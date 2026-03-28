@@ -1,0 +1,34 @@
+[provider]
+name = "local"
+version = "0.17.0"
+description = "Built-in SQLite + memory backends. Zero config."
+
+# No auth needed for local provider
+
+[[backend]]
+name = "sqlite"
+description = "SQLite — persistent, ACID, zero config"
+requires = ["persistent"]
+optional = ["consistent", "encrypted", "retain", "immutable"]
+native = "sqlite"
+
+[[backend]]
+name = "sqlite-encrypted"
+description = "SQLite with encrypted properties"
+requires = ["persistent", "encrypted"]
+optional = ["consistent", "retain"]
+native = "sqlite"
+
+[[backend]]
+name = "memory"
+description = "In-memory HashMap — fast, ephemeral"
+requires = ["ephemeral"]
+optional = ["local", "ttl"]
+native = "memory"
+
+[[backend]]
+name = "memory-local"
+description = "Per-instance memory, no sharing"
+requires = ["ephemeral", "local"]
+optional = ["ttl"]
+native = "memory"
