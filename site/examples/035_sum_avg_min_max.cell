@@ -1,0 +1,40 @@
+// ============================================================================
+// 035 — Sum, Avg, Min, Max
+// ============================================================================
+// Convenience aggregation functions that work on a whole list.
+//
+// Run:   soma run 035_sum_avg_min_max.cell run
+// Expect:
+//   Total revenue: 520
+//   Average revenue: 104
+//   Lowest: {"region": "East", "revenue": 45}
+//   Highest: {"region": "West", "revenue": 200}
+
+cell Aggregates {
+
+    on run() {
+        let sales = list(
+            map("region", "West", "revenue", 200),
+            map("region", "East", "revenue", 45),
+            map("region", "North", "revenue", 150),
+            map("region", "South", "revenue", 125)
+        )
+
+        // sum_by sums a numeric field across all rows
+        let total = sales |> sum_by("revenue")
+        print("Total revenue: {total}")
+
+        // avg_by computes the mean
+        let average = sales |> avg_by("revenue")
+        print("Average revenue: {average}")
+
+        // min_by / max_by return the entire row with the min/max value
+        let lowest = sales |> min_by("revenue")
+        print("Lowest: {lowest}")
+
+        let highest = sales |> max_by("revenue")
+        print("Highest: {highest}")
+
+        return "done"
+    }
+}

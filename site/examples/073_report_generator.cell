@@ -1,0 +1,55 @@
+// ============================================================================
+// 073 — Report Generator
+// ============================================================================
+// Builds a formatted text report from data.
+//
+// Run:   soma run 073_report_generator.cell run
+// Expect:
+//   ========================================
+//   QUARTERLY REPORT
+//   ========================================
+//   Q1: revenue=1700, deals=2
+//   Q2: revenue=3300, deals=2
+//   Q3: revenue=2600, deals=3
+//   Q4: revenue=1050, deals=3
+//   ========================================
+//   TOTAL: 8650 across 10 deals
+//   ========================================
+
+cell ReportGenerator {
+
+    on run() {
+        let sales = list(
+            map("rep", "Alice", "amount", 500, "quarter", "Q1"),
+            map("rep", "Bob", "amount", 1200, "quarter", "Q1"),
+            map("rep", "Carol", "amount", 2500, "quarter", "Q2"),
+            map("rep", "Alice", "amount", 800, "quarter", "Q2"),
+            map("rep", "Bob", "amount", 350, "quarter", "Q3"),
+            map("rep", "Carol", "amount", 1500, "quarter", "Q3"),
+            map("rep", "Alice", "amount", 750, "quarter", "Q3"),
+            map("rep", "Bob", "amount", 400, "quarter", "Q4"),
+            map("rep", "Carol", "amount", 400, "quarter", "Q4"),
+            map("rep", "Alice", "amount", 250, "quarter", "Q4")
+        )
+
+        let sep = "========================================"
+        print(sep)
+        print("QUARTERLY REPORT")
+        print(sep)
+
+        // Aggregate by quarter
+        let by_quarter = sales |> agg("quarter", "amount:sum") |> sort_by("quarter", "asc")
+        for row in by_quarter {
+            print("{row.quarter}: revenue={row.amount_sum}, deals={row.count}")
+        }
+
+        let total = sales |> sum_by("amount")
+        let deal_count = sales.length
+
+        print(sep)
+        print("TOTAL: {total} across {deal_count} deals")
+        print(sep)
+
+        return "done"
+    }
+}

@@ -1,0 +1,68 @@
+// ============================================================================
+// 005 — String Operations
+// ============================================================================
+// Demonstrates Soma's rich set of string built-in functions.
+//
+// Run:   soma run 005_strings.cell run
+// Expect:
+//   Length of 'Hello, Soma!': 12
+//   Uppercase: HELLO, SOMA!
+//   Lowercase: hello, soma!
+//   Trimmed: [Hello]
+//   Contains 'Soma': true
+//   Starts with 'Hello': true
+//   Index of 'Soma': 7
+//   Substring(0,5): Hello
+//   Replace: Hello, World!
+//   Concat: Hello World
+//   Split: ["a", "b", "c"]
+
+cell Strings {
+
+    on run() {
+        let s = "Hello, Soma!"
+
+        // len() returns the string length
+        let slen = len(s)
+        print("Length of 'Hello, Soma!': {slen}")
+
+        // Case conversion
+        let up = uppercase(s)
+        print("Uppercase: {up}")
+        let low = lowercase(s)
+        print("Lowercase: {low}")
+
+        // trim() removes leading/trailing whitespace
+        let padded = "   Hello   "
+        let trimmed = trim(padded)
+        print("Trimmed: [{trimmed}]")
+
+        // Search functions
+        let has_soma = contains(s, "Soma")
+        print("Contains 'Soma': {has_soma}")
+
+        let starts = starts_with(s, "Hello")
+        print("Starts with 'Hello': {starts}")
+
+        let idx = index_of(s, "Soma")
+        print("Index of 'Soma': {idx}")
+
+        // Extraction
+        let sub = substring(s, 0, 5)
+        print("Substring(0,5): {sub}")
+
+        // Transformation
+        let replaced = replace(s, "Soma", "World")
+        print("Replace: {replaced}")
+
+        // Concatenation
+        let combined = concat("Hello", " World")
+        print("Concat: {combined}")
+
+        // Splitting
+        let parts = split("a,b,c", ",")
+        print("Split: {parts}")
+
+        return "done"
+    }
+}

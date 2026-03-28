@@ -1,0 +1,50 @@
+// ============================================================================
+// 037 — Multi-Stage Pipeline
+// ============================================================================
+// Chaining multiple operations: filter -> join -> aggregate -> sort.
+//
+// Run:   soma run 037_multi_stage_pipeline.cell run
+// Expect:
+//   Revenue by category (large orders only):
+//     Electronics: 2690
+//     Furniture: 450
+
+cell MultiPipeline {
+
+    on run() {
+        let orders = list(
+            map("id", 1, "product_id", "P1", "qty", 2, "unit_price", 500),
+            map("id", 2, "product_id", "P2", "qty", 1, "unit_price", 80),
+            map("id", 3, "product_id", "P3", "qty", 5, "unit_price", 90),
+            map("id", 4, "product_id", "P1", "qty", 3, "unit_price", 500),
+            map("id", 5, "product_id", "P4", "qty", 1, "unit_price", 40),
+            map("id", 6, "product_id", "P2", "qty", 10, "unit_price", 80),
+            map("id", 7, "product_id", "P3", "qty", 1, "unit_price", 90)
+        )
+
+        let products = list(
+            map("product_id", "P1", "name", "Laptop", "category", "Electronics"),
+            map("product_id", "P2", "name", "Headphones", "category", "Electronics"),
+            map("product_id", "P3", "name", "Desk Chair", "category", "Furniture"),
+            map("product_id", "P4", "name", "Notebook", "category", "Stationery")
+        )
+
+        // Multi-stage pipeline:
+        // 1. Filter orders with qty > 1
+        // 2. Join with products to get category
+        // 3. Aggregate revenue by category
+        // 4. Sort by revenue descending
+        let result = orders
+            |> filter_by("qty", ">", 1)
+            |> join(products, "product_id")
+            |> agg("category", "unit_price:sum")
+            |> sort_by("unit_price_sum", "desc")
+
+        print("Revenue by category (large orders only):")
+        for row in result {
+            print("  {row.category}: {row.unit_price_sum}")
+        }
+
+        return "done"
+    }
+}

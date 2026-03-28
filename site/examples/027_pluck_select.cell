@@ -1,0 +1,35 @@
+// ============================================================================
+// 027 — Pluck and Select
+// ============================================================================
+// pluck() extracts a single field; select() picks multiple fields.
+//
+// Run:   soma run 027_pluck_select.cell run
+// Expect:
+//   names: ["Alice", "Bob", "Carol"]
+//   selected: [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}, {"name": "Carol", "age": 35}]
+//   distinct cities: [{"city": "Paris"}, {"city": "London"}]
+
+cell PluckSelect {
+
+    on run() {
+        let people = list(
+            map("name", "Alice", "age", 30, "city", "Paris"),
+            map("name", "Bob", "age", 25, "city", "London"),
+            map("name", "Carol", "age", 35, "city", "Paris")
+        )
+
+        // pluck() extracts one field into a flat list
+        let names = pluck(people, "name")
+        print("names: {names}")
+
+        // select() picks specific fields, returning maps
+        let subset = select(people, "name", "age")
+        print("selected: {subset}")
+
+        // distinct() removes duplicates based on a field
+        let unique_cities = distinct(people, "city")
+        print("distinct cities: {unique_cities}")
+
+        return "done"
+    }
+}

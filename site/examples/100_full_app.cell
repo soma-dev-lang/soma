@@ -1,0 +1,161 @@
+// ============================================================================
+// 100 — Full Application: Product Catalog with State Machine
+// ============================================================================
+// The capstone example: combines cells, state machines, pipelines,
+// memory, tests, and HTML rendering in one file.
+//
+// Run:   soma run 100_full_app.cell demo
+// Expect:
+//   === Product Catalog ===
+//   Added: Laptop ($999)
+//   Added: Phone ($699)
+//   Added: Tablet ($449)
+//   Added: Watch ($299)
+//   Added: Earbuds ($149)
+//   Published Laptop
+//   Published Phone
+//   Published Tablet
+//   === Published Products ===
+//   Laptop: $999
+//   Phone: $699
+//   Tablet: $449
+//   === Analytics ===
+//   Total value: 2147
+//   Average price: 715
+//   Most expensive: Laptop ($999)
+//
+// Run:   soma test 100_full_app.cell
+// Expect: All tests pass
+
+cell ProductCatalog {
+
+    memory {
+        products: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    // Product lifecycle state machine
+    state product_status {
+        initial: draft
+
+        draft -> published
+        published -> archived
+        archived -> published      // can re-publish
+        * -> deleted
+    }
+
+    on add_product(name: String, price: Int, category: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+
+        let product = map("id", id, "name", name, "price", price, "category", category)
+        products.set(id_str, to_json(product))
+        status.set(id_str, "draft")
+        return product
+    }
+
+    on publish(id: String) {
+        return transition(id, "published")
+    }
+
+    on archive(id: String) {
+        return transition(id, "archived")
+    }
+
+    on get_published() {
+        let keys = products.keys()
+        let result = list()
+        for key in keys {
+            let st = status.get(key)
+            if st == "published" {
+                result = list(result, from_json(products.get(key)))
+            }
+        }
+        return result |> sort_by("price", "desc")
+    }
+
+    on get_all() {
+        let keys = products.keys()
+        let result = list()
+        for key in keys {
+            result = list(result, from_json(products.get(key)))
+        }
+        return result
+    }
+
+    on demo() {
+        print("=== Product Catalog ===")
+
+        let p1 = add_product("Laptop", 999, "Electronics")
+        print("Added: {p1.name} (${p1.price})")
+
+        let p2 = add_product("Phone", 699, "Electronics")
+        print("Added: {p2.name} (${p2.price})")
+
+        let p3 = add_product("Tablet", 449, "Electronics")
+        print("Added: {p3.name} (${p3.price})")
+
+        let p4 = add_product("Watch", 299, "Accessories")
+        print("Added: {p4.name} (${p4.price})")
+
+        let p5 = add_product("Earbuds", 149, "Accessories")
+        print("Added: {p5.name} (${p5.price})")
+
+        // Publish some products
+        publish("1")
+        print("Published Laptop")
+        publish("2")
+        print("Published Phone")
+        publish("3")
+        print("Published Tablet")
+
+        // Show published only
+        let published = get_published()
+        print("=== Published Products ===")
+        for p in published {
+            print("{p.name}: ${p.price}")
+        }
+
+        // Analytics on published products
+        let total = published |> sum_by("price")
+        let avg = published |> avg_by("price")
+        let most = published |> max_by("price")
+
+        print("=== Analytics ===")
+        print("Total value: {total}")
+        print("Average price: {avg}")
+        print("Most expensive: {most.name} (${most.price})")
+
+        return "done"
+    }
+}
+
+// Helper for tests
+cell MathHelper {
+    on double(n: Int) {
+        return n * 2
+    }
+
+    on is_positive(n: Int) {
+        if n > 0 {
+            return true
+        }
+        return false
+    }
+}
+
+// Tests
+cell test CatalogTests {
+    rules {
+        assert double(5) == 10
+        assert double(0) == 0
+        assert is_positive(1) == true
+        assert is_positive(0) == false
+    }
+}

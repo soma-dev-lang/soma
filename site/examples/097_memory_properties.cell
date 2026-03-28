@@ -1,0 +1,42 @@
+// ============================================================================
+// 097 — Memory Properties
+// ============================================================================
+// Memory slots can have different property combinations that declare
+// durability, consistency, and visibility semantics.
+//
+// Run:   soma check 097_memory_properties.cell
+// Expect: All checks passed.
+
+cell DataStore {
+    face {
+        signal read(key: String) -> String
+        signal write(key: String, value: String) -> String
+        promise "critical data is always persistent"
+    }
+
+    memory {
+        // Persistent + consistent: survives restarts, reads reflect latest write
+        critical: Map<String, String> [persistent, consistent]
+
+        // Ephemeral + local: in-memory cache, lost on restart
+        cache: Map<String, String> [ephemeral, local]
+
+        // Encrypted: data at rest is encrypted
+        secrets: Map<String, String> [persistent, encrypted]
+    }
+
+    on read(key: String) {
+        // Try cache first, fall back to persistent store
+        let cached = cache.get(key)
+        if cached != () {
+            return cached
+        }
+        return critical.get(key)
+    }
+
+    on write(key: String, value: String) {
+        critical.set(key, value)
+        cache.set(key, value)
+        return value
+    }
+}

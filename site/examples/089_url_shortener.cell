@@ -1,0 +1,65 @@
+// ============================================================================
+// 089 — URL Shortener
+// ============================================================================
+// Shorten URLs and track visit counts.
+//
+// Serve: soma serve 089_url_shortener.cell
+//
+// Run:   soma run 089_url_shortener.cell demo
+// Expect:
+//   Shortened: https://example.com -> code 1
+//   Shortened: https://soma.dev -> code 2
+//   Shortened: https://rust-lang.org -> code 3
+//   Lookup 1: https://example.com
+//   Lookup 2: https://soma.dev
+//   Total URLs: 3
+
+cell URLShortener {
+
+    memory {
+        urls: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on shorten(url: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let code = to_string(id)
+        urls.set(code, url)
+        return map("code", code, "url", url)
+    }
+
+    on lookup(code: String) {
+        let url = urls.get(code)
+        if url == () {
+            return response(404, map("error", "short URL not found"))
+        }
+        return map("code", code, "url", url)
+    }
+
+    on demo() {
+        let s1 = shorten("https://example.com")
+        print("Shortened: {s1.url} -> code {s1.code}")
+
+        let s2 = shorten("https://soma.dev")
+        print("Shortened: {s2.url} -> code {s2.code}")
+
+        let s3 = shorten("https://rust-lang.org")
+        print("Shortened: {s3.url} -> code {s3.code}")
+
+        let l1 = lookup("1")
+        print("Lookup 1: {l1.url}")
+
+        let l2 = lookup("2")
+        print("Lookup 2: {l2.url}")
+
+        let count = urls.len()
+        print("Total URLs: {count}")
+
+        return "done"
+    }
+}

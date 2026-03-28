@@ -1,0 +1,44 @@
+// ============================================================================
+// 014 — Recursion
+// ============================================================================
+// Handlers can call themselves recursively.
+//
+// Run:   soma run 014_recursion.cell factorial 6
+// Expect: 720
+//
+// Run:   soma run 014_recursion.cell fibonacci 10
+// Expect: 55
+
+cell Recursive {
+
+    // Classic factorial: n! = n * (n-1)!
+    on factorial(n: Int) {
+        // Base case
+        if n <= 1 {
+            return 1
+        }
+        // Recursive case: handler calls itself
+        return n * factorial(n - 1)
+    }
+
+    // Fibonacci: fib(n) = fib(n-1) + fib(n-2)
+    on fibonacci(n: Int) {
+        if n <= 0 {
+            return 0
+        }
+        if n == 1 {
+            return 1
+        }
+        return fibonacci(n - 1) + fibonacci(n - 2)
+    }
+
+    // Sum of digits: 123 -> 1 + 2 + 3 = 6
+    // Run: soma run 014_recursion.cell digit_sum 123
+    // Expect: 6
+    on digit_sum(n: Int) {
+        if n < 10 {
+            return n
+        }
+        return (n % 10) + digit_sum(n / 10)
+    }
+}

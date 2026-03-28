@@ -1,0 +1,43 @@
+// ============================================================================
+// 008 — Type Conversions
+// ============================================================================
+// Demonstrates to_string(), to_int(), to_float(), and to_json()/from_json().
+//
+// Run:   soma run 008_type_conversion.cell run
+// Expect:
+//   to_string(42) = 42 (type: String)
+//   to_int("123") = 123 (type: Int)
+//   to_float(7) = 7 (type: Float)
+//   json: {"name":"Alice","score":95}
+//   parsed name: Alice
+
+cell Conversions {
+
+    on run() {
+        // to_string: convert any value to its string representation
+        let n = 42
+        let s = to_string(n)
+        let s_type = type_of(s)
+        print("to_string(42) = {s} (type: {s_type})")
+
+        // to_int: parse a string as an integer
+        let parsed = to_int("123")
+        let p_type = type_of(parsed)
+        print("to_int(\"123\") = {parsed} (type: {p_type})")
+
+        // to_float: convert int to float
+        let f = to_float(7)
+        let f_type = type_of(f)
+        print("to_float(7) = {f} (type: {f_type})")
+
+        // to_json / from_json: serialize maps to JSON strings and back
+        let data = map("name", "Alice", "score", 95)
+        let json = to_json(data)
+        print("json: {json}")
+
+        let back = from_json(json)
+        print("parsed name: {back.name}")
+
+        return "done"
+    }
+}

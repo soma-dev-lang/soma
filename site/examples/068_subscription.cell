@@ -1,0 +1,62 @@
+// ============================================================================
+// 068 — Subscription Lifecycle
+// ============================================================================
+// Models a SaaS subscription: trial -> active -> cancelled etc.
+//
+// Run:   soma run 068_subscription.cell demo
+// Expect:
+//   Subscription created (trial)
+//   Activated!
+//   Status: active
+//   Paused
+//   Resumed
+//   Cancelled
+
+cell Subscription {
+
+    memory {
+        subs: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state sub_status {
+        initial: trial
+
+        trial -> active
+        trial -> cancelled
+        active -> paused
+        active -> cancelled
+        paused -> active
+        paused -> cancelled
+        cancelled -> trial
+    }
+
+    on create(plan: String) {
+        let id = to_string(next_id())
+        subs.set(id, plan)
+        status.set(id, "trial")
+        return map("id", id, "plan", plan, "status", "trial")
+    }
+
+    on demo() {
+        create("Pro")
+        print("Subscription created (trial)")
+
+        transition("1", "active")
+        print("Activated!")
+
+        let st = get_status("1")
+        print("Status: {st}")
+
+        transition("1", "paused")
+        print("Paused")
+
+        transition("1", "active")
+        print("Resumed")
+
+        transition("1", "cancelled")
+        print("Cancelled")
+
+        return "done"
+    }
+}

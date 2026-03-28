@@ -1,0 +1,40 @@
+// ============================================================================
+// 010 — Multiple Handlers
+// ============================================================================
+// A cell can have multiple handlers. Each is like a public method.
+// Handlers can call each other.
+//
+// Run:   soma run 010_multiple_handlers.cell area 5 3
+// Expect: 15
+//
+// Run:   soma run 010_multiple_handlers.cell perimeter 5 3
+// Expect: 16
+//
+// Run:   soma run 010_multiple_handlers.cell describe 5 3
+// Expect:
+//   Rectangle 5 x 3
+//   Area: 15
+//   Perimeter: 16
+
+cell Rectangle {
+
+    // Compute the area of a rectangle
+    on area(width: Int, height: Int) {
+        return width * height
+    }
+
+    // Compute the perimeter
+    on perimeter(width: Int, height: Int) {
+        return 2 * (width + height)
+    }
+
+    // Handlers can call other handlers in the same cell
+    on describe(width: Int, height: Int) {
+        let a = area(width, height)
+        let p = perimeter(width, height)
+        print("Rectangle {width} x {height}")
+        print("Area: {a}")
+        print("Perimeter: {p}")
+        return "done"
+    }
+}

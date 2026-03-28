@@ -1,0 +1,36 @@
+// ============================================================================
+// 006 — String Interpolation
+// ============================================================================
+// Soma strings support {variable} interpolation, including map field access.
+//
+// Run:   soma run 006_string_interpolation.cell run
+// Expect:
+//   Hello, Alice!
+//   Alice is 30 years old
+//   User: Alice (alice@example.com)
+//   Score: 95/100
+
+cell Interpolation {
+
+    on run() {
+        // Simple variable interpolation
+        let name = "Alice"
+        print("Hello, {name}!")
+
+        // Multiple variables in one string
+        let age = 30
+        print("{name} is {age} years old")
+
+        // Map field access works inside interpolation
+        let user = map("name", "Alice", "email", "alice@example.com")
+        print("User: {user.name} ({user.email})")
+
+        // Expressions must be pre-computed into variables
+        // (function calls don't work directly in interpolation)
+        let score = 95
+        let max_score = 100
+        print("Score: {score}/{max_score}")
+
+        return "done"
+    }
+}

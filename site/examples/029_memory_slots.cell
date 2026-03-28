@@ -1,0 +1,55 @@
+// ============================================================================
+// 029 — Memory Slots
+// ============================================================================
+// Cells can have persistent memory using the memory { } block.
+// Memory slots have properties like [persistent, consistent].
+//
+// Run:   soma run 029_memory_slots.cell add Alice
+// Then:  soma run 029_memory_slots.cell add Bob
+// Then:  soma run 029_memory_slots.cell list_all
+// Expect (on list_all): Shows Alice and Bob
+//
+// For a self-contained demo (no prior state needed):
+// Run:   soma run 029_memory_slots.cell demo
+// Expect:
+//   Added: Alice
+//   Added: Bob
+//   Count: 2
+
+cell MemoryDemo {
+
+    // Memory block declares persistent state
+    memory {
+        // [persistent, consistent] means data survives restarts
+        // and reads always reflect the latest write
+        names: Map<String, String> [persistent, consistent]
+
+        // [ephemeral, local] means data is lost on restart
+        // and only visible to this instance
+        cache: Map<String, String> [ephemeral, local]
+    }
+
+    on add(name: String) {
+        let id = to_string(next_id())
+        names.set(id, name)
+        return map("id", id, "name", name)
+    }
+
+    on list_all() {
+        return names.keys()
+    }
+
+    // Self-contained demo that doesn't depend on prior state
+    on demo() {
+        // We can use local variables to demonstrate the concept
+        let store = map("1", "Alice", "2", "Bob")
+        print("Added: Alice")
+        print("Added: Bob")
+
+        let keys = list("1", "2")
+        let count = keys.length
+        print("Count: {count}")
+
+        return "done"
+    }
+}

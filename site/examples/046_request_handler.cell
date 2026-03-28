@@ -1,0 +1,35 @@
+// ============================================================================
+// 046 — Generic Request Handler
+// ============================================================================
+// The special request(method, path, body) handler catches all HTTP requests.
+//
+// Serve: soma serve 046_request_handler.cell
+// Test:  curl localhost:8080/anything/here
+//
+// Run:   soma run 046_request_handler.cell request GET /hello ""
+// Expect: {"method": "GET", "path": "/hello", "message": "Hello from Soma!"}
+
+cell RequestHandler {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+    }
+
+    // The request handler receives ALL HTTP requests
+    on request(method: String, path: String, body: String) {
+        // Route based on path
+        if path == "/hello" {
+            return map("method", method, "path", path, "message", "Hello from Soma!")
+        }
+
+        if path == "/echo" {
+            return map("method", method, "body", body)
+        }
+
+        if path == "/time" {
+            return map("status", "ok", "note", "Time endpoint")
+        }
+
+        // Default response for unknown paths
+        return map("method", method, "path", path, "message", "Not found")
+    }
+}

@@ -1,0 +1,40 @@
+// ============================================================================
+// 032 — The Pipe Operator |>
+// ============================================================================
+// a |> f(b) is equivalent to f(a, b). Enables readable data pipelines.
+//
+// Run:   soma run 032_pipe_operator.cell run
+// Expect:
+//   Top 3 scores:
+//     Carol: 95
+//     Alice: 90
+//     Eve: 88
+
+cell PipeOperator {
+
+    on run() {
+        let students = list(
+            map("name", "Alice", "score", 90),
+            map("name", "Bob", "score", 72),
+            map("name", "Carol", "score", 95),
+            map("name", "Dave", "score", 60),
+            map("name", "Eve", "score", 88)
+        )
+
+        // Without pipes (nested calls, hard to read):
+        // let result = top(sort_by(filter_by(students, "score", ">", 50), "score", "desc"), 3)
+
+        // With pipes (reads top-to-bottom, like a data flow):
+        let result = students
+            |> filter_by("score", ">", 50)      // keep scores above 50
+            |> sort_by("score", "desc")          // highest first
+            |> top(3)                            // take top 3
+
+        print("Top 3 scores:")
+        for s in result {
+            print("  {s.name}: {s.score}")
+        }
+
+        return "done"
+    }
+}

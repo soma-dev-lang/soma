@@ -1,0 +1,41 @@
+// ============================================================================
+// 044 — HTTP Status Codes
+// ============================================================================
+// response() lets you set HTTP status codes for error handling.
+//
+// Serve: soma serve 044_status_codes.cell
+// Test:  curl localhost:8080/find/1   -> 404 not found
+//        curl localhost:8080/health   -> 200 ok
+//
+// Run:   soma run 044_status_codes.cell health
+// Expect: {"status": "ok", "version": "1.0"}
+
+cell StatusCodes {
+
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+
+    // Health check — always returns 200
+    on health() {
+        return map("status", "ok", "version", "1.0")
+    }
+
+    // Find an item — returns 404 if not found
+    on find(id: String) {
+        let item = items.get(id)
+        if item == () {
+            // response(status_code, body) sets the HTTP status
+            return response(404, map("error", "item not found", "id", id))
+        }
+        return from_json(item)
+    }
+
+    // Create — returns the created item
+    on create(name: String) {
+        let id = to_string(next_id())
+        let item = map("id", id, "name", name)
+        items.set(id, to_json(item))
+        return item
+    }
+}

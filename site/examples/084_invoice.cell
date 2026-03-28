@@ -1,0 +1,50 @@
+// ============================================================================
+// 084 — Invoice Generator
+// ============================================================================
+// Create invoices with line items and compute totals.
+//
+// Run:   soma run 084_invoice.cell demo
+// Expect:
+//   === INVOICE ===
+//   Customer: Acme Corp
+//   Items:
+//     Widget x10 @ $9.99 = $99.90
+//     Gadget x5 @ $19.99 = $99.95
+//     Service x1 @ $150.00 = $150.00
+//   Subtotal: $349.85
+//   Tax (10%): $34.985
+//   Total: $384.835
+
+cell Invoice {
+
+    on demo() {
+        let customer = "Acme Corp"
+        let items = list(
+            map("name", "Widget", "qty", 10, "price", 9.99),
+            map("name", "Gadget", "qty", 5, "price", 19.99),
+            map("name", "Service", "qty", 1, "price", 150.00)
+        )
+
+        let tax_rate = 0.10
+
+        print("=== INVOICE ===")
+        print("Customer: {customer}")
+        print("Items:")
+
+        let subtotal = 0.0
+        for item in items {
+            let line_total = to_float(item.qty) * item.price
+            subtotal = subtotal + line_total
+            print("  {item.name} x{item.qty} @ ${item.price} = ${line_total}")
+        }
+
+        let tax = subtotal * tax_rate
+        let total = subtotal + tax
+
+        print("Subtotal: ${subtotal}")
+        print("Tax (10%): ${tax}")
+        print("Total: ${total}")
+
+        return "done"
+    }
+}

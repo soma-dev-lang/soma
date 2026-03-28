@@ -1,0 +1,57 @@
+// ============================================================================
+// 003 — Basic Types
+// ============================================================================
+// Soma has these built-in types: Int, Float, String, Bool, List, Map, and ()
+// () is null/unit. type_of() tells you what something is.
+//
+// Run:   soma run 003_types.cell run
+// Expect:
+//   Int: 42 -> Int
+//   Float: 3.14 -> Float
+//   String: hello -> String
+//   Bool: true -> Bool
+//   Null: () -> Null
+//   List: [1, 2, 3] -> List
+//   Map: {"x": 10} -> Map
+
+cell Types {
+
+    on run() {
+        // Int — 64-bit signed integer
+        let i = 42
+        let i_type = type_of(i)
+        print("Int: {i} -> {i_type}")
+
+        // Float — 64-bit floating point
+        let f = 3.14
+        let f_type = type_of(f)
+        print("Float: {f} -> {f_type}")
+
+        // String — UTF-8 text
+        let s = "hello"
+        let s_type = type_of(s)
+        print("String: {s} -> {s_type}")
+
+        // Bool — true or false
+        let b = true
+        let b_type = type_of(b)
+        print("Bool: {b} -> {b_type}")
+
+        // () — null / unit / nothing
+        let n = ()
+        let n_type = type_of(n)
+        print("Null: {n} -> {n_type}")
+
+        // List — ordered collection
+        let l = list(1, 2, 3)
+        let l_type = type_of(l)
+        print("List: {l} -> {l_type}")
+
+        // Map — key-value pairs
+        let m = map("x", 10)
+        let m_type = type_of(m)
+        print("Map: {m} -> {m_type}")
+
+        return "done"
+    }
+}

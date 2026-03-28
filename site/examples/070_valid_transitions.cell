@@ -1,0 +1,57 @@
+// ============================================================================
+// 070 — Querying Valid Transitions
+// ============================================================================
+// valid_transitions() returns what states are reachable from the current one.
+//
+// Run:   soma run 070_valid_transitions.cell demo
+// Expect:
+//   From draft: ["review", "cancelled"]
+//   From review: ["approved", "draft", "cancelled"]
+//   From approved: ["published", "cancelled"]
+
+cell TransitionQuery {
+
+    memory {
+        items: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state item_status {
+        initial: draft
+
+        draft -> review
+        review -> approved
+        review -> draft
+        approved -> published
+        published -> archived
+        * -> cancelled
+    }
+
+    on create(name: String) {
+        let id = to_string(next_id())
+        items.set(id, name)
+        status.set(id, "draft")
+        return id
+    }
+
+    on demo() {
+        create("Doc A")
+        create("Doc B")
+        create("Doc C")
+
+        // Check valid transitions at each stage
+        let t1 = valid_transitions("1")
+        print("From draft: {t1}")
+
+        transition("2", "review")
+        let t2 = valid_transitions("2")
+        print("From review: {t2}")
+
+        transition("3", "review")
+        transition("3", "approved")
+        let t3 = valid_transitions("3")
+        print("From approved: {t3}")
+
+        return "done"
+    }
+}

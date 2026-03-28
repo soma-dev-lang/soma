@@ -1,0 +1,67 @@
+// ============================================================================
+// 009 — Booleans and Comparisons
+// ============================================================================
+// Demonstrates boolean values and comparison operators.
+//
+// Run:   soma run 009_booleans.cell run
+// Expect:
+//   true is Bool
+//   10 > 5: true
+//   10 == 10: true
+//   10 != 5: true
+//   10 >= 10: true
+//   10 <= 15: true
+//   both true: yes
+//   either true: yes
+
+cell Booleans {
+
+    on run() {
+        // Boolean literals
+        let t = true
+        let f = false
+        let t_type = type_of(t)
+        print("{t} is {t_type}")
+
+        // Comparison operators return booleans
+        let gt = 10 > 5
+        print("10 > 5: {gt}")
+
+        let eq = 10 == 10
+        print("10 == 10: {eq}")
+
+        let ne = 10 != 5
+        print("10 != 5: {ne}")
+
+        let ge = 10 >= 10
+        print("10 >= 10: {ge}")
+
+        let le = 10 <= 15
+        print("10 <= 15: {le}")
+
+        // Boolean logic via if-else (no && or || operators)
+        let a = true
+        let b = true
+        if a == true {
+            if b == true {
+                print("both true: yes")
+            }
+        }
+
+        // Simulating OR: check either condition
+        let x = false
+        let y = true
+        let either = false
+        if x == true {
+            either = true
+        }
+        if y == true {
+            either = true
+        }
+        if either == true {
+            print("either true: yes")
+        }
+
+        return "done"
+    }
+}

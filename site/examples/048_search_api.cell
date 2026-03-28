@@ -1,0 +1,36 @@
+// ============================================================================
+// 048 — Search API
+// ============================================================================
+// Filter and search through data using pipeline operators.
+//
+// Run:   soma run 048_search_api.cell run
+// Expect:
+//   Search 'alice': [{"name": "Alice", "role": "Engineer"}]
+//   Engineers: [{"name": "Alice", "role": "Engineer"}, {"name": "Dave", "role": "Engineer"}]
+//   Sorted by name: ["Alice", "Bob", "Carol", "Dave"]
+
+cell SearchAPI {
+
+    on run() {
+        let people = list(
+            map("name", "Alice", "role", "Engineer", "level", 3),
+            map("name", "Bob", "role", "Designer", "level", 2),
+            map("name", "Carol", "role", "Manager", "level", 4),
+            map("name", "Dave", "role", "Engineer", "level", 2)
+        )
+
+        // Search by exact match
+        let found = people |> filter_by("name", "=", "Alice") |> select("name", "role")
+        print("Search 'alice': {found}")
+
+        // Filter by role
+        let engineers = people |> filter_by("role", "=", "Engineer") |> select("name", "role")
+        print("Engineers: {engineers}")
+
+        // Sort and pluck names
+        let sorted = people |> sort_by("name", "asc") |> pluck("name")
+        print("Sorted by name: {sorted}")
+
+        return "done"
+    }
+}

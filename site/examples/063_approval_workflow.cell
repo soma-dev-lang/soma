@@ -1,0 +1,65 @@
+// ============================================================================
+// 063 — Approval Workflow
+// ============================================================================
+// A multi-stage approval process using state machines.
+//
+// Run:   soma run 063_approval_workflow.cell demo
+// Expect:
+//   Created request: New laptop for dev team
+//   Status: pending
+//   Manager reviewing
+//   Finance reviewing
+//   Approved!
+//   Final status: approved
+
+cell ApprovalWorkflow {
+
+    memory {
+        requests: Map<String, String> [persistent, consistent]
+        // Dedicated map for state tracking
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state approval_status {
+        initial: pending
+
+        pending -> manager_review
+        manager_review -> finance_review
+        finance_review -> approved
+        manager_review -> rejected
+        finance_review -> rejected
+        rejected -> pending
+        * -> cancelled
+    }
+
+    on submit(title: String, amount: Int) {
+        let id = to_string(next_id())
+        let req = map("id", id, "title", title, "amount", amount)
+        requests.set(id, to_json(req))
+        // Initialize state
+        status.set(id, "pending")
+        return req
+    }
+
+    on demo() {
+        let req = submit("New laptop for dev team", 2000)
+        print("Created request: {req.title}")
+
+        let st = get_status("1")
+        print("Status: {st}")
+
+        transition("1", "manager_review")
+        print("Manager reviewing")
+
+        transition("1", "finance_review")
+        print("Finance reviewing")
+
+        transition("1", "approved")
+        print("Approved!")
+
+        let final_st = get_status("1")
+        print("Final status: {final_st}")
+
+        return "done"
+    }
+}

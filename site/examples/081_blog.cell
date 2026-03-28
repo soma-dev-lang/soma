@@ -1,0 +1,72 @@
+// ============================================================================
+// 081 — Blog Engine
+// ============================================================================
+// A simple blog with posts and listing.
+//
+// Run:   soma run 081_blog.cell demo
+// Expect:
+//   Published: Introduction to Soma
+//   Published: Building Web Apps
+//   Published: State Machines 101
+//   === Blog Posts (newest first) ===
+//   [3] State Machines 101 by Carol
+//   [2] Building Web Apps by Bob
+//   [1] Introduction to Soma by Alice
+
+cell Blog {
+
+    memory {
+        posts: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on publish(title: String, author: String, body: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+
+        let post = map("id", id, "title", title, "author", author, "body", body)
+        posts.set(id_str, to_json(post))
+        return post
+    }
+
+    on list_posts() {
+        let keys = posts.keys()
+        let result = list()
+        for key in keys {
+            result = list(result, from_json(posts.get(key)))
+        }
+        return result |> sort_by("id", "desc")
+    }
+
+    on get_post(id: String) {
+        let raw = posts.get(id)
+        if raw == () {
+            return response(404, map("error", "post not found"))
+        }
+        return from_json(raw)
+    }
+
+    on demo() {
+        let p1 = publish("Introduction to Soma", "Alice", "Soma is a declarative language...")
+        print("Published: {p1.title}")
+
+        let p2 = publish("Building Web Apps", "Bob", "With soma serve, you can...")
+        print("Published: {p2.title}")
+
+        let p3 = publish("State Machines 101", "Carol", "State machines define valid transitions...")
+        print("Published: {p3.title}")
+
+        let all = list_posts()
+        print("=== Blog Posts (newest first) ===")
+        for post in all {
+            print("[{post.id}] {post.title} by {post.author}")
+        }
+
+        return "done"
+    }
+}

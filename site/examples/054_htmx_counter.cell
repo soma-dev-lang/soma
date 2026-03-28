@@ -1,0 +1,83 @@
+// ============================================================================
+// 054 — HTMX Counter
+// ============================================================================
+// A counter that updates without page reloads using HTMX.
+//
+// Serve: soma serve 054_htmx_counter.cell
+// Test:  open http://localhost:8080
+//
+// Run:   soma run 054_htmx_counter.cell demo
+// Expect:
+//   Count: 0
+//   Count: 1
+//   Count: 2
+
+cell HtmxCounter {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal increment() -> String
+        signal decrement() -> String
+        signal value() -> String
+        signal demo() -> String
+    }
+
+    memory {
+        data: Map<String, Int> [persistent, consistent]
+    }
+
+    on request(method: String, path: String, body: String) {
+        return html("<!DOCTYPE html>
+<html>
+<head>
+    <title>HTMX Counter</title>
+    <script src='https://unpkg.com/htmx.org@1.9.12'></script>
+    <style>
+        body { font-family: system-ui; text-align: center; padding: 50px; }
+        .counter { font-size: 4rem; font-weight: bold; margin: 20px; }
+        button { font-size: 1.5rem; padding: 10px 20px; margin: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>HTMX Counter</h1>
+    <div class='counter' id='count' hx-get='/value' hx-trigger='load'>0</div>
+    <button hx-post='/increment' hx-target='#count'>+</button>
+    <button hx-post='/decrement' hx-target='#count'>-</button>
+</body>
+</html>")
+    }
+
+    on value() {
+        let v = data.get("count") ?? 0
+        return html(to_string(v))
+    }
+
+    on increment() {
+        let v = data.get("count") ?? 0
+        data.set("count", v + 1)
+        let result = v + 1
+        return html(to_string(result))
+    }
+
+    on decrement() {
+        let v = data.get("count") ?? 0
+        data.set("count", v - 1)
+        let result = v - 1
+        return html(to_string(result))
+    }
+
+    on demo() {
+        data.set("count", 0)
+        let v0 = data.get("count")
+        print("Count: {v0}")
+
+        increment()
+        let v1 = data.get("count")
+        print("Count: {v1}")
+
+        increment()
+        let v2 = data.get("count")
+        print("Count: {v2}")
+
+        return "done"
+    }
+}

@@ -1,0 +1,37 @@
+// ============================================================================
+// 052 — Dynamic HTML with render()
+// ============================================================================
+// render() is a template engine: replaces {key} with values in a string.
+//
+// Run:   soma run 052_dynamic_html.cell run
+// Expect:
+//   <h1>Hello, Alice!</h1>
+//   <p>You have 5 messages.</p>
+//   <li>Item 1: Apple</li>
+//   <li>Item 2: Banana</li>
+//   <li>Item 3: Cherry</li>
+
+cell DynamicHTML {
+
+    on run() {
+        // render(template, key1, val1, key2, val2, ...)
+        // Replaces {key} placeholders with corresponding values
+        let heading = render("<h1>Hello, {name}!</h1>", "name", "Alice")
+        print(heading)
+
+        let msg = render("<p>You have {count} messages.</p>", "count", "5")
+        print(msg)
+
+        // Build a list dynamically
+        let items = list("Apple", "Banana", "Cherry")
+        let idx = 1
+        for item in items {
+            let idx_str = to_string(idx)
+            let line = render("<li>Item {n}: {item}</li>", "n", idx_str, "item", item)
+            print(line)
+            idx = idx + 1
+        }
+
+        return "done"
+    }
+}

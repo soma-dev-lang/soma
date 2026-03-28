@@ -1,0 +1,63 @@
+// ============================================================================
+// 066 — Deployment Pipeline
+// ============================================================================
+// CI/CD deployment stages modeled as a state machine.
+//
+// Run:   soma run 066_deployment_pipeline.cell demo
+// Expect:
+//   Deployment v1.2.3 created
+//   Building...
+//   Testing...
+//   Staging...
+//   Production deploy!
+//   Status: production
+
+cell DeploymentPipeline {
+
+    memory {
+        deploys: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state deploy_status {
+        initial: created
+
+        created -> building
+        building -> testing
+        testing -> staging
+        staging -> production
+        testing -> failed
+        building -> failed
+        failed -> created
+        * -> cancelled
+    }
+
+    on create(version: String) {
+        let id = to_string(next_id())
+        deploys.set(id, version)
+        status.set(id, "created")
+        return map("id", id, "version", version)
+    }
+
+    on demo() {
+        let deploy = create("v1.2.3")
+        print("Deployment {deploy.version} created")
+
+        transition("1", "building")
+        print("Building...")
+
+        transition("1", "testing")
+        print("Testing...")
+
+        transition("1", "staging")
+        print("Staging...")
+
+        transition("1", "production")
+        print("Production deploy!")
+
+        let st = get_status("1")
+        print("Status: {st}")
+
+        return "done"
+    }
+}

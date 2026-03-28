@@ -1,0 +1,21 @@
+// ============================================================================
+// 091 — BigInt Arithmetic
+// ============================================================================
+// BigInt provides arbitrary-precision integers — no overflow.
+//
+// Run:   soma run 091_bigint.cell compute 50
+// Expect: (a very large number: 50!)
+
+cell BigFactorial {
+    face {
+        // BigInt type annotation tells Soma to use arbitrary precision
+        signal compute(n: BigInt) -> BigInt
+    }
+
+    on compute(n: BigInt) {
+        if n <= 1 {
+            return 1
+        }
+        return n * compute(n - 1)
+    }
+}

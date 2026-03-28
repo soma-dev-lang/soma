@@ -1,0 +1,75 @@
+// ============================================================================
+// 055 — HTMX Live Search
+// ============================================================================
+// Search with live results as you type, powered by HTMX.
+//
+// Serve: soma serve 055_htmx_search.cell
+// Test:  open http://localhost:8080 -> type in search box
+//
+// Run:   soma run 055_htmx_search.cell search al
+// Expect: (HTML fragment with matching results)
+
+cell LiveSearch {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal search(q: String) -> String
+    }
+
+    on request(method: String, path: String, body: String) {
+        return html("<!DOCTYPE html>
+<html>
+<head>
+    <title>Live Search</title>
+    <script src='https://unpkg.com/htmx.org@1.9.12'></script>
+    <style>
+        body { font-family: system-ui; max-width: 500px; margin: 50px auto; }
+        input { width: 100%; padding: 12px; font-size: 16px; border: 2px solid #e2e8f0; border-radius: 8px; }
+        .result { padding: 8px 12px; border-bottom: 1px solid #eee; }
+        .result:hover { background: #f5f5f5; }
+    </style>
+</head>
+<body>
+    <h1>Live Search</h1>
+    <input name='q' placeholder='Search...'
+           hx-get='/search' hx-trigger='keyup changed delay:300ms' hx-target='#results'>
+    <div id='results'></div>
+</body>
+</html>")
+    }
+
+    on search(q: String) {
+        // Sample data to search through
+        let items = list(
+            map("name", "Alice Johnson", "role", "Engineer"),
+            map("name", "Bob Smith", "role", "Designer"),
+            map("name", "Carol Williams", "role", "Manager"),
+            map("name", "Dave Brown", "role", "Engineer"),
+            map("name", "Eve Davis", "role", "Analyst"),
+            map("name", "Frank Wilson", "role", "Designer")
+        )
+
+        let query = lowercase(q)
+        let result_html = ""
+
+        for item in items {
+            let name_lower = lowercase(item.name)
+            let role_lower = lowercase(item.role)
+            let match = contains(name_lower, query)
+            if match == false {
+                match = contains(role_lower, query)
+            }
+            if match == true {
+                result_html += render(
+                    "<div class='result'><strong>{name}</strong> - {role}</div>",
+                    "name", item.name, "role", item.role
+                )
+            }
+        }
+
+        if result_html == "" {
+            result_html = "<div class='result' style='color: #999;'>No results found</div>"
+        }
+
+        return html(result_html)
+    }
+}

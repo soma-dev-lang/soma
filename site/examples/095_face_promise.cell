@@ -1,0 +1,49 @@
+// ============================================================================
+// 095 — Face Block and Promises
+// ============================================================================
+// The face block declares a cell's public interface and promises.
+// Promises are runtime-checked guarantees.
+//
+// Run:   soma check 095_face_promise.cell
+// Expect: All checks passed.
+//
+// Run:   soma run 095_face_promise.cell get_balance Alice
+// Expect: 0
+
+cell BankAccount {
+    face {
+        // signal declarations define the public API
+        signal deposit(account: String, amount: Int) -> Int
+        signal withdraw(account: String, amount: Int) -> Int
+        signal get_balance(account: String) -> Int
+
+        // Promises: guarantees this cell makes
+        promise "balance is always non-negative"
+        promise all_persistent
+    }
+
+    memory {
+        balances: Map<String, Int> [persistent, consistent]
+    }
+
+    on deposit(account: String, amount: Int) {
+        let current = balances.get(account) ?? 0
+        let new_balance = current + amount
+        balances.set(account, new_balance)
+        return new_balance
+    }
+
+    on withdraw(account: String, amount: Int) {
+        let current = balances.get(account) ?? 0
+        if amount > current {
+            return response(400, map("error", "insufficient funds"))
+        }
+        let new_balance = current - amount
+        balances.set(account, new_balance)
+        return new_balance
+    }
+
+    on get_balance(account: String) {
+        return balances.get(account) ?? 0
+    }
+}

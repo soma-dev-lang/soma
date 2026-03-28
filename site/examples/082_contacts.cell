@@ -1,0 +1,87 @@
+// ============================================================================
+// 082 — Contact Book
+// ============================================================================
+// Manage contacts with search capability.
+//
+// Run:   soma run 082_contacts.cell demo
+// Expect:
+//   Added: Alice (alice@mail.com)
+//   Added: Bob (bob@mail.com)
+//   Added: Carol (carol@work.com)
+//   All contacts: 3
+//   Search 'mail.com': 2 results
+//     Alice: alice@mail.com
+//     Bob: bob@mail.com
+
+cell ContactBook {
+
+    memory {
+        contacts: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on add(name: String, email: String, phone: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+
+        let contact = map("id", id, "name", name, "email", email, "phone", phone)
+        contacts.set(id_str, to_json(contact))
+        return contact
+    }
+
+    on list_all() {
+        let keys = contacts.keys()
+        let result = list()
+        for key in keys {
+            result = list(result, from_json(contacts.get(key)))
+        }
+        return result
+    }
+
+    on search(query: String) {
+        let all = list_all()
+        let q = lowercase(query)
+        let results = list()
+        for c in all {
+            let name_match = contains(lowercase(c.name), q)
+            let email_match = contains(lowercase(c.email), q)
+            if name_match == true {
+                results = list(results, c)
+            } else {
+                if email_match == true {
+                    results = list(results, c)
+                }
+            }
+        }
+        return results
+    }
+
+    on demo() {
+        let c1 = add("Alice", "alice@mail.com", "555-0001")
+        print("Added: {c1.name} ({c1.email})")
+
+        let c2 = add("Bob", "bob@mail.com", "555-0002")
+        print("Added: {c2.name} ({c2.email})")
+
+        let c3 = add("Carol", "carol@work.com", "555-0003")
+        print("Added: {c3.name} ({c3.email})")
+
+        let all = list_all()
+        let count = all.length
+        print("All contacts: {count}")
+
+        let found = search("mail.com")
+        let found_count = found.length
+        print("Search 'mail.com': {found_count} results")
+        for c in found {
+            print("  {c.name}: {c.email}")
+        }
+
+        return "done"
+    }
+}

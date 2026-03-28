@@ -1,0 +1,44 @@
+// ============================================================================
+// 024 — List Transformations
+// ============================================================================
+// Building new lists from existing ones with for loops.
+//
+// Run:   soma run 024_list_transform.cell run
+// Expect:
+//   squares: [1, 4, 9, 16, 25]
+//   evens: [2, 4, 6, 8, 10]
+//   strings: ["1", "2", "3", "4", "5"]
+
+cell ListTransform {
+
+    on run() {
+        let nums = list(1, 2, 3, 4, 5)
+
+        // Map pattern: transform each element
+        let squares = list()
+        for n in nums {
+            squares = list(squares, n * n)
+        }
+        print("squares: {squares}")
+
+        // Filter pattern: keep only elements matching a condition
+        let all_nums = list(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+        let evens = list()
+        for n in all_nums {
+            if n % 2 == 0 {
+                evens = list(evens, n)
+            }
+        }
+        print("evens: {evens}")
+
+        // Convert pattern: transform types
+        let strings = list()
+        for n in nums {
+            let s = to_string(n)
+            strings = list(strings, s)
+        }
+        print("strings: {strings}")
+
+        return "done"
+    }
+}

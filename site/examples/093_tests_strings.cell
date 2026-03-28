@@ -1,0 +1,38 @@
+// ============================================================================
+// 093 — Testing String Functions
+// ============================================================================
+// Test string manipulation with declarative assertions.
+//
+// Run:   soma test 093_tests_strings.cell
+// Expect: All assertions pass
+
+cell StringUtils {
+    on shout(s: String) {
+        return uppercase(s)
+    }
+
+    on whisper(s: String) {
+        return lowercase(s)
+    }
+
+    on greet(name: String) {
+        return concat("Hello, ", concat(name, "!"))
+    }
+
+    on initials(first: String, last: String) {
+        let f = substring(first, 0, 1)
+        let l = substring(last, 0, 1)
+        return concat(f, l)
+    }
+}
+
+cell test StringTests {
+    rules {
+        assert shout("hello") == "HELLO"
+        assert whisper("HELLO") == "hello"
+        assert greet("Alice") == "Hello, Alice!"
+        assert greet("World") == "Hello, World!"
+        assert initials("Alice", "Smith") == "AS"
+        assert initials("Bob", "Jones") == "BJ"
+    }
+}

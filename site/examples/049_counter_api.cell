@@ -1,0 +1,73 @@
+// ============================================================================
+// 049 — Counter API
+// ============================================================================
+// A simple counter with increment, decrement, and get.
+// Demonstrates memory slots and basic state management.
+//
+// Serve: soma serve 049_counter_api.cell
+// Test:  curl localhost:8080/increment/5
+//        curl localhost:8080/get
+//
+// Run:   soma run 049_counter_api.cell demo
+// Expect:
+//   Initial: 0
+//   After +5: 5
+//   After +3: 8
+//   After -2: 6
+
+cell CounterAPI {
+    face {
+        signal increment(amount: Int) -> Int
+        signal decrement(amount: Int) -> Int
+        signal get() -> Int
+        signal reset() -> Int
+        signal demo() -> String
+    }
+
+    memory {
+        value: Map<String, Int> [persistent, consistent]
+    }
+
+    on increment(amount: Int) {
+        let current = value.get("count") ?? 0
+        let new_val = current + amount
+        value.set("count", new_val)
+        return new_val
+    }
+
+    on decrement(amount: Int) {
+        let current = value.get("count") ?? 0
+        let new_val = current - amount
+        value.set("count", new_val)
+        return new_val
+    }
+
+    on get() {
+        return value.get("count") ?? 0
+    }
+
+    on reset() {
+        value.set("count", 0)
+        return 0
+    }
+
+    on demo() {
+        reset()
+        let v0 = get()
+        print("Initial: {v0}")
+
+        increment(5)
+        let v1 = get()
+        print("After +5: {v1}")
+
+        increment(3)
+        let v2 = get()
+        print("After +3: {v2}")
+
+        decrement(2)
+        let v3 = get()
+        print("After -2: {v3}")
+
+        return "done"
+    }
+}

@@ -1,0 +1,49 @@
+// ============================================================================
+// 079 — Data Merge (Multi-Source Join)
+// ============================================================================
+// Combine data from multiple sources using joins.
+//
+// Run:   soma run 079_data_merge.cell run
+// Expect:
+//   === Merged Employee Report ===
+//   Alice (Eng, West): salary=120, rating=4
+//   Bob (Sales, East): salary=85, rating=3
+//   Carol (Eng, West): salary=110, rating=5
+
+cell DataMerge {
+
+    on run() {
+        // Source 1: employee roster
+        let employees = list(
+            map("id", 1, "name", "Alice", "dept", "Eng"),
+            map("id", 2, "name", "Bob", "dept", "Sales"),
+            map("id", 3, "name", "Carol", "dept", "Eng")
+        )
+
+        // Source 2: compensation data
+        let compensation = list(
+            map("id", 1, "salary", 120, "bonus", 15),
+            map("id", 2, "salary", 85, "bonus", 10),
+            map("id", 3, "salary", 110, "bonus", 12)
+        )
+
+        // Source 3: performance reviews
+        let reviews = list(
+            map("id", 1, "rating", 4, "region", "West"),
+            map("id", 2, "rating", 3, "region", "East"),
+            map("id", 3, "rating", 5, "region", "West")
+        )
+
+        // Multi-join: employees + compensation + reviews
+        let merged = employees
+            |> join(compensation, "id")
+            |> join(reviews, "id")
+
+        print("=== Merged Employee Report ===")
+        for row in merged {
+            print("{row.name} ({row.dept}, {row.region}): salary={row.salary}, rating={row.rating}")
+        }
+
+        return "done"
+    }
+}

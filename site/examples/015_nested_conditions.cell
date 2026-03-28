@@ -1,0 +1,50 @@
+// ============================================================================
+// 015 — Nested Conditions and Complex Logic
+// ============================================================================
+// Demonstrates deeply nested if/else for multi-factor decisions.
+//
+// Run:   soma run 015_nested_conditions.cell run
+// Expect:
+//   Alice (25, score 92): Accepted
+//   Bob (17, score 95): Too young
+//   Carol (30, score 45): Score too low
+//   Dave (22, score 78): Waitlisted
+
+cell Admissions {
+
+    on run() {
+        // Simulate an admissions decision based on age and score
+        let applicants = list(
+            map("name", "Alice", "age", 25, "score", 92),
+            map("name", "Bob", "age", 17, "score", 95),
+            map("name", "Carol", "age", 30, "score", 45),
+            map("name", "Dave", "age", 22, "score", 78)
+        )
+
+        for app in applicants {
+            let decision = evaluate(app.age, app.score)
+            print("{app.name} ({app.age}, score {app.score}): {decision}")
+        }
+
+        return "done"
+    }
+
+    // Multi-factor decision logic
+    on evaluate(age: Int, score: Int) {
+        // Must be at least 18
+        if age < 18 {
+            return "Too young"
+        }
+
+        // Score-based decisions
+        if score >= 90 {
+            return "Accepted"
+        } else {
+            if score >= 70 {
+                return "Waitlisted"
+            } else {
+                return "Score too low"
+            }
+        }
+    }
+}

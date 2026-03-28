@@ -1,0 +1,49 @@
+// ============================================================================
+// 090 — Polling / Voting System
+// ============================================================================
+// Create polls, cast votes, see results.
+//
+// Run:   soma run 090_poll_system.cell demo
+// Expect:
+//   Poll: Favorite Language
+//   Vote: Rust
+//   Vote: Soma
+//   Vote: Rust
+//   Vote: Python
+//   Vote: Soma
+//   Vote: Soma
+//   === Results ===
+//   Soma: 3 votes
+//   Rust: 2 votes
+//   Python: 1 votes
+//   Total votes: 6
+
+cell PollSystem {
+
+    on demo() {
+        let poll_name = "Favorite Language"
+        print("Poll: {poll_name}")
+
+        // Collect votes
+        let votes = list()
+        let raw_votes = list("Rust", "Soma", "Rust", "Python", "Soma", "Soma")
+
+        for v in raw_votes {
+            print("Vote: {v}")
+            votes = list(votes, map("choice", v))
+        }
+
+        // Tally results
+        let results = votes |> agg("choice", "choice:count") |> sort_by("count", "desc")
+
+        print("=== Results ===")
+        for r in results {
+            print("{r.choice}: {r.count} votes")
+        }
+
+        let total = votes.length
+        print("Total votes: {total}")
+
+        return "done"
+    }
+}

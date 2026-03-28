@@ -1,0 +1,40 @@
+// ============================================================================
+// 007 — Null Handling
+// ============================================================================
+// () is null in Soma. The ?? operator provides defaults for null values.
+//
+// Run:   soma run 007_null_handling.cell run
+// Expect:
+//   value is null: true
+//   with default: 42
+//   name: Unknown
+//   found: Alice
+
+cell NullHandling {
+
+    on run() {
+        // () is the null / unit value
+        let value = ()
+
+        // Check for null with == ()
+        if value == () {
+            print("value is null: true")
+        }
+
+        // ?? is the null-coalescing operator: returns left if non-null, else right
+        let result = value ?? 42
+        print("with default: {result}")
+
+        // Practical example: missing map field returns ()
+        let user = map("age", 25)
+        let name = user.name ?? "Unknown"
+        print("name: {name}")
+
+        // When value exists, ?? returns the original value
+        let user2 = map("name", "Alice", "age", 30)
+        let name2 = user2.name ?? "Unknown"
+        print("found: {name2}")
+
+        return "done"
+    }
+}

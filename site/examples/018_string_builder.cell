@@ -1,0 +1,50 @@
+// ============================================================================
+// 018 — String Builder Pattern
+// ============================================================================
+// Demonstrates building strings with += (append) and concat.
+//
+// Run:   soma run 018_string_builder.cell run
+// Expect:
+//   CSV: name,age,city
+//   Alice,30,Paris
+//   Bob,25,London
+//   Carol,35,Tokyo
+//
+//   Reversed: edcba
+//   Repeated: *****
+
+cell StringBuilder {
+
+    on run() {
+        // += appends to a string
+        let csv = "name,age,city"
+        csv += "\nAlice,30,Paris"
+        csv += "\nBob,25,London"
+        csv += "\nCarol,35,Tokyo"
+        print("CSV: {csv}")
+
+        print("")
+
+        // Reversing a string character by character
+        let original = "abcde"
+        let reversed = ""
+        let i = len(original) - 1
+        while i >= 0 {
+            let ch = substring(original, i, i + 1)
+            reversed += ch
+            i = i - 1
+        }
+        print("Reversed: {reversed}")
+
+        // Repeating a character N times
+        let star = ""
+        let count = 0
+        while count < 5 {
+            star += "*"
+            count = count + 1
+        }
+        print("Repeated: {star}")
+
+        return "done"
+    }
+}

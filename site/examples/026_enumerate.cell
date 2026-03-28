@@ -1,0 +1,27 @@
+// ============================================================================
+// 026 — Enumerate
+// ============================================================================
+// enumerate() adds an index to each element of a list.
+//
+// Run:   soma run 026_enumerate.cell run
+// Expect:
+//   0: apple
+//   1: banana
+//   2: cherry
+//   3: date
+
+cell Enumerate {
+
+    on run() {
+        let fruits = list("apple", "banana", "cherry", "date")
+
+        // enumerate() returns a list of maps with "index" and "value" fields
+        let indexed = enumerate(fruits)
+
+        for item in indexed {
+            print("{item.index}: {item.value}")
+        }
+
+        return "done"
+    }
+}

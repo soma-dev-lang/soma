@@ -1,0 +1,74 @@
+// ============================================================================
+// 085 — Task Tracker
+// ============================================================================
+// A project task tracker with priorities and assignment.
+//
+// Run:   soma run 085_task_tracker.cell demo
+// Expect:
+//   Created: Setup CI/CD (high)
+//   Created: Write docs (low)
+//   Created: Fix auth bug (critical)
+//   Created: Add tests (medium)
+//   === Tasks by Priority ===
+//   critical: 1 task(s)
+//   high: 1 task(s)
+//   medium: 1 task(s)
+//   low: 1 task(s)
+
+cell TaskTracker {
+
+    memory {
+        tasks: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on create(title: String, priority: String, assignee: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+
+        let task = map("id", id, "title", title, "priority", priority, "assignee", assignee, "status", "open")
+        tasks.set(id_str, to_json(task))
+        return task
+    }
+
+    on list_all() {
+        let keys = tasks.keys()
+        let result = list()
+        for key in keys {
+            result = list(result, from_json(tasks.get(key)))
+        }
+        return result
+    }
+
+    on demo() {
+        let t1 = create("Setup CI/CD", "high", "Alice")
+        print("Created: {t1.title} ({t1.priority})")
+
+        let t2 = create("Write docs", "low", "Bob")
+        print("Created: {t2.title} ({t2.priority})")
+
+        let t3 = create("Fix auth bug", "critical", "Alice")
+        print("Created: {t3.title} ({t3.priority})")
+
+        let t4 = create("Add tests", "medium", "Carol")
+        print("Created: {t4.title} ({t4.priority})")
+
+        // Group by priority
+        let all = list_all()
+        let by_priority = all |> agg("priority", "title:count")
+
+        print("=== Tasks by Priority ===")
+        let priorities = list("critical", "high", "medium", "low")
+        for p in priorities {
+            let count = count_by(all, "priority", p)
+            print("{p}: {count} task(s)")
+        }
+
+        return "done"
+    }
+}

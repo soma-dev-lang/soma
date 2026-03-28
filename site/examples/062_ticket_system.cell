@@ -1,0 +1,71 @@
+// ============================================================================
+// 062 — Ticket Tracking System
+// ============================================================================
+// A support ticket system with state machine for ticket lifecycle.
+//
+// Run:   soma run 062_ticket_system.cell demo
+// Expect:
+//   Created ticket: Bug in login page
+//   Status: open
+//   Assigned to: Alice
+//   Moved to: in_progress
+//   Resolved!
+//   Final status: resolved
+
+cell TicketSystem {
+
+    memory {
+        // Separate maps: one for data, one for state tracking
+        tickets: Map<String, String> [persistent, consistent]
+        assignees: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state ticket_status {
+        initial: open
+
+        open -> in_progress
+        in_progress -> resolved
+        in_progress -> blocked
+        blocked -> in_progress
+        resolved -> closed
+        resolved -> reopened
+        reopened -> in_progress
+        * -> cancelled
+    }
+
+    on create(title: String, priority: String) {
+        let id = to_string(next_id())
+        tickets.set(id, title)
+        // IMPORTANT: set initial state in the status map
+        status.set(id, "open")
+        return map("id", id, "title", title, "priority", priority)
+    }
+
+    on assign(id: String, person: String) {
+        assignees.set(id, person)
+        return map("id", id, "assignee", person)
+    }
+
+    on demo() {
+        let ticket = create("Bug in login page", "high")
+        print("Created ticket: {ticket.title}")
+
+        let st = get_status("1")
+        print("Status: {st}")
+
+        assign("1", "Alice")
+        print("Assigned to: Alice")
+
+        transition("1", "in_progress")
+        print("Moved to: in_progress")
+
+        transition("1", "resolved")
+        print("Resolved!")
+
+        let final_st = get_status("1")
+        print("Final status: {final_st}")
+
+        return "done"
+    }
+}

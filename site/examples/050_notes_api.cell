@@ -1,0 +1,79 @@
+// ============================================================================
+// 050 — Notes API with Search
+// ============================================================================
+// A notes API that supports creating, listing, and searching notes.
+//
+// Run:   soma run 050_notes_api.cell demo
+// Expect:
+//   Created 3 notes
+//   All notes: 3
+//   Found 'soma': Learn Soma language
+
+cell NotesAPI {
+
+    memory {
+        notes: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on create(title: String, body: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+
+        let note = map("id", id, "title", title, "body", body)
+        notes.set(id_str, to_json(note))
+        return note
+    }
+
+    on list_all() {
+        let keys = notes.keys()
+        let result = list()
+        for key in keys {
+            result = list(result, from_json(notes.get(key)))
+        }
+        return result
+    }
+
+    on search(query: String) {
+        let all = list_all()
+        let results = list()
+        let q = lowercase(query)
+        for note in all {
+            let title_lower = lowercase(note.title)
+            let body_lower = lowercase(note.body)
+            let in_title = contains(title_lower, q)
+            let in_body = contains(body_lower, q)
+            if in_title == true {
+                results = list(results, note)
+            } else {
+                if in_body == true {
+                    results = list(results, note)
+                }
+            }
+        }
+        return results
+    }
+
+    on demo() {
+        create("Learn Soma language", "Soma is a declarative language for building apps")
+        create("Buy groceries", "Milk, eggs, bread, cheese")
+        create("Project meeting", "Discuss the soma compiler roadmap")
+        print("Created 3 notes")
+
+        let all = list_all()
+        let count = all.length
+        print("All notes: {count}")
+
+        let found = search("soma")
+        for note in found {
+            print("Found 'soma': {note.title}")
+        }
+
+        return "done"
+    }
+}

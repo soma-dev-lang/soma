@@ -1,0 +1,43 @@
+// ============================================================================
+// 012 — While Loops
+// ============================================================================
+// Demonstrates the while loop for repeated execution.
+//
+// Run:   soma run 012_while_loop.cell countdown 5
+// Expect:
+//   5...
+//   4...
+//   3...
+//   2...
+//   1...
+//   Liftoff!
+
+cell Countdown {
+
+    on countdown(n: Int) {
+        let i = n
+
+        // "while" repeats as long as the condition is true
+        while i > 0 {
+            print("{i}...")
+            i = i - 1
+        }
+
+        print("Liftoff!")
+        return "done"
+    }
+
+    // Another example: computing powers with a while loop
+    // Run: soma run 012_while_loop.cell power 2 10
+    // Expect: 2^10 = 1024
+    on power(base: Int, exp: Int) {
+        let result = 1
+        let i = 0
+        while i < exp {
+            result = result * base
+            i = i + 1
+        }
+        print("{base}^{exp} = {result}")
+        return result
+    }
+}

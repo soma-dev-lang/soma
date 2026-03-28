@@ -1,0 +1,42 @@
+// ============================================================================
+// 022 — Map Basics
+// ============================================================================
+// Creating maps, accessing fields, and using with/without/merge.
+//
+// Run:   soma run 022_map_basics.cell run
+// Expect:
+//   person: {"name": "Alice", "age": 30, "city": "Paris"}
+//   name: Alice
+//   age: 30
+//   added: {"name": "Alice", "age": 30, "city": "Paris", "email": "alice@ex.com"}
+//   removed: {"name": "Alice", "city": "Paris", "email": "alice@ex.com"}
+//   merged: {"a": 1, "b": 2, "c": 3, "d": 4}
+
+cell MapBasics {
+
+    on run() {
+        // map() creates a map with alternating key-value pairs
+        let person = map("name", "Alice", "age", 30, "city", "Paris")
+        print("person: {person}")
+
+        // Access fields with dot notation
+        print("name: {person.name}")
+        print("age: {person.age}")
+
+        // with() adds or updates a key (returns new map)
+        let updated = with(person, "email", "alice@ex.com")
+        print("added: {updated}")
+
+        // without() removes a key (returns new map)
+        let smaller = without(updated, "age")
+        print("removed: {smaller}")
+
+        // merge() combines two maps (right wins on conflicts)
+        let m1 = map("a", 1, "b", 2)
+        let m2 = map("c", 3, "d", 4)
+        let combined = merge(m1, m2)
+        print("merged: {combined}")
+
+        return "done"
+    }
+}

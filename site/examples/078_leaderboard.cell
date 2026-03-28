@@ -1,0 +1,43 @@
+// ============================================================================
+// 078 — Leaderboard
+// ============================================================================
+// Process game scores into a ranked leaderboard.
+//
+// Run:   soma run 078_leaderboard.cell run
+// Expect:
+//   === LEADERBOARD ===
+//   #1 Carol: 2850 pts (3 games, avg 950)
+//   #2 Alice: 2300 pts (3 games, avg 766)
+//   #3 Bob: 1800 pts (3 games, avg 600)
+
+cell Leaderboard {
+
+    on run() {
+        let games = list(
+            map("player", "Alice", "score", 800),
+            map("player", "Bob", "score", 650),
+            map("player", "Carol", "score", 920),
+            map("player", "Alice", "score", 750),
+            map("player", "Bob", "score", 500),
+            map("player", "Carol", "score", 1050),
+            map("player", "Alice", "score", 750),
+            map("player", "Bob", "score", 650),
+            map("player", "Carol", "score", 880)
+        )
+
+        // Aggregate by player
+        let board = games
+            |> agg("player", "score:sum", "score:avg")
+            |> sort_by("score_sum", "desc")
+
+        print("=== LEADERBOARD ===")
+        let rank = 1
+        for entry in board {
+            let rank_str = to_string(rank)
+            print("#{rank_str} {entry.player}: {entry.score_sum} pts ({entry.count} games, avg {entry.score_avg})")
+            rank = rank + 1
+        }
+
+        return "done"
+    }
+}

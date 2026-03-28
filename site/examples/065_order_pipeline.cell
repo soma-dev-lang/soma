@@ -1,0 +1,77 @@
+// ============================================================================
+// 065 — E-Commerce Order Pipeline
+// ============================================================================
+// Full order management: create, add items, process through stages.
+//
+// Run:   soma run 065_order_pipeline.cell demo
+// Expect:
+//   Order created for Alice
+//   Added: Widget (x2)
+//   Added: Gadget (x1)
+//   Order submitted
+//   Order approved
+//   Order shipped
+//   Final: delivered
+
+cell OrderPipeline {
+
+    memory {
+        orders: Map<String, String> [persistent, consistent]
+        items: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state order_flow {
+        initial: draft
+
+        draft -> submitted
+        submitted -> approved
+        approved -> shipped
+        shipped -> delivered
+        * -> cancelled
+    }
+
+    on create_order(customer: String) {
+        let id = to_string(next_id())
+        orders.set(id, customer)
+        status.set(id, "draft")
+        return id
+    }
+
+    on add_item(order_id: String, item: String, qty: Int) {
+        let existing = items.get(order_id) ?? ""
+        let qty_str = to_string(qty)
+        let entry = concat(item, concat(" (x", concat(qty_str, ")")))
+        if existing == "" {
+            items.set(order_id, entry)
+        } else {
+            items.set(order_id, concat(existing, concat(", ", entry)))
+        }
+        return entry
+    }
+
+    on demo() {
+        let id = create_order("Alice")
+        print("Order created for Alice")
+
+        let i1 = add_item(id, "Widget", 2)
+        print("Added: {i1}")
+
+        let i2 = add_item(id, "Gadget", 1)
+        print("Added: {i2}")
+
+        transition(id, "submitted")
+        print("Order submitted")
+
+        transition(id, "approved")
+        print("Order approved")
+
+        transition(id, "shipped")
+        print("Order shipped")
+
+        transition(id, "delivered")
+        print("Final: delivered")
+
+        return "done"
+    }
+}

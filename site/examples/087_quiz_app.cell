@@ -1,0 +1,62 @@
+// ============================================================================
+// 087 — Quiz Scoring
+// ============================================================================
+// Score a quiz and provide a grade.
+//
+// Run:   soma run 087_quiz_app.cell demo
+// Expect:
+//   Q1: What is 2+2? Answer: 4 -> Correct!
+//   Q2: Capital of France? Answer: Paris -> Correct!
+//   Q3: Largest planet? Answer: Mars -> Wrong! (Jupiter)
+//   Score: 2/3 (66%)
+//   Grade: D
+
+cell QuizApp {
+
+    on demo() {
+        let questions = list(
+            map("q", "What is 2+2?", "answer", "4", "response", "4"),
+            map("q", "Capital of France?", "answer", "Paris", "response", "Paris"),
+            map("q", "Largest planet?", "answer", "Jupiter", "response", "Mars")
+        )
+
+        let correct = 0
+        let total = questions.length
+        let num = 1
+
+        for item in questions {
+            let num_str = to_string(num)
+            if item.response == item.answer {
+                print("Q{num_str}: {item.q} Answer: {item.response} -> Correct!")
+                correct = correct + 1
+            } else {
+                print("Q{num_str}: {item.q} Answer: {item.response} -> Wrong! ({item.answer})")
+            }
+            num = num + 1
+        }
+
+        let pct = (correct * 100) / total
+        print("Score: {correct}/{total} ({pct}%)")
+
+        // Grade
+        let grade = "F"
+        if pct >= 90 {
+            grade = "A"
+        } else {
+            if pct >= 80 {
+                grade = "B"
+            } else {
+                if pct >= 70 {
+                    grade = "C"
+                } else {
+                    if pct >= 60 {
+                        grade = "D"
+                    }
+                }
+            }
+        }
+        print("Grade: {grade}")
+
+        return "done"
+    }
+}

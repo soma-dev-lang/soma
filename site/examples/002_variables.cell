@@ -1,0 +1,34 @@
+// ============================================================================
+// 002 — Variables and Assignment
+// ============================================================================
+// Demonstrates let bindings, reassignment, and string interpolation.
+//
+// Run:   soma run 002_variables.cell run
+// Expect:
+//   name = Alice
+//   age = 30
+//   age after birthday = 31
+//   greeting = Hello, Alice! You are 31 years old.
+
+cell Variables {
+
+    on run() {
+        // "let" creates a new variable binding
+        let name = "Alice"
+        let age = 30
+
+        // String interpolation uses {variable} inside double-quoted strings
+        print("name = {name}")
+        print("age = {age}")
+
+        // Variables can be reassigned (no "mut" keyword needed)
+        age = age + 1
+        print("age after birthday = {age}")
+
+        // You can interpolate multiple variables and field accesses
+        let greeting = "Hello, {name}! You are {age} years old."
+        print("greeting = {greeting}")
+
+        return greeting
+    }
+}

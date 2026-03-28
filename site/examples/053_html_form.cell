@@ -1,0 +1,55 @@
+// ============================================================================
+// 053 — HTML Form Handling
+// ============================================================================
+// Forms submit to signal handlers. GET forms use query parameters.
+//
+// Serve: soma serve 053_html_form.cell
+// Test:  open http://localhost:8080 -> fill form -> submit
+//
+// Run:   soma run 053_html_form.cell greet Alice
+// Expect: (HTML greeting page)
+
+cell FormApp {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal greet(name: String) -> String
+    }
+
+    // Show the form
+    on request(method: String, path: String, body: String) {
+        return html("<!DOCTYPE html>
+<html>
+<head>
+    <title>Soma Form</title>
+    <style>
+        body { font-family: system-ui; max-width: 400px; margin: 50px auto; }
+        input { padding: 8px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 8px 16px; background: #6366f1; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>Greeting Form</h1>
+    <form action='/greet' method='get'>
+        <input name='name' placeholder='Enter your name' required>
+        <button type='submit'>Greet</button>
+    </form>
+</body>
+</html>")
+    }
+
+    // Handle the form submission
+    on greet(name: String) {
+        let upper = uppercase(name)
+        return html(render("<!DOCTYPE html>
+<html>
+<head><title>Hello!</title>
+<style>body { font-family: system-ui; max-width: 400px; margin: 50px auto; }</style>
+</head>
+<body>
+    <h1>Hello, {name}!</h1>
+    <p>Welcome to Soma, {upper}!</p>
+    <a href='/'>Back</a>
+</body>
+</html>", "name", name, "upper", upper))
+    }
+}

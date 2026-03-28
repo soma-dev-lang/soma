@@ -1,0 +1,71 @@
+// ============================================================================
+// 047 — Bookmarks API
+// ============================================================================
+// A practical API for managing bookmarks with tags.
+//
+// Run:   soma run 047_bookmarks_api.cell demo
+// Expect:
+//   Added: Soma Docs (soma.dev)
+//   Added: Rust Book (rust-lang.org)
+//   Added: HN (news.ycombinator.com)
+//   All bookmarks: 3
+//   Bookmark 1: Soma Docs
+
+cell BookmarksAPI {
+
+    memory {
+        bookmarks: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on add(title: String, url: String, tag: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+
+        let bookmark = map("id", id, "title", title, "url", url, "tag", tag)
+        bookmarks.set(id_str, to_json(bookmark))
+        return bookmark
+    }
+
+    on get(id: String) {
+        let raw = bookmarks.get(id)
+        if raw == () {
+            return response(404, map("error", "bookmark not found"))
+        }
+        return from_json(raw)
+    }
+
+    on list_all() {
+        let keys = bookmarks.keys()
+        let result = list()
+        for key in keys {
+            result = list(result, from_json(bookmarks.get(key)))
+        }
+        return result
+    }
+
+    on demo() {
+        let b1 = add("Soma Docs", "soma.dev", "dev")
+        print("Added: {b1.title} ({b1.url})")
+
+        let b2 = add("Rust Book", "rust-lang.org", "dev")
+        print("Added: {b2.title} ({b2.url})")
+
+        let b3 = add("HN", "news.ycombinator.com", "news")
+        print("Added: {b3.title} ({b3.url})")
+
+        let all = list_all()
+        let count = all.length
+        print("All bookmarks: {count}")
+
+        let found = get("1")
+        print("Bookmark 1: {found.title}")
+
+        return "done"
+    }
+}

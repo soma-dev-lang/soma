@@ -1,0 +1,33 @@
+// ============================================================================
+// 043 — JSON API Responses
+// ============================================================================
+// Demonstrates returning structured JSON from API handlers.
+//
+// Run:   soma run 043_json_api.cell run
+// Expect:
+//   Product: {"id": 1, "name": "Widget", "price": 9.99, "in_stock": true}
+//   JSON: {"id": 1, "name": "Widget", "price": 9.99, "in_stock": true}
+//   Catalog: [{"id": 1, "name": "Widget"}, {"id": 2, "name": "Gadget"}, {"id": 3, "name": "Doohickey"}]
+
+cell JsonAPI {
+
+    on run() {
+        // Maps are automatically serialized as JSON when returned
+        let product = map("id", 1, "name", "Widget", "price", 9.99, "in_stock", true)
+        print("Product: {product}")
+
+        // to_json explicitly converts to a JSON string
+        let json = to_json(product)
+        print("JSON: {json}")
+
+        // Lists of maps become JSON arrays
+        let catalog = list(
+            map("id", 1, "name", "Widget"),
+            map("id", 2, "name", "Gadget"),
+            map("id", 3, "name", "Doohickey")
+        )
+        print("Catalog: {catalog}")
+
+        return "done"
+    }
+}

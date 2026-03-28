@@ -1,0 +1,54 @@
+// ============================================================================
+// 080 — ETL Transformation Pipeline
+// ============================================================================
+// Extract data, apply multiple transformations, produce final output.
+//
+// Run:   soma run 080_etl_transform.cell run
+// Expect:
+//   === Raw Transactions: 8 ===
+//   === After filtering (amount > 100): 5 ===
+//   === Final Summary ===
+//     Electronics: 3 txns, total 2800
+//     Grocery: 2 txns, total 550
+
+cell ETLTransform {
+
+    on run() {
+        // EXTRACT: raw transaction data
+        let transactions = list(
+            map("id", 1, "category", "Electronics", "amount", 1200, "type", "purchase"),
+            map("id", 2, "category", "Grocery", "amount", 45, "type", "purchase"),
+            map("id", 3, "category", "Electronics", "amount", 800, "type", "purchase"),
+            map("id", 4, "category", "Grocery", "amount", 250, "type", "purchase"),
+            map("id", 5, "category", "Electronics", "amount", 80, "type", "return"),
+            map("id", 6, "category", "Grocery", "amount", 300, "type", "purchase"),
+            map("id", 7, "category", "Electronics", "amount", 800, "type", "purchase"),
+            map("id", 8, "category", "Clothing", "amount", 90, "type", "purchase")
+        )
+
+        let raw_count = transactions.length
+        print("=== Raw Transactions: {raw_count} ===")
+
+        // TRANSFORM: filter, clean, enrich
+        // Step 1: only purchases above $100
+        let filtered = transactions
+            |> filter_by("type", "=", "purchase")
+            |> filter_by("amount", ">", 100)
+
+        let filtered_count = filtered.length
+        print("=== After filtering (amount > 100): {filtered_count} ===")
+
+        // Step 2: aggregate by category
+        let summary = filtered
+            |> agg("category", "amount:sum")
+            |> sort_by("amount_sum", "desc")
+
+        // LOAD: final output
+        print("=== Final Summary ===")
+        for row in summary {
+            print("  {row.category}: {row.count} txns, total {row.amount_sum}")
+        }
+
+        return "done"
+    }
+}

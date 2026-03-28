@@ -1,0 +1,22 @@
+// ============================================================================
+// 001 — Hello World
+// ============================================================================
+// The simplest Soma program: a cell with one handler that prints a greeting.
+//
+// Run:   soma run 001_hello_world.cell greet
+// Expect: Hello, World!
+
+// Every Soma program lives inside a "cell" — the fundamental unit of code.
+// A cell has a name (here "Hello") and contains handlers defined with "on".
+cell Hello {
+
+    // "on" defines a signal handler — like a function you can call from outside.
+    // This one takes no arguments and returns a String.
+    on greet() {
+        // print() writes to stdout
+        print("Hello, World!")
+
+        // The last expression or explicit return is the handler's return value
+        return "Hello, World!"
+    }
+}

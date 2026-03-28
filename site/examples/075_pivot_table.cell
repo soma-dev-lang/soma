@@ -1,0 +1,51 @@
+// ============================================================================
+// 075 — Pivot Table
+// ============================================================================
+// Summarize data across two dimensions (like a pivot table).
+//
+// Run:   soma run 075_pivot_table.cell run
+// Expect:
+//   === Revenue by Rep x Quarter ===
+//   Alice: Q1=500, Q2=800, Q3=750, Q4=250
+//   Bob: Q1=1200, Q3=350, Q4=400
+//   Carol: Q2=2500, Q3=1500, Q4=400
+
+cell PivotTable {
+
+    on run() {
+        let sales = list(
+            map("rep", "Alice", "amount", 500, "quarter", "Q1"),
+            map("rep", "Bob", "amount", 1200, "quarter", "Q1"),
+            map("rep", "Carol", "amount", 2500, "quarter", "Q2"),
+            map("rep", "Alice", "amount", 800, "quarter", "Q2"),
+            map("rep", "Bob", "amount", 350, "quarter", "Q3"),
+            map("rep", "Carol", "amount", 1500, "quarter", "Q3"),
+            map("rep", "Alice", "amount", 750, "quarter", "Q3"),
+            map("rep", "Bob", "amount", 400, "quarter", "Q4"),
+            map("rep", "Carol", "amount", 400, "quarter", "Q4"),
+            map("rep", "Alice", "amount", 250, "quarter", "Q4")
+        )
+
+        print("=== Revenue by Rep x Quarter ===")
+
+        // Group by rep first
+        let reps = sales |> distinct("rep") |> pluck("rep")
+        let quarters = list("Q1", "Q2", "Q3", "Q4")
+
+        for rep in reps {
+            let rep_sales = sales |> filter_by("rep", "=", rep)
+            let line = "{rep}:"
+            for q in quarters {
+                let q_sales = rep_sales |> filter_by("quarter", "=", q)
+                let q_total = q_sales |> sum_by("amount")
+                if q_total > 0 {
+                    line += " {q}={q_total}"
+                    // Add comma logic
+                }
+            }
+            print(line)
+        }
+
+        return "done"
+    }
+}

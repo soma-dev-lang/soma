@@ -1,0 +1,37 @@
+// ============================================================================
+// 058 — HTML Partials (Component Pattern)
+// ============================================================================
+// Break HTML into reusable handler-based components.
+//
+// Run:   soma run 058_partials.cell run
+// Expect:
+//   <div class='card'><h2>Widget</h2><p>Price: $9.99</p></div>
+//   <div class='card'><h2>Gadget</h2><p>Price: $19.99</p></div>
+//   <div class='card'><h2>Doohickey</h2><p>Price: $4.99</p></div>
+
+cell Partials {
+
+    // A reusable "component" — renders a product card
+    on product_card(name: String, price: String) {
+        return render(
+            "<div class='card'><h2>{name}</h2><p>Price: ${price}</p></div>",
+            "name", name, "price", price
+        )
+    }
+
+    on run() {
+        let products = list(
+            map("name", "Widget", "price", "9.99"),
+            map("name", "Gadget", "price", "19.99"),
+            map("name", "Doohickey", "price", "4.99")
+        )
+
+        // Use the partial for each product
+        for p in products {
+            let card = product_card(p.name, p.price)
+            print(card)
+        }
+
+        return "done"
+    }
+}

@@ -1,0 +1,43 @@
+// ============================================================================
+// 057 — Redirects
+// ============================================================================
+// redirect() sends an HTTP redirect response to the browser.
+//
+// Serve: soma serve 057_redirect.cell
+// Test:  curl localhost:8080/old-page -> redirects to /
+//
+// Run:   soma run 057_redirect.cell demo
+// Expect:
+//   Added item, redirecting...
+//   done
+
+cell RedirectDemo {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal add(name: String) -> String
+        signal demo() -> String
+    }
+
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+
+    on request(method: String, path: String, body: String) {
+        return html("<h1>Home Page</h1><p>Add an item: <a href='/add?name=test'>Add Test</a></p>")
+    }
+
+    // After adding, redirect back to home page
+    on add(name: String) {
+        let id = to_string(next_id())
+        items.set(id, name)
+        // redirect() sends a 302 redirect
+        return redirect("/")
+    }
+
+    on demo() {
+        let id = to_string(next_id())
+        items.set(id, "test-item")
+        print("Added item, redirecting...")
+        return "done"
+    }
+}

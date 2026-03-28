@@ -1,0 +1,48 @@
+// ============================================================================
+// 031 — Filter and Sort Pipelines
+// ============================================================================
+// filter_by() and sort_by() are the building blocks of data pipelines.
+//
+// Run:   soma run 031_filter_sort.cell run
+// Expect:
+//   Expensive items (price > 50):
+//     Laptop: 999
+//     Phone: 699
+//     Tablet: 449
+//   Sorted by price ascending:
+//     Mouse: 29
+//     Keyboard: 49
+//     Tablet: 449
+//     Phone: 699
+//     Laptop: 999
+
+cell FilterSort {
+
+    on run() {
+        let products = list(
+            map("name", "Laptop", "price", 999),
+            map("name", "Mouse", "price", 29),
+            map("name", "Keyboard", "price", 49),
+            map("name", "Phone", "price", 699),
+            map("name", "Tablet", "price", 449)
+        )
+
+        // filter_by(list, field, operator, value)
+        // Operators: "=", "!=", ">", "<", ">=", "<="
+        let expensive = filter_by(products, "price", ">", 50)
+        print("Expensive items (price > 50):")
+        for item in expensive {
+            print("  {item.name}: {item.price}")
+        }
+
+        // sort_by(list, field, direction)
+        // Direction: "asc" or "desc"
+        let sorted = sort_by(products, "price", "asc")
+        print("Sorted by price ascending:")
+        for item in sorted {
+            print("  {item.name}: {item.price}")
+        }
+
+        return "done"
+    }
+}

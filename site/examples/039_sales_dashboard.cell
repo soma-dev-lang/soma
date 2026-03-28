@@ -1,0 +1,50 @@
+// ============================================================================
+// 039 — Sales Dashboard Pipeline
+// ============================================================================
+// A realistic multi-table analytics pipeline for sales data.
+//
+// Run:   soma run 039_sales_dashboard.cell run
+// Expect:
+//   === Sales Dashboard ===
+//   Total revenue: 4250
+//   Top rep: Alice (1800)
+//   By region:
+//     West: revenue=2550, deals=3
+//     East: revenue=1700, deals=3
+
+cell SalesDashboard {
+
+    on run() {
+        let deals = list(
+            map("id", 1, "rep", "Alice", "region", "West", "amount", 500),
+            map("id", 2, "rep", "Bob", "region", "East", "amount", 700),
+            map("id", 3, "rep", "Alice", "region", "West", "amount", 1300),
+            map("id", 4, "rep", "Carol", "region", "East", "amount", 400),
+            map("id", 5, "rep", "Bob", "region", "East", "amount", 600),
+            map("id", 6, "rep", "Carol", "region", "West", "amount", 750)
+        )
+
+        // Total revenue
+        let total = deals |> sum_by("amount")
+        print("=== Sales Dashboard ===")
+        print("Total revenue: {total}")
+
+        // Top rep
+        let by_rep = deals |> agg("rep", "amount:sum") |> sort_by("amount_sum", "desc")
+        let top_rep = by_rep |> top(1)
+        for r in top_rep {
+            print("Top rep: {r.rep} ({r.amount_sum})")
+        }
+
+        // By region
+        let by_region = deals
+            |> agg("region", "amount:sum")
+            |> sort_by("amount_sum", "desc")
+        print("By region:")
+        for r in by_region {
+            print("  {r.region}: revenue={r.amount_sum}, deals={r.count}")
+        }
+
+        return "done"
+    }
+}

@@ -1,0 +1,54 @@
+// ============================================================================
+// 071 — CSV-Like Data Processing
+// ============================================================================
+// Parse and process tabular data represented as lists of maps.
+//
+// Run:   soma run 071_csv_processing.cell run
+// Expect:
+//   Loaded 5 employees
+//   Eng employees: 2
+//   Average salary: 96
+//   CSV output:
+//   name,dept,salary
+//   Alice,Eng,120
+//   Bob,Sales,80
+//   Carol,Eng,95
+//   Dave,Marketing,85
+//   Eve,Sales,100
+
+cell CsvProcessing {
+
+    on run() {
+        // Simulate loading CSV data as a list of maps
+        let data = list(
+            map("name", "Alice", "dept", "Eng", "salary", 120),
+            map("name", "Bob", "dept", "Sales", "salary", 80),
+            map("name", "Carol", "dept", "Eng", "salary", 95),
+            map("name", "Dave", "dept", "Marketing", "salary", 85),
+            map("name", "Eve", "dept", "Sales", "salary", 100)
+        )
+
+        let count = data.length
+        print("Loaded {count} employees")
+
+        // Filter and count
+        let eng = data |> filter_by("dept", "=", "Eng")
+        let eng_count = eng.length
+        print("Eng employees: {eng_count}")
+
+        // Average
+        let avg = data |> avg_by("salary")
+        print("Average salary: {avg}")
+
+        // Generate CSV output
+        print("CSV output:")
+        print("name,dept,salary")
+        for row in data {
+            let salary_str = to_string(row.salary)
+            let line = concat(row.name, concat(",", concat(row.dept, concat(",", salary_str))))
+            print(line)
+        }
+
+        return "done"
+    }
+}

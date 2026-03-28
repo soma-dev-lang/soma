@@ -1,0 +1,53 @@
+// ============================================================================
+// 040 — ETL Pipeline (Extract, Transform, Load)
+// ============================================================================
+// Simulates an ETL workflow: extract raw data, transform it, load a summary.
+//
+// Run:   soma run 040_etl_pipeline.cell run
+// Expect:
+//   === Extract: 6 raw records ===
+//   === Transform: cleaned and enriched ===
+//   === Load: final summary ===
+//     Luxury: volume=45500, avg_price=720
+//     Energy: volume=22900, avg_price=62
+//     Consumer: volume=26000, avg_price=420
+
+cell ETLPipeline {
+
+    on run() {
+        // ── EXTRACT: raw data from two sources ──────────────────────────
+        let trades = list(
+            map("ticker", "MC",  "volume", 15000, "side", "buy"),
+            map("ticker", "OR",  "volume", 8000,  "side", "sell"),
+            map("ticker", "TTE", "volume", 22000, "side", "buy"),
+            map("ticker", "MC",  "volume", 500,   "side", "sell"),
+            map("ticker", "OR",  "volume", 18000, "side", "buy"),
+            map("ticker", "MC",  "volume", 30000, "side", "buy")
+        )
+
+        let ref_data = list(
+            map("ticker", "MC",  "price", 720, "sector", "Luxury"),
+            map("ticker", "OR",  "price", 420, "sector", "Consumer"),
+            map("ticker", "TTE", "price", 62,  "sector", "Energy")
+        )
+
+        let raw_count = trades.length
+        print("=== Extract: {raw_count} raw records ===")
+
+        // ── TRANSFORM: join, filter, enrich ─────────────────────────────
+        let enriched = trades |> join(ref_data, "ticker")
+        print("=== Transform: cleaned and enriched ===")
+
+        // ── LOAD: aggregate into final summary ──────────────────────────
+        let summary = enriched
+            |> agg("sector", "volume:sum", "price:avg")
+            |> sort_by("volume_sum", "desc")
+
+        print("=== Load: final summary ===")
+        for row in summary {
+            print("  {row.sector}: volume={row.volume_sum}, avg_price={row.price_avg}")
+        }
+
+        return "done"
+    }
+}

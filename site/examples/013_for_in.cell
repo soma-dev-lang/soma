@@ -1,0 +1,47 @@
+// ============================================================================
+// 013 — For..In Loops
+// ============================================================================
+// for..in iterates over List values.
+//
+// Run:   soma run 013_for_in.cell run
+// Expect:
+//   Fruits: apple banana cherry
+//   Sum of 1..5: 15
+//   Names: Alice, Bob, Carol
+
+cell ForLoop {
+
+    on run() {
+        // for..in iterates over a list
+        let fruits = list("apple", "banana", "cherry")
+        let output = ""
+        for fruit in fruits {
+            output = concat(output, concat(fruit, " "))
+        }
+        let trimmed = trim(output)
+        print("Fruits: {trimmed}")
+
+        // Summing a list of numbers
+        let numbers = list(1, 2, 3, 4, 5)
+        let sum = 0
+        for n in numbers {
+            sum = sum + n
+        }
+        print("Sum of 1..5: {sum}")
+
+        // Building a comma-separated string
+        let names = list("Alice", "Bob", "Carol")
+        let result = ""
+        let count = 0
+        for name in names {
+            if count > 0 {
+                result = concat(result, ", ")
+            }
+            result = concat(result, name)
+            count = count + 1
+        }
+        print("Names: {result}")
+
+        return "done"
+    }
+}

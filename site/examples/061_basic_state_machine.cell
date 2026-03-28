@@ -1,0 +1,71 @@
+// ============================================================================
+// 061 — Basic State Machine
+// ============================================================================
+// State machines define valid transitions. The compiler enforces them.
+//
+// Run:   soma run 061_basic_state_machine.cell demo
+// Expect:
+//   Created order 1
+//   Status: draft
+//   Transitioned to: submitted
+//   Status: submitted
+
+cell OrderFlow {
+
+    memory {
+        orders: Map<String, String> [persistent, consistent]
+        state_data: Map<String, String> [persistent, consistent]
+    }
+
+    // Define the state machine: only these transitions are allowed
+    state order_status {
+        initial: draft
+
+        draft -> submitted
+        submitted -> approved
+        approved -> shipped
+        shipped -> delivered
+        * -> cancelled        // any state can go to cancelled
+    }
+
+    on create(customer: String) {
+        let id = to_string(next_id())
+        orders.set(id, customer)
+        state_data.set(id, "draft")
+        return map("id", id, "customer", customer, "status", "draft")
+    }
+
+    on advance(id: String, to: String) {
+        let customer = orders.get(id)
+        if customer == () {
+            return response(404, map("error", "order not found"))
+        }
+        // transition() validates against the state machine
+        let result = transition(id, to)
+        return result
+    }
+
+    on status(id: String) {
+        return get_status(id)
+    }
+
+    on valid_next(id: String) {
+        return valid_transitions(id)
+    }
+
+    on demo() {
+        let order = create("Alice")
+        print("Created order {order.id}")
+
+        let st = get_status("1")
+        print("Status: {st}")
+
+        let result = transition("1", "submitted")
+        print("Transitioned to: submitted")
+
+        let st2 = get_status("1")
+        print("Status: {st2}")
+
+        return "done"
+    }
+}

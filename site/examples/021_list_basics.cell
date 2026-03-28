@@ -1,0 +1,40 @@
+// ============================================================================
+// 021 — List Basics
+// ============================================================================
+// Creating lists, accessing elements, appending, and getting length.
+//
+// Run:   soma run 021_list_basics.cell run
+// Expect:
+//   nums: [1, 2, 3]
+//   length: 3
+//   appended: [1, 2, 3, 4]
+//   new length: 4
+//   empty: []
+//   empty length: 0
+
+cell ListBasics {
+
+    on run() {
+        // list() creates a new list with the given elements
+        let nums = list(1, 2, 3)
+        print("nums: {nums}")
+
+        // .length gives the number of elements
+        let count = nums.length
+        print("length: {count}")
+
+        // list(existing, item) appends an item (creates new list)
+        let bigger = list(nums, 4)
+        print("appended: {bigger}")
+        let new_count = bigger.length
+        print("new length: {new_count}")
+
+        // Empty list
+        let empty = list()
+        print("empty: {empty}")
+        let elen = empty.length
+        print("empty length: {elen}")
+
+        return "done"
+    }
+}

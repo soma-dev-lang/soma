@@ -1,0 +1,39 @@
+// ============================================================================
+// 030 — Collection Algorithms
+// ============================================================================
+// Higher-level operations: group_by, unique counting, frequency analysis.
+//
+// Run:   soma run 030_collection_algorithms.cell run
+// Expect:
+//   Grouped by dept:
+//     Eng: [{"dept": "Eng", "name": "Alice"}, {"dept": "Eng", "name": "Bob"}]
+//     Sales: [{"dept": "Sales", "name": "Carol"}]
+//   Unique departments: [{"dept": "Eng"}, {"dept": "Sales"}]
+//   Engineers: 2
+
+cell CollectionAlgorithms {
+
+    on run() {
+        let employees = list(
+            map("dept", "Eng", "name", "Alice"),
+            map("dept", "Eng", "name", "Bob"),
+            map("dept", "Sales", "name", "Carol")
+        )
+
+        // group_by() returns a map of field_value -> list
+        let grouped = group_by(employees, "dept")
+        print("Grouped by dept:")
+        print("  Eng: {grouped.Eng}")
+        print("  Sales: {grouped.Sales}")
+
+        // distinct() for unique values
+        let unique = distinct(employees, "dept")
+        print("Unique departments: {unique}")
+
+        // count_by() counts occurrences of a specific value
+        let eng_count = count_by(employees, "dept", "Eng")
+        print("Engineers: {eng_count}")
+
+        return "done"
+    }
+}

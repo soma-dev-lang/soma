@@ -1,0 +1,52 @@
+// ============================================================================
+// 088 — Recipe Book
+// ============================================================================
+// Store and search recipes with ingredients.
+//
+// Run:   soma run 088_recipe_book.cell demo
+// Expect:
+//   Added: Pasta Carbonara
+//   Added: Caesar Salad
+//   Added: Chocolate Cake
+//   All recipes: 3
+//   Search 'egg': Pasta Carbonara, Chocolate Cake
+
+cell RecipeBook {
+
+    on demo() {
+        let recipes = list(
+            map("name", "Pasta Carbonara",
+                "ingredients", "pasta, eggs, bacon, parmesan, pepper",
+                "time", 20),
+            map("name", "Caesar Salad",
+                "ingredients", "romaine, croutons, parmesan, dressing",
+                "time", 10),
+            map("name", "Chocolate Cake",
+                "ingredients", "flour, sugar, cocoa, eggs, butter, milk",
+                "time", 45)
+        )
+
+        for r in recipes {
+            print("Added: {r.name}")
+        }
+
+        let count = recipes.length
+        print("All recipes: {count}")
+
+        // Search by ingredient
+        let query = "egg"
+        let results = ""
+        for r in recipes {
+            let has = contains(lowercase(r.ingredients), query)
+            if has == true {
+                if results != "" {
+                    results += ", "
+                }
+                results += r.name
+            }
+        }
+        print("Search '{query}': {results}")
+
+        return "done"
+    }
+}

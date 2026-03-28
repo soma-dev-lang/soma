@@ -1,0 +1,68 @@
+// ============================================================================
+// 098 — Multiple Cells in One File
+// ============================================================================
+// A file can contain multiple cells. Each is an independent unit.
+// Tests can reference handlers from non-test cells.
+//
+// Run:   soma test 098_multi_cell.cell
+// Expect: All tests pass
+//
+// Run:   soma run 098_multi_cell.cell run
+// Expect:
+//   5 + 3 = 8
+//   5 - 3 = 2
+//   5 * 3 = 15
+//   abs(-7) = 7
+
+// Cell 1: Arithmetic operations
+cell Arithmetic {
+    on add(a: Int, b: Int) {
+        return a + b
+    }
+
+    on subtract(a: Int, b: Int) {
+        return a - b
+    }
+
+    on multiply(a: Int, b: Int) {
+        return a * b
+    }
+
+    on absolute(n: Int) {
+        return abs(n)
+    }
+
+    on run() {
+        let r = add(5, 3)
+        print("{r}")
+        return "done"
+    }
+}
+
+// Cell 2: Demo that uses the arithmetic cell
+cell Demo {
+    on run() {
+        let a = 5
+        let b = 3
+        let sum = a + b
+        let diff = a - b
+        let prod = a * b
+        let av = abs(-7)
+        print("{a} + {b} = {sum}")
+        print("{a} - {b} = {diff}")
+        print("{a} * {b} = {prod}")
+        print("abs(-7) = {av}")
+        return "done"
+    }
+}
+
+// Cell 3: Tests for the arithmetic cell
+cell test ArithmeticTests {
+    rules {
+        assert add(10, 20) == 30
+        assert subtract(10, 3) == 7
+        assert multiply(6, 7) == 42
+        assert absolute(-42) == 42
+        assert absolute(42) == 42
+    }
+}

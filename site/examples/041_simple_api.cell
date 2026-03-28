@@ -1,0 +1,58 @@
+// ============================================================================
+// 041 — Simple REST API
+// ============================================================================
+// A minimal key-value API with put, get, delete.
+//
+// Serve: soma serve 041_simple_api.cell
+// Test:  curl localhost:8080/put/mykey/myvalue
+//        curl localhost:8080/get/mykey
+//        curl localhost:8080/delete/mykey
+//
+// Run handler directly:
+//   soma run 041_simple_api.cell put hello world
+//   Expect: world
+
+cell KeyValueAPI {
+    face {
+        // Each signal becomes an HTTP endpoint when served
+        signal put(key: String, value: String) -> String
+        signal get(key: String) -> String
+        signal delete(key: String) -> String
+        signal count() -> Int
+    }
+
+    memory {
+        // Persistent storage — survives server restarts
+        data: Map<String, String> [persistent, consistent]
+    }
+
+    // PUT /put/:key/:value
+    on put(key: String, value: String) {
+        data.set(key, value)
+        return value
+    }
+
+    // GET /get/:key
+    on get(key: String) {
+        let val = data.get(key)
+        // Return 404 if key doesn't exist
+        if val == () {
+            return response(404, map("error", "key not found"))
+        }
+        return val
+    }
+
+    // DELETE /delete/:key
+    on delete(key: String) {
+        let existed = data.delete(key)
+        if existed == false {
+            return response(404, map("error", "key not found"))
+        }
+        return map("deleted", key)
+    }
+
+    // GET /count
+    on count() {
+        return data.len()
+    }
+}

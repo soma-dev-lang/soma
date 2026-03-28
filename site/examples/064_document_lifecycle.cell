@@ -1,0 +1,52 @@
+// ============================================================================
+// 064 — Document Lifecycle
+// ============================================================================
+// Documents move through draft -> review -> published states.
+//
+// Run:   soma run 064_document_lifecycle.cell demo
+// Expect:
+//   Created: Design Spec v1
+//   Draft -> review
+//   Review -> published
+//   Valid transitions from published: ["archived", "cancelled"]
+
+cell DocumentLifecycle {
+
+    memory {
+        docs: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state doc_status {
+        initial: draft
+
+        draft -> review
+        review -> published
+        review -> draft
+        published -> archived
+        * -> cancelled
+    }
+
+    on create(title: String) {
+        let id = to_string(next_id())
+        docs.set(id, title)
+        status.set(id, "draft")
+        return map("id", id, "title", title, "status", "draft")
+    }
+
+    on demo() {
+        let doc = create("Design Spec v1")
+        print("Created: {doc.title}")
+
+        transition("1", "review")
+        print("Draft -> review")
+
+        transition("1", "published")
+        print("Review -> published")
+
+        let next = valid_transitions("1")
+        print("Valid transitions from published: {next}")
+
+        return "done"
+    }
+}

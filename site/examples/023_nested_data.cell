@@ -1,0 +1,33 @@
+// ============================================================================
+// 023 — Nested Data Structures
+// ============================================================================
+// Lists of maps, maps of lists — complex nested data.
+//
+// Run:   soma run 023_nested_data.cell run
+// Expect:
+//   Alice is 30, from Paris
+//   Bob is 25, from London
+//   Carol is 35, from Tokyo
+//   Total age: 90
+
+cell NestedData {
+
+    on run() {
+        // A list of maps — like a table or array of records
+        let people = list(
+            map("name", "Alice", "age", 30, "city", "Paris"),
+            map("name", "Bob", "age", 25, "city", "London"),
+            map("name", "Carol", "age", 35, "city", "Tokyo")
+        )
+
+        // Iterate over the list and access map fields
+        let total_age = 0
+        for person in people {
+            print("{person.name} is {person.age}, from {person.city}")
+            total_age = total_age + person.age
+        }
+        print("Total age: {total_age}")
+
+        return "done"
+    }
+}

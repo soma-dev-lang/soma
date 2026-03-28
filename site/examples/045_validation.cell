@@ -1,0 +1,52 @@
+// ============================================================================
+// 045 — Input Validation
+// ============================================================================
+// Validates input data and returns appropriate error responses.
+//
+// Run:   soma run 045_validation.cell run
+// Expect:
+//   Valid input: {"ok": true, "name": "Alice", "age": 25}
+//   Empty name: {"error": "name is required"}
+//   Bad age: {"error": "age must be between 0 and 150"}
+
+cell Validation {
+
+    on run() {
+        // Test valid input
+        let r1 = validate("Alice", 25)
+        print("Valid input: {r1}")
+
+        // Test empty name
+        let r2 = validate("", 25)
+        print("Empty name: {r2}")
+
+        // Test invalid age
+        let r3 = validate("Bob", -5)
+        print("Bad age: {r3}")
+
+        return "done"
+    }
+
+    on validate(name: String, age: Int) {
+        // Check name is not empty
+        if name == "" {
+            return map("error", "name is required")
+        }
+
+        // Check name length
+        let name_len = len(name)
+        if name_len > 100 {
+            return map("error", "name too long")
+        }
+
+        // Check age range
+        if age < 0 {
+            return map("error", "age must be between 0 and 150")
+        }
+        if age > 150 {
+            return map("error", "age must be between 0 and 150")
+        }
+
+        return map("ok", true, "name", name, "age", age)
+    }
+}

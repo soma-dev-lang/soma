@@ -1,0 +1,80 @@
+// ============================================================================
+// 083 — Inventory Management
+// ============================================================================
+// Track products, quantities, and stock levels.
+//
+// Run:   soma run 083_inventory.cell demo
+// Expect:
+//   Stocked: Widget x100
+//   Stocked: Gadget x50
+//   Stocked: Doohickey x200
+//   Sold 30 Widgets
+//   === Inventory Report ===
+//   Widget: 70 units ($699.30 value)
+//   Gadget: 50 units ($999.50 value)
+//   Doohickey: 200 units ($998.00 value)
+//   Low stock items: 0
+
+cell Inventory {
+
+    memory {
+        products: Map<String, String> [persistent, consistent]
+        stock: Map<String, Int> [persistent, consistent]
+    }
+
+    on add_product(name: String, price: Float, qty: Int) {
+        let product = map("name", name, "price", price)
+        products.set(name, to_json(product))
+        stock.set(name, qty)
+        return map("name", name, "qty", qty)
+    }
+
+    on sell(name: String, qty: Int) {
+        let current = stock.get(name)
+        if current == () {
+            return map("error", "product not found")
+        }
+        if current < qty {
+            return map("error", "insufficient stock")
+        }
+        stock.set(name, current - qty)
+        return map("name", name, "remaining", current - qty)
+    }
+
+    on report() {
+        let keys = products.keys()
+        let items = list()
+        for key in keys {
+            let product = from_json(products.get(key))
+            let qty = stock.get(key)
+            let value = product.price * to_float(qty)
+            items = list(items, map("name", key, "qty", qty, "value", value))
+        }
+        return items
+    }
+
+    on demo() {
+        add_product("Widget", 9.99, 100)
+        print("Stocked: Widget x100")
+        add_product("Gadget", 19.99, 50)
+        print("Stocked: Gadget x50")
+        add_product("Doohickey", 4.99, 200)
+        print("Stocked: Doohickey x200")
+
+        sell("Widget", 30)
+        print("Sold 30 Widgets")
+
+        let items = report()
+        print("=== Inventory Report ===")
+        for item in items {
+            print("{item.name}: {item.qty} units (${item.value} value)")
+        }
+
+        // Check low stock (below 20)
+        let low = items |> filter_by("qty", "<", 20)
+        let low_count = low.length
+        print("Low stock items: {low_count}")
+
+        return "done"
+    }
+}

@@ -1,0 +1,36 @@
+// ============================================================================
+// 028 — JSON Serialization
+// ============================================================================
+// to_json() and from_json() for data serialization.
+//
+// Run:   soma run 028_json_roundtrip.cell run
+// Expect:
+//   json: {"name": "Alice", "scores": [95, 87, 92]}
+//   parsed name: Alice
+//   parsed scores: [95, 87, 92]
+//   list json: [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]
+
+cell JsonRoundtrip {
+
+    on run() {
+        // Serialize a map to JSON
+        let data = map("name", "Alice", "scores", list(95, 87, 92))
+        let json = to_json(data)
+        print("json: {json}")
+
+        // Parse JSON back to a map
+        let parsed = from_json(json)
+        print("parsed name: {parsed.name}")
+        print("parsed scores: {parsed.scores}")
+
+        // Serialize a list of maps
+        let items = list(
+            map("id", 1, "v", "a"),
+            map("id", 2, "v", "b")
+        )
+        let items_json = to_json(items)
+        print("list json: {items_json}")
+
+        return "done"
+    }
+}

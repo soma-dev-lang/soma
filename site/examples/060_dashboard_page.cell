@@ -1,0 +1,41 @@
+// ============================================================================
+// 060 — Dashboard Page with Dynamic Data
+// ============================================================================
+// Combines data processing with HTML rendering for a dashboard.
+//
+// Run:   soma run 060_dashboard_page.cell run
+// Expect:
+//   === Dashboard ===
+//   Total sales: 4250
+//   Top region: West (2550)
+//   Active reps: 3
+
+cell Dashboard {
+
+    on run() {
+        let sales = list(
+            map("rep", "Alice", "region", "West", "amount", 500),
+            map("rep", "Alice", "region", "West", "amount", 1300),
+            map("rep", "Bob", "region", "East", "amount", 700),
+            map("rep", "Bob", "region", "East", "amount", 600),
+            map("rep", "Carol", "region", "West", "amount", 750),
+            map("rep", "Carol", "region", "East", "amount", 400)
+        )
+
+        // Compute metrics
+        let total = sales |> sum_by("amount")
+        let by_region = sales |> agg("region", "amount:sum") |> sort_by("amount_sum", "desc")
+        let top_region = by_region |> top(1)
+        let unique_reps = sales |> distinct("rep")
+        let rep_count = unique_reps.length
+
+        print("=== Dashboard ===")
+        print("Total sales: {total}")
+        for r in top_region {
+            print("Top region: {r.region} ({r.amount_sum})")
+        }
+        print("Active reps: {rep_count}")
+
+        return "done"
+    }
+}

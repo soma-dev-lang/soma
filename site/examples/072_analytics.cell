@@ -1,0 +1,55 @@
+// ============================================================================
+// 072 — Analytics Report
+// ============================================================================
+// Multi-dimensional analytics on a dataset.
+//
+// Run:   soma run 072_analytics.cell run
+// Expect:
+//   === Sales Analytics ===
+//   Total revenue: 8650
+//   Average deal size: 865
+//   By product:
+//     CRM: 3 deals, total 3750
+//     Analytics: 3 deals, total 2950
+//     Storage: 2 deals, total 1200
+//     API: 2 deals, total 750
+//   Top deal: {"rep": "Carol", "product": "CRM", "amount": 2500, "quarter": "Q1"}
+
+cell Analytics {
+
+    on run() {
+        let sales = list(
+            map("rep", "Alice", "product", "CRM", "amount", 500, "quarter", "Q1"),
+            map("rep", "Bob", "product", "Analytics", "amount", 1200, "quarter", "Q1"),
+            map("rep", "Carol", "product", "CRM", "amount", 2500, "quarter", "Q2"),
+            map("rep", "Alice", "product", "Storage", "amount", 800, "quarter", "Q2"),
+            map("rep", "Bob", "product", "API", "amount", 350, "quarter", "Q3"),
+            map("rep", "Carol", "product", "Analytics", "amount", 1500, "quarter", "Q3"),
+            map("rep", "Alice", "product", "CRM", "amount", 750, "quarter", "Q3"),
+            map("rep", "Bob", "product", "Storage", "amount", 400, "quarter", "Q4"),
+            map("rep", "Carol", "product", "API", "amount", 400, "quarter", "Q4"),
+            map("rep", "Alice", "product", "Analytics", "amount", 250, "quarter", "Q4")
+        )
+
+        print("=== Sales Analytics ===")
+
+        let total = sales |> sum_by("amount")
+        print("Total revenue: {total}")
+
+        let avg = sales |> avg_by("amount")
+        print("Average deal size: {avg}")
+
+        // By product
+        let by_product = sales |> agg("product", "amount:sum") |> sort_by("amount_sum", "desc")
+        print("By product:")
+        for row in by_product {
+            print("  {row.product}: {row.count} deals, total {row.amount_sum}")
+        }
+
+        // Top deal
+        let top = sales |> max_by("amount")
+        print("Top deal: {top}")
+
+        return "done"
+    }
+}

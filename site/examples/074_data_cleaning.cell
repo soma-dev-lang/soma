@@ -1,0 +1,58 @@
+// ============================================================================
+// 074 — Data Cleaning
+// ============================================================================
+// Clean and normalize messy data.
+//
+// Run:   soma run 074_data_cleaning.cell run
+// Expect:
+//   Raw: 5 records
+//   Cleaned:
+//     alice -> alice@test.com
+//     bob -> bob@test.com
+//     carol -> carol@test.com
+//   Removed 2 invalid records
+
+cell DataCleaning {
+
+    on run() {
+        // Messy data with inconsistent formatting
+        let raw = list(
+            map("name", "  Alice  ", "email", "  Alice@TEST.com  "),
+            map("name", "BOB", "email", "bob@test.com"),
+            map("name", "", "email", "nobody@test.com"),
+            map("name", "Carol", "email", "carol@test.com"),
+            map("name", "Dave", "email", "")
+        )
+
+        let raw_count = raw.length
+        print("Raw: {raw_count} records")
+
+        // Clean and validate
+        let cleaned = list()
+        let removed = 0
+        for row in raw {
+            let name = lowercase(trim(row.name))
+            let email = lowercase(trim(row.email))
+
+            // Skip if name or email is empty
+            if name == "" {
+                removed = removed + 1
+            } else {
+                if email == "" {
+                    removed = removed + 1
+                } else {
+                    let clean_row = map("name", name, "email", email)
+                    cleaned = list(cleaned, clean_row)
+                }
+            }
+        }
+
+        print("Cleaned:")
+        for row in cleaned {
+            print("  {row.name} -> {row.email}")
+        }
+        print("Removed {removed} invalid records")
+
+        return "done"
+    }
+}

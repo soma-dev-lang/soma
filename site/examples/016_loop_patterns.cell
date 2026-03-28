@@ -1,0 +1,57 @@
+// ============================================================================
+// 016 — Loop Patterns
+// ============================================================================
+// Common loop patterns: accumulator, find, early exit simulation.
+//
+// Run:   soma run 016_loop_patterns.cell run
+// Expect:
+//   Sum: 55
+//   Product: 120
+//   Max: 42
+//   Found Alice at index: 1
+
+cell Patterns {
+
+    on run() {
+        // Pattern 1: Accumulator — sum all values
+        let nums = list(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+        let sum = 0
+        for n in nums {
+            sum = sum + n
+        }
+        print("Sum: {sum}")
+
+        // Pattern 2: Product accumulator
+        let factors = list(1, 2, 3, 4, 5)
+        let product = 1
+        for f in factors {
+            product = product * f
+        }
+        print("Product: {product}")
+
+        // Pattern 3: Find maximum
+        let values = list(17, 42, 8, 23, 31)
+        let max_val = 0
+        for v in values {
+            if v > max_val {
+                max_val = v
+            }
+        }
+        print("Max: {max_val}")
+
+        // Pattern 4: Linear search with index
+        let names = list("Bob", "Alice", "Carol")
+        let target = "Alice"
+        let found_idx = -1
+        let idx = 0
+        for name in names {
+            if name == target {
+                found_idx = idx
+            }
+            idx = idx + 1
+        }
+        print("Found {target} at index: {found_idx}")
+
+        return "done"
+    }
+}

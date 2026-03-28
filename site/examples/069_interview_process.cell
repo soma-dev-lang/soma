@@ -1,0 +1,66 @@
+// ============================================================================
+// 069 — Interview Process
+// ============================================================================
+// Candidate moves through interview stages.
+//
+// Run:   soma run 069_interview_process.cell demo
+// Expect:
+//   Candidate: Alice Chen
+//   Phone screen...
+//   Technical interview...
+//   Onsite interview...
+//   Offer extended!
+//   Final: offer
+
+cell InterviewProcess {
+
+    memory {
+        candidates: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state interview_status {
+        initial: applied
+
+        applied -> phone_screen
+        phone_screen -> technical
+        phone_screen -> rejected
+        technical -> onsite
+        technical -> rejected
+        onsite -> offer
+        onsite -> rejected
+        offer -> accepted
+        offer -> declined
+        rejected -> applied
+    }
+
+    on apply(name: String, role: String) {
+        let id = to_string(next_id())
+        let candidate = map("name", name, "role", role)
+        candidates.set(id, to_json(candidate))
+        status.set(id, "applied")
+        return candidate
+    }
+
+    on demo() {
+        let c = apply("Alice Chen", "Engineer")
+        print("Candidate: {c.name}")
+
+        transition("1", "phone_screen")
+        print("Phone screen...")
+
+        transition("1", "technical")
+        print("Technical interview...")
+
+        transition("1", "onsite")
+        print("Onsite interview...")
+
+        transition("1", "offer")
+        print("Offer extended!")
+
+        let st = get_status("1")
+        print("Final: {st}")
+
+        return "done"
+    }
+}

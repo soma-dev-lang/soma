@@ -1,0 +1,35 @@
+// ============================================================================
+// 092 — Basic Tests
+// ============================================================================
+// Tests are declared with `cell test Name { rules { assert ... } }`.
+//
+// Run:   soma test 092_tests_basic.cell
+// Expect:
+//   test BasicMath ...
+//     ok assert add(2, 3) == 5
+//     ok assert add(0, 0) == 0
+//     ok assert multiply(3, 4) == 12
+//     ok assert multiply(0, 5) == 0
+//   4 tests: 4 passed, 0 failed
+
+// The code under test
+cell Calculator {
+    on add(a: Int, b: Int) {
+        return a + b
+    }
+
+    on multiply(a: Int, b: Int) {
+        return a * b
+    }
+}
+
+// Declarative test cell
+cell test BasicMath {
+    rules {
+        // assert expression == expected_value
+        assert add(2, 3) == 5
+        assert add(0, 0) == 0
+        assert multiply(3, 4) == 12
+        assert multiply(0, 5) == 0
+    }
+}

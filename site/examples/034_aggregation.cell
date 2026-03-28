@@ -1,0 +1,36 @@
+// ============================================================================
+// 034 — Aggregation with agg()
+// ============================================================================
+// agg() groups by a field and computes aggregates (sum, avg, count, etc).
+//
+// Run:   soma run 034_aggregation.cell run
+// Expect:
+//   Department summary:
+//     Eng: 2 people, total salary 210k, avg 105k
+//     Sales: 2 people, total salary 170k, avg 85k
+//     Design: 1 people, total salary 95k, avg 95k
+
+cell Aggregation {
+
+    on run() {
+        let employees = list(
+            map("dept", "Eng", "name", "Alice", "salary", 120),
+            map("dept", "Eng", "name", "Bob", "salary", 90),
+            map("dept", "Sales", "name", "Carol", "salary", 85),
+            map("dept", "Sales", "name", "Dave", "salary", 85),
+            map("dept", "Design", "name", "Eve", "salary", 95)
+        )
+
+        // agg(list, group_by_field, "col:func", ...)
+        // Available functions: sum, avg, count, min, max
+        let summary = employees
+            |> agg("dept", "salary:sum", "salary:avg")
+
+        print("Department summary:")
+        for row in summary {
+            print("  {row.dept}: {row.count} people, total salary {row.salary_sum}k, avg {row.salary_avg}k")
+        }
+
+        return "done"
+    }
+}

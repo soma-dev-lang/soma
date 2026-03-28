@@ -1,0 +1,46 @@
+// ============================================================================
+// 094 — Testing Recursive Functions
+// ============================================================================
+// Verify recursive algorithms with declarative tests.
+//
+// Run:   soma test 094_tests_recursion.cell
+// Expect: All assertions pass
+
+cell Recursive {
+    on factorial(n: Int) {
+        if n <= 1 { return 1 }
+        return n * factorial(n - 1)
+    }
+
+    on fibonacci(n: Int) {
+        if n <= 0 { return 0 }
+        if n == 1 { return 1 }
+        return fibonacci(n - 1) + fibonacci(n - 2)
+    }
+
+    on power(base: Int, exp: Int) {
+        if exp == 0 { return 1 }
+        return base * power(base, exp - 1)
+    }
+}
+
+cell test RecursionTests {
+    rules {
+        // Factorial tests
+        assert factorial(0) == 1
+        assert factorial(1) == 1
+        assert factorial(5) == 120
+        assert factorial(10) == 3628800
+
+        // Fibonacci tests
+        assert fibonacci(0) == 0
+        assert fibonacci(1) == 1
+        assert fibonacci(5) == 5
+        assert fibonacci(10) == 55
+
+        // Power tests
+        assert power(2, 0) == 1
+        assert power(2, 10) == 1024
+        assert power(3, 3) == 27
+    }
+}

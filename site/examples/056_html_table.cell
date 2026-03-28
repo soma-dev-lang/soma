@@ -1,0 +1,43 @@
+// ============================================================================
+// 056 — HTML Table from Data
+// ============================================================================
+// Generating an HTML table from a list of maps.
+//
+// Run:   soma run 056_html_table.cell run
+// Expect:
+//   <table>
+//   <tr><th>Name</th><th>Score</th><th>Grade</th></tr>
+//   <tr><td>Alice</td><td>92</td><td>A</td></tr>
+//   <tr><td>Bob</td><td>78</td><td>C</td></tr>
+//   <tr><td>Carol</td><td>85</td><td>B</td></tr>
+//   </table>
+
+cell HtmlTable {
+
+    on run() {
+        let students = list(
+            map("name", "Alice", "score", 92, "grade", "A"),
+            map("name", "Bob", "score", 78, "grade", "C"),
+            map("name", "Carol", "score", 85, "grade", "B")
+        )
+
+        // Build the table HTML
+        let table = "<table>\n"
+        table += "<tr><th>Name</th><th>Score</th><th>Grade</th></tr>\n"
+
+        for s in students {
+            let score_str = to_string(s.score)
+            let row = render(
+                "<tr><td>{name}</td><td>{score}</td><td>{grade}</td></tr>",
+                "name", s.name, "score", score_str, "grade", s.grade
+            )
+            table += row
+            table += "\n"
+        }
+
+        table += "</table>"
+        print(table)
+
+        return "done"
+    }
+}

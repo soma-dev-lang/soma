@@ -1,0 +1,48 @@
+// ============================================================================
+// 059 — Multi-Page App with Routing
+// ============================================================================
+// Route different paths to different pages using the request handler.
+//
+// Serve: soma serve 059_multi_page.cell
+// Test:  curl localhost:8080/         -> home page
+//        curl localhost:8080/about    -> about page
+//
+// Run:   soma run 059_multi_page.cell request GET /about ""
+// Expect: (HTML about page)
+
+cell MultiPage {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+    }
+
+    on request(method: String, path: String, body: String) {
+        // Simple router based on path
+        if path == "/about" {
+            return html(page_layout("About", "<h1>About</h1><p>This is a Soma multi-page app.</p><a href='/'>Home</a>"))
+        }
+
+        if path == "/contact" {
+            return html(page_layout("Contact", "<h1>Contact</h1><p>Email: hello@soma.dev</p><a href='/'>Home</a>"))
+        }
+
+        // Default: home page
+        return html(page_layout("Home",
+            "<h1>Welcome</h1><p>A multi-page Soma app.</p><nav><a href='/about'>About</a> | <a href='/contact'>Contact</a></nav>"))
+    }
+
+    // Shared layout "component"
+    on page_layout(title: String, content: String) {
+        return render("<!DOCTYPE html>
+<html>
+<head>
+    <title>{title} - Soma App</title>
+    <style>
+        body { font-family: system-ui; max-width: 600px; margin: 40px auto; padding: 20px; }
+        a { color: #6366f1; }
+        nav { margin-top: 20px; }
+    </style>
+</head>
+<body>{content}</body>
+</html>", "title", title, "content", content)
+    }
+}

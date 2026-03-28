@@ -1,0 +1,62 @@
+// ============================================================================
+// 067 — Kanban Task Board
+// ============================================================================
+// Tasks flow through: backlog -> todo -> in_progress -> done.
+//
+// Run:   soma run 067_task_board.cell demo
+// Expect:
+//   Task 'Implement login' created
+//   Task 'Write tests' created
+//   Task 1 -> todo
+//   Task 1 -> in_progress
+//   Task 2 -> todo
+//   Task 1 -> done!
+
+cell TaskBoard {
+
+    memory {
+        tasks: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    state task_status {
+        initial: backlog
+
+        backlog -> todo
+        todo -> in_progress
+        in_progress -> done
+        in_progress -> blocked
+        blocked -> in_progress
+        done -> todo
+        * -> cancelled
+    }
+
+    on create(title: String) {
+        let id = to_string(next_id())
+        tasks.set(id, title)
+        status.set(id, "backlog")
+        return map("id", id, "title", title, "status", "backlog")
+    }
+
+    on demo() {
+        create("Implement login")
+        print("Task 'Implement login' created")
+
+        create("Write tests")
+        print("Task 'Write tests' created")
+
+        transition("1", "todo")
+        print("Task 1 -> todo")
+
+        transition("1", "in_progress")
+        print("Task 1 -> in_progress")
+
+        transition("2", "todo")
+        print("Task 2 -> todo")
+
+        transition("1", "done")
+        print("Task 1 -> done!")
+
+        return "done"
+    }
+}

@@ -1,0 +1,57 @@
+// ============================================================================
+// 096 — Custom Properties
+// ============================================================================
+// Define custom properties that extend the memory system.
+// The language grows — no compiler changes needed.
+//
+// Run:   soma check 096_custom_property.cell
+// Expect: All checks passed.
+
+// Define a new property: "replicated"
+cell property replicated {
+    face {
+        // Parameters for the property
+        given copies: Int
+        promise "data is replicated across nodes"
+    }
+    rules {
+        // This property implies persistent and consistent
+        implies [persistent, consistent]
+        // It cannot be used with ephemeral or local
+        contradicts [local, ephemeral]
+    }
+}
+
+// Define another: "cached"
+cell property cached {
+    face {
+        given ttl: Int
+        promise "reads served from cache when possible"
+    }
+    rules {}
+}
+
+// Use the custom properties in a regular cell
+cell UserStore {
+    face {
+        signal get(id: String) -> String
+        signal put(id: String, name: String) -> String
+    }
+
+    memory {
+        // Custom properties used alongside built-in ones
+        users: Map<String, String> [replicated(3), encrypted]
+
+        // Cached sessions with TTL
+        sessions: Map<String, String> [cached(300), ephemeral]
+    }
+
+    on get(id: String) {
+        return users.get(id)
+    }
+
+    on put(id: String, name: String) {
+        users.set(id, name)
+        return name
+    }
+}

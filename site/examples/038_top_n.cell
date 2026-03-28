@@ -1,0 +1,49 @@
+// ============================================================================
+// 038 — Top N Analysis
+// ============================================================================
+// top() takes the first N rows from a (usually sorted) list.
+//
+// Run:   soma run 038_top_n.cell run
+// Expect:
+//   Top 3 by population:
+//     Tokyo: 37400000
+//     Delhi: 30290000
+//     Shanghai: 27058000
+//   Bottom 2 by population:
+//     Osaka: 19281000
+//     Cairo: 20076000
+
+cell TopN {
+
+    on run() {
+        let cities = list(
+            map("name", "Tokyo", "population", 37400000),
+            map("name", "Delhi", "population", 30290000),
+            map("name", "Shanghai", "population", 27058000),
+            map("name", "Cairo", "population", 20076000),
+            map("name", "Osaka", "population", 19281000)
+        )
+
+        // Top 3 by population (descending)
+        let top3 = cities
+            |> sort_by("population", "desc")
+            |> top(3)
+
+        print("Top 3 by population:")
+        for city in top3 {
+            print("  {city.name}: {city.population}")
+        }
+
+        // Bottom 2 (sort ascending, take top 2)
+        let bottom2 = cities
+            |> sort_by("population", "asc")
+            |> top(2)
+
+        print("Bottom 2 by population:")
+        for city in bottom2 {
+            print("  {city.name}: {city.population}")
+        }
+
+        return "done"
+    }
+}

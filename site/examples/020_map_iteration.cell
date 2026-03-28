@@ -1,0 +1,52 @@
+// ============================================================================
+// 020 — Iterating Over Maps
+// ============================================================================
+// Maps are iterated via .keys(), then accessing each value with .get().
+//
+// Run:   soma run 020_map_iteration.cell run
+// Expect:
+//   Inventory:
+//     apple: 50
+//     banana: 30
+//     cherry: 15
+//   Total items: 95
+//   Most stocked: apple (50)
+
+cell MapIteration {
+
+    memory {
+        inventory: Map<String, Int> [persistent, consistent]
+    }
+
+    on run() {
+        // Populate the map
+        inventory.set("apple", 50)
+        inventory.set("banana", 30)
+        inventory.set("cherry", 15)
+
+        // Iterate using .keys()
+        let keys = inventory.keys()
+        print("Inventory:")
+
+        let total = 0
+        let best_item = ""
+        let best_count = 0
+
+        for key in keys {
+            let val = inventory.get(key)
+            print("  {key}: {val}")
+            total = total + val
+
+            // Track the maximum
+            if val > best_count {
+                best_count = val
+                best_item = key
+            }
+        }
+
+        print("Total items: {total}")
+        print("Most stocked: {best_item} ({best_count})")
+
+        return "done"
+    }
+}

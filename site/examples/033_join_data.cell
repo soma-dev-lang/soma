@@ -1,0 +1,48 @@
+// ============================================================================
+// 033 — Joining Datasets
+// ============================================================================
+// join() and left_join() combine two lists on a shared key.
+//
+// Run:   soma run 033_join_data.cell run
+// Expect:
+//   Inner join (only matches):
+//     Alice: Eng
+//     Carol: Sales
+//   Left join (keep all from left):
+//     Alice: Eng
+//     Bob: (no department)
+//     Carol: Sales
+
+cell JoinData {
+
+    on run() {
+        // Two separate datasets with a shared "id" field
+        let employees = list(
+            map("id", 1, "name", "Alice"),
+            map("id", 2, "name", "Bob"),
+            map("id", 3, "name", "Carol")
+        )
+
+        let departments = list(
+            map("id", 1, "dept", "Eng"),
+            map("id", 3, "dept", "Sales")
+        )
+
+        // join() — inner join: only rows that exist in both lists
+        let inner = join(employees, departments, "id")
+        print("Inner join (only matches):")
+        for row in inner {
+            print("  {row.name}: {row.dept}")
+        }
+
+        // left_join() — keeps all rows from the left list
+        let left = left_join(employees, departments, "id")
+        print("Left join (keep all from left):")
+        for row in left {
+            let dept = row.dept ?? "(no department)"
+            print("  {row.name}: {dept}")
+        }
+
+        return "done"
+    }
+}

@@ -1,0 +1,38 @@
+// ============================================================================
+// 036 — Group By
+// ============================================================================
+// group_by() partitions data; combine with iteration for analytics.
+//
+// Run:   soma run 036_group_by.cell run
+// Expect:
+//   Orders by status:
+//     pending: 3 orders
+//     shipped: 2 orders
+//     delivered: 1 orders
+
+cell GroupBy {
+
+    on run() {
+        let orders = list(
+            map("id", 1, "status", "pending", "total", 50),
+            map("id", 2, "status", "shipped", "total", 75),
+            map("id", 3, "status", "pending", "total", 120),
+            map("id", 4, "status", "delivered", "total", 30),
+            map("id", 5, "status", "shipped", "total", 90),
+            map("id", 6, "status", "pending", "total", 45)
+        )
+
+        // group_by returns a map where each key is a group and values are lists
+        let grouped = group_by(orders, "status")
+
+        // Summarize using agg
+        let summary = orders |> agg("status", "total:sum")
+
+        print("Orders by status:")
+        for row in summary {
+            print("  {row.status}: {row.count} orders")
+        }
+
+        return "done"
+    }
+}

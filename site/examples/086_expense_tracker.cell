@@ -1,0 +1,59 @@
+// ============================================================================
+// 086 — Expense Tracker
+// ============================================================================
+// Track expenses by category and generate summaries.
+//
+// Run:   soma run 086_expense_tracker.cell demo
+// Expect:
+//   Logged: Coffee ($4)
+//   Logged: Lunch ($12)
+//   Logged: Taxi ($25)
+//   Logged: Books ($35)
+//   Logged: Dinner ($45)
+//   === Expense Summary ===
+//   Total: $121
+//   By category:
+//     Transport: $25
+//     Food: $61
+//     Education: $35
+
+cell ExpenseTracker {
+
+    on demo() {
+        let expenses = list()
+
+        // Log expenses
+        let e1 = map("desc", "Coffee", "amount", 4, "category", "Food")
+        expenses = list(expenses, e1)
+        print("Logged: {e1.desc} (${e1.amount})")
+
+        let e2 = map("desc", "Lunch", "amount", 12, "category", "Food")
+        expenses = list(expenses, e2)
+        print("Logged: {e2.desc} (${e2.amount})")
+
+        let e3 = map("desc", "Taxi", "amount", 25, "category", "Transport")
+        expenses = list(expenses, e3)
+        print("Logged: {e3.desc} (${e3.amount})")
+
+        let e4 = map("desc", "Books", "amount", 35, "category", "Education")
+        expenses = list(expenses, e4)
+        print("Logged: {e4.desc} (${e4.amount})")
+
+        let e5 = map("desc", "Dinner", "amount", 45, "category", "Food")
+        expenses = list(expenses, e5)
+        print("Logged: {e5.desc} (${e5.amount})")
+
+        // Summary
+        let total = expenses |> sum_by("amount")
+        print("=== Expense Summary ===")
+        print("Total: ${total}")
+
+        let by_cat = expenses |> agg("category", "amount:sum") |> sort_by("category", "asc")
+        print("By category:")
+        for row in by_cat {
+            print("  {row.category}: ${row.amount_sum}")
+        }
+
+        return "done"
+    }
+}
