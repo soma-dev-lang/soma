@@ -1,0 +1,93 @@
+// Allocation Engine — generates allocations from rules + portfolio value
+
+cell Engine {
+    memory {
+        allocations: Map<String, String> [persistent, consistent]
+    }
+
+    state allocation_status {
+        initial: draft
+        draft -> proposed
+        proposed -> approved
+        approved -> executed
+        * -> cancelled
+    }
+
+    on generate(portfolio_value: String, profile_name: String, client: String) {
+        let profile = get_profile(profile_name)
+        if profile == () { return response(400, map("error", "unknown profile: {profile_name}")) }
+
+        let id = next_id()
+        let id_str = to_string(id)
+
+        // Calculate allocations from rules
+        let bonds_pct = profile.bonds
+        let stocks_pct = profile.stocks
+        let cash_pct = profile.cash
+        let alts_pct = profile.alternatives
+
+        // Store the allocation
+        let alloc = to_json(map(
+            "id", id,
+            "client", client,
+            "profile", profile_name,
+            "portfolio_value", portfolio_value,
+            "status", "draft",
+            "bonds_pct", bonds_pct,
+            "stocks_pct", stocks_pct,
+            "cash_pct", cash_pct,
+            "alternatives_pct", alts_pct,
+            "max_single_position", profile.max_single_position,
+            "rebalance_threshold", profile.rebalance_threshold
+        ))
+        allocations.set(id_str, alloc)
+
+        return from_json(alloc)
+    }
+
+    on get_allocation(id: String) {
+        let raw = allocations.get(id)
+        if raw == () { return response(404, map("error", "allocation not found")) }
+        return from_json(raw)
+    }
+
+    on list_allocations() {
+        let items = list()
+        for key in allocations.keys() {
+            items = list(items, from_json(allocations.get(key)))
+        }
+        return items
+    }
+
+    on approve(id: String) {
+        let raw = allocations.get(id)
+        if raw == () { return response(404, map("error", "not found")) }
+        let alloc = from_json(raw)
+        let updated = to_json(map(
+            "id", alloc.id, "client", alloc.client, "profile", alloc.profile,
+            "portfolio_value", alloc.portfolio_value, "status", "approved",
+            "bonds_pct", alloc.bonds_pct, "stocks_pct", alloc.stocks_pct,
+            "cash_pct", alloc.cash_pct, "alternatives_pct", alloc.alternatives_pct,
+            "max_single_position", alloc.max_single_position,
+            "rebalance_threshold", alloc.rebalance_threshold
+        ))
+        allocations.set(id, updated)
+        return map("id", id, "status", "approved")
+    }
+
+    on reject(id: String) {
+        let raw = allocations.get(id)
+        if raw == () { return response(404, map("error", "not found")) }
+        let alloc = from_json(raw)
+        let updated = to_json(map(
+            "id", alloc.id, "client", alloc.client, "profile", alloc.profile,
+            "portfolio_value", alloc.portfolio_value, "status", "cancelled",
+            "bonds_pct", alloc.bonds_pct, "stocks_pct", alloc.stocks_pct,
+            "cash_pct", alloc.cash_pct, "alternatives_pct", alloc.alternatives_pct,
+            "max_single_position", alloc.max_single_position,
+            "rebalance_threshold", alloc.rebalance_threshold
+        ))
+        allocations.set(id, updated)
+        return map("id", id, "status", "cancelled")
+    }
+}

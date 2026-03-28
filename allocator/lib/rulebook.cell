@@ -1,0 +1,93 @@
+// Rulebook — defines allocation profiles and constraints
+// Rules are data, not code. Add a new profile = add a rule.
+
+cell Rulebook {
+    memory {
+        profiles: Map<String, String> [persistent, consistent]
+        constraints: Map<String, String> [persistent, consistent]
+    }
+
+    on seed_rules() {
+        // ── Allocation Profiles ──────────────────────────────────────
+        profiles.set("conservative", to_json(map(
+            "name", "Conservative",
+            "description", "Capital preservation, low risk",
+            "bonds", 60, "stocks", 25, "cash", 10, "alternatives", 5,
+            "max_single_position", 10,
+            "min_cash", 5,
+            "rebalance_threshold", 5
+        )))
+        profiles.set("balanced", to_json(map(
+            "name", "Balanced",
+            "description", "Growth with moderate risk",
+            "bonds", 35, "stocks", 45, "cash", 10, "alternatives", 10,
+            "max_single_position", 15,
+            "min_cash", 5,
+            "rebalance_threshold", 5
+        )))
+        profiles.set("aggressive", to_json(map(
+            "name", "Aggressive",
+            "description", "Maximum growth, high risk tolerance",
+            "bonds", 15, "stocks", 60, "cash", 5, "alternatives", 20,
+            "max_single_position", 25,
+            "min_cash", 3,
+            "rebalance_threshold", 7
+        )))
+        profiles.set("income", to_json(map(
+            "name", "Income",
+            "description", "Regular income generation",
+            "bonds", 50, "stocks", 20, "cash", 15, "alternatives", 15,
+            "max_single_position", 10,
+            "min_cash", 10,
+            "rebalance_threshold", 3
+        )))
+
+        // ── Asset Universe ───────────────────────────────────────────
+        constraints.set("bonds", to_json(map(
+            "class", "bonds", "instruments", "Treasury,Corporate,Municipal,TIPS",
+            "min", 0, "max", 80
+        )))
+        constraints.set("stocks", to_json(map(
+            "class", "stocks", "instruments", "US Large Cap,US Small Cap,Intl Developed,Emerging Markets",
+            "min", 0, "max", 80
+        )))
+        constraints.set("cash", to_json(map(
+            "class", "cash", "instruments", "Money Market,T-Bills,Savings",
+            "min", 3, "max", 100
+        )))
+        constraints.set("alternatives", to_json(map(
+            "class", "alternatives", "instruments", "REITs,Commodities,Gold,Crypto",
+            "min", 0, "max", 30
+        )))
+
+        return map("status", "rules loaded", "profiles", 4, "constraints", 4)
+    }
+
+    on get_profile(name: String) {
+        let raw = profiles.get(name)
+        if raw == () { return () }
+        return from_json(raw)
+    }
+
+    on list_profiles() {
+        let items = list()
+        for key in profiles.keys() {
+            items = list(items, from_json(profiles.get(key)))
+        }
+        return items
+    }
+
+    on get_constraint(asset_class: String) {
+        let raw = constraints.get(asset_class)
+        if raw == () { return () }
+        return from_json(raw)
+    }
+
+    on list_constraints() {
+        let items = list()
+        for key in constraints.keys() {
+            items = list(items, from_json(constraints.get(key)))
+        }
+        return items
+    }
+}

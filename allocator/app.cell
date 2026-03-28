@@ -1,0 +1,234 @@
+// Asset Allocation Generator
+//   soma serve app.cell
+
+use lib::rulebook
+use lib::engine
+
+cell App {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal home() -> String
+        signal allocations_page() -> String
+        signal generate_form(profile: String) -> String
+        signal do_generate(profile: String, value: String, client: String) -> String
+        signal do_approve(id: String) -> String
+        signal do_reject(id: String) -> String
+        signal api_profiles() -> String
+        signal api_generate(data: Map<String, String>) -> String
+    }
+
+    memory {
+        config: Map<String, String> [persistent, consistent]
+    }
+
+    on request(method: String, path: String, body: String) {
+        if config.get("seeded") == () {
+            seed_rules()
+            config.set("seeded", "true")
+        }
+        if path == "/" { return html(page("Allocator", home())) }
+        if path == "/allocations" { return html(page("Allocations", allocations_page())) }
+        if path == "/api/profiles" { return api_profiles() }
+        return html(page("404", "<div class='container'><p class='empty'>Page non trouvee</p></div>"))
+    }
+
+    // ── Pages ────────────────────────────────────────────────────────
+
+    on home() {
+        let profiles_html = ""
+        for p in list_profiles() {
+            let bars = "<div class='bar-group'>
+                <div class='bar'><div class='bar-fill bonds' style='width:{p.bonds}%'></div><span>Obligations {p.bonds}%</span></div>
+                <div class='bar'><div class='bar-fill stocks' style='width:{p.stocks}%'></div><span>Actions {p.stocks}%</span></div>
+                <div class='bar'><div class='bar-fill cash' style='width:{p.cash}%'></div><span>Cash {p.cash}%</span></div>
+                <div class='bar'><div class='bar-fill alts' style='width:{p.alternatives}%'></div><span>Alternatifs {p.alternatives}%</span></div>
+            </div>"
+            let pname = lowercase(p.name)
+            profiles_html += "<div class='profile-card'>
+                <div class='profile-header'>
+                    <h3>{p.name}</h3>
+                    <p class='meta'>{p.description}</p>
+                </div>
+                {bars}
+                <div class='profile-footer'>
+                    <span class='meta'>Max position: {p.max_single_position}% | Seuil rebalance: {p.rebalance_threshold}%</span>
+                    <a class='btn' hx-get='/generate_form/{pname}' hx-target='#modal' hx-swap='innerHTML'>Generer</a>
+                </div>
+            </div>"
+        }
+        return "<div class='container'>
+            <div class='hero'>
+                <h1>Asset Allocator</h1>
+                <p>Generez des allocations d'actifs a partir du rulebook</p>
+            </div>
+            <div class='profiles-grid'>{profiles_html}</div>
+            <div id='modal'></div>
+        </div>"
+    }
+
+    on generate_form(profile: String) {
+        let p = get_profile(profile)
+        if p == () { return html("<p>Profil inconnu</p>") }
+        return html("<div class='overlay' onclick='if(event.target===this)document.getElementById(\"modal\").innerHTML=\"\"'>
+            <div class='modal-box'>
+                <h3>Generer: {p.name}</h3>
+                <p class='meta' style='margin-bottom:1.5rem'>{p.description}</p>
+                <form hx-get='/do_generate/{profile}' hx-target='#modal' hx-swap='innerHTML'>
+                    <div class='form-group'><label>Client</label><input name='client' placeholder='Nom du client' required></div>
+                    <div class='form-group'><label>Valeur du portefeuille (EUR)</label><input name='value' type='number' placeholder='1000000' required></div>
+                    <div style='display:flex;gap:.75rem;margin-top:.5rem'>
+                        <button type='submit' class='btn' style='flex:1'>Generer l allocation</button>
+                        <button type='button' class='btn btn-danger' onclick='document.getElementById(\"modal\").innerHTML=\"\"'>Annuler</button>
+                    </div>
+                </form>
+            </div>
+        </div>")
+    }
+
+    on do_generate(profile: String, value: String, client: String) {
+        let alloc = generate(value, profile, client)
+        return html("<div class='overlay' onclick='window.location=\"/allocations\"'>
+            <div class='modal-box' style='text-align:center'>
+                <div class='success-icon'>&#10003;</div>
+                <h3>Allocation generee!</h3>
+                <p class='meta'>{client} — Profil {profile}</p>
+                <p style='font-size:2rem;font-weight:800;color:#818cf8;margin:1rem 0'>{value} EUR</p>
+                <div class='alloc-summary'>
+                    <div class='alloc-item'><span class='dot bonds'></span>Obligations {alloc.bonds_pct}%</div>
+                    <div class='alloc-item'><span class='dot stocks'></span>Actions {alloc.stocks_pct}%</div>
+                    <div class='alloc-item'><span class='dot cash'></span>Cash {alloc.cash_pct}%</div>
+                    <div class='alloc-item'><span class='dot alts'></span>Alternatifs {alloc.alternatives_pct}%</div>
+                </div>
+                <a href='/allocations' class='btn' style='width:100%;margin-top:1.5rem'>Voir les allocations</a>
+            </div>
+        </div>")
+    }
+
+    on allocations_page() {
+        let rows = ""
+        for a in list_allocations() {
+            let actions = ""
+            if a.status == "draft" {
+                actions = "<a class='btn btn-sm btn-success' hx-post='/do_approve/{a.id}' hx-target='closest tr' hx-swap='outerHTML'>Approuver</a> <a class='btn btn-sm btn-danger' hx-post='/do_reject/{a.id}' hx-target='closest tr' hx-swap='outerHTML'>Rejeter</a>"
+            }
+            rows += "<tr>
+                <td style='font-weight:600;color:#818cf8'>#{a.id}</td>
+                <td>{a.client}</td>
+                <td><span class='badge badge-profile'>{a.profile}</span></td>
+                <td style='font-weight:600'>{a.portfolio_value} EUR</td>
+                <td>{a.bonds_pct}%</td><td>{a.stocks_pct}%</td><td>{a.cash_pct}%</td><td>{a.alternatives_pct}%</td>
+                <td><span class='badge badge-{a.status}'>{a.status}</span></td>
+                <td class='actions'>{actions}</td>
+            </tr>"
+        }
+        if rows == "" { rows = "<tr><td colspan='10' class='empty'>Aucune allocation generee</td></tr>" }
+        return "<div class='container'>
+            <h2>Allocations</h2>
+            <table><thead><tr>
+                <th>#</th><th>Client</th><th>Profil</th><th>Portefeuille</th>
+                <th>Oblig.</th><th>Actions</th><th>Cash</th><th>Alt.</th>
+                <th>Statut</th><th></th>
+            </tr></thead><tbody>{rows}</tbody></table>
+        </div>"
+    }
+
+    on do_approve(id: String) {
+        approve(id)
+        let a = get_allocation(id)
+        return html("<tr>
+            <td style='font-weight:600;color:#818cf8'>#{a.id}</td>
+            <td>{a.client}</td><td><span class='badge badge-profile'>{a.profile}</span></td>
+            <td style='font-weight:600'>{a.portfolio_value} EUR</td>
+            <td>{a.bonds_pct}%</td><td>{a.stocks_pct}%</td><td>{a.cash_pct}%</td><td>{a.alternatives_pct}%</td>
+            <td><span class='badge badge-approved'>approved</span></td><td></td>
+        </tr>")
+    }
+
+    on do_reject(id: String) {
+        reject(id)
+        let a = get_allocation(id)
+        return html("<tr>
+            <td style='font-weight:600;color:#818cf8'>#{a.id}</td>
+            <td>{a.client}</td><td><span class='badge badge-profile'>{a.profile}</span></td>
+            <td style='font-weight:600'>{a.portfolio_value} EUR</td>
+            <td>{a.bonds_pct}%</td><td>{a.stocks_pct}%</td><td>{a.cash_pct}%</td><td>{a.alternatives_pct}%</td>
+            <td><span class='badge badge-cancelled'>cancelled</span></td><td></td>
+        </tr>")
+    }
+
+    // ── JSON API ─────────────────────────────────────────────────────
+
+    on api_profiles() {
+        return list_profiles()
+    }
+
+    on api_generate(data: Map<String, String>) {
+        return generate(data.value, data.profile, data.client)
+    }
+
+    // ── Layout ───────────────────────────────────────────────────────
+
+    on page(title: String, content: String) {
+        return "<!DOCTYPE html><html lang='fr'><head>
+        <meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+        <title>{title} — Asset Allocator</title>
+        <script src='https://unpkg.com/htmx.org@1.9.12'></script>
+        <link href='https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap' rel='stylesheet'>
+        <style>
+            :root{--p:#6366f1;--bg:#0f172a;--bg2:#1e293b;--bg3:#334155;--text:#f1f5f9;--muted:#94a3b8;--dim:#64748b;--border:rgba(255,255,255,.06);--r:16px}
+            *{margin:0;padding:0;box-sizing:border-box}
+            body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+            nav{background:rgba(15,23,42,.8);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 2rem;height:72px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+            .logo{font-size:1.5rem;font-weight:900;background:linear-gradient(135deg,#818cf8,#c084fc);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+            nav a{color:var(--muted);text-decoration:none;font-weight:500;margin-left:2rem;transition:color .2s}nav a:hover{color:var(--text)}
+            .container{max-width:1280px;margin:0 auto;padding:2rem}
+            .hero{text-align:center;padding:3rem 1rem 2rem}
+            .hero h1{font-size:3rem;font-weight:900;letter-spacing:-2px;background:linear-gradient(135deg,#e0e7ff,#818cf8,#c084fc);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+            .hero p{color:var(--muted);font-size:1.125rem;margin-top:.5rem}
+            h2{font-size:1.75rem;font-weight:800;margin-bottom:1.5rem}
+            .profiles-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1.5rem}
+            .profile-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;transition:all .3s}
+            .profile-card:hover{transform:translateY(-4px);box-shadow:0 20px 60px rgba(99,102,241,.15);border-color:rgba(99,102,241,.3)}
+            .profile-header{padding:1.5rem 1.5rem .75rem}
+            .profile-header h3{font-size:1.125rem;font-weight:700}
+            .profile-footer{padding:.75rem 1.5rem 1.5rem;display:flex;justify-content:space-between;align-items:center}
+            .meta{color:var(--dim);font-size:.8125rem}
+            .bar-group{padding:0 1.5rem}
+            .bar{position:relative;height:28px;background:var(--bg);border-radius:6px;margin-bottom:.5rem;overflow:hidden}
+            .bar-fill{height:100%;border-radius:6px;transition:width .5s ease}
+            .bar span{position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:.75rem;font-weight:600;z-index:1}
+            .bonds{background:linear-gradient(90deg,#3b82f6,#60a5fa)}.stocks{background:linear-gradient(90deg,#8b5cf6,#a78bfa)}
+            .cash{background:linear-gradient(90deg,#10b981,#34d399)}.alts{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+            .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:.5rem}
+            .dot.bonds{background:#3b82f6}.dot.stocks{background:#8b5cf6}.dot.cash{background:#10b981}.dot.alts{background:#f59e0b}
+            .alloc-summary{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin:1rem 0;text-align:left}
+            .alloc-item{font-size:.875rem;display:flex;align-items:center}
+            .btn{display:inline-flex;align-items:center;padding:.7rem 1.5rem;font-size:.875rem;font-weight:600;border:none;border-radius:10px;cursor:pointer;text-decoration:none;transition:all .2s;background:linear-gradient(135deg,var(--p),#4338ca);color:white;box-shadow:0 4px 16px rgba(99,102,241,.3)}
+            .btn:hover{transform:translateY(-1px);box-shadow:0 8px 24px rgba(99,102,241,.4)}
+            .btn-sm{padding:.4rem .875rem;font-size:.8125rem;border-radius:8px}
+            .btn-danger{background:linear-gradient(135deg,#ef4444,#dc2626);box-shadow:0 4px 16px rgba(239,68,68,.3)}
+            .btn-success{background:linear-gradient(135deg,#10b981,#059669);box-shadow:0 4px 16px rgba(16,185,129,.3)}
+            table{width:100%;border-collapse:collapse;background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);overflow:hidden}
+            th{background:var(--bg);text-align:left;padding:.875rem 1rem;font-size:.75rem;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);font-weight:600}
+            td{padding:.875rem 1rem;border-top:1px solid var(--border)}tr:hover td{background:rgba(255,255,255,.02)}
+            .actions{display:flex;gap:.5rem}
+            .badge{display:inline-flex;align-items:center;gap:.375rem;padding:.25rem .75rem;border-radius:20px;font-size:.75rem;font-weight:600;text-transform:uppercase}
+            .badge::before{content:'';width:6px;height:6px;border-radius:50%}
+            .badge-draft{background:rgba(245,158,11,.1);color:#fbbf24}.badge-draft::before{background:#fbbf24}
+            .badge-approved{background:rgba(16,185,129,.1);color:#34d399}.badge-approved::before{background:#34d399}
+            .badge-cancelled{background:rgba(239,68,68,.1);color:#f87171}.badge-cancelled::before{background:#f87171}
+            .badge-profile{background:rgba(99,102,241,.1);color:#818cf8}.badge-profile::before{background:#818cf8}
+            .overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:100}
+            .modal-box{background:var(--bg2);border-radius:var(--r);border:1px solid var(--border);padding:2rem;max-width:480px;width:90vw;box-shadow:0 40px 100px rgba(0,0,0,.5)}
+            .form-group{margin-bottom:1.25rem}.form-group label{display:block;font-weight:600;font-size:.8125rem;margin-bottom:.5rem;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+            .form-group input{width:100%;padding:.75rem 1rem;background:var(--bg);border:1.5px solid var(--bg3);border-radius:10px;color:var(--text);font-size:.9375rem;font-family:inherit;outline:none}
+            .form-group input:focus{border-color:var(--p);box-shadow:0 0 0 3px rgba(99,102,241,.1)}
+            .success-icon{width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;font-size:1.75rem;color:white}
+            .empty{text-align:center;padding:3rem;color:var(--dim)}
+            .htmx-added{animation:fadeIn .25s ease-out}@keyframes fadeIn{from{opacity:0;transform:translateY(-8px)}}
+        </style></head><body>
+        <nav><div class='logo'>Asset Allocator</div><div><a href='/'>Rulebook</a><a href='/allocations'>Allocations</a></div></nav>
+        {content}
+        </body></html>"
+    }
+}
