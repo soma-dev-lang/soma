@@ -245,12 +245,20 @@ impl Interpreter {
         }
     }
 
-    /// Ensure state machine storage slots exist (auto-create in-memory backends)
+    /// Ensure state machine storage slots exist
+    /// Uses persistent backend (SQLite) if any existing slot is persistent, otherwise memory
     pub fn ensure_state_machine_storage(&mut self) {
-        for ((_, sm_name), _) in &self.state_machines {
+        // Check if any existing slot uses a persistent backend
+        let has_persistent = self.storage.values().any(|b| b.backend_name() == "sqlite" || b.backend_name() == "file");
+        for ((cell_name, sm_name), _) in self.state_machines.clone() {
             let key = format!("__sm_{}", sm_name);
             if !self.storage.contains_key(&key) {
-                self.storage.insert(key, Arc::new(crate::runtime::storage::MemoryBackend::new()));
+                let backend: Arc<dyn crate::runtime::storage::StorageBackend> = if has_persistent {
+                    Arc::new(crate::runtime::storage::SqliteBackend::new(&cell_name, &format!("_sm_{}", sm_name)))
+                } else {
+                    Arc::new(crate::runtime::storage::MemoryBackend::new())
+                };
+                self.storage.insert(key, backend);
             }
         }
     }
@@ -1885,6 +1893,91 @@ impl Interpreter {
                     }).collect();
                     Some(Ok(Value::List(result)))
                 } else { Some(Ok(Value::List(vec![]))) }
+            }
+            // ── Advanced pipeline operations ──────────────────────────
+            "with_column" | "add_field" => {
+                if args.len() >= 3 {
+                    if let Value::List(items) = &args[0] {
+                        let new_field = format!("{}", args[1]);
+                        let source = format!("{}", args[2]);
+                        let op = if args.len() >= 4 { format!("{}", args[3]) } else { "=".to_string() };
+                        let operand = if args.len() >= 5 { val_to_i64(&args[4]) } else { 0 };
+                        let result: Vec<Value> = items.iter().map(|item| {
+                            if let Value::Map(entries) = item {
+                                let src_val = entries.iter().find(|(k,_)| k == &source).map(|(_,v)| val_to_i64(v)).unwrap_or(0);
+                                let computed = match op.as_str() { "*" => src_val * operand, "+" => src_val + operand, "-" => src_val - operand, "/" => if operand != 0 { src_val / operand } else { 0 }, _ => src_val };
+                                let mut e = entries.clone(); e.push((new_field.clone(), Value::Int(computed))); Value::Map(e)
+                            } else { item.clone() }
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Ok(args[0].clone())) }
+                } else { Some(Err(RuntimeError::TypeError("with_column(list, name, source, op, value)".to_string()))) }
+            }
+            "describe" | "stats" => {
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let vals: Vec<i64> = items.iter().map(|i| map_field_i64(i, &field)).collect();
+                        let n = vals.len() as i64; let sum: i64 = vals.iter().sum();
+                        let avg = if n > 0 { sum / n } else { 0 };
+                        Some(Ok(Value::Map(vec![("count".into(), Value::Int(n)), ("sum".into(), Value::Int(sum)), ("avg".into(), Value::Int(avg)),
+                            ("min".into(), Value::Int(vals.iter().copied().min().unwrap_or(0))), ("max".into(), Value::Int(vals.iter().copied().max().unwrap_or(0)))])))
+                    } else { Some(Ok(Value::Unit)) }
+                } else { Some(Err(RuntimeError::TypeError("describe(list, field)".to_string()))) }
+            }
+            "sample" => {
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let n = val_to_i64(&args[1]) as usize;
+                        if n >= items.len() { return Some(Ok(Value::List(items.clone()))); }
+                        let step = items.len() / n;
+                        Some(Ok(Value::List((0..n).map(|i| items[i * step].clone()).collect())))
+                    } else { Some(Ok(args[0].clone())) }
+                } else { Some(Err(RuntimeError::TypeError("sample(list, n)".to_string()))) }
+            }
+            "window" | "rolling" => {
+                if args.len() >= 4 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]); let size = val_to_i64(&args[2]) as usize; let func = format!("{}", args[3]);
+                        let out = format!("{}_{}{}", field, func, size);
+                        let vals: Vec<i64> = items.iter().map(|i| map_field_i64(i, &field)).collect();
+                        let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
+                            let start = if i >= size { i - size + 1 } else { 0 };
+                            let w = &vals[start..=i];
+                            let v = match func.as_str() { "avg" => w.iter().sum::<i64>() / w.len() as i64, "sum" => w.iter().sum(), "min" => w.iter().copied().min().unwrap_or(0), "max" => w.iter().copied().max().unwrap_or(0), _ => 0 };
+                            if let Value::Map(e) = item { let mut ne = e.clone(); ne.push((out.clone(), Value::Int(v))); Value::Map(ne) } else { item.clone() }
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Ok(args[0].clone())) }
+                } else { Some(Err(RuntimeError::TypeError("window(list, field, size, func)".to_string()))) }
+            }
+            "cumsum" => {
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]); let out = format!("{}_cumsum", field);
+                        let mut cum = 0i64;
+                        let result: Vec<Value> = items.iter().map(|item| {
+                            cum += map_field_i64(item, &field);
+                            if let Value::Map(e) = item { let mut ne = e.clone(); ne.push((out.clone(), Value::Int(cum))); Value::Map(ne) } else { item.clone() }
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Ok(args[0].clone())) }
+                } else { Some(Err(RuntimeError::TypeError("cumsum(list, field)".to_string()))) }
+            }
+            "add_rank" => {
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]); let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(true);
+                        let mut idx: Vec<(usize, i64)> = items.iter().enumerate().map(|(i, item)| (i, map_field_i64(item, &field))).collect();
+                        idx.sort_by(|a, b| if desc { b.1.cmp(&a.1) } else { a.1.cmp(&b.1) });
+                        let mut ranks = vec![0usize; items.len()];
+                        for (r, (i, _)) in idx.iter().enumerate() { ranks[*i] = r + 1; }
+                        let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
+                            if let Value::Map(e) = item { let mut ne = e.clone(); ne.push(("_rank".into(), Value::Int(ranks[i] as i64))); Value::Map(ne) } else { item.clone() }
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Ok(args[0].clone())) }
+                } else { Some(Err(RuntimeError::TypeError("add_rank(list, field)".to_string()))) }
             }
             // ── Auto-increment ────────────────────────────────────────
             "next_id" => {
