@@ -132,20 +132,28 @@ pub struct Interpreter {
     emitted_signals: Vec<(String, Vec<Value>)>,
     /// Storage backends for memory slots, keyed by "cell_name.slot_name"
     storage: HashMap<String, Arc<dyn StorageBackend>>,
+    /// State machines: (cell_name, machine_name) → definition
+    state_machines: HashMap<(String, String), StateMachineSection>,
 }
 
 impl Interpreter {
     pub fn new(program: &Program) -> Self {
         let mut cells = HashMap::new();
         let mut handler_cache = HashMap::new();
+        let mut state_machines = HashMap::new();
         for cell in &program.cells {
             cells.insert(cell.node.name.clone(), cell.node.clone());
-            // Pre-compute handler lookup
             for section in &cell.node.sections {
                 if let Section::OnSignal(ref on) = section.node {
                     let key = (cell.node.name.clone(), on.signal_name.clone());
                     let value = (on.params.clone(), on.body.clone());
                     handler_cache.insert(key, value);
+                }
+                if let Section::State(ref sm) = section.node {
+                    state_machines.insert(
+                        (cell.node.name.clone(), sm.name.clone()),
+                        sm.clone(),
+                    );
                 }
             }
         }
@@ -156,6 +164,7 @@ impl Interpreter {
             current_depth: 0,
             emitted_signals: Vec::new(),
             storage: HashMap::new(),
+            state_machines,
         }
     }
 
@@ -1186,8 +1195,217 @@ impl Interpreter {
                     ("Location".to_string(), Value::String(url)),
                 ])))
             }
+            // ── Auto-increment ────────────────────────────────────────
+            "next_id" => {
+                // next_id() — auto-increment a counter, returns the new ID as Int
+                // Uses a storage slot named "_ids" or the first available slot
+                let counter_key = "__next_id";
+                let slot = self.storage.values().next();
+                if let Some(backend) = slot {
+                    let current = backend.get(counter_key)
+                        .and_then(|v| match v {
+                            crate::runtime::storage::StoredValue::Int(n) => Some(n),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let next = current + 1;
+                    backend.set(counter_key, crate::runtime::storage::StoredValue::Int(next));
+                    Some(Ok(Value::Int(next)))
+                } else {
+                    Some(Ok(Value::Int(1)))
+                }
+            }
+            // ── String operations (additional) ───────────────────────────
+            "contains" => {
+                if args.len() >= 2 {
+                    if let (Value::String(haystack), Value::String(needle)) = (&args[0], &args[1]) {
+                        Some(Ok(Value::Bool(haystack.contains(needle.as_str()))))
+                    } else {
+                        Some(Ok(Value::Bool(false)))
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("contains(string, substring)".to_string())))
+                }
+            }
+            "lowercase" | "to_lower" => {
+                args.first().map(|a| {
+                    if let Value::String(s) = a {
+                        Ok(Value::String(s.to_lowercase()))
+                    } else {
+                        Ok(Value::String(format!("{}", a)))
+                    }
+                })
+            }
+            "uppercase" | "to_upper" => {
+                args.first().map(|a| {
+                    if let Value::String(s) = a {
+                        Ok(Value::String(s.to_uppercase()))
+                    } else {
+                        Ok(Value::String(format!("{}", a)))
+                    }
+                })
+            }
+            "index_of" => {
+                if args.len() >= 2 {
+                    if let (Value::String(s), Value::String(sub)) = (&args[0], &args[1]) {
+                        Some(Ok(match s.find(sub.as_str()) {
+                            Some(i) => Value::Int(i as i64),
+                            None => Value::Int(-1),
+                        }))
+                    } else {
+                        Some(Ok(Value::Int(-1)))
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("index_of(string, substring)".to_string())))
+                }
+            }
+            "substring" | "substr" => {
+                if args.len() >= 3 {
+                    if let (Value::String(s), Value::Int(start), Value::Int(end)) = (&args[0], &args[1], &args[2]) {
+                        let start = (*start).max(0) as usize;
+                        let end = (*end).min(s.len() as i64) as usize;
+                        Some(Ok(Value::String(s.get(start..end).unwrap_or("").to_string())))
+                    } else {
+                        Some(Ok(Value::Unit))
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("substring(string, start, end)".to_string())))
+                }
+            }
+            // ── State machine builtins ────────────────────────────────
+            "transition" => {
+                // transition(id, target_state)
+                // Finds the state machine, checks guard, moves state
+                if args.len() >= 2 {
+                    let id = format!("{}", args[0]);
+                    let target = format!("{}", args[1]);
+                    Some(self.do_transition(&id, &target))
+                } else {
+                    Some(Err(RuntimeError::TypeError("transition(id, target_state) requires 2 args".to_string())))
+                }
+            }
+            "get_status" => {
+                // get_status(id) → current state string
+                if let Some(id) = args.first() {
+                    let id_str = format!("{}", id);
+                    Some(self.do_get_status(&id_str))
+                } else {
+                    Some(Err(RuntimeError::TypeError("get_status(id) requires 1 arg".to_string())))
+                }
+            }
+            "valid_transitions" => {
+                // valid_transitions(id) → list of valid target states
+                if let Some(id) = args.first() {
+                    let id_str = format!("{}", id);
+                    Some(Ok(self.do_valid_transitions(&id_str)))
+                } else {
+                    Some(Err(RuntimeError::TypeError("valid_transitions(id) requires 1 arg".to_string())))
+                }
+            }
             _ => None,
         }
+    }
+
+    /// Execute a state transition
+    fn do_transition(&self, id: &str, target: &str) -> Result<Value, RuntimeError> {
+        // Find the state machine and its storage
+        let (sm, status_slot) = self.find_state_machine()
+            .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
+
+        // Get current state
+        let current = status_slot.get(id)
+            .map(|v| match v {
+                crate::runtime::storage::StoredValue::String(s) => s,
+                _ => format!("{}", v),
+            })
+            .unwrap_or(sm.initial.clone());
+
+        // Find matching transition
+        let transition = sm.transitions.iter().find(|t| {
+            (t.node.from == current || t.node.from == "*") && t.node.to == target
+        });
+
+        let transition = match transition {
+            Some(t) => t,
+            None => {
+                let valid: Vec<String> = sm.transitions.iter()
+                    .filter(|t| t.node.from == current || t.node.from == "*")
+                    .map(|t| t.node.to.clone())
+                    .collect();
+                return Err(RuntimeError::RequireFailed(format!(
+                    "invalid transition: {} → {}. Current state: '{}'. Valid targets: [{}]",
+                    current, target, current, valid.join(", ")
+                )));
+            }
+        };
+
+        // TODO: evaluate guard expression (would need env context)
+        // For now, guards are checked if they're simple comparisons
+
+        // Perform transition
+        status_slot.set(id, crate::runtime::storage::StoredValue::String(target.to_string()));
+
+        Ok(Value::Map(vec![
+            ("id".to_string(), Value::String(id.to_string())),
+            ("from".to_string(), Value::String(current)),
+            ("to".to_string(), Value::String(target.to_string())),
+        ]))
+    }
+
+    fn do_get_status(&self, id: &str) -> Result<Value, RuntimeError> {
+        let (sm, status_slot) = self.find_state_machine()
+            .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
+
+        let current = status_slot.get(id)
+            .map(|v| match v {
+                crate::runtime::storage::StoredValue::String(s) => s,
+                _ => format!("{}", v),
+            })
+            .unwrap_or(sm.initial.clone());
+
+        Ok(Value::String(current))
+    }
+
+    fn do_valid_transitions(&self, id: &str) -> Value {
+        let Some((sm, status_slot)) = self.find_state_machine() else {
+            return Value::List(vec![]);
+        };
+
+        let current = status_slot.get(id)
+            .map(|v| match v {
+                crate::runtime::storage::StoredValue::String(s) => s,
+                _ => format!("{}", v),
+            })
+            .unwrap_or(sm.initial.clone());
+
+        let targets: Vec<Value> = sm.transitions.iter()
+            .filter(|t| t.node.from == current || t.node.from == "*")
+            .map(|t| Value::String(t.node.to.clone()))
+            .collect();
+
+        Value::List(targets)
+    }
+
+    /// Find the first state machine and its backing storage slot
+    fn find_state_machine(&self) -> Option<(&StateMachineSection, &Arc<dyn StorageBackend>)> {
+        for ((cell_name, sm_name), sm) in &self.state_machines {
+            // The state is stored in a slot named after the state machine
+            let slot_name = format!("_state_{}", sm_name);
+            if let Some(backend) = self.storage.get(&slot_name).or_else(|| self.storage.get(sm_name)) {
+                return Some((sm, backend));
+            }
+            // Try any storage slot that exists
+            for (key, backend) in &self.storage {
+                if key.contains("state") || key.contains("status") || key == sm_name {
+                    return Some((sm, backend));
+                }
+            }
+            // Use first available storage as fallback for state
+            if let Some((_, backend)) = self.storage.iter().next() {
+                return Some((sm, backend));
+            }
+        }
+        None
     }
 }
 

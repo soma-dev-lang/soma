@@ -150,6 +150,17 @@ impl Parser {
                 self.advance();
                 Ok((name, span))
             }
+            // Keywords that can also be used as identifiers in certain positions
+            // Keywords that can also be used as identifiers
+            Token::State => { let span = tok.span; self.advance(); Ok(("state".to_string(), span)) }
+            Token::Type => { let span = tok.span; self.advance(); Ok(("type".to_string(), span)) }
+            Token::Effect => { let span = tok.span; self.advance(); Ok(("effect".to_string(), span)) }
+            Token::Guard => { let span = tok.span; self.advance(); Ok(("guard".to_string(), span)) }
+            Token::Initial => { let span = tok.span; self.advance(); Ok(("initial".to_string(), span)) }
+            Token::Start => { let span = tok.span; self.advance(); Ok(("start".to_string(), span)) }
+            Token::Test => { let span = tok.span; self.advance(); Ok(("test".to_string(), span)) }
+            Token::Backend => { let span = tok.span; self.advance(); Ok(("backend".to_string(), span)) }
+            Token::Builtin => { let span = tok.span; self.advance(); Ok(("builtin".to_string(), span)) }
             _ => Err(ParseError::Expected {
                 expected: "identifier".to_string(),
                 found: tok.token.clone(),
@@ -189,6 +200,15 @@ impl Parser {
             Token::Check => "check".to_string(),
             Token::Type => "type".to_string(),
             Token::Property => "property".to_string(),
+            Token::State => "state".to_string(),
+            Token::Start => "start".to_string(),
+            Token::Guard => "guard".to_string(),
+            Token::Effect => "effect".to_string(),
+            Token::Initial => "initial".to_string(),
+            Token::Test => "test".to_string(),
+            Token::Backend => "backend".to_string(),
+            Token::Builtin => "builtin".to_string(),
+            Token::Runtime => "runtime".to_string(),
             _ => {
                 return Err(ParseError::Expected {
                     expected: "name".to_string(),
@@ -317,8 +337,12 @@ impl Parser {
                 let rt = self.parse_runtime_section()?;
                 Ok(Spanned::new(Section::Runtime(rt), start.merge(self.prev_span())))
             }
+            Token::State => {
+                let sm = self.parse_state_machine()?;
+                Ok(Spanned::new(Section::State(sm), start.merge(self.prev_span())))
+            }
             _ => Err(ParseError::Expected {
-                expected: "face, memory, interior, on, rules, or runtime".to_string(),
+                expected: "face, memory, interior, on, rules, runtime, or state".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -724,6 +748,89 @@ impl Parser {
         }
     }
 
+    // ── State Machine ─────────────────────────────────────────────────
+
+    fn parse_state_machine(&mut self) -> Result<StateMachineSection, ParseError> {
+        self.expect(Token::State)?;
+        let (name, _) = self.expect_ident()?;
+        self.expect(Token::LBrace)?;
+
+        let mut initial = String::new();
+        let mut transitions = Vec::new();
+
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            // Check for `initial: state_name`
+            if self.check(&Token::Initial) {
+                self.advance();
+                self.expect(Token::Colon)?;
+                let (state_name, _) = self.expect_ident()?;
+                initial = state_name;
+                continue;
+            }
+
+            // Parse transition: from -> to { guard { ... } effect { ... } }
+            // or: * -> to { ... }
+            let start = self.peek_span();
+            let from = if self.check(&Token::Star) {
+                self.advance();
+                "*".to_string()
+            } else {
+                let (name, _) = self.expect_ident()?;
+                name
+            };
+
+            self.expect(Token::Arrow)?;
+
+            let (to, _) = self.expect_ident()?;
+
+            let mut guard = None;
+            let mut effect = Vec::new();
+
+            // Optional block with guard/effect
+            if self.check(&Token::LBrace) {
+                self.advance();
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    if self.check(&Token::Guard) {
+                        self.advance();
+                        self.expect(Token::LBrace)?;
+                        let expr = self.parse_expr()?;
+                        self.expect(Token::RBrace)?;
+                        guard = Some(expr);
+                    } else if self.check(&Token::Effect) {
+                        self.advance();
+                        self.expect(Token::LBrace)?;
+                        while !self.check(&Token::RBrace) && !self.is_at_end() {
+                            effect.push(self.parse_statement()?);
+                        }
+                        self.expect(Token::RBrace)?;
+                    } else {
+                        // Unknown token in transition block, skip
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RBrace)?;
+            }
+
+            transitions.push(Spanned::new(
+                Transition { from, to, guard, effect },
+                start.merge(self.prev_span()),
+            ));
+        }
+
+        self.expect(Token::RBrace)?;
+
+        // Default initial to first "from" state if not specified
+        if initial.is_empty() {
+            if let Some(first) = transitions.first() {
+                if first.node.from != "*" {
+                    initial = first.node.from.clone();
+                }
+            }
+        }
+
+        Ok(StateMachineSection { name, initial, transitions })
+    }
+
     // ── Interior ─────────────────────────────────────────────────────
 
     fn parse_interior_section(&mut self) -> Result<InteriorSection, ParseError> {
@@ -867,7 +974,7 @@ impl Parser {
                     start.merge(self.prev_span()),
                 ))
             }
-            Token::Ident(_) => {
+            Token::Ident(_) | Token::State | Token::Type | Token::Effect | Token::Guard | Token::Initial => {
                 // Could be: assignment, target.method(args), fn_call(args), or bare expr
                 let save_pos = self.pos;
                 let (name, name_span) = self.expect_ident()?;

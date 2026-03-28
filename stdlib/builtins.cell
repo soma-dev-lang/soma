@@ -80,6 +80,54 @@ cell builtin trim {
     rules { native "trim" }
 }
 
+cell builtin contains {
+    face {
+        promise "returns true if string contains substring"
+        signal call(s: String, sub: String) -> Bool
+    }
+    rules { native "contains" }
+}
+
+cell builtin lowercase {
+    face {
+        promise "converts string to lowercase"
+        signal call(s: String) -> String
+    }
+    rules { native "lowercase" }
+}
+
+cell builtin uppercase {
+    face {
+        promise "converts string to uppercase"
+        signal call(s: String) -> String
+    }
+    rules { native "uppercase" }
+}
+
+cell builtin index_of {
+    face {
+        promise "returns index of substring, or -1 if not found"
+        signal call(s: String, sub: String) -> Int
+    }
+    rules { native "index_of" }
+}
+
+cell builtin substring {
+    face {
+        promise "returns substring from start to end index"
+        signal call(s: String, start: Int, end: Int) -> String
+    }
+    rules { native "substring" }
+}
+
+cell builtin next_id {
+    face {
+        promise "auto-increment counter, returns next unique ID"
+        signal call() -> Int
+    }
+    rules { native "next_id" }
+}
+
 // ── JSON ─────────────────────────────────────────────────────────────
 
 cell builtin to_json {

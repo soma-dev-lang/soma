@@ -1,0 +1,106 @@
+// Order management with first-class state machine.
+// The state machine IS the business logic.
+//
+//   soma serve examples/order.cell
+//
+// API:
+//   POST /create?customer=alice      → creates order in "draft"
+//   POST /add_item/1?item=widget     → adds item to order
+//   POST /advance/1?to=submitted     → transition draft → submitted
+//   GET  /status/1                   → current state
+//   GET  /transitions/1              → valid next states
+//   GET  /list                       → all orders
+
+cell OrderSystem {
+    face {
+        signal create(customer: String) -> String
+        signal add_item(id: String, item: String) -> String
+        signal advance(id: String, to: String) -> String
+        signal status(id: String) -> String
+        signal transitions(id: String) -> String
+        signal list() -> String
+    }
+
+    memory {
+        orders: Map<String, String> [persistent, consistent]
+        items: Map<String, String> [persistent, consistent]
+        state: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    // The state machine: defines ALL valid transitions
+    state status {
+        initial: draft
+
+        draft -> submitted {
+            guard { items != "" }
+        }
+        submitted -> approved {
+            guard { role == "admin" }
+        }
+        approved -> shipped
+        shipped -> delivered
+        * -> cancelled
+    }
+
+    on create(customer: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+
+        orders.set(id_str, customer)
+        state.set(id_str, "draft")
+
+        return map("id", id, "customer", customer, "status", "draft")
+    }
+
+    on add_item(id: String, item: String) {
+        let existing = items.get(id)
+        if existing == () {
+            items.set(id, item)
+        } else {
+            items.set(id, concat(existing, concat(",", item)))
+        }
+        return map("id", id, "items", items.get(id))
+    }
+
+    on advance(id: String, to: String) {
+        let customer = orders.get(id)
+        if customer == () {
+            return response(404, map("error", "order not found"))
+        }
+
+        // Use the state machine to validate the transition
+        let result = transition(id, to)
+        return result
+    }
+
+    on status(id: String) {
+        let customer = orders.get(id)
+        if customer == () {
+            return response(404, map("error", "order not found"))
+        }
+        let st = get_status(id)
+        let order_items = items.get(id)
+        let valid = valid_transitions(id)
+        return map(
+            "id", id,
+            "customer", customer,
+            "status", st,
+            "items", order_items,
+            "valid_transitions", valid
+        )
+    }
+
+    on transitions(id: String) {
+        return valid_transitions(id)
+    }
+
+    on list() {
+        return orders.keys()
+    }
+}

@@ -53,6 +53,11 @@ pub enum Token {
     Builtin,
     Test,
     Assert,
+    // State machine
+    State,
+    Guard,
+    Effect,
+    Initial,
     Matches,
     Native,
     // Rules keywords
@@ -369,6 +374,10 @@ impl<'a> Lexer<'a> {
                     "builtin" => Token::Builtin,
                     "test" => Token::Test,
                     "assert" => Token::Assert,
+                    "state" => Token::State,
+                    "guard" => Token::Guard,
+                    "effect" => Token::Effect,
+                    "initial" => Token::Initial,
                     "matches" => Token::Matches,
                     "native" => Token::Native,
                     "rules" => Token::Rules,

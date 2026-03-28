@@ -82,6 +82,8 @@ pub enum Section {
     Rules(RulesSection),
     /// Runtime section: how this cell executes
     Runtime(RuntimeSection),
+    /// State machine section
+    State(StateMachineSection),
 }
 
 // ── Face (Contract) ──────────────────────────────────────────────────
@@ -214,6 +216,27 @@ pub enum RuntimeEntry {
     Start { cell_name: String },
     /// Arbitrary statement for scripting
     Stmt(Statement),
+}
+
+// ── State Machine ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct StateMachineSection {
+    pub name: String,
+    pub initial: String,
+    pub transitions: Vec<Spanned<Transition>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Transition {
+    /// Source state ("*" = any)
+    pub from: String,
+    /// Target state
+    pub to: String,
+    /// Guard condition (must be true for transition to proceed)
+    pub guard: Option<Spanned<Expr>>,
+    /// Effect statements (run after transition)
+    pub effect: Vec<Spanned<Statement>>,
 }
 
 // ── Interior (Children) ──────────────────────────────────────────────

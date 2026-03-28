@@ -681,6 +681,8 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
     eprintln!("soma serve v0.1.0");
     eprintln!("cell: {}", cell_name);
     eprintln!("handlers: [{}]", handler_names.join(", "));
+    eprintln!("database: {}", std::path::Path::new(".soma_data/soma.db").canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(".soma_data/soma.db")).display());
     eprintln!("listening on http://localhost:{}", port);
     eprintln!("---");
 
@@ -1015,17 +1017,17 @@ fn cmd_test(path: &PathBuf, registry: &mut Registry) {
     // Build an interpreter with all cells (so tests can call signal handlers)
     let mut interp = interpreter::Interpreter::new(&program);
 
-    // Set up storage for regular cells
+    // Set up storage for regular cells — TESTS USE IN-MEMORY ONLY
+    // This ensures tests never pollute the persistent database
     for cell in &program.cells {
         if cell.node.kind == ast::CellKind::Cell {
             for section in &cell.node.sections {
                 if let ast::Section::Memory(ref mem) = section.node {
                     let mut slots = std::collections::HashMap::new();
                     for slot in &mem.slots {
-                        let props: Vec<String> = slot.node.properties.iter()
-                            .map(|p| p.node.name().to_string()).collect();
-                        let backend = runtime::storage::resolve_backend_from_registry(
-                            &cell.node.name, &slot.node.name, &props, registry);
+                        // Force in-memory backend for test isolation
+                        let backend: std::sync::Arc<dyn runtime::storage::StorageBackend> =
+                            std::sync::Arc::new(runtime::storage::MemoryBackend::new());
                         slots.insert(slot.node.name.clone(), backend);
                     }
                     interp.set_storage(&cell.node.name, &slots);
