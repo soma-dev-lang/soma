@@ -663,10 +663,10 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
                         .collect();
                     let backend = runtime::storage::resolve_backend_from_registry(
                         &prog_cell.node.name, &slot.node.name, &props, registry);
-                    storage_slots.insert(slot.node.name.clone(), backend.clone());
-                    // Also register with cell prefix
+                    // Register with AND without prefix — both work
                     storage_slots.insert(
-                        format!("{}.{}", prog_cell.node.name, slot.node.name), backend);
+                        format!("{}.{}", prog_cell.node.name, slot.node.name), backend.clone());
+                    storage_slots.insert(slot.node.name.clone(), backend);
                 }
             }
         }

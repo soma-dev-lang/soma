@@ -13,6 +13,7 @@ cell App {
         signal do_generate(profile: String, value: String, client: String) -> String
         signal do_approve(id: String) -> String
         signal do_reject(id: String) -> String
+        signal alloc_row(a: Map<String, String>, actions: String) -> String
         signal api_profiles() -> String
         signal api_generate(data: Map<String, String>) -> String
     }
@@ -32,26 +33,56 @@ cell App {
         return html(page("404", "<div class='container'><p class='empty'>Page non trouvee</p></div>"))
     }
 
+    // ── Allocation row helper ────────────────────────────────────────
+
+    on alloc_row(a: Map<String, String>, actions: String) {
+        let aid = to_string(a.id)
+        let client = a.client
+        let profile = a.profile
+        let pv = a.portfolio_value
+        let bonds = a.bonds_pct
+        let stocks = a.stocks_pct
+        let cash = a.cash_pct
+        let alts = a.alternatives_pct
+        let st = a.status
+        return "<tr>
+            <td style='font-weight:600;color:#818cf8'>#{aid}</td>
+            <td>{client}</td>
+            <td><span class='badge badge-profile'>{profile}</span></td>
+            <td style='font-weight:600'>{pv} EUR</td>
+            <td>{bonds}%</td><td>{stocks}%</td><td>{cash}%</td><td>{alts}%</td>
+            <td><span class='badge badge-{st}'>{st}</span></td>
+            <td class='actions'>{actions}</td>
+        </tr>"
+    }
+
     // ── Pages ────────────────────────────────────────────────────────
 
     on home() {
         let profiles_html = ""
         for p in list_profiles() {
-            let bars = "<div class='bar-group'>
-                <div class='bar'><div class='bar-fill bonds' style='width:{p.bonds}%'></div><span>Obligations {p.bonds}%</span></div>
-                <div class='bar'><div class='bar-fill stocks' style='width:{p.stocks}%'></div><span>Actions {p.stocks}%</span></div>
-                <div class='bar'><div class='bar-fill cash' style='width:{p.cash}%'></div><span>Cash {p.cash}%</span></div>
-                <div class='bar'><div class='bar-fill alts' style='width:{p.alternatives}%'></div><span>Alternatifs {p.alternatives}%</span></div>
-            </div>"
             let pname = lowercase(p.name)
+            let bonds = p.bonds
+            let stocks = p.stocks
+            let cash = p.cash
+            let alts = p.alternatives
+            let desc = p.description
+            let max_pos = p.max_single_position
+            let rebal = p.rebalance_threshold
+            let name = p.name
             profiles_html += "<div class='profile-card'>
                 <div class='profile-header'>
-                    <h3>{p.name}</h3>
-                    <p class='meta'>{p.description}</p>
+                    <h3>{name}</h3>
+                    <p class='meta'>{desc}</p>
                 </div>
-                {bars}
+                <div class='bar-group'>
+                    <div class='bar'><div class='bar-fill bonds' style='width:{bonds}%'></div><span>Obligations {bonds}%</span></div>
+                    <div class='bar'><div class='bar-fill stocks' style='width:{stocks}%'></div><span>Actions {stocks}%</span></div>
+                    <div class='bar'><div class='bar-fill cash' style='width:{cash}%'></div><span>Cash {cash}%</span></div>
+                    <div class='bar'><div class='bar-fill alts' style='width:{alts}%'></div><span>Alternatifs {alts}%</span></div>
+                </div>
                 <div class='profile-footer'>
-                    <span class='meta'>Max position: {p.max_single_position}% | Seuil rebalance: {p.rebalance_threshold}%</span>
+                    <span class='meta'>Max position: {max_pos}% | Seuil: {rebal}%</span>
                     <a class='btn' hx-get='/generate_form/{pname}' hx-target='#modal' hx-swap='innerHTML'>Generer</a>
                 </div>
             </div>"
@@ -69,10 +100,12 @@ cell App {
     on generate_form(profile: String) {
         let p = get_profile(profile)
         if p == () { return html("<p>Profil inconnu</p>") }
+        let name = p.name
+        let desc = p.description
         return html("<div class='overlay' onclick='if(event.target===this)document.getElementById(\"modal\").innerHTML=\"\"'>
             <div class='modal-box'>
-                <h3>Generer: {p.name}</h3>
-                <p class='meta' style='margin-bottom:1.5rem'>{p.description}</p>
+                <h3>Generer: {name}</h3>
+                <p class='meta' style='margin-bottom:1.5rem'>{desc}</p>
                 <form hx-get='/do_generate/{profile}' hx-target='#modal' hx-swap='innerHTML'>
                     <div class='form-group'><label>Client</label><input name='client' placeholder='Nom du client' required></div>
                     <div class='form-group'><label>Valeur du portefeuille (EUR)</label><input name='value' type='number' placeholder='1000000' required></div>
@@ -87,6 +120,10 @@ cell App {
 
     on do_generate(profile: String, value: String, client: String) {
         let alloc = generate(value, profile, client)
+        let bonds = alloc.bonds_pct
+        let stocks = alloc.stocks_pct
+        let cash = alloc.cash_pct
+        let alts = alloc.alternatives_pct
         return html("<div class='overlay' onclick='window.location=\"/allocations\"'>
             <div class='modal-box' style='text-align:center'>
                 <div class='success-icon'>&#10003;</div>
@@ -94,10 +131,10 @@ cell App {
                 <p class='meta'>{client} — Profil {profile}</p>
                 <p style='font-size:2rem;font-weight:800;color:#818cf8;margin:1rem 0'>{value} EUR</p>
                 <div class='alloc-summary'>
-                    <div class='alloc-item'><span class='dot bonds'></span>Obligations {alloc.bonds_pct}%</div>
-                    <div class='alloc-item'><span class='dot stocks'></span>Actions {alloc.stocks_pct}%</div>
-                    <div class='alloc-item'><span class='dot cash'></span>Cash {alloc.cash_pct}%</div>
-                    <div class='alloc-item'><span class='dot alts'></span>Alternatifs {alloc.alternatives_pct}%</div>
+                    <div class='alloc-item'><span class='dot bonds'></span>Obligations {bonds}%</div>
+                    <div class='alloc-item'><span class='dot stocks'></span>Actions {stocks}%</div>
+                    <div class='alloc-item'><span class='dot cash'></span>Cash {cash}%</div>
+                    <div class='alloc-item'><span class='dot alts'></span>Alternatifs {alts}%</div>
                 </div>
                 <a href='/allocations' class='btn' style='width:100%;margin-top:1.5rem'>Voir les allocations</a>
             </div>
@@ -107,19 +144,12 @@ cell App {
     on allocations_page() {
         let rows = ""
         for a in list_allocations() {
+            let aid = to_string(a.id)
             let actions = ""
             if a.status == "draft" {
-                actions = "<a class='btn btn-sm btn-success' hx-post='/do_approve/{a.id}' hx-target='closest tr' hx-swap='outerHTML'>Approuver</a> <a class='btn btn-sm btn-danger' hx-post='/do_reject/{a.id}' hx-target='closest tr' hx-swap='outerHTML'>Rejeter</a>"
+                actions = "<a class='btn btn-sm btn-success' hx-post='/do_approve/{aid}' hx-target='closest tr' hx-swap='outerHTML'>Approuver</a> <a class='btn btn-sm btn-danger' hx-post='/do_reject/{aid}' hx-target='closest tr' hx-swap='outerHTML'>Rejeter</a>"
             }
-            rows += "<tr>
-                <td style='font-weight:600;color:#818cf8'>#{a.id}</td>
-                <td>{a.client}</td>
-                <td><span class='badge badge-profile'>{a.profile}</span></td>
-                <td style='font-weight:600'>{a.portfolio_value} EUR</td>
-                <td>{a.bonds_pct}%</td><td>{a.stocks_pct}%</td><td>{a.cash_pct}%</td><td>{a.alternatives_pct}%</td>
-                <td><span class='badge badge-{a.status}'>{a.status}</span></td>
-                <td class='actions'>{actions}</td>
-            </tr>"
+            rows += alloc_row(a, actions)
         }
         if rows == "" { rows = "<tr><td colspan='10' class='empty'>Aucune allocation generee</td></tr>" }
         return "<div class='container'>
@@ -135,32 +165,18 @@ cell App {
     on do_approve(id: String) {
         approve(id)
         let a = get_allocation(id)
-        return html("<tr>
-            <td style='font-weight:600;color:#818cf8'>#{a.id}</td>
-            <td>{a.client}</td><td><span class='badge badge-profile'>{a.profile}</span></td>
-            <td style='font-weight:600'>{a.portfolio_value} EUR</td>
-            <td>{a.bonds_pct}%</td><td>{a.stocks_pct}%</td><td>{a.cash_pct}%</td><td>{a.alternatives_pct}%</td>
-            <td><span class='badge badge-approved'>approved</span></td><td></td>
-        </tr>")
+        return html(alloc_row(a, ""))
     }
 
     on do_reject(id: String) {
         reject(id)
         let a = get_allocation(id)
-        return html("<tr>
-            <td style='font-weight:600;color:#818cf8'>#{a.id}</td>
-            <td>{a.client}</td><td><span class='badge badge-profile'>{a.profile}</span></td>
-            <td style='font-weight:600'>{a.portfolio_value} EUR</td>
-            <td>{a.bonds_pct}%</td><td>{a.stocks_pct}%</td><td>{a.cash_pct}%</td><td>{a.alternatives_pct}%</td>
-            <td><span class='badge badge-cancelled'>cancelled</span></td><td></td>
-        </tr>")
+        return html(alloc_row(a, ""))
     }
 
     // ── JSON API ─────────────────────────────────────────────────────
 
-    on api_profiles() {
-        return list_profiles()
-    }
+    on api_profiles() { return list_profiles() }
 
     on api_generate(data: Map<String, String>) {
         return generate(data.value, data.profile, data.client)
@@ -189,8 +205,7 @@ cell App {
             .profiles-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1.5rem}
             .profile-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;transition:all .3s}
             .profile-card:hover{transform:translateY(-4px);box-shadow:0 20px 60px rgba(99,102,241,.15);border-color:rgba(99,102,241,.3)}
-            .profile-header{padding:1.5rem 1.5rem .75rem}
-            .profile-header h3{font-size:1.125rem;font-weight:700}
+            .profile-header{padding:1.5rem 1.5rem .75rem}.profile-header h3{font-size:1.125rem;font-weight:700}
             .profile-footer{padding:.75rem 1.5rem 1.5rem;display:flex;justify-content:space-between;align-items:center}
             .meta{color:var(--dim);font-size:.8125rem}
             .bar-group{padding:0 1.5rem}
