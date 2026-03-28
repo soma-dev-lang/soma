@@ -1,0 +1,78 @@
+// Tech Hiring Pipeline
+// Candidates → Screen → Score → Rank → Match to roles
+//
+//   soma run examples/hiring.cell run
+
+cell Hiring {
+    on run() {
+        // ── Universe: candidate pool ─────────────────────────────────
+        let candidates = list(
+            map("name", "Alice Chen", "role", "Backend", "yoe", 7, "lang", "Rust", "algo", 92, "system", 88, "collab", 85, "salary", 140),
+            map("name", "Bob Martin", "role", "Backend", "yoe", 3, "lang", "Go", "algo", 78, "system", 72, "collab", 90, "salary", 95),
+            map("name", "Clara Dev", "role", "Frontend", "yoe", 5, "lang", "TypeScript", "algo", 70, "system", 60, "collab", 95, "salary", 115),
+            map("name", "David Kim", "role", "Backend", "yoe", 10, "lang", "Java", "algo", 85, "system", 95, "collab", 70, "salary", 175),
+            map("name", "Eva Ruiz", "role", "ML", "yoe", 4, "lang", "Python", "algo", 95, "system", 65, "collab", 88, "salary", 130),
+            map("name", "Frank Li", "role", "Backend", "yoe", 1, "lang", "Rust", "algo", 88, "system", 55, "collab", 92, "salary", 75),
+            map("name", "Grace Wu", "role", "Frontend", "yoe", 8, "lang", "TypeScript", "algo", 65, "system", 70, "collab", 98, "salary", 145),
+            map("name", "Hugo Blanc", "role", "DevOps", "yoe", 6, "lang", "Go", "algo", 60, "system", 92, "collab", 80, "salary", 125),
+            map("name", "Iris Nakamura", "role", "ML", "yoe", 2, "lang", "Python", "algo", 90, "system", 58, "collab", 75, "salary", 100),
+            map("name", "Jules Petit", "role", "Backend", "yoe", 15, "lang", "C++", "algo", 98, "system", 99, "collab", 55, "salary", 200),
+            map("name", "Kira Osei", "role", "Frontend", "yoe", 3, "lang", "React", "algo", 72, "system", 50, "collab", 93, "salary", 90),
+            map("name", "Leo Markov", "role", "DevOps", "yoe", 9, "lang", "Python", "algo", 55, "system", 96, "collab", 82, "salary", 155)
+        )
+
+        // ── Open positions ───────────────────────────────────────────
+        let roles = list(
+            map("title", "Senior Backend Engineer", "role", "Backend", "min_yoe", 5, "min_algo", 80, "budget", 160),
+            map("title", "ML Engineer", "role", "ML", "min_yoe", 2, "min_algo", 85, "budget", 140),
+            map("title", "Frontend Lead", "role", "Frontend", "min_yoe", 5, "min_algo", 60, "budget", 150)
+        )
+
+        // ── Pipeline per role ────────────────────────────────────────
+        let results = ""
+        for role in roles {
+            let title = role.title
+            let min_yoe = role.min_yoe
+            let min_algo = role.min_algo
+            let budget = role.budget
+            let target_role = role.role
+
+            // Screen → Score → Rank → Top 3
+            let shortlist = candidates
+                |> filter_by("role", "=", target_role)
+                |> filter_by("yoe", ">=", min_yoe)
+                |> filter_by("algo", ">=", min_algo)
+                |> filter_by("salary", "<=", budget)
+                |> sort_by("algo", "desc")
+                |> top(3)
+
+            let count = shortlist.length
+            let names = shortlist |> pluck("name")
+            let avg_algo = shortlist |> avg_by("algo")
+            let avg_salary = shortlist |> avg_by("salary")
+
+            results += "\n  {title}:"
+            results += "\n    candidates: {count}"
+            results += "\n    shortlist: {names}"
+            results += "\n    avg algo score: {avg_algo}"
+            results += "\n    avg salary: {avg_salary}k"
+        }
+
+        // ── Analytics ────────────────────────────────────────────────
+        let top_algo = candidates |> sort_by("algo", "desc") |> top(3) |> pluck("name")
+        let top_collab = candidates |> sort_by("collab", "desc") |> top(3) |> pluck("name")
+        let avg_salary = candidates |> avg_by("salary")
+        let total = candidates.length
+        let role_names = candidates |> pluck("role")
+        let lang_names = candidates |> pluck("lang")
+
+        return "Hiring Pipeline Results
+========================
+Pool: {total} candidates
+Avg salary: {avg_salary}k
+Top algo: {top_algo}
+Top collab: {top_collab}
+{results}
+"
+    }
+}
