@@ -87,6 +87,14 @@ impl ProviderResolver {
 
         // Instantiate the native backend
         let native = backend.native.as_deref().unwrap_or(&backend.name);
+
+        // If native = "http", use the URL from config
+        let native = if native == "http" {
+            self.config.config.get("url").map(|s| s.as_str()).unwrap_or("http://localhost:9100")
+        } else {
+            native
+        };
+
         Ok(instantiate(native, &request.cell_name, &request.field_name))
     }
 

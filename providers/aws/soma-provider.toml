@@ -1,0 +1,21 @@
+[provider]
+name = "aws"
+version = "0.1.0"
+description = "AWS DynamoDB storage provider for Soma"
+
+[provider.auth]
+env = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION"]
+
+[[backend]]
+name = "dynamodb"
+description = "DynamoDB with strong consistency"
+requires = ["persistent", "consistent"]
+optional = ["encrypted", "ttl"]
+native = "http"
+
+[[backend]]
+name = "dynamodb-default"
+description = "DynamoDB for any persistent storage"
+requires = ["persistent"]
+optional = ["consistent", "encrypted", "ttl", "retain", "immutable"]
+native = "http"
