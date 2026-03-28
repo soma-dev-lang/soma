@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::ast::*;
 use crate::interpreter::{self, Value};
-use storage::{StorageBackend, StoredValue, resolve_backend};
+use storage::{StorageBackend, resolve_backend};
 
 /// A live cell instance with its state and handlers
 #[derive(Clone)]

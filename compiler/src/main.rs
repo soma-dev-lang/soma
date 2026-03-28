@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports, unused_variables)]
+
 mod ast;
 mod checker;
 mod codegen;
@@ -1319,7 +1321,7 @@ fn cmd_install() {
     println!("installing {} dependencies...", manifest.dependencies.len());
 
     // Resolve dependencies into .soma_env/packages/
-    let env_packages = cwd.join(".soma_env").join("packages");
+    let _env_packages = cwd.join(".soma_env").join("packages");
     // Temporarily override cache dir to use env packages
     let installed = pkg::resolve_and_install(&cwd.join(".soma_env"), &manifest, &mut lock)
         .unwrap_or_else(|e| {

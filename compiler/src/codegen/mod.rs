@@ -254,7 +254,7 @@ impl CodeGen {
             Constraint::Comparison { left, op, right } => {
                 format!("{:?} {} {:?}", left.node, op, right.node)
             }
-            Constraint::Predicate { name, args } => {
+            Constraint::Predicate { name, args: _ } => {
                 format!("{}(..)", name)
             }
             Constraint::And(a, b) => {

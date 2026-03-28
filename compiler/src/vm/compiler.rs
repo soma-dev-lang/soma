@@ -338,7 +338,7 @@ impl BytecodeCompiler {
                 self.compile_constraint(chunk, &inner.node);
                 chunk.emit(Op::Not);
             }
-            Constraint::Predicate { name, .. } => {
+            Constraint::Predicate { name: _, .. } => {
                 chunk.emit(Op::True); // Unknown predicates pass
             }
             Constraint::Descriptive(_) => {

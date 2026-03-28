@@ -61,11 +61,12 @@ else
     echo "  → no pre-built binary found, building from source..."
     echo ""
 
-    # Check dependencies
+    # Check dependencies — auto-install Rust if missing
     if ! command -v cargo > /dev/null 2>&1; then
-        echo "  ✗ cargo not found. Install Rust first:"
-        echo "    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-        exit 1
+        echo "  → Rust not found, installing..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
+        . "$HOME/.cargo/env"
+        echo "  ✓ Rust installed"
     fi
 
     if ! command -v git > /dev/null 2>&1; then

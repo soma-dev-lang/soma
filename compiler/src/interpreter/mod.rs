@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::ast::*;
 use crate::runtime::storage::{StorageBackend, StoredValue};
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero, One};
+use num_traits::{ToPrimitive, Zero};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -769,7 +769,7 @@ impl Interpreter {
                 let result = self.eval_cmpop(&l, *op, &r).map_err(ExecError::Runtime)?;
                 result.as_bool().map_err(ExecError::Runtime)
             }
-            Constraint::Predicate { name, args } => {
+            Constraint::Predicate { name, args: _ } => {
                 // Evaluate as a boolean expression
                 if let Some(val) = env.get(name) {
                     return val.as_bool().map_err(ExecError::Runtime);
@@ -1553,7 +1553,7 @@ impl Interpreter {
                 }
             }
             // ── JOIN operations ───────────────────────────────────────
-            "join" | "inner_join" => {
+            "inner_join" => {
                 // join(left, right, key) → inner join on key field
                 if args.len() >= 3 {
                     if let (Value::List(left), Value::List(right)) = (&args[0], &args[1]) {
@@ -1859,7 +1859,7 @@ impl Interpreter {
             (t.node.from == current || t.node.from == "*") && t.node.to == target
         });
 
-        let transition = match transition {
+        let _transition = match transition {
             Some(t) => t,
             None => {
                 let valid: Vec<String> = sm.transitions.iter()
@@ -1922,7 +1922,7 @@ impl Interpreter {
 
     /// Find the first state machine and its backing storage slot
     fn find_state_machine(&self) -> Option<(&StateMachineSection, &Arc<dyn StorageBackend>)> {
-        for ((cell_name, sm_name), sm) in &self.state_machines {
+        for ((_cell_name, sm_name), sm) in &self.state_machines {
             // The state is stored in a slot named after the state machine
             let slot_name = format!("_state_{}", sm_name);
             if let Some(backend) = self.storage.get(&slot_name).or_else(|| self.storage.get(sm_name)) {

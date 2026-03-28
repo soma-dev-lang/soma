@@ -58,7 +58,7 @@ impl VM {
         }
     }
 
-    pub fn set_storage(&mut self, name: &str, slots: &HashMap<String, Arc<dyn StorageBackend>>) {
+    pub fn set_storage(&mut self, _name: &str, slots: &HashMap<String, Arc<dyn StorageBackend>>) {
         for (slot_name, backend) in slots {
             self.storage.insert(slot_name.clone(), backend.clone());
         }

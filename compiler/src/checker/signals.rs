@@ -51,7 +51,7 @@ impl SignalChecker {
         // Check for duplicate cell names
         let mut cell_names: HashMap<String, Span> = HashMap::new();
         for cell in cells {
-            if let Some(prev_span) = cell_names.get(&cell.node.name) {
+            if let Some(_prev_span) = cell_names.get(&cell.node.name) {
                 self.errors.push(CheckError::DuplicateCellName {
                     name: cell.node.name.clone(),
                     span: cell.span,

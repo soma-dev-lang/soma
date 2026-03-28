@@ -1,9 +1,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::fs;
 
-use super::bytecode::{Chunk, Constant, Op};
+use super::bytecode::{Chunk, Constant};
 
 const CACHE_DIR: &str = ".soma_cache";
 const MAGIC: &[u8; 4] = b"SOMA";
