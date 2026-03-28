@@ -84,6 +84,14 @@ pub enum Section {
     Runtime(RuntimeSection),
     /// State machine section
     State(StateMachineSection),
+    /// Scheduled execution: every 30s { ... }
+    Every(EverySection),
+}
+
+#[derive(Debug, Clone)]
+pub struct EverySection {
+    pub interval_ms: u64,
+    pub body: Vec<Spanned<Statement>>,
 }
 
 // ── Face (Contract) ──────────────────────────────────────────────────

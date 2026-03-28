@@ -341,8 +341,12 @@ impl Parser {
                 let sm = self.parse_state_machine()?;
                 Ok(Spanned::new(Section::State(sm), start.merge(self.prev_span())))
             }
+            Token::Every => {
+                let ev = self.parse_every_section()?;
+                Ok(Spanned::new(Section::Every(ev), start.merge(self.prev_span())))
+            }
             _ => Err(ParseError::Expected {
-                expected: "face, memory, interior, on, rules, runtime, or state".to_string(),
+                expected: "face, memory, interior, on, rules, runtime, state, or every".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -829,6 +833,48 @@ impl Parser {
         }
 
         Ok(StateMachineSection { name, initial, transitions })
+    }
+
+    // ── Every (scheduler) ─────────────────────────────────────────────
+
+    fn parse_every_section(&mut self) -> Result<EverySection, ParseError> {
+        self.expect(Token::Every)?;
+        // Parse interval: 30s, 5min, 1h, 500ms, or bare number (seconds)
+        let tok = &self.tokens[self.pos].clone();
+        let interval_ms = match &tok.token {
+            Token::DurationLit(val, unit) => {
+                self.advance();
+                let multiplier = match unit {
+                    crate::lexer::DurationUnitTok::Ms => 1.0,
+                    crate::lexer::DurationUnitTok::S => 1000.0,
+                    crate::lexer::DurationUnitTok::Min => 60_000.0,
+                    crate::lexer::DurationUnitTok::H => 3_600_000.0,
+                    crate::lexer::DurationUnitTok::D => 86_400_000.0,
+                    crate::lexer::DurationUnitTok::Years => 365.25 * 86_400_000.0,
+                };
+                (val * multiplier) as u64
+            }
+            Token::IntLit(n) => {
+                self.advance();
+                (*n as u64) * 1000 // bare number = seconds
+            }
+            _ => {
+                return Err(ParseError::Expected {
+                    expected: "interval (e.g., 30s, 5min, 1h)".to_string(),
+                    found: tok.token.clone(),
+                    span: tok.span,
+                });
+            }
+        };
+
+        self.expect(Token::LBrace)?;
+        let mut body = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            body.push(self.parse_statement()?);
+        }
+        self.expect(Token::RBrace)?;
+
+        Ok(EverySection { interval_ms, body })
     }
 
     // ── Interior ─────────────────────────────────────────────────────

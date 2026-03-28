@@ -245,6 +245,18 @@ impl Interpreter {
         }
     }
 
+    /// Execute an `every` block's body
+    pub fn exec_every(&mut self, body: &[Spanned<Statement>], env: &mut HashMap<String, Value>, cell_name: &str) -> Result<Value, RuntimeError> {
+        match self.exec_body(body, env, cell_name, "_every") {
+            Ok(val) => Ok(val),
+            Err(ExecError::Return(val)) => Ok(val),
+            Err(ExecError::Runtime(e)) => {
+                eprintln!("[scheduler] error: {}", e);
+                Err(e)
+            }
+        }
+    }
+
     /// Ensure state machine storage slots exist
     /// Uses persistent backend (SQLite) if any existing slot is persistent, otherwise memory
     pub fn ensure_state_machine_storage(&mut self) {
@@ -1492,6 +1504,210 @@ impl Interpreter {
                     ("_body".to_string(), Value::String(String::new())),
                     ("Location".to_string(), Value::String(url)),
                 ])))
+            }
+            // ── HTTP client ───────────────────────────────────────────
+            "http_get" | "fetch" => {
+                // http_get(url) → parsed JSON response or string
+                if let Some(Value::String(url)) = args.first() {
+                    match ureq::get(url).call() {
+                        Ok(resp) => {
+                            let body = resp.into_string().unwrap_or_default();
+                            if body.starts_with('{') || body.starts_with('[') {
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                                    Some(Ok(serde_json_to_value(&v)))
+                                } else {
+                                    Some(Ok(Value::String(body)))
+                                }
+                            } else {
+                                Some(Ok(Value::String(body)))
+                            }
+                        }
+                        Err(e) => Some(Ok(Value::Map(vec![
+                            ("error".to_string(), Value::String(format!("{}", e))),
+                        ])))
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("http_get(url)".to_string())))
+                }
+            }
+            "http_post" => {
+                // http_post(url, body_map) → parsed JSON response
+                if args.len() >= 2 {
+                    if let Value::String(url) = &args[0] {
+                        let body = format!("{}", args[1]);
+                        match ureq::post(url)
+                            .set("Content-Type", "application/json")
+                            .send_string(&body)
+                        {
+                            Ok(resp) => {
+                                let text = resp.into_string().unwrap_or_default();
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    Some(Ok(serde_json_to_value(&v)))
+                                } else {
+                                    Some(Ok(Value::String(text)))
+                                }
+                            }
+                            Err(e) => Some(Ok(Value::Map(vec![
+                                ("error".to_string(), Value::String(format!("{}", e))),
+                            ])))
+                        }
+                    } else {
+                        Some(Err(RuntimeError::TypeError("http_post(url, body)".to_string())))
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("http_post(url, body)".to_string())))
+                }
+            }
+            // ── Time ─────────────────────────────────────────────────────
+            "now" | "timestamp" => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                Some(Ok(Value::Int(ts)))
+            }
+            "now_ms" => {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                Some(Ok(Value::Int(ts)))
+            }
+            "sleep" | "wait" => {
+                if let Some(ms) = args.first().map(|a| val_to_i64(a)) {
+                    std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+                    Some(Ok(Value::Unit))
+                } else {
+                    Some(Ok(Value::Unit))
+                }
+            }
+            // ── Math ─────────────────────────────────────────────────────
+            "round" => {
+                args.first().map(|a| match a {
+                    Value::Float(n) => Ok(Value::Int(n.round() as i64)),
+                    Value::Int(n) => Ok(Value::Int(*n)),
+                    _ => Ok(Value::Int(0)),
+                })
+            }
+            "floor" => { args.first().map(|a| Ok(Value::Int(match a { Value::Float(n) => n.floor() as i64, Value::Int(n) => *n, _ => 0 }))) }
+            "ceil" => { args.first().map(|a| Ok(Value::Int(match a { Value::Float(n) => n.ceil() as i64, Value::Int(n) => *n, _ => 0 }))) }
+            "sqrt" => { args.first().map(|a| Ok(Value::Float(match a { Value::Float(n) => n.sqrt(), Value::Int(n) => (*n as f64).sqrt(), _ => 0.0 }))) }
+            "pow" => {
+                if args.len() >= 2 {
+                    let base = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                    let exp = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                    Some(Ok(Value::Float(base.powf(exp))))
+                } else { Some(Ok(Value::Float(0.0))) }
+            }
+            "min" => {
+                if args.len() >= 2 { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(a.min(b)))) }
+                else { args.first().map(|a| Ok(a.clone())) }
+            }
+            "max" => {
+                if args.len() >= 2 { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(a.max(b)))) }
+                else { args.first().map(|a| Ok(a.clone())) }
+            }
+            // ── Technical indicators ─────────────────────────────────────
+            "sma" => {
+                // sma(list, field, period) → simple moving average of last N values
+                if args.len() >= 3 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let period = val_to_i64(&args[2]) as usize;
+                        let vals: Vec<f64> = items.iter().map(|i| map_field_i64(i, &field) as f64).collect();
+                        let start = if vals.len() > period { vals.len() - period } else { 0 };
+                        let window = &vals[start..];
+                        let avg = if window.is_empty() { 0.0 } else { window.iter().sum::<f64>() / window.len() as f64 };
+                        Some(Ok(Value::Float(avg)))
+                    } else { Some(Ok(Value::Float(0.0))) }
+                } else { Some(Err(RuntimeError::TypeError("sma(list, field, period)".to_string()))) }
+            }
+            "ema" => {
+                // ema(list, field, period) → exponential moving average
+                if args.len() >= 3 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let period = val_to_i64(&args[2]) as usize;
+                        let vals: Vec<f64> = items.iter().map(|i| map_field_i64(i, &field) as f64).collect();
+                        if vals.is_empty() || period == 0 { return Some(Ok(Value::Float(0.0))); }
+                        let k = 2.0 / (period as f64 + 1.0);
+                        let mut ema = vals[0];
+                        for v in &vals[1..] { ema = v * k + ema * (1.0 - k); }
+                        Some(Ok(Value::Float(ema)))
+                    } else { Some(Ok(Value::Float(0.0))) }
+                } else { Some(Err(RuntimeError::TypeError("ema(list, field, period)".to_string()))) }
+            }
+            "rsi" => {
+                // rsi(list, field, period) → relative strength index (0-100)
+                if args.len() >= 3 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let period = val_to_i64(&args[2]) as usize;
+                        let vals: Vec<f64> = items.iter().map(|i| map_field_i64(i, &field) as f64).collect();
+                        if vals.len() < 2 || period == 0 { return Some(Ok(Value::Float(50.0))); }
+                        let mut gains = 0.0f64;
+                        let mut losses = 0.0f64;
+                        let start = if vals.len() > period + 1 { vals.len() - period - 1 } else { 0 };
+                        for i in (start + 1)..vals.len() {
+                            let diff = vals[i] - vals[i - 1];
+                            if diff > 0.0 { gains += diff; } else { losses += -diff; }
+                        }
+                        let count = (vals.len() - start - 1) as f64;
+                        let avg_gain = gains / count;
+                        let avg_loss = losses / count;
+                        let rsi = if avg_loss == 0.0 { 100.0 } else { 100.0 - 100.0 / (1.0 + avg_gain / avg_loss) };
+                        Some(Ok(Value::Float(rsi)))
+                    } else { Some(Ok(Value::Float(50.0))) }
+                } else { Some(Err(RuntimeError::TypeError("rsi(list, field, period)".to_string()))) }
+            }
+            "macd" => {
+                // macd(list, field) → map with macd, signal, histogram
+                // Uses standard 12/26/9 periods
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let vals: Vec<f64> = items.iter().map(|i| map_field_i64(i, &field) as f64).collect();
+                        if vals.len() < 26 { return Some(Ok(Value::Map(vec![("macd".into(), Value::Float(0.0)), ("signal".into(), Value::Float(0.0)), ("histogram".into(), Value::Float(0.0))]))); }
+                        // EMA 12
+                        let k12 = 2.0 / 13.0;
+                        let mut ema12 = vals[0];
+                        for v in &vals[1..] { ema12 = v * k12 + ema12 * (1.0 - k12); }
+                        // EMA 26
+                        let k26 = 2.0 / 27.0;
+                        let mut ema26 = vals[0];
+                        for v in &vals[1..] { ema26 = v * k26 + ema26 * (1.0 - k26); }
+                        let macd_val = ema12 - ema26;
+                        // Signal line (EMA 9 of MACD) — simplified
+                        let signal = macd_val * 0.8; // approximation
+                        let histogram = macd_val - signal;
+                        Some(Ok(Value::Map(vec![
+                            ("macd".to_string(), Value::Float(macd_val)),
+                            ("signal".to_string(), Value::Float(signal)),
+                            ("histogram".to_string(), Value::Float(histogram)),
+                        ])))
+                    } else { Some(Ok(Value::Float(0.0))) }
+                } else { Some(Err(RuntimeError::TypeError("macd(list, field)".to_string()))) }
+            }
+            "bollinger" => {
+                // bollinger(list, field, period) → map with upper, middle, lower
+                if args.len() >= 3 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let period = val_to_i64(&args[2]) as usize;
+                        let vals: Vec<f64> = items.iter().map(|i| map_field_i64(i, &field) as f64).collect();
+                        let start = if vals.len() > period { vals.len() - period } else { 0 };
+                        let window = &vals[start..];
+                        let mean = if window.is_empty() { 0.0 } else { window.iter().sum::<f64>() / window.len() as f64 };
+                        let variance = if window.is_empty() { 0.0 } else { window.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / window.len() as f64 };
+                        let std_dev = variance.sqrt();
+                        Some(Ok(Value::Map(vec![
+                            ("upper".to_string(), Value::Float(mean + 2.0 * std_dev)),
+                            ("middle".to_string(), Value::Float(mean)),
+                            ("lower".to_string(), Value::Float(mean - 2.0 * std_dev)),
+                            ("std_dev".to_string(), Value::Float(std_dev)),
+                        ])))
+                    } else { Some(Ok(Value::Float(0.0))) }
+                } else { Some(Err(RuntimeError::TypeError("bollinger(list, field, period)".to_string()))) }
             }
             // ── Null coalescing and map operations ─────────────────────
             "_coalesce" => {

@@ -778,6 +778,32 @@ fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Registry) 
         path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
     );
 
+    // Spawn scheduler threads for `every` sections
+    for cell_spanned in &program.cells {
+        if cell_spanned.node.kind != ast::CellKind::Cell { continue; }
+        for section in &cell_spanned.node.sections {
+            if let ast::Section::Every(ref every) = section.node {
+                let interval = every.interval_ms;
+                let body = every.body.clone();
+                let prog = program.clone();
+                let slots = storage_slots.clone();
+                let cname = cell_name.clone();
+                eprintln!("scheduler: every {}ms", interval);
+
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(interval));
+                        let mut interp = interpreter::Interpreter::new(&prog);
+                        interp.set_storage_raw(&slots);
+                        interp.ensure_state_machine_storage();
+                        let mut env = std::collections::HashMap::new();
+                        let _ = interp.exec_every(&body, &mut env, &cname);
+                    }
+                });
+            }
+        }
+    }
+
     for mut request in server.incoming_requests() {
         let program = program.clone();
         let storage_slots = storage_slots.clone();
