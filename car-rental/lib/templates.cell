@@ -5,12 +5,16 @@ cell Templates {
         return "<div class='card'>
             <img src='{car.image}' alt='{car.brand} {car.model}'>
             <div class='card-body'>
-                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem'>
-                    <h3>{car.brand} {car.model}</h3>{badge}
-                </div>
-                <p class='meta'>{car.year}</p>
                 <div style='display:flex;justify-content:space-between;align-items:center'>
-                    <div class='price'>{car.price}EUR <span>/jour</span></div>{btn}
+                    <div>
+                        <h3>{car.brand} {car.model}</h3>
+                        <p class='meta'>{car.year}</p>
+                    </div>
+                    {badge}
+                </div>
+                <div class='price-row'>
+                    <div class='price'>{car.price}<span>EUR/jour</span></div>
+                    {btn}
                 </div>
             </div>
         </div>"
@@ -18,38 +22,38 @@ cell Templates {
 
     on booking_row(b: Map<String, String>, car_name: String, actions: String) {
         return "<tr>
-            <td>#{b.id}</td>
+            <td style='font-weight:600;color:#818cf8'>#{b.id}</td>
             <td>{car_name}</td>
             <td>{b.customer}</td>
             <td>{b.start_date}</td>
             <td>{b.end_date}</td>
-            <td>{b.total}EUR</td>
+            <td style='font-weight:600'>{b.total}EUR</td>
             <td><span class='badge badge-{b.status}'>{b.status}</span></td>
             <td class='actions'>{actions}</td>
         </tr>"
     }
 
     on modal(content: String) {
-        return "<div style='position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100' onclick='if(event.target===this)document.getElementById(\"modal\").innerHTML=\"\"'>
+        return "<div style='position:fixed;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:100' onclick='if(event.target===this)document.getElementById(\"modal\").innerHTML=\"\"'>
             <div class='booking-form' onclick='event.stopPropagation()'>{content}</div>
         </div>"
     }
 
     on success_modal(content: String) {
-        return "<div style='position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100' onclick='window.location=\"/\"'>
+        return "<div style='position:fixed;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:100' onclick='window.location=\"/\"'>
             <div class='booking-form' style='text-align:center'>
-                <div style='font-size:3rem;margin-bottom:1rem'>&#10003;</div>
+                <div style='width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;font-size:1.75rem;color:white'>&#10003;</div>
                 {content}
-                <a href='/' class='btn' style='margin-top:1rem'>Retour aux vehicules</a>
+                <a href='/' class='btn' style='margin-top:1.5rem;width:100%'>Retour aux vehicules</a>
             </div>
         </div>"
     }
 
     on confirm_btn(id: String) {
-        return "<a class='btn btn-sm btn-success' hx-post='/confirm/{id}' hx-target='closest tr' hx-swap='outerHTML'>Confirmer</a>"
+        return "<a class='btn btn-sm btn-success' hx-post='/confirm/{id}' hx-target='closest tr' hx-swap='outerHTML swap:150ms'>Confirmer</a>"
     }
 
     on cancel_btn(id: String) {
-        return "<a class='btn btn-sm btn-danger' hx-post='/cancel/{id}' hx-target='closest tr' hx-swap='outerHTML'>Annuler</a>"
+        return "<a class='btn btn-sm btn-danger' hx-post='/cancel/{id}' hx-target='closest tr' hx-swap='outerHTML swap:150ms'>Annuler</a>"
     }
 }

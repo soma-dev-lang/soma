@@ -21,8 +21,6 @@ cell App {
         config: Map<String, String> [persistent, consistent]
     }
 
-    // ── Router ───────────────────────────────────────────────────────
-
     on request(method: String, path: String, body: String) {
         if config.get("seeded") == () {
             seed()
@@ -30,10 +28,8 @@ cell App {
         }
         if path == "/" { return html(layout("Vehicules", cars_html())) }
         if path == "/bookings" { return html(layout("Reservations", bookings_html())) }
-        return html(layout("404", "<div class='container empty'><h2>Page non trouvee</h2><a href='/' class='btn'>Retour</a></div>"))
+        return html(layout("404", "<div class='container empty' style='padding:6rem 2rem'><h2 style='font-size:4rem;font-weight:900;color:var(--dim)'>404</h2><p style='color:var(--dim);margin:1rem 0'>Page non trouvee</p><a href='/' class='btn'>Retour</a></div>"))
     }
-
-    // ── Pages ────────────────────────────────────────────────────────
 
     on cars_html() {
         let cards = ""
@@ -47,8 +43,12 @@ cell App {
             cards += car_card(car, badge, btn)
         }
         return "<div class='container'>
-            <div class='hero'><h1>Location de Vehicules</h1><p>Trouvez la voiture parfaite</p></div>
-            <div class='grid'>{cards}</div><div id='modal'></div>
+            <div class='hero'>
+                <h1>Location de Vehicules</h1>
+                <p>Trouvez la voiture parfaite pour votre prochain voyage</p>
+            </div>
+            <div class='grid'>{cards}</div>
+            <div id='modal'></div>
         </div>"
     }
 
@@ -56,14 +56,16 @@ cell App {
         let car = get_car(car_id)
         if car == () { return html("<p>Vehicule non trouve</p>") }
         return html(modal(
-            "<h3 style='margin-bottom:1rem'>Reserver: {car.brand} {car.model}</h3>
-            <p class='meta' style='margin-bottom:1rem'>{car.price}EUR / jour</p>
+            "<h3 style='margin-bottom:.25rem;font-size:1.25rem'>Reserver</h3>
+            <p style='color:var(--muted);margin-bottom:1.5rem'>{car.brand} {car.model} — <span style='color:#818cf8;font-weight:700'>{car.price}EUR</span>/jour</p>
             <form hx-get='/book/{car_id}' hx-target='#modal' hx-swap='innerHTML'>
-                <div class='form-group'><label>Votre nom</label><input name='customer' placeholder='Jean Dupont' required></div>
-                <div class='form-group'><label>Date de debut</label><input name='start_date' type='date' required></div>
-                <div class='form-group'><label>Date de fin</label><input name='end_date' type='date' required></div>
-                <div style='display:flex;gap:.75rem;margin-top:1.25rem'>
-                    <button type='submit' class='btn' style='flex:1'>Confirmer</button>
+                <div class='form-group'><label>Nom complet</label><input name='customer' placeholder='Jean Dupont' required></div>
+                <div style='display:grid;grid-template-columns:1fr 1fr;gap:1rem'>
+                    <div class='form-group'><label>Debut</label><input name='start_date' type='date' required></div>
+                    <div class='form-group'><label>Fin</label><input name='end_date' type='date' required></div>
+                </div>
+                <div style='display:flex;gap:.75rem;margin-top:.5rem'>
+                    <button type='submit' class='btn' style='flex:1'>Confirmer la reservation</button>
                     <button type='button' class='btn btn-danger' onclick='document.getElementById(\"modal\").innerHTML=\"\"'>Annuler</button>
                 </div>
             </form>"
@@ -76,14 +78,12 @@ cell App {
         create_booking(car_id, customer, start_date, end_date, to_string(car.price))
         set_available(car_id, "false")
         return html(success_modal(
-            "<h3 style='color:#22c55e;margin-bottom:.5rem'>Reservation confirmee!</h3>
-            <p class='meta'>{car.brand} {car.model} pour {customer}</p>
-            <p class='meta'>{start_date} au {end_date}</p>
-            <p class='price' style='margin:1rem 0'>{car.price}EUR/jour</p>"
+            "<h3 style='font-size:1.25rem;margin-bottom:.5rem'>Reservation confirmee!</h3>
+            <p style='color:var(--muted)'>{car.brand} {car.model}</p>
+            <p style='color:var(--muted);font-size:.875rem'>{customer} — {start_date} au {end_date}</p>
+            <p style='font-size:2rem;font-weight:800;color:#818cf8;margin:1rem 0'>{car.price}<span style='font-size:1rem;color:var(--dim)'>EUR/jour</span></p>"
         ))
     }
-
-    // ── Bookings ─────────────────────────────────────────────────────
 
     on bookings_html() {
         let rows = ""
@@ -96,10 +96,18 @@ cell App {
             if b.status == "confirmed" { actions = cancel_btn(to_string(b.id)) }
             rows += booking_row(b, car_name, actions)
         }
-        if rows == "" { rows = "<tr><td colspan='8' class='empty'>Aucune reservation</td></tr>" }
-        return "<div class='container'><h2>Reservations</h2>
-            <table><thead><tr><th>#</th><th>Vehicule</th><th>Client</th><th>Debut</th><th>Fin</th><th>Prix</th><th>Statut</th><th>Actions</th></tr></thead>
-            <tbody>{rows}</tbody></table></div>"
+        if rows == "" { rows = "<tr><td colspan='8' class='empty'>Aucune reservation pour le moment</td></tr>" }
+        return "<div class='container'>
+            <h2 style='font-size:1.75rem;font-weight:800;margin-bottom:1.5rem'>Reservations</h2>
+            <table>
+                <thead><tr>
+                    <th>#</th><th>Vehicule</th><th>Client</th>
+                    <th>Debut</th><th>Fin</th><th>Prix</th>
+                    <th>Statut</th><th>Actions</th>
+                </tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </div>"
     }
 
     on confirm(id: String) {

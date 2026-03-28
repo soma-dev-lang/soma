@@ -1,23 +1,25 @@
-// HTML page rendering
+// HTML layout — premium design
 
 cell Pages {
     on layout(title: String, content: String) {
-        return render("<!DOCTYPE html>
+        return "<!DOCTYPE html>
 <html lang='fr'>
 <head>
     <meta charset='utf-8'>
     <meta name='viewport' content='width=device-width, initial-scale=1'>
     <title>{title} — SomaCar</title>
     <script src='https://unpkg.com/htmx.org@1.9.12'></script>
-    <link rel='preconnect' href='https://fonts.googleapis.com'>
-    <link href='https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap' rel='stylesheet'>
+    <link href='https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap' rel='stylesheet'>
     <style>
         :root {
-            --primary: #2563eb; --primary-dark: #1d4ed8;
-            --accent: #f59e0b; --danger: #ef4444; --success: #22c55e;
-            --bg: #f0f4f8; --card: #ffffff;
-            --text: #1e293b; --muted: #64748b;
-            --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 8px 32px rgba(0,0,0,0.06);
+            --p: #6366f1; --p2: #4f46e5; --p3: #4338ca;
+            --accent: #f59e0b; --danger: #ef4444; --success: #10b981;
+            --bg: #0f172a; --bg2: #1e293b; --bg3: #334155;
+            --card: #1e293b; --card2: #273549;
+            --text: #f1f5f9; --muted: #94a3b8; --dim: #64748b;
+            --border: rgba(255,255,255,0.06);
+            --glow: 0 0 60px rgba(99,102,241,0.15);
+            --r: 16px;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -26,81 +28,147 @@ cell Pages {
             min-height: 100vh;
         }
         nav {
-            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
-            color: white; padding: 0 2rem; height: 64px;
+            background: rgba(15,23,42,0.8); backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 2rem; height: 72px;
             display: flex; align-items: center; justify-content: space-between;
-            box-shadow: 0 2px 12px rgba(37,99,235,0.3);
+            position: sticky; top: 0; z-index: 50;
         }
-        nav .logo { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.5px; }
-        nav .logo span { color: var(--accent); }
-        nav a { color: rgba(255,255,255,0.85); text-decoration: none; font-weight: 500; margin-left: 2rem; transition: color 0.15s; }
-        nav a:hover { color: white; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
-        h2 { font-size: 1.75rem; font-weight: 700; margin-bottom: 1.5rem; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1.5rem; }
+        .logo {
+            font-size: 1.5rem; font-weight: 900; letter-spacing: -1px;
+            background: linear-gradient(135deg, #818cf8, #c084fc);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        nav a {
+            color: var(--muted); text-decoration: none; font-weight: 500;
+            font-size: 0.9375rem; margin-left: 2rem; padding: 0.5rem 0;
+            border-bottom: 2px solid transparent; transition: all 0.2s;
+        }
+        nav a:hover { color: var(--text); border-color: var(--p); }
+        .container { max-width: 1280px; margin: 0 auto; padding: 2rem; }
+        .hero {
+            text-align: center; padding: 4rem 1rem 3rem;
+        }
+        .hero h1 {
+            font-size: 3.5rem; font-weight: 900; letter-spacing: -2px;
+            background: linear-gradient(135deg, #e0e7ff 0%, #818cf8 50%, #c084fc 100%);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            margin-bottom: 0.75rem;
+        }
+        .hero p { color: var(--muted); font-size: 1.25rem; font-weight: 300; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+            gap: 1.5rem;
+        }
         .card {
-            background: var(--card); border-radius: var(--radius);
-            box-shadow: var(--shadow); overflow: hidden; transition: transform 0.2s;
+            background: var(--card); border-radius: var(--r);
+            border: 1px solid var(--border);
+            overflow: hidden; transition: all 0.3s;
+            box-shadow: var(--glow);
         }
-        .card:hover { transform: translateY(-4px); }
-        .card img { width: 100%; height: 200px; object-fit: cover; }
-        .card-body { padding: 1.25rem; }
-        .card-body h3 { font-size: 1.125rem; font-weight: 700; margin-bottom: 0.25rem; }
-        .card-body .meta { color: var(--muted); font-size: 0.875rem; margin-bottom: 0.75rem; }
-        .card-body .price { font-size: 1.5rem; font-weight: 800; color: var(--primary); }
-        .card-body .price span { font-size: 0.875rem; font-weight: 400; color: var(--muted); }
+        .card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 20px 60px rgba(99,102,241,0.2);
+            border-color: rgba(99,102,241,0.3);
+        }
+        .card img {
+            width: 100%; height: 220px; object-fit: cover;
+            border-bottom: 1px solid var(--border);
+        }
+        .card-body { padding: 1.5rem; }
+        .card-body h3 { font-size: 1.2rem; font-weight: 700; }
+        .card-body .meta { color: var(--dim); font-size: 0.875rem; margin-top: 0.25rem; }
+        .card-body .price-row {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border);
+        }
+        .price { font-size: 1.75rem; font-weight: 800; color: #818cf8; }
+        .price span { font-size: 0.8rem; font-weight: 400; color: var(--dim); }
         .badge {
-            display: inline-block; padding: 0.2rem 0.625rem; border-radius: 20px;
-            font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+            display: inline-flex; align-items: center; gap: 0.375rem;
+            padding: 0.25rem 0.75rem; border-radius: 20px;
+            font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
         }
-        .badge-available { background: #dcfce7; color: #166534; }
-        .badge-unavailable { background: #fef2f2; color: #991b1b; }
-        .badge-pending { background: #fef3c7; color: #92400e; }
-        .badge-confirmed { background: #dbeafe; color: #1e40af; }
-        .badge-active { background: #dcfce7; color: #166534; }
-        .badge-cancelled { background: #fef2f2; color: #991b1b; }
-        .badge-completed { background: #f0f4f8; color: #475569; }
+        .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; }
+        .badge-available { background: rgba(16,185,129,0.1); color: #34d399; }
+        .badge-available::before { background: #34d399; }
+        .badge-unavailable { background: rgba(239,68,68,0.1); color: #f87171; }
+        .badge-unavailable::before { background: #f87171; }
+        .badge-pending { background: rgba(245,158,11,0.1); color: #fbbf24; }
+        .badge-pending::before { background: #fbbf24; }
+        .badge-confirmed { background: rgba(99,102,241,0.1); color: #818cf8; }
+        .badge-confirmed::before { background: #818cf8; }
+        .badge-cancelled { background: rgba(239,68,68,0.1); color: #f87171; }
+        .badge-cancelled::before { background: #f87171; }
+        .badge-completed { background: rgba(16,185,129,0.1); color: #34d399; }
+        .badge-completed::before { background: #34d399; }
         .btn {
-            display: inline-block; padding: 0.625rem 1.25rem;
-            background: var(--primary); color: white; border: none;
-            border-radius: 8px; font-size: 0.875rem; font-weight: 600;
-            cursor: pointer; text-decoration: none; transition: all 0.15s;
+            display: inline-flex; align-items: center; justify-content: center;
+            padding: 0.7rem 1.5rem; font-size: 0.875rem; font-weight: 600;
+            border: none; border-radius: 10px; cursor: pointer;
+            text-decoration: none; transition: all 0.2s;
+            background: linear-gradient(135deg, var(--p), var(--p3));
+            color: white; box-shadow: 0 4px 16px rgba(99,102,241,0.3);
         }
-        .btn:hover { background: var(--primary-dark); }
-        .btn-sm { padding: 0.375rem 0.875rem; font-size: 0.8125rem; }
-        .btn-danger { background: var(--danger); }
-        .btn-danger:hover { background: #dc2626; }
-        .btn-success { background: var(--success); }
-        .btn-success:hover { background: #16a34a; }
-        .form-group { margin-bottom: 1rem; }
-        .form-group label { display: block; font-weight: 600; font-size: 0.875rem; margin-bottom: 0.375rem; color: var(--text); }
-        .form-group input, .form-group select {
-            width: 100%; padding: 0.625rem 0.875rem;
-            border: 1.5px solid #e2e8f0; border-radius: 8px;
-            font-size: 0.9375rem; outline: none; font-family: inherit;
+        .btn:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(99,102,241,0.4); }
+        .btn-sm { padding: 0.4rem 0.875rem; font-size: 0.8125rem; border-radius: 8px; }
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            box-shadow: 0 4px 16px rgba(239,68,68,0.3);
         }
-        .form-group input:focus { border-color: var(--primary); }
-        .booking-form { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.5rem; max-width: 500px; }
-        table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
-        th { background: #f8fafc; text-align: left; padding: 0.75rem 1rem; font-size: 0.8125rem; text-transform: uppercase; color: var(--muted); font-weight: 600; }
-        td { padding: 0.75rem 1rem; border-top: 1px solid #f1f5f9; font-size: 0.9375rem; }
-        tr:hover td { background: #f8fafc; }
+        .btn-danger:hover { box-shadow: 0 8px 24px rgba(239,68,68,0.4); }
+        .btn-success {
+            background: linear-gradient(135deg, #10b981, #059669);
+            box-shadow: 0 4px 16px rgba(16,185,129,0.3);
+        }
+        .btn-success:hover { box-shadow: 0 8px 24px rgba(16,185,129,0.4); }
+        .booking-form {
+            background: var(--bg2); border-radius: var(--r);
+            border: 1px solid var(--border); padding: 2rem;
+            max-width: 480px; width: 90vw; box-shadow: 0 40px 100px rgba(0,0,0,0.5);
+        }
+        .form-group { margin-bottom: 1.25rem; }
+        .form-group label {
+            display: block; font-weight: 600; font-size: 0.8125rem;
+            margin-bottom: 0.5rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .form-group input {
+            width: 100%; padding: 0.75rem 1rem;
+            background: var(--bg); border: 1.5px solid var(--bg3); border-radius: 10px;
+            color: var(--text); font-size: 0.9375rem; font-family: inherit; outline: none;
+            transition: border-color 0.2s;
+        }
+        .form-group input:focus { border-color: var(--p); box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+        .form-group input::placeholder { color: var(--dim); }
+        table {
+            width: 100%; border-collapse: collapse;
+            background: var(--card); border-radius: var(--r);
+            border: 1px solid var(--border); overflow: hidden;
+        }
+        th {
+            background: var(--bg); text-align: left;
+            padding: 0.875rem 1rem; font-size: 0.75rem;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            color: var(--dim); font-weight: 600;
+        }
+        td { padding: 0.875rem 1rem; border-top: 1px solid var(--border); }
+        tr:hover td { background: rgba(255,255,255,0.02); }
         .actions { display: flex; gap: 0.5rem; }
-        .hero { text-align: center; padding: 3rem 1rem 2rem; }
-        .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 0.5rem; }
-        .hero p { color: var(--muted); font-size: 1.125rem; }
-        .stats { display: flex; gap: 2rem; justify-content: center; margin: 2rem 0; }
-        .stat { text-align: center; }
-        .stat .num { font-size: 2rem; font-weight: 800; color: var(--primary); }
-        .stat .label { font-size: 0.8125rem; color: var(--muted); }
-        .htmx-added { animation: fadeIn 0.2s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } }
-        .empty { text-align: center; padding: 3rem; color: var(--muted); }
+        .empty { text-align: center; padding: 3rem; color: var(--dim); font-size: 0.9375rem; }
+        .htmx-added { animation: fadeIn 0.25s ease-out; }
+        .htmx-swapping { opacity: 0; transition: opacity 0.15s; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } }
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.25rem; }
+            .grid { grid-template-columns: 1fr; }
+            nav { padding: 0 1rem; }
+        }
     </style>
 </head>
 <body>
     <nav>
-        <div class='logo'>Soma<span>Car</span></div>
+        <div class='logo'>SomaCar</div>
         <div>
             <a href='/'>Vehicules</a>
             <a href='/bookings'>Reservations</a>
@@ -108,6 +176,6 @@ cell Pages {
     </nav>
     {content}
 </body>
-</html>", "title", title, "content", content)
+</html>"
     }
 }
