@@ -2,7 +2,7 @@
 set -e
 
 REPO="soma-dev-lang/soma"
-VERSION="0.11.0"
+VERSION="0.12.0"
 INSTALL_DIR="/usr/local/bin"
 
 echo ""
