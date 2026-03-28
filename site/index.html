@@ -465,6 +465,10 @@ soma serve app.cell --watch        <span class="cmt"># hot reload on file change
 <tr><td>soma install</td><td>Install dependencies</td></tr>
 <tr><td>soma env</td><td>Show environment</td></tr>
 <tr><td>soma props</td><td>List all properties + backends + builtins</td></tr>
+<tr><td>soma add-provider &lt;name&gt;</td><td>Scaffold a storage provider</td></tr>
+<tr><td>soma test-provider &lt;name&gt;</td><td>Run provider conformance tests</td></tr>
+<tr><td>soma migrate --from a --to b</td><td>Migrate data between providers</td></tr>
+<tr><td>soma repl</td><td>Interactive expression evaluator</td></tr>
 </table>
 
 <h2>All builtins</h2>
@@ -517,6 +521,78 @@ soma serve app.cell --watch        <span class="cmt"># hot reload on file change
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
+<section>
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<section id="providers">
+<h2>Storage providers</h2>
+
+<p>Write once, deploy anywhere. Same Soma code on SQLite, DynamoDB, Firestore, D1. The developer writes properties. The provider resolves them to services.</p>
+
+<pre><code><span class="cmt">// Your code — doesn't change between providers</span>
+<span class="kw">memory</span> {
+    users:    Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>]
+    cache:    Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">local</span>]
+    secrets:  Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">encrypted</span>]
+    sessions: Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">ttl</span>(<span class="num">30</span>min)]
+}</code></pre>
+
+<h3>Configure in soma.toml</h3>
+<pre><code><span class="cmt"># Default — zero config, uses SQLite</span>
+[storage]
+provider = <span class="str">"local"</span>
+
+<span class="cmt"># AWS — resolves to DynamoDB + ElastiCache</span>
+[storage]
+provider = <span class="str">"aws"</span>
+[storage.config]
+region = <span class="str">"eu-west-1"</span>
+
+<span class="cmt"># Cloudflare — resolves to D1 + KV</span>
+[storage]
+provider = <span class="str">"cloudflare"</span></code></pre>
+
+<h3>Resolution</h3>
+<table>
+<tr><th>Properties</th><th>local</th><th>AWS</th><th>GCP</th><th>Cloudflare</th></tr>
+<tr><td>[persistent, consistent]</td><td>SQLite</td><td>DynamoDB</td><td>Firestore</td><td>D1</td></tr>
+<tr><td>[ephemeral]</td><td>Memory</td><td>ElastiCache</td><td>Memorystore</td><td>Workers KV</td></tr>
+<tr><td>[persistent, encrypted]</td><td>SQLite</td><td>DynamoDB+KMS</td><td>Firestore+CMEK</td><td>D1</td></tr>
+<tr><td>[persistent, immutable]</td><td>SQLite</td><td>S3+ObjectLock</td><td>GCS+Retention</td><td>R2</td></tr>
+<tr><td>[ephemeral, ttl(30min)]</td><td>Memory</td><td>ElastiCache+TTL</td><td>Memorystore+TTL</td><td>KV+TTL</td></tr>
+</table>
+
+<h3>Provider manifest (soma-provider.toml)</h3>
+<pre><code>[provider]
+name = <span class="str">"aws"</span>
+
+[[backend]]
+name = <span class="str">"dynamodb"</span>
+requires = [<span class="str">"persistent"</span>, <span class="str">"consistent"</span>]
+optional = [<span class="str">"encrypted"</span>, <span class="str">"ttl"</span>]
+native = <span class="str">"http://dynamo-sidecar:8000"</span>  <span class="cmt">// or native Rust impl</span>
+
+[[backend]]
+name = <span class="str">"elasticache"</span>
+requires = [<span class="str">"ephemeral"</span>]
+optional = [<span class="str">"ttl"</span>, <span class="str">"local"</span>]
+native = <span class="str">"http://redis-sidecar:6380"</span></code></pre>
+
+<h3>HTTP provider protocol</h3>
+<p>Any language can be a provider. Just expose 5 HTTP endpoints:</p>
+<pre><code><span class="cmt">// Provider sidecar — implement in any language</span>
+POST /get     { <span class="str">"table"</span>: <span class="str">"T_data"</span>, <span class="str">"key"</span>: <span class="str">"k"</span> }     → { <span class="str">"value"</span>: <span class="str">"v"</span> }
+POST /set     { <span class="str">"table"</span>: <span class="str">"T_data"</span>, <span class="str">"key"</span>: <span class="str">"k"</span>, <span class="str">"value"</span>: <span class="str">"v"</span> } → { <span class="str">"ok"</span>: <span class="kw">true</span> }
+POST /delete  { <span class="str">"table"</span>: <span class="str">"T_data"</span>, <span class="str">"key"</span>: <span class="str">"k"</span> }     → { <span class="str">"ok"</span>: <span class="kw">true</span> }
+POST /keys    { <span class="str">"table"</span>: <span class="str">"T_data"</span> }                  → { <span class="str">"keys"</span>: [<span class="str">"a"</span>, <span class="str">"b"</span>] }
+POST /len     { <span class="str">"table"</span>: <span class="str">"T_data"</span> }                  → { <span class="str">"len"</span>: <span class="num">42</span> }</code></pre>
+
+<h3>Commands</h3>
+<pre><code>soma add-provider aws           <span class="cmt"># scaffold provider manifest</span>
+soma test-provider aws          <span class="cmt"># run 5 conformance tests</span>
+soma test-provider local        <span class="cmt"># test built-in (5/5 pass)</span>
+soma migrate --from local --to aws  <span class="cmt"># migrate data</span></code></pre>
+</section>
+
 <section>
 <h2>Architecture</h2>
 <pre><code>Source (.cell)
