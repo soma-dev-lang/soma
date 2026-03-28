@@ -39,26 +39,17 @@ cell Booleans {
         let le = 10 <= 15
         print("10 <= 15: {le}")
 
-        // Boolean logic via if-else (no && or || operators)
+        // Boolean logic with && and || operators
         let a = true
         let b = true
-        if a == true {
-            if b == true {
-                print("both true: yes")
-            }
+        if a && b {
+            print("both true: yes")
         }
 
-        // Simulating OR: check either condition
+        // OR: check either condition
         let x = false
         let y = true
-        let either = false
-        if x == true {
-            either = true
-        }
-        if y == true {
-            either = true
-        }
-        if either == true {
+        if x || y {
             print("either true: yes")
         }
 

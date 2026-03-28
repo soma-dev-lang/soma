@@ -258,6 +258,7 @@ impl Interpreter {
         match self.exec_body(body, env, cell_name, "_every") {
             Ok(val) => Ok(val),
             Err(ExecError::Return(val)) => Ok(val),
+            Err(ExecError::Break) | Err(ExecError::Continue) => Ok(Value::Unit),
             Err(ExecError::Runtime(e)) => {
                 eprintln!("[scheduler] error: {}", e);
                 Err(e)
@@ -332,6 +333,16 @@ impl Interpreter {
             return Err(RuntimeError::StackOverflow);
         }
 
+        // Check arity
+        if args.len() != params.len() {
+            self.current_depth -= 1;
+            return Err(RuntimeError::TypeError(format!(
+                "expected {} arguments, got {}",
+                params.len(),
+                args.len()
+            )));
+        }
+
         // Bind parameters, promoting Int → BigInt if the type declares BigInt
         let mut env = HashMap::with_capacity(params.len() + 8);
         for (param, val) in params.iter().zip(args) {
@@ -353,6 +364,7 @@ impl Interpreter {
         match result {
             Ok(val) => Ok(val),
             Err(ExecError::Return(val)) => Ok(val),
+            Err(ExecError::Break) | Err(ExecError::Continue) => Ok(Value::Unit),
             Err(ExecError::Runtime(e)) => Err(e),
         }
     }
@@ -422,6 +434,14 @@ impl Interpreter {
                 Err(ExecError::Return(val))
             }
 
+            Statement::Break => {
+                Err(ExecError::Break)
+            }
+
+            Statement::Continue => {
+                Err(ExecError::Continue)
+            }
+
             Statement::If {
                 condition,
                 then_body,
@@ -460,7 +480,12 @@ impl Interpreter {
                 let mut last = Value::Unit;
                 for item in items {
                     env.insert(var.clone(), item);
-                    last = self.exec_body(body, env, cell_name, signal_name)?;
+                    match self.exec_body(body, env, cell_name, signal_name) {
+                        Ok(val) => last = val,
+                        Err(ExecError::Break) => break,
+                        Err(ExecError::Continue) => continue,
+                        Err(e) => { env.remove(var); return Err(e); }
+                    }
                 }
                 env.remove(var);
                 Ok(last)
@@ -473,7 +498,12 @@ impl Interpreter {
                     if !cond.as_bool().map_err(ExecError::Runtime)? {
                         break;
                     }
-                    self.exec_body(body, env, cell_name, signal_name)?;
+                    match self.exec_body(body, env, cell_name, signal_name) {
+                        Ok(_) => {}
+                        Err(ExecError::Break) => break,
+                        Err(ExecError::Continue) => {}
+                        Err(e) => return Err(e),
+                    }
                     iterations += 1;
                     if iterations > 1_000_000 {
                         return Err(ExecError::Runtime(RuntimeError::StackOverflow));
@@ -623,6 +653,8 @@ impl Interpreter {
                         ("error".to_string(), Value::String(format!("{}", e))),
                     ])),
                     Err(ExecError::Return(val)) => Err(ExecError::Return(val)),
+                    Err(ExecError::Break) => Err(ExecError::Break),
+                    Err(ExecError::Continue) => Err(ExecError::Continue),
                 }
             }
 
@@ -1021,7 +1053,17 @@ impl Interpreter {
             Literal::Float(n) => Value::Float(*n),
             Literal::String(s) => Value::String(s.clone()),
             Literal::Bool(b) => Value::Bool(*b),
-            Literal::Duration(d) => Value::Float(d.value),
+            Literal::Duration(d) => {
+                let ms = match d.unit {
+                    DurationUnit::Milliseconds => d.value,
+                    DurationUnit::Seconds => d.value * 1000.0,
+                    DurationUnit::Minutes => d.value * 60_000.0,
+                    DurationUnit::Hours => d.value * 3_600_000.0,
+                    DurationUnit::Days => d.value * 86_400_000.0,
+                    DurationUnit::Years => d.value * 365.0 * 86_400_000.0,
+                };
+                Value::Int(ms as i64)
+            }
             Literal::Percentage(p) => Value::Float(*p),
             Literal::Unit => Value::Unit,
         }
@@ -1333,6 +1375,8 @@ fn stored_to_value(stored: StoredValue) -> Value {
 #[derive(Debug)]
 enum ExecError {
     Return(Value),
+    Break,
+    Continue,
     Runtime(RuntimeError),
 }
 

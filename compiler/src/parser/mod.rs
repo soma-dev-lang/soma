@@ -954,6 +954,14 @@ impl Parser {
                 let value = self.parse_expr()?;
                 Ok(Spanned::new(Statement::Return { value }, start.merge(self.prev_span())))
             }
+            Token::Break => {
+                self.advance();
+                Ok(Spanned::new(Statement::Break, start.merge(self.prev_span())))
+            }
+            Token::Continue => {
+                self.advance();
+                Ok(Spanned::new(Statement::Continue, start.merge(self.prev_span())))
+            }
             Token::If => {
                 self.advance();
                 let condition = self.parse_expr()?;

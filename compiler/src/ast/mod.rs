@@ -303,6 +303,8 @@ pub enum Statement {
         method: String,
         args: Vec<Spanned<Expr>>,
     },
+    Break,
+    Continue,
     /// Bare expression statement (for function calls as statements)
     ExprStmt {
         expr: Spanned<Expr>,

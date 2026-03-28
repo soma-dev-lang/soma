@@ -37,6 +37,8 @@ pub enum Token {
     For,
     In,
     While,
+    Break,
+    Continue,
     Try,
     Catch,
     Every,
@@ -388,6 +390,8 @@ impl<'a> Lexer<'a> {
                     "in" => Token::In,
                     "use" => Token::Use,
                     "while" => Token::While,
+                    "break" => Token::Break,
+                    "continue" => Token::Continue,
                     "try" => Token::Try,
                     "catch" => Token::Catch,
                     "every" => Token::Every,
@@ -456,6 +460,38 @@ impl<'a> Lexer<'a> {
                 }
             } else {
                 break;
+            }
+        }
+
+        // Handle scientific notation: e/E followed by optional +/- and digits
+        if let Some(c) = self.peek() {
+            if c == 'e' || c == 'E' {
+                // Look ahead to confirm there are digits (possibly after +/-)
+                let mut offset = 1;
+                if let Some(sign) = self.chars.get(self.pos + offset).copied() {
+                    if sign == '+' || sign == '-' {
+                        offset += 1;
+                    }
+                }
+                if let Some(d) = self.chars.get(self.pos + offset).copied() {
+                    if d.is_ascii_digit() {
+                        is_float = true;
+                        num_str.push(self.advance()); // e or E
+                        if let Some(s) = self.peek() {
+                            if s == '+' || s == '-' {
+                                num_str.push(self.advance());
+                            }
+                        }
+                        while let Some(d) = self.peek() {
+                            if d.is_ascii_digit() {
+                                num_str.push(d);
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
 

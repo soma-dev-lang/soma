@@ -39,12 +39,10 @@ cell Admissions {
         // Score-based decisions
         if score >= 90 {
             return "Accepted"
+        } else if score >= 70 {
+            return "Waitlisted"
         } else {
-            if score >= 70 {
-                return "Waitlisted"
-            } else {
-                return "Score too low"
-            }
+            return "Score too low"
         }
     }
 }

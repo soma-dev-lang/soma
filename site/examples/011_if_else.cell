@@ -14,23 +14,17 @@ cell Grader {
     on classify(score: Int) {
         let grade = "F"
 
-        // if / else chains — no "else if" keyword, use nested else { if }
+        // if / else if / else chains
         if score >= 90 {
             grade = "A"
+        } else if score >= 80 {
+            grade = "B"
+        } else if score >= 70 {
+            grade = "C"
+        } else if score >= 60 {
+            grade = "D"
         } else {
-            if score >= 80 {
-                grade = "B"
-            } else {
-                if score >= 70 {
-                    grade = "C"
-                } else {
-                    if score >= 60 {
-                        grade = "D"
-                    } else {
-                        grade = "F"
-                    }
-                }
-            }
+            grade = "F"
         }
 
         print("Score {score} is grade: {grade}")

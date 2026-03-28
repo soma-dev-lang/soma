@@ -53,6 +53,26 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
             else { args.first().map(|a| Ok(a.clone())) }
         }
+        "clamp" => {
+            if args.len() >= 3 {
+                match (&args[0], &args[1], &args[2]) {
+                    (Value::Float(_), _, _) | (_, Value::Float(_), _) | (_, _, Value::Float(_)) => {
+                        let v = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                        let lo = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                        let hi = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                        Some(Ok(Value::Float(v.max(lo).min(hi))))
+                    }
+                    _ => {
+                        let v = val_to_i64(&args[0]);
+                        let lo = val_to_i64(&args[1]);
+                        let hi = val_to_i64(&args[2]);
+                        Some(Ok(Value::Int(v.max(lo).min(hi))))
+                    }
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("clamp expects (value, min, max)".to_string())))
+            }
+        }
         _ => None,
     }
 }

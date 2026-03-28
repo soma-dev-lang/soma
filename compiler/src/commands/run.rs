@@ -78,6 +78,13 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
         .filter_map(|s| if let ast::Section::OnSignal(ref on) = s.node { Some(on.signal_name.clone()) } else { None })
         .collect();
 
+    // Collect handler param counts for smart auto-dispatch
+    let handler_params: Vec<(String, usize)> = cell.node.sections.iter()
+        .filter_map(|s| if let ast::Section::OnSignal(ref on) = s.node {
+            Some((on.signal_name.clone(), on.params.len()))
+        } else { None })
+        .collect();
+
     let (signal_name, actual_args) = if let Some(sig) = signal_flag {
         (sig.to_string(), arg_values)
     } else if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
@@ -87,7 +94,14 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
             (handler_names[0].clone(), arg_values)
         }
     } else {
-        (handler_names[0].clone(), arg_values)
+        // No explicit signal: prefer handler matching arg count, then "run", then first zero-arg handler
+        let n_args = arg_values.len();
+        let default = handler_params.iter().find(|(h, p)| h == "run" && *p == n_args)
+            .or_else(|| handler_params.iter().find(|(h, _)| h == "run"))
+            .or_else(|| handler_params.iter().find(|(_, p)| *p == n_args))
+            .or_else(|| handler_params.iter().find(|(_, p)| *p == 0))
+            .unwrap_or(&handler_params[0]);
+        (default.0.clone(), arg_values)
     };
 
     let mut vm = vm::VM::new(chunks);
@@ -146,6 +160,13 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         process::exit(1);
     }
 
+    // Collect handler param counts for smart auto-dispatch
+    let handler_params: Vec<(String, usize)> = cell.node.sections.iter()
+        .filter_map(|s| if let ast::Section::OnSignal(ref on) = s.node {
+            Some((on.signal_name.clone(), on.params.len()))
+        } else { None })
+        .collect();
+
     let (signal_name, actual_args) = if let Some(sig) = signal_flag {
         (sig.to_string(), arg_values)
     } else if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
@@ -155,7 +176,14 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
             (handler_names[0].clone(), arg_values)
         }
     } else {
-        (handler_names[0].clone(), arg_values)
+        // No explicit signal: prefer handler matching arg count, then "run", then first zero-arg handler
+        let n_args = arg_values.len();
+        let default = handler_params.iter().find(|(h, p)| h == "run" && *p == n_args)
+            .or_else(|| handler_params.iter().find(|(h, _)| h == "run"))
+            .or_else(|| handler_params.iter().find(|(_, p)| *p == n_args))
+            .or_else(|| handler_params.iter().find(|(_, p)| *p == 0))
+            .unwrap_or(&handler_params[0]);
+        (default.0.clone(), arg_values)
     };
 
     let mut interp = interpreter::Interpreter::new(&program);

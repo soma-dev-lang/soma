@@ -61,10 +61,13 @@ cell OrderFlow {
         print("Status: {st}")
 
         let result = transition("1", "submitted")
-        print("Transitioned to: submitted")
+        print("Transition: {result}")
+
+        let result2 = transition("1", "approved")
+        print("Transition: {result2}")
 
         let st2 = get_status("1")
-        print("Status: {st2}")
+        print("Final status: {st2}")
 
         return "done"
     }

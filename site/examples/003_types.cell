@@ -10,7 +10,7 @@
 //   Float: 3.14 -> Float
 //   String: hello -> String
 //   Bool: true -> Bool
-//   Null: () -> Null
+//   Unit: () -> Unit
 //   List: [1, 2, 3] -> List
 //   Map: {"x": 10} -> Map
 
@@ -37,10 +37,10 @@ cell Types {
         let b_type = type_of(b)
         print("Bool: {b} -> {b_type}")
 
-        // () — null / unit / nothing
+        // () — unit / nothing
         let n = ()
         let n_type = type_of(n)
-        print("Null: {n} -> {n_type}")
+        print("Unit: {n} -> {n_type}")
 
         // List — ordered collection
         let l = list(1, 2, 3)

@@ -92,6 +92,19 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("top expects (list, n)".to_string())))
             }
         }
+        "bottom" => {
+            if args.len() >= 2 {
+                if let Value::List(items) = &args[0] {
+                    let n = val_to_i64(&args[1]) as usize;
+                    let start = if n >= items.len() { 0 } else { items.len() - n };
+                    Some(Ok(Value::List(items[start..].to_vec())))
+                } else {
+                    Some(Ok(args[0].clone()))
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("bottom expects (list, n)".to_string())))
+            }
+        }
         "sum_by" => {
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {

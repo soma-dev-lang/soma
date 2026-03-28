@@ -67,6 +67,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("starts_with expects 2 arguments".to_string())))
             }
         }
+        "ends_with" => {
+            if args.len() >= 2 {
+                if let (Value::String(s), Value::String(suffix)) = (&args[0], &args[1]) {
+                    Some(Ok(Value::Bool(s.ends_with(suffix.as_str()))))
+                } else {
+                    Some(Err(RuntimeError::TypeError("ends_with expects strings".to_string())))
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("ends_with expects 2 arguments".to_string())))
+            }
+        }
         "lowercase" | "to_lower" => {
             args.first().map(|a| {
                 if let Value::String(s) = a {
@@ -136,19 +147,31 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             args.first().map(|arg| match arg {
                 Value::Int(n) => Ok(Value::Int(*n)),
                 Value::Float(n) => Ok(Value::Int(*n as i64)),
-                Value::String(s) => Ok(Value::Int(
-                    s.parse::<i64>().unwrap_or_else(|_| s.parse::<f64>().unwrap_or(0.0) as i64)
-                )),
+                Value::String(s) => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        Ok(Value::Int(n))
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        Ok(Value::Int(f as i64))
+                    } else {
+                        Ok(Value::Unit)
+                    }
+                },
                 Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
-                _ => Ok(Value::Int(0)),
+                _ => Ok(Value::Unit),
             })
         }
         "to_float" | "float" => {
             args.first().map(|arg| match arg {
                 Value::Float(n) => Ok(Value::Float(*n)),
                 Value::Int(n) => Ok(Value::Float(*n as f64)),
-                Value::String(s) => Ok(Value::Float(s.parse::<f64>().unwrap_or(0.0))),
-                _ => Ok(Value::Float(0.0)),
+                Value::String(s) => {
+                    if let Ok(f) = s.parse::<f64>() {
+                        Ok(Value::Float(f))
+                    } else {
+                        Ok(Value::Unit)
+                    }
+                },
+                _ => Ok(Value::Unit),
             })
         }
         "to_json" => {

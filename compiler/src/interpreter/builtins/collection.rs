@@ -224,6 +224,25 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 } else { Some(Err(RuntimeError::TypeError("left_join expects (list, list, key)".to_string()))) }
             } else { Some(Err(RuntimeError::TypeError("left_join expects (list, list, key)".to_string()))) }
         }
+        "reverse" => {
+            if let Some(Value::List(items)) = args.first() {
+                let mut result = items.clone();
+                result.reverse();
+                Some(Ok(Value::List(result)))
+            } else {
+                Some(Err(RuntimeError::TypeError("reverse expects a list".to_string())))
+            }
+        }
+        "range" => {
+            if args.len() >= 2 {
+                let start = match &args[0] { Value::Int(n) => *n, Value::Float(n) => *n as i64, _ => 0 };
+                let end = match &args[1] { Value::Int(n) => *n, Value::Float(n) => *n as i64, _ => 0 };
+                let result: Vec<Value> = (start..end).map(Value::Int).collect();
+                Some(Ok(Value::List(result)))
+            } else {
+                Some(Err(RuntimeError::TypeError("range expects (start, end)".to_string())))
+            }
+        }
         "_coalesce" => {
             if args.len() >= 2 {
                 Some(Ok(if matches!(args[0], Value::Unit) { args[1].clone() } else { args[0].clone() }))

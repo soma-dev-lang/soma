@@ -171,6 +171,10 @@ impl BytecodeCompiler {
                 self.compile_expr(chunk, &expr.node);
                 chunk.emit(Op::Pop);
             }
+
+            Statement::Break | Statement::Continue => {
+                // TODO: implement break/continue in bytecode VM
+            }
         }
     }
 
