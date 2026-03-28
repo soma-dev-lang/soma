@@ -94,6 +94,7 @@ pub enum Token {
     Arrow,    // ->
     FatArrow, // =>
     Eq,       // =
+    PlusEq,   // +=
     Dot,      // .
 
     // Delimiters
@@ -233,7 +234,14 @@ impl<'a> Lexer<'a> {
             ',' => Token::Comma,
             ':' => Token::Colon,
             '.' => Token::Dot,
-            '+' => Token::Plus,
+            '+' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Token::PlusEq
+                } else {
+                    Token::Plus
+                }
+            }
             '*' => Token::Star,
             '%' => Token::Percent,
             '/' => Token::Slash,

@@ -1,6 +1,5 @@
 // SomaCar — Car rental booking system
 //   soma serve app.cell
-//   open http://localhost:8080
 
 use lib::cars
 use lib::bookings
@@ -22,8 +21,7 @@ cell App {
     }
 
     on request(method: String, path: String, body: String) {
-        let seeded = config.get("seeded")
-        if seeded == () {
+        if config.get("seeded") == () {
             seed()
             config.set("seeded", "true")
         }
@@ -33,50 +31,40 @@ cell App {
     }
 
     on cars_html() {
-        let all_cars = list_cars()
         let cards = ""
-        for car in all_cars {
-            let avail_badge = "<span class='badge badge-unavailable'>Indisponible</span>"
-            let book_btn = ""
+        for car in list_cars() {
+            let badge = "<span class='badge badge-unavailable'>Indisponible</span>"
+            let btn = ""
             if car.available == "true" {
-                let cid = to_string(car.id)
-                avail_badge = "<span class='badge badge-available'>Disponible</span>"
-                book_btn = "<a href='#' class='btn' hx-get='/booking_form/{cid}' hx-target='#modal' hx-swap='innerHTML'>Reserver</a>"
+                badge = "<span class='badge badge-available'>Disponible</span>"
+                btn = "<a class='btn' hx-get='/booking_form/{car.id}' hx-target='#modal' hx-swap='innerHTML'>Reserver</a>"
             }
-            cards = concat(cards, render(
-                "<div class='card'>
-                    <img src='{image}' alt='{brand} {model}'>
-                    <div class='card-body'>
-                        <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem'>
-                            <h3>{brand} {model}</h3>{badge}
-                        </div>
-                        <p class='meta'>{year}</p>
-                        <div style='display:flex;justify-content:space-between;align-items:center'>
-                            <div class='price'>{price}EUR <span>/jour</span></div>{book_btn}
-                        </div>
+            cards += "<div class='card'>
+                <img src='{car.image}' alt='{car.brand} {car.model}'>
+                <div class='card-body'>
+                    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem'>
+                        <h3>{car.brand} {car.model}</h3>{badge}
                     </div>
-                </div>",
-                "brand", car.brand, "model", car.model, "year", to_string(car.year),
-                "price", to_string(car.price), "image", car.image,
-                "badge", avail_badge, "book_btn", book_btn))
+                    <p class='meta'>{car.year}</p>
+                    <div style='display:flex;justify-content:space-between;align-items:center'>
+                        <div class='price'>{car.price}EUR <span>/jour</span></div>{btn}
+                    </div>
+                </div>
+            </div>"
         }
         return "<div class='container'>
             <div class='hero'><h1>Location de Vehicules</h1><p>Trouvez la voiture parfaite</p></div>
-            <div class='grid'>{cards}</div>
-            <div id='modal'></div>
+            <div class='grid'>{cards}</div><div id='modal'></div>
         </div>"
     }
 
     on booking_form(car_id: String) {
         let car = get_car(car_id)
         if car == () { return html("<p>Vehicule non trouve</p>") }
-        let brand = car.brand
-        let model = car.model
-        let price = to_string(car.price)
         return html("<div style='position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100' onclick='if(event.target===this)document.getElementById(\"modal\").innerHTML=\"\"'>
             <div class='booking-form' onclick='event.stopPropagation()'>
-                <h3 style='margin-bottom:1rem'>Reserver: {brand} {model}</h3>
-                <p class='meta' style='margin-bottom:1rem'>{price}EUR / jour</p>
+                <h3 style='margin-bottom:1rem'>Reserver: {car.brand} {car.model}</h3>
+                <p class='meta' style='margin-bottom:1rem'>{car.price}EUR / jour</p>
                 <form hx-get='/book/{car_id}' hx-target='#modal' hx-swap='innerHTML'>
                     <div class='form-group'><label>Votre nom</label><input name='customer' placeholder='Jean Dupont' required></div>
                     <div class='form-group'><label>Date de debut</label><input name='start_date' type='date' required></div>
@@ -93,45 +81,36 @@ cell App {
     on book(car_id: String, customer: String, start_date: String, end_date: String) {
         let car = get_car(car_id)
         if car == () { return html("<p class='empty'>Vehicule non trouve</p>") }
-        let total = to_string(car.price)
-        let brand = car.brand
-        let model = car.model
-        create_booking(car_id, customer, start_date, end_date, total)
+        create_booking(car_id, customer, start_date, end_date, to_string(car.price))
         set_available(car_id, "false")
         return html("<div style='position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100' onclick='window.location=\"/\"'>
             <div class='booking-form' style='text-align:center'>
                 <div style='font-size:3rem;margin-bottom:1rem'>&#10003;</div>
                 <h3 style='color:#22c55e;margin-bottom:.5rem'>Reservation confirmee!</h3>
-                <p class='meta'>{brand} {model} pour {customer}</p>
+                <p class='meta'>{car.brand} {car.model} pour {customer}</p>
                 <p class='meta'>{start_date} au {end_date}</p>
-                <p class='price' style='margin:1rem 0'>{total}EUR/jour</p>
+                <p class='price' style='margin:1rem 0'>{car.price}EUR/jour</p>
                 <a href='/' class='btn'>Retour aux vehicules</a>
             </div>
         </div>")
     }
 
     on bookings_html() {
-        let all_bookings = list_bookings()
         let rows = ""
-        for b in all_bookings {
+        for b in list_bookings() {
             let car = get_car(to_string(b.car_id))
             let car_name = "Inconnu"
             if car != () { car_name = "{car.brand} {car.model}" }
-            let bid = to_string(b.id)
-            let status_class = "badge-{b.status}"
             let actions = ""
             if b.status == "pending" {
-                actions = "<a class='btn btn-sm btn-success' hx-post='/confirm/{bid}' hx-target='closest tr' hx-swap='outerHTML'>Confirmer</a> <a class='btn btn-sm btn-danger' hx-post='/cancel/{bid}' hx-target='closest tr' hx-swap='outerHTML'>Annuler</a>"
+                actions = "<a class='btn btn-sm btn-success' hx-post='/confirm/{b.id}' hx-target='closest tr' hx-swap='outerHTML'>Confirmer</a> <a class='btn btn-sm btn-danger' hx-post='/cancel/{b.id}' hx-target='closest tr' hx-swap='outerHTML'>Annuler</a>"
             }
             if b.status == "confirmed" {
-                actions = "<a class='btn btn-sm btn-danger' hx-post='/cancel/{bid}' hx-target='closest tr' hx-swap='outerHTML'>Annuler</a>"
+                actions = "<a class='btn btn-sm btn-danger' hx-post='/cancel/{b.id}' hx-target='closest tr' hx-swap='outerHTML'>Annuler</a>"
             }
-            let btotal = to_string(b.total)
-            rows = concat(rows, "<tr><td>#{bid}</td><td>{car_name}</td><td>{b.customer}</td><td>{b.start_date}</td><td>{b.end_date}</td><td>{btotal}EUR</td><td><span class='badge {status_class}'>{b.status}</span></td><td class='actions'>{actions}</td></tr>")
+            rows += "<tr><td>#{b.id}</td><td>{car_name}</td><td>{b.customer}</td><td>{b.start_date}</td><td>{b.end_date}</td><td>{b.total}EUR</td><td><span class='badge badge-{b.status}'>{b.status}</span></td><td class='actions'>{actions}</td></tr>"
         }
-        if rows == "" {
-            rows = "<tr><td colspan='8' class='empty'>Aucune reservation</td></tr>"
-        }
+        if rows == "" { rows = "<tr><td colspan='8' class='empty'>Aucune reservation</td></tr>" }
         return "<div class='container'><h2>Reservations</h2>
             <table><thead><tr><th>#</th><th>Vehicule</th><th>Client</th><th>Debut</th><th>Fin</th><th>Prix</th><th>Statut</th><th>Actions</th></tr></thead>
             <tbody>{rows}</tbody></table></div>"
@@ -142,9 +121,7 @@ cell App {
         let b = get_booking(id)
         let car = get_car(to_string(b.car_id))
         let car_name = "{car.brand} {car.model}"
-        let bid = to_string(b.id)
-        let btotal = to_string(b.total)
-        return html("<tr><td>#{bid}</td><td>{car_name}</td><td>{b.customer}</td><td>{b.start_date}</td><td>{b.end_date}</td><td>{btotal}EUR</td><td><span class='badge badge-confirmed'>confirmed</span></td><td class='actions'><a class='btn btn-sm btn-danger' hx-post='/cancel/{bid}' hx-target='closest tr' hx-swap='outerHTML'>Annuler</a></td></tr>")
+        return html("<tr><td>#{b.id}</td><td>{car_name}</td><td>{b.customer}</td><td>{b.start_date}</td><td>{b.end_date}</td><td>{b.total}EUR</td><td><span class='badge badge-confirmed'>confirmed</span></td><td class='actions'><a class='btn btn-sm btn-danger' hx-post='/cancel/{b.id}' hx-target='closest tr' hx-swap='outerHTML'>Annuler</a></td></tr>")
     }
 
     on cancel(id: String) {
@@ -153,8 +130,6 @@ cell App {
         set_available(to_string(b.car_id), "true")
         let car = get_car(to_string(b.car_id))
         let car_name = "{car.brand} {car.model}"
-        let bid = to_string(b.id)
-        let btotal = to_string(b.total)
-        return html("<tr><td>#{bid}</td><td>{car_name}</td><td>{b.customer}</td><td>{b.start_date}</td><td>{b.end_date}</td><td>{btotal}EUR</td><td><span class='badge badge-cancelled'>cancelled</span></td><td></td></tr>")
+        return html("<tr><td>#{b.id}</td><td>{car_name}</td><td>{b.customer}</td><td>{b.start_date}</td><td>{b.end_date}</td><td>{b.total}EUR</td><td><span class='badge badge-cancelled'>cancelled</span></td><td></td></tr>")
     }
 }

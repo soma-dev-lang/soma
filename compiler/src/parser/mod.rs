@@ -987,6 +987,23 @@ impl Parser {
                         Statement::Assign { name, value },
                         start.merge(self.prev_span()),
                     ))
+                } else if self.check(&Token::PlusEq) {
+                    // name += expr → name = name + expr
+                    self.advance();
+                    let rhs = self.parse_expr()?;
+                    let rhs_span = rhs.span;
+                    let value = Spanned::new(
+                        Expr::BinaryOp {
+                            left: Box::new(Spanned::new(Expr::Ident(name.clone()), name_span)),
+                            op: BinOp::Add,
+                            right: Box::new(rhs),
+                        },
+                        name_span.merge(rhs_span),
+                    );
+                    Ok(Spanned::new(
+                        Statement::Assign { name, value },
+                        start.merge(self.prev_span()),
+                    ))
                 } else if self.check(&Token::Dot) {
                     // target.method(args)
                     self.advance();
