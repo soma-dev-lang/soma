@@ -1012,7 +1012,9 @@ impl Interpreter {
                 args.first().map(|arg| match arg {
                     Value::Int(n) => Ok(Value::Int(*n)),
                     Value::Float(n) => Ok(Value::Int(*n as i64)),
-                    Value::String(s) => Ok(Value::Int(s.parse::<i64>().unwrap_or(0))),
+                    Value::String(s) => Ok(Value::Int(
+                        s.parse::<i64>().unwrap_or_else(|_| s.parse::<f64>().unwrap_or(0.0) as i64)
+                    )),
                     Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
                     _ => Ok(Value::Int(0)),
                 })
