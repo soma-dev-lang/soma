@@ -362,6 +362,28 @@ impl Interpreter {
             }
 
             Statement::Assign { name, value } => {
+                // Optimization: items = list(items, x) → in-place append (avoids O(n²) clone)
+                if let Expr::FnCall { name: fn_name, args: fn_args } = &value.node {
+                    if (fn_name == "list" || fn_name == "push" || fn_name == "append") && fn_args.len() >= 2 {
+                        if let Expr::Ident(ref first_arg_name) = fn_args[0].node {
+                            if first_arg_name == name {
+                                // Take the list from env, append in place, put back
+                                let mut existing = env.remove(name).unwrap_or(Value::List(vec![]));
+                                if let Value::List(ref mut vec) = existing {
+                                    for arg in &fn_args[1..] {
+                                        let val = self.eval_expr(&arg.node, env, cell_name, signal_name)?;
+                                        vec.push(val);
+                                    }
+                                    env.insert(name.clone(), existing);
+                                    return Ok(Value::Unit);
+                                }
+                                env.insert(name.clone(), existing);
+                            }
+                        }
+                    }
+                }
+                // += optimization: items += val → in-place append for lists, in-place concat for strings
+                // (handled by BinaryOp::Add desugaring, but we can optimize the common case)
                 let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
                 env.insert(name.clone(), val);
                 Ok(Value::Unit)
@@ -1321,10 +1343,13 @@ impl Interpreter {
             }
             "map" => {
                 // map("key1", val1, "key2", val2, ...)
-                let mut entries = Vec::new();
+                let mut entries = Vec::with_capacity(args.len() / 2);
                 let mut i = 0;
                 while i + 1 < args.len() {
-                    let key = format!("{}", args[i]);
+                    let key = match &args[i] {
+                        Value::String(s) => s.clone(),
+                        other => format!("{}", other),
+                    };
                     let val = args[i + 1].clone();
                     entries.push((key, val));
                     i += 2;
