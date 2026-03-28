@@ -93,7 +93,9 @@ impl StorageBackend for MemoryBackend {
     }
 
     fn keys(&self) -> Vec<String> {
-        self.map.read().unwrap().keys().cloned().collect()
+        self.map.read().unwrap().keys()
+            .filter(|k| !k.starts_with("__"))
+            .cloned().collect()
     }
 
     fn values(&self) -> Vec<StoredValue> {
@@ -202,7 +204,9 @@ impl StorageBackend for FileBackend {
     }
 
     fn keys(&self) -> Vec<String> {
-        self.map.read().unwrap().keys().cloned().collect()
+        self.map.read().unwrap().keys()
+            .filter(|k| !k.starts_with("__"))
+            .cloned().collect()
     }
 
     fn values(&self) -> Vec<StoredValue> {
@@ -349,7 +353,7 @@ impl StorageBackend for SqliteBackend {
     fn keys(&self) -> Vec<String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&format!(
-            "SELECT key FROM \"{}\" ORDER BY key", self.table
+            "SELECT key FROM \"{}\" WHERE key NOT LIKE '__%%' ORDER BY key", self.table
         )).unwrap();
         stmt.query_map([], |row| {
             let key: String = row.get(0)?;
