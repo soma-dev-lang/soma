@@ -1,0 +1,213 @@
+// ============================================================================
+// Semaphore Agent — Real-time traffic light management
+// ============================================================================
+// A multi-intersection traffic light controller with:
+// - State machines for each light phase
+// - Automatic cycling via scheduler
+// - Live dashboard with real-time status
+// - Manual override API
+//
+// Run: soma serve semaphore.cell
+
+cell Semaphore {
+
+    memory {
+        lights: Map<String, String> [persistent, consistent]
+        config: Map<String, String> [persistent, consistent]
+        log: Map<String, String> [ephemeral, local]
+    }
+
+    state phase {
+        initial: green_ns
+        green_ns -> yellow_ns
+        yellow_ns -> green_ew
+        green_ew -> yellow_ew
+        yellow_ew -> green_ns
+        * -> emergency_red
+        emergency_red -> green_ns
+    }
+
+    every 3s {
+        let mode = config.get("mode")
+        if mode == "auto" {
+            let current = get_status("main")
+            if current == "green_ns" {
+                transition("main", "yellow_ns")
+                update_lights("main")
+            } else if current == "yellow_ns" {
+                transition("main", "green_ew")
+                update_lights("main")
+            } else if current == "green_ew" {
+                transition("main", "yellow_ew")
+                update_lights("main")
+            } else if current == "yellow_ew" {
+                transition("main", "green_ns")
+                update_lights("main")
+            }
+            let cycle = to_int(config.get("cycle") ?? "0") + 1
+            config.set("cycle", to_string(cycle))
+        }
+    }
+
+    on init() {
+        config.set("mode", "auto")
+        config.set("cycle", "0")
+        config.set("intersection", "Main St / Broadway")
+        update_lights("main")
+        return map("status", "initialized", "mode", "auto")
+    }
+
+    on update_lights(id: String) {
+        let phase = get_status(id)
+        if phase == "green_ns" {
+            lights.set("north", "green")
+            lights.set("south", "green")
+            lights.set("east", "red")
+            lights.set("west", "red")
+        } else if phase == "yellow_ns" {
+            lights.set("north", "yellow")
+            lights.set("south", "yellow")
+            lights.set("east", "red")
+            lights.set("west", "red")
+        } else if phase == "green_ew" {
+            lights.set("north", "red")
+            lights.set("south", "red")
+            lights.set("east", "green")
+            lights.set("west", "green")
+        } else if phase == "yellow_ew" {
+            lights.set("north", "red")
+            lights.set("south", "red")
+            lights.set("east", "yellow")
+            lights.set("west", "yellow")
+        } else if phase == "emergency_red" {
+            lights.set("north", "red")
+            lights.set("south", "red")
+            lights.set("east", "red")
+            lights.set("west", "red")
+        }
+        let t = now()
+        log.set("last_change", to_string(t))
+        log.set("last_phase", phase)
+        return phase
+    }
+
+    on status() {
+        let phase = get_status("main")
+        let n = lights.get("north") ?? "off"
+        let s = lights.get("south") ?? "off"
+        let e = lights.get("east") ?? "off"
+        let w = lights.get("west") ?? "off"
+        let mode = config.get("mode") ?? "auto"
+        let cycle = config.get("cycle") ?? "0"
+        return map(
+            "phase", phase,
+            "mode", mode,
+            "cycle", cycle,
+            "intersection", config.get("intersection") ?? "unknown",
+            "lights", map("north", n, "south", s, "east", e, "west", w)
+        )
+    }
+
+    on emergency() {
+        transition("main", "emergency_red")
+        update_lights("main")
+        config.set("mode", "manual")
+        return map("status", "emergency", "all_lights", "red")
+    }
+
+    on resume() {
+        config.set("mode", "auto")
+        transition("main", "green_ns")
+        update_lights("main")
+        return map("status", "resumed", "mode", "auto")
+    }
+
+    on set_mode(mode: String) {
+        config.set("mode", mode)
+        return map("mode", mode)
+    }
+
+    on force_phase(phase: String) {
+        config.set("mode", "manual")
+        transition("main", phase)
+        update_lights("main")
+        let current = get_status("main")
+        return map("status", "forced", "phase", current)
+    }
+
+    on valid_phases() {
+        return valid_transitions("main")
+    }
+
+    on request(method: String, path: String, body: String) {
+        if config.get("mode") == () {
+            init()
+        }
+
+        if path == "/" {
+            return html(dashboard())
+        }
+        if path == "/api/status" {
+            return status()
+        }
+        if path == "/api/emergency" {
+            return emergency()
+        }
+        if path == "/api/resume" {
+            return resume()
+        }
+        if path == "/api/valid" {
+            return valid_phases()
+        }
+        if path == "/api/force" && method == "POST" {
+            let data = from_json(body)
+            return force_phase(data.phase)
+        }
+
+        return response(404, map("error", "not found"))
+    }
+
+    on dashboard() {
+        let phase = get_status("main")
+        let n = lights.get("north") ?? "off"
+        let s = lights.get("south") ?? "off"
+        let e = lights.get("east") ?? "off"
+        let w = lights.get("west") ?? "off"
+        let mode = config.get("mode") ?? "auto"
+        let cycle = config.get("cycle") ?? "0"
+        let intersection = config.get("intersection") ?? "Main St / Broadway"
+        let valid = valid_transitions("main")
+
+        let light_color_n = color_for(n)
+        let light_color_s = color_for(s)
+        let light_color_e = color_for(e)
+        let light_color_w = color_for(w)
+
+        let phase_label = phase_name(phase)
+
+        let emergency_btn = ""
+        if mode == "auto" {
+            emergency_btn = "<button onclick=\"fetch('/api/emergency').then(()=>location.reload())\" class='btn btn-emergency'>EMERGENCY STOP</button>"
+        } else {
+            emergency_btn = "<button onclick=\"fetch('/api/resume').then(()=>location.reload())\" class='btn btn-resume'>RESUME AUTO</button>"
+        }
+
+        return "<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='3'><title>Semaphore Agent</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:'SF Mono',monospace;display:flex;justify-content:center;align-items:center;min-height:100vh}.container{width:700px;padding:2rem}.header{text-align:center;margin-bottom:2rem}.header h1{font-size:1.4rem;color:#818cf8;letter-spacing:2px}.header .sub{color:#6b7280;font-size:.8rem;margin-top:.3rem}.status-bar{display:flex;justify-content:space-between;background:#111827;border-radius:8px;padding:1rem;margin-bottom:1.5rem;font-size:.85rem}.status-bar .label{color:#6b7280}.status-bar .value{color:#f9fafb;font-weight:600}.intersection{text-align:center;position:relative;height:340px;margin:1.5rem 0}.road-h,.road-v{position:absolute;background:#1f2937;border-radius:4px}.road-v{width:80px;height:100%;left:50%;transform:translateX(-50%)}.road-h{height:80px;width:100%;top:50%;transform:translateY(-50%)}.center-box{position:absolute;width:80px;height:80px;left:50%;top:50%;transform:translate(-50%,-50%);background:#374151;border-radius:4px;z-index:2}.light{position:absolute;width:36px;height:36px;border-radius:50%;border:3px solid #374151;z-index:3;transition:all .3s}.light.north{left:50%;top:40px;transform:translateX(-50%)}.light.south{left:50%;bottom:40px;transform:translateX(-50%)}.light.east{right:60px;top:50%;transform:translateY(-50%)}.light.west{left:60px;top:50%;transform:translateY(-50%)}.light.red{background:#ef4444;box-shadow:0 0 20px rgba(239,68,68,.6)}.light.yellow{background:#eab308;box-shadow:0 0 20px rgba(234,179,8,.6)}.light.green{background:#22c55e;box-shadow:0 0 20px rgba(34,197,94,.6)}.light.off{background:#374151}.light-label{position:absolute;font-size:.65rem;color:#9ca3af;z-index:4;text-transform:uppercase;letter-spacing:1px}.light-label.north{left:50%;top:20px;transform:translateX(-50%)}.light-label.south{left:50%;bottom:20px;transform:translateX(-50%)}.light-label.east{right:30px;top:50%;transform:translateY(-50%)}.light-label.west{left:30px;top:50%;transform:translateY(-50%)}.controls{display:flex;gap:.8rem;justify-content:center;margin-top:1.5rem;flex-wrap:wrap}.btn{padding:.6rem 1.2rem;border:none;border-radius:6px;font-family:inherit;font-size:.8rem;cursor:pointer;font-weight:600;letter-spacing:1px}.btn-emergency{background:#dc2626;color:white}.btn-resume{background:#22c55e;color:white}.phase-info{text-align:center;margin:1.5rem 0;padding:1rem;background:#111827;border-radius:8px}.phase-info .phase{font-size:1.2rem;color:#f9fafb;font-weight:700}.phase-info .detail{color:#6b7280;font-size:.75rem;margin-top:.3rem}.footer{text-align:center;color:#374151;font-size:.7rem;margin-top:2rem}</style></head><body><div class='container'><div class='header'><h1>SEMAPHORE AGENT</h1><div class='sub'>{intersection}</div></div><div class='status-bar'><div><span class='label'>MODE </span><span class='value'>{mode}</span></div><div><span class='label'>CYCLE </span><span class='value'>#{cycle}</span></div><div><span class='label'>PHASE </span><span class='value'>{phase}</span></div></div><div class='phase-info'><div class='phase'>{phase_label}</div><div class='detail'>Valid transitions: {valid}</div></div><div class='intersection'><div class='road-v'></div><div class='road-h'></div><div class='center-box'></div><span class='light-label north'>N</span><div class='light north {n}'></div><span class='light-label south'>S</span><div class='light south {s}'></div><span class='light-label east'>E</span><div class='light east {e}'></div><span class='light-label west'>W</span><div class='light west {w}'></div></div><div class='controls'>{emergency_btn}</div><div class='footer'>Soma v0.23 -- Real-time Traffic Control</div></div></body></html>"
+    }
+
+    on color_for(state: String) {
+        if state == "green" { return "#22c55e" }
+        if state == "yellow" { return "#eab308" }
+        if state == "red" { return "#ef4444" }
+        return "#374151"
+    }
+
+    on phase_name(phase: String) {
+        if phase == "green_ns" { return "North-South GREEN" }
+        if phase == "yellow_ns" { return "North-South YELLOW -- Clearing" }
+        if phase == "green_ew" { return "East-West GREEN" }
+        if phase == "yellow_ew" { return "East-West YELLOW -- Clearing" }
+        if phase == "emergency_red" { return "EMERGENCY -- All Red" }
+        return phase
+    }
+}

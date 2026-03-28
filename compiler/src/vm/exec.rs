@@ -492,7 +492,7 @@ impl VM {
                 Value::Map(vec![
                     ("_status".to_string(), Value::Int(200)),
                     ("_body".to_string(), Value::String(body)),
-                    ("_content_type".to_string(), Value::String("text/html".to_string())),
+                    ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
                 ])
             }
             "response" => {

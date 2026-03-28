@@ -86,7 +86,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::Map(vec![
                 ("_status".to_string(), status),
                 ("_body".to_string(), Value::String(body)),
-                ("_content_type".to_string(), Value::String("text/html".to_string())),
+                ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
             ])))
         }
         "response" => {

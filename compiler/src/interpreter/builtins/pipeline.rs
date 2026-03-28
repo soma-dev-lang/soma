@@ -298,7 +298,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 } else { Some(Ok(args[0].clone())) }
             } else { Some(Err(RuntimeError::TypeError("with_column(list, name, source, op, value)".to_string()))) }
         }
-        "describe" | "stats" => {
+        "describe" => {
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);

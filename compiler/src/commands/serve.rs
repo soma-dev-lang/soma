@@ -193,7 +193,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let mime = match file_path.extension().and_then(|e| e.to_str()) {
                     Some("css") => "text/css",
                     Some("js") => "application/javascript",
-                    Some("html") => "text/html",
+                    Some("html") => "text/html; charset=utf-8",
                     Some("png") => "image/png",
                     Some("jpg") | Some("jpeg") => "image/jpeg",
                     Some("svg") => "image/svg+xml",
