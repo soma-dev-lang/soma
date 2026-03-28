@@ -353,12 +353,15 @@ impl StorageBackend for SqliteBackend {
     fn keys(&self) -> Vec<String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&format!(
-            "SELECT key FROM \"{}\" WHERE key NOT LIKE '__%%' ORDER BY key", self.table
+            "SELECT key FROM \"{}\" ORDER BY key", self.table
         )).unwrap();
         stmt.query_map([], |row| {
             let key: String = row.get(0)?;
             Ok(key)
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        }).unwrap()
+            .filter_map(|r| r.ok())
+            .filter(|k| !k.starts_with("__"))
+            .collect()
     }
 
     fn values(&self) -> Vec<StoredValue> {
