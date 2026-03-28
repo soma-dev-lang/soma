@@ -399,6 +399,13 @@ pub enum Expr {
         right: Box<Spanned<Expr>>,
     },
     Not(Box<Spanned<Expr>>),
+    /// Record literal: User { name: "Alice", age: 30 }
+    Record {
+        type_name: String,
+        fields: Vec<(String, Spanned<Expr>)>,
+    },
+    /// Try expression: try { expr } returns map with value or error
+    Try(Box<Spanned<Expr>>),
     /// Pipe: expr |> fn(args) → fn(expr, args)
     Pipe {
         left: Box<Spanned<Expr>>,

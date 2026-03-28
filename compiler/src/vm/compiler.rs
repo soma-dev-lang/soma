@@ -251,7 +251,6 @@ impl BytecodeCompiler {
             }
 
             Expr::Pipe { left, right } => {
-                // Compile left, then desugar: left |> f(a,b) → f(left,a,b)
                 self.compile_expr(chunk, &left.node);
                 match &right.node {
                     Expr::FnCall { name, args } => {
@@ -269,6 +268,26 @@ impl BytecodeCompiler {
                         self.compile_expr(chunk, &right.node);
                     }
                 }
+            }
+
+            Expr::Record { type_name, fields } => {
+                // Compile as map("_type", name, field1, val1, ...)
+                let type_idx = chunk.add_constant(Constant::String("_type".to_string()));
+                chunk.emit_u16(Op::Const, type_idx);
+                let name_idx = chunk.add_constant(Constant::String(type_name.clone()));
+                chunk.emit_u16(Op::Const, name_idx);
+                for (fname, fexpr) in fields {
+                    let fi = chunk.add_constant(Constant::String(fname.clone()));
+                    chunk.emit_u16(Op::Const, fi);
+                    self.compile_expr(chunk, &fexpr.node);
+                }
+                let map_idx = chunk.add_constant(Constant::Name("map".to_string()));
+                chunk.emit_u16_u8(Op::CallBuiltin, map_idx, (2 + fields.len() * 2) as u8);
+            }
+
+            Expr::Try(inner) => {
+                // For VM: just compile the inner expr (simplified)
+                self.compile_expr(chunk, &inner.node);
             }
         }
     }

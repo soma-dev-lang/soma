@@ -37,6 +37,8 @@ pub enum Token {
     For,
     In,
     While,
+    Try,
+    Catch,
     // Operators
     Percent,  // %
     // Imports
@@ -385,6 +387,8 @@ impl<'a> Lexer<'a> {
                     "in" => Token::In,
                     "use" => Token::Use,
                     "while" => Token::While,
+                    "try" => Token::Try,
+                    "catch" => Token::Catch,
                     "runtime" => Token::Runtime,
                     "connect" => Token::Connect,
                     "start" => Token::Start,

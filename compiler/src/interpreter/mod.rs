@@ -540,6 +540,32 @@ impl Interpreter {
                 Ok(Value::Bool(!b))
             }
 
+            Expr::Record { type_name, fields } => {
+                // Record literal: User { name: "Alice", age: 30 }
+                // Evaluates to a Map with a _type field for runtime type checking
+                let mut entries = vec![("_type".to_string(), Value::String(type_name.clone()))];
+                for (field_name, field_expr) in fields {
+                    let val = self.eval_expr(&field_expr.node, env, cell_name, signal_name)?;
+                    entries.push((field_name.clone(), val));
+                }
+                Ok(Value::Map(entries))
+            }
+
+            Expr::Try(inner) => {
+                // try { expr } → returns map("value", result) or map("error", message)
+                match self.eval_expr(&inner.node, env, cell_name, signal_name) {
+                    Ok(val) => Ok(Value::Map(vec![
+                        ("value".to_string(), val),
+                        ("error".to_string(), Value::Unit),
+                    ])),
+                    Err(ExecError::Runtime(e)) => Ok(Value::Map(vec![
+                        ("value".to_string(), Value::Unit),
+                        ("error".to_string(), Value::String(format!("{}", e))),
+                    ])),
+                    Err(ExecError::Return(val)) => Err(ExecError::Return(val)),
+                }
+            }
+
             Expr::Pipe { left, right } => {
                 // Evaluate left side
                 let left_val = self.eval_expr(&left.node, env, cell_name, signal_name)?;
@@ -1376,6 +1402,46 @@ impl Interpreter {
                 }
             }
             // Redirect
+            "load_template" | "load" | "include" => {
+                // load_template("path.html", k1, v1, k2, v2, ...) → load file + render vars
+                if let Some(Value::String(path)) = args.first() {
+                    match std::fs::read_to_string(path) {
+                        Ok(content) => {
+                            // Apply render-style variable substitution
+                            if args.len() > 1 {
+                                let mut result = content;
+                                let mut i = 1;
+                                while i + 1 < args.len() {
+                                    let key = format!("{}", args[i]);
+                                    let val = format!("{}", args[i + 1]);
+                                    result = result.replace(&format!("{{{}}}", key), &val);
+                                    i += 2;
+                                }
+                                Some(Ok(Value::String(result)))
+                            } else {
+                                Some(Ok(Value::String(content)))
+                            }
+                        }
+                        Err(e) => Some(Err(RuntimeError::TypeError(format!("cannot load '{}': {}", path, e)))),
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("load_template expects a file path string".to_string())))
+                }
+            }
+            "is_type" | "is_a" => {
+                // is_type(value, "User") → checks if a record has _type == "User"
+                if args.len() >= 2 {
+                    if let (Value::Map(entries), Value::String(expected)) = (&args[0], &args[1]) {
+                        let actual = entries.iter().find(|(k, _)| k == "_type")
+                            .and_then(|(_, v)| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                        Some(Ok(Value::Bool(actual.as_deref() == Some(expected.as_str()))))
+                    } else {
+                        Some(Ok(Value::Bool(false)))
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("is_type expects (value, type_name)".to_string())))
+                }
+            }
             "redirect" => {
                 let url = args.first().map(|a| format!("{}", a)).unwrap_or("/".to_string());
                 Some(Ok(Value::Map(vec![

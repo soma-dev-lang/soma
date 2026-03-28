@@ -1439,7 +1439,30 @@ impl Parser {
             Token::TypeIdent(name) => {
                 let name = name.clone();
                 self.advance();
-                Ok(Spanned::new(Expr::Ident(name), start))
+                // Check for record literal: User { name: "Alice", age: 30 }
+                if self.check(&Token::LBrace) {
+                    self.advance();
+                    let mut fields = Vec::new();
+                    while !self.check(&Token::RBrace) && !self.is_at_end() {
+                        let (field_name, _) = self.expect_ident()?;
+                        self.expect(Token::Colon)?;
+                        let value = self.parse_expr()?;
+                        fields.push((field_name, value));
+                        if self.check(&Token::Comma) { self.advance(); }
+                    }
+                    self.expect(Token::RBrace)?;
+                    Ok(Spanned::new(Expr::Record { type_name: name, fields }, start.merge(self.prev_span())))
+                } else {
+                    Ok(Spanned::new(Expr::Ident(name), start))
+                }
+            }
+            Token::Try => {
+                // try { expr } → returns map("value", result) or map("error", message)
+                self.advance();
+                self.expect(Token::LBrace)?;
+                let expr = self.parse_expr()?;
+                self.expect(Token::RBrace)?;
+                Ok(Spanned::new(Expr::Try(Box::new(expr)), start.merge(self.prev_span())))
             }
             Token::LParen => {
                 self.advance();
