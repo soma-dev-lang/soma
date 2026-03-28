@@ -1,0 +1,8 @@
+// Tests for the car rental system
+
+cell test CarTests {
+    rules {
+        assert seed() != ()
+        assert list_cars() != ()
+    }
+}

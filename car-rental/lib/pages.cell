@@ -1,0 +1,113 @@
+// HTML page rendering
+
+cell Pages {
+    on layout(title: String, content: String) {
+        return render("<!DOCTYPE html>
+<html lang='fr'>
+<head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <title>{title} — SomaCar</title>
+    <script src='https://unpkg.com/htmx.org@1.9.12'></script>
+    <link rel='preconnect' href='https://fonts.googleapis.com'>
+    <link href='https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap' rel='stylesheet'>
+    <style>
+        :root {
+            --primary: #2563eb; --primary-dark: #1d4ed8;
+            --accent: #f59e0b; --danger: #ef4444; --success: #22c55e;
+            --bg: #f0f4f8; --card: #ffffff;
+            --text: #1e293b; --muted: #64748b;
+            --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 8px 32px rgba(0,0,0,0.06);
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: Inter, -apple-system, sans-serif;
+            background: var(--bg); color: var(--text);
+            min-height: 100vh;
+        }
+        nav {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white; padding: 0 2rem; height: 64px;
+            display: flex; align-items: center; justify-content: space-between;
+            box-shadow: 0 2px 12px rgba(37,99,235,0.3);
+        }
+        nav .logo { font-size: 1.5rem; font-weight: 800; letter-spacing: -0.5px; }
+        nav .logo span { color: var(--accent); }
+        nav a { color: rgba(255,255,255,0.85); text-decoration: none; font-weight: 500; margin-left: 2rem; transition: color 0.15s; }
+        nav a:hover { color: white; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        h2 { font-size: 1.75rem; font-weight: 700; margin-bottom: 1.5rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 1.5rem; }
+        .card {
+            background: var(--card); border-radius: var(--radius);
+            box-shadow: var(--shadow); overflow: hidden; transition: transform 0.2s;
+        }
+        .card:hover { transform: translateY(-4px); }
+        .card img { width: 100%; height: 200px; object-fit: cover; }
+        .card-body { padding: 1.25rem; }
+        .card-body h3 { font-size: 1.125rem; font-weight: 700; margin-bottom: 0.25rem; }
+        .card-body .meta { color: var(--muted); font-size: 0.875rem; margin-bottom: 0.75rem; }
+        .card-body .price { font-size: 1.5rem; font-weight: 800; color: var(--primary); }
+        .card-body .price span { font-size: 0.875rem; font-weight: 400; color: var(--muted); }
+        .badge {
+            display: inline-block; padding: 0.2rem 0.625rem; border-radius: 20px;
+            font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+        }
+        .badge-available { background: #dcfce7; color: #166534; }
+        .badge-unavailable { background: #fef2f2; color: #991b1b; }
+        .badge-pending { background: #fef3c7; color: #92400e; }
+        .badge-confirmed { background: #dbeafe; color: #1e40af; }
+        .badge-active { background: #dcfce7; color: #166534; }
+        .badge-cancelled { background: #fef2f2; color: #991b1b; }
+        .badge-completed { background: #f0f4f8; color: #475569; }
+        .btn {
+            display: inline-block; padding: 0.625rem 1.25rem;
+            background: var(--primary); color: white; border: none;
+            border-radius: 8px; font-size: 0.875rem; font-weight: 600;
+            cursor: pointer; text-decoration: none; transition: all 0.15s;
+        }
+        .btn:hover { background: var(--primary-dark); }
+        .btn-sm { padding: 0.375rem 0.875rem; font-size: 0.8125rem; }
+        .btn-danger { background: var(--danger); }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-success { background: var(--success); }
+        .btn-success:hover { background: #16a34a; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; font-weight: 600; font-size: 0.875rem; margin-bottom: 0.375rem; color: var(--text); }
+        .form-group input, .form-group select {
+            width: 100%; padding: 0.625rem 0.875rem;
+            border: 1.5px solid #e2e8f0; border-radius: 8px;
+            font-size: 0.9375rem; outline: none; font-family: inherit;
+        }
+        .form-group input:focus { border-color: var(--primary); }
+        .booking-form { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.5rem; max-width: 500px; }
+        table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+        th { background: #f8fafc; text-align: left; padding: 0.75rem 1rem; font-size: 0.8125rem; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+        td { padding: 0.75rem 1rem; border-top: 1px solid #f1f5f9; font-size: 0.9375rem; }
+        tr:hover td { background: #f8fafc; }
+        .actions { display: flex; gap: 0.5rem; }
+        .hero { text-align: center; padding: 3rem 1rem 2rem; }
+        .hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 0.5rem; }
+        .hero p { color: var(--muted); font-size: 1.125rem; }
+        .stats { display: flex; gap: 2rem; justify-content: center; margin: 2rem 0; }
+        .stat { text-align: center; }
+        .stat .num { font-size: 2rem; font-weight: 800; color: var(--primary); }
+        .stat .label { font-size: 0.8125rem; color: var(--muted); }
+        .htmx-added { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } }
+        .empty { text-align: center; padding: 3rem; color: var(--muted); }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class='logo'>Soma<span>Car</span></div>
+        <div>
+            <a href='/'>Vehicules</a>
+            <a href='/bookings'>Reservations</a>
+        </div>
+    </nav>
+    {content}
+</body>
+</html>", "title", title, "content", content)
+    }
+}

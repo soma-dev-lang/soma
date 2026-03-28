@@ -1,0 +1,43 @@
+// Car inventory management
+
+cell Cars {
+    memory {
+        cars: Map<String, String> [persistent, consistent]
+    }
+
+    on seed() {
+        cars.set("1", to_json(map("id", 1, "brand", "Tesla", "model", "Model 3", "year", 2024, "price", 89, "image", "https://images.unsplash.com/photo-1560958089-b8a1929cea89?w=400", "available", "true")))
+        cars.set("2", to_json(map("id", 2, "brand", "BMW", "model", "Serie 3", "year", 2023, "price", 75, "image", "https://images.unsplash.com/photo-1555215695-3004980ad54e?w=400", "available", "true")))
+        cars.set("3", to_json(map("id", 3, "brand", "Mercedes", "model", "Classe C", "year", 2024, "price", 95, "image", "https://images.unsplash.com/photo-1618843479313-40f8afb4b4d8?w=400", "available", "true")))
+        cars.set("4", to_json(map("id", 4, "brand", "Audi", "model", "A4", "year", 2023, "price", 70, "image", "https://images.unsplash.com/photo-1606664515524-ed2f786a0bd6?w=400", "available", "true")))
+        cars.set("5", to_json(map("id", 5, "brand", "Porsche", "model", "Taycan", "year", 2024, "price", 150, "image", "https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=400", "available", "true")))
+        cars.set("6", to_json(map("id", 6, "brand", "Renault", "model", "Megane E-Tech", "year", 2024, "price", 55, "image", "https://images.unsplash.com/photo-1549317661-bd32c8ce0afa?w=400", "available", "true")))
+        return map("status", "seeded", "count", 6)
+    }
+
+    on list_cars() {
+        let keys = cars.keys()
+        let items = list()
+        for key in keys {
+            let raw = cars.get(key)
+            let car = from_json(raw)
+            items = list(items, car)
+        }
+        return items
+    }
+
+    on get_car(id: String) {
+        let raw = cars.get(id)
+        if raw == () { return () }
+        return from_json(raw)
+    }
+
+    on set_available(id: String, avail: String) {
+        let raw = cars.get(id)
+        if raw == () { return () }
+        let car = from_json(raw)
+        let updated = to_json(map("id", car.id, "brand", car.brand, "model", car.model, "year", car.year, "price", car.price, "image", car.image, "available", avail))
+        cars.set(id, updated)
+        return from_json(updated)
+    }
+}

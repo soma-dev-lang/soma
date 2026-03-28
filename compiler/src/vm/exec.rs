@@ -480,14 +480,16 @@ impl VM {
                 }
             }
             "from_json" => {
-                if let Some(Value::String(s)) = args.first() {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
-                        json_to_value(&v)
-                    } else {
-                        Value::String(s.clone())
+                match args.first() {
+                    Some(Value::String(s)) => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+                            json_to_value(&v)
+                        } else {
+                            Value::String(s.clone())
+                        }
                     }
-                } else {
-                    Value::Unit
+                    Some(v @ Value::Map(_)) | Some(v @ Value::List(_)) => v.clone(),
+                    _ => Value::Unit,
                 }
             }
             "to_json" => {

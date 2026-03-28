@@ -421,9 +421,7 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
         .filter_map(|s| if let ast::Section::OnSignal(ref on) = s.node { Some(on.signal_name.clone()) } else { None })
         .collect();
 
-    let (signal_name, actual_args) = if handler_names.len() == 1 {
-        (handler_names[0].clone(), arg_values)
-    } else if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
+    let (signal_name, actual_args) = if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
         if handler_names.contains(name) {
             (name.clone(), arg_values[1..].to_vec())
         } else {
@@ -487,9 +485,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     // If the first arg matches a handler name, use it as the signal
     // Otherwise, use the first (or only) handler
-    let (signal_name, actual_args) = if handler_names.len() == 1 {
-        (handler_names[0].clone(), arg_values)
-    } else if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
+    let (signal_name, actual_args) = if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
         if handler_names.contains(name) {
             (name.clone(), arg_values[1..].to_vec())
         } else {
@@ -501,13 +497,10 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     let mut interp = interpreter::Interpreter::new(&program);
 
-    // Set up storage backends for the cell's memory slots
-    let cell_def = program.cells.iter()
-        .find(|c| c.node.name == cell_name)
-        .map(|c| &c.node);
-
-    if let Some(cell) = cell_def {
-        for section in &cell.sections {
+    // Set up storage for ALL cells (including imported ones)
+    for prog_cell in &program.cells {
+        if prog_cell.node.kind != ast::CellKind::Cell { continue; }
+        for section in &prog_cell.node.sections {
             if let ast::Section::Memory(ref mem) = section.node {
                 let mut slots = std::collections::HashMap::new();
                 for slot in &mem.slots {
@@ -515,11 +508,11 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
                         .map(|p| p.node.name().to_string())
                         .collect();
                     let backend = runtime::storage::resolve_backend_from_registry(
-                        &cell_name, &slot.node.name, &props, registry,
+                        &prog_cell.node.name, &slot.node.name, &props, registry,
                     );
                     slots.insert(slot.node.name.clone(), backend);
                 }
-                interp.set_storage(&cell_name, &slots);
+                interp.set_storage(&prog_cell.node.name, &slots);
             }
         }
     }
@@ -658,16 +651,23 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
         })
         .collect();
 
-    // Set up storage
+    // Set up storage for ALL cells (including imported ones)
     let mut storage_slots = std::collections::HashMap::new();
-    for section in &cell.node.sections {
-        if let ast::Section::Memory(ref mem) = section.node {
-            for slot in &mem.slots {
-                let props: Vec<String> = slot.node.properties.iter()
-                    .map(|p| p.node.name().to_string())
-                    .collect();
-                let backend = runtime::storage::resolve_backend_from_registry(&cell_name, &slot.node.name, &props, registry);
-                storage_slots.insert(slot.node.name.clone(), backend);
+    for prog_cell in &program.cells {
+        if prog_cell.node.kind != ast::CellKind::Cell { continue; }
+        for section in &prog_cell.node.sections {
+            if let ast::Section::Memory(ref mem) = section.node {
+                for slot in &mem.slots {
+                    let props: Vec<String> = slot.node.properties.iter()
+                        .map(|p| p.node.name().to_string())
+                        .collect();
+                    let backend = runtime::storage::resolve_backend_from_registry(
+                        &prog_cell.node.name, &slot.node.name, &props, registry);
+                    storage_slots.insert(slot.node.name.clone(), backend.clone());
+                    // Also register with cell prefix
+                    storage_slots.insert(
+                        format!("{}.{}", prog_cell.node.name, slot.node.name), backend);
+                }
             }
         }
     }

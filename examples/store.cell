@@ -1,10 +1,10 @@
-// A key-value store that actually persists data.
-// Run it multiple times — data survives.
+// A key-value store with string interpolation
 
 cell Store {
     face {
-        signal put(key: String, value: String)
+        signal put(key: String, value: String) -> String
         signal get(key: String) -> String
+        signal delete(key: String) -> String
         signal count() -> Int
         signal dump() -> String
     }
@@ -18,15 +18,11 @@ cell Store {
         return value
     }
 
-    on get(key: String) {
-        return data.get(key)
-    }
+    on get(key: String) { return data.get(key) }
+    on count() { return data.len() }
+    on dump() { return data.keys() }
 
-    on count() {
-        return data.len()
-    }
-
-    on dump() {
-        return data.list()
+    on delete(key: String) {
+        return data.delete(key)
     }
 }

@@ -410,7 +410,16 @@ impl Interpreter {
         signal_name: &str,
     ) -> Result<Value, ExecError> {
         match expr {
-            Expr::Literal(lit) => Ok(self.eval_literal(lit)),
+            Expr::Literal(lit) => {
+                let val = self.eval_literal(lit);
+                // Auto-interpolate strings: "Hello {name}" → "Hello Alice"
+                if let Value::String(ref s) = val {
+                    if s.contains('{') {
+                        return Ok(Value::String(self.interpolate_string(s, env)));
+                    }
+                }
+                Ok(val)
+            }
 
             Expr::Ident(name) => env
                 .get(name)
@@ -733,6 +742,47 @@ impl Interpreter {
         }
     }
 
+    /// Interpolate {var} in a string from the local scope.
+    /// If var is not found in scope, leave {var} as-is (for render() compatibility).
+    fn interpolate_string(&self, s: &str, env: &HashMap<String, Value>) -> String {
+        let bytes = s.as_bytes();
+        let mut result = String::with_capacity(s.len());
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'{' {
+                if let Some(end) = s[pos + 1..].find('}') {
+                    let key = &s[pos + 1..pos + 1 + end];
+                    // Check if it's a simple identifier (no spaces, no special chars)
+                    if !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        if let Some(val) = env.get(key) {
+                            result.push_str(&format!("{}", val));
+                            pos = pos + 1 + end + 1;
+                            continue;
+                        }
+                    }
+                    // Also try field access: {car.brand}
+                    if key.contains('.') {
+                        let parts: Vec<&str> = key.splitn(2, '.').collect();
+                        if parts.len() == 2 {
+                            if let Some(val) = env.get(parts[0]) {
+                                if let Value::Map(ref entries) = val {
+                                    if let Some((_, field_val)) = entries.iter().find(|(k, _)| k == parts[1]) {
+                                        result.push_str(&format!("{}", field_val));
+                                        pos = pos + 1 + end + 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            result.push(bytes[pos] as char);
+            pos += 1;
+        }
+        result
+    }
+
     fn eval_literal(&self, lit: &Literal) -> Value {
         match lit {
             Literal::Int(n) => Value::Int(*n),
@@ -955,10 +1005,12 @@ impl Interpreter {
             }
             "from_json" => {
                 args.first().map(|arg| {
-                    if let Value::String(s) = arg {
-                        Ok(json_to_value(s))
-                    } else {
-                        Err(RuntimeError::TypeError("from_json expects a string".to_string()))
+                    match arg {
+                        Value::String(s) => Ok(json_to_value(s)),
+                        // If already a Map or List, return as-is (idempotent)
+                        Value::Map(_) | Value::List(_) => Ok(arg.clone()),
+                        Value::Unit => Ok(Value::Unit),
+                        other => Ok(Value::String(format!("{}", other))),
                     }
                 })
             }

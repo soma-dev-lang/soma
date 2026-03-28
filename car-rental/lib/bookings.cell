@@ -1,0 +1,51 @@
+// Booking management with state machine
+
+cell Bookings {
+    memory {
+        bookings: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    state booking_status {
+        initial: pending
+        pending -> confirmed
+        confirmed -> active
+        active -> completed
+        * -> cancelled
+    }
+
+    on create_booking(car_id: String, customer: String, start_date: String, end_date: String, total: String) {
+        let id = next_id()
+        let id_str = to_string(id)
+        let booking = to_json(map("id", id, "car_id", car_id, "customer", customer, "start_date", start_date, "end_date", end_date, "total", total, "status", "pending"))
+        bookings.set(id_str, booking)
+        return map("id", id, "car_id", car_id, "customer", customer, "status", "pending")
+    }
+
+    on get_booking(id: String) {
+        let raw = bookings.get(id)
+        if raw == () { return () }
+        return from_json(raw)
+    }
+
+    on list_bookings() {
+        let keys = bookings.keys()
+        let items = list()
+        for key in keys {
+            items = list(items, from_json(bookings.get(key)))
+        }
+        return items
+    }
+
+    on update_status(id: String, new_status: String) {
+        let raw = bookings.get(id)
+        if raw == () { return response(404, map("error", "booking not found")) }
+        let b = from_json(raw)
+        let updated = to_json(map("id", b.id, "car_id", b.car_id, "customer", b.customer, "start_date", b.start_date, "end_date", b.end_date, "total", b.total, "status", new_status))
+        bookings.set(id, updated)
+        return map("id", id, "status", new_status)
+    }
+
+    on cancel_booking(id: String) { return update_status(id, "cancelled") }
+    on confirm_booking(id: String) { return update_status(id, "confirmed") }
+}
