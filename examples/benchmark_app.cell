@@ -1,0 +1,74 @@
+// A complete REST API with persistence, validation, and HTML UI.
+// This is the benchmark: same app in Soma vs Express vs Flask vs Go.
+
+cell Contacts {
+    face {
+        signal create(name: String, email: String, phone: String) -> String
+        signal get(id: String) -> String
+        signal list() -> String
+        signal search(q: String) -> String
+        signal delete(id: String) -> String
+        signal page() -> String
+        promise all_persistent
+    }
+
+    memory {
+        contacts: Map<String, String> [persistent, consistent]
+    }
+
+    on create(name: String, email: String, phone: String) {
+        let id = next_id()
+        contacts.set(to_string(id), to_json(map("id", id, "name", name, "email", email, "phone", phone)))
+        return map("id", id, "name", name, "email", email, "phone", phone)
+    }
+
+    on get(id: String) {
+        let raw = contacts.get(id)
+        if raw == () { return response(404, map("error", "not found")) }
+        return from_json(raw)
+    }
+
+    on list() {
+        let items = list()
+        for key in contacts.keys() {
+            items = list(items, from_json(contacts.get(key)))
+        }
+        return items
+    }
+
+    on search(q: String) {
+        let results = list()
+        for key in contacts.keys() {
+            let c = from_json(contacts.get(key))
+            if contains(c.name, q) { results = list(results, c) }
+        }
+        return results
+    }
+
+    on delete(id: String) {
+        if contacts.delete(id) == false { return response(404, map("error", "not found")) }
+        return map("deleted", id)
+    }
+
+    on page() {
+        let rows = ""
+        for key in contacts.keys() {
+            let c = from_json(contacts.get(key))
+            rows += "<tr><td>{c.name}</td><td>{c.email}</td><td>{c.phone}</td>
+                <td><a class='btn btn-sm btn-danger' hx-post='/delete/{c.id}' hx-target='closest tr' hx-swap='outerHTML swap:150ms'>X</a></td></tr>"
+        }
+        return html("<html><head><script src='https://unpkg.com/htmx.org@1.9.12'></script>
+            <style>*{margin:0;padding:0;box-sizing:border-box;font-family:system-ui}body{background:#0f172a;color:#e2e8f0;padding:2rem}
+            h1{font-size:2rem;margin-bottom:1rem}table{width:100%;border-collapse:collapse;background:#1e293b;border-radius:8px;overflow:hidden}
+            th{background:#334155;padding:.75rem;text-align:left;font-size:.75rem;text-transform:uppercase;color:#94a3b8}
+            td{padding:.75rem;border-top:1px solid #334155}input{padding:.5rem;background:#1e293b;border:1px solid #475569;border-radius:6px;color:#e2e8f0}
+            .btn{padding:.4rem .8rem;background:#6366f1;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;text-decoration:none}
+            .btn-danger{background:#ef4444}form{display:flex;gap:.5rem;margin-bottom:1.5rem}</style></head>
+            <body><h1>Contacts</h1>
+            <form hx-get='/create' hx-target='#list' hx-swap='innerHTML' hx-on::after-request='this.reset()'>
+                <input name='name' placeholder='Nom' required><input name='email' placeholder='Email' required>
+                <input name='phone' placeholder='Tel' required><button class='btn'>Ajouter</button></form>
+            <table><thead><tr><th>Nom</th><th>Email</th><th>Tel</th><th></th></tr></thead>
+            <tbody id='list' hx-get='/list_rows' hx-trigger='load' hx-swap='innerHTML'>{rows}</tbody></table></body></html>")
+    }
+}
