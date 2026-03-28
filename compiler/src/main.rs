@@ -832,6 +832,18 @@ fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Registry) 
         };
         let body = body_raw;
 
+        // Handle CORS preflight (OPTIONS)
+        if method == "OPTIONS" {
+            let resp = tiny_http::Response::from_string("")
+                .with_status_code(204)
+                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
+                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, DELETE, OPTIONS"[..]).unwrap())
+                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type, Authorization"[..]).unwrap())
+                .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Max-Age"[..], &b"86400"[..]).unwrap());
+            let _ = request.respond(resp);
+            return;
+        }
+
         // Serve static files: /static/path → base_dir/static/path
         if url.starts_with("/static/") {
             let file_path = base_dir.join(&url[1..]); // strip leading /

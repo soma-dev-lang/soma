@@ -76,7 +76,13 @@ impl std::fmt::Display for Value {
         match self {
             Value::Int(n) => write!(f, "{}", n),
             Value::Big(n) => write!(f, "{}", n),
-            Value::Float(n) => write!(f, "{}", n),
+            Value::Float(n) => {
+                if n.fract() == 0.0 && n.is_finite() {
+                    write!(f, "{:.1}", n)
+                } else {
+                    write!(f, "{}", n)
+                }
+            }
             Value::String(s) => write!(f, "{}", s),
             Value::Bool(b) => write!(f, "{}", b),
             Value::List(items) => {
@@ -672,6 +678,13 @@ impl Interpreter {
                 let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
                 match target_val {
                     Value::Map(ref entries) => {
+                        // Built-in pseudo-fields for maps
+                        match field.as_str() {
+                            "keys" => return Ok(Value::List(entries.iter().map(|(k, _)| Value::String(k.clone())).collect())),
+                            "values" => return Ok(Value::List(entries.iter().map(|(_, v)| v.clone()).collect())),
+                            "length" | "len" | "size" => return Ok(Value::Int(entries.len() as i64)),
+                            _ => {}
+                        }
                         let val = entries.iter()
                             .find(|(k, _)| k == field)
                             .map(|(_, v)| v.clone())
@@ -1081,6 +1094,14 @@ impl Interpreter {
                 BinOp::Add => Ok(Value::String(format!("{}{}", a, b))),
                 _ => Err(RuntimeError::TypeError("invalid op for strings".to_string())),
             },
+            (Value::List(a), Value::List(b)) => match op {
+                BinOp::Add => {
+                    let mut result = a.clone();
+                    result.extend(b.clone());
+                    Ok(Value::List(result))
+                }
+                _ => Err(RuntimeError::TypeError("invalid op for lists".to_string())),
+            },
             (Value::Bool(a), Value::Bool(b)) => match op {
                 BinOp::And => Ok(Value::Bool(*a && *b)),
                 BinOp::Or => Ok(Value::Bool(*a || *b)),
@@ -1193,7 +1214,9 @@ impl Interpreter {
             "len" => {
                 args.first().map(|arg| match arg {
                     Value::String(s) => Ok(Value::Int(s.len() as i64)),
-                    _ => Err(RuntimeError::TypeError("len expects a string".to_string())),
+                    Value::List(items) => Ok(Value::Int(items.len() as i64)),
+                    Value::Map(entries) => Ok(Value::Int(entries.len() as i64)),
+                    _ => Err(RuntimeError::TypeError("len expects a string, list, or map".to_string())),
                 })
             }
             "concat" => {
@@ -1640,11 +1663,29 @@ impl Interpreter {
                 } else { Some(Ok(Value::Float(0.0))) }
             }
             "min" => {
-                if args.len() >= 2 { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(a.min(b)))) }
+                if args.len() >= 2 {
+                    match (&args[0], &args[1]) {
+                        (Value::Float(_), _) | (_, Value::Float(_)) => {
+                            let a = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                            let b = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                            Some(Ok(Value::Float(a.min(b))))
+                        }
+                        _ => { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(a.min(b)))) }
+                    }
+                }
                 else { args.first().map(|a| Ok(a.clone())) }
             }
             "max" => {
-                if args.len() >= 2 { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(a.max(b)))) }
+                if args.len() >= 2 {
+                    match (&args[0], &args[1]) {
+                        (Value::Float(_), _) | (_, Value::Float(_)) => {
+                            let a = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                            let b = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                            Some(Ok(Value::Float(a.max(b))))
+                        }
+                        _ => { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(a.max(b)))) }
+                    }
+                }
                 else { args.first().map(|a| Ok(a.clone())) }
             }
             // ── Technical indicators ─────────────────────────────────────
@@ -1827,16 +1868,32 @@ impl Interpreter {
                         if let Value::Map(entries) = item {
                             let val = entries.iter().find(|(k, _)| k == &field).map(|(_, v)| v);
                             if let Some(val) = val {
-                                let a = val_to_i64(val);
-                                let b = val_to_i64(threshold);
-                                match op.as_str() {
-                                    ">" => a > b,
-                                    ">=" => a >= b,
-                                    "<" => a < b,
-                                    "<=" => a <= b,
-                                    "==" | "=" => format!("{}", val) == format!("{}", threshold),
-                                    "!=" => format!("{}", val) != format!("{}", threshold),
-                                    _ => true,
+                                // Use float comparison if either value is a Float
+                                let use_float = matches!(val, Value::Float(_)) || matches!(threshold, Value::Float(_));
+                                if use_float {
+                                    let a = val_to_f64(val);
+                                    let b = val_to_f64(threshold);
+                                    match op.as_str() {
+                                        ">" => a > b,
+                                        ">=" => a >= b,
+                                        "<" => a < b,
+                                        "<=" => a <= b,
+                                        "==" | "=" => (a - b).abs() < f64::EPSILON,
+                                        "!=" => (a - b).abs() >= f64::EPSILON,
+                                        _ => true,
+                                    }
+                                } else {
+                                    let a = val_to_i64(val);
+                                    let b = val_to_i64(threshold);
+                                    match op.as_str() {
+                                        ">" => a > b,
+                                        ">=" => a >= b,
+                                        "<" => a < b,
+                                        "<=" => a <= b,
+                                        "==" | "=" => format!("{}", val) == format!("{}", threshold),
+                                        "!=" => format!("{}", val) != format!("{}", threshold),
+                                        _ => true,
+                                    }
                                 }
                             } else { false }
                         } else { false }
@@ -1851,12 +1908,27 @@ impl Interpreter {
                 if let Some(Value::List(items)) = args.first() {
                     let field = if args.len() >= 2 { format!("{}", args[1]) } else { return Some(Ok(Value::List(items.clone()))); };
                     let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(false);
-                    let mut sorted = items.clone();
-                    sorted.sort_by(|a, b| {
-                        let av = map_field_i64(a, &field);
-                        let bv = map_field_i64(b, &field);
-                        if desc { bv.cmp(&av) } else { av.cmp(&bv) }
+                    // Check if any value in the field is a float to use float comparison
+                    let has_float = items.iter().any(|item| {
+                        if let Value::Map(entries) = item {
+                            entries.iter().any(|(k, v)| k == &field && matches!(v, Value::Float(_)))
+                        } else { false }
                     });
+                    let mut sorted = items.clone();
+                    if has_float {
+                        sorted.sort_by(|a, b| {
+                            let av = map_field_f64(a, &field);
+                            let bv = map_field_f64(b, &field);
+                            if desc { bv.partial_cmp(&av).unwrap_or(std::cmp::Ordering::Equal) }
+                            else { av.partial_cmp(&bv).unwrap_or(std::cmp::Ordering::Equal) }
+                        });
+                    } else {
+                        sorted.sort_by(|a, b| {
+                            let av = map_field_i64(a, &field);
+                            let bv = map_field_i64(b, &field);
+                            if desc { bv.cmp(&av) } else { av.cmp(&bv) }
+                        });
+                    }
                     Some(Ok(Value::List(sorted)))
                 } else {
                     Some(Err(RuntimeError::TypeError("sort_by expects (list, field)".to_string())))
@@ -2474,6 +2546,17 @@ fn serde_json_to_value(v: &serde_json::Value) -> Value {
     }
 }
 
+/// Extract an f64 from a Value (for float comparisons)
+fn val_to_f64(v: &Value) -> f64 {
+    match v {
+        Value::Float(n) => *n,
+        Value::Int(n) => *n as f64,
+        Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
+        Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+        _ => 0.0,
+    }
+}
+
 /// Extract an i64 from a Value (for sorting/filtering)
 fn val_to_i64(v: &Value) -> i64 {
     match v {
@@ -2483,6 +2566,14 @@ fn val_to_i64(v: &Value) -> i64 {
         Value::Bool(b) => if *b { 1 } else { 0 },
         _ => 0,
     }
+}
+
+/// Get a field from a Map as f64
+fn map_field_f64(item: &Value, field: &str) -> f64 {
+    if let Value::Map(entries) = item {
+        entries.iter().find(|(k, _)| k == field)
+            .map(|(_, v)| val_to_f64(v)).unwrap_or(0.0)
+    } else { 0.0 }
 }
 
 /// Get a field from a Map as i64

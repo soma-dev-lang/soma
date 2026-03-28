@@ -89,7 +89,15 @@ impl StorageBackend for MemoryBackend {
     }
 
     fn list(&self) -> Vec<StoredValue> {
-        self.log.read().unwrap().clone()
+        let log = self.log.read().unwrap();
+        if !log.is_empty() {
+            return log.clone();
+        }
+        // Fall back to map values when log is empty (data was added via set())
+        self.map.read().unwrap().iter()
+            .filter(|(k, _)| !k.starts_with("__"))
+            .map(|(_, v)| v.clone())
+            .collect()
     }
 
     fn keys(&self) -> Vec<String> {
@@ -200,7 +208,14 @@ impl StorageBackend for FileBackend {
     }
 
     fn list(&self) -> Vec<StoredValue> {
-        self.log.read().unwrap().clone()
+        let log = self.log.read().unwrap();
+        if !log.is_empty() {
+            return log.clone();
+        }
+        self.map.read().unwrap().iter()
+            .filter(|(k, _)| !k.starts_with("__"))
+            .map(|(_, v)| v.clone())
+            .collect()
     }
 
     fn keys(&self) -> Vec<String> {
@@ -340,8 +355,21 @@ impl StorageBackend for SqliteBackend {
 
     fn list(&self) -> Vec<StoredValue> {
         let conn = self.conn.lock().unwrap();
+        // First try the log table
         let mut stmt = conn.prepare(&format!(
             "SELECT value, type FROM \"{}_log\" ORDER BY id", self.table
+        )).unwrap();
+        let log_items: Vec<StoredValue> = stmt.query_map([], |row| {
+            let val: String = row.get(0)?;
+            let typ: String = row.get(1)?;
+            Ok(Self::load_typed(&val, &typ))
+        }).unwrap().filter_map(|r| r.ok()).collect();
+        if !log_items.is_empty() {
+            return log_items;
+        }
+        // Fall back to KV table values when log is empty (data was added via set())
+        let mut stmt = conn.prepare(&format!(
+            "SELECT value, type FROM \"{}\" WHERE key NOT LIKE '__%%' ORDER BY key", self.table
         )).unwrap();
         stmt.query_map([], |row| {
             let val: String = row.get(0)?;

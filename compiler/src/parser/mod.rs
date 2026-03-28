@@ -161,6 +161,16 @@ impl Parser {
             Token::Test => { let span = tok.span; self.advance(); Ok(("test".to_string(), span)) }
             Token::Backend => { let span = tok.span; self.advance(); Ok(("backend".to_string(), span)) }
             Token::Builtin => { let span = tok.span; self.advance(); Ok(("builtin".to_string(), span)) }
+            Token::Signal => { let span = tok.span; self.advance(); Ok(("signal".to_string(), span)) }
+            Token::Check => { let span = tok.span; self.advance(); Ok(("check".to_string(), span)) }
+            Token::Memory => { let span = tok.span; self.advance(); Ok(("memory".to_string(), span)) }
+            Token::Face => { let span = tok.span; self.advance(); Ok(("face".to_string(), span)) }
+            Token::Property => { let span = tok.span; self.advance(); Ok(("property".to_string(), span)) }
+            Token::Rules => { let span = tok.span; self.advance(); Ok(("rules".to_string(), span)) }
+            Token::Runtime => { let span = tok.span; self.advance(); Ok(("runtime".to_string(), span)) }
+            Token::Matches => { let span = tok.span; self.advance(); Ok(("matches".to_string(), span)) }
+            Token::Native => { let span = tok.span; self.advance(); Ok(("native".to_string(), span)) }
+            Token::Checker => { let span = tok.span; self.advance(); Ok(("checker".to_string(), span)) }
             _ => Err(ParseError::Expected {
                 expected: "identifier".to_string(),
                 found: tok.token.clone(),
@@ -344,6 +354,20 @@ impl Parser {
             Token::Every => {
                 let ev = self.parse_every_section()?;
                 Ok(Spanned::new(Section::Every(ev), start.merge(self.prev_span())))
+            }
+            Token::Assert => {
+                // In test cells, `assert expr` is syntactic sugar for a Rules section with Assert rules
+                let mut rules = Vec::new();
+                while self.check(&Token::Assert) {
+                    let rule_start = self.peek_span();
+                    self.advance();
+                    let expr = self.parse_expr()?;
+                    rules.push(Spanned::new(Rule::Assert(expr), rule_start.merge(self.prev_span())));
+                }
+                Ok(Spanned::new(
+                    Section::Rules(RulesSection { rules }),
+                    start.merge(self.prev_span()),
+                ))
             }
             _ => Err(ParseError::Expected {
                 expected: "face, memory, interior, on, rules, runtime, state, or every".to_string(),
@@ -1011,7 +1035,18 @@ impl Parser {
                 self.advance();
                 let constraint = self.parse_constraint()?;
                 self.expect(Token::Else)?;
-                let (else_signal, _) = self.expect_ident()?;
+                // Accept either an identifier or a string literal as the else target
+                let else_signal = match self.peek() {
+                    Token::StringLit(s) => {
+                        let s = s.clone();
+                        self.advance();
+                        s
+                    }
+                    _ => {
+                        let (name, _) = self.expect_ident()?;
+                        name
+                    }
+                };
                 Ok(Spanned::new(
                     Statement::Require {
                         constraint,
@@ -1020,7 +1055,11 @@ impl Parser {
                     start.merge(self.prev_span()),
                 ))
             }
-            Token::Ident(_) | Token::State | Token::Type | Token::Effect | Token::Guard | Token::Initial => {
+            Token::Ident(_) | Token::State | Token::Type | Token::Effect | Token::Guard | Token::Initial |
+            Token::Start | Token::Test | Token::Backend | Token::Builtin |
+            Token::Check | Token::Memory | Token::Face |
+            Token::Property | Token::Rules | Token::Runtime | Token::Matches |
+            Token::Native | Token::Checker => {
                 // Could be: assignment, target.method(args), fn_call(args), or bare expr
                 let save_pos = self.pos;
                 let (name, name_span) = self.expect_ident()?;
@@ -1237,13 +1276,18 @@ impl Parser {
                     ))
                 }
             }
-            _ => Ok(Spanned::new(
-                Constraint::Predicate {
-                    name: format!("{:?}", left.node),
-                    args: vec![],
-                },
-                left.span,
-            )),
+            _ => {
+                // Treat any non-ident expression as a boolean comparison: expr == true
+                let right_span = left.span;
+                Ok(Spanned::new(
+                    Constraint::Comparison {
+                        left,
+                        op: CmpOp::Eq,
+                        right: Spanned::new(Expr::Literal(Literal::Bool(true)), right_span),
+                    },
+                    right_span,
+                ))
+            }
         }
     }
 
@@ -1268,10 +1312,10 @@ impl Parser {
     }
 
     fn parse_null_coalesce(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        let mut left = self.parse_comparison()?;
+        let mut left = self.parse_logical_or()?;
         while self.check(&Token::NullCoal) {
             self.advance();
-            let right = self.parse_comparison()?;
+            let right = self.parse_logical_or()?;
             let span = left.span.merge(right.span);
             // a ?? b → if a == () then b else a
             // Desugar to FnCall("_coalesce", [a, b])
@@ -1279,6 +1323,42 @@ impl Parser {
                 name: "_coalesce".to_string(),
                 args: vec![left, right],
             }, span);
+        }
+        Ok(left)
+    }
+
+    fn parse_logical_or(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        let mut left = self.parse_logical_and()?;
+        while self.check(&Token::OrOr) {
+            self.advance();
+            let right = self.parse_logical_and()?;
+            let span = left.span.merge(right.span);
+            left = Spanned::new(
+                Expr::BinaryOp {
+                    left: Box::new(left),
+                    op: BinOp::Or,
+                    right: Box::new(right),
+                },
+                span,
+            );
+        }
+        Ok(left)
+    }
+
+    fn parse_logical_and(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        let mut left = self.parse_comparison()?;
+        while self.check(&Token::AndAnd) {
+            self.advance();
+            let right = self.parse_comparison()?;
+            let span = left.span.merge(right.span);
+            left = Spanned::new(
+                Expr::BinaryOp {
+                    left: Box::new(left),
+                    op: BinOp::And,
+                    right: Box::new(right),
+                },
+                span,
+            );
         }
         Ok(left)
     }
@@ -1498,6 +1578,35 @@ impl Parser {
                     }
                     self.expect(Token::RBrace)?;
                     Ok(Spanned::new(Expr::Record { type_name: name, fields }, start.merge(self.prev_span())))
+                } else {
+                    Ok(Spanned::new(Expr::Ident(name), start))
+                }
+            }
+            // Keywords that can be used as variable/function names in expressions
+            Token::State | Token::Type | Token::Effect | Token::Guard | Token::Initial |
+            Token::Start | Token::Test | Token::Backend | Token::Builtin |
+            Token::Signal | Token::Check | Token::Memory | Token::Face |
+            Token::Property | Token::Rules | Token::Runtime | Token::Matches |
+            Token::Native | Token::Checker => {
+                let name = format!("{:?}", self.peek()).to_lowercase();
+                // Get the keyword as a string name
+                let name = match self.peek() {
+                    Token::State => "state", Token::Type => "type", Token::Effect => "effect",
+                    Token::Guard => "guard", Token::Initial => "initial", Token::Start => "start",
+                    Token::Test => "test", Token::Backend => "backend", Token::Builtin => "builtin",
+                    Token::Signal => "signal", Token::Check => "check", Token::Memory => "memory",
+                    Token::Face => "face", Token::Property => "property", Token::Rules => "rules",
+                    Token::Runtime => "runtime", Token::Matches => "matches", Token::Native => "native",
+                    Token::Checker => "checker",
+                    _ => unreachable!(),
+                }.to_string();
+                self.advance();
+                if self.check(&Token::LParen) {
+                    self.advance();
+                    let args = self.parse_arg_list()?;
+                    let end = self.peek_span();
+                    self.expect(Token::RParen)?;
+                    Ok(Spanned::new(Expr::FnCall { name, args }, start.merge(end)))
                 } else {
                     Ok(Spanned::new(Expr::Ident(name), start))
                 }
