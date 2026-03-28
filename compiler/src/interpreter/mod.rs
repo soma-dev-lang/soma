@@ -1319,6 +1319,172 @@ impl Interpreter {
                     ("Location".to_string(), Value::String(url)),
                 ])))
             }
+            // ── Collection pipeline operations ────────────────────────
+            "filter_by" => {
+                // filter_by(list, field, op, value) → filtered list
+                // filter_by(list, field, value) → filter where field == value
+                if let Some(Value::List(items)) = args.first() {
+                    let field = if args.len() >= 2 { format!("{}", args[1]) } else { return Some(Ok(Value::List(items.clone()))); };
+                    let (op, threshold) = if args.len() >= 4 {
+                        (format!("{}", args[2]), &args[3])
+                    } else if args.len() >= 3 {
+                        ("==".to_string(), &args[2])
+                    } else {
+                        return Some(Ok(Value::List(items.clone())));
+                    };
+                    let result: Vec<Value> = items.iter().filter(|item| {
+                        if let Value::Map(entries) = item {
+                            let val = entries.iter().find(|(k, _)| k == &field).map(|(_, v)| v);
+                            if let Some(val) = val {
+                                let a = val_to_i64(val);
+                                let b = val_to_i64(threshold);
+                                match op.as_str() {
+                                    ">" => a > b,
+                                    ">=" => a >= b,
+                                    "<" => a < b,
+                                    "<=" => a <= b,
+                                    "==" | "=" => format!("{}", val) == format!("{}", threshold),
+                                    "!=" => format!("{}", val) != format!("{}", threshold),
+                                    _ => true,
+                                }
+                            } else { false }
+                        } else { false }
+                    }).cloned().collect();
+                    Some(Ok(Value::List(result)))
+                } else {
+                    Some(Err(RuntimeError::TypeError("filter_by expects (list, field, op, value)".to_string())))
+                }
+            }
+            "sort_by" => {
+                // sort_by(list, field) or sort_by(list, field, "desc")
+                if let Some(Value::List(items)) = args.first() {
+                    let field = if args.len() >= 2 { format!("{}", args[1]) } else { return Some(Ok(Value::List(items.clone()))); };
+                    let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(false);
+                    let mut sorted = items.clone();
+                    sorted.sort_by(|a, b| {
+                        let av = map_field_i64(a, &field);
+                        let bv = map_field_i64(b, &field);
+                        if desc { bv.cmp(&av) } else { av.cmp(&bv) }
+                    });
+                    Some(Ok(Value::List(sorted)))
+                } else {
+                    Some(Err(RuntimeError::TypeError("sort_by expects (list, field)".to_string())))
+                }
+            }
+            "top" | "take" => {
+                // top(list, n) → first n elements
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let n = val_to_i64(&args[1]) as usize;
+                        Some(Ok(Value::List(items.iter().take(n).cloned().collect())))
+                    } else {
+                        Some(Ok(args[0].clone()))
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("top expects (list, n)".to_string())))
+                }
+            }
+            "sum_by" => {
+                // sum_by(list, field) → sum of field values
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let total: i64 = items.iter().map(|item| map_field_i64(item, &field)).sum();
+                        Some(Ok(Value::Int(total)))
+                    } else { Some(Ok(Value::Int(0))) }
+                } else {
+                    Some(Err(RuntimeError::TypeError("sum_by expects (list, field)".to_string())))
+                }
+            }
+            "avg_by" => {
+                // avg_by(list, field) → average of field values
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        if items.is_empty() { return Some(Ok(Value::Int(0))); }
+                        let total: i64 = items.iter().map(|item| map_field_i64(item, &field)).sum();
+                        Some(Ok(Value::Int(total / items.len() as i64)))
+                    } else { Some(Ok(Value::Int(0))) }
+                } else {
+                    Some(Err(RuntimeError::TypeError("avg_by expects (list, field)".to_string())))
+                }
+            }
+            "min_by" | "max_by" => {
+                // min_by(list, field) / max_by(list, field) → item with min/max field
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let is_max = name == "max_by";
+                        let result = items.iter().max_by_key(|item| {
+                            let v = map_field_i64(item, &field);
+                            if is_max { v } else { -v }
+                        });
+                        Some(Ok(result.cloned().unwrap_or(Value::Unit)))
+                    } else { Some(Ok(Value::Unit)) }
+                } else {
+                    Some(Err(RuntimeError::TypeError("min_by/max_by expects (list, field)".to_string())))
+                }
+            }
+            "map_by" | "pluck" => {
+                // map_by(list, field) → list of field values
+                // pluck(list, field) → same thing
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let result: Vec<Value> = items.iter().map(|item| {
+                            if let Value::Map(entries) = item {
+                                entries.iter().find(|(k, _)| k == &field)
+                                    .map(|(_, v)| v.clone()).unwrap_or(Value::Unit)
+                            } else { Value::Unit }
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Ok(Value::List(vec![]))) }
+                } else {
+                    Some(Err(RuntimeError::TypeError("map_by expects (list, field)".to_string())))
+                }
+            }
+            "count_by" => {
+                // count_by(list, field, value) → count where field == value
+                if args.len() >= 3 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let target = format!("{}", args[2]);
+                        let count = items.iter().filter(|item| {
+                            if let Value::Map(entries) = item {
+                                entries.iter().any(|(k, v)| k == &field && format!("{}", v) == target)
+                            } else { false }
+                        }).count();
+                        Some(Ok(Value::Int(count as i64)))
+                    } else { Some(Ok(Value::Int(0))) }
+                } else {
+                    Some(Err(RuntimeError::TypeError("count_by expects (list, field, value)".to_string())))
+                }
+            }
+            "group_by" => {
+                // group_by(list, field) → map of field_value → list of items
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let field = format!("{}", args[1]);
+                        let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
+                        for item in items {
+                            let key = if let Value::Map(entries) = item {
+                                entries.iter().find(|(k, _)| k == &field)
+                                    .map(|(_, v)| format!("{}", v)).unwrap_or("unknown".to_string())
+                            } else { "unknown".to_string() };
+                            if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
+                                group.1.push(item.clone());
+                            } else {
+                                groups.push((key, vec![item.clone()]));
+                            }
+                        }
+                        let result: Vec<(String, Value)> = groups.into_iter()
+                            .map(|(k, v)| (k, Value::List(v))).collect();
+                        Some(Ok(Value::Map(result)))
+                    } else { Some(Ok(Value::Map(vec![]))) }
+                } else {
+                    Some(Err(RuntimeError::TypeError("group_by expects (list, field)".to_string())))
+                }
+            }
             // ── Auto-increment ────────────────────────────────────────
             "next_id" => {
                 // next_id() — auto-increment counter using the current cell's first storage slot
@@ -1565,6 +1731,25 @@ fn serde_json_to_value(v: &serde_json::Value) -> Value {
             Value::Map(obj.iter().map(|(k, v)| (k.clone(), serde_json_to_value(v))).collect())
         }
     }
+}
+
+/// Extract an i64 from a Value (for sorting/filtering)
+fn val_to_i64(v: &Value) -> i64 {
+    match v {
+        Value::Int(n) => *n,
+        Value::Float(n) => *n as i64,
+        Value::String(s) => s.parse::<i64>().unwrap_or_else(|_| s.parse::<f64>().unwrap_or(0.0) as i64),
+        Value::Bool(b) => if *b { 1 } else { 0 },
+        _ => 0,
+    }
+}
+
+/// Get a field from a Map as i64
+fn map_field_i64(item: &Value, field: &str) -> i64 {
+    if let Value::Map(entries) = item {
+        entries.iter().find(|(k, _)| k == field)
+            .map(|(_, v)| val_to_i64(v)).unwrap_or(0)
+    } else { 0 }
 }
 
 fn is_bigint_type(ty: &TypeExpr) -> bool {
