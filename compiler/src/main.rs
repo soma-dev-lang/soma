@@ -755,7 +755,7 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
 
         // Create a fresh interpreter per request (shares storage via Arc)
         let mut interp = interpreter::Interpreter::new(&program);
-        interp.set_storage(&cell_name, &storage_slots);
+        interp.set_storage_raw(&storage_slots);
 
         // Determine which signal to call
         // Priority: /signal/ prefix > path-based routing > generic request handler

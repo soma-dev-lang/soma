@@ -193,6 +193,13 @@ impl Interpreter {
         }
     }
 
+    /// Inject pre-keyed storage backends (keys already include cell prefix)
+    pub fn set_storage_raw(&mut self, slots: &HashMap<String, Arc<dyn StorageBackend>>) {
+        for (key, backend) in slots {
+            self.storage.insert(key.clone(), backend.clone());
+        }
+    }
+
     /// Take all emitted signals (drains the buffer)
     /// Find which cell has a handler for the given signal and call it
     pub fn find_and_call(&mut self, signal_name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -205,7 +212,7 @@ impl Interpreter {
             self.call_signal(&cell, signal_name, args)
         } else {
             // Try as a builtin
-            if let Some(result) = self.call_builtin(signal_name, &args) {
+            if let Some(result) = self.call_builtin(signal_name, &args, "") {
                 result
             } else {
                 Err(RuntimeError::UndefinedFn(signal_name.to_string()))
@@ -446,7 +453,7 @@ impl Interpreter {
 
                 // Check builtins FIRST (before recursive calls)
                 // This ensures list() calls the builtin even inside a "list" handler
-                if let Some(val) = self.call_builtin(name, &arg_vals) {
+                if let Some(val) = self.call_builtin(name, &arg_vals, cell_name) {
                     val.map_err(ExecError::Runtime)
                 }
                 // Then check for recursive call to current signal
@@ -612,9 +619,10 @@ impl Interpreter {
         method: &str,
         args: &[Value],
     ) -> Result<Value, ExecError> {
-        // Look up the storage backend for this slot
-        let backend = self.storage.get(slot_name)
-            .or_else(|| self.storage.get(&format!("{}.{}", cell_name, slot_name)));
+        // Look up the storage backend: cell-prefixed FIRST (avoids cross-cell collisions)
+        let prefixed = format!("{}.{}", cell_name, slot_name);
+        let backend = self.storage.get(&prefixed)
+            .or_else(|| self.storage.get(slot_name));
 
         let backend = match backend {
             Some(b) => b,
@@ -956,7 +964,7 @@ impl Interpreter {
     /// Native function boundary. The names here correspond to `native "name"`
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma.
-    fn call_builtin(&self, name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
+    fn call_builtin(&self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
         match name {
             "print" => {
                 for (i, arg) in args.iter().enumerate() {
@@ -1266,10 +1274,13 @@ impl Interpreter {
             }
             // ── Auto-increment ────────────────────────────────────────
             "next_id" => {
-                // next_id() — auto-increment a counter, returns the new ID as Int
-                // Uses a storage slot named "_ids" or the first available slot
+                // next_id() — auto-increment counter using the current cell's first storage slot
                 let counter_key = "__next_id";
-                let slot = self.storage.values().next();
+                // Prefer cell-prefixed slot
+                let slot = self.storage.iter()
+                    .find(|(k, _)| k.starts_with(&format!("{}.", cell_name)))
+                    .or_else(|| self.storage.iter().next())
+                    .map(|(_, v)| v);
                 if let Some(backend) = slot {
                     let current = backend.get(counter_key)
                         .and_then(|v| match v {

@@ -68,6 +68,7 @@ cell Optimizer {
         }
 
         // Normalize to 100%
+        if total_weight == 0 { total_weight = 1 }
         let normalized = list()
         for p in positions {
             let w = p.portfolio_weight * 100 / total_weight

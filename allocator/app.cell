@@ -122,6 +122,8 @@ cell App {
         let portfolio = optimize(ranked, to_int(top_n), to_int(max_wt), to_int(max_active), to_int(track_budget))
         let positions = portfolio.positions
 
+
+
         // Rejected table
         let rej_rows = ""
         let rejected = screened.rejected
