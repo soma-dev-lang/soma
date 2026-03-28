@@ -1,0 +1,54 @@
+// A web app in Soma.
+// HTTP requests become signals. Memory is the database.
+//
+// Usage:
+//   soma serve examples/webapp.cell
+//
+// Then:
+//   curl localhost:8080/put/alice/hello
+//   curl localhost:8080/get/alice
+//   curl localhost:8080/count
+//   curl localhost:8080/list
+//   curl localhost:8080/request   (generic handler)
+
+cell App {
+    face {
+        signal put(key: String, value: String) -> String
+        signal get(key: String) -> String
+        signal delete(key: String) -> String
+        signal count() -> Int
+        signal list() -> String
+        signal request(method: String, path: String, body: String) -> String
+    }
+
+    memory {
+        data: Map<String, String> [persistent, consistent]
+        visits: Map<String, Int> [ephemeral, local]
+    }
+
+    on put(key: String, value: String) {
+        data.set(key, value)
+        return value
+    }
+
+    on get(key: String) {
+        return data.get(key)
+    }
+
+    on delete(key: String) {
+        let removed = data.delete(key)
+        return removed
+    }
+
+    on count() {
+        return data.len()
+    }
+
+    on list() {
+        return data.keys()
+    }
+
+    on request(method: String, path: String, body: String) {
+        return path
+    }
+}

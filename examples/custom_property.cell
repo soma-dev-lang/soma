@@ -1,0 +1,48 @@
+// A user defines a custom property — the language grows.
+// No compiler changes needed.
+
+cell property geo_replicated {
+    face {
+        given regions: Int
+        promise "data replicated across geographic regions"
+        promise "survives regional outages"
+    }
+    rules {
+        implies [persistent, consistent]
+        contradicts [local, ephemeral]
+    }
+}
+
+cell property compressed {
+    face {
+        given algorithm: String
+        promise "data compressed at rest"
+    }
+    rules {}
+}
+
+// Now use the custom properties in a regular cell
+
+cell GlobalUserStore {
+    face {
+        signal get_user(id: String) -> String
+        signal put_user(id: String, data: String)
+        promise "reads reflect latest write"
+        promise latency < 200ms
+    }
+
+    memory {
+        // geo_replicated and compressed are user-defined properties!
+        users: Map<String, String> [
+            geo_replicated(3),
+            compressed(zstd),
+            encrypted
+        ]
+
+        // This should still catch contradictions
+        sessions: Map<String, String> [
+            ephemeral,
+            local
+        ]
+    }
+}

@@ -1,0 +1,34 @@
+// Consistency axis: what guarantees do readers get?
+// Exactly one of these per memory slot.
+
+cell property consistent {
+    face {
+        promise "all readers see the latest write"
+        promise "linearizable reads"
+    }
+    rules {
+        contradicts [eventual, local]
+        mutex_group consistency
+    }
+}
+
+cell property eventual {
+    face {
+        promise "readers may see stale data"
+        promise "all writes eventually visible"
+    }
+    rules {
+        contradicts [consistent, local]
+        mutex_group consistency
+    }
+}
+
+cell property local {
+    face {
+        promise "per-instance state, no cross-instance guarantees"
+    }
+    rules {
+        contradicts [consistent, eventual]
+        mutex_group consistency
+    }
+}

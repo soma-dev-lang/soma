@@ -1,0 +1,18 @@
+// Redundancy and security properties
+
+cell property replicated {
+    face {
+        given count: Int
+        promise "data maintained across failure domains"
+    }
+    rules {
+        implies [persistent]
+    }
+}
+
+cell property encrypted {
+    face {
+        promise "data encrypted at rest"
+    }
+    rules {}
+}

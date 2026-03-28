@@ -1,0 +1,161 @@
+// Built-in functions — the native function boundary.
+// Each builtin declares its contract. The native keyword
+// bridges to the Rust implementation.
+
+// ── Output ───────────────────────────────────────────────────────────
+
+cell builtin print {
+    face {
+        promise "writes arguments to stdout"
+        signal call(args: List<String>)
+    }
+    rules { native "print" }
+}
+
+// ── Math ─────────────────────────────────────────────────────────────
+
+cell builtin abs {
+    face {
+        promise "returns absolute value"
+        signal call(n: Int) -> Int
+    }
+    rules { native "abs" }
+}
+
+// ── String operations ────────────────────────────────────────────────
+
+cell builtin len {
+    face {
+        promise "returns length of string"
+        signal call(s: String) -> Int
+    }
+    rules { native "len" }
+}
+
+cell builtin concat {
+    face {
+        promise "concatenates two strings"
+        signal call(a: String, b: String) -> String
+    }
+    rules { native "concat" }
+}
+
+cell builtin to_string {
+    face {
+        promise "converts any value to its string representation"
+        signal call(v: Int) -> String
+    }
+    rules { native "to_string" }
+}
+
+cell builtin split {
+    face {
+        promise "splits string by delimiter, returns list"
+        signal call(s: String, delim: String) -> List<String>
+    }
+    rules { native "split" }
+}
+
+cell builtin replace {
+    face {
+        promise "replaces all occurrences of old with new"
+        signal call(s: String, old: String, new: String) -> String
+    }
+    rules { native "replace" }
+}
+
+cell builtin starts_with {
+    face {
+        promise "returns true if string starts with prefix"
+        signal call(s: String, prefix: String) -> Bool
+    }
+    rules { native "starts_with" }
+}
+
+cell builtin trim {
+    face {
+        promise "removes leading and trailing whitespace"
+        signal call(s: String) -> String
+    }
+    rules { native "trim" }
+}
+
+// ── JSON ─────────────────────────────────────────────────────────────
+
+cell builtin to_json {
+    face {
+        promise "serializes value to JSON string"
+        signal call(v: Map<String, String>) -> String
+    }
+    rules { native "to_json" }
+}
+
+cell builtin from_json {
+    face {
+        promise "parses JSON string into a Map or List"
+        signal call(s: String) -> Map<String, String>
+    }
+    rules { native "from_json" }
+}
+
+// ── Type introspection ───────────────────────────────────────────────
+
+cell builtin type_of {
+    face {
+        promise "returns the type name of a value"
+        signal call(v: String) -> String
+    }
+    rules { native "type_of" }
+}
+
+// ── Collection constructors ──────────────────────────────────────────
+
+cell builtin list {
+    face {
+        promise "creates a list from arguments"
+        signal call(args: List<String>) -> List<String>
+    }
+    rules { native "list" }
+}
+
+cell builtin map {
+    face {
+        promise "creates a map from key-value pairs"
+        signal call(args: List<String>) -> Map<String, String>
+    }
+    rules { native "map" }
+}
+
+// ── HTTP response constructors ───────────────────────────────────────
+
+cell builtin response {
+    face {
+        promise "creates an HTTP response with status code and body"
+        signal call(status: Int, body: String) -> Map<String, String>
+    }
+    rules { native "response" }
+}
+
+cell builtin html {
+    face {
+        promise "creates an HTML response (sets Content-Type: text/html)"
+        signal call(body: String) -> Map<String, String>
+    }
+    rules { native "html" }
+}
+
+cell builtin render {
+    face {
+        promise "replaces {key} placeholders in template with values"
+        signal call(template: String, key: String, value: String) -> String
+    }
+    rules { native "render" }
+}
+
+cell builtin redirect {
+    face {
+        promise "creates a 302 redirect response"
+        signal call(url: String) -> Map<String, String>
+    }
+    rules { native "redirect" }
+}

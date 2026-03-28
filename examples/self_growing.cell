@@ -1,0 +1,85 @@
+// The ultimate test: the language defining itself.
+// A property, a type, a checker, and a system — all in one file.
+
+// ── Define a domain-specific property ────────────────────────────────
+
+cell property audit_logged {
+    face {
+        promise "all mutations recorded in audit trail"
+    }
+    rules {
+        implies [persistent]
+        contradicts [ephemeral]
+    }
+}
+
+// ── Define a domain-specific type ────────────────────────────────────
+
+cell type Ledger<T> {
+    face {
+        signal append(entry: T)
+        signal read(from: Int, to: Int) -> List<T>
+        signal balance() -> Int
+        promise "append-only, no modifications"
+        promise "total always consistent"
+    }
+}
+
+// ── Define a project-specific checker ────────────────────────────────
+
+cell checker must_have_memory {
+    face {
+        promise "every cell must declare its state"
+    }
+    rules {
+        check {
+            require has_memory else StatelessCell
+        }
+    }
+}
+
+// ── Build the system using all of the above ──────────────────────────
+
+cell PaymentSystem {
+    face {
+        promise "payments are never double-charged"
+        promise "all transactions are auditable"
+    }
+
+    memory {
+        // Uses our custom audit_logged property!
+        transactions: Ledger<String> [persistent, consistent, audit_logged, encrypted]
+    }
+
+    interior {
+        cell Gateway {
+            face {
+                signal payment_requested(id: String, amount: Int)
+                signal payment_confirmed(id: String)
+            }
+            memory {
+                pending: Map<String, Int> [persistent, consistent]
+            }
+        }
+
+        cell Processor {
+            face {
+                await payment_requested(id: String, amount: Int)
+                signal payment_processed(id: String, result: String)
+            }
+            memory {
+                processed_ids: Set<String> [persistent, consistent]
+            }
+        }
+
+        cell Notifier {
+            face {
+                await payment_processed(id: String, result: String)
+                signal payment_confirmed(id: String)
+            }
+            memory {
+                sent: Set<String> [ephemeral, local]
+            }
+        }
+    }
+}

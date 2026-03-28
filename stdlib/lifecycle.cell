@@ -1,0 +1,39 @@
+// Lifecycle properties: TTL, retention, capacity, eviction
+
+cell property ttl {
+    face {
+        given duration: Int
+        promise "entries expire after duration"
+    }
+    rules {}
+}
+
+cell property retain {
+    face {
+        given duration: Int
+        promise "entries kept for at least duration"
+    }
+    rules {
+        implies [persistent]
+        contradicts [ephemeral]
+    }
+}
+
+cell property capacity {
+    face {
+        given max_entries: Int
+        promise "bounded to max_entries entries"
+    }
+    rules {}
+}
+
+cell property evict {
+    face {
+        given policy: String
+        promise "eviction when at capacity"
+    }
+    rules {
+        requires [capacity]
+        contradicts [immutable]
+    }
+}

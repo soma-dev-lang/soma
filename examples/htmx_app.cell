@@ -1,0 +1,212 @@
+// Interactive TODO app with HTMX — optimized.
+//
+//   soma serve examples/htmx_app.cell
+//   open http://localhost:8080
+
+cell App {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal todos() -> String
+        signal item(id: String) -> String
+        signal add(text: String) -> String
+        signal toggle(id: String) -> String
+        signal remove(id: String) -> String
+        signal count() -> String
+        promise all_persistent
+    }
+
+    memory {
+        items: Map<String, String> [persistent, consistent]
+        done: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    // ── Static page shell (served once, HTMX loads content) ──────────
+
+    on request(method: String, path: String, body: String) {
+        return html("<!DOCTYPE html>
+<html lang='en'>
+<head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <title>Soma + HTMX</title>
+    <script src='https://unpkg.com/htmx.org@1.9.12'></script>
+    <style>
+        :root { --accent: #6366f1; --danger: #ef4444; --bg: #f8fafc; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg); color: #1e293b;
+            min-height: 100vh; display: flex; justify-content: center;
+            padding: 3rem 1rem;
+        }
+        .app { width: 100%; max-width: 480px; }
+        h1 {
+            font-size: 2rem; font-weight: 800;
+            background: linear-gradient(135deg, var(--accent), #a855f7);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            margin-bottom: 0.25rem;
+        }
+        .subtitle { color: #94a3b8; font-size: 0.875rem; margin-bottom: 1.5rem; }
+        .card {
+            background: white; border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 4px 24px rgba(0,0,0,0.04);
+            overflow: hidden;
+        }
+        .add-form {
+            display: flex; gap: 0.5rem; padding: 1rem;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .add-form input {
+            flex: 1; padding: 0.625rem 0.875rem;
+            border: 1.5px solid #e2e8f0; border-radius: 8px;
+            font-size: 0.9375rem; outline: none;
+        }
+        .add-form input:focus { border-color: var(--accent); }
+        .add-form button {
+            padding: 0.625rem 1.25rem; background: var(--accent); color: white;
+            border: none; border-radius: 8px; font-weight: 600; cursor: pointer;
+        }
+        .add-form button:hover { opacity: 0.9; }
+        .todo-list { list-style: none; }
+        .todo-item {
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.75rem 1rem; border-bottom: 1px solid #f8fafc;
+        }
+        .todo-item:hover { background: #f8fafc; }
+        .todo-item.done .todo-text { text-decoration: line-through; color: #94a3b8; }
+        .check-btn {
+            width: 22px; height: 22px; border: 2px solid #cbd5e1; border-radius: 6px;
+            background: white; cursor: pointer; display: flex;
+            align-items: center; justify-content: center; flex-shrink: 0;
+        }
+        .check-btn:hover { border-color: var(--accent); }
+        .done .check-btn { background: var(--accent); border-color: var(--accent); }
+        .done .check-btn::after { content: '\2713'; color: white; font-size: 13px; font-weight: bold; }
+        .todo-text { flex: 1; font-size: 0.9375rem; }
+        .del-btn {
+            opacity: 0; color: var(--danger); background: none; border: none;
+            cursor: pointer; font-size: 1.1rem;
+        }
+        .todo-item:hover .del-btn { opacity: 0.5; }
+        .del-btn:hover { opacity: 1 !important; }
+        .footer {
+            padding: 0.75rem 1rem; display: flex; justify-content: space-between;
+            border-top: 1px solid #f1f5f9; color: #94a3b8; font-size: 0.8125rem;
+        }
+        .counter { background: #f1f5f9; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+        .empty { padding: 2.5rem 1rem; text-align: center; color: #cbd5e1; }
+        .htmx-added { animation: fadeIn 0.15s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } }
+    </style>
+</head>
+<body>
+    <div class='app'>
+        <h1>soma</h1>
+        <p class='subtitle'>declare what exists</p>
+        <div class='card'>
+            <form class='add-form' hx-get='/add' hx-target='#todo-list' hx-swap='innerHTML'
+                  hx-on::after-request='this.reset(); htmx.trigger(this, \"updateCount\")'>
+                <input name='text' placeholder='What needs to be done?' autocomplete='off' autofocus>
+                <button type='submit'>Add</button>
+            </form>
+            <ul id='todo-list' class='todo-list' hx-get='/todos' hx-trigger='load' hx-swap='innerHTML'></ul>
+            <div class='footer'>
+                <span hx-get='/count' hx-trigger='load, updateCount from:body' hx-swap='innerHTML'></span>
+                <span>Soma + HTMX + SQLite</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>")
+    }
+
+    // ── Render a single item (reused by todos, toggle) ───────────────
+
+    on item(id: String) {
+        let text = items.get(id)
+        if text == () {
+            return html("")
+        }
+        let is_done = done.get(id)
+        let done_class = ""
+        if is_done == "yes" {
+            done_class = " done"
+        }
+        return html(render(
+            "<li class='todo-item{done_class}' id='todo-{id}'>
+                <button class='check-btn' hx-post='/toggle/{id}' hx-target='#todo-{id}' hx-swap='outerHTML'></button>
+                <span class='todo-text'>{text}</span>
+                <button class='del-btn' hx-post='/remove/{id}' hx-target='#todo-{id}' hx-swap='outerHTML settle:150ms'
+                        hx-on::after-request='htmx.trigger(document.body, \"updateCount\")'>x</button>
+            </li>",
+            "id", id, "text", text, "done_class", done_class))
+    }
+
+    // ── Full list (initial load only) ────────────────────────────────
+
+    on todos() {
+        let keys = items.keys()
+        let result = ""
+        for key in keys {
+            let text = items.get(key)
+            let is_done = done.get(key)
+            let done_class = ""
+            if is_done == "yes" {
+                done_class = " done"
+            }
+            result = concat(result, render(
+                "<li class='todo-item{done_class}' id='todo-{key}'>
+                    <button class='check-btn' hx-post='/toggle/{key}' hx-target='#todo-{key}' hx-swap='outerHTML'></button>
+                    <span class='todo-text'>{text}</span>
+                    <button class='del-btn' hx-post='/remove/{key}' hx-target='#todo-{key}' hx-swap='outerHTML settle:150ms'
+                            hx-on::after-request='htmx.trigger(document.body, \"updateCount\")'>x</button>
+                </li>",
+                "key", key, "text", text, "done_class", done_class))
+        }
+        if result == "" {
+            result = "<li class='empty'>Nothing to do. Enjoy your day.</li>"
+        }
+        return html(result)
+    }
+
+    // ── Mutations (return minimal HTML fragments) ────────────────────
+
+    on add(text: String) {
+        if text == "" {
+            return todos()
+        }
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        items.set(to_string(id), text)
+        done.set(to_string(id), "no")
+        return todos()
+    }
+
+    on toggle(id: String) {
+        let current = done.get(id)
+        if current == "yes" {
+            done.set(id, "no")
+        } else {
+            done.set(id, "yes")
+        }
+        // Return ONLY the changed item (not the whole list)
+        return item(id)
+    }
+
+    on remove(id: String) {
+        items.delete(id)
+        done.delete(id)
+        // Return empty — HTMX removes the element via outerHTML swap
+        return html("")
+    }
+
+    on count() {
+        let n = items.len()
+        return html(render("<span class='counter'>{n}</span> items", "n", to_string(n)))
+    }
+}

@@ -1,0 +1,6 @@
+# Build artifacts
+compiler/target/
+.soma_data/
+
+# OS
+.DS_Store

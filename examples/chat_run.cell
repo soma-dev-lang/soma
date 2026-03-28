@@ -1,0 +1,49 @@
+// A runnable chat system — signals flow between cells
+
+cell ChatSystem {
+    face {
+        promise "messages are delivered in order"
+    }
+
+    interior {
+        cell Gateway {
+            face {
+                signal message_received(channel: String, sender: String, text: String)
+            }
+
+            on message_received(channel: String, sender: String, text: String) {
+                signal routed(channel, sender, text)
+            }
+        }
+
+        cell Router {
+            face {
+                await message_received(channel: String, sender: String, text: String)
+                signal routed(channel: String, sender: String, text: String)
+            }
+
+            on routed(channel: String, sender: String, text: String) {
+                signal stored(channel, sender, text)
+            }
+        }
+
+        cell Store {
+            face {
+                await routed(channel: String, sender: String, text: String)
+                signal stored(channel: String, sender: String, text: String)
+            }
+
+            memory {
+                messages: Log<String> [persistent, consistent]
+            }
+
+            on stored(channel: String, sender: String, text: String) {
+                return text
+            }
+        }
+    }
+
+    runtime {
+        signal message_received("general", "alice", "hello world")
+    }
+}

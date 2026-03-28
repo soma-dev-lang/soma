@@ -1,0 +1,78 @@
+// A TODO app in Soma.
+//
+//   soma serve examples/todo.cell
+//
+//   curl -X POST localhost:8080/add/Buy%20milk
+//   curl localhost:8080/list
+//   curl localhost:8080/get/1
+//   curl -X POST localhost:8080/done/1
+//   curl -X POST localhost:8080/delete/1
+//   curl localhost:8080/count
+
+cell TodoApp {
+    face {
+        signal add(text: String) -> String
+        signal get(id: String) -> String
+        signal done(id: String) -> String
+        signal delete(id: String) -> String
+        signal list() -> String
+        signal count() -> Int
+        promise all_persistent
+    }
+
+    memory {
+        todos: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on add(text: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+            let current = 1
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+        todos.set(id_str, text)
+        status.set(id_str, "pending")
+        return map("id", id, "text", text, "status", "pending")
+    }
+
+    on get(id: String) {
+        let text = todos.get(id)
+        if text == () {
+            return response(404, map("error", "todo not found"))
+        }
+        let s = status.get(id)
+        return map("id", id, "text", text, "status", s)
+    }
+
+    on done(id: String) {
+        let text = todos.get(id)
+        if text == () {
+            return response(404, map("error", "todo not found"))
+        }
+        status.set(id, "done")
+        return map("id", id, "text", text, "status", "done")
+    }
+
+    on delete(id: String) {
+        let existed = todos.delete(id)
+        status.delete(id)
+        if existed == false {
+            return response(404, map("error", "todo not found"))
+        }
+        return map("deleted", id)
+    }
+
+    on list() {
+        let keys = todos.keys()
+        return keys
+    }
+
+    on count() {
+        return todos.len()
+    }
+}

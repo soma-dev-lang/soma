@@ -1,0 +1,36 @@
+// Three tiers of promises:
+//   Structural (verified by compiler)
+//   Runtime (checked during execution)
+//   Descriptive (flagged as unverifiable)
+
+cell SecureVault {
+    face {
+        // STRUCTURAL — compiler verifies this
+        promise all_encrypted
+        promise all_persistent
+
+        // DESCRIPTIVE — compiler warns this is unverifiable
+        promise "data is backed up hourly to offsite location"
+
+        signal store(key: String, value: String)
+        signal retrieve(key: String) -> String
+    }
+
+    memory {
+        secrets: Map<String, String> [persistent, consistent, encrypted]
+        audit: Log<String> [persistent, immutable, encrypted]
+    }
+}
+
+// This cell VIOLATES its structural promise
+cell BrokenVault {
+    face {
+        promise all_encrypted
+        signal store(key: String, value: String)
+    }
+
+    memory {
+        // NOT encrypted — violates promise all_encrypted
+        data: Map<String, String> [persistent, consistent]
+    }
+}

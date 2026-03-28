@@ -1,0 +1,24 @@
+// Durability axis: how long does data survive?
+// Exactly one of these per memory slot.
+
+cell property persistent {
+    face {
+        promise "data survives cell restart"
+        promise "backed by durable storage"
+    }
+    rules {
+        contradicts [ephemeral]
+        mutex_group durability
+    }
+}
+
+cell property ephemeral {
+    face {
+        promise "data lives only in memory"
+        promise "lost on cell restart"
+    }
+    rules {
+        contradicts [persistent, retain]
+        mutex_group durability
+    }
+}

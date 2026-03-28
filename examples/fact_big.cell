@@ -1,0 +1,16 @@
+// Factorial — uses BigInt (arbitrary precision, no overflow)
+// The type IS the declaration: BigInt means "I need big numbers"
+
+cell Fact {
+    face {
+        signal compute(n: BigInt) -> BigInt
+        promise "returns n factorial, arbitrary precision"
+    }
+
+    on compute(n: BigInt) {
+        if n <= 1 {
+            return 1
+        }
+        return n * compute(n - 1)
+    }
+}

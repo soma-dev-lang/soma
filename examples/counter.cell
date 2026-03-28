@@ -1,0 +1,14 @@
+// The simplest possible Soma program: a counter cell
+
+cell Counter {
+    face {
+        signal increment(amount: Int)
+        signal decrement(amount: Int)
+        signal get() -> Int
+        promise value >= 0
+    }
+
+    memory {
+        value: Int [persistent, consistent]
+    }
+}

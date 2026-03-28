@@ -1,0 +1,30 @@
+// Demonstrates imports and for..in loops
+use "lib/math.cell"
+
+cell App {
+    face {
+        signal run(n: Int) -> Int
+    }
+
+    memory {
+        results: Map<String, Int> [persistent, consistent]
+    }
+
+    on run(n: Int) {
+        // Use the imported Math cell
+        let sq = square(n)
+        let dbl = double(n)
+
+        // Store results
+        results.set("squared", sq)
+        results.set("doubled", dbl)
+
+        // Iterate over stored keys
+        for key in results.keys() {
+            let val = results.get(key)
+            print(key, val)
+        }
+
+        return sq + dbl
+    }
+}

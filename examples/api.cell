@@ -1,0 +1,108 @@
+// A proper REST API in Soma.
+//
+//   soma serve examples/api.cell
+//
+// Create user:
+//   curl -X POST localhost:8080/create -d '{"name":"Alice","email":"alice@example.com"}'
+//
+// Get user:
+//   curl localhost:8080/get/1
+//
+// List users:
+//   curl localhost:8080/list
+//
+// Update user:
+//   curl -X POST localhost:8080/update/1 -d '{"name":"Alice Updated"}'
+//
+// Delete user:
+//   curl -X POST localhost:8080/delete/1
+
+cell UserAPI {
+    face {
+        signal create(data: Map<String, String>) -> String
+        signal get(id: String) -> String
+        signal list() -> String
+        signal update(id: String, data: Map<String, String>) -> String
+        signal delete(id: String) -> String
+        promise all_persistent
+    }
+
+    memory {
+        users: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on create(data: Map<String, String>) {
+        // Auto-increment ID
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+
+        // Extract fields from the JSON body
+        let name = data.name
+        let email = data.email
+
+        // Store as JSON
+        let user_json = to_json(map(
+            "id", id,
+            "name", name,
+            "email", email
+        ))
+        users.set(to_string(id), user_json)
+
+        return map("id", id, "name", name, "email", email)
+    }
+
+    on get(id: String) {
+        let raw = users.get(id)
+        if raw == () {
+            return response(404, map("error", "user not found"))
+        }
+        let user = from_json(raw)
+        return user
+    }
+
+    on list() {
+        let keys = users.keys()
+        let items = list()
+        for key in keys {
+            let raw = users.get(key)
+            let user = from_json(raw)
+            items = list(items, user)
+        }
+        return items
+    }
+
+    on update(id: String, data: Map<String, String>) {
+        let raw = users.get(id)
+        if raw == () {
+            return response(404, map("error", "user not found"))
+        }
+
+        let existing = from_json(raw)
+        let name = data.name
+        if name == () {
+            name = existing.name
+        }
+        let email = data.email
+        if email == () {
+            email = existing.email
+        }
+
+        let updated = to_json(map("id", id, "name", name, "email", email))
+        users.set(id, updated)
+
+        return map("id", id, "name", name, "email", email)
+    }
+
+    on delete(id: String) {
+        let existed = users.delete(id)
+        if existed == false {
+            return response(404, map("error", "user not found"))
+        }
+        return map("deleted", id)
+    }
+}

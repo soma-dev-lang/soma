@@ -1,0 +1,45 @@
+// Storage backends — the native boundary.
+// Each backend declares what properties it satisfies.
+// The runtime matches properties to backends automatically.
+// More specific matches win (sqlite matches 2 properties, beats file matching 1).
+
+cell backend memory {
+    face {
+        promise "in-process HashMap, no persistence"
+        promise "zero latency"
+    }
+    rules {
+        matches [ephemeral]
+        matches [local]
+        matches [ephemeral, local]
+        native "memory"
+    }
+}
+
+cell backend sqlite {
+    face {
+        promise "ACID transactions"
+        promise "concurrent readers"
+        promise "survives process restart"
+        promise "zero config — single .db file"
+    }
+    rules {
+        matches [persistent, consistent]
+        matches [persistent, consistent, encrypted]
+        matches [persistent, immutable]
+        matches [persistent]
+        native "sqlite"
+    }
+}
+
+cell backend file {
+    face {
+        promise "JSON file on local disk"
+        promise "survives process restart"
+        promise "single-node only, no concurrency"
+    }
+    rules {
+        // File backend is now fallback only — sqlite is preferred
+        native "file"
+    }
+}

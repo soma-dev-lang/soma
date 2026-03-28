@@ -1,0 +1,15 @@
+// A key-value store with cache layer
+
+cell KVStore {
+    face {
+        signal get(key: String) -> String
+        signal put(key: String, value: String)
+        signal delete(key: String)
+        promise "reads reflect the latest write"
+    }
+
+    memory {
+        data: Map<String, String> [persistent, consistent, encrypted]
+        cache: Map<String, String> [ephemeral, local, capacity(10000), evict(lru)]
+    }
+}

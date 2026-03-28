@@ -1,0 +1,17 @@
+[package]
+name = "soma"
+version = "0.1.0"
+edition = "2021"
+description = "The Soma language compiler — fractal, declarative, agent-native"
+
+[dependencies]
+thiserror = "1"
+miette = { version = "5", features = ["fancy"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+num-bigint = "0.4"
+num-traits = "0.2"
+tiny_http = "0.12"
+rusqlite = { version = "0.31", features = ["bundled"] }
+toml = "0.8"

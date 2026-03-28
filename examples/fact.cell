@@ -1,0 +1,15 @@
+// Factorial — uses Int (fast, 64-bit, overflows are errors)
+
+cell Fact {
+    face {
+        signal compute(n: Int) -> Int
+        promise "returns n factorial"
+    }
+
+    on compute(n: Int) {
+        if n <= 1 {
+            return 1
+        }
+        return n * compute(n - 1)
+    }
+}

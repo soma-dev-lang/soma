@@ -1,0 +1,28 @@
+// A user defines a custom checker — project-specific rules enforced by the compiler.
+// No compiler changes needed.
+
+cell checker auth_required {
+    face {
+        promise "every cell with signals must have auth"
+    }
+    rules {
+        check {
+            require has_auth else MissingAuth
+        }
+    }
+}
+
+// This cell has signals but no auth — the checker should flag it
+cell PublicAPI {
+    face {
+        signal handle_request(path: String) -> String
+    }
+}
+
+// This cell has auth — should pass
+cell SecureAPI {
+    face {
+        given auth: String
+        signal handle_request(path: String) -> String
+    }
+}

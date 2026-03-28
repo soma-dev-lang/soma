@@ -1,0 +1,52 @@
+// A chat system demonstrating fractal cells and signal wiring
+
+cell ChatSystem {
+    face {
+        promise "messages are never lost"
+        promise "messages delivered in order per channel"
+    }
+
+    memory {
+        events: Log<String> [persistent, immutable, replicated(3)]
+    }
+
+    interior {
+        cell Gateway {
+            face {
+                given connection: String
+                signal message_received(channel: String, sender: String, text: String)
+                signal message_sent(channel: String, text: String)
+                await delivery_confirmed(channel: String, message_id: String)
+            }
+        }
+
+        cell Router {
+            face {
+                await message_received(channel: String, sender: String, text: String)
+                signal routed(channel: String, sender: String, text: String)
+            }
+
+            on message_received(channel: String, sender: String, text: String) {
+                signal routed(channel, sender, text)
+            }
+        }
+
+        cell Store {
+            face {
+                await routed(channel: String, sender: String, text: String)
+                signal delivery_confirmed(channel: String, message_id: String)
+            }
+
+            memory {
+                messages: Log<String> [persistent, consistent, retain(90d)]
+                channels: Map<String, List<String>> [persistent, consistent]
+            }
+
+            on routed(channel: String, sender: String, text: String) {
+                let message_id = channel
+                messages.append(text)
+                signal delivery_confirmed(channel, message_id)
+            }
+        }
+    }
+}

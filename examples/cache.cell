@@ -1,0 +1,31 @@
+// Ephemeral cache — data lost on restart
+
+cell Cache {
+    face {
+        signal put(key: String, value: String)
+        signal get(key: String) -> String
+        signal count() -> Int
+        signal backend() -> String
+    }
+
+    memory {
+        data: Map<String, String> [ephemeral, local]
+    }
+
+    on put(key: String, value: String) {
+        data.set(key, value)
+        return value
+    }
+
+    on get(key: String) {
+        return data.get(key)
+    }
+
+    on count() {
+        return data.len()
+    }
+
+    on backend() {
+        return data.backend()
+    }
+}

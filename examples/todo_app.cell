@@ -1,0 +1,175 @@
+// A beautiful TODO web app in Soma.
+//
+//   soma serve examples/todo_app.cell
+//   open http://localhost:8080
+
+cell TodoApp {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal add(text: String) -> String
+        signal done(id: String) -> String
+        signal delete(id: String) -> String
+        promise all_persistent
+    }
+
+    memory {
+        todos: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on request(method: String, path: String, body: String) {
+        let items = ""
+        let keys = todos.keys()
+        for key in keys {
+            let text = todos.get(key)
+            let st = status.get(key)
+            let checked = ""
+            let line_style = ""
+            if st == "done" {
+                let checked = "checked"
+                let line_style = "text-decoration: line-through; opacity: 0.6;"
+            }
+            let items = concat(items, render(
+                "<li style='padding: 12px 16px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #eee; {line_style}'>
+                    <a href='/done/{key}' style='text-decoration:none; font-size:20px;'>{check_icon}</a>
+                    <span style='flex:1; font-size: 16px;'>{text}</span>
+                    <a href='/delete/{key}' style='color:#e74c3c; text-decoration:none; font-size:14px;'>delete</a>
+                </li>",
+                "key", key,
+                "text", text,
+                "line_style", line_style,
+                "check_icon", render("{icon}", "icon", checked)
+            ))
+        }
+
+        if items == "" {
+            let items = "<li style='padding: 24px; text-align: center; color: #999;'>No todos yet. Add one above.</li>"
+        }
+
+        let count = todos.len()
+
+        return html(render(
+            "<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <title>Soma TODO</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            padding: 40px 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 100%;
+            max-width: 500px;
+            overflow: hidden;
+            height: fit-content;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 { font-size: 28px; font-weight: 300; letter-spacing: 2px; }
+        .header p { opacity: 0.8; margin-top: 8px; font-size: 14px; }
+        .add-form {
+            display: flex;
+            padding: 20px;
+            gap: 12px;
+            border-bottom: 1px solid #eee;
+        }
+        .add-form input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #eee;
+            border-radius: 8px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .add-form input:focus { border-color: #667eea; }
+        .add-form button {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .add-form button:hover { background: #764ba2; }
+        ul { list-style: none; }
+        li a:hover { opacity: 0.7; }
+        .footer {
+            padding: 16px;
+            text-align: center;
+            color: #999;
+            font-size: 13px;
+            border-top: 1px solid #eee;
+        }
+        .footer b { color: #667eea; }
+    </style>
+</head>
+<body>
+    <div class='container'>
+        <div class='header'>
+            <h1>SOMA TODO</h1>
+            <p>{count} items</p>
+        </div>
+        <form class='add-form' action='/add' method='get'>
+            <input name='text' placeholder='What needs to be done?' autofocus>
+            <button type='submit'>Add</button>
+        </form>
+        <ul>{items}</ul>
+        <div class='footer'>
+            Built with <b>Soma</b> &mdash; declare what exists, not what to do
+        </div>
+    </div>
+</body>
+</html>",
+            "items", items,
+            "count", to_string(count)
+        ))
+    }
+
+    on add(text: String) {
+        let current = meta.get("next_id")
+        if current == () {
+            meta.set("next_id", 1)
+        }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+        todos.set(id_str, text)
+        status.set(id_str, "pending")
+        return redirect("/")
+    }
+
+    on done(id: String) {
+        let current = status.get(id)
+        if current == "done" {
+            status.set(id, "pending")
+        } else {
+            status.set(id, "done")
+        }
+        return redirect("/")
+    }
+
+    on delete(id: String) {
+        todos.delete(id)
+        status.delete(id)
+        return redirect("/")
+    }
+}

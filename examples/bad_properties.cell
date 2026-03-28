@@ -1,0 +1,20 @@
+// This file should produce errors — testing the property checker
+
+cell BadStore {
+    memory {
+        // ERROR: persistent + ephemeral
+        confused: Map<String, Int> [persistent, ephemeral]
+
+        // ERROR: consistent + eventual
+        indecisive: Map<String, Int> [consistent, eventual]
+
+        // ERROR: immutable + evict
+        frozen_but_evictable: Log<String> [immutable, evict(lru)]
+
+        // ERROR: ephemeral + retain
+        volatile_archive: Log<String> [ephemeral, retain(7years)]
+
+        // ERROR: ttl < retain
+        short_lived_archive: Map<String, Int> [persistent, ttl(30d), retain(7years)]
+    }
+}

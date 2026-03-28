@@ -1,0 +1,104 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
+
+/// soma.toml — the project manifest
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Manifest {
+    pub package: PackageInfo,
+    #[serde(default)]
+    pub dependencies: HashMap<String, Dependency>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PackageInfo {
+    pub name: String,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default = "default_entry")]
+    pub entry: String,
+}
+
+fn default_version() -> String { "0.1.0".to_string() }
+fn default_entry() -> String { "main.cell".to_string() }
+
+/// A dependency declaration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Dependency {
+    /// Simple version: `auth = "0.1"`
+    Version(String),
+    /// Full spec: `auth = { git = "https://...", version = "0.1" }`
+    Full(DependencySpec),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DependencySpec {
+    #[serde(default)]
+    pub git: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+impl Dependency {
+    pub fn git_url(&self) -> Option<&str> {
+        match self {
+            Dependency::Version(_) => None,
+            Dependency::Full(spec) => spec.git.as_deref(),
+        }
+    }
+
+    pub fn local_path(&self) -> Option<&str> {
+        match self {
+            Dependency::Version(_) => None,
+            Dependency::Full(spec) => spec.path.as_deref(),
+        }
+    }
+
+    pub fn version_str(&self) -> &str {
+        match self {
+            Dependency::Version(v) => v,
+            Dependency::Full(spec) => spec.version.as_deref().unwrap_or("*"),
+        }
+    }
+}
+
+impl Manifest {
+    /// Load manifest from a soma.toml file
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+        toml::from_str(&content)
+            .map_err(|e| format!("invalid soma.toml: {}", e))
+    }
+
+    /// Save manifest to a file
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| format!("cannot serialize manifest: {}", e))?;
+        std::fs::write(path, content)
+            .map_err(|e| format!("cannot write {}: {}", path.display(), e))
+    }
+
+    /// Create a new default manifest
+    pub fn new(name: &str) -> Self {
+        Self {
+            package: PackageInfo {
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+                description: String::new(),
+                author: String::new(),
+                entry: "main.cell".to_string(),
+            },
+            dependencies: HashMap::new(),
+        }
+    }
+}

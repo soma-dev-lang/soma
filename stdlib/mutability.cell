@@ -1,0 +1,24 @@
+// Mutability axis: can data change after creation?
+
+cell property immutable {
+    face {
+        promise "entries never change after write"
+        promise "append-only or write-once"
+    }
+    rules {
+        implies [consistent]
+        contradicts [evict, versioned]
+        mutex_group mutability
+    }
+}
+
+cell property versioned {
+    face {
+        promise "writes create new versions"
+        promise "history is preserved"
+    }
+    rules {
+        contradicts [immutable]
+        mutex_group mutability
+    }
+}

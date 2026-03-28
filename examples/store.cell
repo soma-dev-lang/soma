@@ -1,0 +1,32 @@
+// A key-value store that actually persists data.
+// Run it multiple times — data survives.
+
+cell Store {
+    face {
+        signal put(key: String, value: String)
+        signal get(key: String) -> String
+        signal count() -> Int
+        signal dump() -> String
+    }
+
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+
+    on put(key: String, value: String) {
+        data.set(key, value)
+        return value
+    }
+
+    on get(key: String) {
+        return data.get(key)
+    }
+
+    on count() {
+        return data.len()
+    }
+
+    on dump() {
+        return data.list()
+    }
+}

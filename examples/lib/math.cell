@@ -1,0 +1,11 @@
+// A math library — importable by other cells
+
+cell Math {
+    on square(n: Int) {
+        return n * n
+    }
+
+    on double(n: Int) {
+        return n + n
+    }
+}

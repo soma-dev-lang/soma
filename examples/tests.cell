@@ -1,0 +1,43 @@
+// Declarative tests for Soma.
+// Tests are cells. Assertions are rules. The compiler verifies.
+//
+//   soma test examples/tests.cell
+
+// The code being tested
+cell Math {
+    on square(n: Int) {
+        return n * n
+    }
+
+    on add(a: Int, b: Int) {
+        return a + b
+    }
+
+    on factorial(n: Int) {
+        if n <= 1 { return 1 }
+        return n * factorial(n - 1)
+    }
+}
+
+// The tests — declarative assertions
+cell test MathTests {
+    rules {
+        assert square(5) == 25
+        assert square(0) == 0
+        assert square(10) == 100
+        assert add(2, 3) == 5
+        assert add(0, 0) == 0
+        assert add(100, 200) == 300
+        assert factorial(5) == 120
+        assert factorial(1) == 1
+        assert factorial(10) == 3628800
+    }
+}
+
+cell test EdgeCases {
+    rules {
+        assert square(1) == 1
+        assert add(1, 1) == 2
+        assert factorial(0) == 1
+    }
+}
