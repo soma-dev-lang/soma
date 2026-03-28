@@ -66,6 +66,9 @@ enum Commands {
         /// Use the bytecode VM instead of the tree-walking interpreter
         #[arg(long)]
         jit: bool,
+        /// Signal handler to call (default: auto-detect from first arg or first handler)
+        #[arg(long)]
+        signal: Option<String>,
     },
     /// Serve a .cell file as a web application
     Serve {
@@ -77,6 +80,9 @@ enum Commands {
         /// Watch for changes and auto-reload
         #[arg(short, long)]
         watch: bool,
+        /// Show parsed parameters and response body
+        #[arg(long)]
+        verbose: bool,
     },
     /// Initialize a new Soma project
     Init {
@@ -106,6 +112,8 @@ enum Commands {
     },
     /// List installed packages in the environment
     Env,
+    /// Start an interactive REPL
+    Repl,
     /// List all registered properties and their rules
     Props,
 }
@@ -125,12 +133,12 @@ fn main() {
         Commands::Build { file, output } => cmd_build(&file, output.as_deref(), &mut registry),
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
-        Commands::Run { file, args, jit } => cmd_run(&file, &args, jit, &mut registry),
-        Commands::Serve { file, port, watch } => {
+        Commands::Run { file, args, jit, signal } => cmd_run(&file, &args, jit, signal.as_deref(), &mut registry),
+        Commands::Serve { file, port, watch, verbose } => {
             if watch {
                 cmd_serve_watch(&file, port, &mut registry);
             } else {
-                cmd_serve(&file, port, &mut registry);
+                cmd_serve(&file, port, verbose, &mut registry);
             }
         }
         Commands::Test { file } => cmd_test(&file, &mut registry),
@@ -138,22 +146,31 @@ fn main() {
         Commands::Add { package, version, git, path } => cmd_add(&package, version.as_deref(), git.as_deref(), path.as_deref()),
         Commands::Install => cmd_install(),
         Commands::Env => cmd_env(),
+        Commands::Repl => cmd_repl(&mut registry),
         Commands::Props => cmd_props(&registry),
     }
 }
 
 /// Find the stdlib directory by looking relative to the source file or binary
 fn find_stdlib() -> PathBuf {
-    // Try relative to current directory
-    let candidates = [
+    // Try relative to current directory, then relative to binary, then user home
+    let mut candidates = vec![
         PathBuf::from("stdlib"),
         PathBuf::from("../stdlib"),
-        // Relative to the binary
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.join("../stdlib")))
-            .unwrap_or_default(),
     ];
+    // Relative to the binary
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("../stdlib"));
+            candidates.push(parent.join("stdlib"));
+        }
+    }
+    // Local .soma_env/stdlib
+    candidates.push(PathBuf::from(".soma_env/stdlib"));
+    // User home: ~/.soma/stdlib/
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".soma/stdlib"));
+    }
 
     for candidate in &candidates {
         if candidate.exists() {
@@ -319,6 +336,8 @@ fn cmd_build(path: &PathBuf, output: Option<&Path>, registry: &mut Registry) {
         process::exit(1);
     }
 
+    eprintln!("note: codegen is experimental and generates skeleton code only — runtime behavior requires `soma run` or `soma serve`");
+
     let mut gen = codegen::CodeGen::new();
     let rust_code = gen.generate(&program);
 
@@ -328,7 +347,7 @@ fn cmd_build(path: &PathBuf, output: Option<&Path>, registry: &mut Registry) {
                 eprintln!("error: cannot write '{}': {}", out_path.display(), e);
                 process::exit(1);
             });
-            eprintln!("✓ Generated {}", out_path.display());
+            eprintln!("generated {}", out_path.display());
         }
         None => {
             print!("{}", rust_code);
@@ -351,7 +370,7 @@ fn cmd_tokens(path: &PathBuf) {
     }
 }
 
-fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, registry: &mut Registry) {
+fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&str>, registry: &mut Registry) {
     let source = read_source(path);
     let tokens = lex(&source);
     let mut program = parse(tokens);
@@ -396,13 +415,14 @@ fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, registry: &mut Regist
     if has_interior || has_runtime {
         run_with_runtime(program, &arg_values);
     } else if use_jit {
-        run_with_vm(program, arg_values, registry, &source);
+        run_with_vm(program, arg_values, registry, &source, signal_flag);
     } else {
-        run_single_cell(program, arg_values, registry);
+        run_single_cell(program, arg_values, registry, signal_flag, path);
     }
 }
 
-fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, source: &str) {
+fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, source: &str, signal_flag: Option<&str>) {
+    eprintln!("note: --jit mode does not support all features yet (e.g., string interpolation)");
     // Try loading compiled bytecode from cache
     let chunks = if let Some(cached) = vm::load_cached(source) {
         cached
@@ -424,7 +444,9 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
         .filter_map(|s| if let ast::Section::OnSignal(ref on) = s.node { Some(on.signal_name.clone()) } else { None })
         .collect();
 
-    let (signal_name, actual_args) = if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
+    let (signal_name, actual_args) = if let Some(sig) = signal_flag {
+        (sig.to_string(), arg_values)
+    } else if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
         if handler_names.contains(name) {
             (name.clone(), arg_values[1..].to_vec())
         } else {
@@ -458,7 +480,7 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
     }
 }
 
-fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry) {
+fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, signal_flag: Option<&str>, source_path: &PathBuf) {
     // Find the main cell based on the signal being called
     // If first arg matches a handler name in a specific cell, use that cell
     let requested_signal = arg_values.first().and_then(|v| {
@@ -497,7 +519,9 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     // If the first arg matches a handler name, use it as the signal
     // Otherwise, use the first (or only) handler
-    let (signal_name, actual_args) = if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
+    let (signal_name, actual_args) = if let Some(sig) = signal_flag {
+        (sig.to_string(), arg_values)
+    } else if let Some(interpreter::Value::String(ref name)) = arg_values.first() {
         if handler_names.contains(name) {
             (name.clone(), arg_values[1..].to_vec())
         } else {
@@ -529,10 +553,12 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         }
     }
 
+    interp.source_file = Some(source_path.display().to_string());
+
     match interp.call_signal(&cell_name, &signal_name, actual_args) {
         Ok(val) => println!("{}", val),
         Err(e) => {
-            eprintln!("runtime error: {}", e);
+            eprintln!("runtime error in {}: {}", source_path.display(), e);
             process::exit(1);
         }
     }
@@ -634,7 +660,7 @@ fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
     }
 }
 
-fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
+fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Registry) {
     let source = read_source(path);
     let tokens = lex(&source);
     let mut program = parse(tokens);
@@ -655,11 +681,22 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
         });
     let cell_name = cell.node.name.clone();
 
-    // Collect handler names to know what signals this cell accepts
+    // Collect handler names and their parameter lists
     let handler_names: Vec<String> = cell.node.sections.iter()
         .filter_map(|s| {
             if let ast::Section::OnSignal(ref on) = s.node {
                 Some(on.signal_name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Map handler name -> list of param names (for JSON body extraction)
+    let handler_params: std::collections::HashMap<String, Vec<String>> = cell.node.sections.iter()
+        .filter_map(|s| {
+            if let ast::Section::OnSignal(ref on) = s.node {
+                Some((on.signal_name.clone(), on.params.iter().map(|p| p.name.clone()).collect()))
             } else {
                 None
             }
@@ -705,6 +742,7 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
     let program = std::sync::Arc::new(program);
     let storage_slots = std::sync::Arc::new(storage_slots);
     let handler_names = std::sync::Arc::new(handler_names);
+    let handler_params = std::sync::Arc::new(handler_params);
     let cell_name = std::sync::Arc::new(cell_name);
     let base_dir = std::sync::Arc::new(
         path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
@@ -714,6 +752,7 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
         let program = program.clone();
         let storage_slots = storage_slots.clone();
         let handler_names = handler_names.clone();
+        let handler_params = handler_params.clone();
         let cell_name = cell_name.clone();
         let base_dir = base_dir.clone();
 
@@ -821,10 +860,28 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
                         }
                     }
                 }
-                // If POST with JSON body, append parsed body as last arg
+                // If POST with JSON body, extract fields to match handler params
                 if method == "POST" && !body.is_empty() {
                     if let Some(ref bv) = body_value {
-                        args.push(bv.clone());
+                        // If handler has named params, extract fields from JSON
+                        if let Some(param_names) = handler_params.get(sig) {
+                            if let interpreter::Value::Map(ref entries) = bv {
+                                // Extract fields in param order, skipping params already filled by path/query
+                                let remaining_params = &param_names[args.len()..];
+                                for pname in remaining_params {
+                                    let val = entries.iter()
+                                        .find(|(k, _)| k == pname)
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or(interpreter::Value::Unit);
+                                    args.push(val);
+                                }
+                            } else {
+                                // Non-object JSON (array, scalar) — pass as single arg
+                                args.push(bv.clone());
+                            }
+                        } else {
+                            args.push(bv.clone());
+                        }
                     } else {
                         args.push(interpreter::Value::String(body.clone()));
                     }
@@ -832,16 +889,37 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
                 (sig.to_string(), args)
             } else if handler_names.contains(&"request".to_string()) {
                 // Fall back to generic request handler
+                // Parse query params for all routes
+                let (req_path, req_query) = url.split_once('?').unwrap_or((&url, ""));
+                let query_map: Vec<(String, interpreter::Value)> = if req_query.is_empty() {
+                    vec![]
+                } else {
+                    req_query.split('&')
+                        .filter_map(|pair| {
+                            let (k, v) = pair.split_once('=')?;
+                            Some((
+                                urlencoding_decode(k),
+                                interpreter::Value::String(urlencoding_decode(v).replace('+', " ")),
+                            ))
+                        })
+                        .collect()
+                };
                 // Pass parsed JSON body if available, otherwise raw string
                 let body_arg = body_value.clone()
                     .unwrap_or(interpreter::Value::String(body.clone()));
+
+                // Build args: method, path (without query), body, query_params map
+                let mut req_args = vec![
+                    interpreter::Value::String(method.clone()),
+                    interpreter::Value::String(req_path.to_string()),
+                    body_arg,
+                ];
+                if !query_map.is_empty() {
+                    req_args.push(interpreter::Value::Map(query_map));
+                }
                 (
                     "request".to_string(),
-                    vec![
-                        interpreter::Value::String(method.clone()),
-                        interpreter::Value::String(url.clone()),
-                        body_arg,
-                    ],
+                    req_args,
                 )
             } else {
                 // 404
@@ -859,6 +937,11 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
                 return;
             }
         };
+
+        if verbose {
+            eprintln!("  signal: {}", signal_name);
+            eprintln!("  args: {:?}", args);
+        }
 
         let start_time = std::time::Instant::now();
 
@@ -921,6 +1004,7 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
                     (200u16, body, "application/json".to_string(), vec![])
                 };
 
+                let verbose_body = if verbose { Some(body_str.clone()) } else { None };
                 let mut resp = tiny_http::Response::from_string(body_str)
                     .with_status_code(tiny_http::StatusCode(status_code))
                     .with_header(
@@ -937,6 +1021,9 @@ fn cmd_serve(path: &PathBuf, port: u16, registry: &mut Registry) {
                 resp.add_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
                 let elapsed = start_time.elapsed();
                 eprintln!("{} {} → {} {}ms", method, url, status_code, elapsed.as_millis());
+                if let Some(ref vb) = verbose_body {
+                    eprintln!("  response body: {}", vb);
+                }
                 let _ = request.respond(resp);
             }
             Err(e) => {
@@ -1191,37 +1278,125 @@ fn format_expr(expr: &ast::Expr) -> String {
     }
 }
 
+// ── REPL ────────────────────────────────────────────────────────────
+
+fn cmd_repl(registry: &mut Registry) {
+    eprintln!("soma repl v0.1.0 — type expressions to evaluate, :quit to exit");
+
+    // Create a minimal program with an empty cell for the REPL
+    let empty_program = ast::Program {
+        imports: vec![],
+        cells: vec![],
+    };
+    let mut interp = interpreter::Interpreter::new(&empty_program);
+
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+
+    loop {
+        eprint!("soma> ");
+        line.clear();
+        match stdin.read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("error: {}", e);
+                break;
+            }
+        }
+
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if input == ":quit" || input == ":q" || input == "exit" {
+            break;
+        }
+
+        // Try to parse as a cell definition first
+        if input.starts_with("cell ") {
+            let tokens = lex(input);
+            match parser::Parser::new(tokens).parse_program() {
+                Ok(program) => {
+                    for cell in &program.cells {
+                        interp.register_cell(cell.node.clone());
+                        println!("defined cell: {}", cell.node.name);
+                    }
+                }
+                Err(e) => eprintln!("parse error: {}", e),
+            }
+            continue;
+        }
+
+        // Try to parse as a signal call: handler_name(args)
+        // Wrap it in a minimal cell handler so we can evaluate it
+        let wrapper = format!(
+            "cell _Repl {{ on _eval() {{ return {} }} }}",
+            input
+        );
+
+        let tokens = lex(&wrapper);
+        match parser::Parser::new(tokens).parse_program() {
+            Ok(program) => {
+                for cell in &program.cells {
+                    interp.register_cell(cell.node.clone());
+                }
+                match interp.call_signal("_Repl", "_eval", vec![]) {
+                    Ok(val) => println!("{}", val),
+                    Err(e) => eprintln!("error: {}", e),
+                }
+            }
+            Err(e) => eprintln!("parse error: {}", e),
+        }
+    }
+}
+
 // ── Package manager commands ─────────────────────────────────────────
 
 fn cmd_init(name: Option<&str>) {
     let cwd = std::env::current_dir().unwrap();
-    let project_name = name.unwrap_or_else(|| {
-        cwd.file_name()
+
+    // If a name is provided, create a subdirectory; otherwise init in cwd
+    let (project_dir, project_name) = if let Some(n) = name {
+        let dir = cwd.join(n);
+        if dir.exists() {
+            eprintln!("error: directory '{}' already exists", n);
+            process::exit(1);
+        }
+        fs::create_dir_all(&dir).unwrap_or_else(|e| {
+            eprintln!("error: cannot create directory '{}': {}", n, e);
+            process::exit(1);
+        });
+        (dir, n.to_string())
+    } else {
+        let n = cwd.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("myapp")
-    });
+            .to_string();
+        (cwd.clone(), n)
+    };
 
-    let manifest_path = cwd.join("soma.toml");
+    let manifest_path = project_dir.join("soma.toml");
     if manifest_path.exists() {
         eprintln!("soma.toml already exists");
         process::exit(1);
     }
 
     // Create manifest
-    let manifest = pkg::Manifest::new(project_name);
+    let manifest = pkg::Manifest::new(&project_name);
     manifest.save(&manifest_path).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         process::exit(1);
     });
 
     // Create environment
-    let env = pkg::SomaEnv::init(&cwd).unwrap_or_else(|e| {
+    let env = pkg::SomaEnv::init(&project_dir).unwrap_or_else(|e| {
         eprintln!("error: {}", e);
         process::exit(1);
     });
 
     // Create starter main.cell
-    let main_path = cwd.join("main.cell");
+    let main_path = project_dir.join("main.cell");
     if !main_path.exists() {
         fs::write(&main_path, r#"// Your Soma app starts here
 
@@ -1237,16 +1412,25 @@ cell App {
 "#).ok();
     }
 
+    let rel_prefix = if name.is_some() {
+        format!("{}/", project_name)
+    } else {
+        String::new()
+    };
+
     println!("initialized soma project: {}", project_name);
     println!("");
-    println!("  soma.toml        project manifest");
-    println!("  main.cell        entry point");
-    println!("  .soma_env/       isolated environment");
+    println!("  {}soma.toml        project manifest", rel_prefix);
+    println!("  {}main.cell        entry point", rel_prefix);
+    println!("  {}.soma_env/       isolated environment", rel_prefix);
     println!("    stdlib/         {} property definitions", env.all_cell_paths().len());
     println!("    packages/      dependencies (empty)");
     println!("    cache/          compiled bytecode");
     println!("");
     println!("next steps:");
+    if name.is_some() {
+        println!("  cd {}", project_name);
+    }
     println!("  soma run main.cell hello world");
     println!("  soma add mypackage --git https://github.com/user/repo");
     println!("  soma serve main.cell");

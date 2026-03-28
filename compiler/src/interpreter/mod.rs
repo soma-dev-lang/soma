@@ -134,6 +134,8 @@ pub struct Interpreter {
     storage: HashMap<String, Arc<dyn StorageBackend>>,
     /// State machines: (cell_name, machine_name) → definition
     state_machines: HashMap<(String, String), StateMachineSection>,
+    /// Source file path for error reporting
+    pub source_file: Option<String>,
 }
 
 impl Interpreter {
@@ -165,6 +167,7 @@ impl Interpreter {
             emitted_signals: Vec::new(),
             storage: HashMap::new(),
             state_machines,
+            source_file: None,
         }
     }
 
@@ -1267,12 +1270,25 @@ impl Interpreter {
                 Some(Ok(Value::Map(entries)))
             }
             // HTML response: html(body) or html(status, body)
+            // Auto-injects HTMX script tag if not already present
             "html" => {
-                let (status, body) = if args.len() >= 2 {
+                let (status, mut body) = if args.len() >= 2 {
                     (args[0].clone(), format!("{}", args[1]))
                 } else {
                     (Value::Int(200), args.first().map(|a| format!("{}", a)).unwrap_or_default())
                 };
+                // Auto-inject HTMX if the body contains hx- attributes but no htmx script
+                if body.contains("hx-") && !body.contains("htmx.org") {
+                    let htmx_tag = "<script src=\"https://unpkg.com/htmx.org@2.0.4\"></script>";
+                    if let Some(pos) = body.find("</head>") {
+                        body.insert_str(pos, htmx_tag);
+                    } else if let Some(pos) = body.find("<body") {
+                        body.insert_str(pos, htmx_tag);
+                    } else {
+                        // Prepend if no head/body tags
+                        body = format!("{}{}", htmx_tag, body);
+                    }
+                }
                 Some(Ok(Value::Map(vec![
                     ("_status".to_string(), status),
                     ("_body".to_string(), Value::String(body)),
