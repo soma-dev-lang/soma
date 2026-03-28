@@ -760,7 +760,7 @@ fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Registry) 
         process::exit(1);
     });
 
-    eprintln!("soma serve v0.1.0");
+    eprintln!("soma serve v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("cell: {}", cell_name);
     eprintln!("handlers: [{}]", handler_names.join(", "));
     eprintln!("database: {}", std::path::Path::new(".soma_data/soma.db").canonicalize()
@@ -1247,13 +1247,16 @@ fn eval_test_assertion(
             let left_val = eval_test_expr(interp, &left.node)?;
             let right_val = eval_test_expr(interp, &right.node)?;
 
+            // Compare as floats for numeric comparisons (handles both Int and Float)
+            let lf = match &left_val { interpreter::Value::Int(n) => *n as f64, interpreter::Value::Float(n) => *n, _ => 0.0 };
+            let rf = match &right_val { interpreter::Value::Int(n) => *n as f64, interpreter::Value::Float(n) => *n, _ => 0.0 };
             let result = match op {
                 ast::CmpOp::Eq => format!("{}", left_val) == format!("{}", right_val),
                 ast::CmpOp::Ne => format!("{}", left_val) != format!("{}", right_val),
-                ast::CmpOp::Lt => left_val.as_int().unwrap_or(0) < right_val.as_int().unwrap_or(0),
-                ast::CmpOp::Gt => left_val.as_int().unwrap_or(0) > right_val.as_int().unwrap_or(0),
-                ast::CmpOp::Le => left_val.as_int().unwrap_or(0) <= right_val.as_int().unwrap_or(0),
-                ast::CmpOp::Ge => left_val.as_int().unwrap_or(0) >= right_val.as_int().unwrap_or(0),
+                ast::CmpOp::Lt => lf < rf,
+                ast::CmpOp::Gt => lf > rf,
+                ast::CmpOp::Le => lf <= rf,
+                ast::CmpOp::Ge => lf >= rf,
             };
 
             if !result {

@@ -525,7 +525,7 @@ impl Interpreter {
                 // Auto-interpolate strings: "Hello {name}" → "Hello Alice"
                 if let Value::String(ref s) = val {
                     if s.contains('{') {
-                        return Ok(Value::String(self.interpolate_string(s, env)));
+                        return Ok(Value::String(self.interpolate_string(s, env, cell_name, signal_name)));
                     }
                 }
                 Ok(val)
@@ -921,36 +921,28 @@ impl Interpreter {
 
     /// Interpolate {var} in a string from the local scope.
     /// If var is not found in scope, leave {var} as-is (for render() compatibility).
-    fn interpolate_string(&self, s: &str, env: &HashMap<String, Value>) -> String {
+    fn interpolate_string(&mut self, s: &str, env: &mut HashMap<String, Value>, cell_name: &str, signal_name: &str) -> String {
         let bytes = s.as_bytes();
         let mut result = String::with_capacity(s.len());
         let mut pos = 0;
         while pos < bytes.len() {
             if bytes[pos] == b'{' {
                 if let Some(end) = s[pos + 1..].find('}') {
-                    let key = &s[pos + 1..pos + 1 + end];
-                    // Check if it's a simple identifier (no spaces, no special chars)
-                    if !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                        if let Some(val) = env.get(key) {
-                            result.push_str(&format!("{}", val));
-                            pos = pos + 1 + end + 1;
-                            continue;
-                        }
+                    let expr_str = &s[pos + 1..pos + 1 + end];
+
+                    // Skip empty or HTML-like content (class names, CSS)
+                    if expr_str.is_empty() || expr_str.contains(':') || expr_str.contains(';') {
+                        result.push('{');
+                        pos += 1;
+                        continue;
                     }
-                    // Also try field access: {car.brand}
-                    if key.contains('.') {
-                        let parts: Vec<&str> = key.splitn(2, '.').collect();
-                        if parts.len() == 2 {
-                            if let Some(val) = env.get(parts[0]) {
-                                if let Value::Map(ref entries) = val {
-                                    if let Some((_, field_val)) = entries.iter().find(|(k, _)| k == parts[1]) {
-                                        result.push_str(&format!("{}", field_val));
-                                        pos = pos + 1 + end + 1;
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
+
+                    // Try to parse and evaluate the expression
+                    let eval_result = self.eval_interpolation_expr(expr_str, env, cell_name, signal_name);
+                    if let Some(val) = eval_result {
+                        result.push_str(&format!("{}", val));
+                        pos = pos + 1 + end + 1;
+                        continue;
                     }
                 }
             }
@@ -958,6 +950,54 @@ impl Interpreter {
             pos += 1;
         }
         result
+    }
+
+    /// Parse and evaluate an expression string from interpolation
+    fn eval_interpolation_expr(&mut self, expr_str: &str, env: &mut HashMap<String, Value>, cell_name: &str, signal_name: &str) -> Option<Value> {
+        // Fast path: simple variable name
+        if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return env.get(expr_str).cloned();
+        }
+        // Fast path: var.field
+        if expr_str.contains('.') && !expr_str.contains('(') && !expr_str.contains(' ') {
+            let parts: Vec<&str> = expr_str.splitn(2, '.').collect();
+            if parts.len() == 2 {
+                if let Some(val) = env.get(parts[0]) {
+                    if let Value::Map(ref entries) = val {
+                        if let Some((_, field_val)) = entries.iter().find(|(k, _)| k == parts[1]) {
+                            return Some(field_val.clone());
+                        }
+                    }
+                    // Try .length etc
+                    match parts[1] {
+                        "length" | "len" => {
+                            if let Value::List(items) = val { return Some(Value::Int(items.len() as i64)); }
+                            if let Value::String(s) = val { return Some(Value::Int(s.len() as i64)); }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Full expression: parse and eval
+        let wrapped = format!("cell _T {{ on _e() {{ return {} }} }}", expr_str);
+        let mut lexer = crate::lexer::Lexer::new(&wrapped);
+        let tokens = lexer.tokenize().ok()?;
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().ok()?;
+        let cell = program.cells.first()?;
+        let section = cell.node.sections.first()?;
+        if let crate::ast::Section::OnSignal(ref on) = section.node {
+            if let Some(stmt) = on.body.first() {
+                if let crate::ast::Statement::Return { ref value } = stmt.node {
+                    match self.eval_expr(&value.node, env, cell_name, signal_name) {
+                        Ok(val) => return Some(val),
+                        Err(_) => return None,
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn eval_literal(&self, lit: &Literal) -> Value {
