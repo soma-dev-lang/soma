@@ -399,6 +399,11 @@ pub enum Expr {
         right: Box<Spanned<Expr>>,
     },
     Not(Box<Spanned<Expr>>),
+    /// Pipe: expr |> fn(args) → fn(expr, args)
+    Pipe {
+        left: Box<Spanned<Expr>>,
+        right: Box<Spanned<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone)]

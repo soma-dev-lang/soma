@@ -1204,7 +1204,21 @@ impl Parser {
     // ── Expressions ──────────────────────────────────────────────────
 
     fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        self.parse_comparison()
+        self.parse_pipe()
+    }
+
+    fn parse_pipe(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        let mut left = self.parse_comparison()?;
+        while self.check(&Token::Pipe) {
+            self.advance();
+            let right = self.parse_comparison()?;
+            let span = left.span.merge(right.span);
+            left = Spanned::new(Expr::Pipe {
+                left: Box::new(left),
+                right: Box::new(right),
+            }, span);
+        }
+        Ok(left)
     }
 
     fn parse_comparison(&mut self) -> Result<Spanned<Expr>, ParseError> {

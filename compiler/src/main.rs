@@ -457,15 +457,20 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
 }
 
 fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry) {
-    // Find the cell
-    // Find the main cell: prefers cell with "request" handler (for serve), else first with handlers
-    let cell = program
-        .cells
-        .iter()
-        .find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
-            if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "request" } else { false }
+    // Find the main cell based on the signal being called
+    // If first arg matches a handler name in a specific cell, use that cell
+    let requested_signal = arg_values.first().and_then(|v| {
+        if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None }
+    });
+    let cell = requested_signal.as_ref().and_then(|sig| {
+        program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+            if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == *sig } else { false }
         }))
-        .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
+    })
+    .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+        if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "request" } else { false }
+    })))
+    .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
         .unwrap_or_else(|| {
             eprintln!("error: no runnable cell found");
             process::exit(1);

@@ -93,6 +93,7 @@ pub enum Token {
     Bang,     // !
     Arrow,    // ->
     FatArrow, // =>
+    Pipe,     // |>
     Eq,       // =
     PlusEq,   // +=
     Dot,      // .
@@ -301,6 +302,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('|') {
                     self.advance();
                     Token::OrOr
+                } else if self.peek() == Some('>') {
+                    self.advance();
+                    Token::Pipe
                 } else {
                     return Err(LexError::UnexpectedChar { ch, pos: start });
                 }

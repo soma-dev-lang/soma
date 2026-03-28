@@ -249,6 +249,27 @@ impl BytecodeCompiler {
                 let method_idx = chunk.add_constant(Constant::Name(method.clone()));
                 chunk.emit_u16_u8(Op::CallMethod, method_idx, args.len() as u8);
             }
+
+            Expr::Pipe { left, right } => {
+                // Compile left, then desugar: left |> f(a,b) → f(left,a,b)
+                self.compile_expr(chunk, &left.node);
+                match &right.node {
+                    Expr::FnCall { name, args } => {
+                        for arg in args {
+                            self.compile_expr(chunk, &arg.node);
+                        }
+                        let name_idx = chunk.add_constant(Constant::Name(name.clone()));
+                        chunk.emit_u16_u8(Op::CallBuiltin, name_idx, (args.len() + 1) as u8);
+                    }
+                    Expr::Ident(name) => {
+                        let name_idx = chunk.add_constant(Constant::Name(name.clone()));
+                        chunk.emit_u16_u8(Op::CallBuiltin, name_idx, 1);
+                    }
+                    _ => {
+                        self.compile_expr(chunk, &right.node);
+                    }
+                }
+            }
         }
     }
 

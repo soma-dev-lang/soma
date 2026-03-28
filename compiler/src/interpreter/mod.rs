@@ -202,6 +202,11 @@ impl Interpreter {
 
     /// Take all emitted signals (drains the buffer)
     /// Find which cell has a handler for the given signal and call it
+    /// Same as find_and_call but with a different name for pipe operator
+    pub fn find_and_call_with_args(&mut self, signal_name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        self.find_and_call(signal_name, args)
+    }
+
     pub fn find_and_call(&mut self, signal_name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // Search handler cache for matching signal
         let cell_name = self.handler_cache.keys()
@@ -487,6 +492,46 @@ impl Interpreter {
                 let val = self.eval_expr(&inner.node, env, cell_name, signal_name)?;
                 let b = val.as_bool().map_err(ExecError::Runtime)?;
                 Ok(Value::Bool(!b))
+            }
+
+            Expr::Pipe { left, right } => {
+                // Evaluate left side
+                let left_val = self.eval_expr(&left.node, env, cell_name, signal_name)?;
+
+                // Right side must be a FnCall — prepend left_val as first arg
+                match &right.node {
+                    Expr::FnCall { name, args } => {
+                        let mut all_args = vec![left_val];
+                        for arg in args {
+                            all_args.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
+                        }
+                        // Call as builtin first, then signal
+                        if let Some(val) = self.call_builtin(name, &all_args, cell_name) {
+                            val.map_err(ExecError::Runtime)
+                        } else {
+                            self.find_and_call_with_args(name, all_args)
+                                .map_err(ExecError::Runtime)
+                        }
+                    }
+                    Expr::Ident(name) => {
+                        // Bare function: expr |> fn → fn(expr)
+                        let all_args = vec![left_val];
+                        if let Some(val) = self.call_builtin(name, &all_args, cell_name) {
+                            val.map_err(ExecError::Runtime)
+                        } else {
+                            self.find_and_call_with_args(name, all_args)
+                                .map_err(ExecError::Runtime)
+                        }
+                    }
+                    Expr::FieldAccess { target, field } => {
+                        // expr |> obj.method → method call with pipe value
+                        let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
+                        self.call_storage_method(cell_name, &format!("{}", target_val), field, &[left_val])
+                    }
+                    _ => Err(ExecError::Runtime(RuntimeError::TypeError(
+                        "pipe (|>) right side must be a function call".to_string()
+                    )))
+                }
             }
 
             Expr::FieldAccess { target, field } => {
