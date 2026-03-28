@@ -1,0 +1,73 @@
+// Mock Storage Provider Sidecar
+// Simulates an external provider (like DynamoDB) over HTTP.
+//
+//   soma serve tools/mock_provider.cell --port 9999
+//
+// The Soma runtime calls this instead of SQLite when
+// soma-provider.toml has: native = "http://localhost:9999"
+//
+// Endpoints:
+//   POST /get     { "table": "T_data", "key": "k" }
+//   POST /set     { "table": "T_data", "key": "k", "value": "v" }
+//   POST /delete  { "table": "T_data", "key": "k" }
+//   POST /keys    { "table": "T_data" }
+//   POST /len     { "table": "T_data" }
+
+cell MockProvider {
+    memory {
+        store: Map<String, String> [ephemeral, local]
+    }
+
+    on request(method: String, path: String, body: String) {
+        let data = from_json(body)
+        let table = data.table ?? "default"
+        let key = data.key ?? ""
+
+        // Namespace keys by table
+        let full_key = "{table}:{key}"
+
+        if path == "/get" {
+            let val = store.get(full_key)
+            if val == () {
+                return map("value", ())
+            }
+            return map("value", val)
+        }
+
+        if path == "/set" {
+            let val = data.value ?? ""
+            store.set(full_key, val)
+            return map("ok", true)
+        }
+
+        if path == "/delete" {
+            store.delete(full_key)
+            return map("ok", true)
+        }
+
+        if path == "/keys" {
+            let all = store.keys()
+            let prefix = "{table}:"
+            let result = list()
+            for k in all {
+                if starts_with(k, prefix) {
+                    let short = substring(k, len(prefix), len(k))
+                    result = list(result, short)
+                }
+            }
+            return map("keys", result)
+        }
+
+        if path == "/len" {
+            let all = store.keys()
+            let prefix = "{table}:"
+            let count = 0
+            for k in all {
+                if starts_with(k, prefix) { count = count + 1 }
+            }
+            return map("len", count)
+        }
+
+        return response(404, map("error", "unknown endpoint"))
+    }
+}

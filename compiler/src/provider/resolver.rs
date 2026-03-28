@@ -135,6 +135,11 @@ fn local_manifest() -> ProviderManifest {
 
 /// Instantiate a native backend
 fn instantiate(native_name: &str, cell_name: &str, field_name: &str) -> Arc<dyn StorageBackend> {
+    // HTTP backend: native = "http://host:port"
+    if native_name.starts_with("http://") || native_name.starts_with("https://") {
+        return Arc::new(super::HttpBackend::new(native_name, cell_name, field_name));
+    }
+
     match native_name {
         "sqlite" => Arc::new(SqliteBackend::new(cell_name, field_name)),
         "memory" => Arc::new(MemoryBackend::new()),
