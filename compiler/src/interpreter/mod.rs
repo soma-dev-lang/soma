@@ -245,6 +245,16 @@ impl Interpreter {
         }
     }
 
+    /// Ensure state machine storage slots exist (auto-create in-memory backends)
+    pub fn ensure_state_machine_storage(&mut self) {
+        for ((_, sm_name), _) in &self.state_machines {
+            let key = format!("__sm_{}", sm_name);
+            if !self.storage.contains_key(&key) {
+                self.storage.insert(key, Arc::new(crate::runtime::storage::MemoryBackend::new()));
+            }
+        }
+    }
+
     /// Take all emitted signals (drains the buffer)
     /// Find which cell has a handler for the given signal and call it
     /// Same as find_and_call but with a different name for pipe operator
@@ -1081,7 +1091,7 @@ impl Interpreter {
     /// Native function boundary. The names here correspond to `native "name"`
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma.
-    fn call_builtin(&self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+    pub fn call_builtin(&self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
         match name {
             "print" => {
                 for (i, arg) in args.iter().enumerate() {
@@ -2048,19 +2058,10 @@ impl Interpreter {
     /// Find the first state machine and its backing storage slot
     fn find_state_machine(&self) -> Option<(&StateMachineSection, &Arc<dyn StorageBackend>)> {
         for ((_cell_name, sm_name), sm) in &self.state_machines {
-            // The state is stored in a slot named after the state machine
-            let slot_name = format!("_state_{}", sm_name);
-            if let Some(backend) = self.storage.get(&slot_name).or_else(|| self.storage.get(sm_name)) {
-                return Some((sm, backend));
-            }
-            // Try any storage slot that exists
-            for (key, backend) in &self.storage {
-                if key.contains("state") || key.contains("status") || key == sm_name {
-                    return Some((sm, backend));
-                }
-            }
-            // Use first available storage as fallback for state
-            if let Some((_, backend)) = self.storage.iter().next() {
+            // State machines use a DEDICATED slot: __sm_{name}
+            // This prevents confusion with user data slots
+            let slot_name = format!("__sm_{}", sm_name);
+            if let Some(backend) = self.storage.get(&slot_name) {
                 return Some((sm, backend));
             }
         }

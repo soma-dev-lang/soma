@@ -133,7 +133,15 @@ impl VM {
                     let val = match &self.chunks[chunk_idx].constants[idx] {
                         Constant::Int(n) => Value::Int(*n),
                         Constant::Float(n) => Value::Float(*n),
-                        Constant::String(s) => Value::String(s.clone()),
+                        Constant::String(s) => {
+                            // String interpolation: resolve {var} from locals
+                            if s.contains('{') {
+                                let interpolated = self.interpolate_vm_string(s, base);
+                                Value::String(interpolated)
+                            } else {
+                                Value::String(s.clone())
+                            }
+                        }
                         Constant::Name(s) => Value::String(s.clone()),
                     };
                     self.stack.push(val);
@@ -341,6 +349,48 @@ impl VM {
 
     // ── Helpers ──────────────────────────────────────────────────────
 
+    /// Interpolate {var} in a string from local variables
+    fn interpolate_vm_string(&self, s: &str, base: usize) -> String {
+        let frame = self.frames.last().unwrap();
+        let chunk = &self.chunks[frame.chunk_idx];
+        let bytes = s.as_bytes();
+        let mut result = String::with_capacity(s.len());
+        let mut pos = 0;
+        while pos < bytes.len() {
+            if bytes[pos] == b'{' {
+                if let Some(end) = s[pos + 1..].find('}') {
+                    let key = &s[pos + 1..pos + 1 + end];
+                    if !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                        // Try to resolve from locals
+                        if key.contains('.') {
+                            let parts: Vec<&str> = key.splitn(2, '.').collect();
+                            if let Some(slot) = chunk.locals.iter().position(|n| n == parts[0]) {
+                                if base + slot < self.locals.len() {
+                                    if let Value::Map(ref entries) = self.locals[base + slot] {
+                                        if let Some((_, val)) = entries.iter().find(|(k, _)| k == parts[1]) {
+                                            result.push_str(&format!("{}", val));
+                                            pos = pos + 1 + end + 1;
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if let Some(slot) = chunk.locals.iter().position(|n| n == key) {
+                            if base + slot < self.locals.len() {
+                                result.push_str(&format!("{}", self.locals[base + slot]));
+                                pos = pos + 1 + end + 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            result.push(bytes[pos] as char);
+            pos += 1;
+        }
+        result
+    }
+
     fn read_u16(&mut self) -> u16 {
         let frame = self.frames.last_mut().unwrap();
         let chunk = &self.chunks[frame.chunk_idx];
@@ -502,7 +552,16 @@ impl VM {
                     } else { Value::Unit }
                 } else { Value::Unit }
             }
-            _ => Value::Unit,
+            // Delegate all other builtins to the interpreter's dispatch
+            _ => {
+                let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![] };
+                let interp = crate::interpreter::Interpreter::new(&dummy_prog);
+                if let Some(result) = interp.call_builtin(name, &args, "") {
+                    result.unwrap_or(Value::Unit)
+                } else {
+                    Value::Unit
+                }
+            }
         }
     }
 

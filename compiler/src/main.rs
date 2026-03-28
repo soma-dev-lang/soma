@@ -549,6 +549,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
                     slots.insert(slot.node.name.clone(), backend);
                 }
                 interp.set_storage(&prog_cell.node.name, &slots);
+                interp.ensure_state_machine_storage();
             }
         }
     }
@@ -816,6 +817,7 @@ fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Registry) 
         // Create a fresh interpreter per request (shares storage via Arc)
         let mut interp = interpreter::Interpreter::new(&program);
         interp.set_storage_raw(&storage_slots);
+        interp.ensure_state_machine_storage();
 
         // Determine which signal to call
         // Priority: /signal/ prefix > path-based routing > generic request handler
@@ -1139,6 +1141,7 @@ fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                         slots.insert(slot.node.name.clone(), backend);
                     }
                     interp.set_storage(&cell.node.name, &slots);
+                    interp.ensure_state_machine_storage();
                 }
             }
         }
