@@ -1000,6 +1000,23 @@ impl Interpreter {
             "to_string" => {
                 args.first().map(|arg| Ok(Value::String(format!("{}", arg))))
             }
+            "to_int" | "int" => {
+                args.first().map(|arg| match arg {
+                    Value::Int(n) => Ok(Value::Int(*n)),
+                    Value::Float(n) => Ok(Value::Int(*n as i64)),
+                    Value::String(s) => Ok(Value::Int(s.parse::<i64>().unwrap_or(0))),
+                    Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
+                    _ => Ok(Value::Int(0)),
+                })
+            }
+            "to_float" | "float" => {
+                args.first().map(|arg| match arg {
+                    Value::Float(n) => Ok(Value::Float(*n)),
+                    Value::Int(n) => Ok(Value::Float(*n as f64)),
+                    Value::String(s) => Ok(Value::Float(s.parse::<f64>().unwrap_or(0.0))),
+                    _ => Ok(Value::Float(0.0)),
+                })
+            }
             "to_json" => {
                 args.first().map(|arg| Ok(Value::String(format!("{}", arg))))
             }

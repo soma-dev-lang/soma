@@ -1,0 +1,67 @@
+// Screener — filters the universe based on rules
+
+cell Screener {
+    memory {
+        screen_results: Map<String, String> [persistent, consistent]
+    }
+
+    on screen(min_mcap: Int, min_momentum: Int, max_volatility: Int, max_pe: Int, sectors: String) {
+        let all = get_all()
+        let passed = list()
+        let rejected = list()
+        let id = next_id()
+
+        for stock in all {
+            let pass = true
+            let reason = ""
+
+            // Market cap filter
+            if stock.market_cap < min_mcap {
+                pass = false
+                reason = "market_cap < {min_mcap}M"
+            }
+
+            // Momentum filter
+            if pass == true {
+                if stock.momentum < min_momentum {
+                    pass = false
+                    reason = "momentum {stock.momentum}% < {min_momentum}%"
+                }
+            }
+
+            // Volatility filter
+            if pass == true {
+                if stock.volatility > max_volatility {
+                    pass = false
+                    reason = "volatility {stock.volatility}% > {max_volatility}%"
+                }
+            }
+
+            // PE filter
+            if pass == true {
+                if stock.pe > max_pe {
+                    pass = false
+                    reason = "PE {stock.pe} > {max_pe}"
+                }
+            }
+
+            if pass == true {
+                passed = list(passed, stock)
+            } else {
+                let rej = map("ticker", stock.ticker, "name", stock.name, "reason", reason)
+                rejected = list(rejected, rej)
+            }
+        }
+
+        // Store results
+        let result = to_json(map(
+            "id", id,
+            "filters", map("min_mcap", min_mcap, "min_momentum", min_momentum, "max_volatility", max_volatility, "max_pe", max_pe),
+            "passed_count", passed.length,
+            "rejected_count", rejected.length
+        ))
+        screen_results.set(to_string(id), result)
+
+        return map("id", id, "passed", passed, "rejected", rejected, "passed_count", passed.length, "rejected_count", rejected.length)
+    }
+}

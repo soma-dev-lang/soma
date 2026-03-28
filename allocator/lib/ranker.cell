@@ -1,0 +1,85 @@
+// Ranker — scores and ranks stocks on multiple factors
+
+cell Ranker {
+    on rank(stocks: List<Map<String, String>>, momentum_w: Int, quality_w: Int, value_w: Int, low_vol_w: Int) {
+        // Score each stock on 4 factors, weighted
+        let scored = list()
+
+        for stock in stocks {
+            // Momentum score: higher momentum = higher score (0-100)
+            let mom_score = stock.momentum + 30
+            if mom_score > 100 { mom_score = 100 }
+            if mom_score < 0 { mom_score = 0 }
+
+            // Quality score: ROE-based (already 0-100)
+            let qual_score = stock.quality
+
+            // Value score: lower PE = higher score
+            let val_score = 100 - stock.pe * 2
+            if val_score < 0 { val_score = 0 }
+            if val_score > 100 { val_score = 100 }
+
+            // Low volatility score: lower vol = higher score
+            let lowvol_score = 100 - stock.volatility * 2
+            if lowvol_score < 0 { lowvol_score = 0 }
+
+            // Weighted composite score
+            let total_w = momentum_w + quality_w + value_w + low_vol_w
+            let composite = 0
+            if total_w > 0 {
+                composite = (mom_score * momentum_w + qual_score * quality_w + val_score * value_w + lowvol_score * low_vol_w) / total_w
+            }
+
+            let scored_stock = map(
+                "ticker", stock.ticker,
+                "name", stock.name,
+                "sector", stock.sector,
+                "market_cap", stock.market_cap,
+                "momentum", stock.momentum,
+                "volatility", stock.volatility,
+                "pe", stock.pe,
+                "quality", stock.quality,
+                "div_yield", stock.div_yield,
+                "mom_score", mom_score,
+                "qual_score", qual_score,
+                "val_score", val_score,
+                "lowvol_score", lowvol_score,
+                "composite", composite
+            )
+            scored = list(scored, scored_stock)
+        }
+
+        // Sort by composite score (simple bubble sort since we have small lists)
+        let n = scored.length
+        let i = 0
+        while i < n {
+            let j = 0
+            while j < n - 1 {
+                let a = scored.get(j)
+                let b = scored.get(j + 1)
+                if a.composite < b.composite {
+                    // Swap — rebuild list (no in-place mutation)
+                    let new_list = list()
+                    let k = 0
+                    while k < n {
+                        if k == j {
+                            new_list = list(new_list, b)
+                        } else {
+                            if k == j + 1 {
+                                new_list = list(new_list, a)
+                            } else {
+                                new_list = list(new_list, scored.get(k))
+                            }
+                        }
+                        k = k + 1
+                    }
+                    scored = new_list
+                }
+                j = j + 1
+            }
+            i = i + 1
+        }
+
+        return scored
+    }
+}

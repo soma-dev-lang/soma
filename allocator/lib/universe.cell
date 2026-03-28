@@ -1,0 +1,68 @@
+// Stock Universe — the investable universe with fundamentals
+
+cell Universe {
+    memory {
+        stocks: Map<String, String> [persistent, consistent]
+        index_weights: Map<String, String> [persistent, consistent]
+    }
+
+    on seed_universe() {
+        // Simulated CAC40-like universe with analytics
+        // Fields: ticker, name, sector, market_cap(M), price, pe_ratio, momentum_6m(%), volatility(%), dividend_yield(%), roe(%), index_weight(%)
+
+        stocks.set("MC", to_json(map("ticker", "MC", "name", "LVMH", "sector", "Luxury", "market_cap", 380000, "price", 720, "pe", 24, "momentum", 12, "volatility", 22, "div_yield", 1.5, "roe", 28, "quality", 92)))
+        stocks.set("OR", to_json(map("ticker", "OR", "name", "L Oreal", "sector", "Consumer", "market_cap", 230000, "price", 420, "pe", 32, "momentum", 8, "volatility", 18, "div_yield", 1.8, "roe", 25, "quality", 88)))
+        stocks.set("TTE", to_json(map("ticker", "TTE", "name", "TotalEnergies", "sector", "Energy", "market_cap", 155000, "price", 62, "pe", 8, "momentum", 5, "volatility", 28, "div_yield", 5.2, "roe", 18, "quality", 72)))
+        stocks.set("SAN", to_json(map("ticker", "SAN", "name", "Sanofi", "sector", "Healthcare", "market_cap", 130000, "price", 95, "pe", 14, "momentum", 3, "volatility", 16, "div_yield", 3.8, "roe", 15, "quality", 78)))
+        stocks.set("AI", to_json(map("ticker", "AI", "name", "Air Liquide", "sector", "Materials", "market_cap", 90000, "price", 175, "pe", 28, "momentum", 10, "volatility", 15, "div_yield", 1.9, "roe", 14, "quality", 85)))
+        stocks.set("SU", to_json(map("ticker", "SU", "name", "Schneider Electric", "sector", "Industrials", "market_cap", 120000, "price", 210, "pe", 30, "momentum", 18, "volatility", 24, "div_yield", 1.6, "roe", 16, "quality", 82)))
+        stocks.set("BNP", to_json(map("ticker", "BNP", "name", "BNP Paribas", "sector", "Financials", "market_cap", 75000, "price", 62, "pe", 7, "momentum", -2, "volatility", 32, "div_yield", 6.5, "roe", 10, "quality", 60)))
+        stocks.set("DG", to_json(map("ticker", "DG", "name", "Vinci", "sector", "Industrials", "market_cap", 68000, "price", 115, "pe", 15, "momentum", 6, "volatility", 20, "div_yield", 3.5, "roe", 14, "quality", 75)))
+        stocks.set("RMS", to_json(map("ticker", "RMS", "name", "Hermes", "sector", "Luxury", "market_cap", 220000, "price", 2100, "pe", 52, "momentum", 15, "volatility", 25, "div_yield", 0.8, "roe", 35, "quality", 95)))
+        stocks.set("SAF", to_json(map("ticker", "SAF", "name", "Safran", "sector", "Aerospace", "market_cap", 85000, "price", 200, "pe", 28, "momentum", 22, "volatility", 22, "div_yield", 1.2, "roe", 20, "quality", 80)))
+        stocks.set("CS", to_json(map("ticker", "CS", "name", "AXA", "sector", "Financials", "market_cap", 72000, "price", 34, "pe", 9, "momentum", 4, "volatility", 26, "div_yield", 5.8, "roe", 12, "quality", 65)))
+        stocks.set("EN", to_json(map("ticker", "EN", "name", "Bouygues", "sector", "Industrials", "market_cap", 15000, "price", 35, "pe", 11, "momentum", -5, "volatility", 30, "div_yield", 5.0, "roe", 8, "quality", 55)))
+        stocks.set("KER", to_json(map("ticker", "KER", "name", "Kering", "sector", "Luxury", "market_cap", 35000, "price", 280, "pe", 18, "momentum", -15, "volatility", 35, "div_yield", 3.2, "roe", 15, "quality", 62)))
+        stocks.set("STM", to_json(map("ticker", "STM", "name", "STMicro", "sector", "Technology", "market_cap", 28000, "price", 28, "pe", 10, "momentum", -20, "volatility", 40, "div_yield", 1.0, "roe", 18, "quality", 58)))
+        stocks.set("CAP", to_json(map("ticker", "CAP", "name", "Capgemini", "sector", "Technology", "market_cap", 32000, "price", 185, "pe", 18, "momentum", -8, "volatility", 28, "div_yield", 2.0, "roe", 16, "quality", 70)))
+
+        // Benchmark index weights (CAC40-like)
+        index_weights.set("MC", "12.5")
+        index_weights.set("OR", "8.5")
+        index_weights.set("TTE", "7.0")
+        index_weights.set("SAN", "5.5")
+        index_weights.set("AI", "4.5")
+        index_weights.set("SU", "5.0")
+        index_weights.set("BNP", "3.5")
+        index_weights.set("DG", "3.0")
+        index_weights.set("RMS", "9.0")
+        index_weights.set("SAF", "4.0")
+        index_weights.set("CS", "3.0")
+        index_weights.set("EN", "1.0")
+        index_weights.set("KER", "2.0")
+        index_weights.set("STM", "1.5")
+        index_weights.set("CAP", "2.0")
+
+        return map("status", "seeded", "stocks", 15)
+    }
+
+    on get_stock(ticker: String) {
+        let raw = stocks.get(ticker)
+        if raw == () { return () }
+        return from_json(raw)
+    }
+
+    on get_all() {
+        let items = list()
+        for key in stocks.keys() {
+            items = list(items, from_json(stocks.get(key)))
+        }
+        return items
+    }
+
+    on get_index_weight(ticker: String) {
+        let w = index_weights.get(ticker)
+        if w == () { return 0 }
+        return w
+    }
+}

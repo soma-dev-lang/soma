@@ -1292,6 +1292,20 @@ impl Parser {
             let span = start.merge(expr.span);
             return Ok(Spanned::new(Expr::Not(Box::new(expr)), span));
         }
+        if self.check(&Token::Minus) {
+            let start = self.peek_span();
+            self.advance();
+            let expr = self.parse_unary()?;
+            let span = start.merge(expr.span);
+            return Ok(Spanned::new(
+                Expr::BinaryOp {
+                    left: Box::new(Spanned::new(Expr::Literal(Literal::Int(0)), start)),
+                    op: BinOp::Sub,
+                    right: Box::new(expr),
+                },
+                span,
+            ));
+        }
         self.parse_postfix()
     }
 
