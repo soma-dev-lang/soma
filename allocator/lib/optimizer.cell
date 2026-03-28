@@ -28,8 +28,8 @@ cell Optimizer {
         let total_weight = 0
 
         for s in selected {
-            // Base weight from index
-            let idx_w = get_index_weight(s.ticker)
+            // Base weight from index (stored as string, convert to int)
+            let idx_w = to_int(get_index_weight(s.ticker))
 
             // Score-based tilt
             let tilt = 0

@@ -2,25 +2,29 @@
 
 cell Ranker {
     on rank(stocks: List<Map<String, String>>, momentum_w: Int, quality_w: Int, value_w: Int, low_vol_w: Int) {
-        // Score each stock on 4 factors, weighted
         let scored = list()
 
         for stock in stocks {
-            // Momentum score: higher momentum = higher score (0-100)
-            let mom_score = stock.momentum + 30
+            let mom = to_int(stock.momentum)
+            let qual = to_int(stock.quality)
+            let pe = to_int(stock.pe)
+            let vol = to_int(stock.volatility)
+
+            // Momentum score: higher = better (0-100)
+            let mom_score = mom + 30
             if mom_score > 100 { mom_score = 100 }
             if mom_score < 0 { mom_score = 0 }
 
-            // Quality score: ROE-based (already 0-100)
-            let qual_score = stock.quality
+            // Quality score (0-100)
+            let qual_score = qual
 
-            // Value score: lower PE = higher score
-            let val_score = 100 - stock.pe * 2
+            // Value score: lower PE = better
+            let val_score = 100 - pe * 2
             if val_score < 0 { val_score = 0 }
             if val_score > 100 { val_score = 100 }
 
-            // Low volatility score: lower vol = higher score
-            let lowvol_score = 100 - stock.volatility * 2
+            // Low vol score: lower vol = better
+            let lowvol_score = 100 - vol * 2
             if lowvol_score < 0 { lowvol_score = 0 }
 
             // Weighted composite score

@@ -14,34 +14,34 @@ cell Screener {
         for stock in all {
             let pass = true
             let reason = ""
+            let mcap = to_int(stock.market_cap)
+            let mom = to_int(stock.momentum)
+            let vol = to_int(stock.volatility)
+            let pe = to_int(stock.pe)
 
-            // Market cap filter
-            if stock.market_cap < min_mcap {
+            if mcap < min_mcap {
                 pass = false
-                reason = "market_cap < {min_mcap}M"
+                reason = "market_cap {mcap}M < {min_mcap}M"
             }
 
-            // Momentum filter
             if pass == true {
-                if stock.momentum < min_momentum {
+                if mom < min_momentum {
                     pass = false
-                    reason = "momentum {stock.momentum}% < {min_momentum}%"
+                    reason = "momentum {mom}% < {min_momentum}%"
                 }
             }
 
-            // Volatility filter
             if pass == true {
-                if stock.volatility > max_volatility {
+                if vol > max_volatility {
                     pass = false
-                    reason = "volatility {stock.volatility}% > {max_volatility}%"
+                    reason = "volatility {vol}% > {max_volatility}%"
                 }
             }
 
-            // PE filter
             if pass == true {
-                if stock.pe > max_pe {
+                if pe > max_pe {
                     pass = false
-                    reason = "PE {stock.pe} > {max_pe}"
+                    reason = "PE {pe}x > {max_pe}x"
                 }
             }
 
