@@ -1198,7 +1198,13 @@ impl Interpreter {
                 }
             }
             "join" => {
-                // join(list, separator) → string
+                // Smart dispatch: join(list, list, key) → data join, join(list, sep) → string join
+                if args.len() >= 3 {
+                    if let (Value::List(_), Value::List(_)) = (&args[0], &args[1]) {
+                        return self.call_builtin("inner_join", args, cell_name);
+                    }
+                }
+                // String join: join(list, separator) → string
                 if args.len() >= 2 {
                     if let Value::List(items) = &args[0] {
                         let sep = format!("{}", args[1]);
@@ -1545,6 +1551,180 @@ impl Interpreter {
                 } else {
                     Some(Err(RuntimeError::TypeError("group_by expects (list, field)".to_string())))
                 }
+            }
+            // ── JOIN operations ───────────────────────────────────────
+            "join" | "inner_join" => {
+                // join(left, right, key) → inner join on key field
+                if args.len() >= 3 {
+                    if let (Value::List(left), Value::List(right)) = (&args[0], &args[1]) {
+                        let key = format!("{}", args[2]);
+                        let result: Vec<Value> = left.iter().filter_map(|l| {
+                            let lk = if let Value::Map(e) = l { e.iter().find(|(k,_)| k == &key).map(|(_,v)| format!("{}", v)) } else { None };
+                            lk.and_then(|lk_val| {
+                                right.iter().find(|r| {
+                                    if let Value::Map(e) = r { e.iter().any(|(k,v)| k == &key && format!("{}", v) == lk_val) } else { false }
+                                }).map(|r| {
+                                    // Merge left + right maps
+                                    let mut merged = if let Value::Map(e) = l { e.clone() } else { vec![] };
+                                    if let Value::Map(re) = r {
+                                        for (rk, rv) in re {
+                                            if rk != &key && !merged.iter().any(|(mk,_)| mk == rk) {
+                                                merged.push((rk.clone(), rv.clone()));
+                                            }
+                                        }
+                                    }
+                                    Value::Map(merged)
+                                })
+                            })
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Err(RuntimeError::TypeError("join expects (list, list, key)".to_string()))) }
+                } else { Some(Err(RuntimeError::TypeError("join expects (list, list, key)".to_string()))) }
+            }
+            "left_join" => {
+                // left_join(left, right, key) → left outer join
+                if args.len() >= 3 {
+                    if let (Value::List(left), Value::List(right)) = (&args[0], &args[1]) {
+                        let key = format!("{}", args[2]);
+                        let result: Vec<Value> = left.iter().map(|l| {
+                            let lk = if let Value::Map(e) = l { e.iter().find(|(k,_)| k == &key).map(|(_,v)| format!("{}", v)) } else { None };
+                            let r_match = lk.and_then(|lk_val| {
+                                right.iter().find(|r| {
+                                    if let Value::Map(e) = r { e.iter().any(|(k,v)| k == &key && format!("{}", v) == lk_val) } else { false }
+                                })
+                            });
+                            let mut merged = if let Value::Map(e) = l { e.clone() } else { vec![] };
+                            if let Some(Value::Map(re)) = r_match {
+                                for (rk, rv) in re {
+                                    if rk != &key && !merged.iter().any(|(mk,_)| mk == rk) {
+                                        merged.push((rk.clone(), rv.clone()));
+                                    }
+                                }
+                            }
+                            Value::Map(merged)
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Err(RuntimeError::TypeError("left_join expects (list, list, key)".to_string()))) }
+                } else { Some(Err(RuntimeError::TypeError("left_join expects (list, list, key)".to_string()))) }
+            }
+            // ── Aggregation (GROUP BY) ───────────────────────────────
+            "agg" => {
+                // agg(list, group_field, "col:func", "col:func", ...)
+                // funcs: sum, avg, count, min, max, first, last
+                if args.len() >= 3 {
+                    if let Value::List(items) = &args[0] {
+                        let group_field = format!("{}", args[1]);
+                        let agg_specs: Vec<(String, String)> = args[2..].iter().map(|a| {
+                            let s = format!("{}", a);
+                            let parts: Vec<&str> = s.splitn(2, ':').collect();
+                            if parts.len() == 2 { (parts[0].to_string(), parts[1].to_string()) }
+                            else { (s.clone(), "count".to_string()) }
+                        }).collect();
+
+                        // Group
+                        let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
+                        for item in items {
+                            let gk = if let Value::Map(e) = item {
+                                e.iter().find(|(k,_)| k == &group_field).map(|(_,v)| format!("{}", v)).unwrap_or("null".to_string())
+                            } else { "null".to_string() };
+                            if let Some(g) = groups.iter_mut().find(|(k,_)| k == &gk) {
+                                g.1.push(item);
+                            } else {
+                                groups.push((gk, vec![item]));
+                            }
+                        }
+
+                        // Aggregate per group
+                        let result: Vec<Value> = groups.iter().map(|(gk, items)| {
+                            let mut row = vec![(group_field.clone(), Value::String(gk.clone())), ("count".to_string(), Value::Int(items.len() as i64))];
+                            for (col, func) in &agg_specs {
+                                let vals: Vec<i64> = items.iter().map(|i| map_field_i64(i, col)).collect();
+                                let agg_val = match func.as_str() {
+                                    "sum" => Value::Int(vals.iter().sum()),
+                                    "avg" => Value::Int(if vals.is_empty() { 0 } else { vals.iter().sum::<i64>() / vals.len() as i64 }),
+                                    "min" => Value::Int(vals.iter().copied().min().unwrap_or(0)),
+                                    "max" => Value::Int(vals.iter().copied().max().unwrap_or(0)),
+                                    "count" => Value::Int(vals.len() as i64),
+                                    _ => Value::Int(vals.iter().sum()),
+                                };
+                                row.push((format!("{}_{}", col, func), agg_val));
+                            }
+                            Value::Map(row)
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Err(RuntimeError::TypeError("agg expects (list, group_field, specs...)".to_string()))) }
+                } else { Some(Err(RuntimeError::TypeError("agg expects at least 3 args".to_string()))) }
+            }
+            // ── Select / Project ─────────────────────────────────────
+            "select" => {
+                // select(list, field1, field2, ...) → list with only those fields
+                if args.len() >= 2 {
+                    if let Value::List(items) = &args[0] {
+                        let fields: Vec<String> = args[1..].iter().map(|a| format!("{}", a)).collect();
+                        let result: Vec<Value> = items.iter().map(|item| {
+                            if let Value::Map(entries) = item {
+                                let picked: Vec<(String, Value)> = entries.iter()
+                                    .filter(|(k,_)| fields.contains(k))
+                                    .cloned().collect();
+                                Value::Map(picked)
+                            } else { item.clone() }
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Ok(args[0].clone())) }
+                } else { Some(Err(RuntimeError::TypeError("select expects (list, fields...)".to_string()))) }
+            }
+            "distinct" => {
+                // distinct(list, field) → unique values of field
+                // distinct(list) → unique items
+                if let Some(Value::List(items)) = args.first() {
+                    if let Some(field) = args.get(1) {
+                        let field = format!("{}", field);
+                        let mut seen = Vec::new();
+                        let result: Vec<Value> = items.iter().filter(|item| {
+                            let v = if let Value::Map(e) = item {
+                                e.iter().find(|(k,_)| k == &field).map(|(_,v)| format!("{}", v)).unwrap_or_default()
+                            } else { format!("{}", item) };
+                            if seen.contains(&v) { false } else { seen.push(v); true }
+                        }).cloned().collect();
+                        Some(Ok(Value::List(result)))
+                    } else {
+                        let mut seen = Vec::new();
+                        let result: Vec<Value> = items.iter().filter(|item| {
+                            let v = format!("{}", item);
+                            if seen.contains(&v) { false } else { seen.push(v); true }
+                        }).cloned().collect();
+                        Some(Ok(Value::List(result)))
+                    }
+                } else { Some(Ok(Value::List(vec![]))) }
+            }
+            "flatten" => {
+                // flatten(list_of_lists) → single list
+                if let Some(Value::List(items)) = args.first() {
+                    let result: Vec<Value> = items.iter().flat_map(|item| {
+                        if let Value::List(inner) = item { inner.clone() } else { vec![item.clone()] }
+                    }).collect();
+                    Some(Ok(Value::List(result)))
+                } else { Some(Ok(Value::List(vec![]))) }
+            }
+            "zip" => {
+                // zip(list1, list2) → list of maps with "left" and "right"
+                if args.len() >= 2 {
+                    if let (Value::List(a), Value::List(b)) = (&args[0], &args[1]) {
+                        let result: Vec<Value> = a.iter().zip(b.iter()).map(|(l, r)| {
+                            Value::Map(vec![("left".to_string(), l.clone()), ("right".to_string(), r.clone())])
+                        }).collect();
+                        Some(Ok(Value::List(result)))
+                    } else { Some(Ok(Value::List(vec![]))) }
+                } else { Some(Err(RuntimeError::TypeError("zip expects (list, list)".to_string()))) }
+            }
+            "enumerate" => {
+                // enumerate(list) → list of maps with "index" and "value"
+                if let Some(Value::List(items)) = args.first() {
+                    let result: Vec<Value> = items.iter().enumerate().map(|(i, v)| {
+                        Value::Map(vec![("index".to_string(), Value::Int(i as i64)), ("value".to_string(), v.clone())])
+                    }).collect();
+                    Some(Ok(Value::List(result)))
+                } else { Some(Ok(Value::List(vec![]))) }
             }
             // ── Auto-increment ────────────────────────────────────────
             "next_id" => {

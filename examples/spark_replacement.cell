@@ -1,0 +1,93 @@
+// Spark-style data pipeline in Soma
+// The same thing you'd write in PySpark — but in 40 lines, not 80.
+//
+//   soma run examples/spark_replacement.cell run
+
+cell Analytics {
+    on run() {
+        // ── Two datasets ─────────────────────────────────────────────
+        let trades = list(
+            map("id", 1, "ticker", "MC",  "volume", 15000, "side", "buy"),
+            map("id", 2, "ticker", "OR",  "volume", 8000,  "side", "sell"),
+            map("id", 3, "ticker", "TTE", "volume", 22000, "side", "buy"),
+            map("id", 4, "ticker", "MC",  "volume", 500,   "side", "sell"),
+            map("id", 5, "ticker", "BNP", "volume", 12000, "side", "buy"),
+            map("id", 6, "ticker", "MC",  "volume", 30000, "side", "buy"),
+            map("id", 7, "ticker", "OR",  "volume", 18000, "side", "buy"),
+            map("id", 8, "ticker", "TTE", "volume", 900,   "side", "sell"),
+            map("id", 9, "ticker", "BNP", "volume", 5000,  "side", "sell")
+        )
+
+        let prices = list(
+            map("ticker", "MC",  "price", 720, "sector", "Luxury",     "index_wt", 12),
+            map("ticker", "OR",  "price", 420, "sector", "Consumer",   "index_wt", 8),
+            map("ticker", "TTE", "price", 62,  "sector", "Energy",     "index_wt", 7),
+            map("ticker", "BNP", "price", 62,  "sector", "Financials", "index_wt", 3)
+        )
+
+        // ── Pipeline: join → filter → aggregate → sort ───────────────
+        // Equivalent PySpark:
+        //   df_trades.join(df_prices, "ticker")
+        //     .filter(col("volume") > 1000)
+        //     .groupBy("sector").agg(sum("volume"), avg("price"), count("*"))
+        //     .orderBy(desc("volume_sum"))
+
+        let by_sector = trades
+            |> join(prices, "ticker")
+            |> filter_by("volume", ">", 1000)
+            |> agg("sector", "volume:sum", "price:avg")
+            |> sort_by("volume_sum", "desc")
+
+        // ── More analytics ───────────────────────────────────────────
+        let by_ticker = trades
+            |> join(prices, "ticker")
+            |> agg("ticker", "volume:sum", "volume:avg", "volume:count")
+            |> sort_by("volume_sum", "desc")
+
+        let buy_flow = trades
+            |> filter_by("side", "=", "buy")
+            |> join(prices, "ticker")
+            |> agg("sector", "volume:sum")
+            |> sort_by("volume_sum", "desc")
+
+        let large_trades = trades
+            |> filter_by("volume", ">", 10000)
+            |> join(prices, "ticker")
+            |> select("ticker", "volume", "sector", "price")
+            |> sort_by("volume", "desc")
+
+        let unique_tickers = trades |> distinct("ticker") |> pluck("ticker")
+        let total_volume = trades |> sum_by("volume")
+
+        // ── Print results ────────────────────────────────────────────
+        print("=== Volume by Sector (Spark-style GROUP BY) ===")
+        for row in by_sector {
+            print("  {row.sector}: volume={row.volume_sum}, avg_price={row.price_avg}")
+        }
+
+        print("")
+        print("=== Volume by Ticker ===")
+        for row in by_ticker {
+            print("  {row.ticker}: total={row.volume_sum}, avg={row.volume_avg}, trades={row.volume_count}")
+        }
+
+        print("")
+        print("=== Buy Flow by Sector ===")
+        for row in buy_flow {
+            print("  {row.sector}: {row.volume_sum}")
+        }
+
+        print("")
+        print("=== Large Trades (>10k) ===")
+        for t in large_trades {
+            print("  {t.ticker} ({t.sector}): {t.volume} @ {t.price}EUR")
+        }
+
+        print("")
+        print("=== Summary ===")
+        print("  Unique tickers: {unique_tickers}")
+        print("  Total volume: {total_volume}")
+
+        return "done"
+    }
+}
