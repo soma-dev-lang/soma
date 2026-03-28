@@ -1208,14 +1208,30 @@ impl Parser {
     }
 
     fn parse_pipe(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        let mut left = self.parse_comparison()?;
+        let mut left = self.parse_null_coalesce()?;
         while self.check(&Token::Pipe) {
             self.advance();
-            let right = self.parse_comparison()?;
+            let right = self.parse_null_coalesce()?;
             let span = left.span.merge(right.span);
             left = Spanned::new(Expr::Pipe {
                 left: Box::new(left),
                 right: Box::new(right),
+            }, span);
+        }
+        Ok(left)
+    }
+
+    fn parse_null_coalesce(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        let mut left = self.parse_comparison()?;
+        while self.check(&Token::NullCoal) {
+            self.advance();
+            let right = self.parse_comparison()?;
+            let span = left.span.merge(right.span);
+            // a ?? b → if a == () then b else a
+            // Desugar to FnCall("_coalesce", [a, b])
+            left = Spanned::new(Expr::FnCall {
+                name: "_coalesce".to_string(),
+                args: vec![left, right],
             }, span);
         }
         Ok(left)

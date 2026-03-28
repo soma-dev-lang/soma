@@ -94,6 +94,7 @@ pub enum Token {
     Arrow,    // ->
     FatArrow, // =>
     Pipe,     // |>
+    NullCoal, // ??
     Eq,       // =
     PlusEq,   // +=
     Dot,      // .
@@ -245,6 +246,14 @@ impl<'a> Lexer<'a> {
             }
             '*' => Token::Star,
             '%' => Token::Percent,
+            '?' => {
+                if self.peek() == Some('?') {
+                    self.advance();
+                    Token::NullCoal
+                } else {
+                    return Err(LexError::UnexpectedChar { ch, pos: start });
+                }
+            }
             '/' => Token::Slash,
 
             '-' => {

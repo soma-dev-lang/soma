@@ -1319,6 +1319,67 @@ impl Interpreter {
                     ("Location".to_string(), Value::String(url)),
                 ])))
             }
+            // ── Null coalescing and map operations ─────────────────────
+            "_coalesce" => {
+                // a ?? b → if a is Unit, return b, else a
+                if args.len() >= 2 {
+                    Some(Ok(if matches!(args[0], Value::Unit) { args[1].clone() } else { args[0].clone() }))
+                } else {
+                    Some(Ok(args.first().cloned().unwrap_or(Value::Unit)))
+                }
+            }
+            "with" => {
+                // with(map, key, value) → new map with field updated
+                // with(map, k1, v1, k2, v2, ...) → multiple updates
+                if let Some(Value::Map(entries)) = args.first() {
+                    let mut result = entries.clone();
+                    let mut i = 1;
+                    while i + 1 < args.len() {
+                        let key = format!("{}", args[i]);
+                        let val = args[i + 1].clone();
+                        // Update existing or insert new
+                        if let Some(entry) = result.iter_mut().find(|(k, _)| k == &key) {
+                            entry.1 = val;
+                        } else {
+                            result.push((key, val));
+                        }
+                        i += 2;
+                    }
+                    Some(Ok(Value::Map(result)))
+                } else {
+                    Some(Err(RuntimeError::TypeError("with expects (map, key, value)".to_string())))
+                }
+            }
+            "without" => {
+                // without(map, key1, key2, ...) → map with keys removed
+                if let Some(Value::Map(entries)) = args.first() {
+                    let keys_to_remove: Vec<String> = args[1..].iter().map(|a| format!("{}", a)).collect();
+                    let result: Vec<(String, Value)> = entries.iter()
+                        .filter(|(k, _)| !keys_to_remove.contains(k))
+                        .cloned().collect();
+                    Some(Ok(Value::Map(result)))
+                } else {
+                    Some(Err(RuntimeError::TypeError("without expects (map, keys...)".to_string())))
+                }
+            }
+            "merge" => {
+                // merge(map1, map2) → combined map (map2 overwrites map1)
+                if args.len() >= 2 {
+                    if let (Value::Map(a), Value::Map(b)) = (&args[0], &args[1]) {
+                        let mut result = a.clone();
+                        for (key, val) in b {
+                            if let Some(entry) = result.iter_mut().find(|(k, _)| k == key) {
+                                entry.1 = val.clone();
+                            } else {
+                                result.push((key.clone(), val.clone()));
+                            }
+                        }
+                        Some(Ok(Value::Map(result)))
+                    } else { Some(Ok(args[0].clone())) }
+                } else {
+                    Some(Err(RuntimeError::TypeError("merge expects (map1, map2)".to_string())))
+                }
+            }
             // ── Collection pipeline operations ────────────────────────
             "filter_by" => {
                 // filter_by(list, field, op, value) → filtered list
