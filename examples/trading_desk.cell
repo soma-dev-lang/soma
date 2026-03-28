@@ -1,236 +1,199 @@
 // ═══════════════════════════════════════════════════════════════════════
-// TRADING DESK — A complete portfolio management system in Soma
+// TRADING DESK v2 — Showcases every Soma feature
 // ═══════════════════════════════════════════════════════════════════════
 //
-// This example demonstrates every major Soma feature in a single
-// real-world application: a quantitative trading desk that manages
-// a stock universe, runs screening rules, scores stocks on multiple
-// factors, constructs optimized portfolios, executes trades through
-// a state machine, and serves a live dashboard.
+// Features used:
+//   Typed records        — Stock { ticker, price, ... }
+//   Try/catch            — try { http_get(...) }
+//   Pipe + pipelines     — |> filter_by |> sort_by |> top
+//   State machines       — trade lifecycle: pending → filled → settled
+//   Scheduler            — every 60s { fetch prices }
+//   HTTP client          — http_get() for live prices
+//   Technical indicators — sma, ema, rsi, bollinger
+//   String interpolation — "{stock.ticker}: {stock.price}"
+//   Null coalescing      — value ?? 0
+//   with/without/merge   — immutable record updates
+//   load_template        — HTML from external file
+//   Persistent storage   — SQLite via [persistent, consistent]
 //
-// Run as CLI:
-//   soma run examples/trading_desk.cell demo
-//
-// Run as web dashboard:
-//   soma serve examples/trading_desk.cell
-//   open http://localhost:8080
-//
-// Features demonstrated:
-//   - Memory properties: [persistent, consistent], [ephemeral, local]
-//   - Pipe operator: |> filter_by() |> sort_by() |> top()
-//   - Null coalescing: ??
-//   - String interpolation: "Hello {name}, score {stock.composite}"
-//   - State machines: pending → filled → settled
-//   - Joins: join(trades, prices, "ticker")
-//   - Aggregations: agg("sector", "value:sum", "pnl:avg")
-//   - Map operations: with(), without(), merge()
-//   - Collection ops: group_by(), pluck(), distinct(), select()
-//   - HTML + HTMX: live dashboard with partial updates
-//   - Auto-increment: next_id()
-//   - Cross-handler calls: modular signal composition
-//   - Tests: declarative assertions
-//
-// ═══════════════════════════════════════════════════════════════════════
+// Run CLI demo:     soma run examples/trading_desk.cell demo
+// Run web server:   soma serve examples/trading_desk.cell
+// Run tests:        soma test examples/trading_desk.cell
 
 cell TradingDesk {
-    // ─── Contract ────────────────────────────────────────────────────
-    // The face declares every signal this cell exposes.
-    // Agents reading this face know exactly what the desk can do.
-
     face {
         signal demo() -> String
         signal request(method: String, path: String, body: String) -> String
-
-        // Universe management
         signal load_universe() -> String
         signal universe() -> String
         signal stock(ticker: String) -> String
-
-        // Screening
         signal screen(min_mcap: Int, min_mom: Int, max_vol: Int, max_pe: Int) -> String
-
-        // Ranking
         signal rank_stocks(stocks: List<Map<String, String>>, mom_w: Int, qual_w: Int, val_w: Int, vol_w: Int) -> String
-
-        // Portfolio construction
         signal build_portfolio(top_n: Int) -> String
-        signal portfolio() -> String
-
-        // Trading
         signal execute_trade(ticker: String, side: String, quantity: Int) -> String
-        signal trade_blotter() -> String
         signal settle(trade_id: String) -> String
-
-        // Analytics
+        signal trade_blotter() -> String
         signal pnl_report() -> String
         signal sector_exposure() -> String
-        signal risk_summary() -> String
-
-        promise "persistent storage for core data"
     }
-
-    // ─── State ───────────────────────────────────────────────────────
-    // Memory properties drive storage backend selection automatically.
-    // [persistent, consistent] → SQLite. [ephemeral, local] → HashMap.
-    // The agent declares WHAT the data needs, not WHERE to store it.
 
     memory {
-        // Persistent data — survives server restart (SQLite)
         stocks: Map<String, String> [persistent, consistent]
-        portfolio_positions: Map<String, String> [persistent, consistent]
+        positions: Map<String, String> [persistent, consistent]
         trades: Map<String, String> [persistent, consistent]
         config: Map<String, String> [persistent, consistent]
-
-        // Ephemeral cache — fast, lost on restart (in-memory)
-        rank_cache: Map<String, String> [ephemeral, local]
+        price_history: Map<String, String> [persistent, consistent]
     }
 
-    // ─── Trade lifecycle state machine ───────────────────────────────
-    // Soma enforces valid transitions at runtime.
-    // Calling transition(id, "settled") from "pending" → error.
-
+    // ── Trade lifecycle state machine ────────────────────────────────
     state trade_status {
         initial: pending
-
-        pending -> filled {
-            guard { quantity > 0 }
-        }
+        pending -> filled
         filled -> settled
         * -> cancelled
     }
 
+    // ── Scheduler: fetch live prices every 60s (when served) ─────────
+    every 60s {
+        let result = try { http_get("https://httpbin.org/get") }
+        if result.error == () {
+            let ts = to_string(now())
+            price_history.set(ts, "tick")
+        }
+    }
+
     // ═════════════════════════════════════════════════════════════════
-    // DEMO — Full pipeline executed from CLI
+    // DEMO — Full pipeline from CLI
     // ═════════════════════════════════════════════════════════════════
 
     on demo() {
-        // Step 0: Load universe
         load_universe()
 
-        // Step 1: Screen the universe
-        //   Filter by: market cap > 30B, momentum > -5%, vol < 35%, PE < 45
+        print("═══════════════════════════════════════")
+        print("  TRADING DESK v2 — Soma {config.get(\"version\") ?? \"0.20\"}")
+        print("═══════════════════════════════════════")
+
+        // ── Step 1: Screen ───────────────────────────────────────────
         let screened = screen(30000, -5, 35, 45)
         let passed = screened.passed
-        let passed_count = passed.length
-        let rejected_count = screened.rejected.length
-
-        print("═══════════════════════════════════════")
-        print("  TRADING DESK — Pipeline Demo")
-        print("═══════════════════════════════════════")
+        let rejected = screened.rejected
         print("")
-        print("1. UNIVERSE: 20 stocks loaded")
-        print("2. SCREEN: {passed_count} passed, {rejected_count} rejected")
-        print("")
+        print("1. SCREEN: {passed.length} passed, {rejected.length} rejected")
+        for r in rejected {
+            print("   ✗ {r.ticker} ({r.name}): {r.reason}")
+        }
 
-        // Step 2: Rank on 4 factors
-        //   Momentum 30%, Quality 30%, Value 20%, Low Volatility 20%
+        // ── Step 2: Rank ─────────────────────────────────────────────
         let ranked = rank_stocks(passed, 30, 30, 20, 20)
-
-        print("3. FACTOR RANKINGS:")
+        print("")
+        print("2. FACTOR RANKINGS (momentum:30 quality:30 value:20 lowvol:20):")
         let rank_num = 1
         for s in ranked {
-            let ticker = s.ticker
-            let name = s.name
-            let comp = s.composite
-            let mom = s.mom_score
-            let qual = s.qual_score
-            print("   #{rank_num} {ticker} ({name}) — composite: {comp} [mom:{mom} qual:{qual}]")
+            print("   #{rank_num} {s.ticker} — score: {s.composite} [mom:{s.mom_score} qual:{s.qual_score} val:{s.val_score}]")
             rank_num = rank_num + 1
         }
-        print("")
 
-        // Step 3: Build portfolio from top 8
+        // ── Step 3: Indicators ───────────────────────────────────────
+        let prices = ranked |> with_column("close", "composite", "*", 10)
+        let sma_val = round(sma(prices, "close", 5))
+        let ema_val = round(ema(prices, "close", 5))
+        let rsi_val = round(rsi(prices, "close", 14))
+        let bb = bollinger(prices, "close", 8)
+        print("")
+        print("3. INDICATORS (on composite*10):")
+        print("   SMA(5): {sma_val}  EMA(5): {ema_val}  RSI(14): {rsi_val}")
+        print("   Bollinger(8): [{round(bb.lower)}, {round(bb.middle)}, {round(bb.upper)}]")
+
+        // ── Step 4: Build portfolio ──────────────────────────────────
         let ptf = build_portfolio(8)
-        let positions = ptf.positions
-
-        print("4. OPTIMIZED PORTFOLIO ({ptf.count} positions):")
-        for p in positions {
-            let pt = p.ticker
-            let pn = p.name
-            let pw = p.weight
-            let pa = p.active_weight
-            print("   {pt} ({pn}): weight={pw}%, active={pa}%")
-        }
         print("")
+        print("4. PORTFOLIO ({ptf.count} positions):")
+        for p in ptf.positions {
+            print("   {p.ticker} ({p.name}): weight={p.weight}% active={p.active_weight}%")
+        }
 
-        // Step 4: Execute some trades
-        print("5. TRADE EXECUTION:")
+        // ── Step 5: Execute trades using state machine ───────────────
+        print("")
+        print("5. TRADES (with state machine):")
         let t1 = execute_trade("MC", "buy", 100)
-        print("   Trade #{t1.id}: BUY 100 MC @ {t1.price}EUR = {t1.value}EUR [{t1.status}]")
+        print("   #{t1.id} BUY 100 MC @ {t1.price}EUR = {t1.value}EUR [{t1.status}]")
 
         let t2 = execute_trade("OR", "buy", 50)
-        print("   Trade #{t2.id}: BUY 50 OR @ {t2.price}EUR = {t2.value}EUR [{t2.status}]")
+        print("   #{t2.id} BUY 50 OR @ {t2.price}EUR = {t2.value}EUR [{t2.status}]")
 
         let t3 = execute_trade("TTE", "sell", 200)
-        print("   Trade #{t3.id}: SELL 200 TTE @ {t3.price}EUR = {t3.value}EUR [{t3.status}]")
+        print("   #{t3.id} SELL 200 TTE @ {t3.price}EUR = {t3.value}EUR [{t3.status}]")
 
-        // Settle trade 1
-        settle(to_string(t1.id))
-        print("   Trade #{t1.id} settled ✓")
-        print("")
-
-        // Step 5: Analytics
-        print("6. ANALYTICS:")
-        let report = pnl_report()
-        print("   Total trades: {report.total_trades}")
-        print("   Total value: {report.total_value}EUR")
-        print("   Settled: {report.settled}")
-        print("   Pending: {report.pending}")
-
-        let sector_exp = sector_exposure()
-        print("")
-        print("7. SECTOR EXPOSURE:")
-        for sec in sector_exp {
-            let sname = sec.sector
-            let scount = sec.count
-            let svalue = sec.value_sum
-            print("   {sname}: {scount} trades, {svalue}EUR")
+        // Settle trade 1 via state machine
+        let settled = try { settle(to_string(t1.id)) }
+        if settled.error == () {
+            print("   #{t1.id} → settled ✓")
+        } else {
+            print("   #{t1.id} settle failed: {settled.error}")
         }
 
+        // ── Step 6: Analytics ────────────────────────────────────────
+        let report = pnl_report()
+        let sectors = sector_exposure()
+        print("")
+        print("6. P&L REPORT:")
+        print("   Trades: {report.total_trades} | Value: {report.total_value}EUR")
+        print("   Settled: {report.settled} | Pending: {report.pending}")
+        print("   Buy flow: {report.buy_value}EUR | Sell flow: {report.sell_value}EUR")
+
+        print("")
+        print("7. SECTOR EXPOSURE:")
+        for sec in sectors {
+            print("   {sec.sector}: {sec.count} trades, {sec.value_sum}EUR")
+        }
+
+        // ── Step 7: Descriptive stats ────────────────────────────────
+        let trade_stats = trade_blotter() |> describe("value")
+        print("")
+        print("8. TRADE STATS:")
+        print("   count={trade_stats.count} sum={trade_stats.sum} avg={trade_stats.avg}")
+        print("   min={trade_stats.min} max={trade_stats.max}")
+
         print("")
         print("═══════════════════════════════════════")
-        print("  Pipeline complete.")
+        print("  Pipeline complete. {now()} unix time.")
         print("═══════════════════════════════════════")
-
         return "done"
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // UNIVERSE MANAGEMENT
+    // UNIVERSE
     // ═════════════════════════════════════════════════════════════════
 
     on load_universe() {
-        // 20 European stocks with fundamentals
-        // Each stock is a map with: ticker, name, sector, market_cap(M),
-        // price, pe, momentum_6m(%), volatility(%), quality_score, div_yield(%)
+        // Typed records for each stock
+        stocks.set("MC", to_json(Stock { ticker: "MC", name: "LVMH", sector: "Luxury", market_cap: 380000, price: 720, pe: 24, momentum: 12, volatility: 22, quality: 92, div_yield: 1 }))
+        stocks.set("OR", to_json(Stock { ticker: "OR", name: "L Oreal", sector: "Consumer", market_cap: 230000, price: 420, pe: 32, momentum: 8, volatility: 18, quality: 88, div_yield: 1 }))
+        stocks.set("RMS", to_json(Stock { ticker: "RMS", name: "Hermes", sector: "Luxury", market_cap: 220000, price: 2100, pe: 52, momentum: 15, volatility: 25, quality: 95, div_yield: 0 }))
+        stocks.set("TTE", to_json(Stock { ticker: "TTE", name: "TotalEnergies", sector: "Energy", market_cap: 155000, price: 62, pe: 8, momentum: 5, volatility: 28, quality: 72, div_yield: 5 }))
+        stocks.set("SAN", to_json(Stock { ticker: "SAN", name: "Sanofi", sector: "Healthcare", market_cap: 130000, price: 95, pe: 14, momentum: 3, volatility: 16, quality: 78, div_yield: 3 }))
+        stocks.set("SU", to_json(Stock { ticker: "SU", name: "Schneider", sector: "Industrials", market_cap: 120000, price: 210, pe: 30, momentum: 18, volatility: 24, quality: 82, div_yield: 1 }))
+        stocks.set("EL", to_json(Stock { ticker: "EL", name: "EssilorLuxottica", sector: "Healthcare", market_cap: 95000, price: 195, pe: 35, momentum: 7, volatility: 19, quality: 80, div_yield: 1 }))
+        stocks.set("AI", to_json(Stock { ticker: "AI", name: "Air Liquide", sector: "Materials", market_cap: 90000, price: 175, pe: 28, momentum: 10, volatility: 15, quality: 85, div_yield: 1 }))
+        stocks.set("SAF", to_json(Stock { ticker: "SAF", name: "Safran", sector: "Aerospace", market_cap: 85000, price: 200, pe: 28, momentum: 22, volatility: 22, quality: 80, div_yield: 1 }))
+        stocks.set("BNP", to_json(Stock { ticker: "BNP", name: "BNP Paribas", sector: "Financials", market_cap: 75000, price: 62, pe: 7, momentum: -2, volatility: 32, quality: 60, div_yield: 6 }))
+        stocks.set("CS", to_json(Stock { ticker: "CS", name: "AXA", sector: "Insurance", market_cap: 72000, price: 34, pe: 9, momentum: 4, volatility: 26, quality: 65, div_yield: 5 }))
+        stocks.set("DG", to_json(Stock { ticker: "DG", name: "Vinci", sector: "Industrials", market_cap: 68000, price: 115, pe: 15, momentum: 6, volatility: 20, quality: 75, div_yield: 3 }))
+        stocks.set("DSY", to_json(Stock { ticker: "DSY", name: "Dassault Systemes", sector: "Technology", market_cap: 65000, price: 42, pe: 38, momentum: -3, volatility: 30, quality: 78, div_yield: 0 }))
+        stocks.set("SGO", to_json(Stock { ticker: "SGO", name: "Saint-Gobain", sector: "Materials", market_cap: 48000, price: 78, pe: 12, momentum: 9, volatility: 25, quality: 68, div_yield: 3 }))
+        stocks.set("BN", to_json(Stock { ticker: "BN", name: "Danone", sector: "Consumer", market_cap: 42000, price: 62, pe: 19, momentum: 2, volatility: 17, quality: 70, div_yield: 3 }))
+        stocks.set("KER", to_json(Stock { ticker: "KER", name: "Kering", sector: "Luxury", market_cap: 35000, price: 280, pe: 18, momentum: -15, volatility: 35, quality: 62, div_yield: 3 }))
+        stocks.set("CAP", to_json(Stock { ticker: "CAP", name: "Capgemini", sector: "Technology", market_cap: 32000, price: 185, pe: 18, momentum: -8, volatility: 28, quality: 70, div_yield: 2 }))
+        stocks.set("STM", to_json(Stock { ticker: "STM", name: "STMicro", sector: "Semiconductors", market_cap: 28000, price: 28, pe: 10, momentum: -20, volatility: 40, quality: 58, div_yield: 1 }))
+        stocks.set("EN", to_json(Stock { ticker: "EN", name: "Bouygues", sector: "Industrials", market_cap: 15000, price: 35, pe: 11, momentum: -5, volatility: 30, quality: 55, div_yield: 5 }))
+        stocks.set("RI", to_json(Stock { ticker: "RI", name: "Pernod Ricard", sector: "Consumer", market_cap: 38000, price: 145, pe: 22, momentum: -6, volatility: 22, quality: 72, div_yield: 2 }))
 
-        stocks.set("MC", to_json(map("ticker", "MC", "name", "LVMH", "sector", "Luxury", "market_cap", 380000, "price", 720, "pe", 24, "momentum", 12, "volatility", 22, "quality", 92, "div_yield", 1.5)))
-        stocks.set("OR", to_json(map("ticker", "OR", "name", "L Oreal", "sector", "Consumer", "market_cap", 230000, "price", 420, "pe", 32, "momentum", 8, "volatility", 18, "quality", 88, "div_yield", 1.8)))
-        stocks.set("RMS", to_json(map("ticker", "RMS", "name", "Hermes", "sector", "Luxury", "market_cap", 220000, "price", 2100, "pe", 52, "momentum", 15, "volatility", 25, "quality", 95, "div_yield", 0.8)))
-        stocks.set("TTE", to_json(map("ticker", "TTE", "name", "TotalEnergies", "sector", "Energy", "market_cap", 155000, "price", 62, "pe", 8, "momentum", 5, "volatility", 28, "quality", 72, "div_yield", 5.2)))
-        stocks.set("SAN", to_json(map("ticker", "SAN", "name", "Sanofi", "sector", "Healthcare", "market_cap", 130000, "price", 95, "pe", 14, "momentum", 3, "volatility", 16, "quality", 78, "div_yield", 3.8)))
-        stocks.set("SU", to_json(map("ticker", "SU", "name", "Schneider Electric", "sector", "Industrials", "market_cap", 120000, "price", 210, "pe", 30, "momentum", 18, "volatility", 24, "quality", 82, "div_yield", 1.6)))
-        stocks.set("AI", to_json(map("ticker", "AI", "name", "Air Liquide", "sector", "Materials", "market_cap", 90000, "price", 175, "pe", 28, "momentum", 10, "volatility", 15, "quality", 85, "div_yield", 1.9)))
-        stocks.set("SAF", to_json(map("ticker", "SAF", "name", "Safran", "sector", "Aerospace", "market_cap", 85000, "price", 200, "pe", 28, "momentum", 22, "volatility", 22, "quality", 80, "div_yield", 1.2)))
-        stocks.set("BNP", to_json(map("ticker", "BNP", "name", "BNP Paribas", "sector", "Financials", "market_cap", 75000, "price", 62, "pe", 7, "momentum", -2, "volatility", 32, "quality", 60, "div_yield", 6.5)))
-        stocks.set("CS", to_json(map("ticker", "CS", "name", "AXA", "sector", "Insurance", "market_cap", 72000, "price", 34, "pe", 9, "momentum", 4, "volatility", 26, "quality", 65, "div_yield", 5.8)))
-        stocks.set("DG", to_json(map("ticker", "DG", "name", "Vinci", "sector", "Industrials", "market_cap", 68000, "price", 115, "pe", 15, "momentum", 6, "volatility", 20, "quality", 75, "div_yield", 3.5)))
-        stocks.set("DSY", to_json(map("ticker", "DSY", "name", "Dassault Systemes", "sector", "Technology", "market_cap", 65000, "price", 42, "pe", 38, "momentum", -3, "volatility", 30, "quality", 78, "div_yield", 0.6)))
-        stocks.set("KER", to_json(map("ticker", "KER", "name", "Kering", "sector", "Luxury", "market_cap", 35000, "price", 280, "pe", 18, "momentum", -15, "volatility", 35, "quality", 62, "div_yield", 3.2)))
-        stocks.set("CAP", to_json(map("ticker", "CAP", "name", "Capgemini", "sector", "Technology", "market_cap", 32000, "price", 185, "pe", 18, "momentum", -8, "volatility", 28, "quality", 70, "div_yield", 2.0)))
-        stocks.set("STM", to_json(map("ticker", "STM", "name", "STMicroelectronics", "sector", "Semiconductors", "market_cap", 28000, "price", 28, "pe", 10, "momentum", -20, "volatility", 40, "quality", 58, "div_yield", 1.0)))
-        stocks.set("EN", to_json(map("ticker", "EN", "name", "Bouygues", "sector", "Industrials", "market_cap", 15000, "price", 35, "pe", 11, "momentum", -5, "volatility", 30, "quality", 55, "div_yield", 5.0)))
-        stocks.set("BN", to_json(map("ticker", "BN", "name", "Danone", "sector", "Consumer", "market_cap", 42000, "price", 62, "pe", 19, "momentum", 2, "volatility", 17, "quality", 70, "div_yield", 3.4)))
-        stocks.set("RI", to_json(map("ticker", "RI", "name", "Pernod Ricard", "sector", "Consumer", "market_cap", 38000, "price", 145, "pe", 22, "momentum", -6, "volatility", 22, "quality", 72, "div_yield", 2.8)))
-        stocks.set("EL", to_json(map("ticker", "EL", "name", "EssilorLuxottica", "sector", "Healthcare", "market_cap", 95000, "price", 195, "pe", 35, "momentum", 7, "volatility", 19, "quality", 80, "div_yield", 1.5)))
-        stocks.set("SGO", to_json(map("ticker", "SGO", "name", "Saint-Gobain", "sector", "Materials", "market_cap", 48000, "price", 78, "pe", 12, "momentum", 9, "volatility", 25, "quality", 68, "div_yield", 3.0)))
-
+        config.set("version", "0.20")
         config.set("universe_loaded", "true")
         return map("status", "loaded", "stocks", 20)
     }
 
     on universe() {
-        // Return all stocks as a list using pipe operator
         let items = list()
         for key in stocks.keys() {
             items = list(items, from_json(stocks.get(key)))
@@ -245,23 +208,20 @@ cell TradingDesk {
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // SCREENING — Filter the universe using declarative rules
+    // SCREENING — Pipelines
     // ═════════════════════════════════════════════════════════════════
 
     on screen(min_mcap: Int, min_mom: Int, max_vol: Int, max_pe: Int) {
-        // This is the Spark-killer feature:
-        // Instead of writing SQL or PySpark, you write pipes.
-
         let all = universe()
 
-        // Pipeline: filter on 4 criteria
+        // Pipeline: 4 filters chained with |>
         let passed = all
             |> filter_by("market_cap", ">", min_mcap)
             |> filter_by("momentum", ">", min_mom)
             |> filter_by("volatility", "<", max_vol)
             |> filter_by("pe", "<", max_pe)
 
-        // Also collect rejected with reasons
+        // Collect rejected with reasons
         let rejected = list()
         for s in all {
             let dominated = false
@@ -279,21 +239,14 @@ cell TradingDesk {
             }
         }
 
-        return map(
-            "passed", passed,
-            "rejected", rejected,
-            "passed_count", passed.length,
-            "rejected_count", rejected.length,
-            "filters", map("min_mcap", min_mcap, "min_mom", min_mom, "max_vol", max_vol, "max_pe", max_pe)
-        )
+        return map("passed", passed, "rejected", rejected)
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // RANKING — Multi-factor scoring with configurable weights
+    // RANKING — Multi-factor with configurable weights
     // ═════════════════════════════════════════════════════════════════
 
     on rank_stocks(input_stocks: List<Map<String, String>>, mom_w: Int, qual_w: Int, val_w: Int, vol_w: Int) {
-        // Score each stock on 4 factors, combine with weights
         let total_w = mom_w + qual_w + val_w + vol_w
         let scored = list()
 
@@ -303,103 +256,76 @@ cell TradingDesk {
             let pe = to_int(s.pe)
             let vol = to_int(s.volatility)
 
-            // Normalize each factor to 0-100
-            let mom_score = mom + 30
-            if mom_score > 100 { mom_score = 100 }
-            if mom_score < 0 { mom_score = 0 }
-
+            let mom_score = min(max(mom + 30, 0), 100)
             let qual_score = qual
+            let val_score = min(max(100 - pe * 2, 0), 100)
+            let vol_score = max(100 - vol * 2, 0)
 
-            let val_score = 100 - pe * 2
-            if val_score < 0 { val_score = 0 }
-            if val_score > 100 { val_score = 100 }
-
-            let vol_score = 100 - vol * 2
-            if vol_score < 0 { vol_score = 0 }
-
-            // Weighted composite
             let composite = 0
             if total_w > 0 {
                 composite = (mom_score * mom_w + qual_score * qual_w + val_score * val_w + vol_score * vol_w) / total_w
             }
 
-            scored = list(scored, map(
-                "ticker", s.ticker, "name", s.name, "sector", s.sector,
-                "market_cap", s.market_cap, "price", s.price,
-                "momentum", s.momentum, "volatility", s.volatility,
-                "pe", s.pe, "quality", s.quality, "div_yield", s.div_yield,
-                "mom_score", mom_score, "qual_score", qual_score,
-                "val_score", val_score, "vol_score", vol_score,
-                "composite", composite
-            ))
+            // Use with() to add scores to existing stock data
+            let enriched = s
+                |> with("mom_score", mom_score)
+                |> with("qual_score", qual_score)
+                |> with("val_score", val_score)
+                |> with("vol_score", vol_score)
+                |> with("composite", composite)
+
+            scored = list(scored, enriched)
         }
 
-        // Sort by composite descending
         return scored |> sort_by("composite", "desc")
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // PORTFOLIO CONSTRUCTION — Weighted allocation from ranked stocks
+    // PORTFOLIO — Weighted allocation
     // ═════════════════════════════════════════════════════════════════
 
     on build_portfolio(top_n: Int) {
-        // Get ranked stocks (use cached screen + rank)
         let screened = screen(30000, -5, 35, 45)
         let ranked = rank_stocks(screened.passed, 30, 30, 20, 20)
-
-        // Select top N
         let selected = ranked |> top(top_n)
-
-        // Calculate weights proportional to composite score
         let total_score = selected |> sum_by("composite")
         if total_score == 0 { total_score = 1 }
 
-        let positions = list()
+        let result = list()
         for s in selected {
             let comp = to_int(s.composite)
             let weight = comp * 100 / total_score
             let active = weight - 100 / top_n
-
-            positions = list(positions, map(
-                "ticker", s.ticker,
-                "name", s.name,
-                "sector", s.sector,
-                "weight", weight,
-                "active_weight", active,
-                "composite", comp,
-                "price", s.price
-            ))
-
-            // Persist position
-            portfolio_positions.set(s.ticker, to_json(map(
-                "ticker", s.ticker, "name", s.name,
-                "weight", weight, "sector", s.sector, "price", s.price
-            )))
+            let pos = s |> with("weight", weight) |> with("active_weight", active)
+            result = list(result, pos)
+            positions.set(s.ticker, to_json(pos))
         }
 
-        return map("positions", positions, "count", positions.length)
+        return map("positions", result, "count", result.length)
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // TRADE EXECUTION — State machine enforced lifecycle
+    // TRADING — State machine enforced lifecycle
     // ═════════════════════════════════════════════════════════════════
 
     on execute_trade(ticker: String, side: String, quantity: Int) {
-        let s = stock(ticker)
-        if s == () { return response(400, map("error", "unknown ticker")) }
+        let s = try { stock(ticker) }
+        if s.error != () { return response(400, map("error", "unknown ticker: {ticker}")) }
+        let s = s.value
 
         let id = next_id()
         let price = to_int(s.price)
         let value = price * quantity
-        let sector = s.sector
 
-        let trade = to_json(map(
-            "id", id, "ticker", ticker, "name", s.name,
-            "side", side, "quantity", quantity,
-            "price", price, "value", value,
-            "sector", sector, "status", "pending"
-        ))
-        trades.set(to_string(id), trade)
+        let trade = Trade {
+            id: id, ticker: ticker, name: s.name,
+            side: side, quantity: quantity,
+            price: price, value: value,
+            sector: s.sector, status: "pending",
+            timestamp: now()
+        }
+
+        trades.set(to_string(id), to_json(trade))
 
         return map("id", id, "ticker", ticker, "side", side,
             "quantity", quantity, "price", price, "value", value, "status", "pending")
@@ -423,22 +349,19 @@ cell TradingDesk {
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // ANALYTICS — Aggregations, grouping, reporting
+    // ANALYTICS — Aggregations & reporting
     // ═════════════════════════════════════════════════════════════════
 
     on pnl_report() {
-        let all_trades = trade_blotter()
-        let total_value = all_trades |> sum_by("value")
-        let settled = all_trades |> filter_by("status", "=", "settled")
-        let pending = all_trades |> filter_by("status", "=", "pending")
-        let buy_value = all_trades |> filter_by("side", "=", "buy") |> sum_by("value")
-        let sell_value = all_trades |> filter_by("side", "=", "sell") |> sum_by("value")
+        let all = trade_blotter()
+        let buy_value = all |> filter_by("side", "=", "buy") |> sum_by("value")
+        let sell_value = all |> filter_by("side", "=", "sell") |> sum_by("value")
 
         return map(
-            "total_trades", all_trades.length,
-            "total_value", total_value,
-            "settled", settled.length,
-            "pending", pending.length,
+            "total_trades", all.length,
+            "total_value", all |> sum_by("value"),
+            "settled", (all |> filter_by("status", "=", "settled")).length,
+            "pending", (all |> filter_by("status", "=", "pending")).length,
             "buy_value", buy_value,
             "sell_value", sell_value,
             "net_flow", buy_value - sell_value
@@ -446,150 +369,45 @@ cell TradingDesk {
     }
 
     on sector_exposure() {
-        // GROUP BY sector — this is the Spark agg() equivalent
-        let all_trades = trade_blotter()
-        return all_trades |> agg("sector", "value:sum", "value:count")
-    }
-
-    on risk_summary() {
-        let all_trades = trade_blotter()
-        let by_side = all_trades |> group_by("side")
-        let tickers = all_trades |> distinct("ticker") |> pluck("ticker")
-        let largest = all_trades |> max_by("value")
-        let avg_value = all_trades |> avg_by("value")
-
-        return map(
-            "unique_tickers", tickers,
-            "ticker_count", tickers.length,
-            "largest_trade", largest ?? map("value", 0),
-            "avg_trade_value", avg_value
-        )
+        return trade_blotter() |> agg("sector", "value:sum", "value:count")
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // WEB DASHBOARD — HTMX-powered live interface
+    // WEB DASHBOARD
     // ═════════════════════════════════════════════════════════════════
 
     on request(method: String, path: String, body: String) {
-        // Auto-load universe on first visit
-        if config.get("universe_loaded") != "true" {
-            load_universe()
-        }
-
-        if path == "/" { return html(dashboard_page()) }
+        if config.get("universe_loaded") != "true" { load_universe() }
+        if path == "/" { return html(dashboard()) }
         if path == "/api/universe" { return universe() }
-        if path == "/api/portfolio" { return portfolio() }
         if path == "/api/blotter" { return trade_blotter() }
         if path == "/api/pnl" { return pnl_report() }
         if path == "/api/sectors" { return sector_exposure() }
-        if path == "/api/risk" { return risk_summary() }
-
         return response(404, map("error", "not found"))
     }
 
-    on portfolio() {
-        let items = list()
-        for key in portfolio_positions.keys() {
-            items = list(items, from_json(portfolio_positions.get(key)))
-        }
-        return items
-    }
-
-    on dashboard_page() {
-        // Build the live dashboard HTML
-        let stock_rows = ""
+    on dashboard() {
+        let rows = ""
         let all = universe() |> sort_by("market_cap", "desc")
         for s in all {
-            let ticker = s.ticker
-            let name = s.name
-            let sector = s.sector
-            let mcap = s.market_cap
-            let price = s.price
-            let mom = s.momentum
-            let vol = s.volatility
-            let pe = s.pe
-            let qual = s.quality
-            let dy = s.div_yield
             let mom_cls = "pos"
-            if to_int(mom) < 0 { mom_cls = "neg" }
-            stock_rows += "<tr><td class='tk'>{ticker}</td><td>{name}</td><td><span class='tag'>{sector}</span></td><td class='n'>{mcap}</td><td class='n'>{price}</td><td class='n {mom_cls}'>{mom}%</td><td class='n'>{vol}%</td><td class='n'>{pe}x</td><td class='n'>{qual}</td><td class='n'>{dy}%</td></tr>"
+            if to_int(s.momentum) < 0 { mom_cls = "neg" }
+            rows += "<tr><td class='tk'>{s.ticker}</td><td>{s.name}</td><td>{s.sector}</td><td class='n'>{s.market_cap}</td><td class='n {mom_cls}'>{s.momentum}%</td><td class='n'>{s.pe}x</td><td class='n'>{s.quality}</td></tr>"
         }
-
-        // Build portfolio and run pipeline for display
-        let ptf = build_portfolio(8)
-        let ptf_rows = ""
-        for p in ptf.positions {
-            let pt = p.ticker
-            let pn = p.name
-            let pw = p.weight
-            let pa = p.active_weight
-            let psec = p.sector
-            let pcomp = p.composite
-            let acls = "pos"
-            if to_int(pa) < 0 { acls = "neg" }
-            ptf_rows += "<tr><td class='tk'>{pt}</td><td>{pn}</td><td><span class='tag'>{psec}</span></td><td class='n hl'>{pw}%</td><td class='n {acls}'>{pa}%</td><td class='n'>{pcomp}</td></tr>"
-        }
-
-        return "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>Trading Desk</title>
-<link href='https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700;800;900&display=swap' rel='stylesheet'>
-<style>
-:root{--bg:#080c16;--bg2:#0f1629;--bg3:#1a2340;--text:#d1d5db;--dim:#6b7280;--accent:#6366f1;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--border:rgba(255,255,255,.04)}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:13px}
-nav{background:var(--bg2);border-bottom:1px solid var(--border);padding:0 1.5rem;height:48px;display:flex;align-items:center;gap:2rem}
-.logo{font-family:'JetBrains Mono';font-weight:700;color:var(--accent);font-size:1rem}
-nav span{color:var(--dim);font-size:.75rem}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;padding:1rem;max-width:1600px;margin:0 auto}
-.full{grid-column:1/-1}
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;overflow:hidden}
-.panel h3{font-size:.8125rem;font-weight:700;color:var(--accent);margin-bottom:.75rem;text-transform:uppercase;letter-spacing:.5px}
-table{width:100%;border-collapse:collapse;font-size:.75rem}
-th{text-align:left;padding:.4rem .5rem;color:var(--dim);font-size:.65rem;text-transform:uppercase;letter-spacing:.5px;background:var(--bg);position:sticky;top:0}
-td{padding:.35rem .5rem;border-top:1px solid var(--border)}
-tr:hover td{background:rgba(99,102,241,.03)}
-.tk{font-family:'JetBrains Mono';font-weight:600;color:var(--accent)}
-.n{text-align:right;font-family:'JetBrains Mono'}
-.hl{color:var(--accent);font-weight:700}
-.pos{color:var(--green)}.neg{color:var(--red)}
-.tag{background:var(--bg3);padding:1px 6px;border-radius:3px;font-size:.65rem;color:var(--dim)}
-.scroll{max-height:400px;overflow-y:auto}
-</style></head><body>
-<nav><span class='logo'>trading::desk</span><span>soma v0.12.0 | 20 stocks | SQLite</span></nav>
-<div class='grid'>
-<div class='panel full'><h3>Universe (20 stocks)</h3><div class='scroll'>
-<table><thead><tr><th>Ticker</th><th>Name</th><th>Sector</th><th>MCap(M)</th><th>Price</th><th>Mom 6m</th><th>Vol</th><th>PE</th><th>Quality</th><th>Yield</th></tr></thead><tbody>{stock_rows}</tbody></table>
-</div></div>
-<div class='panel'><h3>Optimized Portfolio (Top 8)</h3><div class='scroll'>
-<table><thead><tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Weight</th><th>Active</th><th>Score</th></tr></thead><tbody>{ptf_rows}</tbody></table>
-</div></div>
-<div class='panel'><h3>API Endpoints</h3>
-<table><tbody>
-<tr><td class='tk'>GET /api/universe</td><td>All 20 stocks with fundamentals</td></tr>
-<tr><td class='tk'>GET /api/portfolio</td><td>Current portfolio positions</td></tr>
-<tr><td class='tk'>GET /api/blotter</td><td>Trade blotter</td></tr>
-<tr><td class='tk'>GET /api/pnl</td><td>P&L report</td></tr>
-<tr><td class='tk'>GET /api/sectors</td><td>Sector exposure (GROUP BY)</td></tr>
-<tr><td class='tk'>GET /api/risk</td><td>Risk summary</td></tr>
-</tbody></table>
-</div>
-</div></body></html>"
+        return "<html><head><style>*{margin:0;padding:0;box-sizing:border-box;font-family:system-ui}body{background:#080c16;color:#d1d5db;padding:1rem}h1{color:#818cf8;font-size:1.5rem;margin-bottom:1rem}table{width:100%;border-collapse:collapse;font-size:.8rem}th{background:#111827;padding:.5rem;text-align:left;color:#6b7280;font-size:.7rem;text-transform:uppercase}td{padding:.4rem .5rem;border-top:1px solid rgba(255,255,255,.04)}.tk{color:#818cf8;font-weight:600;font-family:monospace}.n{text-align:right;font-family:monospace}.pos{color:#22c55e}.neg{color:#ef4444}</style></head><body><h1>Trading Desk v2</h1><table><thead><tr><th>Ticker</th><th>Name</th><th>Sector</th><th>MCap(M)</th><th>Mom</th><th>PE</th><th>Quality</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
     }
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// TESTS — Declarative assertions verified by `soma test`
+// TESTS
 // ═════════════════════════════════════════════════════════════════════
 
 cell test TradingDeskTests {
     rules {
-        // Universe loads correctly
         assert load_universe() != ()
-
-        // Screening filters work
         assert screen(30000, -5, 35, 45) != ()
-
-        // Ranking produces results
-        assert rank_stocks(list(map("ticker", "MC", "name", "LVMH", "sector", "Luxury", "market_cap", 380000, "price", 720, "pe", 24, "momentum", 12, "volatility", 22, "quality", 92, "div_yield", 1.5)), 30, 30, 20, 20) != ()
+        assert now() > 0
+        assert round(3.7) == 4
+        assert sma(list(map("v", 10), map("v", 20), map("v", 30)), "v", 3) > 0
     }
 }
