@@ -287,6 +287,62 @@ x = x + <span class="num">1</span>                      <span class="cmt">// rea
 <span class="cmt">//   ✓ assert square(5) == 25</span>
 <span class="cmt">//   ✓ assert factorial(10) == 3628800</span>
 <span class="cmt">// 2 tests: 2 passed, 0 failed</span></code></pre>
+
+<h3>Typed records</h3>
+<p>Named maps with compile-time type tags. No more stringly-typed <code>Map&lt;String, String&gt;</code>.</p>
+<pre><code><span class="cmt">// Create a typed record</span>
+<span class="kw">let</span> user = <span class="fn">User</span> { name: <span class="str">"Alice"</span>, age: <span class="num">30</span>, email: <span class="str">"alice@test.com"</span> }
+
+<span class="cmt">// Field access</span>
+user.name              <span class="cmt">// → "Alice"</span>
+user._type             <span class="cmt">// → "User"</span>
+
+<span class="cmt">// Type checking at runtime</span>
+<span class="fn">is_type</span>(user, <span class="str">"User"</span>)  <span class="cmt">// → true</span>
+<span class="fn">is_type</span>(user, <span class="str">"Order"</span>) <span class="cmt">// → false</span>
+
+<span class="cmt">// Records compose with pipes and with()</span>
+<span class="kw">let</span> updated = user |> <span class="fn">with</span>(<span class="str">"age"</span>, <span class="num">31</span>)
+<span class="kw">let</span> clean = user |> <span class="fn">without</span>(<span class="str">"email"</span>)
+
+<span class="cmt">// Use in collections</span>
+<span class="kw">let</span> users = <span class="fn">list</span>(
+    <span class="fn">User</span> { name: <span class="str">"Alice"</span>, role: <span class="str">"admin"</span> },
+    <span class="fn">User</span> { name: <span class="str">"Bob"</span>, role: <span class="str">"user"</span> }
+)
+<span class="kw">let</span> admins = users |> <span class="fn">filter_by</span>(<span class="str">"role"</span>, <span class="str">"="</span>, <span class="str">"admin"</span>)</code></pre>
+
+<h3>Error handling</h3>
+<p><code>try { }</code> catches runtime errors and returns them as values. No exceptions, no panics — errors are data.</p>
+<pre><code><span class="cmt">// try wraps errors into a map with value/error fields</span>
+<span class="kw">let</span> result = <span class="kw">try</span> { <span class="fn">stock</span>(ticker) }
+
+<span class="kw">if</span> result.error != () {
+    <span class="cmt">// Error occurred — handle it</span>
+    <span class="kw">return</span> <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, result.error))
+}
+
+<span class="cmt">// Success — use the value</span>
+<span class="kw">let</span> data = result.value
+
+<span class="cmt">// Works with any expression</span>
+<span class="kw">let</span> safe_divide = <span class="kw">try</span> { a / b }
+<span class="kw">let</span> answer = safe_divide.value ?? <span class="num">0</span>  <span class="cmt">// default to 0 on error</span></code></pre>
+
+<h3>HTML templates</h3>
+<p>Separate HTML from logic. Load external files with variable substitution.</p>
+<pre><code><span class="cmt">// templates/page.html:</span>
+<span class="cmt">// &lt;h1&gt;{title}&lt;/h1&gt;</span>
+<span class="cmt">// &lt;ul&gt;{items}&lt;/ul&gt;</span>
+<span class="cmt">// &lt;p&gt;By {author}&lt;/p&gt;</span>
+
+<span class="cmt">// Load and render with variables</span>
+<span class="kw">let</span> page = <span class="fn">load_template</span>(<span class="str">"templates/page.html"</span>,
+    <span class="str">"title"</span>, <span class="str">"Dashboard"</span>,
+    <span class="str">"items"</span>, rows,
+    <span class="str">"author"</span>, <span class="str">"Soma"</span>
+)
+<span class="kw">return</span> <span class="fn">html</span>(page)</code></pre>
 </section>
 
 <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -428,6 +484,9 @@ soma serve app.cell --watch        <span class="cmt"># hot reload on file change
 <tr><td>response(status, body) / html(body) / redirect(url)</td><td>HTTP responses</td></tr>
 <tr><td>render(template, k, v, ...)</td><td>Template rendering</td></tr>
 <tr><td>transition(id, state) / get_status(id)</td><td>State machine</td></tr>
+<tr><td>is_type(val, "TypeName")</td><td>Record type check</td></tr>
+<tr><td>load_template(path, k1, v1, ...)</td><td>Load HTML file with variable substitution</td></tr>
+<tr><td>try { expr }</td><td>Catch errors as values (.value / .error)</td></tr>
 <tr><td>with(map, k, v) / without(map, k) / merge(m1, m2)</td><td>Map operations</td></tr>
 <tr><td>filter_by / sort_by / top / join / agg / ...</td><td>Pipeline ops (see above)</td></tr>
 </table>
