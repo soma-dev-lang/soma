@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="anthropics/soma"
+REPO="soma-dev-lang/soma"
 VERSION="0.1.0"
 INSTALL_DIR="/usr/local/bin"
 
