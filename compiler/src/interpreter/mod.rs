@@ -22,6 +22,42 @@ pub enum RuntimeError {
     StackOverflow,
 }
 
+/// Convert a byte offset to line:col using source text
+pub fn span_to_location(source: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in source.chars().enumerate() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Format an error with file location if available
+pub fn format_runtime_error(
+    err: &RuntimeError,
+    source_file: Option<&str>,
+    source_text: Option<&str>,
+    span: Option<crate::ast::Span>,
+) -> String {
+    let location = match (source_file, source_text, span) {
+        (Some(file), Some(text), Some(sp)) => {
+            let (line, col) = span_to_location(text, sp.start);
+            format!("{}:{}:{}: ", file, line, col)
+        }
+        (Some(file), _, _) => format!("{}: ", file),
+        _ => String::new(),
+    };
+    format!("{}runtime error: {}", location, err)
+}
+
 /// Runtime values
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -136,6 +172,10 @@ pub struct Interpreter {
     state_machines: HashMap<(String, String), StateMachineSection>,
     /// Source file path for error reporting
     pub source_file: Option<String>,
+    /// Source text for line:col conversion
+    pub source_text: Option<String>,
+    /// Last known span (set before eval, used for error reporting)
+    pub last_span: Option<crate::ast::Span>,
 }
 
 impl Interpreter {
@@ -168,6 +208,8 @@ impl Interpreter {
             storage: HashMap::new(),
             state_machines,
             source_file: None,
+            source_text: None,
+            last_span: None,
         }
     }
 
@@ -288,6 +330,7 @@ impl Interpreter {
         let mut last_value = Value::Unit;
 
         for stmt in body {
+            self.last_span = Some(stmt.span);
             last_value = self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
         }
 

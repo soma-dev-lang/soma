@@ -417,7 +417,7 @@ fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&
     } else if use_jit {
         run_with_vm(program, arg_values, registry, &source, signal_flag);
     } else {
-        run_single_cell(program, arg_values, registry, signal_flag, path);
+        run_single_cell(program, arg_values, registry, signal_flag, path, &source);
     }
 }
 
@@ -480,7 +480,7 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
     }
 }
 
-fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, signal_flag: Option<&str>, source_path: &PathBuf) {
+fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, signal_flag: Option<&str>, source_path: &PathBuf, source: &str) {
     // Find the main cell based on the signal being called
     // If first arg matches a handler name in a specific cell, use that cell
     let requested_signal = arg_values.first().and_then(|v| {
@@ -554,11 +554,17 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
     }
 
     interp.source_file = Some(source_path.display().to_string());
+    interp.source_text = Some(source.to_string());
 
     match interp.call_signal(&cell_name, &signal_name, actual_args) {
         Ok(val) => println!("{}", val),
         Err(e) => {
-            eprintln!("runtime error in {}: {}", source_path.display(), e);
+            eprintln!("{}", interpreter::format_runtime_error(
+                &e,
+                interp.source_file.as_deref(),
+                interp.source_text.as_deref(),
+                interp.last_span,
+            ));
             process::exit(1);
         }
     }
