@@ -672,7 +672,7 @@ fn value_to_stored(val: &Value) -> StoredValue {
         Value::List(items) => StoredValue::List(items.iter().map(value_to_stored).collect()),
         Value::Map(entries) => StoredValue::Map(entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()),
         Value::Big(n) => StoredValue::String(n.to_string()),
-        Value::Lambda { .. } => StoredValue::String("<lambda>".to_string()),
+        Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
     }
 }
 

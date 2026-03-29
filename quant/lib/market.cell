@@ -1,0 +1,45 @@
+// Market data generation and indicators
+
+cell Market {
+
+    on generate_universe() {
+        return list(
+            map("ticker", "AAPL",  "name", "Apple",         "sector", "Tech",     "price", 195, "momentum", 12,  "volatility", 22, "quality", 85, "pe", 28,  "dividend", 0.5,  "market_cap", 3100),
+            map("ticker", "MSFT",  "name", "Microsoft",     "sector", "Tech",     "price", 420, "momentum", 15,  "volatility", 20, "quality", 90, "pe", 35,  "dividend", 0.7,  "market_cap", 3000),
+            map("ticker", "GOOGL", "name", "Alphabet",      "sector", "Tech",     "price", 175, "momentum", 8,   "volatility", 25, "quality", 80, "pe", 24,  "dividend", 0.0,  "market_cap", 2100),
+            map("ticker", "AMZN",  "name", "Amazon",        "sector", "Tech",     "price", 185, "momentum", 18,  "volatility", 28, "quality", 75, "pe", 60,  "dividend", 0.0,  "market_cap", 1900),
+            map("ticker", "NVDA",  "name", "Nvidia",        "sector", "Tech",     "price", 880, "momentum", 45,  "volatility", 45, "quality", 70, "pe", 65,  "dividend", 0.0,  "market_cap", 2200),
+            map("ticker", "META",  "name", "Meta",          "sector", "Tech",     "price", 505, "momentum", 22,  "volatility", 32, "quality", 72, "pe", 25,  "dividend", 0.3,  "market_cap", 1300),
+            map("ticker", "JPM",   "name", "JPMorgan",      "sector", "Finance",  "price", 198, "momentum", 5,   "volatility", 18, "quality", 82, "pe", 12,  "dividend", 2.4,  "market_cap", 570),
+            map("ticker", "V",     "name", "Visa",          "sector", "Finance",  "price", 280, "momentum", 10,  "volatility", 16, "quality", 92, "pe", 30,  "dividend", 0.7,  "market_cap", 520),
+            map("ticker", "JNJ",   "name", "J&J",           "sector", "Health",   "price", 155, "momentum", -3,  "volatility", 12, "quality", 88, "pe", 15,  "dividend", 3.0,  "market_cap", 380),
+            map("ticker", "UNH",   "name", "UnitedHealth",  "sector", "Health",   "price", 520, "momentum", 7,   "volatility", 15, "quality", 86, "pe", 22,  "dividend", 1.4,  "market_cap", 480),
+            map("ticker", "PG",    "name", "Procter",       "sector", "Consumer", "price", 165, "momentum", -1,  "volatility", 10, "quality", 90, "pe", 25,  "dividend", 2.5,  "market_cap", 390),
+            map("ticker", "KO",    "name", "Coca-Cola",     "sector", "Consumer", "price", 62,  "momentum", -2,  "volatility", 11, "quality", 85, "pe", 23,  "dividend", 3.1,  "market_cap", 270),
+            map("ticker", "XOM",   "name", "ExxonMobil",    "sector", "Energy",   "price", 115, "momentum", -8,  "volatility", 24, "quality", 65, "pe", 14,  "dividend", 3.4,  "market_cap", 460),
+            map("ticker", "CVX",   "name", "Chevron",       "sector", "Energy",   "price", 160, "momentum", -5,  "volatility", 22, "quality", 68, "pe", 15,  "dividend", 3.8,  "market_cap", 300),
+            map("ticker", "LLY",   "name", "Eli Lilly",     "sector", "Health",   "price", 790, "momentum", 35,  "volatility", 30, "quality", 78, "pe", 55,  "dividend", 0.7,  "market_cap", 750),
+            map("ticker", "AVGO",  "name", "Broadcom",      "sector", "Tech",     "price", 170, "momentum", 30,  "volatility", 35, "quality", 74, "pe", 35,  "dividend", 1.3,  "market_cap", 780),
+            map("ticker", "WMT",   "name", "Walmart",       "sector", "Consumer", "price", 68,  "momentum", 6,   "volatility", 14, "quality", 80, "pe", 28,  "dividend", 1.4,  "market_cap", 540),
+            map("ticker", "HD",    "name", "Home Depot",    "sector", "Consumer", "price", 380, "momentum", 3,   "volatility", 18, "quality", 82, "pe", 24,  "dividend", 2.5,  "market_cap", 380),
+            map("ticker", "BAC",   "name", "BofA",          "sector", "Finance",  "price", 38,  "momentum", -4,  "volatility", 25, "quality", 60, "pe", 11,  "dividend", 2.6,  "market_cap", 300),
+            map("ticker", "TSLA",  "name", "Tesla",         "sector", "Tech",     "price", 250, "momentum", -15, "volatility", 55, "quality", 45, "pe", 70,  "dividend", 0.0,  "market_cap", 800)
+        )
+    }
+
+    on market_breadth(stocks: List) {
+        let total = len(stocks)
+        let positive = stocks |> count(s => s.momentum > 0)
+        if total == 0 { return 0 }
+        return positive * 100 / total
+    }
+
+    on avg_volatility(stocks: List) {
+        if len(stocks) == 0 { return 0 }
+        let total = 0
+        for s in stocks {
+            total = total + s.volatility
+        }
+        return total / len(stocks)
+    }
+}

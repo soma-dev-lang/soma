@@ -297,7 +297,7 @@ impl BytecodeCompiler {
             Expr::Match { .. } => {
                 // Match expressions not yet implemented in VM
             }
-            Expr::Lambda { .. } => {
+            Expr::Lambda { .. } | Expr::LambdaBlock { .. } => {
                 // Lambda expressions not yet implemented in VM
             }
         }

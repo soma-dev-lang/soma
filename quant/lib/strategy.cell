@@ -1,0 +1,112 @@
+// Strategy: Adaptive Momentum with Regime Detection
+//
+// Regime detection via market breadth:
+//   breadth > 65% → risk_on  (momentum surge, go aggressive)
+//   breadth 40-65% → neutral  (balanced factors)
+//   breadth < 40% → risk_off (defensive rotation)
+//   drawdown > 10% → crisis  (all cash)
+//
+// Each regime has different factor weights and exposure target.
+
+cell Strategy {
+
+    on detect_regime(breadth: Int, avg_vol: Int, current_regime: String) {
+        // Crisis: high vol + low breadth
+        if avg_vol > 35 && breadth < 30 { return "crisis" }
+
+        // Recovery from crisis needs strong breadth
+        if current_regime == "crisis" {
+            if breadth > 55 && avg_vol < 30 { return "neutral" }
+            return "crisis"
+        }
+
+        match current_regime {
+            "risk_on" -> {
+                if breadth < 45 { return "risk_off" }
+                if breadth < 55 { return "neutral" }
+                return "risk_on"
+            }
+            "risk_off" -> {
+                if breadth > 60 { return "neutral" }
+                return "risk_off"
+            }
+            _ -> {
+                if breadth > 65 { return "risk_on" }
+                if breadth < 40 { return "risk_off" }
+                return "neutral"
+            }
+        }
+    }
+
+    on regime_config(regime: String) {
+        match regime {
+            "risk_on"  -> map("exposure", 120, "mom_w", 50, "qual_w", 20, "val_w", 10, "vol_w", 20, "max_positions", 15, "label", "Risk-On: Aggressive Momentum")
+            "neutral"  -> map("exposure", 100, "mom_w", 30, "qual_w", 30, "val_w", 20, "vol_w", 20, "max_positions", 12, "label", "Neutral: Balanced Factors")
+            "risk_off" -> map("exposure", 70,  "mom_w", 10, "qual_w", 20, "val_w", 30, "vol_w", 40, "max_positions", 10, "label", "Risk-Off: Defensive")
+            _          -> map("exposure", 0,   "mom_w", 0,  "qual_w", 0,  "val_w", 0,  "vol_w", 0,  "max_positions", 0,  "label", "Crisis: All Cash")
+        }
+    }
+
+    on score_stock(s: Map, cfg: Map) {
+        // Momentum score: normalize to 0-100
+        let mom = clamp(s.momentum + 20, 0, 100)
+
+        // Quality score: already 0-100
+        let qual = s.quality
+
+        // Value score: inverse PE ratio (lower PE = higher value)
+        let val = clamp(100 - s.pe, 0, 100)
+
+        // Volatility score: inverse (lower vol = higher score)
+        let vol = clamp(100 - s.volatility * 2, 0, 100)
+
+        // Weighted composite
+        let composite = (mom * cfg.mom_w + qual * cfg.qual_w + val * cfg.val_w + vol * cfg.vol_w) / 100
+
+        return s
+            |> with("mom_score", mom)
+            |> with("qual_score", qual)
+            |> with("val_score", val)
+            |> with("vol_score", vol)
+            |> with("composite", composite)
+    }
+
+    on build_portfolio(stocks: List, regime: String) {
+        let cfg = regime_config(regime)
+
+        if regime == "crisis" {
+            return map("positions", list(), "cash_pct", 100, "regime", regime, "config", cfg)
+        }
+
+        // Score all stocks
+        let scored = stocks |> map(s => score_stock(s, cfg))
+
+        // Rank by composite, take top N
+        let selected = scored
+            |> sort_by("composite", "desc")
+            |> top(cfg.max_positions)
+
+        // Calculate weights: proportional to composite score
+        let total_score = 0
+        for s in selected {
+            total_score = total_score + s.composite
+        }
+
+        let positions = list()
+        if total_score > 0 {
+            positions = selected |> map(s => {
+                let raw_weight = s.composite * cfg.exposure / total_score
+                let weight = clamp(raw_weight, 0, 15)
+                s |> with("weight", weight)
+            })
+        }
+
+        let invested = 0
+        for p in positions {
+            invested = invested + p.weight
+        }
+        let cash_pct = 100 - invested
+
+        return map("positions", positions, "cash_pct", cash_pct, "regime", regime, "config", cfg)
+    }
+}

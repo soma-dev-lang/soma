@@ -1,0 +1,154 @@
+// ============================================================================
+// Adaptive Momentum Fund — Multi-regime quantitative strategy
+// ============================================================================
+//
+// Strategy:
+//   1. Score stocks by composite factor (momentum + quality + value + low-vol)
+//   2. Detect market regime from breadth (% stocks with positive momentum)
+//   3. Adjust factor weights and exposure per regime
+//   4. Rebalance every cycle with risk constraints
+//
+// Regimes:
+//   risk_on  → momentum-heavy, 120% exposure, top 15
+//   neutral  → balanced factors, 100% exposure, top 12
+//   risk_off → defensive (low-vol + value), 70% exposure, top 10
+//   crisis   → all cash, 0% exposure
+//
+// Run: soma serve app.cell
+
+use lib::market
+use lib::strategy
+use lib::templates
+
+cell AdaptiveMomentum {
+
+    memory {
+        state_data: Map<String, String> [persistent, consistent]
+        portfolio:  Map<String, String> [persistent, consistent]
+        events:     Map<String, String> [persistent, consistent]
+    }
+
+    state regime {
+        initial: neutral
+        neutral -> risk_on
+        neutral -> risk_off
+        risk_on -> neutral
+        risk_on -> risk_off
+        risk_off -> neutral
+        risk_off -> risk_on
+        * -> crisis
+        crisis -> neutral
+    }
+
+    // ---- Scheduler: rebalance every 5s (simulating daily) ----
+
+    every 5s {
+        rebalance()
+    }
+
+    // ---- Core logic ----
+
+    on rebalance() {
+        let stocks = generate_universe()
+        let breadth = market_breadth(stocks)
+        let avg_vol = avg_volatility(stocks)
+        let current = get_status("regime")
+        let cycle = to_int(portfolio.get("cycle") ?? "0") + 1
+
+        // Detect new regime
+        let new_regime = detect_regime(breadth, avg_vol, current)
+
+        // Transition if needed
+        if new_regime != current {
+            let result = try { transition("regime", new_regime) }
+            if result.error == () {
+                log_event(new_regime, "Regime shift: {current} -> {new_regime} (breadth={breadth}%, vol={avg_vol})", cycle)
+            }
+        }
+
+        let active_regime = get_status("regime")
+
+        // Build portfolio for current regime
+        let pf = build_portfolio(stocks, active_regime)
+
+        // Store state
+        portfolio.set("cycle", to_string(cycle))
+        portfolio.set("regime", active_regime)
+        portfolio.set("breadth", to_string(breadth))
+        portfolio.set("avg_vol", to_string(avg_vol))
+        portfolio.set("data", to_json(pf))
+        portfolio.set("positions_count", to_string(len(pf.positions)))
+        portfolio.set("cash_pct", to_string(pf.cash_pct))
+
+        // Log rebalance
+        let n_pos = len(pf.positions)
+        if cycle % 5 == 0 {
+            log_event(active_regime, "Rebalance #{cycle}: {n_pos} positions, {pf.cash_pct}% cash", cycle)
+        }
+    }
+
+    on log_event(regime_name: String, message: String, cycle: Int) {
+        let t = now()
+        let entry = to_json(map("regime", regime_name, "message", message, "cycle", to_string(cycle), "time", to_string(t)))
+        events.set(to_string(t), entry)
+    }
+
+    on get_events() {
+        let all = events.values()
+        let parsed = all |> map(s => from_json(s))
+        return parsed
+    }
+
+    // ---- API ----
+
+    on get_portfolio_data() {
+        let raw = portfolio.get("data")
+        if raw == () {
+            return map("positions", list(), "cash_pct", 100, "regime", "neutral", "config", regime_config("neutral"))
+        }
+        return from_json(raw)
+    }
+
+    on get_state() {
+        return map(
+            "regime", portfolio.get("regime") ?? "neutral",
+            "cycle", portfolio.get("cycle") ?? "0",
+            "breadth", portfolio.get("breadth") ?? "0",
+            "avg_vol", portfolio.get("avg_vol") ?? "0",
+            "positions", portfolio.get("positions_count") ?? "0",
+            "cash_pct", portfolio.get("cash_pct") ?? "100"
+        )
+    }
+
+    // ---- Router ----
+
+    on request(method: String, path: String, body: String) {
+        // Auto-init on first request
+        if portfolio.get("cycle") == () {
+            rebalance()
+        }
+
+        match path {
+            "/"              -> html(page_dashboard())
+            "/api/portfolio" -> get_portfolio_data()
+            "/api/state"     -> get_state()
+            "/api/events"    -> get_events()
+            "/api/rebalance" -> {
+                rebalance()
+                get_state()
+            }
+            _                -> response(404, map("error", "not found"))
+        }
+    }
+
+    // ---- Pages ----
+
+    on page_dashboard() {
+        let pf = get_portfolio_data()
+        let breadth = to_int(portfolio.get("breadth") ?? "0")
+        let avg_vol = to_int(portfolio.get("avg_vol") ?? "0")
+        let cycle = portfolio.get("cycle") ?? "0"
+        let evts = get_events()
+        return render_dashboard(pf, breadth, avg_vol, cycle, evts)
+    }
+}

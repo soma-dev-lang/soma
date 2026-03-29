@@ -1,0 +1,224 @@
+// Dashboard templates for the quant fund
+
+cell Templates {
+
+    on regime_color(regime: String) {
+        match regime {
+            "risk_on"  -> "#22c55e"
+            "neutral"  -> "#818cf8"
+            "risk_off" -> "#f59e0b"
+            "crisis"   -> "#ef4444"
+            _          -> "#6b7280"
+        }
+    }
+
+    on regime_icon(regime: String) {
+        match regime {
+            "risk_on"  -> "&#x1F4C8;"
+            "neutral"  -> "&#x2696;"
+            "risk_off" -> "&#x1F6E1;"
+            "crisis"   -> "&#x1F6A8;"
+            _          -> "&#x2022;"
+        }
+    }
+
+    on render_position_row(p: Map, idx: Int) {
+        let weight_bar_w = p.weight * 5
+        let mom_cls = "pos"
+        if p.momentum < 0 { mom_cls = "neg" }
+        return """
+        <tr>
+            <td class="rank">{idx}</td>
+            <td class="ticker">{p.ticker}</td>
+            <td>{p.name}</td>
+            <td>{p.sector}</td>
+            <td class="num">${p.price}</td>
+            <td class="num {mom_cls}">{p.momentum}%</td>
+            <td class="num">{p.composite}</td>
+            <td class="num weight">
+                <div class="weight-bar" style="width:{weight_bar_w}px"></div>
+                {p.weight}%
+            </td>
+        </tr>
+        """
+    }
+
+    on render_dashboard(pf: Map, breadth: Int, avg_vol: Int, cycle: String, events: List) {
+        let regime = pf.regime
+        let cfg = pf.config
+        let positions = pf.positions
+        let rc = regime_color(regime)
+        let ri = regime_icon(regime)
+
+        // Position rows
+        let rows = ""
+        let idx = 1
+        for p in positions {
+            rows = rows + render_position_row(p, idx)
+            idx = idx + 1
+        }
+        if rows == "" {
+            rows = """<tr><td colspan="8" class="empty">All cash -- no positions in crisis mode</td></tr>"""
+        }
+
+        // Sector breakdown
+        let sectors = positions |> map(s => s.sector)
+        let sector_summary = ""
+        for sec in list("Tech", "Finance", "Health", "Consumer", "Energy") {
+            let sec_positions = positions |> filter(p => p.sector == sec)
+            let sec_weight = 0
+            for sp in sec_positions {
+                sec_weight = sec_weight + sp.weight
+            }
+            if sec_weight > 0 {
+                sector_summary = sector_summary + """<div class="sector-chip"><span class="sector-name">{sec}</span><span class="sector-weight">{sec_weight}%</span></div>"""
+            }
+        }
+
+        // Event log rows
+        let event_rows = ""
+        for evt in events {
+            let ec = regime_color(evt.regime ?? "neutral")
+            event_rows = event_rows + """<tr><td style="color:{ec}">{evt.regime}</td><td>{evt.message}</td><td class="ts">{evt.cycle}</td></tr>"""
+        }
+
+        let css = render_css()
+        let script = render_script()
+
+        return """
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Adaptive Momentum Fund</title>
+            {css}
+        </head>
+        <body>
+            <div class="app">
+                <div class="header">
+                    <h1>ADAPTIVE MOMENTUM</h1>
+                    <nav>
+                        <a href="/" class="active">Portfolio</a>
+                        <a href="/api/portfolio">API</a>
+                    </nav>
+                </div>
+
+                <div class="regime-banner" style="border-color:{rc}">
+                    <div class="regime-icon">{ri}</div>
+                    <div class="regime-info">
+                        <div class="regime-label" style="color:{rc}">{cfg.label}</div>
+                        <div class="regime-detail">
+                            Breadth: {breadth}% | Avg Vol: {avg_vol} | Exposure: {cfg.exposure}% | Cash: {portfolio.cash_pct}%
+                        </div>
+                    </div>
+                    <div class="cycle-badge">Cycle #{cycle}</div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat">
+                        <div class="stat-label">Positions</div>
+                        <div class="stat-value">{len(positions)}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Target Exposure</div>
+                        <div class="stat-value">{cfg.exposure}%</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Factor Weights</div>
+                        <div class="stat-detail">Mom:{cfg.mom_w} Qual:{cfg.qual_w} Val:{cfg.val_w} Vol:{cfg.vol_w}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Sectors</div>
+                        <div class="sectors">{sector_summary}</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header"><h2>Portfolio</h2></div>
+                    <table class="positions">
+                        <thead>
+                            <tr>
+                                <th>#</th><th>Ticker</th><th>Name</th><th>Sector</th>
+                                <th>Price</th><th>Mom</th><th>Score</th><th>Weight</th>
+                            </tr>
+                        </thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                </div>
+
+                <div class="card">
+                    <div class="card-header"><h2>Regime History</h2></div>
+                    <table class="events">
+                        <thead><tr><th>Regime</th><th>Event</th><th>Cycle</th></tr></thead>
+                        <tbody>{event_rows}</tbody>
+                    </table>
+                </div>
+
+                <div class="footer">Soma v0.25 -- Adaptive Momentum Fund</div>
+            </div>
+            {script}
+        </body>
+        </html>
+        """
+    }
+
+    on render_css() {
+        return """
+        <style>
+        :root { --bg:#050910; --surface:#0d1117; --surface2:#161b22; --border:#21262d; --text:#c9d1d9; --dim:#6e7681; --accent:#818cf8; --green:#22c55e; --yellow:#eab308; --red:#ef4444; }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { background:var(--bg); color:var(--text); font-family:-apple-system,system-ui,sans-serif; }
+        .app { max-width:1200px; margin:0 auto; padding:1.5rem; }
+        .header { display:flex; justify-content:space-between; align-items:center; padding:1rem 0; border-bottom:1px solid var(--border); margin-bottom:1.5rem; }
+        .header h1 { font-size:1.1rem; font-weight:800; letter-spacing:4px; color:var(--accent); }
+        .header nav a { color:var(--dim); text-decoration:none; font-size:.85rem; padding:.4rem .8rem; border-radius:6px; }
+        .header nav a:hover,.header nav a.active { color:var(--text); background:var(--surface2); }
+
+        .regime-banner { background:var(--surface); border:1px solid var(--border); border-left:4px solid; border-radius:10px; padding:1.2rem 1.5rem; display:flex; align-items:center; gap:1.2rem; margin-bottom:1.5rem; }
+        .regime-icon { font-size:2rem; }
+        .regime-info { flex:1; }
+        .regime-label { font-size:1.1rem; font-weight:700; }
+        .regime-detail { font-size:.78rem; color:var(--dim); margin-top:.3rem; font-family:'SF Mono',monospace; }
+        .cycle-badge { background:var(--surface2); padding:.4rem .8rem; border-radius:6px; font-size:.75rem; color:var(--dim); font-weight:600; }
+
+        .stats-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:1rem; margin-bottom:1.5rem; }
+        .stat { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:1rem; }
+        .stat-label { font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin-bottom:.4rem; }
+        .stat-value { font-size:1.5rem; font-weight:700; color:#f0f6fc; }
+        .stat-detail { font-size:.75rem; color:var(--dim); font-family:'SF Mono',monospace; }
+        .sectors { display:flex; gap:.4rem; flex-wrap:wrap; }
+        .sector-chip { background:var(--surface2); padding:.2rem .5rem; border-radius:4px; font-size:.7rem; display:flex; gap:.4rem; }
+        .sector-name { color:var(--dim); }
+        .sector-weight { color:var(--accent); font-weight:600; }
+
+        .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; margin-bottom:1.5rem; overflow:hidden; }
+        .card-header { padding:1rem 1.5rem; border-bottom:1px solid var(--border); }
+        .card-header h2 { font-size:.9rem; font-weight:600; }
+
+        .positions,.events { width:100%; border-collapse:collapse; }
+        .positions th,.events th { text-align:left; padding:.6rem 1rem; font-size:.65rem; text-transform:uppercase; letter-spacing:1px; color:var(--dim); }
+        .positions td,.events td { padding:.5rem 1rem; border-top:1px solid var(--border); font-size:.85rem; }
+        .rank { color:var(--dim); font-weight:600; width:2rem; }
+        .ticker { color:var(--accent); font-weight:700; font-family:'SF Mono',monospace; }
+        .num { text-align:right; font-family:'SF Mono',monospace; }
+        .pos { color:var(--green); }
+        .neg { color:var(--red); }
+        .weight { position:relative; }
+        .weight-bar { position:absolute; left:0; top:50%; transform:translateY(-50%); height:60%; background:rgba(129,140,248,.15); border-radius:2px; }
+        .empty { text-align:center; padding:2rem !important; color:var(--dim); }
+        .ts { color:var(--dim); font-family:'SF Mono',monospace; font-size:.75rem; }
+        .footer { text-align:center; color:var(--dim); font-size:.7rem; margin-top:2rem; padding:1rem 0; border-top:1px solid var(--border); }
+
+        @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
+        .positions tbody tr { animation:fadeIn .3s ease; }
+        </style>
+        """
+    }
+
+    on render_script() {
+        return """
+        <script>
+        setTimeout(()=>location.reload(), 5000);
+        </script>
+        """
+    }
+}

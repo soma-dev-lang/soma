@@ -1570,14 +1570,64 @@ impl Parser {
             Token::Ident(name) => {
                 let name = name.clone();
                 self.advance();
-                // Check for lambda: name => expr
+                // Check for lambda: name => expr  OR  name => { stmts; expr }
                 if self.check(&Token::FatArrow) {
                     self.advance();
-                    let body = self.parse_pipe()?;
-                    return Ok(Spanned::new(
-                        Expr::Lambda { param: name, body: Box::new(body) },
-                        start.merge(self.prev_span()),
-                    ));
+                    if self.check(&Token::LBrace) {
+                        // Block lambda: s => { let x = ...; expr }
+                        self.advance();
+                        let mut stmts = Vec::new();
+                        while !self.check(&Token::RBrace) && !self.is_at_end() {
+                            stmts.push(self.parse_statement()?);
+                        }
+                        self.expect(Token::RBrace)?;
+                        // Extract last statement as result expression
+                        let result = if let Some(last) = stmts.last() {
+                            if let Statement::ExprStmt { ref expr } = last.node {
+                                expr.clone()
+                            } else if let Statement::Return { ref value } = last.node {
+                                value.clone()
+                            } else {
+                                Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                            }
+                        } else {
+                            Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                        };
+                        // Wrap: body is a block that runs stmts (minus last) then evaluates result
+                        // For now, encode as nested Let bindings wrapping the result
+                        // Actually, we need a Block expression. Let's reuse Match arms approach:
+                        // Store stmts in lambda env by creating a special FnCall
+                        // Simpler: just use the last expr as body, with preceding stmts as a separate list
+                        // We need to extend Lambda to support a body with statements.
+                        // For now, wrap in a special form: if there are preceding stmts,
+                        // we create nested lambdas. Actually simplest: extend Expr::Lambda with optional stmts.
+
+                        // Quick approach: generate a synthetic expression that evaluates stmts then result
+                        // by wrapping in FnCall to a synthetic block handler
+                        // ACTUALLY: let's just put all stmts except last into the body, and the last expr is result.
+                        // But Lambda only has body: Expr. We need to change Lambda to support statements.
+                        // Let's do it properly:
+                        if stmts.len() <= 1 {
+                            return Ok(Spanned::new(
+                                Expr::Lambda { param: name, body: Box::new(result) },
+                                start.merge(self.prev_span()),
+                            ));
+                        }
+                        // Multiple statements: we need LambdaBlock. Add it to AST.
+                        // For now, chain lets: let a = x; let b = y; expr → expr (with env setup)
+                        // We'll extend Lambda to include statements.
+                        let body_stmts: Vec<Spanned<Statement>> = stmts[..stmts.len()-1].to_vec();
+                        return Ok(Spanned::new(
+                            Expr::LambdaBlock { param: name, stmts: body_stmts, result: Box::new(result) },
+                            start.merge(self.prev_span()),
+                        ));
+                    } else {
+                        let body = self.parse_pipe()?;
+                        return Ok(Spanned::new(
+                            Expr::Lambda { param: name, body: Box::new(body) },
+                            start.merge(self.prev_span()),
+                        ));
+                    }
                 }
                 // Check for function call: name(args)
                 if self.check(&Token::LParen) {

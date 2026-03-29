@@ -431,6 +431,12 @@ pub enum Expr {
         param: String,
         body: Box<Spanned<Expr>>,
     },
+    /// Block lambda: s => { stmts; result_expr }
+    LambdaBlock {
+        param: String,
+        stmts: Vec<Spanned<Statement>>,
+        result: Box<Spanned<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone)]

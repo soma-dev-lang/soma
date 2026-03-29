@@ -39,6 +39,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
     };
     let lambda = match args.get(1) {
         Some(v @ Value::Lambda { .. }) => v,
+        Some(v @ Value::LambdaBlock { .. }) => v,
         _ => return None,
     };
 

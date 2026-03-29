@@ -87,6 +87,13 @@ pub enum Value {
         body: Box<Spanned<Expr>>,
         env: HashMap<std::string::String, Value>,
     },
+    /// Block lambda: with statements before result
+    LambdaBlock {
+        param: std::string::String,
+        stmts: Vec<Spanned<Statement>>,
+        result: Box<Spanned<Expr>>,
+        env: HashMap<std::string::String, Value>,
+    },
     Unit,
 }
 
@@ -135,6 +142,7 @@ impl std::fmt::Display for Value {
                 write!(f, "}}")
             }
             Value::Lambda { param, .. } => write!(f, "<lambda({})>", param),
+            Value::LambdaBlock { param, .. } => write!(f, "<lambda({})>", param),
             Value::Unit => write!(f, "null"),
         }
     }
@@ -725,6 +733,18 @@ impl Interpreter {
                 })
             }
 
+            Expr::LambdaBlock { param, stmts, result } => {
+                // Capture current environment + statements
+                // Store stmts as a serialized form inside the lambda
+                // We'll handle this in apply_lambda
+                Ok(Value::LambdaBlock {
+                    param: param.clone(),
+                    stmts: stmts.clone(),
+                    result: result.clone(),
+                    env: env.clone(),
+                })
+            }
+
             Expr::Match { subject, arms } => {
                 let val = self.eval_expr(&subject.node, env, cell_name, signal_name)?;
                 for arm in arms {
@@ -760,7 +780,7 @@ impl Interpreter {
                             all_args.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                         }
                         // Check lambda builtins first (map, filter, etc.)
-                        if all_args.iter().any(|v| matches!(v, Value::Lambda { .. })) {
+                        if all_args.iter().any(|v| matches!(v, Value::Lambda { .. } | Value::LambdaBlock { .. })) {
                             if let Some(val) = builtins::call_lambda_builtin(self, name, &all_args, cell_name) {
                                 return val.map_err(ExecError::Runtime);
                             }
@@ -1168,12 +1188,21 @@ impl Interpreter {
 
     /// Apply a lambda to a value: bind param, eval body
     pub fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
-        if let Value::Lambda { param, body, env: closed_env } = lambda {
-            let mut env = closed_env.clone();
-            env.insert(param.clone(), arg);
-            self.eval_expr(&body.node, &mut env, cell_name, "")
-        } else {
-            Err(ExecError::Runtime(RuntimeError::TypeError(
+        match lambda {
+            Value::Lambda { param, body, env: closed_env } => {
+                let mut env = closed_env.clone();
+                env.insert(param.clone(), arg);
+                self.eval_expr(&body.node, &mut env, cell_name, "")
+            }
+            Value::LambdaBlock { param, stmts, result, env: closed_env } => {
+                let mut env = closed_env.clone();
+                env.insert(param.clone(), arg);
+                for stmt in stmts {
+                    self.exec_stmt(&stmt.node, &mut env, cell_name, "")?;
+                }
+                self.eval_expr(&result.node, &mut env, cell_name, "")
+            }
+            _ => Err(ExecError::Runtime(RuntimeError::TypeError(
                 format!("expected lambda, got {}", lambda)
             )))
         }
@@ -1476,7 +1505,7 @@ fn value_to_stored(val: &Value) -> StoredValue {
         Value::Map(entries) => StoredValue::Map(
             entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()
         ),
-        Value::Lambda { .. } => StoredValue::String("<lambda>".to_string()),
+        Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
         Value::Unit => StoredValue::Null,
     }
 }
