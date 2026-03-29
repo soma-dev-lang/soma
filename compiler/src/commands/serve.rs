@@ -124,8 +124,143 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
     );
 
-    // Create shared event bus for SSE
+    // Create shared event bus for SSE + WebSocket
     let event_bus = interpreter::new_event_bus();
+
+    // Check if cell has a `ws` handler
+    let has_ws_handler = handler_names.contains(&"ws".to_string());
+    let ws_port = port + 1;
+
+    // Spawn WebSocket server if `on ws(message)` handler exists
+    if has_ws_handler {
+        let prog = program.clone();
+        let slots = storage_slots.clone();
+        let cname = cell_name.clone();
+        let bus = event_bus.clone();
+
+        eprintln!("websocket: ws://localhost:{}", ws_port);
+
+        std::thread::spawn(move || {
+            let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port)) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("ws error: cannot bind port {}: {}", ws_port, e);
+                    return;
+                }
+            };
+
+            // Track all WS client senders for broadcasting
+            let ws_clients: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<tungstenite::WebSocket<std::net::TcpStream>>>>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+            // Bus → WS broadcast thread
+            {
+                let clients = ws_clients.clone();
+                let (bus_tx, bus_rx) = std::sync::mpsc::channel::<interpreter::BusEvent>();
+                if let Ok(mut senders) = bus.lock() {
+                    senders.push(bus_tx);
+                }
+                std::thread::spawn(move || {
+                    loop {
+                        match bus_rx.recv() {
+                            Ok(event) => {
+                                let json = format!("{{\"event\":\"{}\",\"data\":{}}}", event.stream, event.data);
+                                let msg = tungstenite::Message::Text(json);
+                                if let Ok(mut clients) = clients.lock() {
+                                    clients.retain(|client| {
+                                        if let Ok(mut ws) = client.lock() {
+                                            ws.send(msg.clone()).is_ok()
+                                        } else {
+                                            false
+                                        }
+                                    });
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
+            }
+
+            for stream in listener.incoming() {
+                let stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+
+                let prog = prog.clone();
+                let slots = slots.clone();
+                let cname = cname.clone();
+                let bus = bus.clone();
+                let clients = ws_clients.clone();
+
+                std::thread::spawn(move || {
+                    let ws = match tungstenite::accept(stream) {
+                        Ok(ws) => ws,
+                        Err(_) => return,
+                    };
+
+                    let ws = std::sync::Arc::new(std::sync::Mutex::new(ws));
+
+                    // Register this client for broadcasting
+                    if let Ok(mut c) = clients.lock() {
+                        c.push(ws.clone());
+                    }
+
+                    eprintln!("ws: client connected");
+
+                    // Read messages and dispatch to `on ws(message)` handler
+                    loop {
+                        let msg = {
+                            let mut ws_guard = match ws.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            ws_guard.read()
+                        };
+
+                        match msg {
+                            Ok(tungstenite::Message::Text(text)) => {
+                                let mut interp = interpreter::Interpreter::new(&prog);
+                                interp.set_storage_raw(&slots);
+                                interp.ensure_state_machine_storage();
+                                interp.event_bus = Some(bus.clone());
+
+                                let args = vec![interpreter::Value::String(text)];
+                                match interp.call_signal(&cname, "ws", args) {
+                                    Ok(val) => {
+                                        // If handler returns a value, send it back
+                                        if !matches!(val, interpreter::Value::Unit) {
+                                            let response = format!("{}", val);
+                                            if let Ok(mut ws_guard) = ws.lock() {
+                                                let _ = ws_guard.send(tungstenite::Message::Text(response));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let err_msg = format!("{{\"error\":\"{}\"}}", e);
+                                        if let Ok(mut ws_guard) = ws.lock() {
+                                            let _ = ws_guard.send(tungstenite::Message::Text(err_msg));
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(tungstenite::Message::Close(_)) | Err(_) => {
+                                eprintln!("ws: client disconnected");
+                                break;
+                            }
+                            _ => {} // ignore binary, ping, pong
+                        }
+                    }
+
+                    // Remove from clients list
+                    if let Ok(mut c) = clients.lock() {
+                        c.retain(|client| !std::sync::Arc::ptr_eq(client, &ws));
+                    }
+                });
+            }
+        });
+    }
 
     // Spawn scheduler threads for `every` sections
     for cell_spanned in &program.cells {
