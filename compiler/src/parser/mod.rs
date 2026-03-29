@@ -1570,6 +1570,15 @@ impl Parser {
             Token::Ident(name) => {
                 let name = name.clone();
                 self.advance();
+                // Check for lambda: name => expr
+                if self.check(&Token::FatArrow) {
+                    self.advance();
+                    let body = self.parse_pipe()?;
+                    return Ok(Spanned::new(
+                        Expr::Lambda { param: name, body: Box::new(body) },
+                        start.merge(self.prev_span()),
+                    ));
+                }
                 // Check for function call: name(args)
                 if self.check(&Token::LParen) {
                     self.advance();

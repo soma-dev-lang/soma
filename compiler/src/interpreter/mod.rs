@@ -81,6 +81,12 @@ pub enum Value {
     Bool(bool),
     List(Vec<Value>),
     Map(Vec<(String, Value)>),
+    /// Lambda: captured param name + body expression + closure environment
+    Lambda {
+        param: std::string::String,
+        body: Box<Spanned<Expr>>,
+        env: HashMap<std::string::String, Value>,
+    },
     Unit,
 }
 
@@ -128,6 +134,7 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Lambda { param, .. } => write!(f, "<lambda({})>", param),
             Value::Unit => write!(f, "null"),
         }
     }
@@ -637,6 +644,12 @@ impl Interpreter {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
 
+                // Check lambda builtins first (map, filter, find, etc.) — need &mut self
+                if arg_vals.iter().any(|v| matches!(v, Value::Lambda { .. })) {
+                    if let Some(val) = builtins::call_lambda_builtin(self, name, &arg_vals, cell_name) {
+                        return val.map_err(ExecError::Runtime);
+                    }
+                }
                 // Check builtins FIRST (before recursive calls)
                 // This ensures list() calls the builtin even inside a "list" handler
                 if let Some(val) = self.call_builtin(name, &arg_vals, cell_name) {
@@ -703,6 +716,15 @@ impl Interpreter {
                 }
             }
 
+            Expr::Lambda { param, body } => {
+                // Capture current environment
+                Ok(Value::Lambda {
+                    param: param.clone(),
+                    body: body.clone(),
+                    env: env.clone(),
+                })
+            }
+
             Expr::Match { subject, arms } => {
                 let val = self.eval_expr(&subject.node, env, cell_name, signal_name)?;
                 for arm in arms {
@@ -736,6 +758,12 @@ impl Interpreter {
                         let mut all_args = vec![left_val];
                         for arg in args {
                             all_args.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
+                        }
+                        // Check lambda builtins first (map, filter, etc.)
+                        if all_args.iter().any(|v| matches!(v, Value::Lambda { .. })) {
+                            if let Some(val) = builtins::call_lambda_builtin(self, name, &all_args, cell_name) {
+                                return val.map_err(ExecError::Runtime);
+                            }
                         }
                         // Call as builtin first, then signal
                         if let Some(val) = self.call_builtin(name, &all_args, cell_name) {
@@ -1138,6 +1166,19 @@ impl Interpreter {
         }
     }
 
+    /// Apply a lambda to a value: bind param, eval body
+    pub fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
+        if let Value::Lambda { param, body, env: closed_env } = lambda {
+            let mut env = closed_env.clone();
+            env.insert(param.clone(), arg);
+            self.eval_expr(&body.node, &mut env, cell_name, "")
+        } else {
+            Err(ExecError::Runtime(RuntimeError::TypeError(
+                format!("expected lambda, got {}", lambda)
+            )))
+        }
+    }
+
     fn values_equal(&self, a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => x == y,
@@ -1435,6 +1476,7 @@ fn value_to_stored(val: &Value) -> StoredValue {
         Value::Map(entries) => StoredValue::Map(
             entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()
         ),
+        Value::Lambda { .. } => StoredValue::String("<lambda>".to_string()),
         Value::Unit => StoredValue::Null,
     }
 }

@@ -197,6 +197,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     Value::Bool(_) => "Bool",
                     Value::List(_) => "List",
                     Value::Map(_) => "Map",
+                    Value::Lambda { .. } => "Lambda",
                     Value::Unit => "Unit",
                 };
                 Ok(Value::String(t.to_string()))

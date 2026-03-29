@@ -29,6 +29,99 @@ pub fn call_builtin(interp: &super::Interpreter, name: &str, args: &[Value], cel
         .or_else(|| storage::call_builtin(interp, name, args, cell_name))
 }
 
+/// Higher-order builtins: map, filter, find, any, each — require mutable interpreter
+/// Called from eval_expr directly (not through call_builtin) because we need &mut self
+pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+    // All these expect (list, lambda) as args
+    let list = match args.first() {
+        Some(Value::List(items)) => items,
+        _ => return None,
+    };
+    let lambda = match args.get(1) {
+        Some(v @ Value::Lambda { .. }) => v,
+        _ => return None,
+    };
+
+    match name {
+        "map" | "each" => {
+            let mut result = Vec::with_capacity(list.len());
+            for item in list {
+                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                    Ok(v) => result.push(v),
+                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                }
+            }
+            Some(Ok(Value::List(result)))
+        }
+        "filter" => {
+            let mut result = Vec::new();
+            for item in list {
+                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                    Ok(v) => {
+                        if super::is_truthy(&v) {
+                            result.push(item.clone());
+                        }
+                    }
+                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                }
+            }
+            Some(Ok(Value::List(result)))
+        }
+        "find" => {
+            for item in list {
+                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                    Ok(v) => {
+                        if super::is_truthy(&v) {
+                            return Some(Ok(item.clone()));
+                        }
+                    }
+                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                }
+            }
+            Some(Ok(Value::Unit))
+        }
+        "any" => {
+            for item in list {
+                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                    Ok(v) => {
+                        if super::is_truthy(&v) {
+                            return Some(Ok(Value::Bool(true)));
+                        }
+                    }
+                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                }
+            }
+            Some(Ok(Value::Bool(false)))
+        }
+        "all" => {
+            for item in list {
+                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                    Ok(v) => {
+                        if !super::is_truthy(&v) {
+                            return Some(Ok(Value::Bool(false)));
+                        }
+                    }
+                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                }
+            }
+            Some(Ok(Value::Bool(true)))
+        }
+        "count" => {
+            let mut n = 0i64;
+            for item in list {
+                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                    Ok(v) => {
+                        if super::is_truthy(&v) { n += 1; }
+                    }
+                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                }
+            }
+            Some(Ok(Value::Int(n)))
+        }
+        _ => None,
+    }
+}
+
 // ── Shared helper functions ──────────────────────────────────────────
 
 /// Extract an i64 from a Value

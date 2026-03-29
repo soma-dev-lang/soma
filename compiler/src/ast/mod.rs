@@ -426,6 +426,11 @@ pub enum Expr {
         subject: Box<Spanned<Expr>>,
         arms: Vec<MatchArm>,
     },
+    /// Lambda: s => expr
+    Lambda {
+        param: String,
+        body: Box<Spanned<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone)]
