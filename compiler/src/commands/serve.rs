@@ -439,7 +439,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                                 interp.ws_out = ws_guard.clone();
                             }
                         }
-                        let mut env = std::collections::HashMap::new();
+                        let mut env = rustc_hash::FxHashMap::default();
                         let _ = interp.exec_every(&body, &mut env, &cname);
                     }
                 });

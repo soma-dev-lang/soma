@@ -2,6 +2,10 @@ pub mod builtins;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use rustc_hash::FxHashMap;
+
+/// Fast environment map — uses FxHash (no crypto overhead) for variable lookups
+type Env = FxHashMap<String, Value>;
 use crate::ast::*;
 use crate::runtime::storage::{StorageBackend, StoredValue};
 use num_bigint::BigInt;
@@ -264,7 +268,13 @@ struct ReturnSignal(Value);
 /// Tree-walking interpreter for Soma programs
 /// Pre-computed handler lookup: (cell_name, signal_name) → (params, body)
 type HandlerKey = (String, String);
-type HandlerValue = (Vec<Param>, Vec<Spanned<Statement>>);
+type HandlerValue = (Arc<Vec<Param>>, Arc<Vec<Spanned<Statement>>>);
+
+/// Check whether a slice of statements contains any `let` bindings (used to
+/// decide whether we need full scoping overhead in exec_body_scoped).
+fn body_has_let(body: &[Spanned<Statement>]) -> bool {
+    body.iter().any(|s| matches!(s.node, Statement::Let { .. }))
+}
 
 /// A broadcast event emitted by `emit` — sent to all SSE clients and connected cells
 #[derive(Debug, Clone)]
@@ -313,6 +323,8 @@ pub struct Interpreter {
     pub source_text: Option<String>,
     /// Last known span (set before eval, used for error reporting)
     pub last_span: Option<crate::ast::Span>,
+    /// Cached handler for the current recursive call (avoids repeated HashMap lookups)
+    current_handler: Option<(String, String, Arc<Vec<Param>>, Arc<Vec<Spanned<Statement>>>)>,
 }
 
 impl Interpreter {
@@ -328,7 +340,7 @@ impl Interpreter {
                     if handler_cache.contains_key(&key) {
                         eprintln!("warning: duplicate handler '{}' in cell '{}' (last definition wins)", on.signal_name, cell.node.name);
                     }
-                    let value = (on.params.clone(), on.body.clone());
+                    let value = (Arc::new(on.params.clone()), Arc::new(on.body.clone()));
                     handler_cache.insert(key, value);
                 }
                 if let Section::State(ref sm) = section.node {
@@ -353,6 +365,7 @@ impl Interpreter {
             source_file: None,
             source_text: None,
             last_span: None,
+            current_handler: None,
         }
     }
 
@@ -362,7 +375,7 @@ impl Interpreter {
         for section in &cell.sections {
             if let Section::OnSignal(ref on) = section.node {
                 let key = (cell.name.clone(), on.signal_name.clone());
-                let value = (on.params.clone(), on.body.clone());
+                let value = (Arc::new(on.params.clone()), Arc::new(on.body.clone()));
                 self.handler_cache.insert(key, value);
             }
         }
@@ -389,7 +402,7 @@ impl Interpreter {
     }
 
     /// Execute an `every` block's body
-    pub fn exec_every(&mut self, body: &[Spanned<Statement>], env: &mut HashMap<String, Value>, cell_name: &str) -> Result<Value, RuntimeError> {
+    pub fn exec_every(&mut self, body: &[Spanned<Statement>], env: &mut Env, cell_name: &str) -> Result<Value, RuntimeError> {
         match self.exec_body(body, env, cell_name, "_every") {
             Ok(val) => Ok(val),
             Err(ExecError::Return(val)) => Ok(val),
@@ -467,10 +480,38 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         // Lookup from pre-computed cache — O(1) instead of scanning sections
         let key = (cell_name.to_string(), signal_name.to_string());
-        let (params, body) = self.handler_cache.get(&key)
-            .cloned()
-            .ok_or_else(|| RuntimeError::NoHandler(signal_name.to_string(), cell_name.to_string()))?;
+        let (params, body) = {
+            let entry = self.handler_cache.get(&key)
+                .ok_or_else(|| RuntimeError::NoHandler(signal_name.to_string(), cell_name.to_string()))?;
+            // Arc::clone is cheap — just increments a refcount (no deep copy)
+            (Arc::clone(&entry.0), Arc::clone(&entry.1))
+        };
 
+        // Cache this handler for fast recursive lookups
+        let prev_handler = self.current_handler.take();
+        self.current_handler = Some((
+            cell_name.to_string(),
+            signal_name.to_string(),
+            Arc::clone(&params),
+            Arc::clone(&body),
+        ));
+
+        let result = self.call_signal_resolved(cell_name, signal_name, args, &params, &body);
+
+        self.current_handler = prev_handler;
+        result
+    }
+
+    /// Fast path: execute a signal handler with pre-resolved params/body.
+    /// Avoids the HashMap lookup when we already know which handler to call.
+    fn call_signal_resolved(
+        &mut self,
+        cell_name: &str,
+        signal_name: &str,
+        args: Vec<Value>,
+        params: &[Param],
+        body: &[Spanned<Statement>],
+    ) -> Result<Value, RuntimeError> {
         self.current_depth += 1;
         if self.current_depth > self.max_depth {
             self.current_depth -= 1;
@@ -490,7 +531,7 @@ impl Interpreter {
         }
 
         // Bind parameters, promoting Int → BigInt if the type declares BigInt
-        let mut env = HashMap::with_capacity(params.len() + 8);
+        let mut env = FxHashMap::with_capacity_and_hasher(params.len() + 4, Default::default());
         for (param, val) in params.iter().zip(args) {
             let val = if is_bigint_type(&param.ty.node) {
                 match val {
@@ -503,7 +544,7 @@ impl Interpreter {
             env.insert(param.name.clone(), val);
         }
 
-        let result = self.exec_body(&body, &mut env, cell_name, signal_name);
+        let result = self.exec_body(body, &mut env, cell_name, signal_name);
 
         self.current_depth -= 1;
 
@@ -520,7 +561,7 @@ impl Interpreter {
     fn exec_body(
         &mut self,
         body: &[Spanned<Statement>],
-        env: &mut HashMap<String, Value>,
+        env: &mut Env,
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
@@ -540,12 +581,17 @@ impl Interpreter {
     fn exec_body_scoped(
         &mut self,
         body: &[Spanned<Statement>],
-        env: &mut HashMap<String, Value>,
+        env: &mut Env,
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
+        // Fast path: if the body contains no `let` bindings, no scoping is needed
+        // (no new variables to clean up, no shadowing to restore)
+        if !body_has_let(body) {
+            return self.exec_body(body, env, cell_name, signal_name);
+        }
         let outer_keys: std::collections::HashSet<String> = env.keys().cloned().collect();
-        let snapshot: HashMap<String, Value> = env.clone();
+        let snapshot: Env = env.clone();
         let result = self.exec_body(body, env, cell_name, signal_name);
         // Collect keys to remove (new `let` bindings that should not leak)
         let to_remove: Vec<String> = env.keys()
@@ -572,7 +618,7 @@ impl Interpreter {
     fn exec_stmt(
         &mut self,
         stmt: &Statement,
-        env: &mut HashMap<String, Value>,
+        env: &mut Env,
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
@@ -773,7 +819,7 @@ impl Interpreter {
     fn eval_expr(
         &mut self,
         expr: &Expr,
-        env: &mut HashMap<String, Value>,
+        env: &mut Env,
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
@@ -878,10 +924,23 @@ impl Interpreter {
                 if let Some(val) = self.call_builtin(name, &arg_vals, cell_name) {
                     val.map_err(ExecError::Runtime)
                 }
-                // Then check for recursive call to current signal
+                // Then check for recursive call to current signal — use cached handler
                 else if name == signal_name {
-                    self.call_signal(cell_name, signal_name, arg_vals)
-                        .map_err(ExecError::Runtime)
+                    // Fast path: use cached handler to avoid HashMap lookup + key allocation
+                    let cached = self.current_handler.as_ref().and_then(|(ch_cell, ch_sig, ch_params, ch_body)| {
+                        if ch_cell == cell_name && ch_sig == signal_name {
+                            Some((Arc::clone(ch_params), Arc::clone(ch_body)))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some((params, body)) = cached {
+                        self.call_signal_resolved(cell_name, signal_name, arg_vals, &params, &body)
+                            .map_err(ExecError::Runtime)
+                    } else {
+                        self.call_signal(cell_name, signal_name, arg_vals)
+                            .map_err(ExecError::Runtime)
+                    }
                 }
                 // Is it a call to another cell's signal?
                 else {
@@ -970,23 +1029,23 @@ impl Interpreter {
             }
 
             Expr::Lambda { param, body } => {
-                // Capture current environment
+                // Capture current environment (convert FxHashMap → HashMap for storage in Value)
+                let captured: HashMap<String, Value> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 Ok(Value::Lambda {
                     param: param.clone(),
                     body: body.clone(),
-                    env: env.clone(),
+                    env: captured,
                 })
             }
 
             Expr::LambdaBlock { param, stmts, result } => {
                 // Capture current environment + statements
-                // Store stmts as a serialized form inside the lambda
-                // We'll handle this in apply_lambda
+                let captured: HashMap<String, Value> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 Ok(Value::LambdaBlock {
                     param: param.clone(),
                     stmts: stmts.clone(),
                     result: result.clone(),
-                    env: env.clone(),
+                    env: captured,
                 })
             }
 
@@ -1292,7 +1351,7 @@ impl Interpreter {
     fn eval_constraint(
         &mut self,
         constraint: &Constraint,
-        env: &mut HashMap<String, Value>,
+        env: &mut Env,
         cell_name: &str,
         signal_name: &str,
     ) -> Result<bool, ExecError> {
@@ -1331,7 +1390,7 @@ impl Interpreter {
 
     /// Interpolate {var} in a string from the local scope.
     /// If var is not found in scope, leave {var} as-is (for render() compatibility).
-    fn interpolate_string(&mut self, s: &str, env: &mut HashMap<String, Value>, cell_name: &str, signal_name: &str) -> String {
+    fn interpolate_string(&mut self, s: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> String {
         let mut result = String::with_capacity(s.len());
         let mut pos = 0;
         while pos < s.len() {
@@ -1368,7 +1427,7 @@ impl Interpreter {
     }
 
     /// Parse and evaluate an expression string from interpolation
-    fn eval_interpolation_expr(&mut self, expr_str: &str, env: &mut HashMap<String, Value>, cell_name: &str, signal_name: &str) -> Option<Value> {
+    fn eval_interpolation_expr(&mut self, expr_str: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> Option<Value> {
         // Fast path: simple variable name
         if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return match env.get(expr_str) {
@@ -1682,12 +1741,12 @@ impl Interpreter {
     pub(crate) fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
         match lambda {
             Value::Lambda { param, body, env: closed_env } => {
-                let mut env = closed_env.clone();
+                let mut env: Env = closed_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 env.insert(param.clone(), arg);
                 self.eval_expr(&body.node, &mut env, cell_name, "")
             }
             Value::LambdaBlock { param, stmts, result, env: closed_env } => {
-                let mut env = closed_env.clone();
+                let mut env: Env = closed_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 env.insert(param.clone(), arg);
                 for stmt in stmts {
                     self.exec_stmt(&stmt.node, &mut env, cell_name, "")?;
