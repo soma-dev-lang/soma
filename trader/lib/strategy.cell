@@ -1,53 +1,53 @@
 // Market making strategy
-// Places bids and asks around a fair value, profits from the spread
+// Places bids below fair value and asks above, with enough spread to NOT self-match
 
 cell Strategy {
 
-    on fair_value(ticker: String) {
+    on fair_value(ticker: String, cycle: Int) {
+        // Add small random walk based on cycle to simulate price movement
+        let jitter = (cycle * 7 + 3) % 11 - 5
         match ticker {
-            "BTC"  -> 42000
-            "ETH"  -> 3200
-            "SOL"  -> 145
+            "BTC"  -> 42000 + jitter * 10
+            "ETH"  -> 3200 + jitter * 2
+            "SOL"  -> 145 + jitter
             "AVAX" -> 38
             _      -> 100
         }
     }
 
-    on generate_quotes(ticker: String, spread: Int, size: Int, levels: Int) {
-        let mid = fair_value(ticker)
-        let half = spread / 2
-        let quotes = list()
+    on generate_quotes(ticker: String, cycle: Int) {
+        let mid = fair_value(ticker, cycle)
 
+        // Different spread per ticker, wide enough to not self-match
+        let spread = match ticker {
+            "BTC"  -> 400
+            "ETH"  -> 40
+            "SOL"  -> 6
+            "AVAX" -> 3
+            _      -> 4
+        }
+        let half = spread / 2
+        let base_size = match ticker {
+            "BTC"  -> 2
+            "ETH"  -> 8
+            "SOL"  -> 30
+            "AVAX" -> 50
+            _      -> 10
+        }
+
+        // 3 levels of bids and asks
+        let quotes = list()
         let i = 0
-        while i < levels {
-            let bid_price = mid - half - i * spread
-            let ask_price = mid + half + i * spread
-            let qty = size - i * (size / levels)
+        while i < 3 {
+            let bid_price = mid - half - i * (spread / 2)
+            let ask_price = mid + half + i * (spread / 2)
+            let qty = base_size - i
             if qty < 1 { qty = 1 }
 
-            quotes = push(quotes, map(
-                "ticker", ticker,
-                "side", "buy",
-                "price", bid_price,
-                "qty", qty
-            ))
-            quotes = push(quotes, map(
-                "ticker", ticker,
-                "side", "sell",
-                "price", ask_price,
-                "qty", qty
-            ))
+            quotes = push(quotes, map("ticker", ticker, "side", "buy", "price", bid_price, "qty", qty))
+            quotes = push(quotes, map("ticker", ticker, "side", "sell", "price", ask_price, "qty", qty))
             i = i + 1
         }
         return quotes
-    }
-
-    on should_requote(last_trade: Map, ticker: String, threshold: Int) {
-        if last_trade == () { return false }
-        if last_trade.ticker != ticker { return false }
-        let mid = fair_value(ticker)
-        let diff = last_trade.price - mid
-        if diff < 0 { diff = 0 - diff }
-        return diff > threshold
     }
 }

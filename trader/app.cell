@@ -33,23 +33,8 @@ cell MarketMaker {
     }
 
     on requote(ticker: String) {
-        // Generate quotes: 3 levels of bids and asks
-        let spread = match ticker {
-            "BTC"  -> 200
-            "ETH"  -> 20
-            "SOL"  -> 2
-            "AVAX" -> 1
-            _      -> 1
-        }
-        let size = match ticker {
-            "BTC"  -> 3
-            "ETH"  -> 10
-            "SOL"  -> 50
-            "AVAX" -> 100
-            _      -> 10
-        }
-
-        let quotes = generate_quotes(ticker, spread, size, 3)
+        let cycle = to_int(state.get("cycle") ?? "0")
+        let quotes = generate_quotes(ticker, cycle)
 
         for quote in quotes {
             let result = send_order(quote.ticker, quote.side, quote.price, quote.qty)

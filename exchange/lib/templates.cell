@@ -92,9 +92,10 @@ cell Templates {
             {css}
             <script>
                 const es = new EventSource('/stream');
-                es.addEventListener('trade', () => setTimeout(() => location.reload(), 200));
-                es.addEventListener('book_update', () => setTimeout(() => location.reload(), 200));
-                setTimeout(() => location.reload(), 5000);
+                es.addEventListener('trade', () => setTimeout(() => location.reload(), 300));
+                es.addEventListener('book_update', () => setTimeout(() => location.reload(), 300));
+                es.addEventListener('order_placed', () => setTimeout(() => location.reload(), 300));
+                setTimeout(() => location.reload(), 2000);
             </script>
         </head>
         <body>
