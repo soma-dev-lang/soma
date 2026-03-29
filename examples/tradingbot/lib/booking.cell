@@ -1,10 +1,6 @@
 // ============================================================================
-// Booking — computes orders from yesterday's positions vs today's targets
+// Booking — pipeline: targets × positions → deltas → orders
 // ============================================================================
-// Receives target portfolio from Trading via signal bus.
-// Loads yesterday's positions (persistent).
-// Computes the delta (what to buy/sell today).
-// Emits orders to Broker.
 
 cell Booking {
 
@@ -24,91 +20,81 @@ cell Booking {
         * -> cancelled
     }
 
-    // Receive target portfolio from Trading (via signal bus)
     on target_portfolio(data: Map) {
-        let raw = data.targets ?? "[]"
-        pending_targets.set("latest", raw)
-        // Auto-book on receiving new targets
+        pending_targets.set("latest", data.targets ?? "[]")
         book_orders()
+    }
+
+    on _get_position_qty(sym: String) {
+        let raw = positions.get(sym)
+        if raw == () { return 0 }
+        let pos = from_json(raw)
+        return to_int(pos.qty ?? "0")
     }
 
     on book_orders() {
         let raw = pending_targets.get("latest")
         if raw == () { return () }
-
         let targets = from_json(raw)
         if type_of(targets) != "List" { return () }
-
         let t = now()
 
-        for target in targets {
-            let sym = target.symbol ?? ""
-            if sym == "" { continue }
+        // Pipeline: targets → enrich with current position → compute delta → filter non-zero → create orders
+        let new_orders = targets
+            |> filter(tgt => (tgt.symbol ?? "") != "")
+            |> map(tgt => {
+                let sym = tgt.symbol
+                let target_qty = to_int(tgt.qty ?? "0")
+                let current_qty = _get_position_qty(sym)
+                let delta = target_qty - current_qty
+                tgt |> with("delta", to_string(delta))
+                    |> with("current_qty", to_string(current_qty))
+            })
+            |> filter(tgt => to_int(tgt.delta ?? "0") != 0)
+            |> map(tgt => {
+                let delta = to_int(tgt.delta ?? "0")
+                let side = "buy"
+                let abs_delta = delta
+                if delta < 0 {
+                    side = "sell"
+                    abs_delta = 0 - delta
+                }
+                let order_id = tgt.symbol + "_" + to_string(t) + "_" + to_string(random(1000))
+                map(
+                    "id", order_id,
+                    "symbol", tgt.symbol,
+                    "side", side,
+                    "qty", to_string(abs_delta),
+                    "price", tgt.mid ?? "0",
+                    "status", "pending",
+                    "created_at", to_string(t)
+                )
+            })
 
-            let target_qty = to_int(target.qty ?? "0")
-
-            // Get yesterday's position
-            let pos_raw = positions.get(sym)
-            let current_qty = 0
-            if pos_raw != () {
-                let pos = from_json(pos_raw)
-                current_qty = to_int(pos.qty ?? "0")
-            }
-
-            // Compute delta
-            let delta = target_qty - current_qty
-            if delta == 0 { continue }
-
-            let side = "buy"
-            if delta < 0 {
-                side = "sell"
-                delta = 0 - delta
-            }
-
-            let order_id = sym + "_" + to_string(t) + "_" + to_string(random(1000))
-            let order = map(
-                "id", order_id,
-                "symbol", sym,
-                "side", side,
-                "qty", to_string(delta),
-                "price", target.mid ?? "0",
-                "status", "pending",
-                "created_at", to_string(t)
-            )
-            orders.set(order_id, to_json(order))
-
-            // Send to Broker (direct call)
+        // Store and send each order
+        for order in new_orders {
+            orders.set(order.id, to_json(order))
             send_order(order)
         }
     }
 
-    // Receive fill confirmation from Broker
     on order_filled(data: Map) {
         let order_id = data.id ?? ""
         if order_id == "" { return () }
 
-        // Update order status
+        // Update order: pending → filled
         let raw = orders.get(order_id)
         if raw != () {
-            let order = from_json(raw)
-            let updated = order |> with("status", "filled") |> with("filled_at", to_string(now()))
+            let updated = from_json(raw) |> with("status", "filled") |> with("filled_at", to_string(now()))
             orders.set(order_id, to_json(updated))
         }
 
         // Update position
         let sym = data.symbol ?? ""
         let fill_qty = to_int(data.qty ?? "0")
-        let side = data.side ?? "buy"
-
-        let pos_raw = positions.get(sym)
-        let current_qty = 0
-        if pos_raw != () {
-            let pos = from_json(pos_raw)
-            current_qty = to_int(pos.qty ?? "0")
-        }
-
-        let new_qty = current_qty + fill_qty
-        if side == "sell" { new_qty = current_qty - fill_qty }
+        let current = _get_position_qty(sym)
+        let new_qty = current + fill_qty
+        if data.side == "sell" { new_qty = current - fill_qty }
 
         positions.set(sym, to_json(map(
             "symbol", sym,
@@ -117,14 +103,12 @@ cell Booking {
         )))
     }
 
-    // Receive rejection from Broker
     on order_rejected(data: Map) {
         let order_id = data.id ?? ""
         if order_id == "" { return () }
         let raw = orders.get(order_id)
         if raw != () {
-            let order = from_json(raw)
-            let updated = order |> with("status", "rejected") |> with("reason", data.reason ?? "unknown")
+            let updated = from_json(raw) |> with("status", "rejected") |> with("reason", data.reason ?? "unknown")
             orders.set(order_id, to_json(updated))
         }
     }
@@ -134,15 +118,9 @@ cell Booking {
             book_orders()
             return map("status", "booking")
         }
-        if path == "/orders" {
-            return orders.values() |> map(s => from_json(s)) |> filter(o => o.id != ()) |> sort_by("created_at")
-        }
-        if path == "/positions" {
-            return positions.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
-        }
-        if path == "/" {
-            return map("name", "Booking", "orders", orders.len(), "positions", positions.len())
-        }
+        if path == "/orders" { return orders.values() |> map(s => from_json(s)) |> filter(o => o.id != ()) |> sort_by("created_at") }
+        if path == "/positions" { return positions.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ()) |> sort_by("symbol") }
+        if path == "/" { return map("name", "Booking", "orders", orders.len(), "positions", positions.len()) }
         return response(404, map("error", "not found"))
     }
 }

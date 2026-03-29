@@ -1,9 +1,6 @@
 // ============================================================================
-// Trading — computes target positions from market data + strategy
+// Trading — pure pipeline strategy: prices → rank → weight → targets
 // ============================================================================
-// Receives prices from Market via signal bus.
-// Computes target portfolio. Emits orders to Broker.
-// Pure logic: no booking, no execution. Just decisions.
 
 cell Trading {
 
@@ -21,67 +18,64 @@ cell Trading {
         * -> stopped
     }
 
-    // Recompute targets every 10s
     every 10s {
         compute_targets()
     }
 
-    // Receive market data from Market cell (via signal bus)
     on price_update(data: Map) {
         let sym = data.symbol ?? ""
-        if sym != "" {
-            prices.set(sym, to_json(data))
-        }
+        if sym != "" { prices.set(sym, to_json(data)) }
     }
 
     on compute_targets() {
-        let all_prices = prices.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
-        if len(all_prices) == 0 { return () }
-
-        // Simple momentum strategy:
-        // Buy the 3 cheapest stocks by mid price (value strategy)
-        let ranked = all_prices |> sort_by("mid")
         let budget = 100000
+        let top_n = 3
 
-        let i = 0
-        for stock in ranked {
-            let mid = to_float(stock.mid ?? "0")
-            if mid <= 0 { continue }
+        // The entire strategy is one pipeline:
+        // prices → parse → rank by cheapest → assign weights → compute qty → store
+        let portfolio = prices.values()
+            |> map(s => from_json(s))
+            |> filter(p => p.symbol != () && to_float(p.mid ?? "0") > 0)
+            |> sort_by("mid")
+            |> map(s => {
+                let mid = to_float(s.mid ?? "0")
+                let rank = len(targets.values() |> map(t => from_json(t)) |> filter(t => to_float(t.mid ?? "0") < mid))
+                s |> with("rank", to_string(rank))
+            })
+            |> map(s => {
+                let mid = to_float(s.mid ?? "0")
+                let rank = to_int(s.rank ?? "999")
+                let weight = 0
+                if rank < top_n { weight = 1 }
+                let notional = budget * weight / top_n
+                let qty = floor(notional / mid)
+                s |> with("qty", to_string(qty))
+                  |> with("side", "buy")
+                  |> with("weight", to_string(weight))
+                  |> with("notional", to_string(round(to_float(qty) * mid)))
+                  |> with("computed_at", to_string(now()))
+            })
 
-            let weight = 0
-            if i < 3 { weight = 1 }
-            i = i + 1
-
-            let notional = budget * weight / 3
-            let qty = 0
-            if mid > 0 { qty = floor(notional / mid) }
-
-            let target = map(
-                "symbol", stock.symbol,
-                "qty", to_string(qty),
-                "side", "buy",
-                "mid", stock.mid,
-                "notional", to_string(round(to_float(qty) * mid)),
-                "weight", to_string(weight),
-                "computed_at", to_string(now())
-            )
-            targets.set(stock.symbol, to_json(target))
+        // Store targets
+        for t in portfolio {
+            targets.set(t.symbol, to_json(t))
         }
 
-        // Send targets to Booking (direct handler call — all cells share handlers via use)
-        let portfolio = targets.values() |> map(s => from_json(s)) |> filter(t => t.symbol != ())
-        target_portfolio(map("targets", to_json(portfolio), "time", to_string(now())))
+        // Send to booking
+        let active = portfolio |> filter(t => to_int(t.qty ?? "0") > 0)
+        target_portfolio(map("targets", to_json(active), "time", to_string(now())))
     }
 
     on request(method: String, path: String, body: String) {
         if path == "/targets" {
-            return targets.values() |> map(s => from_json(s)) |> filter(t => t.symbol != ())
+            return targets.values() |> map(s => from_json(s)) |> filter(t => t.symbol != ()) |> sort_by("mid")
         }
         if path == "/prices" {
-            return prices.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
+            return prices.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ()) |> sort_by("symbol")
         }
         if path == "/" {
-            return map("name", "Trading Engine", "targets", targets.len(), "prices", prices.len())
+            let active = targets.values() |> map(s => from_json(s)) |> filter(t => to_int(t.qty ?? "0") > 0)
+            return map("name", "Trading", "targets", len(active), "prices", prices.len())
         }
         return response(404, map("error", "not found"))
     }
