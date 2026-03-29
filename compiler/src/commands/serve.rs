@@ -190,7 +190,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                                 if let Ok(mut clients) = clients.lock() {
                                     clients.retain(|client| {
                                         if let Ok(mut ws) = client.lock() {
-                                            ws.send(msg.clone()).is_ok()
+                                            if ws.send(msg.clone()).is_ok() {
+                                                ws.flush().is_ok()
+                                            } else {
+                                                false
+                                            }
                                         } else {
                                             false
                                         }
@@ -216,31 +220,37 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let clients = ws_clients.clone();
 
                 std::thread::spawn(move || {
+                    // Clone the TCP stream BEFORE WS handshake
+                    let read_stream = match stream.try_clone() {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+
                     let ws = match tungstenite::accept(stream) {
                         Ok(ws) => ws,
                         Err(_) => return,
                     };
 
-                    let ws = std::sync::Arc::new(std::sync::Mutex::new(ws));
+                    // The write side: used for broadcasting (Arc<Mutex>)
+                    let ws_write = std::sync::Arc::new(std::sync::Mutex::new(ws));
 
-                    // Register this client for broadcasting
+                    // Register the write handle for broadcasting
                     if let Ok(mut c) = clients.lock() {
-                        c.push(ws.clone());
+                        c.push(ws_write.clone());
                     }
 
                     eprintln!("ws: client connected");
 
-                    // Read messages and dispatch to `on ws(message)` handler
-                    loop {
-                        let msg = {
-                            let mut ws_guard = match ws.lock() {
-                                Ok(g) => g,
-                                Err(_) => break,
-                            };
-                            ws_guard.read()
-                        };
+                    // Read side: create a separate WS from the cloned stream (no handshake needed — already done)
+                    let mut ws_read = tungstenite::WebSocket::from_raw_socket(
+                        read_stream,
+                        tungstenite::protocol::Role::Server,
+                        None,
+                    );
 
-                        match msg {
+                    // Read loop: blocks on read, doesn't hold any lock
+                    loop {
+                        match ws_read.read() {
                             Ok(tungstenite::Message::Text(text)) => {
                                 let mut interp = interpreter::Interpreter::new(&prog);
                                 interp.set_storage_raw(&slots);
@@ -250,18 +260,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                                 let args = vec![interpreter::Value::String(text)];
                                 match interp.call_signal(&cname, "ws", args) {
                                     Ok(val) => {
-                                        // If handler returns a value, send it back
                                         if !matches!(val, interpreter::Value::Unit) {
                                             let response = format!("{}", val);
-                                            if let Ok(mut ws_guard) = ws.lock() {
-                                                let _ = ws_guard.send(tungstenite::Message::Text(response));
+                                            if let Ok(mut ws_w) = ws_write.lock() {
+                                                let _ = ws_w.send(tungstenite::Message::Text(response));
+                                                let _ = ws_w.flush();
                                             }
                                         }
                                     }
                                     Err(e) => {
                                         let err_msg = format!("{{\"error\":\"{}\"}}", e);
-                                        if let Ok(mut ws_guard) = ws.lock() {
-                                            let _ = ws_guard.send(tungstenite::Message::Text(err_msg));
+                                        if let Ok(mut ws_w) = ws_write.lock() {
+                                            let _ = ws_w.send(tungstenite::Message::Text(err_msg));
                                         }
                                     }
                                 }
@@ -270,13 +280,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                                 eprintln!("ws: client disconnected");
                                 break;
                             }
-                            _ => {} // ignore binary, ping, pong
+                            _ => {}
                         }
                     }
 
-                    // Remove from clients list
                     if let Ok(mut c) = clients.lock() {
-                        c.retain(|client| !std::sync::Arc::ptr_eq(client, &ws));
+                        c.retain(|client| !std::sync::Arc::ptr_eq(client, &ws_write));
                     }
                 });
             }

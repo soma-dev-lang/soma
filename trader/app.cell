@@ -1,11 +1,13 @@
 // ============================================================================
-// Market Maker Bot — WS orders out, HTTP polling for fills
+// Market Maker Bot — WS orders out, WS subscribe for fills
 // ============================================================================
-// Sends orders via WebSocket to Exchange ws://localhost:8081
-// Polls exchange HTTP API for trades to track fills
+// Sends orders via ws_send → Exchange WS :8081
+// Receives trades via subscribe → Exchange WS :8081 (separate connection)
+//
+// When exchange emits `signal trade(data)`, it broadcasts to all WS clients.
+// The subscribe() connection receives it and dispatches to `on trade(data)`.
 //
 // Run: soma serve app.cell -p 9090
-//   (Exchange must be running: cd exchange && soma serve app.cell)
 
 use lib::strategy
 use lib::connection
@@ -15,78 +17,73 @@ cell MarketMaker {
 
     memory {
         state: Map<String, String> [ephemeral, local]
-        my_orders: Map<String, String> [ephemeral, local]
         fills: Map<String, String> [ephemeral, local]
     }
 
-    // Connect to exchange on startup
+    // ---- Connect on startup ----
     on init() {
         let result = connect_exchange()
-        print("WS: {result.status}")
-        return result
+        print("Exchange: send={result.send}, recv={result.recv}")
     }
 
-    // ---- Quote + poll cycle: every 3s ----
+    // ---- Incoming events from exchange (via subscribe) ----
+    on trade(data: Map) {
+        let tid = to_string(now()) + "_" + to_string(random(10000))
+        fills.set(tid, to_json(data))
+        print("FILL: {data.ticker} @ {data.price} x{data.qty}")
+    }
+
+    on order_placed(data: Map) {
+        // Another order was placed on the exchange
+    }
+
+    on book_update(data: Map) {
+        // Book changed
+    }
+
+    // ---- Quote cycle ----
     every 3s {
         let cycle = to_int(state.get("cycle") ?? "0") + 1
         state.set("cycle", to_string(cycle))
 
-        // Re-quote on all tickers
-        let tickers = list("BTC", "ETH", "SOL", "AVAX")
-        for ticker in tickers {
+        for ticker in list("BTC", "ETH", "SOL", "AVAX") {
             requote(ticker)
         }
 
-        // Aggressive order every 2nd cycle
         if cycle % 2 == 0 {
             aggress(cycle)
         }
-
-        // Poll exchange for new trades
-        poll_trades()
     }
 
     on requote(ticker: String) {
         let cycle = to_int(state.get("cycle") ?? "0")
         let quotes = generate_quotes(ticker, cycle)
-        for quote in quotes {
-            send_order(quote.ticker, quote.side, quote.price, quote.qty)
+        for q in quotes {
+            send_order(q.ticker, q.side, q.price, q.qty)
         }
     }
 
     on aggress(cycle: Int) {
         let tickers = list("BTC", "ETH", "SOL", "AVAX")
-        let idx = cycle % 4
-        let ticker = tickers.get(idx)
+        let ticker = tickers.get(cycle % 4)
         let mid = fair_value(ticker, cycle)
 
-        if cycle % 4 < 2 {
-            let price = mid + 500
-            if ticker == "ETH" { price = mid + 50 }
-            if ticker == "SOL" { price = mid + 10 }
-            if ticker == "AVAX" { price = mid + 5 }
-            send_order(ticker, "buy", price, 1)
-        } else {
-            let price = mid - 500
-            if ticker == "ETH" { price = mid - 50 }
-            if ticker == "SOL" { price = mid - 10 }
-            if ticker == "AVAX" { price = mid - 5 }
-            send_order(ticker, "sell", price, 1)
+        let price = mid + 500
+        let side = "buy"
+        if cycle % 4 >= 2 {
+            price = mid - 500
+            side = "sell"
         }
-    }
-
-    on poll_trades() {
-        let trades = http_get("http://localhost:8080/api/trades")
-        if type_of(trades) == "List" {
-            for trade in trades {
-                if trade.ticker != () {
-                    let tid = trade.id ?? to_string(trade.time)
-                    if fills.get(tid) == () {
-                        fills.set(tid, to_json(trade))
-                    }
-                }
-            }
+        if ticker == "ETH" {
+            if side == "buy" { price = mid + 50 } else { price = mid - 50 }
         }
+        if ticker == "SOL" {
+            if side == "buy" { price = mid + 10 } else { price = mid - 10 }
+        }
+        if ticker == "AVAX" {
+            if side == "buy" { price = mid + 5 } else { price = mid - 5 }
+        }
+        send_order(ticker, side, price, 1)
     }
 
     // ---- Data ----
@@ -96,40 +93,29 @@ cell MarketMaker {
             |> filter(t => t.ticker != ())
     }
 
-    on get_recent_orders() {
-        return my_orders.values()
-            |> map(s => from_json(s))
-            |> filter(o => o.ticker != ())
-            |> top(20)
-    }
-
     on get_pnl() {
         let fill_list = get_fills()
-        let total_trades = len(fill_list)
-        let order_count = len(my_orders.keys())
-        return map("total", 0, "color", "#22c55e", "trades", total_trades, "open_orders", order_count)
+        return map("total", 0, "color", "#22c55e", "trades", len(fill_list), "open_orders", 0)
     }
 
     on get_positions() {
         return get_fills()
     }
 
-    // ---- HTTP dashboard ----
+    // ---- HTTP ----
     on request(method: String, path: String, body: String) {
         match path {
-            "/"              -> html(page_dashboard())
-            "/api/fills"     -> get_fills()
-            "/api/pnl"       -> get_pnl()
-            "/api/orders"    -> get_recent_orders()
-            _                -> response(404, map("error", "not found"))
+            "/"          -> html(page_dashboard())
+            "/api/fills" -> get_fills()
+            "/api/pnl"   -> get_pnl()
+            _            -> response(404, map("error", "not found"))
         }
     }
 
     on page_dashboard() {
         let pnl = get_pnl()
         let positions = get_positions()
-        let recent = get_recent_orders()
         let cycle = to_int(state.get("cycle") ?? "0")
-        return render_dashboard(pnl, positions, recent, cycle)
+        return render_dashboard(pnl, positions, list(), cycle)
     }
 }

@@ -1,27 +1,24 @@
-// WebSocket connection to the Exchange
+// Connection to Exchange — WS send + subscribe receive
 
 cell Connection {
 
     on connect_exchange() {
-        let result = ws_connect("ws://localhost:8081")
-        return result
+        // Send channel: orders go out via WS
+        let send = ws_connect("ws://localhost:8081")
+
+        // Receive channel: trades/events come in via separate WS subscription
+        let recv = subscribe("ws://localhost:8081")
+
+        return map("send", send.status, "recv", recv.status)
     }
 
     on send_order(ticker: String, side: String, price: Int, qty: Int) {
         let payload = to_json(map("action", "place", "ticker", ticker, "side", side, "price", price, "qty", qty))
         ws_send(payload)
-        return map("status", "sent", "ticker", ticker, "side", side, "price", price, "qty", qty)
+        return map("status", "sent")
     }
 
     on cancel_order(order_id: String) {
-        let payload = to_json(map("action", "cancel", "id", order_id))
-        ws_send(payload)
-        return map("status", "cancel_sent", "id", order_id)
-    }
-
-    on get_book(ticker: String) {
-        let payload = to_json(map("action", "book", "ticker", ticker))
-        ws_send(payload)
-        return map("status", "requested")
+        ws_send(to_json(map("action", "cancel", "id", order_id)))
     }
 }

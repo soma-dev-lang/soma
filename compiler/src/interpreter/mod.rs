@@ -610,9 +610,12 @@ impl Interpreter {
                         },
                     };
                     if let Ok(senders) = bus.lock() {
-                        // Remove dead senders
+                        let count = senders.len();
                         for sender in senders.iter() {
                             let _ = sender.send(event.clone());
+                        }
+                        if count > 0 {
+
                         }
                     }
                 }
@@ -710,6 +713,13 @@ impl Interpreter {
                         return Ok(Value::Unit);
                     }
                     return Err(ExecError::Runtime(RuntimeError::TypeError("ws_send: not connected".to_string())));
+                }
+                if name == "subscribe" {
+                    if let Some(Value::String(url)) = arg_vals.first() {
+                        return self.do_subscribe(url, cell_name)
+                            .map_err(ExecError::Runtime);
+                    }
+                    return Err(ExecError::Runtime(RuntimeError::TypeError("subscribe(url)".to_string())));
                 }
 
                 // Check lambda builtins first (map, filter, find, etc.) — need &mut self
@@ -1282,8 +1292,8 @@ impl Interpreter {
             eprintln!("ws: writer thread ended");
         });
 
-        // Note: incoming WS messages not yet supported in client mode.
-        // Use http_get to poll exchange APIs for trade data.
+        // ws_connect is send-only. Use subscribe() for receiving.
+        // This separation avoids the read/write deadlock in tungstenite.
 
         eprintln!("ws: connected to {}", url);
         Ok(Value::Map(vec![
@@ -1293,6 +1303,84 @@ impl Interpreter {
     }
 
     /// Apply a lambda to a value: bind param, eval body
+    /// Subscribe to a remote WS stream — dedicated read-only connection
+    /// Incoming messages are parsed as {"event":"name","data":{...}} and dispatched to on name() handlers
+    fn do_subscribe(&mut self, url: &str, cell_name: &str) -> Result<Value, RuntimeError> {
+        let parsed = url::Url::parse(url).map_err(|e| {
+            RuntimeError::TypeError(format!("subscribe: bad URL: {}", e))
+        })?;
+        let host = parsed.host_str().unwrap_or("localhost");
+        let port = parsed.port().unwrap_or(80);
+
+        let stream = std::net::TcpStream::connect(format!("{}:{}", host, port)).map_err(|e| {
+            RuntimeError::TypeError(format!("subscribe: {}", e))
+        })?;
+
+        let (ws, _) = tungstenite::client::client(url, stream).map_err(|e| {
+            RuntimeError::TypeError(format!("subscribe handshake: {}", e))
+        })?;
+
+        // Reader thread: blocks on read, dispatches to handlers
+        let cells = self.cells.clone();
+        let storage: HashMap<String, Arc<dyn StorageBackend>> = self.storage.iter()
+            .map(|(k, v)| (k.clone(), v.clone())).collect();
+        let state_machines = self.state_machines.clone();
+        let event_bus = self.event_bus.clone();
+        let ws_out = self.ws_out.clone();
+        let cname = cell_name.to_string();
+
+        let url_owned = url.to_string();
+        std::thread::spawn(move || {
+            let mut ws = ws;
+            eprintln!("subscribe: listening on {}", url_owned);
+            loop {
+                match ws.read() {
+                    Ok(tungstenite::Message::Text(text)) => {
+                        // Parse {"event":"trade","data":{...}} format
+                        let prog = Program { imports: vec![], cells: cells.values().map(|c| {
+                            Spanned::new(c.clone(), Span::new(0, 0))
+                        }).collect() };
+                        let mut interp = Interpreter::new(&prog);
+                        for (k, v) in &storage {
+                            interp.storage.insert(k.clone(), v.clone());
+                        }
+                        interp.state_machines = state_machines.clone();
+                        interp.event_bus = event_bus.clone();
+                        interp.ws_out = ws_out.clone();
+
+                        // Try to parse as bus event format
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if let Some(event_name) = parsed.get("event").and_then(|e| e.as_str()) {
+                                let data = parsed.get("data")
+                                    .map(|d| builtins::serde_json_to_value(d))
+                                    .unwrap_or(Value::String(text.clone()));
+                                // Dispatch to on event_name(data)
+                                let _ = interp.call_signal(&cname, event_name, vec![data]);
+                                continue;
+                            }
+                        }
+                        // Fallback: dispatch to on ws(message)
+                        let _ = interp.call_signal(&cname, "ws", vec![Value::String(text)]);
+                    }
+                    Ok(tungstenite::Message::Close(_)) => {
+                        eprintln!("subscribe: connection closed");
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("subscribe: error: {}", e);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        Ok(Value::Map(vec![
+            ("status".to_string(), Value::String("subscribed".to_string())),
+            ("url".to_string(), Value::String(url.to_string())),
+        ]))
+    }
+
     pub(crate) fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
         match lambda {
             Value::Lambda { param, body, env: closed_env } => {
