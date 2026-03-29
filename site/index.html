@@ -61,6 +61,8 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <div class="logo">soma</div>
 <div class="links">
 <a href="#manifesto">Manifesto</a>
+<a href="#contracts">Contracts</a>
+<a href="#foundations">Foundations</a>
 <a href="#syntax">Syntax</a>
 <a href="#pipeline">Pipelines</a>
 <a href="#web">Web</a>
@@ -179,6 +181,111 @@ and <strong>pipelines are pipes</strong>.
 <cite>&mdash; Alan Kay, Turing Award 2003</cite>
 </blockquote>
 </div>
+</section>
+
+<!-- ═══════════════════════════════════ CONTRACTS ═══════════════════════════════════ -->
+<section id="contracts">
+<h2>Contracts are enforced</h2>
+
+<p>The <code>face</code> section is not documentation. It is a <strong>machine-checked contract</strong>. The compiler verifies it. Break the contract &mdash; the program does not compile.</p>
+
+<pre><code><span class="kw">cell</span> API {
+    <span class="kw">face</span> {
+        <span class="kw">signal</span> create(name: String) -> Map
+        <span class="kw">signal</span> delete(id: String)            <span class="cmt">// &larr; declared but no handler</span>
+        <span class="kw">promise</span> all_persistent
+    }
+    <span class="kw">on</span> create(name: String) { <span class="kw">return</span> <span class="fn">map</span>(<span class="str">"name"</span>, name) }
+}</code></pre>
+
+<pre><code><span class="op">error: face contract: signal 'delete' declared in cell 'API' has no handler</span>
+<span class="dim">&rarr; Every signal in the face MUST have a matching on handler.</span>
+<span class="dim">&rarr; Param counts are verified. Contradictory properties are rejected.</span>
+<span class="dim">&rarr; Descriptive promises generate warnings. Structural promises are enforced.</span></code></pre>
+
+<p>This is what separates Soma from every other dynamic language. The face is a <strong>behavioral type</strong>: it declares what the cell does, and the compiler proves the cell does it. An auditor reads the <code>face</code> and knows the API. Not "what the developer intended" &mdash; what the program <em>guarantees</em>.</p>
+</section>
+
+<!-- ═══════════════════════════════════ FOUNDATIONS ═══════════════════════════════════ -->
+<section id="foundations">
+<h2>Intellectual foundations</h2>
+
+<p>Soma is not invented from nothing. It stands on decades of research in programming language theory, distributed systems, and formal methods.</p>
+
+<div class="thesis">
+<div class="number">The Actor Model</div>
+<h3>Cells are actors with contracts</h3>
+<p>Hewitt's Actor model (1973) introduced the idea that computation is message passing between autonomous agents. Soma cells are actors: they have private state (memory), respond to messages (signals), and can spawn children (interior). What Soma adds: <strong>typed contracts</strong> on the messages (face), and <strong>declarative infrastructure</strong> on the state (properties).</p>
+<blockquote>
+<p>One Actor can send messages, create new Actors, and determine how to handle the next message it receives.</p>
+<cite>&mdash; Carl Hewitt, Peter Bishop, Richard Steiger. A Universal Modular ACTOR Formalism. 1973</cite>
+</blockquote>
+</div>
+
+<div class="thesis">
+<div class="number">Specification as Program</div>
+<h3>TLA+ made executable</h3>
+<p>Lamport showed that distributed systems need formal specifications. But specifications lived in separate documents, drifting from code. In Soma, the <code>state</code> machine IS the protocol. The <code>face</code> contract IS the API. The <code>promise</code> IS the invariant. There is no drift because there is no separation.</p>
+<blockquote>
+<p>If you're thinking without writing, you only think you're thinking.</p>
+<cite>&mdash; Leslie Lamport, Turing Award 2013</cite>
+</blockquote>
+</div>
+
+<div class="thesis">
+<div class="number">Declarative Infrastructure</div>
+<h3>What, not how</h3>
+<p>Codd's relational model (1970) proved that declaring <em>what</em> you want beats specifying <em>how</em> to get it. SQL replaced procedural data access. Soma applies the same principle to infrastructure: <code>[persistent, consistent]</code> declares the intent. The runtime resolves SQLite, DynamoDB, or Firestore. Change the provider &mdash; zero code changes.</p>
+<blockquote>
+<p>Future users of large data banks must be protected from having to know how the data is organized in the machine.</p>
+<cite>&mdash; E.F. Codd, A Relational Model of Data for Large Shared Data Banks. 1970</cite>
+</blockquote>
+</div>
+
+<div class="thesis">
+<div class="number">Self-Growing Systems</div>
+<h3>The language extends itself</h3>
+<p>Kay's vision for Smalltalk was a system where everything &mdash; including the language itself &mdash; could be modified from within. In Soma, properties, checkers, and backends are defined as <code>.cell</code> files, not compiler code. Add a new property? Write a cell. Add a new storage backend? Write a cell. The compiler reads them and enforces them.</p>
+<blockquote>
+<p>The best way to predict the future is to invent it.</p>
+<cite>&mdash; Alan Kay, Turing Award 2003</cite>
+</blockquote>
+</div>
+
+<div class="thesis">
+<div class="number">Pipe Composition</div>
+<h3>Data flows, not data structures</h3>
+<p>Thompson and McIlroy's Unix pipes (1973) showed that complex programs are built by composing simple ones. Soma's <code>|></code> operator is the same idea applied to data: <code>filter |> map |> sort |> top</code>. Each stage is a pure transform. The pipeline reads like a sentence.</p>
+<blockquote>
+<p>Write programs that do one thing and do it well. Write programs to work together.</p>
+<cite>&mdash; Doug McIlroy, Unix Philosophy. 1978</cite>
+</blockquote>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════ ERROR MESSAGES ═══════════════════════════════════ -->
+<section>
+<h2>Errors that help</h2>
+
+<p>Inspired by Elm and Rust. Every error shows the source line, points to the exact expression, and suggests a fix.</p>
+
+<pre><code><span class="op">error:</span> expected '=', found number '10'
+  <span class="dim">--&gt; app.cell:3:15</span>
+  |
+3 |         let x 10
+  |               <span class="op">^</span>
+
+<span class="op">error:</span> cannot add String and Int: hello + 5
+  <span class="dim">--&gt; app.cell:7:17</span>
+  |
+7 |         let r = "hello" + 5
+  |                 <span class="op">^</span>
+
+<span class="op">error:</span> undefined function: langth (did you mean 'length'?)
+  <span class="dim">--&gt; app.cell:4:9</span>
+
+<span class="op">error:</span> face contract: signal 'delete' declared in cell 'API' has no handler
+  <span class="dim">&rarr; The face is a contract. Break it, and the compiler tells you.</span></code></pre>
 </section>
 
 <!-- ═══════════════════════════════════ WHAT IT REPLACES ═══════════════════════════════════ -->
@@ -515,7 +622,8 @@ risk = <span class="str">"localhost:7082"</span>        <span class="cmt">// add
 
 <footer>
 Soma is open source. The specification is the program.<br>
-<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v0.28.0
+<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v0.30.0<br>
+<span style="margin-top:.5rem;display:inline-block">Built on: Actors (Hewitt 1973) &middot; Relational Model (Codd 1970) &middot; TLA+ (Lamport) &middot; Unix Pipes (McIlroy 1978) &middot; Smalltalk (Kay)</span>
 </footer>
 
 </body>
