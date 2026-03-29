@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        print(substring("hello", 0, 3))
+        print(index_of("hello", "l"))
+        return "done"
+    }
+}

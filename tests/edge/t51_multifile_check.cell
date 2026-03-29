@@ -1,0 +1,10 @@
+// T51: soma check on multi-file
+use lib::helpers
+
+cell T51 {
+    on run() {
+        let x = double(10)
+        print("checked: {x}")
+        return "done"
+    }
+}

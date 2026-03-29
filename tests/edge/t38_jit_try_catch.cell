@@ -1,0 +1,10 @@
+// T38: JIT - try/catch
+cell T38 {
+    on run() {
+        let result = try { 10 / 0 }
+        print("try 10/0: {result}")
+        let ok = try { 10 + 5 }
+        print("try 10+5: {ok}")
+        return "done"
+    }
+}

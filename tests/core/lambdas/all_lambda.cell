@@ -1,0 +1,8 @@
+cell Test {
+    on run() {
+        let nums = list(1, 2, 3)
+        print(all(nums, x => x > 0))
+        print(all(nums, x => x > 2))
+        return "done"
+    }
+}

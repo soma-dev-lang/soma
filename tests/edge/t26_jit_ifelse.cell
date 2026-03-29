@@ -1,0 +1,17 @@
+// T26: JIT - If/else
+cell T26 {
+    on run() {
+        let x = 10
+        if x > 5 {
+            print("x > 5: true")
+        } else {
+            print("x > 5: false")
+        }
+        if x > 20 {
+            print("x > 20: true")
+        } else {
+            print("x > 20: false")
+        }
+        return "done"
+    }
+}

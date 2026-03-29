@@ -1,0 +1,12 @@
+cell Test {
+    on area(w: Int, h: Int) { return w * h }
+    on perimeter(w: Int, h: Int) { return 2 * (w + h) }
+    on describe(w: Int, h: Int) {
+        let a = area(w, h)
+        let p = perimeter(w, h)
+        print("Rectangle {w} x {h}")
+        print("Area: {a}")
+        print("Perimeter: {p}")
+        return "done"
+    }
+}

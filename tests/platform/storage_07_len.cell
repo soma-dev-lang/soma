@@ -1,0 +1,14 @@
+// Test: .len() returns count
+cell LenTest {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("a", "1")
+        data.set("b", "2")
+        data.set("c", "3")
+        let n = data.len()
+        print("len: {n}")
+        return n
+    }
+}

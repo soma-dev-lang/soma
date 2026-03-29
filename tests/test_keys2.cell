@@ -1,0 +1,10 @@
+cell Test {
+    on run() {
+        let m = map("a", 1, "b", 2)
+        let k = m.keys
+        print(k)
+        let v = m.values
+        print(v)
+        return "done"
+    }
+}

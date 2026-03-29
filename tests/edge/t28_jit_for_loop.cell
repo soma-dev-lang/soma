@@ -1,0 +1,12 @@
+// T28: JIT - For loop
+cell T28 {
+    on run() {
+        let nums = list(10, 20, 30, 40, 50)
+        let sum = 0
+        for n in nums {
+            sum = sum + n
+        }
+        print("sum: {sum}")
+        return "done"
+    }
+}

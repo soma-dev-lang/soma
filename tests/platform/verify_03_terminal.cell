@@ -1,0 +1,13 @@
+// Test: soma verify terminal states detection
+cell TerminalCheck {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: open
+        open -> in_progress
+        in_progress -> done
+        * -> cancelled
+    }
+    on test() { return "ok" }
+}

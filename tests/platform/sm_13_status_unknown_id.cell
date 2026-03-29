@@ -1,0 +1,15 @@
+// Test: get_status on unknown entity returns initial
+cell SMUnknown {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> published
+    }
+    on test() {
+        let st = get_status("999")
+        print("unknown entity status: {st}")
+        return st
+    }
+}

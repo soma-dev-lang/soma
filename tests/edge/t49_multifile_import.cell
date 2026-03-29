@@ -1,0 +1,12 @@
+// T49: use lib::module imports
+use lib::helpers
+
+cell T49 {
+    on run() {
+        let result = double(21)
+        print("double(21): {result}")
+        let msg = greet("Soma")
+        print(msg)
+        return "done"
+    }
+}

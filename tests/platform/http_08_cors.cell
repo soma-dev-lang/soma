@@ -1,0 +1,6 @@
+// Test: CORS headers on OPTIONS preflight
+cell CorsTest {
+    on data() {
+        return map("value", 42)
+    }
+}

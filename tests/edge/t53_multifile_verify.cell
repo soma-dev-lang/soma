@@ -1,0 +1,16 @@
+// T53: soma verify on multi-file with state
+use lib::helpers
+
+cell T53 {
+    state status {
+        initial: idle
+        idle -> running
+        running -> done
+    }
+
+    on run() {
+        let x = double(5)
+        print("result: {x}")
+        return "done"
+    }
+}

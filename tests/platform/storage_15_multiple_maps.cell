@@ -1,0 +1,16 @@
+// Test: multiple memory maps in one cell
+cell MultiMap {
+    memory {
+        users: Map<String, String> [persistent, consistent]
+        settings: Map<String, String> [ephemeral, local]
+    }
+    on test() {
+        users.set("alice", "admin")
+        settings.set("theme", "dark")
+        let u = users.get("alice")
+        let s = settings.get("theme")
+        print("user: {u}")
+        print("setting: {s}")
+        return map("user", u, "setting", s)
+    }
+}

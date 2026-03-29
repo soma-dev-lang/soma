@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let x = "world"
+        print("hello {x}")
+        return "done"
+    }
+}

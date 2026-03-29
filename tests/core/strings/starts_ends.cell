@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        print(starts_with("hello world", "hello"))
+        print(ends_with("hello world", "world"))
+        return "done"
+    }
+}

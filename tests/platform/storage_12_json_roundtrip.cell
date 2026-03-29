@@ -1,0 +1,16 @@
+// Test: to_json/from_json roundtrip in storage
+cell JsonRoundtrip {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        let obj = map("name", "Alice", "age", 30)
+        let json = to_json(obj)
+        data.set("user", json)
+        let raw = data.get("user")
+        let parsed = from_json(raw)
+        print("name: {parsed.name}")
+        print("age: {parsed.age}")
+        return parsed
+    }
+}

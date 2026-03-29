@@ -1,0 +1,6 @@
+// Test: JSON responses have correct content-type
+cell ContentType {
+    on data() {
+        return map("type", "json")
+    }
+}

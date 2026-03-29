@@ -1,0 +1,6 @@
+cell Test {
+    on run() {
+        for i in range(1, 5) { print(i) }
+        return "done"
+    }
+}

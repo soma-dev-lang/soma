@@ -1,0 +1,17 @@
+// T29: JIT - String operations
+cell T29 {
+    on run() {
+        let s = "Hello, World!"
+        let slen = len(s)
+        print("len: {slen}")
+        let up = uppercase(s)
+        print("upper: {up}")
+        let low = lowercase(s)
+        print("lower: {low}")
+        let has = contains(s, "World")
+        print("contains: {has}")
+        let rep = replace(s, "World", "Soma")
+        print("replace: {rep}")
+        return "done"
+    }
+}

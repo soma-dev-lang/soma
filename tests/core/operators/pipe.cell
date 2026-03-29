@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let r = "hello" |> uppercase()
+        print(r)
+        return "done"
+    }
+}

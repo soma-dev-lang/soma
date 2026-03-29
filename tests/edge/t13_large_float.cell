@@ -1,0 +1,10 @@
+// T13: Very large float 1e308
+cell T13 {
+    on run() {
+        let big = 1e308
+        print("1e308: {big}")
+        let inf = 1e308 * 2.0
+        print("1e308 * 2: {inf}")
+        return "done"
+    }
+}

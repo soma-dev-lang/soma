@@ -1,0 +1,8 @@
+// T41: Type mismatch - cannot add String and Int
+cell T41 {
+    on run() {
+        let result = "hello" + 5
+        print(result)
+        return "done"
+    }
+}

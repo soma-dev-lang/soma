@@ -1,0 +1,12 @@
+cell Test {
+    on run() {
+        let a = true
+        let b = true
+        if a {
+            if b {
+                print("both")
+            }
+        }
+        return "done"
+    }
+}

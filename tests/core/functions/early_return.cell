@@ -1,0 +1,13 @@
+cell Test {
+    on run() {
+        let items = list("a", "b", "c")
+        for item in items {
+            if item == "b" {
+                print("found")
+                return "done"
+            }
+        }
+        print("not found")
+        return "done"
+    }
+}

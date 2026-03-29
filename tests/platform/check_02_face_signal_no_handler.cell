@@ -1,0 +1,11 @@
+// Test: face declares signal but no handler exists
+cell MissingHandler {
+    face {
+        signal process(data: String) -> String
+        signal missing_handler(x: Int) -> Int
+    }
+    on process(data: String) {
+        return data
+    }
+    // Note: missing_handler has no on block
+}

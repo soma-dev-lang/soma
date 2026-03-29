@@ -1,0 +1,12 @@
+// Test: .set() and .get() basic operations
+cell SetGet {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("hello", "world")
+        let val = data.get("hello")
+        print("got: {val}")
+        return val
+    }
+}

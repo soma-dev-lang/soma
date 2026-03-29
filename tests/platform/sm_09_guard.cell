@@ -1,0 +1,22 @@
+// Test: guard conditions on transitions
+cell SMGuard {
+    memory {
+        orders: Map<String, String> [persistent, consistent]
+        items: Map<String, String> [persistent, consistent]
+    }
+    state order_status {
+        initial: draft
+        draft -> submitted {
+            guard { items != "" }
+        }
+        submitted -> approved
+    }
+    on test() {
+        orders.set("1", "alice")
+        items.set("1", "widget")
+        let result = transition("1", "submitted")
+        let st = get_status("1")
+        print("guarded transition: {st}")
+        return st
+    }
+}

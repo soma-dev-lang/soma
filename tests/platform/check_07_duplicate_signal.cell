@@ -1,0 +1,10 @@
+// Test: duplicate signals should error
+cell DuplicateSignal {
+    face {
+        signal process(data: String) -> String
+        signal process(data: String) -> String
+    }
+    on process(data: String) {
+        return data
+    }
+}

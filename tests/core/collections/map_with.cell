@@ -1,0 +1,8 @@
+cell Test {
+    on run() {
+        let m = map("name", "Alice")
+        let m2 = with(m, "email", "alice@ex.com")
+        print(m2.email)
+        return "done"
+    }
+}

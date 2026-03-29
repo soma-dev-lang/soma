@@ -1,0 +1,12 @@
+// T06: to_string(42), to_string(true), to_string(())
+cell T06 {
+    on run() {
+        let s1 = to_string(42)
+        print("to_string(42): {s1}")
+        let s2 = to_string(true)
+        print("to_string(true): {s2}")
+        let s3 = to_string(())
+        print("to_string(()): {s3}")
+        return "done"
+    }
+}

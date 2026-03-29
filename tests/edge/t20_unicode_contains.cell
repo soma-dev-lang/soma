@@ -1,0 +1,13 @@
+// T20: Unicode string operations
+cell T20 {
+    on run() {
+        let s = "héllo wörld"
+        let has = contains(s, "wörld")
+        print("contains(héllo wörld, wörld): {has}")
+        let up = uppercase(s)
+        print("uppercase: {up}")
+        let idx = index_of(s, "wörld")
+        print("index_of(wörld): {idx}")
+        return "done"
+    }
+}

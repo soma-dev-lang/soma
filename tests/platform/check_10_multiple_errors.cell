@@ -1,0 +1,8 @@
+// Test: multiple errors in one file
+cell MultiError {
+    memory {
+        confused: Map<String, Int> [persistent, ephemeral]
+        indecisive: Map<String, Int> [consistent, eventual]
+    }
+    on test() { return "should fail" }
+}

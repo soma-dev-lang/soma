@@ -1,0 +1,14 @@
+// Test: all_persistent violation (ephemeral memory)
+cell PersistentViolation {
+    face {
+        promise all_persistent
+        signal store(key: String, val: String) -> String
+    }
+    memory {
+        data: Map<String, String> [ephemeral, local]
+    }
+    on store(key: String, val: String) {
+        data.set(key, val)
+        return val
+    }
+}

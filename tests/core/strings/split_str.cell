@@ -1,0 +1,6 @@
+cell Test {
+    on run() {
+        print(split("a,b,c", ","))
+        return "done"
+    }
+}

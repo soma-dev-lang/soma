@@ -1,0 +1,7 @@
+// T48: Parse error - unexpected token
+cell T48 {
+    on run() {
+        let x = 10 +
+        return "done"
+    }
+}

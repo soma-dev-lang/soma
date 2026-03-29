@@ -1,0 +1,24 @@
+// T07: type_of() for all types
+cell T07 {
+    on run() {
+        let ti = type_of(42)
+        print("type_of(42): {ti}")
+        let tf = type_of(3.14)
+        print("type_of(3.14): {tf}")
+        let ts = type_of("hello")
+        print("type_of(hello): {ts}")
+        let tb = type_of(true)
+        print("type_of(true): {tb}")
+        let tbf = type_of(false)
+        print("type_of(false): {tbf}")
+        let tn = type_of(())
+        print("type_of(null): {tn}")
+        let lst = list(1, 2, 3)
+        let tl = type_of(lst)
+        print("type_of(list): {tl}")
+        let m = map("a", 1)
+        let tm = type_of(m)
+        print("type_of(map): {tm}")
+        return "done"
+    }
+}

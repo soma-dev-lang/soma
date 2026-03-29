@@ -1,0 +1,6 @@
+cell Test {
+    on run() {
+        print(3.14 * 2.0)
+        return "done"
+    }
+}

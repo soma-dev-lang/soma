@@ -1,0 +1,12 @@
+cell Test {
+    on run() {
+        let items = list(
+            map("name", "Alice", "score", 70),
+            map("name", "Bob", "score", 85),
+            map("name", "Charlie", "score", 90)
+        )
+        let high = filter_by(items, "score", ">", 75)
+        print(len(high))
+        return "done"
+    }
+}

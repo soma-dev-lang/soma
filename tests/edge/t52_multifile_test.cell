@@ -1,0 +1,15 @@
+// T52: multi-file with tests
+use lib::helpers
+
+cell MathOps {
+    on quad(n: Int) {
+        return double(double(n))
+    }
+}
+
+cell test MultiFileTests {
+    rules {
+        assert quad(3) == 12
+        assert double(5) == 10
+    }
+}

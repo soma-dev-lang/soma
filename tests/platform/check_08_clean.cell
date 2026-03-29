@@ -1,0 +1,14 @@
+// Test: clean file passes all checks
+cell CleanCell {
+    face {
+        signal greet(name: String) -> String
+        promise all_persistent
+    }
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on greet(name: String) {
+        data.set("last", name)
+        return concat("Hello, ", name)
+    }
+}

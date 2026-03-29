@@ -1,0 +1,14 @@
+// Test: all_encrypted violation
+cell EncryptedViolation {
+    face {
+        promise all_encrypted
+        signal store(key: String, val: String) -> String
+    }
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on store(key: String, val: String) {
+        data.set(key, val)
+        return val
+    }
+}

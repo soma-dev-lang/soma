@@ -1,0 +1,15 @@
+cell Test {
+    on run() {
+        let m = map("a", 1, "b", 2)
+        let k = m.keys
+        let v = m.values
+        let klen = len(k)
+        let vlen = len(v)
+        if klen == 2 && vlen == 2 {
+            print("ok")
+        } else {
+            print("fail")
+        }
+        return "done"
+    }
+}

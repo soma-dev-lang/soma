@@ -1,0 +1,13 @@
+// Test: .values() returns all values
+cell ValuesTest {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("a", "1")
+        data.set("b", "2")
+        let v = data.values()
+        print("values: {v}")
+        return v
+    }
+}

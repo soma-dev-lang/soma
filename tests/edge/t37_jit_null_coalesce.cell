@@ -1,0 +1,12 @@
+// T37: JIT - Null coalescing
+cell T37 {
+    on run() {
+        let a = () ?? 42
+        print("() ?? 42: {a}")
+        let b = 10 ?? 42
+        print("10 ?? 42: {b}")
+        let c = () ?? () ?? "default"
+        print("() ?? () ?? default: {c}")
+        return "done"
+    }
+}

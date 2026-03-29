@@ -1,0 +1,10 @@
+cell Test {
+    on run() {
+        let x = ()
+        match x {
+            () -> print("was null")
+            _ -> print("not null")
+        }
+        return "done"
+    }
+}

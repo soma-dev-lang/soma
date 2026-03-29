@@ -1,0 +1,13 @@
+// Test: signal keyword in handler body
+cell SignalKeyword {
+    face {
+        signal alert(msg: String) -> String
+    }
+    on process(data: String) {
+        signal alert(data)
+        return "processed"
+    }
+    on alert(msg: String) {
+        return concat("ALERT: ", msg)
+    }
+}

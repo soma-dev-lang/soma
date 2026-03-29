@@ -1,0 +1,10 @@
+cell Test {
+    on run() {
+        let sum = 0
+        for i in list(1, 2, 3) {
+            sum = sum + i
+        }
+        print(sum)
+        return "done"
+    }
+}

@@ -1,0 +1,16 @@
+cell Test {
+    on run() {
+        let m = map("a", 1, "b", 2)
+        let count = 0
+        let k = m.keys
+        for key in k {
+            count = count + 1
+        }
+        if count == 2 {
+            print("ok")
+        } else {
+            print("fail")
+        }
+        return "done"
+    }
+}

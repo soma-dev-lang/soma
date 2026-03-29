@@ -1,0 +1,12 @@
+// Test: signal with no return type
+cell NoReturn {
+    face {
+        signal fire(msg: String)
+    }
+    memory {
+        log: Map<String, String> [persistent, consistent]
+    }
+    on fire(msg: String) {
+        log.set("last", msg)
+    }
+}

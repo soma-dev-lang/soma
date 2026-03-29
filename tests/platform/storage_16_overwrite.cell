@@ -1,0 +1,13 @@
+// Test: overwriting a key with set()
+cell Overwrite {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("key", "first")
+        data.set("key", "second")
+        let val = data.get("key")
+        print("overwritten: {val}")
+        return val
+    }
+}

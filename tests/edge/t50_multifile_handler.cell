@@ -1,0 +1,11 @@
+// T50: Handler from imported cell callable
+use lib::helpers
+
+cell T50 {
+    on run() {
+        let a = double(5)
+        let b = double(a)
+        print("double(double(5)): {b}")
+        return "done"
+    }
+}

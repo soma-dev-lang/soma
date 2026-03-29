@@ -1,0 +1,12 @@
+// T05: to_float("xyz") -> ()
+cell T05 {
+    on run() {
+        let result = to_float("xyz")
+        if result == () {
+            print("to_float(xyz) is null: true")
+        } else {
+            print("to_float(xyz) is null: false, got: {result}")
+        }
+        return "done"
+    }
+}

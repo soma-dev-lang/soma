@@ -1,0 +1,14 @@
+// T10: Mixed arithmetic coercion chain
+cell T10 {
+    on run() {
+        let a = 10 * 2.5
+        print("10 * 2.5 = {a}")
+        let b = 10 / 3
+        print("10 / 3 = {b}")
+        let c = 10.0 / 3
+        print("10.0 / 3 = {c}")
+        let d = 7 % 3
+        print("7 % 3 = {d}")
+        return "done"
+    }
+}

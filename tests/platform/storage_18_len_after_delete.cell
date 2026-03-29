@@ -1,0 +1,17 @@
+// Test: len() updates after delete
+cell LenAfterDelete {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("a", "1")
+        data.set("b", "2")
+        data.set("c", "3")
+        let before = data.len()
+        data.delete("b")
+        let after = data.len()
+        print("before: {before}")
+        print("after: {after}")
+        return map("before", before, "after", after)
+    }
+}

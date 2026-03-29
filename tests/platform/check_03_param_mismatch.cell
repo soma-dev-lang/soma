@@ -1,0 +1,9 @@
+// Test: face signal param count mismatch with handler
+cell ParamMismatch {
+    face {
+        signal compute(a: Int, b: Int) -> Int
+    }
+    on compute(a: Int) {
+        return a
+    }
+}

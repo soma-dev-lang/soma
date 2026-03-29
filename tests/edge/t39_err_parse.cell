@@ -1,0 +1,9 @@
+// T39: Parse error - missing closing brace
+cell T39 {
+    on run() {
+        let x = 10
+        if x > 5 {
+            print("yes")
+
+    }
+}

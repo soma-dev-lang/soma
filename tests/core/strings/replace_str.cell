@@ -1,0 +1,6 @@
+cell Test {
+    on run() {
+        print(replace("hello earth", "earth", "world"))
+        return "done"
+    }
+}

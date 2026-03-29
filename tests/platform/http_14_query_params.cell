@@ -1,0 +1,6 @@
+// Test: query parameter passing to handlers
+cell QueryParams {
+    on greet(name: String) {
+        return map("hello", name)
+    }
+}

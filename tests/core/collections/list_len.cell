@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let l = list(1, 2, 3)
+        print(len(l))
+        return "done"
+    }
+}

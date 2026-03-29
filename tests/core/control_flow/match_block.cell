@@ -1,0 +1,15 @@
+cell Test {
+    on run() {
+        let x = 2
+        let r = match x {
+            1 -> "one"
+            2 -> {
+                print("handling two")
+                "two"
+            }
+            _ -> "other"
+        }
+        print(r)
+        return "done"
+    }
+}

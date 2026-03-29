@@ -1,0 +1,11 @@
+// T17: String interpolation with non-ASCII
+cell T17 {
+    on run() {
+        let name = "café"
+        let greeting = "Welcome to {name}!"
+        print(greeting)
+        let emoji_name = "héllo"
+        print("Say: {emoji_name}")
+        return "done"
+    }
+}

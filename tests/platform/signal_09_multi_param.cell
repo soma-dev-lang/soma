@@ -1,0 +1,9 @@
+// Test: signals with multiple parameters
+cell MultiParam {
+    face {
+        signal add(a: Int, b: Int) -> Int
+    }
+    on add(a: Int, b: Int) {
+        return a + b
+    }
+}

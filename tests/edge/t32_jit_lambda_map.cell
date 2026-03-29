@@ -1,0 +1,9 @@
+// T32: JIT - Lambda: map(x => x * 2)
+cell T32 {
+    on run() {
+        let nums = list(1, 2, 3, 4, 5)
+        let doubled = nums |> map(x => x * 2)
+        print("doubled: {doubled}")
+        return "done"
+    }
+}

@@ -1,0 +1,11 @@
+cell Test {
+    on run() {
+        let s = "hello"
+        match s {
+            "hello" -> print("greeting")
+            "bye" -> print("farewell")
+            _ -> print("unknown")
+        }
+        return "done"
+    }
+}

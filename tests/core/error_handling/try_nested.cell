@@ -1,0 +1,11 @@
+cell Test {
+    on run() {
+        let r1 = try { 42 }
+        print(r1.value)
+        let r2 = try { 1 / 0 }
+        if r2.error != () {
+            print("caught")
+        }
+        return "done"
+    }
+}

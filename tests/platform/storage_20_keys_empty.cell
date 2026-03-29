@@ -1,0 +1,13 @@
+// Test: keys() on empty map
+cell KeysEmpty {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        let k = data.keys()
+        let n = data.len()
+        print("empty keys: {k}")
+        print("empty len: {n}")
+        return map("keys", k, "len", n)
+    }
+}

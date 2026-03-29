@@ -1,0 +1,7 @@
+// Test: soma check property contradictions
+cell CheckContradiction {
+    memory {
+        data: Map<String, Int> [persistent, ephemeral]
+    }
+    on test() { return "should fail" }
+}

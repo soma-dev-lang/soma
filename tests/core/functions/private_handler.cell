@@ -1,0 +1,8 @@
+cell Test {
+    on _helper() { return 42 }
+    on run() {
+        let v = _helper()
+        print(v)
+        return "done"
+    }
+}

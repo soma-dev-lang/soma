@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let r = try { undefined_var }
+        print(r.error)
+        return "done"
+    }
+}

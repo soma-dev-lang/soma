@@ -1,0 +1,12 @@
+// Test: store string values
+cell StoreString {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("name", "Alice")
+        let val = data.get("name")
+        print("string: {val}")
+        return val
+    }
+}

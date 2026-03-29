@@ -1,0 +1,23 @@
+// Test: face block declares signal interface
+cell FaceSignals {
+    face {
+        signal create(name: String) -> String
+        signal read(id: String) -> String
+        signal delete(id: String) -> String
+    }
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on create(name: String) {
+        let id = to_string(next_id())
+        data.set(id, name)
+        return map("id", id, "name", name)
+    }
+    on read(id: String) {
+        return data.get(id)
+    }
+    on delete(id: String) {
+        data.delete(id)
+        return map("deleted", id)
+    }
+}

@@ -1,0 +1,14 @@
+// Test: .keys() returns all keys
+cell KeysTest {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("a", "1")
+        data.set("b", "2")
+        data.set("c", "3")
+        let k = data.keys()
+        print("keys: {k}")
+        return k
+    }
+}

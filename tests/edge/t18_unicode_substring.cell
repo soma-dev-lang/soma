@@ -1,0 +1,11 @@
+// T18: substring() with multibyte chars
+cell T18 {
+    on run() {
+        let s = "café"
+        let sub = substring(s, 0, 4)
+        print("substring(café, 0, 4): {sub}")
+        let sub2 = substring(s, 3, 4)
+        print("substring(café, 3, 4): {sub2}")
+        return "done"
+    }
+}

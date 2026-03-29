@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let s = """hello "world" here"""
+        // Just verify it doesn't crash - triple quote with quotes inside
+        return "done"
+    }
+}

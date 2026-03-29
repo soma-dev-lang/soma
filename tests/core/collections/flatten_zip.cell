@@ -1,0 +1,11 @@
+cell Test {
+    on run() {
+        let nested = list(list(1, 2), list(3, 4))
+        let flat = flatten(nested)
+        print(flat)
+        let z = zip(list("a"), list(1))
+        let pair = z.first
+        print("{pair.left}:{pair.right}")
+        return "done"
+    }
+}

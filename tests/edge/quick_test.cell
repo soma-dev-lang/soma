@@ -1,0 +1,6 @@
+cell QuickTest {
+    on run() {
+        print("hello")
+        return "ok"
+    }
+}

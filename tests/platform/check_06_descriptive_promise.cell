@@ -1,0 +1,14 @@
+// Test: descriptive promise generates warning
+cell DescriptivePromise {
+    face {
+        promise "data is backed up hourly"
+        signal store(key: String, val: String) -> String
+    }
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on store(key: String, val: String) {
+        data.set(key, val)
+        return val
+    }
+}

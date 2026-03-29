@@ -1,0 +1,13 @@
+// Test: path parameter parsing (e.g., /get/alice)
+cell PathParams {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on put(key: String, value: String) {
+        data.set(key, value)
+        return map("key", key, "value", value)
+    }
+    on get(key: String) {
+        return data.get(key)
+    }
+}

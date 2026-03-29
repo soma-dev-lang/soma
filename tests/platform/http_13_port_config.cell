@@ -1,0 +1,6 @@
+// Test: port configuration via -p flag
+cell PortTest {
+    on ping() {
+        return map("pong", true)
+    }
+}

@@ -1,0 +1,14 @@
+// T25: JIT - Comparison: 5 > 3
+cell T25 {
+    on run() {
+        let a = 5 > 3
+        print("5 > 3: {a}")
+        let b = 3 > 5
+        print("3 > 5: {b}")
+        let c = 5 >= 5
+        print("5 >= 5: {c}")
+        let d = 5 <= 4
+        print("5 <= 4: {d}")
+        return "done"
+    }
+}

@@ -1,0 +1,11 @@
+// Test: match expression in request handler
+cell MatchTest {
+    on request(method: String, path: String, body: String) {
+        let action = match method {
+            "GET" -> "read"
+            "POST" -> "write"
+            _ -> "unknown"
+        }
+        return map("action", action)
+    }
+}

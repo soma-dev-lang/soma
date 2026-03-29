@@ -354,17 +354,64 @@ impl BytecodeCompiler {
             }
 
             Expr::Try(inner) => {
-                // For VM: just compile the inner expr (simplified)
-                self.compile_expr(chunk, &inner.node);
+                // Store the inner expression as AST and fall back to interpreter
+                // at runtime, so that errors (like division by zero) are properly
+                // caught and returned as {value: unit, error: "message"}.
+                let idx = chunk.add_constant(Constant::TryAst(inner.clone()));
+                chunk.emit_u16(Op::Const, idx);
             }
 
-            Expr::Match { .. } => {
-                // Match expressions not yet implemented in VM
-                let idx = chunk.add_constant(Constant::String(
-                    "match expressions are not supported in the bytecode VM".to_string(),
-                ));
-                chunk.emit_u16(Op::Const, idx);
-                chunk.emit(Op::Return);
+            Expr::Match { subject, arms } => {
+                // Compile match expression:
+                // For each arm, recompile the subject, compare with pattern,
+                // and jump over non-matching arms.
+                let mut jump_to_end: Vec<usize> = Vec::new();
+
+                for arm in arms {
+                    match &arm.pattern {
+                        MatchPattern::Wildcard => {
+                            // Wildcard always matches — compile body and result
+                            for s in &arm.body {
+                                self.compile_stmt(chunk, &s.node);
+                            }
+                            self.compile_expr(chunk, &arm.result.node);
+                            // Jump to end (skip remaining arms)
+                            let je = chunk.emit_u16(Op::Jump, 0xFFFF);
+                            jump_to_end.push(je);
+                        }
+                        MatchPattern::Literal(lit) => {
+                            // Recompile the subject for comparison
+                            self.compile_expr(chunk, &subject.node);
+                            // Push the literal pattern value
+                            self.compile_literal(chunk, lit);
+                            // Compare
+                            chunk.emit(Op::Eq);
+                            // If not equal, skip this arm
+                            let skip = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);
+
+                            // Arm matches — compile body statements and result
+                            for s in &arm.body {
+                                self.compile_stmt(chunk, &s.node);
+                            }
+                            self.compile_expr(chunk, &arm.result.node);
+                            // Jump to end
+                            let je = chunk.emit_u16(Op::Jump, 0xFFFF);
+                            jump_to_end.push(je);
+
+                            // Patch the skip target to here
+                            chunk.patch_jump(skip, chunk.len() as u16);
+                        }
+                    }
+                }
+
+                // Default: push Unit if no arm matched
+                chunk.emit(Op::Unit);
+
+                // Patch all end jumps to here
+                let end = chunk.len() as u16;
+                for je in jump_to_end {
+                    chunk.patch_jump(je, end);
+                }
             }
             Expr::Lambda { param, body } => {
                 let idx = chunk.add_constant(Constant::LambdaAst {

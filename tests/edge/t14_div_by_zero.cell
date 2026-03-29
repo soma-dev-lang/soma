@@ -1,0 +1,10 @@
+// T14: Division by zero: int and float
+cell T14 {
+    on run() {
+        let int_result = try { 10 / 0 }
+        print("10 / 0: {int_result}")
+        let float_result = try { 10.0 / 0.0 }
+        print("10.0 / 0.0: {float_result}")
+        return "done"
+    }
+}

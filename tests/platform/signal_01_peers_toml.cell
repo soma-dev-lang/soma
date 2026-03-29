@@ -1,0 +1,7 @@
+// Test: soma.toml [peers] auto-connect declaration
+// This tests that the soma.toml structure is valid
+cell SignalPeer {
+    on ping() {
+        return map("status", "alive")
+    }
+}

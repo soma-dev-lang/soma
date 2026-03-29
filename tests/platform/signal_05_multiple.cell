@@ -1,0 +1,21 @@
+// Test: multiple signals in sequence
+cell MultiSignal {
+    memory {
+        log: Map<String, String> [persistent, consistent]
+    }
+    on step1() {
+        log.set("s1", "done")
+        return "step1 done"
+    }
+    on step2() {
+        log.set("s2", "done")
+        return "step2 done"
+    }
+    on step3() {
+        log.set("s3", "done")
+        return "step3 done"
+    }
+    on check() {
+        return map("s1", log.get("s1"), "s2", log.get("s2"), "s3", log.get("s3"))
+    }
+}

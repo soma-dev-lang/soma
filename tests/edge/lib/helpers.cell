@@ -1,0 +1,9 @@
+// Helper module for multi-file tests
+cell Helpers {
+    on double(n: Int) {
+        return n * 2
+    }
+    on greet(name: String) {
+        return "Hello, {name}!"
+    }
+}

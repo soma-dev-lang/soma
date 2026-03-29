@@ -1,0 +1,10 @@
+// T02: Int == Float (5 == 5.0)
+cell T02 {
+    on run() {
+        let eq = 5 == 5.0
+        print("5 == 5.0: {eq}")
+        let neq = 5 == 5.1
+        print("5 == 5.1: {neq}")
+        return "done"
+    }
+}

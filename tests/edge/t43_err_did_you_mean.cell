@@ -1,0 +1,8 @@
+// T43: "Did you mean?" suggestion
+cell T43 {
+    on run() {
+        let message = "hello"
+        print(mesage)
+        return "done"
+    }
+}

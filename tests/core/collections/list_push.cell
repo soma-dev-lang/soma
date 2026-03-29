@@ -1,0 +1,8 @@
+cell Test {
+    on run() {
+        let l = list(1, 2, 3)
+        let l2 = push(l, 4)
+        print(l2)
+        return "done"
+    }
+}

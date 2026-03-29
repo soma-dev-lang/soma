@@ -1,0 +1,12 @@
+// Test: multiple signal handlers as endpoints
+cell MultiHandler {
+    on health() {
+        return map("status", "ok")
+    }
+    on version() {
+        return map("v", "1.0")
+    }
+    on echo(msg: String) {
+        return map("echo", msg)
+    }
+}

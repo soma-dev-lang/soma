@@ -1,0 +1,13 @@
+// Test: on name(data) receives signal
+cell Receiver {
+    memory {
+        log: Map<String, String> [persistent, consistent]
+    }
+    on receive(data: String) {
+        log.set("last", data)
+        return data
+    }
+    on check() {
+        return log.get("last")
+    }
+}

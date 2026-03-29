@@ -1,0 +1,8 @@
+cell Test {
+    on run() {
+        let r = try { 42 }
+        print(r.value)
+        print(r.error)
+        return "done"
+    }
+}

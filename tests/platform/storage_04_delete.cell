@@ -1,0 +1,16 @@
+// Test: .delete() removes a key
+cell DeleteTest {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("key1", "val1")
+        data.set("key2", "val2")
+        data.delete("key1")
+        let v1 = data.get("key1")
+        let v2 = data.get("key2")
+        print("after delete key1: {v1}")
+        print("key2 still: {v2}")
+        return map("key1", v1, "key2", v2)
+    }
+}

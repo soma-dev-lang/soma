@@ -1,0 +1,17 @@
+// T23: try { deep_recursion() } catches the error
+cell T23 {
+    on deep(n: Int) {
+        if n <= 0 { return 0 }
+        return 1 + deep(n - 1)
+    }
+    on run() {
+        let result = try { deep(100000) }
+        if result.error != () {
+            print("caught error: true")
+            print("error: {result.error}")
+        } else {
+            print("no error, result: {result}")
+        }
+        return "done"
+    }
+}

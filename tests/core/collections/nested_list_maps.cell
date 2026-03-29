@@ -1,0 +1,12 @@
+cell Test {
+    on run() {
+        let people = list(
+            map("name", "Alice", "age", 30),
+            map("name", "Bob", "age", 25)
+        )
+        let first = people.first
+        print(first.name)
+        print(first.age)
+        return "done"
+    }
+}

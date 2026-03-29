@@ -1,0 +1,9 @@
+// T44: filter_by invalid operator
+cell T44 {
+    on run() {
+        let data = list(map("score", 10), map("score", 20))
+        let result = data |> filter_by("score", "~", 15)
+        print(result)
+        return "done"
+    }
+}

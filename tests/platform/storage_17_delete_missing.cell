@@ -1,0 +1,11 @@
+// Test: delete non-existent key
+cell DeleteMissing {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        let result = data.delete("nonexistent")
+        print("delete missing: {result}")
+        return result
+    }
+}

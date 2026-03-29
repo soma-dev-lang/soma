@@ -1,0 +1,12 @@
+[package]
+name = "verify_toml"
+version = "0.1.0"
+entry = "verify_05_toml_props.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["delivered", "cancelled"]
+never = ["error"]
+
+[verify.after.submitted]
+eventually = ["approved", "cancelled"]

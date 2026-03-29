@@ -1,0 +1,11 @@
+// T42: Arity error - wrong number of args
+cell T42 {
+    on add(a: Int, b: Int) {
+        return a + b
+    }
+    on run() {
+        let result = add(1, 2, 3)
+        print(result)
+        return "done"
+    }
+}

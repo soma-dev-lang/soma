@@ -1,0 +1,18 @@
+// Test: valid transition works
+cell SMValid {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> review
+        review -> published
+    }
+    on test() {
+        items.set("1", "doc")
+        let result = transition("1", "review")
+        let st = get_status("1")
+        print("after transition: {st}")
+        return st
+    }
+}

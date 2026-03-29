@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        print(contains("hello world", "world"))
+        print(contains("hello world", "xyz"))
+        return "done"
+    }
+}

@@ -1,0 +1,9 @@
+cell Test {
+    on run() {
+        let x = 42
+        print(x)
+        x = "hello"
+        print(x)
+        return "done"
+    }
+}

@@ -1,0 +1,6 @@
+// Test: 404 handling for missing routes
+cell Handle404 {
+    on exists() {
+        return map("found", true)
+    }
+}

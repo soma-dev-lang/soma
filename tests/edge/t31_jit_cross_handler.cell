@@ -1,0 +1,15 @@
+// T31: JIT - Cross-handler calls
+cell T31 {
+    on square(n: Int) {
+        return n * n
+    }
+    on double(n: Int) {
+        return n * 2
+    }
+    on run() {
+        let a = square(5)
+        let b = double(a)
+        print("double(square(5)): {b}")
+        return "done"
+    }
+}

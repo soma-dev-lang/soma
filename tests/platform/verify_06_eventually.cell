@@ -1,0 +1,12 @@
+// Test: eventually temporal property
+cell EventuallyCheck {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: start
+        start -> processing
+        processing -> done
+    }
+    on test() { return "ok" }
+}

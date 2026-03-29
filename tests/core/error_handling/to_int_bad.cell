@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let r = to_int("abc")
+        print(r)
+        return "done"
+    }
+}

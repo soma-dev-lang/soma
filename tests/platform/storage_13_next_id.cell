@@ -1,0 +1,15 @@
+// Test: next_id() increments
+cell NextIdTest {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        let id1 = next_id()
+        let id2 = next_id()
+        let id3 = next_id()
+        print("id1: {id1}")
+        print("id2: {id2}")
+        print("id3: {id3}")
+        return map("id1", id1, "id2", id2, "id3", id3)
+    }
+}

@@ -1,0 +1,9 @@
+// T11: i64 MAX + 1 -> overflow error
+cell T11 {
+    on run() {
+        let max = 9223372036854775807
+        let result = try { max + 1 }
+        print("overflow result: {result}")
+        return "done"
+    }
+}

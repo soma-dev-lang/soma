@@ -1,0 +1,21 @@
+// T34: JIT - Match expression
+cell T34 {
+    on classify(n: Int) {
+        let result = match n {
+            1 -> "one"
+            2 -> "two"
+            3 -> "three"
+            _ -> "other"
+        }
+        return result
+    }
+    on run() {
+        let a = classify(1)
+        print("1: {a}")
+        let b = classify(2)
+        print("2: {b}")
+        let c = classify(99)
+        print("99: {c}")
+        return "done"
+    }
+}

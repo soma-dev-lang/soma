@@ -1,0 +1,20 @@
+// Test: two state machines in same cell (if supported)
+// Note: Soma may only support one state machine per cell
+cell TwoMachines {
+    memory {
+        orders: Map<String, String> [persistent, consistent]
+        payments: Map<String, String> [persistent, consistent]
+    }
+    state order_status {
+        initial: pending
+        pending -> confirmed
+        confirmed -> shipped
+    }
+    on test() {
+        orders.set("1", "item")
+        let result = transition("1", "confirmed")
+        let st = get_status("1")
+        print("order: {st}")
+        return st
+    }
+}

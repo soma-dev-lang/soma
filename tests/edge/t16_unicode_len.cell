@@ -1,0 +1,12 @@
+// T16: len("héllo") -> 5 (chars not bytes)
+cell T16 {
+    on run() {
+        let s = "héllo"
+        let l = len(s)
+        print("len(héllo): {l}")
+        let s2 = "日本語"
+        let l2 = len(s2)
+        print("len(日本語): {l2}")
+        return "done"
+    }
+}

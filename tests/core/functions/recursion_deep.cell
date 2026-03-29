@@ -1,0 +1,6 @@
+cell Test {
+    on sum_to(n: Int) {
+        if n <= 0 { return 0 }
+        return n + sum_to(n - 1)
+    }
+}

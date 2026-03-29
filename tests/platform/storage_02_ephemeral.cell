@@ -1,0 +1,16 @@
+// Test: ephemeral storage is in-memory only
+cell EphemStore {
+    memory {
+        data: Map<String, String> [ephemeral, local]
+    }
+    on put(key: String, value: String) {
+        data.set(key, value)
+        return value
+    }
+    on get(key: String) {
+        return data.get(key)
+    }
+    on count() {
+        return data.len()
+    }
+}

@@ -1,0 +1,8 @@
+cell Test {
+    on run() {
+        let nums = list(1, 2, 3, 4, 5)
+        let found = find(nums, x => x > 2)
+        print(found)
+        return "done"
+    }
+}

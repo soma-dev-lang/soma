@@ -1,0 +1,12 @@
+// T04: to_int("abc") -> ()
+cell T04 {
+    on run() {
+        let result = to_int("abc")
+        if result == () {
+            print("to_int(abc) is null: true")
+        } else {
+            print("to_int(abc) is null: false, got: {result}")
+        }
+        return "done"
+    }
+}

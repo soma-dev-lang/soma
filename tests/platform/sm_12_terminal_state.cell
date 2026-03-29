@@ -1,0 +1,17 @@
+// Test: terminal state (no outgoing transitions)
+cell SMTerminal {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: open
+        open -> closed
+    }
+    on test() {
+        items.set("1", "item")
+        transition("1", "closed")
+        let valid = valid_transitions("1")
+        print("valid from terminal: {valid}")
+        return valid
+    }
+}

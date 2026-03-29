@@ -1,0 +1,16 @@
+// Test: .get() on missing key returns ()
+cell MissingKey {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        let val = data.get("nonexistent")
+        print("missing: {val}")
+        if val == () {
+            print("PASS: missing key returns unit")
+        } else {
+            print("FAIL: expected unit")
+        }
+        return val
+    }
+}

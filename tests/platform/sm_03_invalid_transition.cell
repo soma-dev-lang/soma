@@ -1,0 +1,17 @@
+// Test: invalid transition returns error with valid targets
+cell SMInvalid {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> review
+        review -> published
+    }
+    on test() {
+        items.set("1", "doc")
+        let result = transition("1", "published")
+        print("invalid: {result}")
+        return result
+    }
+}

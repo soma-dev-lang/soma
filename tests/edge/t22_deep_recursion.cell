@@ -1,0 +1,12 @@
+// T22: Deep recursion (500) -> StackOverflow error
+cell T22 {
+    on deep(n: Int) {
+        if n <= 0 { return 0 }
+        return 1 + deep(n - 1)
+    }
+    on run() {
+        let result = try { deep(50000) }
+        print("deep(50000): {result}")
+        return "done"
+    }
+}

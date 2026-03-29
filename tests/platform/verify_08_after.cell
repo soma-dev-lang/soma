@@ -1,0 +1,14 @@
+// Test: after temporal property
+cell AfterCheck {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: created
+        created -> submitted
+        submitted -> reviewed
+        reviewed -> accepted
+        reviewed -> rejected
+    }
+    on test() { return "ok" }
+}

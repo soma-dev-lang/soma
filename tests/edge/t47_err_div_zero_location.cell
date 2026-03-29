@@ -1,0 +1,10 @@
+// T47: Division by zero shows location
+cell T47 {
+    on run() {
+        let a = 10
+        let b = 0
+        let c = a / b
+        print(c)
+        return "done"
+    }
+}

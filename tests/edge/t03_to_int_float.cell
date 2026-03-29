@@ -1,0 +1,10 @@
+// T03: to_int(3.7) -> 3 (truncate)
+cell T03 {
+    on run() {
+        let result = to_int(3.7)
+        print("to_int(3.7): {result}")
+        let result2 = to_int(-2.9)
+        print("to_int(-2.9): {result2}")
+        return "done"
+    }
+}

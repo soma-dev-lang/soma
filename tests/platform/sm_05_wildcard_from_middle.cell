@@ -1,0 +1,20 @@
+// Test: wildcard from non-initial state
+cell SMWildcardMiddle {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> review
+        review -> published
+        * -> cancelled
+    }
+    on test() {
+        items.set("1", "doc")
+        transition("1", "review")
+        let result = transition("1", "cancelled")
+        let st = get_status("1")
+        print("cancelled from review: {st}")
+        return st
+    }
+}

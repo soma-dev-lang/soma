@@ -1,0 +1,9 @@
+cell Test {
+    on run() {
+        for i in list(1, 2, 3, 4, 5) {
+            if i % 2 == 0 { continue }
+            print(i)
+        }
+        return "done"
+    }
+}

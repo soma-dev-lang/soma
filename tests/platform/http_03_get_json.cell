@@ -1,0 +1,6 @@
+// Test: GET returns JSON map
+cell GetJson {
+    on items() {
+        return map("count", 3, "items", list("a", "b", "c"))
+    }
+}

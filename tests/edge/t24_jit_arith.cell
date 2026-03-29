@@ -1,0 +1,8 @@
+// T24: JIT - Arithmetic: 2 + 3 * 4
+cell T24 {
+    on run() {
+        let result = 2 + 3 * 4
+        print("2 + 3 * 4 = {result}")
+        return "done"
+    }
+}

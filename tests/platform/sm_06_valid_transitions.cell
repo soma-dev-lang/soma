@@ -1,0 +1,19 @@
+// Test: valid_transitions() listing
+cell SMValidTransitions {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> review
+        draft -> archived
+        review -> published
+        * -> cancelled
+    }
+    on test() {
+        items.set("1", "doc")
+        let valid = valid_transitions("1")
+        print("valid from draft: {valid}")
+        return valid
+    }
+}

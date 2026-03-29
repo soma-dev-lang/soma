@@ -1,0 +1,6 @@
+// Test: basic serve starts and responds
+cell BasicServe {
+    on health() {
+        return map("status", "ok")
+    }
+}

@@ -1,0 +1,13 @@
+// Test: custom response code
+cell ResponseCode {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    on find(id: String) {
+        let item = items.get(id)
+        if item == () {
+            return response(404, map("error", "not found"))
+        }
+        return item
+    }
+}

@@ -1,0 +1,12 @@
+// Test: soma verify liveness - eventually reaches terminal
+cell LivenessCheck {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: pending
+        pending -> active
+        active -> complete
+    }
+    on test() { return "ok" }
+}

@@ -1,0 +1,10 @@
+// Test: POST with JSON body parsing
+cell PostJson {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on create(name: String, email: String) {
+        data.set(name, email)
+        return map("name", name, "email", email)
+    }
+}

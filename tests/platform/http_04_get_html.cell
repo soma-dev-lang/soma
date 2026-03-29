@@ -1,0 +1,6 @@
+// Test: GET returns HTML via html()
+cell GetHtml {
+    on page() {
+        return html("<html><body><h1>Hello</h1></body></html>")
+    }
+}

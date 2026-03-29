@@ -1,0 +1,10 @@
+// Test: POST with form-encoded body
+cell PostForm {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on submit(name: String, value: String) {
+        data.set(name, value)
+        return map("saved", name)
+    }
+}

@@ -1,0 +1,23 @@
+// Test: multiple sequential transitions
+cell SMSequence {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> submitted
+        submitted -> approved
+        approved -> shipped
+        shipped -> delivered
+    }
+    on test() {
+        items.set("1", "order")
+        transition("1", "submitted")
+        transition("1", "approved")
+        transition("1", "shipped")
+        transition("1", "delivered")
+        let st = get_status("1")
+        print("final: {st}")
+        return st
+    }
+}

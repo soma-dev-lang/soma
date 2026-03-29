@@ -1,0 +1,17 @@
+// Test: get_status returns initial state
+cell SMInitial {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> review
+        review -> published
+    }
+    on test() {
+        items.set("1", "doc")
+        let st = get_status("1")
+        print("initial: {st}")
+        return st
+    }
+}

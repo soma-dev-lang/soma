@@ -1,0 +1,12 @@
+// Test: store integer values
+cell StoreInt {
+    memory {
+        data: Map<String, Int> [persistent, consistent]
+    }
+    on test() {
+        data.set("count", 42)
+        let val = data.get("count")
+        print("int: {val}")
+        return val
+    }
+}

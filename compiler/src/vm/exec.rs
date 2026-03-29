@@ -161,6 +161,38 @@ impl VM {
                                 Value::Unit
                             }
                         }
+                        Constant::TryAst(inner_expr) => {
+                            // Fall back to the interpreter for try expressions
+                            // so that runtime errors are properly caught.
+                            let inner = inner_expr.clone();
+                            let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![] };
+                            let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
+                            // Build an env from the current locals
+                            let frame_ref = self.frames.last().unwrap();
+                            let chunk_ref = &self.chunks[frame_ref.chunk_idx];
+                            let mut env = std::collections::HashMap::new();
+                            for (i, name) in chunk_ref.locals.iter().enumerate() {
+                                if base + i < self.locals.len() {
+                                    env.insert(name.clone(), self.locals[base + i].clone());
+                                }
+                            }
+                            // Evaluate try { inner } via interpreter
+                            let try_result = interp.eval_expr_with_env(&inner.node, &mut env, "", "");
+                            match try_result {
+                                Ok(val) => Value::Map(vec![
+                                    ("value".to_string(), val),
+                                    ("error".to_string(), Value::Unit),
+                                ]),
+                                Err(crate::interpreter::ExecError::Runtime(e)) => Value::Map(vec![
+                                    ("value".to_string(), Value::Unit),
+                                    ("error".to_string(), Value::String(format!("{}", e))),
+                                ]),
+                                Err(_) => Value::Map(vec![
+                                    ("value".to_string(), Value::Unit),
+                                    ("error".to_string(), Value::String("unknown error".to_string())),
+                                ]),
+                            }
+                        }
                     };
                     self.stack.push(val);
                 }

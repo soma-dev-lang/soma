@@ -1,0 +1,15 @@
+// Test: structural promise all_persistent
+cell AllPersistent {
+    face {
+        promise all_persistent
+        signal store(key: String, val: String) -> String
+    }
+    memory {
+        data: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+    on store(key: String, val: String) {
+        data.set(key, val)
+        return val
+    }
+}

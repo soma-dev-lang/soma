@@ -1,0 +1,10 @@
+cell Test {
+    on run() {
+        let x = 99
+        if true {
+            let y = 50
+        }
+        print(x)
+        return "done"
+    }
+}

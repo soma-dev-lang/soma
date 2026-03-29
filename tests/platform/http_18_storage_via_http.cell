@@ -1,0 +1,16 @@
+// Test: storage operations via HTTP
+cell StorageHttp {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on put(key: String, value: String) {
+        data.set(key, value)
+        return map("stored", key)
+    }
+    on get(key: String) {
+        return data.get(key)
+    }
+    on list() {
+        return data.keys()
+    }
+}

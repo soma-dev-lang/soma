@@ -1,0 +1,6 @@
+cell Test {
+    on run() {
+        print(trim("  hello  "))
+        return "done"
+    }
+}

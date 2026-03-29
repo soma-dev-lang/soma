@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let m = map("name", "Alice")
+        print("name: {m.name}")
+        return "done"
+    }
+}

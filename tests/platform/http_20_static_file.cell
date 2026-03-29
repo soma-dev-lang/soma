@@ -1,0 +1,6 @@
+// Test: static file serving from /static/ directory
+cell StaticFile {
+    on index() {
+        return html("<html><body>index</body></html>")
+    }
+}

@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        print(uppercase("hello"))
+        print(lowercase("HELLO"))
+        return "done"
+    }
+}

@@ -1,0 +1,12 @@
+// Test: soma verify deadlock detection - state with no outgoing
+cell DeadlockCheck {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: start
+        start -> middle
+        middle -> end
+    }
+    on test() { return "ok" }
+}

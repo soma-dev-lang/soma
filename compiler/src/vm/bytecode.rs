@@ -213,6 +213,8 @@ pub enum Constant {
         body_stmts: Option<Vec<crate::ast::Spanned<crate::ast::Statement>>>,
         result_expr: Option<Box<crate::ast::Spanned<crate::ast::Expr>>>,
     },
+    /// Try expression AST stored for interpreter fallback
+    TryAst(Box<crate::ast::Spanned<crate::ast::Expr>>),
 }
 
 impl PartialEq for Constant {
@@ -222,9 +224,11 @@ impl PartialEq for Constant {
             (Constant::Float(a), Constant::Float(b)) => a == b,
             (Constant::String(a), Constant::String(b)) => a == b,
             (Constant::Name(a), Constant::Name(b)) => a == b,
-            // Lambdas are never deduplicated
+            // Lambdas and TryAst are never deduplicated
             (Constant::LambdaAst { .. }, _) => false,
             (_, Constant::LambdaAst { .. }) => false,
+            (Constant::TryAst(_), _) => false,
+            (_, Constant::TryAst(_)) => false,
             _ => false,
         }
     }

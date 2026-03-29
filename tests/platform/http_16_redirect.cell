@@ -1,0 +1,9 @@
+// Test: redirect() response
+cell RedirectTest {
+    on go() {
+        return redirect("/target")
+    }
+    on target() {
+        return map("landed", true)
+    }
+}

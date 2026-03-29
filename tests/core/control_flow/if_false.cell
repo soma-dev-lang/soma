@@ -1,0 +1,10 @@
+cell Test {
+    on run() {
+        if false {
+            print("yes")
+        } else {
+            print("no")
+        }
+        return "done"
+    }
+}

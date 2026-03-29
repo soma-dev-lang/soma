@@ -1,0 +1,8 @@
+// T45: map() odd args
+cell T45 {
+    on run() {
+        let m = map("a", 1, "b")
+        print(m)
+        return "done"
+    }
+}

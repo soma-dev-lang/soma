@@ -1,0 +1,7 @@
+[package]
+name = "signal_test"
+version = "0.1.0"
+entry = "signal_01_peers_toml.cell"
+
+[peers]
+other = "localhost:9999"

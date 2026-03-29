@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        print(1.5 < 2.5)
+        print(3.0 >= 3.0)
+        return "done"
+    }
+}

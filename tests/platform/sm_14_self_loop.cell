@@ -1,0 +1,18 @@
+// Test: self-loop transitions (if supported)
+cell SMSelfLoop {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: active
+        active -> active
+        active -> done
+    }
+    on test() {
+        items.set("1", "item")
+        transition("1", "active")
+        let st = get_status("1")
+        print("self-loop: {st}")
+        return st
+    }
+}

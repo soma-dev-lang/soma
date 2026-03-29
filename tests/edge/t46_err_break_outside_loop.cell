@@ -1,0 +1,7 @@
+// T46: break outside loop
+cell T46 {
+    on run() {
+        break
+        return "done"
+    }
+}

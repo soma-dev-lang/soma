@@ -1,0 +1,43 @@
+// T08: Truthiness: 0, "", (), [], false are falsy
+cell T08 {
+    on run() {
+        // Test falsy values
+        if 0 {
+            print("0 is truthy")
+        } else {
+            print("0 is falsy")
+        }
+        if "" {
+            print("empty string is truthy")
+        } else {
+            print("empty string is falsy")
+        }
+        if () {
+            print("null is truthy")
+        } else {
+            print("null is falsy")
+        }
+        if false {
+            print("false is truthy")
+        } else {
+            print("false is falsy")
+        }
+        // Test truthy values
+        if 1 {
+            print("1 is truthy")
+        } else {
+            print("1 is falsy")
+        }
+        if "hello" {
+            print("non-empty string is truthy")
+        } else {
+            print("non-empty string is falsy")
+        }
+        if true {
+            print("true is truthy")
+        } else {
+            print("true is falsy")
+        }
+        return "done"
+    }
+}

@@ -1,0 +1,18 @@
+cell Test {
+    on run() {
+        let items = list(
+            map("cat", "A", "val", 1),
+            map("cat", "B", "val", 2),
+            map("cat", "A", "val", 3)
+        )
+        let groups = group_by(items, "cat")
+        // group_by returns a list of groups
+        let glen = len(groups)
+        if glen == 2 {
+            print("ok")
+        } else {
+            print("fail: {glen}")
+        }
+        return "done"
+    }
+}

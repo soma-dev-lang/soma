@@ -1,0 +1,12 @@
+// Test: store boolean values
+cell StoreBool {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+    on test() {
+        data.set("active", "true")
+        let val = data.get("active")
+        print("bool: {val}")
+        return val
+    }
+}

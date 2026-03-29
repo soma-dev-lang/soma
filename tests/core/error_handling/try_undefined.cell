@@ -1,0 +1,11 @@
+cell Test {
+    on run() {
+        let r = try { undefined_var }
+        if r.error != () {
+            print("caught")
+        } else {
+            print("no error")
+        }
+        return "done"
+    }
+}

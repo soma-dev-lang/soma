@@ -1,0 +1,8 @@
+// T15: Modulo by zero
+cell T15 {
+    on run() {
+        let result = try { 10 % 0 }
+        print("10 % 0: {result}")
+        return "done"
+    }
+}

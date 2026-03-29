@@ -1,0 +1,6 @@
+// Test: SSE endpoint via sse()
+cell SseTest {
+    on stream() {
+        return sse("updates")
+    }
+}

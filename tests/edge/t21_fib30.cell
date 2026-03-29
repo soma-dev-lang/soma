@@ -1,0 +1,13 @@
+// T21: fib(30) works
+cell T21 {
+    on fib(n: Int) {
+        if n <= 0 { return 0 }
+        if n == 1 { return 1 }
+        return fib(n - 1) + fib(n - 2)
+    }
+    on run() {
+        let result = fib(30)
+        print("fib(30): {result}")
+        return "done"
+    }
+}

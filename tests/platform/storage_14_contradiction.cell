@@ -1,0 +1,9 @@
+// Test: property contradiction [persistent, ephemeral] should error
+cell Contradiction {
+    memory {
+        data: Map<String, Int> [persistent, ephemeral]
+    }
+    on test() {
+        return "should not reach"
+    }
+}

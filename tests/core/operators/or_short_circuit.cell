@@ -1,0 +1,10 @@
+cell Test {
+    on run() {
+        let x = "no side effect"
+        let a = true
+        let b = a || (x == "trigger")
+        print(b)
+        print(x)
+        return "done"
+    }
+}

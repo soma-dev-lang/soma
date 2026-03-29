@@ -1,0 +1,13 @@
+// Test: counter-example trace on verification failure
+cell CounterExample {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: start
+        start -> a
+        a -> b
+        b -> c
+    }
+    on test() { return "ok" }
+}

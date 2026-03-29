@@ -1,0 +1,21 @@
+// Test: multiple entities tracked by same state machine
+cell SMMultiEntity {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: open
+        open -> closed
+        * -> cancelled
+    }
+    on test() {
+        items.set("1", "ticket-a")
+        items.set("2", "ticket-b")
+        transition("1", "closed")
+        let s1 = get_status("1")
+        let s2 = get_status("2")
+        print("entity 1: {s1}")
+        print("entity 2: {s2}")
+        return map("e1", s1, "e2", s2)
+    }
+}

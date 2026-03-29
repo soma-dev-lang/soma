@@ -1,0 +1,9 @@
+// Test: signals with zero parameters
+cell ZeroParams {
+    face {
+        signal status() -> String
+    }
+    on status() {
+        return "ok"
+    }
+}

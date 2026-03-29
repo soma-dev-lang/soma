@@ -1,0 +1,13 @@
+// Test: signal name(data) emits to bus
+cell Emitter {
+    face {
+        signal notify(msg: String) -> String
+    }
+    on trigger(msg: String) {
+        signal notify(msg)
+        return map("emitted", msg)
+    }
+    on notify(msg: String) {
+        return msg
+    }
+}

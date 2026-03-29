@@ -1,0 +1,10 @@
+// T36: JIT - Boolean short-circuit: false && (1/0)
+cell T36 {
+    on run() {
+        let result = false && (1 / 0 == 1)
+        print("false && (1/0): {result}")
+        let result2 = true || (1 / 0 == 1)
+        print("true || (1/0): {result2}")
+        return "done"
+    }
+}

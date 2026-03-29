@@ -1,0 +1,10 @@
+// Test: _private handlers not exposed as HTTP routes
+cell PrivateTest {
+    on public_route() {
+        let result = _helper("data")
+        return map("result", result)
+    }
+    on _helper(input: String) {
+        return concat("processed:", input)
+    }
+}

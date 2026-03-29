@@ -1,0 +1,6 @@
+// Test: on request(method, path, body) routing
+cell RequestRouting {
+    on request(method: String, path: String, body: String) {
+        return map("method", method, "path", path)
+    }
+}

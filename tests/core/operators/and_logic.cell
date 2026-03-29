@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        print(true && true)
+        print(true && false)
+        return "done"
+    }
+}

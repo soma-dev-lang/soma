@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let r = try { 5 + 5 }
+        print(r.value)
+        return "done"
+    }
+}

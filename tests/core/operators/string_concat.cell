@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let s = concat("hello", " world")
+        print(s)
+        return "done"
+    }
+}

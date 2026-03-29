@@ -1,0 +1,20 @@
+// Test: wildcard * -> cancelled from any state
+cell SMWildcard {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> review
+        review -> published
+        * -> cancelled
+    }
+    on test() {
+        items.set("1", "doc")
+        // From draft, cancel should work via wildcard
+        let result = transition("1", "cancelled")
+        let st = get_status("1")
+        print("cancelled from draft: {st}")
+        return st
+    }
+}

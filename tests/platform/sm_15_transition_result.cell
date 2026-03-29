@@ -1,0 +1,16 @@
+// Test: transition() return value
+cell SMResult {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> published
+    }
+    on test() {
+        items.set("1", "doc")
+        let result = transition("1", "published")
+        print("transition result: {result}")
+        return result
+    }
+}

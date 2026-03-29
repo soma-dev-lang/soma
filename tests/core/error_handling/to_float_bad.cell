@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        let r = to_float("xyz")
+        print(r)
+        return "done"
+    }
+}

@@ -1,0 +1,9 @@
+// T19: escape_html() with Unicode
+cell T19 {
+    on run() {
+        let s = "<b>héllo</b> & \"world\""
+        let escaped = escape_html(s)
+        print("escaped: {escaped}")
+        return "done"
+    }
+}

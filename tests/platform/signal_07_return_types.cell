@@ -1,0 +1,17 @@
+// Test: signal return type declarations
+cell ReturnTypes {
+    face {
+        signal get_count() -> Int
+        signal get_name() -> String
+        signal get_data() -> String
+    }
+    on get_count() {
+        return 42
+    }
+    on get_name() {
+        return "Alice"
+    }
+    on get_data() {
+        return map("key", "value")
+    }
+}

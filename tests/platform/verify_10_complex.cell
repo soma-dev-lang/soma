@@ -1,0 +1,17 @@
+// Test: complex state machine verification
+cell ComplexVerify {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    state workflow {
+        initial: draft
+        draft -> submitted
+        submitted -> review
+        review -> approved
+        review -> rejected
+        rejected -> draft
+        approved -> published
+        * -> archived
+    }
+    on test() { return "ok" }
+}

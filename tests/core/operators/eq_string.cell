@@ -1,0 +1,7 @@
+cell Test {
+    on run() {
+        print("a" == "a")
+        print("a" == "b")
+        return "done"
+    }
+}

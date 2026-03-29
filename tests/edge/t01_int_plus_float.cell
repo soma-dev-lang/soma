@@ -1,0 +1,10 @@
+// T01: Int + Float -> Float
+cell T01 {
+    on run() {
+        let result = 3 + 2.5
+        let t = type_of(result)
+        print("result: {result}")
+        print("type: {t}")
+        return "done"
+    }
+}

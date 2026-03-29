@@ -1,0 +1,9 @@
+// Test: consistent + eventual contradiction
+cell ConsistentEventual {
+    memory {
+        data: Map<String, Int> [consistent, eventual]
+    }
+    on test() {
+        return "should not reach"
+    }
+}

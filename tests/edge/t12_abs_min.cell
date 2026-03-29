@@ -1,0 +1,9 @@
+// T12: abs(i64::MIN) -> error
+cell T12 {
+    on run() {
+        let min_val = -9223372036854775807 - 1
+        let result = try { abs(min_val) }
+        print("abs(MIN) result: {result}")
+        return "done"
+    }
+}

@@ -1738,6 +1738,19 @@ impl Interpreter {
         ]))
     }
 
+    /// Evaluate an expression with the given environment. Used by the VM for
+    /// interpreter fallback (e.g. try expressions).
+    pub fn eval_expr_with_env(
+        &mut self,
+        expr: &Expr,
+        env: &HashMap<String, Value>,
+        cell_name: &str,
+        signal_name: &str,
+    ) -> Result<Value, ExecError> {
+        let mut fx_env: Env = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        self.eval_expr(expr, &mut fx_env, cell_name, signal_name)
+    }
+
     pub(crate) fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
         match lambda {
             Value::Lambda { param, body, env: closed_env } => {

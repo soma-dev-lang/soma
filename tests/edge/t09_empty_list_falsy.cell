@@ -1,0 +1,18 @@
+// T09: Empty list [] is falsy
+cell T09 {
+    on run() {
+        let empty = list()
+        if empty {
+            print("empty list is truthy")
+        } else {
+            print("empty list is falsy")
+        }
+        let nonempty = list(1)
+        if nonempty {
+            print("non-empty list is truthy")
+        } else {
+            print("non-empty list is falsy")
+        }
+        return "done"
+    }
+}

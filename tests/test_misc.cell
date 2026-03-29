@@ -1,0 +1,15 @@
+cell Test {
+    on run() {
+        // test null display
+        let x = ()
+        print(x)
+        // test bool
+        print(true)
+        print(false)
+        // test float
+        print(3.14)
+        // test negative
+        print(-1)
+        return "done"
+    }
+}
