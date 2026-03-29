@@ -1,0 +1,12 @@
+[package]
+name = "status-page"
+
+[verify]
+deadlock_free = true
+eventually = ["resolved", "cancelled"]
+
+[verify.after.identified]
+eventually = ["monitoring", "resolved", "cancelled"]
+
+[verify.after.monitoring]
+eventually = ["resolved", "cancelled"]

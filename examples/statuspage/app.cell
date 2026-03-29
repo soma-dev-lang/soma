@@ -1,0 +1,182 @@
+// ============================================================================
+// Status Page — incident tracking with verified lifecycle
+// ============================================================================
+//
+// soma serve app.cell                              → single node
+// soma serve app.cell --join localhost:8082         → cluster (HA)
+// soma deploy app.cell --target cloudflare          → edge deployment
+//
+// POST /incident   {"service": "api", "title": "High latency", "severity": "major"}
+// POST /update     {"id": "...", "status": "identified", "message": "Root cause found"}
+// POST /resolve    {"id": "...", "message": "Deployed fix"}
+// GET  /incidents
+// GET  /status
+// GET  /
+
+cell StatusPage {
+
+    memory {
+        incidents: Map<String, String> [persistent, consistent]
+        updates: Map<String, String> [persistent, consistent]
+        services: Map<String, String> [persistent]
+    }
+
+    scale {
+        replicas: 3
+        shard: incidents
+        consistency: strong
+        tolerance: 1
+        cpu: 1
+        memory: "256Mi"
+    }
+
+    // ---- Incident lifecycle: formally verified ----
+    state incident {
+        initial: investigating
+        investigating -> identified
+        identified -> monitoring
+        monitoring -> resolved
+        investigating -> resolved
+        identified -> resolved
+        * -> cancelled
+    }
+
+    // ---- Periodic health check ----
+    every 30s {
+        let all = incidents.values() |> map(s => from_json(s)) |> filter(i => i.id != ())
+        let t = now()
+
+        // Auto-resolve stale incidents (investigating > 24h)
+        for inc in all {
+            if inc.status == "investigating" {
+                let created = to_int(inc.created_at ?? "0")
+                if t - created > 86400 {
+                    let updated = inc |> with("status", "resolved") |> with("resolved_at", to_string(t))
+                    incidents.set(inc.id, to_json(updated))
+                    add_update(inc.id, "Auto-resolved after 24h without update")
+                }
+            }
+        }
+
+        // Update service status from active incidents
+        let active = all |> filter(i => i.status != "resolved" && i.status != "cancelled")
+        let affected_services = active |> map(i => i.service) |> distinct()
+
+        // Reset all services to operational
+        let svc_keys = services.keys()
+        for key in svc_keys {
+            services.set(key, to_json(map("name", key, "status", "operational")))
+        }
+
+        // Mark affected services
+        for svc in affected_services {
+            let worst = active |> filter(i => i.service == svc) |> sort_by("severity")
+            let sev = "degraded"
+            if len(worst) > 0 {
+                let first = nth(worst, 0)
+                if first.severity == "critical" { sev = "outage" }
+                if first.severity == "major" { sev = "major_outage" }
+            }
+            services.set(svc, to_json(map("name", svc, "status", sev)))
+        }
+    }
+
+    // ---- API ----
+
+    on create_incident(data: Map) {
+        let id = to_string(now()) + "_" + to_string(random(10000))
+        let t = now()
+        let inc = map(
+            "id", id,
+            "service", data.service ?? "unknown",
+            "title", data.title ?? "Incident",
+            "severity", data.severity ?? "minor",
+            "status", "investigating",
+            "created_at", to_string(t),
+            "updated_at", to_string(t)
+        )
+        incidents.set(id, to_json(inc))
+        add_update(id, "Incident created: " + (data.title ?? "Incident"))
+
+        // Register service if new
+        let svc = data.service ?? "unknown"
+        if services.get(svc) == () {
+            services.set(svc, to_json(map("name", svc, "status", "operational")))
+        }
+
+        return map("status", "created", "id", id)
+    }
+
+    on update_incident(data: Map) {
+        let raw = incidents.get(data.id)
+        if raw == () { return map("error", "incident not found") }
+        let inc = from_json(raw)
+        let new_status = data.status ?? inc.status
+        let updated = inc
+            |> with("status", new_status)
+            |> with("updated_at", to_string(now()))
+        incidents.set(data.id, to_json(updated))
+        add_update(data.id, data.message ?? ("Status changed to " + new_status))
+        return map("status", "updated", "id", data.id, "incident_status", new_status)
+    }
+
+    on resolve_incident(data: Map) {
+        let raw = incidents.get(data.id)
+        if raw == () { return map("error", "incident not found") }
+        let inc = from_json(raw)
+        let updated = inc
+            |> with("status", "resolved")
+            |> with("resolved_at", to_string(now()))
+            |> with("updated_at", to_string(now()))
+        incidents.set(data.id, to_json(updated))
+        add_update(data.id, data.message ?? "Incident resolved")
+        return map("status", "resolved", "id", data.id)
+    }
+
+    on add_update(incident_id: String, message: String) {
+        let id = to_string(now()) + "_" + to_string(random(10000))
+        let upd = map(
+            "id", id,
+            "incident_id", incident_id,
+            "message", message,
+            "time", to_string(now())
+        )
+        updates.set(id, to_json(upd))
+    }
+
+    // ---- HTTP ----
+
+    on request(method: String, path: String, body: String) {
+        if method == "POST" {
+            if path == "/incident" { return create_incident(body) }
+            if path == "/update" { return update_incident(body) }
+            if path == "/resolve" { return resolve_incident(body) }
+            return response(404, map("error", "not found"))
+        } else {
+            if path == "/incidents" {
+                return incidents.values() |> map(s => from_json(s)) |> filter(i => i.id != ()) |> sort_by("created_at")
+            }
+            if path == "/updates" {
+                return updates.values() |> map(s => from_json(s)) |> filter(u => u.id != ()) |> sort_by("time")
+            }
+            if path == "/services" {
+                return services.values() |> map(s => from_json(s)) |> filter(s => s.name != ())
+            }
+            if path == "/status" {
+                let all_services = services.values() |> map(s => from_json(s)) |> filter(s => s.name != ())
+                let active = incidents.values() |> map(s => from_json(s)) |> filter(i => i.id != () && i.status != "resolved" && i.status != "cancelled")
+                let overall = "operational"
+                if len(active) > 0 { overall = "degraded" }
+                if len(active |> filter(i => i.severity == "critical")) > 0 { overall = "outage" }
+                return map("status", overall, "active_incidents", len(active), "services", all_services)
+            }
+            if path == "/" {
+                let active = incidents.values() |> map(s => from_json(s)) |> filter(i => i.id != () && i.status != "resolved" && i.status != "cancelled")
+                let overall = "operational"
+                if len(active) > 0 { overall = "degraded" }
+                return map("name", "Status Page", "status", overall, "active_incidents", len(active), "total_incidents", incidents.len())
+            }
+            return response(404, map("error", "not found"))
+        }
+    }
+}
