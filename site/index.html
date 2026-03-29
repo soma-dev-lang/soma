@@ -1,16 +1,63 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" prefix="og: https://ogp.me/ns#">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Soma — The specification is the program</title>
-<meta name="description" content="Soma is a language where infrastructure is a constraint, compliance is a state machine, and pipelines are pipes. One program replaces ten tools.">
+<title>Soma — A fractal language for verified distributed systems</title>
+<meta name="description" content="Soma is a programming language where the same code runs on one machine or a cluster. State machines are formally verified. Distribution is declared in the code, not YAML. The compiler proves CAP properties before deployment.">
+<meta name="keywords" content="soma, programming language, distributed systems, formal verification, state machines, fractal, declarative, agent-native, cell model, CAP theorem, consistent hashing, Erlang alternative, Kubernetes alternative, TLA+, model checking, pipes, actor model">
+
+<!-- Open Graph -->
+<meta property="og:title" content="Soma — A fractal language for verified distributed systems">
+<meta property="og:description" content="Same code, one machine or a cluster. State machines formally verified. Distribution declared in the code. The compiler proves it correct before deployment.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://soma-lang.dev">
+<meta property="og:site_name" content="Soma Language">
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Soma — Verified distributed systems in one language">
+<meta name="twitter:description" content="Same code, one machine or 1000. State machines proven correct. Distribution declared, not configured. The compiler is the supervisor.">
+
+<!-- Canonical -->
+<link rel="canonical" href="https://soma-lang.dev">
+
+<!-- Structured data for search engines and AI agents -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Soma",
+  "applicationCategory": "Programming Language",
+  "operatingSystem": "macOS, Linux",
+  "description": "A fractal, declarative programming language for building verified distributed systems. The same cell code runs on one machine or across a cluster. State machines are formally verified with CTL temporal logic. Distribution semantics (consistency, sharding, tolerance) are declared in the source code and checked at compile time.",
+  "url": "https://soma-lang.dev",
+  "downloadUrl": "https://github.com/soma-dev-lang/soma",
+  "softwareVersion": "2.1.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "programmingLanguage": "Rust",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "featureList": [
+    "Fractal cell model — same structure from function to datacenter",
+    "Formal verification — CTL model checker proves state machine properties",
+    "Distributed by declaration — scale { replicas: 50, consistency: strong }",
+    "Compile-time CAP analysis — consistency vs availability checked before deploy",
+    "Native compilation — [native] compiles handlers to Rust for 200x speedup",
+    "Zero-config clustering — soma serve --join host:port",
+    "Pipe composition — data |> filter() |> map() |> sort_by() |> top()",
+    "Machine-readable output — soma check --json, soma verify --json, soma describe",
+    "Cloud deployment — soma deploy --target cloudflare|fly|aws",
+    "Agent-friendly — AGENT.md guide, JSON output, structured counter-examples"
+  ]
+}
+</script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#060910;--bg2:#0d1117;--bg3:#161b22;--text:#e5e7eb;--muted:#9ca3af;--dim:#6b7280;--accent:#818cf8;--accent2:#a78bfa;--green:#34d399;--yellow:#fbbf24;--red:#f87171;--border:rgba(255,255,255,.06);--r:12px}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
 a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 nav{background:rgba(6,9,16,.9);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 2rem;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
 .logo{font-family:'JetBrains Mono';font-size:1.25rem;font-weight:800;color:var(--accent)}
 nav .links a{color:var(--muted);margin-left:2rem;font-size:.875rem;font-weight:500}nav .links a:hover{color:var(--text);text-decoration:none}
@@ -74,13 +121,13 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 
 <!-- ═══════════════════════════════════ HERO ═══════════════════════════════════ -->
 <div class="hero">
-<h1>soma</h1>
+<h1><span class="hero-title">soma</span><span class="sr-only"> — a fractal language for verified distributed systems</span></h1>
 <p class="manifesto">
 A language where <strong>infrastructure is a constraint</strong>,
 <strong>compliance is a state machine</strong>,
 and <strong>pipelines are pipes</strong>.
 </p>
-<p class="tagline">the specification is the program</p>
+<p class="tagline">same code, one machine or a cluster — the compiler proves it correct</p>
 </div>
 
 <div class="install-box">

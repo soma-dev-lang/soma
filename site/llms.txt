@@ -1,0 +1,35 @@
+# Soma Language — for AI agents and LLMs
+
+> Soma is a programming language for verified distributed systems.
+> Same code runs on 1 machine or a cluster. The compiler proves it correct.
+
+## What is Soma
+
+A language where every system is a **cell** with:
+- **memory** — state with properties: [persistent, consistent] → SQLite, [ephemeral, local] → in-memory
+- **state machines** — lifecycle with formal verification (CTL temporal logic)
+- **handlers** (on) — functions that process signals
+- **scale** — distribution: replicas, shard, consistency (strong/causal/eventual), tolerance
+- **face** — compile-time checked contracts
+
+## Key capabilities
+
+- `soma check app.cell --json` → verify contracts, returns JSON errors
+- `soma verify app.cell --json` → prove state machine properties, returns counter-examples
+- `soma describe app.cell` → structured JSON: signals, memory, state machines, scale
+- `soma serve app.cell` → HTTP server on :8080
+- `soma serve app.cell --join host:port` → join a cluster (same code, no changes)
+- `soma deploy app.cell --target cloudflare|fly|aws` → deploy to cloud
+
+## For agents building Soma code
+
+Read AGENT.md at https://github.com/soma-dev-lang/soma/blob/main/AGENT.md
+Read SOMA_REFERENCE.md at https://github.com/soma-dev-lang/soma/blob/main/SOMA_REFERENCE.md
+
+## Links
+
+- Website: https://soma-lang.dev
+- Paper: https://soma-lang.dev/paper
+- GitHub: https://github.com/soma-dev-lang/soma
+- Agent guide: https://github.com/soma-dev-lang/soma/blob/main/AGENT.md
+- Language reference: https://github.com/soma-dev-lang/soma/blob/main/SOMA_REFERENCE.md
