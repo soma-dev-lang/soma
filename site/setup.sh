@@ -2,12 +2,11 @@
 set -e
 
 REPO="soma-dev-lang/soma"
-# Fetch latest version from GitHub repo
 VERSION=$(curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/compiler/Cargo.toml" 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/')
 if [ -z "$VERSION" ]; then
-    VERSION="0.28.0"
+    VERSION="0.31.0"
 fi
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="$HOME/.soma/bin"
 
 echo ""
 echo "  ╔═══════════════════════════════╗"
@@ -26,17 +25,35 @@ case "$ARCH" in
 esac
 
 case "$OS" in
-    darwin) PLATFORM="apple-darwin" ;;
-    linux) PLATFORM="unknown-linux-gnu" ;;
+    darwin) PLATFORM="apple-darwin"; SHELL_RC="$HOME/.zshrc" ;;
+    linux) PLATFORM="unknown-linux-gnu"; SHELL_RC="$HOME/.bashrc" ;;
     *) echo "  ✗ unsupported OS: $OS"; exit 1 ;;
 esac
+
+# Override shell rc if bash on mac or zsh on linux
+if [ -f "$HOME/.bash_profile" ] && [ "$OS" = "darwin" ]; then
+    SHELL_RC="$HOME/.zshrc"
+fi
+if [ -n "$ZSH_VERSION" ]; then
+    SHELL_RC="$HOME/.zshrc"
+elif [ -n "$BASH_VERSION" ]; then
+    if [ "$OS" = "darwin" ]; then
+        SHELL_RC="$HOME/.zshrc"
+    else
+        SHELL_RC="$HOME/.bashrc"
+    fi
+fi
 
 TARGET="${ARCH}-${PLATFORM}"
 BINARY_URL="https://github.com/${REPO}/releases/download/v${VERSION}/soma-${TARGET}"
 
 echo "  platform: ${OS} ${ARCH}"
 echo "  target:   ${TARGET}"
+echo "  install:  ${INSTALL_DIR}"
 echo ""
+
+# Create install directory
+mkdir -p "$INSTALL_DIR"
 
 # Check if binary is available, otherwise build from source
 echo "  → checking for pre-built binary..."
@@ -48,24 +65,13 @@ fi
 
 if [ "$HTTP_CODE" = "200" ]; then
     echo "  → downloading soma for ${TARGET}..."
-    TMP=$(mktemp)
-    curl -fsSL "$BINARY_URL" -o "$TMP"
-    chmod +x "$TMP"
-
-    if [ -w "$INSTALL_DIR" ]; then
-        mv "$TMP" "$INSTALL_DIR/soma"
-    else
-        echo "  → installing to ${INSTALL_DIR} (requires sudo)..."
-        sudo mv "$TMP" "$INSTALL_DIR/soma"
-    fi
-
-    echo ""
-    echo "  ✓ soma installed to ${INSTALL_DIR}/soma"
+    curl -fsSL "$BINARY_URL" -o "$INSTALL_DIR/soma"
+    chmod +x "$INSTALL_DIR/soma"
+    echo "  ✓ soma downloaded to ${INSTALL_DIR}/soma"
 else
     echo "  → no pre-built binary found, building from source..."
     echo ""
 
-    # Check dependencies — auto-install Rust if missing
     if ! command -v cargo > /dev/null 2>&1; then
         echo "  → Rust not found, installing..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
@@ -86,23 +92,46 @@ else
     cd "$TMPDIR/soma/compiler"
     cargo build --release --quiet
 
-    if [ -w "$INSTALL_DIR" ]; then
-        cp target/release/soma "$INSTALL_DIR/soma"
-    else
-        echo "  → installing to ${INSTALL_DIR} (requires sudo)..."
-        sudo cp target/release/soma "$INSTALL_DIR/soma"
-    fi
+    cp target/release/soma "$INSTALL_DIR/soma"
+    chmod +x "$INSTALL_DIR/soma"
 
     # Copy stdlib
-    SOMA_LIB="${HOME}/.soma"
-    mkdir -p "$SOMA_LIB"
-    cp -r ../stdlib "$SOMA_LIB/"
+    mkdir -p "$HOME/.soma"
+    cp -r ../stdlib "$HOME/.soma/"
 
     rm -rf "$TMPDIR"
 
     echo ""
     echo "  ✓ soma built and installed to ${INSTALL_DIR}/soma"
-    echo "  ✓ stdlib installed to ${SOMA_LIB}/stdlib"
+    echo "  ✓ stdlib installed to $HOME/.soma/stdlib"
+fi
+
+# Add to PATH if not already there
+PATH_LINE="export PATH=\"\$HOME/.soma/bin:\$PATH\""
+
+if echo "$PATH" | grep -q "$HOME/.soma/bin"; then
+    echo "  ✓ $INSTALL_DIR already in PATH"
+else
+    echo ""
+    echo "  → adding $INSTALL_DIR to PATH..."
+
+    if [ -f "$SHELL_RC" ]; then
+        if ! grep -q '.soma/bin' "$SHELL_RC" 2>/dev/null; then
+            echo "" >> "$SHELL_RC"
+            echo "# Soma" >> "$SHELL_RC"
+            echo "$PATH_LINE" >> "$SHELL_RC"
+            echo "  ✓ added to $SHELL_RC"
+        else
+            echo "  ✓ already in $SHELL_RC"
+        fi
+    else
+        echo "$PATH_LINE" > "$SHELL_RC"
+        echo "  ✓ created $SHELL_RC"
+    fi
+
+    # Also add to current session
+    export PATH="$HOME/.soma/bin:$PATH"
+    echo "  ✓ PATH updated for current session"
 fi
 
 echo ""
