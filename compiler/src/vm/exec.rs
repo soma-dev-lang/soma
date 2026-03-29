@@ -143,6 +143,24 @@ impl VM {
                             }
                         }
                         Constant::Name(s) => Value::String(s.clone()),
+                        Constant::LambdaAst { param, body_expr, body_stmts, result_expr } => {
+                            if let Some(body) = body_expr {
+                                Value::Lambda {
+                                    param: param.clone(),
+                                    body: body.clone(),
+                                    env: std::collections::HashMap::new(),
+                                }
+                            } else if let (Some(stmts), Some(result)) = (body_stmts, result_expr) {
+                                Value::LambdaBlock {
+                                    param: param.clone(),
+                                    stmts: stmts.clone(),
+                                    result: result.clone(),
+                                    env: std::collections::HashMap::new(),
+                                }
+                            } else {
+                                Value::Unit
+                            }
+                        }
                     };
                     self.stack.push(val);
                 }
@@ -529,7 +547,13 @@ impl VM {
                     ("Location".to_string(), Value::String(url)),
                 ])
             }
-            "map" => {
+            "map" | "each" => {
+                // Check if this is a lambda map (list, lambda) or a key-value map
+                if args.len() == 2 {
+                    if let (Value::List(items), lambda @ (Value::Lambda { .. } | Value::LambdaBlock { .. })) = (&args[0], &args[1]) {
+                        return self.apply_lambda_builtin("map", items, lambda);
+                    }
+                }
                 let mut entries = Vec::new();
                 let mut i = 0;
                 while i + 1 < args.len() {
@@ -537,6 +561,30 @@ impl VM {
                     i += 2;
                 }
                 Value::Map(entries)
+            }
+            "filter" => {
+                if args.len() == 2 {
+                    if let (Value::List(items), lambda @ (Value::Lambda { .. } | Value::LambdaBlock { .. })) = (&args[0], &args[1]) {
+                        return self.apply_lambda_builtin("filter", items, lambda);
+                    }
+                }
+                Value::Unit
+            }
+            "find" => {
+                if args.len() == 2 {
+                    if let (Value::List(items), lambda @ (Value::Lambda { .. } | Value::LambdaBlock { .. })) = (&args[0], &args[1]) {
+                        return self.apply_lambda_builtin("find", items, lambda);
+                    }
+                }
+                Value::Unit
+            }
+            "any" => {
+                if args.len() == 2 {
+                    if let (Value::List(items), lambda @ (Value::Lambda { .. } | Value::LambdaBlock { .. })) = (&args[0], &args[1]) {
+                        return self.apply_lambda_builtin("any", items, lambda);
+                    }
+                }
+                Value::Unit
             }
             "list" => {
                 if let Some(Value::List(existing)) = args.first() {
@@ -618,6 +666,65 @@ impl VM {
                 Value::Bool(backend.has(&key))
             }
             "backend" => Value::String(backend.backend_name().to_string()),
+            _ => Value::Unit,
+        }
+    }
+
+    /// Apply a lambda builtin (map, filter, find, any) by falling back to the interpreter
+    fn apply_lambda_builtin(&self, op: &str, items: &[Value], lambda: &Value) -> Value {
+        let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![] };
+        let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
+        match op {
+            "map" | "each" => {
+                let mut result = Vec::with_capacity(items.len());
+                for item in items {
+                    match interp.apply_lambda(lambda, item.clone(), "") {
+                        Ok(v) => result.push(v),
+                        Err(_) => result.push(Value::Unit),
+                    }
+                }
+                Value::List(result)
+            }
+            "filter" => {
+                let mut result = Vec::new();
+                for item in items {
+                    match interp.apply_lambda(lambda, item.clone(), "") {
+                        Ok(v) => {
+                            if v.is_truthy() {
+                                result.push(item.clone());
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Value::List(result)
+            }
+            "find" => {
+                for item in items {
+                    match interp.apply_lambda(lambda, item.clone(), "") {
+                        Ok(v) => {
+                            if v.is_truthy() {
+                                return item.clone();
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Value::Unit
+            }
+            "any" => {
+                for item in items {
+                    match interp.apply_lambda(lambda, item.clone(), "") {
+                        Ok(v) => {
+                            if v.is_truthy() {
+                                return Value::Bool(true);
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Value::Bool(false)
+            }
             _ => Value::Unit,
         }
     }

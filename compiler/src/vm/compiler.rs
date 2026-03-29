@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::ast::*;
 use super::bytecode::*;
 
@@ -5,11 +6,19 @@ use super::bytecode::*;
 pub struct BytecodeCompiler {
     /// All compiled chunks, indexed by (cell_name, signal_name)
     pub chunks: Vec<Chunk>,
+    /// Handler names known in the current cell (for cross-handler calls)
+    current_cell_handlers: HashSet<String>,
+    /// Current cell name being compiled
+    current_cell_name: String,
 }
 
 impl BytecodeCompiler {
     pub fn new() -> Self {
-        Self { chunks: Vec::new() }
+        Self {
+            chunks: Vec::new(),
+            current_cell_handlers: HashSet::new(),
+            current_cell_name: String::new(),
+        }
     }
 
     /// Compile all handlers in a program
@@ -23,6 +32,15 @@ impl BytecodeCompiler {
     }
 
     fn compile_cell(&mut self, cell: &CellDef) {
+        // Collect all handler names in this cell first (for cross-handler calls)
+        self.current_cell_name = cell.name.clone();
+        self.current_cell_handlers.clear();
+        for section in &cell.sections {
+            if let Section::OnSignal(ref handler) = section.node {
+                self.current_cell_handlers.insert(handler.signal_name.clone());
+            }
+        }
+
         for section in &cell.sections {
             if let Section::OnSignal(ref handler) = section.node {
                 let chunk = self.compile_handler(cell, handler);
@@ -274,9 +292,9 @@ impl BytecodeCompiler {
                 for arg in args {
                     self.compile_expr(chunk, &arg.node);
                 }
-                // Check if it's a recursive call (same signal name)
-                if chunk.signal_name == *name {
-                    let cell_idx = chunk.add_constant(Constant::Name(chunk.cell_name.clone()));
+                // Check if it's a call to any handler in the current cell
+                if self.current_cell_handlers.contains(name.as_str()) {
+                    let cell_idx = chunk.add_constant(Constant::Name(self.current_cell_name.clone()));
                     let sig_idx = chunk.add_constant(Constant::Name(name.clone()));
                     chunk.emit_call_signal(cell_idx, sig_idx, args.len() as u8);
                 } else {
@@ -348,13 +366,23 @@ impl BytecodeCompiler {
                 chunk.emit_u16(Op::Const, idx);
                 chunk.emit(Op::Return);
             }
-            Expr::Lambda { .. } | Expr::LambdaBlock { .. } => {
-                // Lambda expressions not yet implemented in VM
-                let idx = chunk.add_constant(Constant::String(
-                    "lambda expressions are not supported in the bytecode VM".to_string(),
-                ));
+            Expr::Lambda { param, body } => {
+                let idx = chunk.add_constant(Constant::LambdaAst {
+                    param: param.clone(),
+                    body_expr: Some(body.clone()),
+                    body_stmts: None,
+                    result_expr: None,
+                });
                 chunk.emit_u16(Op::Const, idx);
-                chunk.emit(Op::Return);
+            }
+            Expr::LambdaBlock { param, stmts, result } => {
+                let idx = chunk.add_constant(Constant::LambdaAst {
+                    param: param.clone(),
+                    body_expr: None,
+                    body_stmts: Some(stmts.clone()),
+                    result_expr: Some(result.clone()),
+                });
+                chunk.emit_u16(Op::Const, idx);
             }
         }
     }

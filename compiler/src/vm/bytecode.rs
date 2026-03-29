@@ -199,13 +199,35 @@ impl Chunk {
 }
 
 /// Constant pool entries
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Constant {
     Int(i64),
     Float(f64),
     String(String),
     /// Name reference (for builtins, fields, methods, storage slots)
     Name(String),
+    /// Lambda AST stored for interpreter fallback
+    LambdaAst {
+        param: String,
+        body_expr: Option<Box<crate::ast::Spanned<crate::ast::Expr>>>,
+        body_stmts: Option<Vec<crate::ast::Spanned<crate::ast::Statement>>>,
+        result_expr: Option<Box<crate::ast::Spanned<crate::ast::Expr>>>,
+    },
+}
+
+impl PartialEq for Constant {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Constant::Int(a), Constant::Int(b)) => a == b,
+            (Constant::Float(a), Constant::Float(b)) => a == b,
+            (Constant::String(a), Constant::String(b)) => a == b,
+            (Constant::Name(a), Constant::Name(b)) => a == b,
+            // Lambdas are never deduplicated
+            (Constant::LambdaAst { .. }, _) => false,
+            (_, Constant::LambdaAst { .. }) => false,
+            _ => false,
+        }
+    }
 }
 
 impl Constant {

@@ -70,7 +70,12 @@ fn serialize_chunks(chunks: &[Chunk]) -> Vec<u8> {
         for local in &chunk.locals {
             write_str(&mut buf, local);
         }
-        // Constants
+        // Constants — skip LambdaAst (not serializable); if any exist, don't cache
+        let has_lambda = chunk.constants.iter().any(|c| matches!(c, Constant::LambdaAst { .. }));
+        if has_lambda {
+            // Can't cache chunks with lambda AST nodes; return empty to signal no-cache
+            return Vec::new();
+        }
         write_u16(&mut buf, chunk.constants.len() as u16);
         for constant in &chunk.constants {
             match constant {
@@ -90,6 +95,7 @@ fn serialize_chunks(chunks: &[Chunk]) -> Vec<u8> {
                     buf.push(3);
                     write_str(&mut buf, s);
                 }
+                Constant::LambdaAst { .. } => unreachable!(),
             }
         }
         // Code
