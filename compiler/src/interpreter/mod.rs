@@ -974,14 +974,21 @@ impl Interpreter {
                             "top", "bottom", "agg", "group_by", "distinct", "describe", "flatten", "zip",
                             "sum_by", "avg_by", "min_by", "max_by", "count_by", "escape_html",
                             "each", "find", "any", "all", "count", "sse", "link", "ws_connect", "ws_send",
-                            "subscribe", "length", "keys", "values", "sort", "append", "sleep",
+                            "subscribe", "keys", "values", "sort", "append", "sleep",
+                            "nth", "at", "read_file", "write_file", "read_csv",
                         ];
                         for b in &builtins { all_names.push(b.to_string()); }
 
                         let suggestion = all_names.iter()
-                            .filter(|n| levenshtein(n, name) <= 2)
+                            .filter(|n| levenshtein(n, name) <= 3)
                             .min_by_key(|n| levenshtein(n, name))
-                            .cloned();
+                            .cloned()
+                            .or_else(|| {
+                                // Fallback: prefix match (e.g. "length" starts with "len")
+                                all_names.iter()
+                                    .find(|n| name.starts_with(n.as_str()) || n.starts_with(name))
+                                    .cloned()
+                            });
 
                         if let Some(did_you_mean) = suggestion {
                             Err(ExecError::Runtime(RuntimeError::UndefinedFn(

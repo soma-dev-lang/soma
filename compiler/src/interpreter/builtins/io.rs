@@ -129,6 +129,73 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 )),
             ])))
         }
+        "read_file" => {
+            if let Some(Value::String(path)) = args.first() {
+                match std::fs::read_to_string(path) {
+                    Ok(content) => Some(Ok(Value::String(content))),
+                    Err(e) => Some(Ok(Value::Map(vec![
+                        ("error".to_string(), Value::String(format!("{}", e))),
+                    ]))),
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("read_file(path)".to_string())))
+            }
+        }
+        "write_file" => {
+            if args.len() >= 2 {
+                if let (Value::String(path), content) = (&args[0], &args[1]) {
+                    let text = format!("{}", content);
+                    match std::fs::write(path, &text) {
+                        Ok(_) => Some(Ok(Value::Bool(true))),
+                        Err(e) => Some(Ok(Value::Map(vec![
+                            ("error".to_string(), Value::String(format!("{}", e))),
+                        ]))),
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("write_file(path, content)".to_string())))
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("write_file(path, content)".to_string())))
+            }
+        }
+        "read_csv" => {
+            if let Some(Value::String(path)) = args.first() {
+                match std::fs::read_to_string(path) {
+                    Ok(content) => {
+                        let mut rows = Vec::new();
+                        let mut lines = content.lines();
+                        let headers: Vec<String> = if let Some(header_line) = lines.next() {
+                            header_line.split(',').map(|s| s.trim().to_string()).collect()
+                        } else {
+                            return Some(Ok(Value::List(vec![])));
+                        };
+                        for line in lines {
+                            if line.trim().is_empty() { continue; }
+                            let values: Vec<&str> = line.split(',').collect();
+                            let mut entries = Vec::new();
+                            for (i, header) in headers.iter().enumerate() {
+                                let val = values.get(i).map(|s| s.trim()).unwrap_or("");
+                                // Try to parse as number
+                                if let Ok(n) = val.parse::<i64>() {
+                                    entries.push((header.clone(), Value::Int(n)));
+                                } else if let Ok(n) = val.parse::<f64>() {
+                                    entries.push((header.clone(), Value::Float(n)));
+                                } else {
+                                    entries.push((header.clone(), Value::String(val.to_string())));
+                                }
+                            }
+                            rows.push(Value::Map(entries));
+                        }
+                        Some(Ok(Value::List(rows)))
+                    }
+                    Err(e) => Some(Ok(Value::Map(vec![
+                        ("error".to_string(), Value::String(format!("{}", e))),
+                    ]))),
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("read_csv(path)".to_string())))
+            }
+        }
         _ => None,
     }
 }

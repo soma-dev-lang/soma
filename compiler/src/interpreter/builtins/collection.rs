@@ -255,6 +255,43 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("range expects (start, end)".to_string())))
             }
         }
+        "sort" => {
+            if let Some(Value::List(items)) = args.first() {
+                let mut sorted = items.clone();
+                let desc = args.get(1).map(|a| format!("{}", a) == "desc").unwrap_or(false);
+                sorted.sort_by(|a, b| {
+                    let ordering = match (a, b) {
+                        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+                        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+                        (Value::String(x), Value::String(y)) => x.cmp(y),
+                        _ => std::cmp::Ordering::Equal,
+                    };
+                    if desc { ordering.reverse() } else { ordering }
+                });
+                Some(Ok(Value::List(sorted)))
+            } else {
+                Some(Err(RuntimeError::TypeError("sort(list) or sort(list, \"desc\")".to_string())))
+            }
+        }
+        "nth" | "at" | "get_at" => {
+            if args.len() >= 2 {
+                if let Value::List(items) = &args[0] {
+                    let idx = match &args[1] {
+                        Value::Int(n) => *n as usize,
+                        _ => return Some(Err(RuntimeError::TypeError("nth: index must be Int".to_string()))),
+                    };
+                    if idx < items.len() {
+                        Some(Ok(items[idx].clone()))
+                    } else {
+                        Some(Ok(Value::Unit)) // out of bounds -> null
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("nth: first argument must be a list".to_string())))
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("nth(list, index)".to_string())))
+            }
+        }
         "_coalesce" => {
             if args.len() >= 2 {
                 Some(Ok(if matches!(args[0], Value::Unit) { args[1].clone() } else { args[0].clone() }))
