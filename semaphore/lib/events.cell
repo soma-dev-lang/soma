@@ -1,6 +1,7 @@
-// Event rendering helpers
+// Event log and rendering
 
 cell Events {
+
     on event_icon(event_type: String) {
         if event_type == "emergency" { return "&#x1F6A8;" }
         if event_type == "resume" { return "&#x25B6;" }

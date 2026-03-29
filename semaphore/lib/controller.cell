@@ -1,0 +1,15 @@
+// Traffic control logic — pure functions, no storage access
+
+cell Controller {
+
+    on step_to_phase(sm: String, target: String) {
+        let steps = 0
+        let current = get_status(sm)
+        while current != target && steps < 5 {
+            transition(sm, next_phase(current))
+            current = get_status(sm)
+            steps = steps + 1
+        }
+        return current
+    }
+}

@@ -2,16 +2,9 @@
 // Semaphore Agent -- Real-time multi-intersection traffic management
 // ============================================================================
 // Run: soma serve app.cell
-//
-// Features:
-// - 2 intersections with independent state machines
-// - Automatic phase cycling (configurable timing)
-// - Emergency mode (all red)
-// - Night mode (flashing yellow)
-// - Event log with timestamps
-// - Live dashboard with WebSocket-style polling
-// - Full REST API
 
+use lib::lights
+use lib::controller
 use lib::intersections
 use lib::templates
 use lib::events
@@ -44,142 +37,89 @@ cell SemaphoreApp {
         emergency_red -> green_ns
     }
 
-    // ---- Scheduler: auto-cycle every 3s ----
+    // ---- Storage helpers (must live here — memory is cell-scoped) ----
+
+    on apply_lights(id: String, sm: String) {
+        let phase = get_status(sm)
+        let l = lights_for_phase(phase)
+        lights.set("{id}_north", l.north)
+        lights.set("{id}_south", l.south)
+        lights.set("{id}_east", l.east)
+        lights.set("{id}_west", l.west)
+    }
+
+    on set_all_lights(color: String) {
+        for id in list("main", "secondary") {
+            for dir in list("north", "south", "east", "west") {
+                lights.set("{id}_{dir}", color)
+            }
+        }
+    }
+
+    on get_intersection(id: String, sm: String) {
+        let name = config.get("{id}_name") ?? id
+        return map(
+            "id", id, "name", name, "phase", get_status(sm),
+            "north", lights.get("{id}_north") ?? "off",
+            "south", lights.get("{id}_south") ?? "off",
+            "east", lights.get("{id}_east") ?? "off",
+            "west", lights.get("{id}_west") ?? "off"
+        )
+    }
+
+    on log_event(event_type: String, message: String) {
+        let t = now()
+        events.set(to_string(t), to_json(map("type", event_type, "message", message, "time", to_string(t))))
+    }
+
+    on get_events() {
+        let parsed = list()
+        for raw in events.values() {
+            parsed = push(parsed, from_json(raw))
+        }
+        return parsed
+    }
+
+    // ---- Scheduler ----
+
     every 3s {
         let mode = config.get("mode") ?? "auto"
         if mode == "auto" {
-            cycle_intersection("main", "phase_main")
-            cycle_intersection("secondary", "phase_secondary")
+            let m = get_status("phase_main")
+            transition("phase_main", next_phase(m))
+            apply_lights("main", "phase_main")
+            let s = get_status("phase_secondary")
+            transition("phase_secondary", next_phase(s))
+            apply_lights("secondary", "phase_secondary")
             let c = to_int(config.get("cycle") ?? "0") + 1
             config.set("cycle", to_string(c))
         } else if mode == "night" {
-            cycle_night()
+            let tick = to_int(config.get("night_tick") ?? "0")
+            if tick % 2 == 0 { set_all_lights("yellow") }
+            else { set_all_lights("off") }
+            config.set("night_tick", to_string(tick + 1))
         }
     }
 
     // ---- Init ----
+
     on init() {
         config.set("mode", "auto")
         config.set("cycle", "0")
-        config.set("speed", "normal")
         config.set("main_name", "Main St / Broadway")
         config.set("secondary_name", "2nd Ave / Park Rd")
-        update_lights("main", "phase_main")
-        update_lights("secondary", "phase_secondary")
+        apply_lights("main", "phase_main")
+        apply_lights("secondary", "phase_secondary")
         log_event("system", "Semaphore agent initialized")
-        return map("status", "initialized")
     }
 
-    // ---- Intersection logic ----
-    on cycle_intersection(id: String, sm: String) {
-        let current = get_status(sm)
-        if current == "green_ns" {
-            transition(sm, "yellow_ns")
-        } else if current == "yellow_ns" {
-            transition(sm, "green_ew")
-        } else if current == "green_ew" {
-            transition(sm, "yellow_ew")
-        } else if current == "yellow_ew" {
-            transition(sm, "green_ns")
-        }
-        update_lights(id, sm)
-    }
+    // ---- Actions ----
 
-    on update_lights(id: String, sm: String) {
-        let phase = get_status(sm)
-        let prefix = id
-        if phase == "green_ns" {
-            lights.set("{prefix}_north", "green")
-            lights.set("{prefix}_south", "green")
-            lights.set("{prefix}_east", "red")
-            lights.set("{prefix}_west", "red")
-        } else if phase == "yellow_ns" {
-            lights.set("{prefix}_north", "yellow")
-            lights.set("{prefix}_south", "yellow")
-            lights.set("{prefix}_east", "red")
-            lights.set("{prefix}_west", "red")
-        } else if phase == "green_ew" {
-            lights.set("{prefix}_north", "red")
-            lights.set("{prefix}_south", "red")
-            lights.set("{prefix}_east", "green")
-            lights.set("{prefix}_west", "green")
-        } else if phase == "yellow_ew" {
-            lights.set("{prefix}_north", "red")
-            lights.set("{prefix}_south", "red")
-            lights.set("{prefix}_east", "yellow")
-            lights.set("{prefix}_west", "yellow")
-        } else if phase == "emergency_red" {
-            lights.set("{prefix}_north", "red")
-            lights.set("{prefix}_south", "red")
-            lights.set("{prefix}_east", "red")
-            lights.set("{prefix}_west", "red")
-        }
-        return phase
-    }
-
-    on cycle_night() {
-        let c = to_int(config.get("night_tick") ?? "0")
-        let on_off = c % 2
-        if on_off == 0 {
-            lights.set("main_north", "yellow")
-            lights.set("main_south", "yellow")
-            lights.set("main_east", "yellow")
-            lights.set("main_west", "yellow")
-            lights.set("secondary_north", "yellow")
-            lights.set("secondary_south", "yellow")
-            lights.set("secondary_east", "yellow")
-            lights.set("secondary_west", "yellow")
-        } else {
-            lights.set("main_north", "off")
-            lights.set("main_south", "off")
-            lights.set("main_east", "off")
-            lights.set("main_west", "off")
-            lights.set("secondary_north", "off")
-            lights.set("secondary_south", "off")
-            lights.set("secondary_east", "off")
-            lights.set("secondary_west", "off")
-        }
-        config.set("night_tick", to_string(c + 1))
-    }
-
-    // ---- API: status ----
-    on get_full_status() {
-        let mode = config.get("mode") ?? "auto"
-        let cycle = config.get("cycle") ?? "0"
-        let main_phase = get_status("phase_main")
-        let sec_phase = get_status("phase_secondary")
-        return map(
-            "mode", mode,
-            "cycle", cycle,
-            "intersections", list(
-                map(
-                    "id", "main",
-                    "name", config.get("main_name") ?? "Main",
-                    "phase", main_phase,
-                    "north", lights.get("main_north") ?? "off",
-                    "south", lights.get("main_south") ?? "off",
-                    "east", lights.get("main_east") ?? "off",
-                    "west", lights.get("main_west") ?? "off"
-                ),
-                map(
-                    "id", "secondary",
-                    "name", config.get("secondary_name") ?? "Secondary",
-                    "phase", sec_phase,
-                    "north", lights.get("secondary_north") ?? "off",
-                    "south", lights.get("secondary_south") ?? "off",
-                    "east", lights.get("secondary_east") ?? "off",
-                    "west", lights.get("secondary_west") ?? "off"
-                )
-            )
-        )
-    }
-
-    // ---- API: controls ----
     on emergency() {
         transition("phase_main", "emergency_red")
         transition("phase_secondary", "emergency_red")
-        update_lights("main", "phase_main")
-        update_lights("secondary", "phase_secondary")
+        apply_lights("main", "phase_main")
+        apply_lights("secondary", "phase_secondary")
         config.set("mode", "manual")
         log_event("emergency", "All intersections set to RED")
         return map("status", "emergency")
@@ -189,69 +129,45 @@ cell SemaphoreApp {
         config.set("mode", "auto")
         transition("phase_main", "green_ns")
         transition("phase_secondary", "green_ns")
-        update_lights("main", "phase_main")
-        update_lights("secondary", "phase_secondary")
+        apply_lights("main", "phase_main")
+        apply_lights("secondary", "phase_secondary")
         log_event("resume", "Auto mode resumed")
         return map("status", "resumed", "mode", "auto")
     }
 
     on set_night_mode() {
         config.set("mode", "night")
-        log_event("mode", "Night mode activated -- flashing yellow")
+        log_event("mode", "Night mode activated")
         return map("status", "night_mode", "mode", "night")
     }
 
-    on force_phase(intersection: String, target: String) {
+    on force(intersection: String, target: String) {
         config.set("mode", "manual")
         let sm = "phase_main"
         if intersection == "secondary" { sm = "phase_secondary" }
-
-        // Step through transitions until we reach the target (max 4 steps)
-        let steps = 0
-        let current = get_status(sm)
-        while current != target && steps < 5 {
-            if current == "green_ns" { transition(sm, "yellow_ns") }
-            else if current == "yellow_ns" { transition(sm, "green_ew") }
-            else if current == "green_ew" { transition(sm, "yellow_ew") }
-            else if current == "yellow_ew" { transition(sm, "green_ns") }
-            else if current == "emergency_red" { transition(sm, "green_ns") }
-            current = get_status(sm)
-            steps = steps + 1
-        }
-        update_lights(intersection, sm)
-        log_event("force", "Forced {intersection} to {current}")
-        return map("status", "forced", "intersection", intersection, "phase", current)
+        let final_phase = step_to_phase(sm, target)
+        apply_lights(intersection, sm)
+        log_event("force", "Forced {intersection} to {final_phase}")
+        return map("status", "forced", "intersection", intersection, "phase", final_phase)
     }
 
-    // ---- Event log ----
-    on log_event(event_type: String, message: String) {
-        let t = now()
-        let id = to_string(t)
-        let entry = to_json(map("type", event_type, "message", message, "time", to_string(t)))
-        events.set(id, entry)
-        return entry
-    }
+    // ---- Data ----
 
-    on get_events() {
-        let all = events.values()
-        let parsed = list()
-        for raw in all {
-            parsed = push(parsed, from_json(raw))
-        }
-        return parsed
+    on get_full_status() {
+        let mode = config.get("mode") ?? "auto"
+        let cycle = config.get("cycle") ?? "0"
+        let main_i = get_intersection("main", "phase_main")
+        let sec_i = get_intersection("secondary", "phase_secondary")
+        return map("mode", mode, "cycle", cycle, "intersections", list(main_i, sec_i))
     }
 
     // ---- Router ----
-    on request(method: String, path: String, body: String) {
-        if config.get("mode") == () {
-            init()
-        }
 
-        // Pages
+    on request(method: String, path: String, body: String) {
+        if config.get("mode") == () { init() }
+
         if path == "/" { return html(page_dashboard()) }
         if path == "/events" { return html(page_events()) }
-
-        // API
         if path == "/api/status" { return get_full_status() }
         if path == "/api/events" { return get_events() }
         if path == "/api/emergency" { return emergency() }
@@ -259,22 +175,19 @@ cell SemaphoreApp {
         if path == "/api/night" { return set_night_mode() }
         if path == "/api/force" && method == "POST" {
             let data = from_json(body)
-            return force_phase(data.intersection, data.phase)
+            return force(data.intersection, data.phase)
         }
-
         return response(404, map("error", "not found"))
     }
 
-    // ---- Pages (delegate to templates) ----
+    // ---- Pages ----
+
     on page_dashboard() {
-        let status = get_full_status()
-        let main_i = status.intersections.get(0)
-        let sec_i = status.intersections.get(1)
-        return render_dashboard(status.mode, status.cycle, main_i, sec_i)
+        let s = get_full_status()
+        return render_dashboard(s.mode, s.cycle, s.intersections.get(0), s.intersections.get(1))
     }
 
     on page_events() {
-        let evts = get_events()
-        return render_events(evts)
+        return render_events(get_events())
     }
 }
