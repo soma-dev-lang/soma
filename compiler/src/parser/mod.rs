@@ -4,7 +4,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ParseError {
-    #[error("expected {expected}, found {found:?} at {span:?}")]
+    #[error("expected {expected}, found {found:?}")]
     Expected {
         expected: String,
         found: Token,

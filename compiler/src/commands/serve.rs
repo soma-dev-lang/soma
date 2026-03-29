@@ -7,7 +7,7 @@ use crate::ast;
 use crate::interpreter;
 use crate::registry::Registry;
 use crate::runtime;
-use super::{read_source, lex, parse, resolve_imports, load_meta_cells_from_program};
+use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
 pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
     eprintln!("soma serve --watch");
@@ -43,8 +43,9 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
 
 pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Registry) {
     let source = read_source(path);
-    let tokens = lex(&source);
-    let mut program = parse(tokens);
+    let file_str = path.display().to_string();
+    let tokens = lex_with_location(&source, Some(&file_str));
+    let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut program, path);
     load_meta_cells_from_program(&program, registry, path);
 

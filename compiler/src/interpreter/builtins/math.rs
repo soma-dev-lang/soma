@@ -60,12 +60,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         let v = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
                         let lo = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
                         let hi = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                        if lo > hi {
+                            return Some(Err(RuntimeError::TypeError(format!("clamp: min ({}) must be <= max ({})", lo, hi))));
+                        }
                         Some(Ok(Value::Float(v.max(lo).min(hi))))
                     }
                     _ => {
                         let v = val_to_i64(&args[0]);
                         let lo = val_to_i64(&args[1]);
                         let hi = val_to_i64(&args[2]);
+                        if lo > hi {
+                            return Some(Err(RuntimeError::TypeError(format!("clamp: min ({}) must be <= max ({})", lo, hi))));
+                        }
                         Some(Ok(Value::Int(v.max(lo).min(hi))))
                     }
                 }

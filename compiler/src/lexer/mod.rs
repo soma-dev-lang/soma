@@ -3,13 +3,13 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum LexError {
-    #[error("unexpected character '{ch}' at position {pos}")]
+    #[error("unexpected character '{ch}'")]
     UnexpectedChar { ch: char, pos: usize },
-    #[error("unterminated string starting at position {pos}")]
+    #[error("unterminated string")]
     UnterminatedString { pos: usize },
-    #[error("unterminated block comment starting at position {pos}")]
+    #[error("unterminated block comment")]
     UnterminatedComment { pos: usize },
-    #[error("invalid number at position {pos}")]
+    #[error("invalid number")]
     InvalidNumber { pos: usize },
 }
 

@@ -54,23 +54,63 @@ pub fn read_source(path: &PathBuf) -> String {
     }
 }
 
+fn lex_error_position(e: &lexer::LexError) -> Option<usize> {
+    match e {
+        lexer::LexError::UnexpectedChar { pos, .. } => Some(*pos),
+        lexer::LexError::UnterminatedString { pos } => Some(*pos),
+        lexer::LexError::UnterminatedComment { pos } => Some(*pos),
+        lexer::LexError::InvalidNumber { pos } => Some(*pos),
+    }
+}
+
 pub fn lex(source: &str) -> Vec<lexer::SpannedToken> {
+    lex_with_location(source, None)
+}
+
+pub fn lex_with_location(source: &str, file: Option<&str>) -> Vec<lexer::SpannedToken> {
     let mut lex = lexer::Lexer::new(source);
     match lex.tokenize() {
         Ok(tokens) => tokens,
         Err(e) => {
-            eprintln!("lexer error: {}", e);
+            if let Some(pos) = lex_error_position(&e) {
+                let (line, col) = crate::interpreter::span_to_location(source, pos);
+                let prefix = if let Some(f) = file {
+                    format!("{}:{}:{}", f, line, col)
+                } else {
+                    format!("{}:{}", line, col)
+                };
+                eprintln!("{}: lexer error: {}", prefix, e);
+            } else {
+                eprintln!("lexer error: {}", e);
+            }
             process::exit(1);
         }
     }
 }
 
 pub fn parse(tokens: Vec<lexer::SpannedToken>) -> ast::Program {
+    parse_with_location(tokens, None, None)
+}
+
+pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str>, file: Option<&str>) -> ast::Program {
     let mut p = parser::Parser::new(tokens);
     match p.parse_program() {
         Ok(program) => program,
         Err(e) => {
-            eprintln!("parse error: {}", e);
+            match (&e, source) {
+                (parser::ParseError::Expected { span, .. }, Some(src)) => {
+                    let (line, col) = crate::interpreter::span_to_location(src, span.start);
+                    let prefix = if let Some(f) = file {
+                        format!("{}:{}:{}", f, line, col)
+                    } else {
+                        format!("{}:{}", line, col)
+                    };
+                    eprintln!("{}: parse error: {}", prefix, e);
+                }
+                _ => {
+                    eprintln!("parse error: {}", e);
+                }
+            }
             process::exit(1);
         }
     }
@@ -147,8 +187,9 @@ fn import_file(program: &mut ast::Program, path: &PathBuf) {
             process::exit(1);
         }
     };
-    let tokens = lex(&source);
-    let mut imported = parse(tokens);
+    let file_str = path.display().to_string();
+    let tokens = lex_with_location(&source, Some(&file_str));
+    let mut imported = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut imported, path);
     program.cells.extend(imported.cells);
 }

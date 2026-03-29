@@ -60,6 +60,17 @@ pub fn format_runtime_error(
     format!("{}runtime error: {}", location, err)
 }
 
+/// Check if a Value is truthy (false for Bool(false), Unit, Int(0); true otherwise)
+pub fn is_truthy(val: &Value) -> bool {
+    match val {
+        Value::Bool(b) => *b,
+        Value::Unit => false,
+        Value::Int(n) => *n != 0,
+        Value::Big(n) => !n.is_zero(),
+        _ => true,
+    }
+}
+
 /// Runtime values
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -92,7 +103,10 @@ impl std::fmt::Display for Value {
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     match item {
-                        Value::String(s) => write!(f, "\"{}\"", s)?,
+                        Value::String(s) => {
+                            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+                            write!(f, "\"{}\"", escaped)?
+                        }
                         other => write!(f, "{}", other)?,
                     }
                 }
@@ -102,9 +116,13 @@ impl std::fmt::Display for Value {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
-                    write!(f, "\"{}\": ", k)?;
+                    let escaped_k = k.replace('\\', "\\\\").replace('"', "\\\"");
+                    write!(f, "\"{}\": ", escaped_k)?;
                     match v {
-                        Value::String(s) => write!(f, "\"{}\"", s)?,
+                        Value::String(s) => {
+                            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+                            write!(f, "\"{}\"", escaped)?
+                        }
                         other => write!(f, "{}", other)?,
                     }
                 }
@@ -258,7 +276,16 @@ impl Interpreter {
         match self.exec_body(body, env, cell_name, "_every") {
             Ok(val) => Ok(val),
             Err(ExecError::Return(val)) => Ok(val),
-            Err(ExecError::Break) | Err(ExecError::Continue) => Ok(Value::Unit),
+            Err(ExecError::Break) => {
+                let e = RuntimeError::TypeError("break outside of loop".to_string());
+                eprintln!("[scheduler] error: {}", e);
+                Err(e)
+            }
+            Err(ExecError::Continue) => {
+                let e = RuntimeError::TypeError("continue outside of loop".to_string());
+                eprintln!("[scheduler] error: {}", e);
+                Err(e)
+            }
             Err(ExecError::Runtime(e)) => {
                 eprintln!("[scheduler] error: {}", e);
                 Err(e)
@@ -364,7 +391,8 @@ impl Interpreter {
         match result {
             Ok(val) => Ok(val),
             Err(ExecError::Return(val)) => Ok(val),
-            Err(ExecError::Break) | Err(ExecError::Continue) => Ok(Value::Unit),
+            Err(ExecError::Break) => Err(RuntimeError::TypeError("break outside of loop".to_string())),
+            Err(ExecError::Continue) => Err(RuntimeError::TypeError("continue outside of loop".to_string())),
             Err(ExecError::Runtime(e)) => Err(e),
         }
     }
@@ -575,6 +603,23 @@ impl Interpreter {
                 .ok_or_else(|| ExecError::Runtime(RuntimeError::UndefinedVar(name.clone()))),
 
             Expr::BinaryOp { left, op, right } => {
+                // Short-circuit for logical And/Or
+                if *op == BinOp::And {
+                    let l = self.eval_expr(&left.node, env, cell_name, signal_name)?;
+                    if !is_truthy(&l) {
+                        return Ok(Value::Bool(false));
+                    }
+                    let r = self.eval_expr(&right.node, env, cell_name, signal_name)?;
+                    return Ok(Value::Bool(is_truthy(&r)));
+                }
+                if *op == BinOp::Or {
+                    let l = self.eval_expr(&left.node, env, cell_name, signal_name)?;
+                    if is_truthy(&l) {
+                        return Ok(Value::Bool(true));
+                    }
+                    let r = self.eval_expr(&right.node, env, cell_name, signal_name)?;
+                    return Ok(Value::Bool(is_truthy(&r)));
+                }
                 let l = self.eval_expr(&left.node, env, cell_name, signal_name)?;
                 let r = self.eval_expr(&right.node, env, cell_name, signal_name)?;
                 self.eval_binop(&l, *op, &r).map_err(ExecError::Runtime)
