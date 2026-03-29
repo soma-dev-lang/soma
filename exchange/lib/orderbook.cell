@@ -1,0 +1,55 @@
+// Order book: bid/ask management, price-time priority
+
+cell OrderBook {
+
+    on make_order(id: String, ticker: String, side: String, price: Int, qty: Int) {
+        return map(
+            "id", id,
+            "ticker", ticker,
+            "side", side,
+            "price", price,
+            "qty", qty,
+            "remaining", qty,
+            "status", "open",
+            "time", now()
+        )
+    }
+
+    on best_bid(orders: List, ticker: String) {
+        let bids = orders
+            |> filter(o => o.ticker == ticker && o.side == "buy" && o.status == "open")
+            |> sort_by("price", "desc")
+        if len(bids) == 0 { return () }
+        return bids.get(0)
+    }
+
+    on best_ask(orders: List, ticker: String) {
+        let asks = orders
+            |> filter(o => o.ticker == ticker && o.side == "sell" && o.status == "open")
+            |> sort_by("price", "asc")
+        if len(asks) == 0 { return () }
+        return asks.get(0)
+    }
+
+    on spread(bid: Map, ask: Map) {
+        if bid == () { return () }
+        if ask == () { return () }
+        return ask.price - bid.price
+    }
+
+    on book_depth(orders: List, ticker: String, levels: Int) {
+        let bids = orders
+            |> filter(o => o.ticker == ticker && o.side == "buy" && o.status == "open")
+            |> sort_by("price", "desc")
+            |> top(levels)
+            |> map(o => map("price", o.price, "qty", o.remaining))
+
+        let asks = orders
+            |> filter(o => o.ticker == ticker && o.side == "sell" && o.status == "open")
+            |> sort_by("price", "asc")
+            |> top(levels)
+            |> map(o => map("price", o.price, "qty", o.remaining))
+
+        return map("bids", bids, "asks", asks)
+    }
+}

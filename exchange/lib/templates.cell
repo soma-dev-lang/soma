@@ -1,0 +1,159 @@
+// Exchange dashboard templates
+
+cell Templates {
+
+    on side_color(side: String) {
+        match side {
+            "buy"  -> "#22c55e"
+            "sell" -> "#ef4444"
+            _      -> "#6b7280"
+        }
+    }
+
+    on status_badge(status: String) {
+        match status {
+            "open"      -> """<span style="color:#22c55e">OPEN</span>"""
+            "partial"   -> """<span style="color:#eab308">PARTIAL</span>"""
+            "filled"    -> """<span style="color:#818cf8">FILLED</span>"""
+            "cancelled" -> """<span style="color:#6b7280">CANCELLED</span>"""
+            _           -> status
+        }
+    }
+
+    on render_book_side(entries: List, side: String) {
+        let color = side_color(side)
+        let rows = entries |> map(e => {
+            let bar_w = e.qty * 3
+            return """
+            <div class="book-row {side}">
+                <span class="book-price" style="color:{color}">{e.price}</span>
+                <span class="book-qty">{e.qty}</span>
+                <div class="book-bar" style="width:{bar_w}px;background:{color}22"></div>
+            </div>
+            """
+        })
+        return rows |> join("")
+    }
+
+    on render_trade_row(trade: Map) {
+        let color = "#818cf8"
+        return """
+        <div class="trade-row">
+            <span class="trade-ticker">{trade.ticker}</span>
+            <span class="trade-price">{trade.price}</span>
+            <span class="trade-qty">x{trade.qty}</span>
+        </div>
+        """
+    }
+
+    on render_dashboard(tickers: List, books: List, trades: List, order_count: Int, trade_count: Int) {
+        let book_panels = ""
+        let idx = 0
+        for ticker in tickers {
+            let book = books.get(idx)
+            if book != () {
+                let ask_rows = render_book_side(book.asks, "sell")
+                let bid_rows = render_book_side(book.bids, "buy")
+
+                let mid = ""
+                if len(book.asks) > 0 && len(book.bids) > 0 {
+                    let best_a = book.asks.get(0)
+                    let best_b = book.bids.get(0)
+                    let sp = best_a.price - best_b.price
+                    mid = """<div class="book-spread">Spread: {sp}</div>"""
+                }
+
+                book_panels = book_panels + """
+                <div class="book-panel">
+                    <div class="panel-header">{ticker}</div>
+                    <div class="book-side asks">{ask_rows}</div>
+                    {mid}
+                    <div class="book-side bids">{bid_rows}</div>
+                </div>
+                """
+            }
+            idx = idx + 1
+        }
+
+        let trade_rows = trades
+            |> map(t => render_trade_row(t))
+            |> join("")
+        if trade_rows == "" {
+            trade_rows = """<div class="empty">No trades yet</div>"""
+        }
+
+        let css = render_css()
+
+        return """
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Soma Exchange</title>
+            {css}
+            <script>
+                const es = new EventSource('/stream');
+                es.addEventListener('trade', () => setTimeout(() => location.reload(), 200));
+                es.addEventListener('book_update', () => setTimeout(() => location.reload(), 200));
+                setTimeout(() => location.reload(), 5000);
+            </script>
+        </head>
+        <body>
+            <div class="app">
+                <div class="header">
+                    <h1>SOMA EXCHANGE</h1>
+                    <div class="header-stats">
+                        <span class="stat-pill">Orders: {order_count}</span>
+                        <span class="stat-pill">Trades: {trade_count}</span>
+                        <span class="stat-pill live">WS :8081</span>
+                    </div>
+                </div>
+
+                <div class="books">{book_panels}</div>
+
+                <div class="panel">
+                    <div class="panel-header">Recent Trades</div>
+                    <div class="trades-list">{trade_rows}</div>
+                </div>
+
+                <div class="footer">Soma v0.27 Exchange -- Real-time order matching via WebSocket</div>
+            </div>
+        </body>
+        </html>
+        """
+    }
+
+    on render_css() {
+        return """
+        <style>
+        :root{--bg:#050910;--surface:#0d1117;--border:#21262d;--text:#c9d1d9;--dim:#6e7681;--accent:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif}
+        .app{max-width:1200px;margin:0 auto;padding:1.5rem}
+        .header{display:flex;justify-content:space-between;align-items:center;padding:1rem 0;border-bottom:1px solid var(--border);margin-bottom:1.5rem}
+        .header h1{font-size:1.1rem;font-weight:800;letter-spacing:4px;color:var(--accent)}
+        .header-stats{display:flex;gap:.5rem}
+        .stat-pill{background:var(--surface);border:1px solid var(--border);padding:.3rem .7rem;border-radius:6px;font-size:.75rem;color:var(--dim)}
+        .stat-pill.live{color:var(--green);border-color:rgba(34,197,94,.3)}
+
+        .books{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1rem;margin-bottom:1.5rem}
+        .book-panel,.panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+        .panel-header{padding:.8rem 1rem;border-bottom:1px solid var(--border);font-size:.85rem;font-weight:700;letter-spacing:1px}
+        .book-side{padding:.5rem}
+        .book-row{display:flex;align-items:center;gap:.5rem;padding:.2rem .5rem;position:relative;font-family:'SF Mono',monospace;font-size:.8rem}
+        .book-price{width:80px;font-weight:600}
+        .book-qty{width:60px;text-align:right;color:var(--dim)}
+        .book-bar{position:absolute;right:0;top:0;height:100%;opacity:.3;border-radius:2px}
+        .book-spread{text-align:center;padding:.4rem;font-size:.7rem;color:var(--dim);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+        .asks .book-row{flex-direction:row-reverse}
+
+        .trades-list{padding:.5rem;max-height:300px;overflow-y:auto}
+        .trade-row{display:flex;gap:1rem;padding:.3rem .5rem;font-family:'SF Mono',monospace;font-size:.8rem;border-bottom:1px solid var(--border)}
+        .trade-ticker{color:var(--accent);font-weight:700;width:50px}
+        .trade-price{color:var(--text);width:80px}
+        .trade-qty{color:var(--dim)}
+        .empty{padding:2rem;text-align:center;color:var(--dim)}
+        .footer{text-align:center;color:var(--dim);font-size:.7rem;margin-top:2rem;padding:1rem 0;border-top:1px solid var(--border)}
+        </style>
+        """
+    }
+}

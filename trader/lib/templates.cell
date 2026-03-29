@@ -1,0 +1,113 @@
+// Trader dashboard
+
+cell Templates {
+
+    on render_dashboard(pnl: Map, positions: List, recent_orders: List, cycle: Int) {
+        let pos_rows = positions |> map(p => {
+            let pnl_color = "#22c55e"
+            if p.pnl < 0 { pnl_color = "#ef4444" }
+            return """
+            <tr>
+                <td class="ticker">{p.ticker}</td>
+                <td>{p.qty}</td>
+                <td>{p.avg_price}</td>
+                <td style="color:{pnl_color}">{p.pnl}</td>
+            </tr>
+            """
+        })
+        let pos_html = pos_rows |> join("")
+        if pos_html == "" { pos_html = """<tr><td colspan="4" class="empty">No positions</td></tr>""" }
+
+        let order_rows = recent_orders |> map(o => {
+            let sc = "#22c55e"
+            if o.side == "sell" { sc = "#ef4444" }
+            return """
+            <tr>
+                <td class="ticker">{o.ticker}</td>
+                <td style="color:{sc}">{o.side}</td>
+                <td>{o.price}</td>
+                <td>{o.qty}</td>
+                <td>{o.status}</td>
+            </tr>
+            """
+        })
+        let order_html = order_rows |> join("")
+        if order_html == "" { order_html = """<tr><td colspan="5" class="empty">No orders</td></tr>""" }
+
+        return """
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Market Maker Bot</title>
+            <meta http-equiv="refresh" content="3">
+            <style>
+            :root{--bg:#050910;--surface:#0d1117;--border:#21262d;--text:#c9d1d9;--dim:#6e7681;--accent:#f59e0b;--green:#22c55e;--red:#ef4444}
+            *{margin:0;padding:0;box-sizing:border-box}
+            body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif}
+            .app{max-width:900px;margin:0 auto;padding:1.5rem}
+            .header{display:flex;justify-content:space-between;align-items:center;padding:1rem 0;border-bottom:1px solid var(--border);margin-bottom:1.5rem}
+            .header h1{font-size:1.1rem;font-weight:800;letter-spacing:4px;color:var(--accent)}
+            .cycle{color:var(--dim);font-size:.8rem}
+            .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem}
+            .stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem}
+            .stat .label{font-size:.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:.3rem}
+            .stat .value{font-size:1.3rem;font-weight:700}
+            .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:1.5rem;overflow:hidden}
+            .panel-header{padding:.8rem 1rem;border-bottom:1px solid var(--border);font-weight:700;font-size:.85rem}
+            table{width:100%;border-collapse:collapse}
+            th{text-align:left;padding:.5rem 1rem;font-size:.65rem;text-transform:uppercase;color:var(--dim);letter-spacing:1px}
+            td{padding:.4rem 1rem;border-top:1px solid var(--border);font-size:.85rem;font-family:'SF Mono',monospace}
+            .ticker{color:var(--accent);font-weight:700}
+            .empty{text-align:center;padding:1.5rem;color:var(--dim)}
+            .footer{text-align:center;color:var(--dim);font-size:.7rem;margin-top:2rem;padding:1rem 0;border-top:1px solid var(--border)}
+            </style>
+        </head>
+        <body>
+            <div class="app">
+                <div class="header">
+                    <h1>MARKET MAKER</h1>
+                    <span class="cycle">Cycle #{cycle}</span>
+                </div>
+
+                <div class="stats">
+                    <div class="stat">
+                        <div class="label">Total PnL</div>
+                        <div class="value" style="color:{pnl.color}">{pnl.total}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="label">Trades</div>
+                        <div class="value">{pnl.trades}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="label">Open Orders</div>
+                        <div class="value">{pnl.open_orders}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="label">Positions</div>
+                        <div class="value">{len(positions)}</div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">Positions</div>
+                    <table>
+                        <thead><tr><th>Ticker</th><th>Qty</th><th>Avg Price</th><th>PnL</th></tr></thead>
+                        <tbody>{pos_html}</tbody>
+                    </table>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">Recent Orders</div>
+                    <table>
+                        <thead><tr><th>Ticker</th><th>Side</th><th>Price</th><th>Qty</th><th>Status</th></tr></thead>
+                        <tbody>{order_html}</tbody>
+                    </table>
+                </div>
+
+                <div class="footer">Soma v0.27 -- Market Maker Bot -- Connected to Exchange :8080</div>
+            </div>
+        </body>
+        </html>
+        """
+    }
+}

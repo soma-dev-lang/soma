@@ -1,0 +1,186 @@
+// ============================================================================
+// Soma Exchange — Order book + matching engine + WebSocket
+// ============================================================================
+// HTTP dashboard: http://localhost:8080
+// WebSocket:      ws://localhost:8081
+//
+// WS protocol (JSON):
+//   → { "action": "place", "ticker": "BTC", "side": "buy", "price": 42000, "qty": 1 }
+//   ← { "status": "placed", "order_id": "1" }
+//   ← { "event": "trade", "data": { "ticker": "BTC", "price": 42000, "qty": 1 } }
+//   → { "action": "cancel", "id": "1" }
+//   ← { "status": "cancelled" }
+//
+// Run: soma serve app.cell
+
+use lib::orderbook
+use lib::matching
+use lib::templates
+
+cell Exchange {
+
+    memory {
+        orders: Map<String, String> [persistent, consistent]
+        trades: Map<String, String> [persistent, consistent]
+        config: Map<String, String> [ephemeral, local]
+    }
+
+    state order_lifecycle {
+        initial: open
+        open -> partial
+        open -> filled
+        open -> cancelled
+        partial -> filled
+        partial -> cancelled
+    }
+
+    // ---- Matching engine: run every 500ms ----
+
+    every 500ms {
+        let tickers = list("BTC", "ETH", "SOL", "AVAX")
+        for ticker in tickers {
+            run_matching(ticker)
+        }
+    }
+
+    on run_matching(ticker: String) {
+        let all = load_orders()
+        let result = try_match(all, ticker)
+        if result == () { return () }
+
+        // Execute the fill
+        let bid_order = from_json(orders.get(result.bid_id))
+        let ask_order = from_json(orders.get(result.ask_id))
+
+        let fill_qty = result.qty
+
+        // Update bid
+        let bid_remaining = bid_order.remaining - fill_qty
+        let bid_status = "partial"
+        if bid_remaining <= 0 {
+            bid_remaining = 0
+            bid_status = "filled"
+        }
+        let updated_bid = bid_order
+            |> with("remaining", bid_remaining)
+            |> with("status", bid_status)
+        orders.set(result.bid_id, to_json(updated_bid))
+
+        // Update ask
+        let ask_remaining = ask_order.remaining - fill_qty
+        let ask_status = "partial"
+        if ask_remaining <= 0 {
+            ask_remaining = 0
+            ask_status = "filled"
+        }
+        let updated_ask = ask_order
+            |> with("remaining", ask_remaining)
+            |> with("status", ask_status)
+        orders.set(result.ask_id, to_json(updated_ask))
+
+        // Record trade
+        let trade_id = to_string(now())
+        let trade = map(
+            "id", trade_id,
+            "ticker", ticker,
+            "price", result.price,
+            "qty", fill_qty,
+            "buyer", result.bid_id,
+            "seller", result.ask_id,
+            "time", now()
+        )
+        trades.set(trade_id, to_json(trade))
+
+        // Broadcast
+        signal trade(trade)
+        signal book_update(map("ticker", ticker))
+    }
+
+    // ---- Data helpers ----
+
+    on load_orders() {
+        return orders.values() |> map(s => from_json(s))
+    }
+
+    on load_trades() {
+        return trades.values()
+            |> map(s => from_json(s))
+            |> sort_by("time", "desc")
+            |> top(50)
+    }
+
+    // ---- WebSocket handler ----
+
+    on ws(message: String) {
+        let data = from_json(message)
+        let action = data.action ?? "unknown"
+
+        match action {
+            "place" -> {
+                let id = to_string(next_id())
+                let order = make_order(id, data.ticker, data.side, to_int(data.price), to_int(data.qty))
+                orders.set(id, to_json(order))
+
+                signal order_placed(order)
+
+                // Immediately try to match
+                run_matching(data.ticker)
+
+                return map("status", "placed", "order_id", id, "ticker", data.ticker, "side", data.side, "price", data.price, "qty", data.qty)
+            }
+            "cancel" -> {
+                let raw = orders.get(data.id)
+                if raw == () {
+                    return map("error", "order not found")
+                }
+                let order = from_json(raw)
+                let cancelled = order |> with("status", "cancelled")
+                orders.set(data.id, to_json(cancelled))
+                signal order_cancelled(map("id", data.id))
+                return map("status", "cancelled", "id", data.id)
+            }
+            "book" -> {
+                let all = load_orders()
+                let ticker = data.ticker ?? "BTC"
+                return book_depth(all, ticker, 10)
+            }
+            "subscribe" -> {
+                return map("status", "subscribed", "streams", list("trade", "book_update", "order_placed"))
+            }
+            _ -> {
+                return map("error", "unknown action: {action}")
+            }
+        }
+    }
+
+    // ---- HTTP routes ----
+
+    on request(method: String, path: String, body: String) {
+        if path == "/api/order" && method == "POST" {
+            return ws(body)
+        }
+
+        match path {
+            "/"            -> html(page_dashboard())
+            "/stream"      -> sse("trade", "book_update", "order_placed")
+            "/api/book"    -> {
+                let all = load_orders()
+                let ticker = "BTC"
+                book_depth(all, ticker, 10)
+            }
+            "/api/trades"  -> load_trades()
+            "/api/orders"  -> load_orders()
+            _              -> response(404, map("error", "not found"))
+        }
+    }
+
+    on page_dashboard() {
+        let all = load_orders()
+        let tickers = list("BTC", "ETH", "SOL", "AVAX")
+        let books = tickers |> map(t => book_depth(all, t, 5))
+        let recent_trades = load_trades()
+        let order_count = len(all)
+        let trade_count = len(recent_trades)
+        return render_dashboard(tickers, books, recent_trades, order_count, trade_count)
+    }
+}

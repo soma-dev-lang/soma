@@ -1,0 +1,31 @@
+// Matching engine: price-time priority, continuous matching
+
+cell Matching {
+
+    on try_match(orders: List, ticker: String) {
+        // Get best bid (highest buy) and best ask (lowest sell)
+        let bid = best_bid(orders, ticker)
+        let ask = best_ask(orders, ticker)
+
+        if bid == () { return () }
+        if ask == () { return () }
+
+        // Match if bid price >= ask price
+        if bid.price < ask.price { return () }
+
+        // Execute at the ask price (price improvement for buyer)
+        let fill_price = ask.price
+        let fill_qty = bid.remaining
+        if ask.remaining < fill_qty { fill_qty = ask.remaining }
+
+        return map(
+            "bid_id", bid.id,
+            "ask_id", ask.id,
+            "ticker", ticker,
+            "price", fill_price,
+            "qty", fill_qty,
+            "buyer", bid.id,
+            "seller", ask.id
+        )
+    }
+}

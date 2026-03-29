@@ -1,0 +1,24 @@
+// WebSocket connection management via HTTP bridge
+// Since ws_connect is sync, we use HTTP POST to the exchange for now
+// In production, this would use async WS client
+
+cell Connection {
+
+    on send_order(ticker: String, side: String, price: Int, qty: Int) {
+        let payload = to_json(map("action", "place", "ticker", ticker, "side", side, "price", price, "qty", qty))
+        let result = http_post("http://localhost:8080/api/order", payload)
+        return result
+    }
+
+    on cancel_order(order_id: String) {
+        let payload = to_json(map("action", "cancel", "id", order_id))
+        let result = http_post("http://localhost:8080/api/order", payload)
+        return result
+    }
+
+    on get_book(ticker: String) {
+        let payload = to_json(map("action", "book", "ticker", ticker))
+        let result = http_post("http://localhost:8080/api/order", payload)
+        return result
+    }
+}
