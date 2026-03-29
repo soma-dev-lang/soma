@@ -1,10 +1,11 @@
 // ============================================================================
-// Trading Bot — soma serve app.cell → open http://localhost:8080
+// Trading Bot — soma serve app.cell → http://localhost:8080
 // ============================================================================
 //
-// 4 cells: Market (GBM), Trading (momentum), Booking (deltas), Broker (execution)
-// Dashboard: static/index.html (live JS, CSS transitions on value changes)
-// APIs: /api/prices, /api/positions, /api/orders, /api/fills, /api/targets
+// Market  → GBM prices every 2s (60% annual vol)
+// Trading → value strategy every 10s (buy 3 cheapest)
+// Booking → delta orders (target - position)
+// Broker  → execution (99% fill rate)
 
 use lib::market
 use lib::trading
@@ -13,29 +14,13 @@ use lib::broker
 
 cell TradingBot {
 
-    memory {
-        meta: Map<String, String> [ephemeral, local]
-    }
-
     on request(method: String, path: String, body: String) {
-        if path == "/api/prices" {
-            return prices.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
-        }
-        if path == "/api/targets" {
-            return targets.values() |> map(s => from_json(s)) |> filter(t => t.symbol != ())
-        }
-        if path == "/api/orders" {
-            return orders.values() |> map(s => from_json(s)) |> filter(o => o.id != ()) |> sort_by("created_at")
-        }
-        if path == "/api/positions" {
-            return positions.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
-        }
-        if path == "/api/fills" {
-            return fills.values() |> map(s => from_json(s)) |> filter(f => f.id != ())
-        }
-        if path == "/" {
-            return redirect("/static/index.html")
-        }
+        if path == "/api/prices"    { return prices.values()    |> filter(p => p.symbol != ()) }
+        if path == "/api/targets"   { return targets.values()   |> filter(t => t.symbol != ()) |> sort_by("mid") }
+        if path == "/api/orders"    { return orders.values()    |> filter(o => o.id != ()) |> sort_by("created_at") }
+        if path == "/api/positions" { return positions.values() |> filter(p => p.symbol != ()) }
+        if path == "/api/fills"     { return fills.values()     |> filter(f => f.id != ()) }
+        if path == "/" { return redirect("/static/index.html") }
         return response(404, map("error", "not found"))
     }
 }
