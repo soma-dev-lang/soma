@@ -196,6 +196,52 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("read_csv(path)".to_string())))
             }
         }
+        "write_csv" => {
+            // write_csv(path, list_of_maps)
+            if args.len() >= 2 {
+                if let (Value::String(path), Value::List(items)) = (&args[0], &args[1]) {
+                    let mut output = String::new();
+                    // Extract headers from first row
+                    if let Some(Value::Map(first)) = items.first() {
+                        let headers: Vec<&str> = first.iter().map(|(k, _)| k.as_str()).collect();
+                        output.push_str(&headers.join(","));
+                        output.push('\n');
+                        // Write rows
+                        for item in items {
+                            if let Value::Map(entries) = item {
+                                let vals: Vec<String> = headers.iter().map(|h| {
+                                    entries.iter()
+                                        .find(|(k, _)| k == h)
+                                        .map(|(_, v)| match v {
+                                            Value::String(s) => {
+                                                if s.contains(',') || s.contains('"') {
+                                                    format!("\"{}\"", s.replace('"', "\"\""))
+                                                } else {
+                                                    s.clone()
+                                                }
+                                            }
+                                            other => format!("{}", other),
+                                        })
+                                        .unwrap_or_default()
+                                }).collect();
+                                output.push_str(&vals.join(","));
+                                output.push('\n');
+                            }
+                        }
+                    }
+                    match std::fs::write(path, &output) {
+                        Ok(_) => Some(Ok(Value::Bool(true))),
+                        Err(e) => Some(Ok(Value::Map(vec![
+                            ("error".to_string(), Value::String(format!("{}", e))),
+                        ]))),
+                    }
+                } else {
+                    Some(Err(RuntimeError::TypeError("write_csv(path, list_of_maps)".to_string())))
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("write_csv(path, list_of_maps)".to_string())))
+            }
+        }
         _ => None,
     }
 }

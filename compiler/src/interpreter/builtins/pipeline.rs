@@ -127,9 +127,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     if items.is_empty() { return Some(Ok(Value::Unit)); }
-                    let total: i64 = items.iter().map(|item| map_field_i64(item, &field)).sum();
-                    Some(Ok(Value::Int(total / items.len() as i64)))
-                } else { Some(Ok(Value::Int(0))) }
+                    let total: f64 = items.iter().map(|item| map_field_f64(item, &field)).sum();
+                    let avg = total / items.len() as f64;
+                    // Return Int if whole number, Float otherwise
+                    if avg == (avg as i64) as f64 {
+                        Some(Ok(Value::Int(avg as i64)))
+                    } else {
+                        Some(Ok(Value::Float(avg)))
+                    }
+                } else { Some(Ok(Value::Unit)) }
             } else {
                 Some(Err(RuntimeError::TypeError("avg_by expects (list, field)".to_string())))
             }
