@@ -2,7 +2,11 @@
 set -e
 
 REPO="soma-dev-lang/soma"
-VERSION="0.28.0"
+# Fetch latest version from GitHub repo
+VERSION=$(curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/compiler/Cargo.toml" 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/')
+if [ -z "$VERSION" ]; then
+    VERSION="0.28.0"
+fi
 INSTALL_DIR="/usr/local/bin"
 
 echo ""
