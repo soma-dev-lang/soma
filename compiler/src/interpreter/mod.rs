@@ -1831,8 +1831,10 @@ impl Interpreter {
                 BinOp::Div => {
                     if *b == 0 {
                         Err(RuntimeError::TypeError("division by zero".to_string()))
-                    } else {
+                    } else if a % b == 0 {
                         Ok(Value::Int(a / b))
+                    } else {
+                        Ok(Value::Float(*a as f64 / *b as f64))
                     }
                 }
                 BinOp::Mod => {
