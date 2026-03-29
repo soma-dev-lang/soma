@@ -64,6 +64,7 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <a href="#syntax">Syntax</a>
 <a href="#pipeline">Pipelines</a>
 <a href="#web">Web</a>
+<a href="#bus">Signals</a>
 <a href="#reference">Reference</a>
 <a href="https://github.com/soma-dev-lang/soma">GitHub</a>
 </div>
@@ -387,14 +388,79 @@ The spec IS the program</code></pre>
 <span class="cmt">// listening on http://localhost:8080</span></code></pre>
 </section>
 
+<!-- ═══════════════════════════════════ SIGNAL BUS ═══════════════════════════════════ -->
+<section id="bus">
+<h2>Inter-process signals</h2>
+
+<p>Independent Soma programs communicate via a <strong>TCP signal bus</strong>. No WebSocket libraries. No message queues. No serialization code. <code>signal</code> to send, <code>on</code> to receive. The runtime delivers.</p>
+
+<div class="vs">
+<div class="side">
+<h4>Exchange</h4>
+<pre><code><span class="kw">cell</span> Exchange {
+    <span class="kw">on</span> order(data: Map) {
+        place_order(data)
+    }
+
+    <span class="kw">on</span> run_matching() {
+        <span class="cmt">// ... match bid with ask ...</span>
+        <span class="kw">signal</span> trade(fill)
+    }
+}</code></pre>
+</div>
+<div class="side">
+<h4>Trader</h4>
+<pre><code><span class="kw">cell</span> Trader {
+    <span class="kw">on</span> init() {
+        <span class="fn">link</span>(<span class="str">"localhost:8082"</span>)
+    }
+
+    <span class="kw">every</span> <span class="num">3</span>s {
+        <span class="kw">signal</span> order(data)
+    }
+
+    <span class="kw">on</span> trade(fill: Map) {
+        record_fill(fill)
+    }
+}</code></pre>
+</div>
+</div>
+
+<p>The exchange emits <code>signal trade(fill)</code>. The trader's <code>on trade(fill)</code> fires. Two independent processes. No shared code. The signal bus handles serialization, transport, and dispatch.</p>
+
+<pre><code><span class="cmt">// Protocol: line-delimited JSON over TCP</span>
+EVENT trade {"ticker": "BTC", "price": 42000, "qty": 1}
+EVENT order_placed {"id": "1", "side": "buy", "price": 41500}
+EVENT book_update {"ticker": "BTC"}
+
+<span class="cmt">// Every soma serve listens on port+2 for bus peers</span>
+<span class="cmt">// Exchange :8080 (HTTP) :8081 (WS) :8082 (bus)</span>
+<span class="cmt">// Trader   :9090 (HTTP)            :9092 (bus) &rarr; connects to :8082</span></code></pre>
+
+<h3>Real-time streaming</h3>
+<p>SSE for browsers, signal bus for programs. Same <code>signal</code> keyword, different transports.</p>
+
+<pre><code><span class="kw">on</span> request(method: String, path: String, body: String) {
+    <span class="kw">match</span> path {
+        <span class="str">"/stream"</span> &rarr; <span class="fn">sse</span>(<span class="str">"trade"</span>, <span class="str">"book_update"</span>)   <span class="cmt">// browser: EventSource</span>
+        <span class="str">"/"</span>       &rarr; <span class="fn">html</span>(dashboard())
+    }
+}
+
+<span class="kw">every</span> <span class="num">500</span>ms {
+    <span class="kw">let</span> fill = match_orders()
+    <span class="kw">signal</span> trade(fill)                             <span class="cmt">// &rarr; SSE clients + bus peers</span>
+}</code></pre>
+</section>
+
 <!-- ═══════════════════════════════════ EXAMPLES ═══════════════════════════════════ -->
 <section>
 <h2>Built with Soma</h2>
 
 <div class="grid3">
 <div class="card">
-<h4>Trading Desk</h4>
-<p>20-stock universe, screener, ranker, state machine orders, real-time dashboard. 413 lines.</p>
+<h4>Exchange + Trader</h4>
+<p>Order book, matching engine, market maker bot. Two independent programs communicating via signal bus. Real-time fills.</p>
 </div>
 <div class="card">
 <h4>Quant Fund</h4>
@@ -402,15 +468,15 @@ The spec IS the program</code></pre>
 </div>
 <div class="card">
 <h4>Semaphore Agent</h4>
-<p>2-intersection traffic controller. State machines, night mode, emergency, live dashboard. 4 files.</p>
+<p>2-intersection traffic controller. State machines, night mode, emergency, live SSE dashboard. 4 files.</p>
+</div>
+<div class="card">
+<h4>Trading Desk</h4>
+<p>20-stock universe, screener, ranker, state machine orders, real-time dashboard. 413 lines.</p>
 </div>
 <div class="card">
 <h4>Car Rental</h4>
 <p>Multi-file booking system. Vehicle inventory, reservations, HTML pages. 5 files.</p>
-</div>
-<div class="card">
-<h4>Portfolio Allocator</h4>
-<p>Full pipeline: universe &rarr; screen &rarr; rank &rarr; optimize. Factor investing in pure Soma. 4 files.</p>
 </div>
 <div class="card">
 <h4>100 Examples</h4>
@@ -425,7 +491,7 @@ The spec IS the program</code></pre>
 <table>
 <tr><td>soma run file.cell [args]</td><td>Execute a signal</td></tr>
 <tr><td>soma run file.cell --jit</td><td>Bytecode VM (faster)</td></tr>
-<tr><td>soma serve file.cell</td><td>HTTP server on :8080</td></tr>
+<tr><td>soma serve file.cell</td><td>HTTP :8080, WS :8081, Bus :8082</td></tr>
 <tr><td>soma serve file.cell --watch</td><td>Hot reload</td></tr>
 <tr><td>soma check file.cell</td><td>Verify contracts &amp; properties</td></tr>
 <tr><td>soma test file.cell</td><td>Run test cells</td></tr>
@@ -443,14 +509,19 @@ The spec IS the program</code></pre>
         &rarr; Interpreter (soma run)
         &rarr; Bytecode VM (soma run --jit)
     &rarr; Registry (stdlib/*.cell &mdash; properties, backends, builtins)
-    &rarr; Runtime (SQLite | Memory | HTTP Provider)</code></pre>
+    &rarr; Runtime
+        &rarr; Storage (SQLite | Memory | HTTP Provider)
+        &rarr; HTTP server (soma serve)
+        &rarr; SSE streaming (real-time browser push)
+        &rarr; WebSocket server (bidirectional)
+        &rarr; TCP signal bus (inter-process signals)</code></pre>
 </section>
 
 </div>
 
 <footer>
 Soma is open source. The specification is the program.<br>
-<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v0.25.0
+<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v0.27.0
 </footer>
 
 </body>
