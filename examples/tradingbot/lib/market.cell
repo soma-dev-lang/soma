@@ -20,61 +20,62 @@ cell Market {
         * -> halted
     }
 
-    on _normal() {
-        let s = 2.0
-        let x = 0.0
-        let y = 0.0
-        while s >= 1.0 {
-            x = (random(20000) - 10000) / 10000.0
-            y = (random(20000) - 10000) / 10000.0
-            s = x * x + y * y
-            if s == 0.0 { s = 2.0 }
-        }
-        return x * sqrt(-2.0 * log(s) / s)
-    }
-
-    on _init_prices() {
-        if last_price.get("AAPL") != () { return () }
-        last_price.set("AAPL", 185.50)
-        last_price.set("TSLA", 245.00)
-        last_price.set("NVDA", 920.00)
-        last_price.set("MSFT", 420.00)
-        last_price.set("GOOG", 175.00)
-    }
-
     every 2s {
-        _init_prices()
-        let t = now()
-        let symbols = list("AAPL", "TSLA", "NVDA", "MSFT", "GOOG")
-
         let annual_vol = 0.60
-        let annual_drift = 0.05
         let dt = 1.0 / (252.0 * 6.5)
         let vol_dt = annual_vol * sqrt(dt)
-        let drift_dt = (annual_drift - 0.5 * annual_vol * annual_vol) * dt
+        let drift_dt = (0.05 - 0.5 * annual_vol * annual_vol) * dt
+        let t = now()
 
+        let symbols = list("AAPL", "TSLA", "NVDA", "MSFT", "GOOG")
+        let bases = list(185.50, 245.00, 920.00, 420.00, 175.00)
+
+        let i = 0
         for sym in symbols {
-            let prev = to_float(last_price.get(sym) ?? 100)
-            let z = _normal()
-            let log_return = drift_dt + vol_dt * z
-            let mid = round(prev * exp(log_return) * 100) / 100
-            let spread = mid * 0.0005
-            let bid = round((mid - spread) * 100) / 100
-            let ask = round((mid + spread) * 100) / 100
+            let base = nth(bases, i)
+            i = i + 1
 
-            last_price.set(sym, mid)
+            let prev_raw = last_price.get(sym)
+            let prev = to_float(base)
+            if prev_raw != () { prev = to_float(prev_raw) }
+
+            // Marsaglia polar method inline
+            let s = 2.0
+            let rx = 0.0
+            let ry = 0.0
+            while s >= 1.0 {
+                rx = (random(20000) - 10000) / 10000.0
+                ry = (random(20000) - 10000) / 10000.0
+                s = rx * rx + ry * ry
+                if s == 0.0 { s = 2.0 }
+            }
+            let z = rx * sqrt(-2.0 * log(s) / s)
+
+            let log_return = drift_dt + vol_dt * z
+            let mid = prev * exp(log_return)
+            mid = round(mid * 100.0) / 100.0
+            let spread = mid * 0.0005
+            let bid = round((mid - spread) * 100.0) / 100.0
+            let ask = round((mid + spread) * 100.0) / 100.0
+
+            last_price.set(sym, to_string(mid))
 
             let tick = map(
                 "symbol", sym,
                 "bid", bid,
                 "ask", ask,
                 "mid", mid,
-                "return", round(log_return * 10000) / 100,
+                "return", round(log_return * 10000.0) / 100.0,
                 "time", t
             )
             prices.set(sym, tick)
             history.set(sym + "_" + to_string(t), tick)
-            price_update(tick)
+        }
+
+        // Notify Trading after all prices updated
+        let all = prices.values() |> filter(p => p.symbol != ())
+        for p in all {
+            let result = try { price_update(p) }
         }
     }
 
@@ -83,7 +84,7 @@ cell Market {
             return prices.values() |> filter(p => p.symbol != ())
         }
         if path == "/" {
-            return map("name", "Market Feed (GBM 60% vol)", "symbols", prices.len(), "status", "live")
+            return map("name", "Market (GBM 60% vol)", "symbols", prices.len())
         }
         return response(404, map("error", "not found"))
     }

@@ -773,13 +773,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                 let body = every.body.clone();
                 let prog = program.clone();
                 let slots = storage_slots.clone();
-                let cname = cell_name.clone();
+                let cname = cell_spanned.node.name.clone();
                 let bus = event_bus.clone();
                 let pbus = peer_bus.clone();
                 let ws = shared_ws_out.clone();
                 let cluster_for_sched = cluster_node.clone();
                 let sharded_for_sched = sharded_slots.clone();
-                eprintln!("scheduler: every {}ms", interval);
+                eprintln!("scheduler: every {}ms [{}]", interval, cname);
 
                 std::thread::spawn(move || {
                     // Create interpreter ONCE and reuse across ticks
@@ -804,7 +804,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                             }
                         }
                         let mut env = rustc_hash::FxHashMap::default();
-                        let _ = interp.exec_every(&body, &mut env, &cname);
+                        if let Err(e) = interp.exec_every(&body, &mut env, &cname) {
+                            eprintln!("[scheduler:{}] tick error: {}", cname, e);
+                        }
                     }
                 });
             }
