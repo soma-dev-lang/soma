@@ -109,7 +109,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let (Value::String(s), Value::String(sub)) = (&args[0], &args[1]) {
                     Some(Ok(match s.find(sub.as_str()) {
-                        Some(i) => Value::Int(i as i64),
+                        Some(byte_pos) => {
+                            // Convert byte offset to char offset
+                            let char_pos = s[..byte_pos].chars().count();
+                            Value::Int(char_pos as i64)
+                        }
                         None => Value::Int(-1),
                     }))
                 } else {
@@ -123,8 +127,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 3 {
                 if let (Value::String(s), Value::Int(start), Value::Int(end)) = (&args[0], &args[1], &args[2]) {
                     let start = (*start).max(0) as usize;
-                    let end = (*end).min(s.len() as i64) as usize;
-                    Some(Ok(Value::String(s.get(start..end).unwrap_or("").to_string())))
+                    let char_count = s.chars().count();
+                    let end = (*end).min(char_count as i64) as usize;
+                    let result: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
+                    Some(Ok(Value::String(result)))
                 } else {
                     Some(Ok(Value::Unit))
                 }
@@ -134,7 +140,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "len" => {
             args.first().map(|arg| match arg {
-                Value::String(s) => Ok(Value::Int(s.len() as i64)),
+                Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
                 Value::List(items) => Ok(Value::Int(items.len() as i64)),
                 Value::Map(entries) => Ok(Value::Int(entries.len() as i64)),
                 _ => Err(RuntimeError::TypeError("len expects a string, list, or map".to_string())),

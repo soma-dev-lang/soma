@@ -70,7 +70,13 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
     };
 
     let cell = program.cells.iter()
-        .find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_))))
+        .find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+            if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "run" } else { false }
+        }))
+        .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+            if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "request" } else { false }
+        })))
+        .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
         .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell))
         .unwrap_or_else(|| { eprintln!("error: no cell found"); process::exit(1); });
     let cell_name = cell.node.name.clone();
@@ -136,6 +142,9 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
             if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == *sig } else { false }
         }))
     })
+    .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+        if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "run" } else { false }
+    })))
     .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
         if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "request" } else { false }
     })))

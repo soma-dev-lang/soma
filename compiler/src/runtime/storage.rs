@@ -182,7 +182,11 @@ impl FileBackend {
             "log": log,
         });
 
-        let _ = std::fs::write(&self.path, serde_json::to_string_pretty(&data).unwrap());
+        // Atomic write: write to temp file then rename to avoid TOCTOU races
+        let tmp_path = format!("{}.tmp", self.path);
+        if std::fs::write(&tmp_path, serde_json::to_string_pretty(&data).unwrap()).is_ok() {
+            let _ = std::fs::rename(&tmp_path, &self.path);
+        }
     }
 }
 

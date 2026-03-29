@@ -1446,7 +1446,7 @@ impl Interpreter {
                     DurationUnit::Minutes => d.value * 60_000.0,
                     DurationUnit::Hours => d.value * 3_600_000.0,
                     DurationUnit::Days => d.value * 86_400_000.0,
-                    DurationUnit::Years => d.value * 365.0 * 86_400_000.0,
+                    DurationUnit::Years => d.value * 365.25 * 86_400_000.0,
                 };
                 Value::Int(ms as i64)
             }

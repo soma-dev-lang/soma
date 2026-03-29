@@ -129,10 +129,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
 
     // Create peer bus for inter-process signal delivery
     let peer_bus = interpreter::new_peer_bus();
-    let bus_port = port + 2;
+    let bus_port = if (port as u32) + 2 <= 65535 { port + 2 } else {
+        eprintln!("warning: bus port {} exceeds 65535, disabled", (port as u32) + 2);
+        0
+    };
 
     // TCP bus listener: accepts incoming peer connections
-    {
+    if bus_port > 0 {
         let peer_bus_clone = peer_bus.clone();
         let event_bus_clone = event_bus.clone();
         let prog = program.clone();
@@ -255,10 +258,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
 
     // Check if cell has a `ws` handler
     let has_ws_handler = handler_names.contains(&"ws".to_string());
-    let ws_port = port + 1;
+    let ws_port = if (port as u32) + 1 <= 65535 { port + 1 } else {
+        eprintln!("warning: WS port {} exceeds 65535, disabled", (port as u32) + 1);
+        0
+    };
 
     // Spawn WebSocket server if `on ws(message)` handler exists
-    if has_ws_handler {
+    if has_ws_handler && ws_port > 0 {
         let prog = program.clone();
         let slots = storage_slots.clone();
         let cname = cell_name.clone();

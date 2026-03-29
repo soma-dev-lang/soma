@@ -342,9 +342,19 @@ impl BytecodeCompiler {
 
             Expr::Match { .. } => {
                 // Match expressions not yet implemented in VM
+                let idx = chunk.add_constant(Constant::String(
+                    "match expressions are not supported in the bytecode VM".to_string(),
+                ));
+                chunk.emit_u16(Op::Const, idx);
+                chunk.emit(Op::Return);
             }
             Expr::Lambda { .. } | Expr::LambdaBlock { .. } => {
                 // Lambda expressions not yet implemented in VM
+                let idx = chunk.add_constant(Constant::String(
+                    "lambda expressions are not supported in the bytecode VM".to_string(),
+                ));
+                chunk.emit_u16(Op::Const, idx);
+                chunk.emit(Op::Return);
             }
         }
     }

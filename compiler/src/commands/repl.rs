@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::ast;
 use crate::interpreter;
 use crate::parser;
@@ -12,6 +14,7 @@ pub fn cmd_repl(_registry: &mut Registry) {
         cells: vec![],
     };
     let mut interp = interpreter::Interpreter::new(&empty_program);
+    let mut bindings: HashMap<String, String> = HashMap::new();
 
     let stdin = std::io::stdin();
     let mut line = String::new();
@@ -50,10 +53,53 @@ pub fn cmd_repl(_registry: &mut Registry) {
             continue;
         }
 
-        let wrapper = format!(
-            "cell _Repl {{ on _eval() {{ return {} }} }}",
-            input
-        );
+        // Try parsing as a let statement
+        if input.starts_with("let ") {
+            // Build let bindings preamble + this new let + return the bound value
+            let var_name = input.trim_start_matches("let ")
+                .split(|c: char| c == '=' || c.is_whitespace())
+                .next()
+                .unwrap_or("_")
+                .trim()
+                .to_string();
+
+            // Store the raw let statement
+            bindings.insert(var_name.clone(), input.to_string());
+
+            // Build a cell with all bindings so far
+            let mut body = String::new();
+            for binding in bindings.values() {
+                body.push_str(binding);
+                body.push('\n');
+            }
+            body.push_str(&format!("return {}", var_name));
+
+            let wrapper = format!("cell _Repl {{ on _eval() {{ {} }} }}", body);
+            let tokens = lex(&wrapper);
+            match parser::Parser::new(tokens).parse_program() {
+                Ok(program) => {
+                    for cell in &program.cells {
+                        interp.register_cell(cell.node.clone());
+                    }
+                    match interp.call_signal("_Repl", "_eval", vec![]) {
+                        Ok(val) => println!("{}", val),
+                        Err(e) => eprintln!("error: {}", e),
+                    }
+                }
+                Err(e) => eprintln!("parse error: {}", e),
+            }
+            continue;
+        }
+
+        // Build expression with all existing let bindings as preamble
+        let mut body = String::new();
+        for binding in bindings.values() {
+            body.push_str(binding);
+            body.push('\n');
+        }
+        body.push_str(&format!("return {}", input));
+
+        let wrapper = format!("cell _Repl {{ on _eval() {{ {} }} }}", body);
 
         let tokens = lex(&wrapper);
         match parser::Parser::new(tokens).parse_program() {

@@ -175,7 +175,7 @@ impl VM {
                     (a, b) => Value::String(format!("{}{}", a, b)),
                 }),
                 x if x == Op::Sub as u8 => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+                    (Value::Int(a), Value::Int(b)) => a.checked_sub(b).map(Value::Int).unwrap_or(Value::Float(a as f64 - b as f64)),
                     (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
                     (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
                     (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
@@ -634,7 +634,7 @@ impl VM {
                 let key = args.first().map(|a| format!("{}", a)).unwrap_or_default();
                 entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone()).unwrap_or(Value::Unit)
             }
-            (Value::String(s), "len" | "length") => Value::Int(s.len() as i64),
+            (Value::String(s), "len" | "length") => Value::Int(s.chars().count() as i64),
             _ => Value::Unit,
         }
     }
