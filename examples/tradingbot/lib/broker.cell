@@ -31,9 +31,9 @@ cell Broker {
         let order = data |> with("received_at", to_string(now()))
         orders.set(order_id, to_json(order))
 
-        // Simulate execution: 95% fill, 5% reject
+        // Simulate execution: 99% fill, 1% reject
         let t = now()
-        if random(100) < 95 {
+        if random(100) < 99 {
             // FILLED
             let fill = map(
                 "id", order_id,
