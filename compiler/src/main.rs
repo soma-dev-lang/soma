@@ -178,7 +178,10 @@ fn main() {
 }
 
 fn cmd_verify(files: &[PathBuf]) {
+    use checker::temporal::*;
+
     let mut all_results = Vec::new();
+    let mut all_temporal = Vec::new();
 
     for path in files {
         let source = commands::read_source(path);
@@ -189,6 +192,55 @@ fn cmd_verify(files: &[PathBuf]) {
         eprintln!("Verifying {}...", path.display());
         let results = checker::verify::verify_program(&program);
         all_results.extend(results);
+
+        // Run temporal property checks on each state machine
+        for cell in &program.cells {
+            if cell.node.kind != ast::CellKind::Cell { continue; }
+            for section in &cell.node.sections {
+                if let ast::Section::State(ref sm) = section.node {
+                    let graph = StateMachineGraph::from_ast(sm);
+                    let mut props = Vec::new();
+
+                    // Auto-derive properties from the state machine structure
+                    props.push(Property::DeadlockFree);
+
+                    // Every state machine should eventually terminate (or have a valid cycle)
+                    if !graph.terminals.is_empty() {
+                        let terminal_pred = StatePredicate::InSet(
+                            graph.terminals.iter().cloned().collect()
+                        );
+                        props.push(Property::Eventually(terminal_pred));
+                    }
+
+                    // If there's a wildcard → cancelled/error state, check it's reachable from everywhere
+                    for t in &sm.transitions {
+                        if t.node.from == "*" {
+                            let target = &t.node.to;
+                            // after any non-terminal state, the escape hatch is reachable
+                            for state in &graph.states {
+                                if !graph.terminals.contains(state) && state != target {
+                                    props.push(Property::After(
+                                        state.clone(),
+                                        StatePredicate::InState(target.clone()),
+                                    ));
+                                }
+                            }
+                            break; // only check first wildcard
+                        }
+                    }
+
+                    // Check all state pairs for mutual exclusivity of "opposite" states
+                    // (e.g., "filled" and "rejected" should not be reachable from each other
+                    //  without going through a reset)
+
+                    let results: Vec<PropertyResult> = props.iter()
+                        .map(|p| check_property(&graph, p))
+                        .collect();
+
+                    all_temporal.push((sm.name.clone(), results));
+                }
+            }
+        }
     }
 
     if all_results.is_empty() {
@@ -198,7 +250,23 @@ fn cmd_verify(files: &[PathBuf]) {
 
     print!("{}", checker::verify::format_results(&all_results));
 
-    let has_failures = all_results.iter().any(|r| r.has_failures());
+    // Print temporal results
+    for (name, results) in &all_temporal {
+        print!("{}", format_property_results(name, results));
+    }
+
+    let has_failures = all_results.iter().any(|r| r.has_failures())
+        || all_temporal.iter().any(|(_, rs)| rs.iter().any(|r| !r.passed));
+
+    let total_temporal = all_temporal.iter().map(|(_, rs)| rs.len()).sum::<usize>();
+    let passed_temporal = all_temporal.iter()
+        .flat_map(|(_, rs)| rs.iter())
+        .filter(|r| r.passed)
+        .count();
+    let failed_temporal = total_temporal - passed_temporal;
+
+    eprintln!("\nTemporal: {} passed, {} failed", passed_temporal, failed_temporal);
+
     if has_failures {
         std::process::exit(1);
     }
