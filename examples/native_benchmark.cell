@@ -1,0 +1,66 @@
+cell App {
+    on fib_native(n: Int) [native] {
+        if n <= 1 { return n }
+        let a = 0
+        let b = 1
+        let i = 2
+        while i <= n {
+            let tmp = a + b
+            a = b
+            b = tmp
+            i = i + 1
+        }
+        return b
+    }
+
+    on fib_interp(n: Int) {
+        if n <= 1 { return n }
+        let a = 0
+        let b = 1
+        let i = 2
+        while i <= n {
+            let tmp = a + b
+            a = b
+            b = tmp
+            i = i + 1
+        }
+        return b
+    }
+
+    on run() {
+        let n = 90
+        let reps = 1000000
+
+        let result_native = fib_native(n)
+        let result_interp = fib_interp(n)
+        print("fib({n}) = {result_native}")
+        print("(verified: both give same result: {result_native == result_interp})")
+        print("")
+
+        let t1 = now_ms()
+        let i = 0
+        while i < reps {
+            fib_interp(n)
+            i = i + 1
+        }
+        let e1 = now_ms() - t1
+        print("Interpreted: fib({n}) x {reps} in {e1}ms")
+
+        let t2 = now_ms()
+        i = 0
+        while i < reps {
+            fib_native(n)
+            i = i + 1
+        }
+        let e2 = now_ms() - t2
+        print("[native]:    fib({n}) x {reps} in {e2}ms")
+
+        print("")
+        if e2 > 0 {
+            let speedup = e1 / e2
+            print("Speedup: {speedup}x faster with [native]")
+        } else {
+            print("[native] too fast to measure — try more reps")
+        }
+    }
+}
