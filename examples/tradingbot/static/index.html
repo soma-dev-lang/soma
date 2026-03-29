@@ -179,8 +179,11 @@ async function update() {
 
         // ── Portfolio ──
         const port = $('port');
+        // Clear stale "waiting" message
+        const waitRow = port.querySelector('.empty');
+        if (waitRow) waitRow.parentElement.remove();
         let totalPnl = 0, totalExp = 0, posCount = 0;
-        const posArr = positions.filter(p=>p.symbol).sort((a,b)=>(a.symbol||'').localeCompare(b.symbol));
+        const posArr = positions.filter(p=>p.symbol && parseInt(p.qty||'0')!==0).sort((a,b)=>(a.symbol||'').localeCompare(b.symbol));
 
         for (const pos of posArr) {
             const s = pos.symbol, qty = parseInt(pos.qty||'0');
@@ -213,8 +216,30 @@ async function update() {
             row.children[6].className='r'; row.children[6].id='p-ret-'+s;
             setCell('p-ret-'+s, ret.toFixed(2)+'%', true);
         }
-        if (posCount===0 && !port.querySelector('tr')) {
-            port.innerHTML='<tr><td colspan="7" class="empty">Waiting for first trade cycle...</td></tr>';
+        if (posCount===0) {
+            if (!port.querySelector('.empty')) {
+                port.innerHTML='<tr><td colspan="7" class="empty">Waiting for first trade cycle...</td></tr>';
+            }
+        } else {
+            // Add total row
+            let totRow = document.getElementById('p-total');
+            if (!totRow) {
+                totRow = document.createElement('tr');
+                totRow.id = 'p-total';
+                totRow.style.borderTop = '2px solid #2a3040';
+                for (let i=0;i<7;i++) { const td=document.createElement('td'); td.id='p-total-'+i; totRow.appendChild(td); }
+                port.appendChild(totRow);
+            }
+            totRow.children[0].textContent='TOTAL'; totRow.children[0].style.fontWeight='700'; totRow.children[0].style.color='#eaecef';
+            totRow.children[1].textContent='';
+            totRow.children[2].textContent='';
+            totRow.children[3].textContent='';
+            totRow.children[4].className='r'; totRow.children[4].textContent=fmt(Math.round(totalExp));
+            totRow.children[5].className='r'; totRow.children[5].id='p-pnl-total';
+            setCell('p-pnl-total', fmt(Math.round(totalPnl)), true);
+            const totRet = totalExp>0?(totalPnl/totalExp*100):0;
+            totRow.children[6].className='r'; totRow.children[6].id='p-ret-total';
+            setCell('p-ret-total', totRet.toFixed(2)+'%', true);
         }
         $('pc').textContent = posCount;
 
