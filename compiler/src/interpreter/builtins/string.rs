@@ -203,6 +203,19 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Ok(Value::String(t.to_string()))
             })
         }
+        "escape_html" | "html_escape" => {
+            if let Some(Value::String(s)) = args.first() {
+                let escaped = s
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+                    .replace('\'', "&#39;");
+                Some(Ok(Value::String(escaped)))
+            } else {
+                Some(Err(RuntimeError::TypeError("escape_html(string)".to_string())))
+            }
+        }
         _ => None,
     }
 }

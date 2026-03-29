@@ -275,7 +275,7 @@ pub struct Interpreter {
     handler_cache: HashMap<HandlerKey, HandlerValue>,
     /// Maximum recursion depth
     max_depth: usize,
-    current_depth: usize,
+    pub(crate) current_depth: usize,
     /// Signals emitted during execution (collected for runtime dispatch)
     emitted_signals: Vec<(String, Vec<Value>)>,
     /// Storage backends for memory slots, keyed by "cell_name.slot_name"
@@ -521,12 +521,14 @@ impl Interpreter {
     ) -> Result<Value, ExecError> {
         match stmt {
             Statement::Let { name, value } => {
+                self.last_span = Some(value.span);
                 let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
                 env.insert(name.clone(), val);
                 Ok(Value::Unit)
             }
 
             Statement::Assign { name, value } => {
+                self.last_span = Some(value.span);
                 // Optimization: items = list(items, x) → in-place append (avoids O(n²) clone)
                 if let Expr::FnCall { name: fn_name, args: fn_args } = &value.node {
                     if (fn_name == "list" || fn_name == "push" || fn_name == "append") && fn_args.len() >= 2 {
@@ -555,6 +557,7 @@ impl Interpreter {
             }
 
             Statement::Return { value } => {
+                self.last_span = Some(value.span);
                 let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
                 Err(ExecError::Return(val))
             }
@@ -572,6 +575,7 @@ impl Interpreter {
                 then_body,
                 else_body,
             } => {
+                self.last_span = Some(condition.span);
                 let cond = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
                 if cond.as_bool().map_err(ExecError::Runtime)? {
                     self.exec_body(then_body, env, cell_name, signal_name)
@@ -638,6 +642,7 @@ impl Interpreter {
             }
 
             Statement::ExprStmt { expr } => {
+                self.last_span = Some(expr.span);
                 self.eval_expr(&expr.node, env, cell_name, signal_name)
             }
 
@@ -918,6 +923,7 @@ impl Interpreter {
                 let left_val = self.eval_expr(&left.node, env, cell_name, signal_name)?;
 
                 // Right side must be a FnCall — prepend left_val as first arg
+                self.last_span = Some(right.span);
                 match &right.node {
                     Expr::FnCall { name, args } => {
                         let mut all_args = vec![left_val];

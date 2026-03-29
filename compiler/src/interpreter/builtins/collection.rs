@@ -13,6 +13,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "map" => {
+            if args.len() % 2 != 0 {
+                return Some(Err(RuntimeError::TypeError(
+                    format!("map() requires an even number of arguments (key-value pairs), got {}", args.len())
+                )));
+            }
             let mut entries = Vec::with_capacity(args.len() / 2);
             let mut i = 0;
             while i + 1 < args.len() {

@@ -413,15 +413,25 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 eprintln!("scheduler: every {}ms", interval);
 
                 std::thread::spawn(move || {
+                    // Create interpreter ONCE and reuse across ticks
+                    let mut interp = interpreter::Interpreter::new(&prog);
+                    interp.set_storage_raw(&slots);
+                    interp.ensure_state_machine_storage();
+                    interp.event_bus = Some(bus.clone());
+                    interp.peer_bus = Some(pbus.clone());
+                    if let Ok(ws_guard) = ws.lock() {
+                        interp.ws_out = ws_guard.clone();
+                    }
+
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(interval));
-                        let mut interp = interpreter::Interpreter::new(&prog);
-                        interp.set_storage_raw(&slots);
-                        interp.ensure_state_machine_storage();
-                        interp.event_bus = Some(bus.clone());
-                        interp.peer_bus = Some(pbus.clone());
-                        if let Ok(ws_guard) = ws.lock() {
-                            interp.ws_out = ws_guard.clone();
+                        // Reset depth counter for each tick
+                        interp.current_depth = 0;
+                        // Pick up ws_out if it was set after init
+                        if interp.ws_out.is_none() {
+                            if let Ok(ws_guard) = ws.lock() {
+                                interp.ws_out = ws_guard.clone();
+                            }
                         }
                         let mut env = std::collections::HashMap::new();
                         let _ = interp.exec_every(&body, &mut env, &cname);

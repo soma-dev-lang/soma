@@ -224,6 +224,7 @@ impl Parser {
             Token::Backend => { let span = tok.span; self.advance(); Ok(("backend".to_string(), span)) }
             Token::Builtin => { let span = tok.span; self.advance(); Ok(("builtin".to_string(), span)) }
             Token::Signal => { let span = tok.span; self.advance(); Ok(("signal".to_string(), span)) }
+            Token::Emit => { let span = tok.span; self.advance(); Ok(("emit".to_string(), span)) }
             Token::Check => { let span = tok.span; self.advance(); Ok(("check".to_string(), span)) }
             Token::Memory => { let span = tok.span; self.advance(); Ok(("memory".to_string(), span)) }
             Token::Face => { let span = tok.span; self.advance(); Ok(("face".to_string(), span)) }
@@ -269,6 +270,7 @@ impl Parser {
             Token::Face => "face".to_string(),
             Token::Cell => "cell".to_string(),
             Token::Signal => "signal".to_string(),
+            Token::Emit => "emit".to_string(),
             Token::Check => "check".to_string(),
             Token::Type => "type".to_string(),
             Token::Property => "property".to_string(),
@@ -793,7 +795,7 @@ impl Parser {
     fn parse_runtime_entry(&mut self) -> Result<Spanned<RuntimeEntry>, ParseError> {
         let start = self.peek_span();
         match self.peek() {
-            Token::Signal => {
+            Token::Signal | Token::Emit => {
                 // emit signal_name(args)
                 self.advance();
                 let (name, _) = self.expect_ident()?;
@@ -1090,7 +1092,7 @@ impl Parser {
                     start.merge(self.prev_span()),
                 ))
             }
-            Token::Signal => {
+            Token::Signal | Token::Emit => {
                 self.advance();
                 let (signal_name, _) = self.expect_ident()?;
                 self.expect(Token::LParen)?;
@@ -1725,7 +1727,7 @@ impl Parser {
             // Keywords that can be used as variable/function names in expressions
             Token::State | Token::Type | Token::Effect | Token::Guard | Token::Initial |
             Token::Start | Token::Test | Token::Backend | Token::Builtin |
-            Token::Signal | Token::Check | Token::Memory | Token::Face |
+            Token::Signal | Token::Emit | Token::Check | Token::Memory | Token::Face |
             Token::Property | Token::Rules | Token::Runtime | Token::Matches |
             Token::Native | Token::Checker => {
                 let name = format!("{:?}", self.peek()).to_lowercase();
@@ -1734,7 +1736,7 @@ impl Parser {
                     Token::State => "state", Token::Type => "type", Token::Effect => "effect",
                     Token::Guard => "guard", Token::Initial => "initial", Token::Start => "start",
                     Token::Test => "test", Token::Backend => "backend", Token::Builtin => "builtin",
-                    Token::Signal => "signal", Token::Check => "check", Token::Memory => "memory",
+                    Token::Signal => "signal", Token::Emit => "emit", Token::Check => "check", Token::Memory => "memory",
                     Token::Face => "face", Token::Property => "property", Token::Rules => "rules",
                     Token::Runtime => "runtime", Token::Matches => "matches", Token::Native => "native",
                     Token::Checker => "checker",
