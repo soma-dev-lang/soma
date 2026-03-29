@@ -559,7 +559,7 @@ handlers = [<span class="str">"simulate"</span>]
 <tr><td>[native] + parallel (8 cores)</td><td><strong>29ms</strong></td><td><strong>275x faster</strong></td></tr>
 </table>
 
-<p>The code is the same in all three rows. The first line is <code>soma run app.cell</code>. The second is the same code with <code>[native]</code> on the handler. The third adds two lines to <code>soma.toml</code>. No threads, no mutexes, no <code>async</code>/<code>await</code> &mdash; just a property.</p>
+<p>The code is the same in all three rows. <code>[native]</code> compiles to machine code. Adding <code>[compute.parallel]</code> in <code>soma.toml</code> splits the work across cores automatically. No threads, no mutexes, no <code>async</code>/<code>await</code>, no rewrite. One word in the code, two lines in the config.</p>
 
 <p>This is the fourth axis of the Soma property system:</p>
 <table>
