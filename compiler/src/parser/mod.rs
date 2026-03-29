@@ -1136,8 +1136,19 @@ impl Parser {
                     ))
                 }
             }
+            // Tokens that can start an expression: match, literals, parenthesized, etc.
+            Token::Match | Token::Try |
+            Token::IntLit(_) | Token::FloatLit(_) | Token::StringLit(_) |
+            Token::True | Token::False | Token::LParen |
+            Token::Bang | Token::Minus | Token::LBracket => {
+                let expr = self.parse_expr()?;
+                Ok(Spanned::new(
+                    Statement::ExprStmt { expr },
+                    start.merge(self.prev_span()),
+                ))
+            }
             _ => Err(ParseError::Expected {
-                expected: "statement (let, return, if, signal, require, or expression)".to_string(),
+                expected: "statement (let, return, if, match, signal, require, or expression)".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -1618,6 +1629,75 @@ impl Parser {
                 } else {
                     Ok(Spanned::new(Expr::Ident(name), start))
                 }
+            }
+            Token::Match => {
+                self.advance();
+                let subject = self.parse_expr()?;
+                self.expect(Token::LBrace)?;
+                let mut arms = Vec::new();
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    // Parse pattern: literal, _ (wildcard), or negative number
+                    let pattern = if let Token::Ident(ref id) = self.peek().clone() {
+                        if id == "_" {
+                            self.advance();
+                            MatchPattern::Wildcard
+                        } else {
+                            return Err(ParseError::Expected {
+                                expected: "match pattern (literal or _)".to_string(),
+                                found: self.peek().clone(),
+                                span: self.peek_span(),
+                            });
+                        }
+                    } else if self.check(&Token::Minus) {
+                        // Negative number pattern: -5, -3.14
+                        self.advance();
+                        let lit = self.parse_literal()?;
+                        match lit.node {
+                            Literal::Int(n) => MatchPattern::Literal(Literal::Int(-n)),
+                            Literal::Float(n) => MatchPattern::Literal(Literal::Float(-n)),
+                            _ => return Err(ParseError::Expected {
+                                expected: "number after '-' in match pattern".to_string(),
+                                found: self.peek().clone(),
+                                span: self.peek_span(),
+                            }),
+                        }
+                    } else {
+                        MatchPattern::Literal(self.parse_literal()?.node)
+                    };
+                    self.expect(Token::Arrow)?;
+
+                    // Parse body: either a block { stmts; result_expr } or single expression
+                    if self.check(&Token::LBrace) {
+                        self.advance();
+                        let mut stmts = Vec::new();
+                        while !self.check(&Token::RBrace) && !self.is_at_end() {
+                            stmts.push(self.parse_statement()?);
+                        }
+                        self.expect(Token::RBrace)?;
+                        // The last statement should be an ExprStmt used as the result
+                        let result = if let Some(last) = stmts.pop() {
+                            match last.node {
+                                Statement::ExprStmt { expr } => expr,
+                                _ => {
+                                    // Put it back, result is Unit
+                                    stmts.push(last);
+                                    Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                                }
+                            }
+                        } else {
+                            Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                        };
+                        arms.push(MatchArm { pattern, body: stmts, result });
+                    } else {
+                        let result = self.parse_expr()?;
+                        arms.push(MatchArm { pattern, body: vec![], result });
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                Ok(Spanned::new(
+                    Expr::Match { subject: Box::new(subject), arms },
+                    start.merge(self.prev_span()),
+                ))
             }
             Token::Try => {
                 // try { expr } → returns map("value", result) or map("error", message)

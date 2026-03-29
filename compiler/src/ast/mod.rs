@@ -421,6 +421,25 @@ pub enum Expr {
         left: Box<Spanned<Expr>>,
         right: Box<Spanned<Expr>>,
     },
+    /// Match expression: match expr { pattern -> result, ... }
+    Match {
+        subject: Box<Spanned<Expr>>,
+        arms: Vec<MatchArm>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: Vec<Spanned<Statement>>,
+    /// The result expression (last expression in body, or the single expression after ->)
+    pub result: Spanned<Expr>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    Literal(Literal),
+    Wildcard, // _
 }
 
 #[derive(Debug, Clone)]

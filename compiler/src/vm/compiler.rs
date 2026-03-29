@@ -293,6 +293,10 @@ impl BytecodeCompiler {
                 // For VM: just compile the inner expr (simplified)
                 self.compile_expr(chunk, &inner.node);
             }
+
+            Expr::Match { .. } => {
+                // Match expressions not yet implemented in VM
+            }
         }
     }
 

@@ -703,6 +703,29 @@ impl Interpreter {
                 }
             }
 
+            Expr::Match { subject, arms } => {
+                let val = self.eval_expr(&subject.node, env, cell_name, signal_name)?;
+                for arm in arms {
+                    let matches = match &arm.pattern {
+                        MatchPattern::Wildcard => true,
+                        MatchPattern::Literal(lit) => {
+                            let lit_val = self.eval_literal(lit);
+                            self.values_equal(&val, &lit_val)
+                        }
+                    };
+                    if matches {
+                        // Execute body statements
+                        for stmt in &arm.body {
+                            self.last_span = Some(stmt.span);
+                            self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
+                        }
+                        return self.eval_expr(&arm.result.node, env, cell_name, signal_name);
+                    }
+                }
+                // No match found
+                Ok(Value::Unit)
+            }
+
             Expr::Pipe { left, right } => {
                 // Evaluate left side
                 let left_val = self.eval_expr(&left.node, env, cell_name, signal_name)?;
@@ -868,6 +891,7 @@ impl Interpreter {
                     }
                 }
             }
+
         }
     }
 
@@ -1111,6 +1135,19 @@ impl Interpreter {
             }
             Literal::Percentage(p) => Value::Float(*p),
             Literal::Unit => Value::Unit,
+        }
+    }
+
+    fn values_equal(&self, a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Int(x), Value::Int(y)) => x == y,
+            (Value::Float(x), Value::Float(y)) => x == y,
+            (Value::Int(x), Value::Float(y)) => (*x as f64) == *y,
+            (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
+            (Value::String(x), Value::String(y)) => x == y,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::Unit, Value::Unit) => true,
+            _ => false,
         }
     }
 

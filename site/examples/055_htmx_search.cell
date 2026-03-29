@@ -54,11 +54,11 @@ cell LiveSearch {
         for item in items {
             let name_lower = lowercase(item.name)
             let role_lower = lowercase(item.role)
-            let match = contains(name_lower, query)
-            if match == false {
-                match = contains(role_lower, query)
+            let found =contains(name_lower, query)
+            if found == false {
+                found = contains(role_lower, query)
             }
-            if match == true {
+            if found == true {
                 result_html += render(
                     "<div class='result'><strong>{name}</strong> - {role}</div>",
                     "name", item.name, "role", item.role

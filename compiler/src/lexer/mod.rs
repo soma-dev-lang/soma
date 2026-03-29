@@ -42,6 +42,7 @@ pub enum Token {
     Try,
     Catch,
     Every,
+    Match,
     // Operators
     Percent,  // %
     // Imports
@@ -325,31 +326,87 @@ impl<'a> Lexer<'a> {
             }
 
             '"' => {
-                let mut s = String::new();
-                loop {
-                    match self.peek() {
-                        None => return Err(LexError::UnterminatedString { pos: start }),
-                        Some('"') => {
-                            self.advance();
+                // Check for """ (triple-quote multi-line string)
+                if self.peek() == Some('"') && self.peek_next() == Some('"') {
+                    self.advance(); // consume second "
+                    self.advance(); // consume third "
+                    // Now scan until closing """
+                    let mut content = String::new();
+                    loop {
+                        if self.pos >= self.chars.len() {
+                            return Err(LexError::UnterminatedString { pos: start });
+                        }
+                        let c = self.chars[self.pos];
+                        if c == '"'
+                            && self.pos + 1 < self.chars.len() && self.chars[self.pos + 1] == '"'
+                            && self.pos + 2 < self.chars.len() && self.chars[self.pos + 2] == '"'
+                        {
+                            self.pos += 3; // consume closing """
                             break;
                         }
-                        Some('\\') => {
-                            self.advance();
-                            match self.peek() {
-                                Some('n') => { self.advance(); s.push('\n'); }
-                                Some('t') => { self.advance(); s.push('\t'); }
-                                Some('\\') => { self.advance(); s.push('\\'); }
-                                Some('"') => { self.advance(); s.push('"'); }
-                                _ => s.push('\\'),
-                            }
-                        }
-                        Some(c) => {
-                            self.advance();
-                            s.push(c);
+                        content.push(c);
+                        self.pos += 1;
+                    }
+                    // Strip leading newline after opening """
+                    if content.starts_with('\n') {
+                        content = content[1..].to_string();
+                    }
+                    // Strip trailing newline + whitespace before closing """
+                    if let Some(last_nl) = content.rfind('\n') {
+                        let trailing = &content[last_nl + 1..];
+                        if trailing.chars().all(|c| c == ' ' || c == '\t') {
+                            content = content[..last_nl].to_string();
                         }
                     }
+                    // Dedent: find minimum leading whitespace across non-empty lines
+                    let min_indent = content
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| l.len() - l.trim_start().len())
+                        .min()
+                        .unwrap_or(0);
+                    if min_indent > 0 {
+                        content = content
+                            .lines()
+                            .map(|l| {
+                                if l.len() >= min_indent {
+                                    &l[min_indent..]
+                                } else {
+                                    l
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                    }
+                    Token::StringLit(content)
+                } else {
+                    // Regular string
+                    let mut s = String::new();
+                    loop {
+                        match self.peek() {
+                            None => return Err(LexError::UnterminatedString { pos: start }),
+                            Some('"') => {
+                                self.advance();
+                                break;
+                            }
+                            Some('\\') => {
+                                self.advance();
+                                match self.peek() {
+                                    Some('n') => { self.advance(); s.push('\n'); }
+                                    Some('t') => { self.advance(); s.push('\t'); }
+                                    Some('\\') => { self.advance(); s.push('\\'); }
+                                    Some('"') => { self.advance(); s.push('"'); }
+                                    _ => s.push('\\'),
+                                }
+                            }
+                            Some(c) => {
+                                self.advance();
+                                s.push(c);
+                            }
+                        }
+                    }
+                    Token::StringLit(s)
                 }
-                Token::StringLit(s)
             }
 
             c if c.is_ascii_digit() => {
@@ -395,6 +452,7 @@ impl<'a> Lexer<'a> {
                     "try" => Token::Try,
                     "catch" => Token::Catch,
                     "every" => Token::Every,
+                    "match" => Token::Match,
                     "runtime" => Token::Runtime,
                     "connect" => Token::Connect,
                     "start" => Token::Start,
@@ -665,5 +723,52 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens[0].token, Token::Cell);
         assert_eq!(tokens[1].token, Token::TypeIdent("Counter".to_string()));
+    }
+
+    #[test]
+    fn test_triple_quote_multiline() {
+        let input = "let x = \"\"\"\n    <html>\n        <body>hello</body>\n    </html>\n    \"\"\"";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(
+            tokens[3].token,
+            Token::StringLit("<html>\n    <body>hello</body>\n</html>".to_string())
+        );
+    }
+
+    #[test]
+    fn test_triple_quote_inline() {
+        let input = r#""""hello""""#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].token, Token::StringLit("hello".to_string()));
+    }
+
+    #[test]
+    fn test_triple_quote_empty() {
+        let input = r#""""""""#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].token, Token::StringLit("".to_string()));
+    }
+
+    #[test]
+    fn test_triple_quote_with_inner_quotes() {
+        let input = "\"\"\"<div class=\"foo\">bar</div>\"\"\"";
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(
+            tokens[0].token,
+            Token::StringLit("<div class=\"foo\">bar</div>".to_string())
+        );
+    }
+
+    #[test]
+    fn test_regular_string_still_works() {
+        let input = r#""hello" "world""#;
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].token, Token::StringLit("hello".to_string()));
+        assert_eq!(tokens[1].token, Token::StringLit("world".to_string()));
     }
 }
