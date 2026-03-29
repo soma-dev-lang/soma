@@ -327,6 +327,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                                             eprintln!("cluster: updated membership — {} nodes", ring.node_count());
                                         }
                                     }
+                                    runtime::cluster::ClusterMsg::Heartbeat(peer_id) => {
+                                        if let Some(ref cluster) = cluster_for_reader {
+                                            cluster.record_heartbeat(&peer_id);
+                                            // If this node isn't in our ring yet, add it
+                                            let known = cluster.ring.read().unwrap().nodes().contains(&peer_id);
+                                            if !known {
+                                                cluster.ring.write().unwrap().add_node(&peer_id);
+                                                eprintln!("cluster: discovered node '{}' via heartbeat", peer_id);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             continue;
@@ -429,6 +440,36 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                                     continue;
                                 }
 
+                                // Sync request: dump all local data for a slot
+                                if event_name == "_cluster_sync_request" {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                                        let slot = parsed.get("slot").and_then(|v| v.as_str()).unwrap_or("");
+                                        if !slot.is_empty() {
+                                            let slot_key = format!("{}.{}", cname2, slot);
+                                            if let Some(backend) = slots2.get(&slot_key).or_else(|| slots2.get(slot)) {
+                                                let keys = backend.keys();
+                                                let mut sent = 0;
+                                                for key in &keys {
+                                                    if let Some(val) = backend.get(key) {
+                                                        let set_msg = format!("EVENT _cluster_set {}\n",
+                                                            serde_json::json!({"slot": slot, "key": key, "value": format!("{}", val)}));
+                                                        if let Ok(peers) = pbus.lock() {
+                                                            for tx in peers.iter() {
+                                                                let _ = tx.send(set_msg.clone());
+                                                            }
+                                                        }
+                                                        sent += 1;
+                                                    }
+                                                }
+                                                if sent > 0 {
+                                                    eprintln!("cluster: synced {} keys from '{}'", sent, slot);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
                                 // Regular signal — dispatch to handler
                                 let data = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
                                     interpreter::builtins::serde_json_to_value(&parsed)
@@ -462,6 +503,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
             match cluster.join_cluster(seed) {
                 Ok(()) => {
                     eprintln!("cluster: joined {}", seed);
+                    // Request data sync from the seed
+                    // The seed will respond with _cluster_set events for all its data
+                    if let Ok(sync_stream) = std::net::TcpStream::connect(seed) {
+                        sync_stream.set_nodelay(true).ok();
+                        let shard_name = scale_section.as_ref().and_then(|s| s.shard.clone()).unwrap_or_default();
+                        let sync_msg = format!("EVENT _cluster_sync_request {{\"slot\":\"{}\"}}\n", shard_name);
+                        let mut sw = sync_stream;
+                        use std::io::Write;
+                        let _ = sw.write_all(sync_msg.as_bytes());
+                        let _ = sw.flush();
+                        // Connection will be closed after the message — that's fine
+                    }
                     // Also connect our peer bus to the seed for bidirectional EVENT routing
                     // This ensures _cluster_set events flow from this node to the seed
                     if let Ok(stream) = std::net::TcpStream::connect(seed) {
@@ -488,6 +541,28 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         if count > 1 {
             eprintln!("cluster: {} nodes active", count);
         }
+
+        // Heartbeat thread: send heartbeat every 3s, check for dead nodes every 10s
+        let hb_cluster = cluster.clone();
+        let hb_bus = peer_bus.clone();
+        std::thread::spawn(move || {
+            let mut tick = 0u64;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                tick += 1;
+                // Send heartbeat
+                let msg = runtime::cluster::ClusterMsg::Heartbeat(hb_cluster.node_id.clone()).encode();
+                if let Ok(senders) = hb_bus.lock() {
+                    for tx in senders.iter() {
+                        let _ = tx.send(msg.clone());
+                    }
+                }
+                // Every 3rd tick (~9s), check for dead nodes
+                if tick % 3 == 0 {
+                    hb_cluster.check_dead_nodes(15);
+                }
+            }
+        });
     }
 
     // Shared WS client output (set by ws_connect, used by ws_send across all interpreters)

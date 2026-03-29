@@ -80,6 +80,7 @@ fn fnv_hash(s: &str) -> u64 {
 pub enum ClusterMsg {
     Join(String),
     Members(Vec<String>),
+    Heartbeat(String),
 }
 
 impl ClusterMsg {
@@ -87,6 +88,7 @@ impl ClusterMsg {
         match self {
             ClusterMsg::Join(id) => format!("CLUSTER JOIN {}\n", id),
             ClusterMsg::Members(nodes) => format!("CLUSTER MEMBERS {}\n", nodes.join(",")),
+            ClusterMsg::Heartbeat(id) => format!("CLUSTER HEARTBEAT {}\n", id),
         }
     }
 
@@ -99,6 +101,7 @@ impl ClusterMsg {
                 let nodes = parts[2].trim().split(',').map(|s| s.to_string()).collect();
                 Some(ClusterMsg::Members(nodes))
             }
+            "HEARTBEAT" => Some(ClusterMsg::Heartbeat(parts[2].trim().to_string())),
             _ => None,
         }
     }
@@ -113,6 +116,8 @@ pub struct ClusterNode {
     /// Pending get/values requests: req_id → sender
     pub pending: Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<String>>>>,
     request_counter: Arc<Mutex<u64>>,
+    /// Last heartbeat timestamp per node (epoch seconds)
+    pub heartbeats: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 impl ClusterNode {
@@ -125,7 +130,40 @@ impl ClusterNode {
             peers: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
             request_counter: Arc::new(Mutex::new(0)),
+            heartbeats: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Record a heartbeat from a peer
+    pub fn record_heartbeat(&self, node_id: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        self.heartbeats.write().unwrap().insert(node_id.to_string(), now);
+    }
+
+    /// Check for dead nodes (no heartbeat in `timeout_secs`) and remove them
+    pub fn check_dead_nodes(&self, timeout_secs: u64) -> Vec<String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let heartbeats = self.heartbeats.read().unwrap();
+        let ring = self.ring.read().unwrap();
+        let mut dead = Vec::new();
+        for node in ring.nodes() {
+            if node == &self.node_id { continue; }
+            let last = heartbeats.get(node).copied().unwrap_or(0);
+            if last > 0 && now - last > timeout_secs {
+                dead.push(node.clone());
+            }
+        }
+        drop(heartbeats);
+        drop(ring);
+        // Remove dead nodes from ring
+        for node in &dead {
+            self.ring.write().unwrap().remove_node(node);
+            self.peers.lock().unwrap().remove(node);
+            eprintln!("cluster: node '{}' removed (no heartbeat for {}s)", node, timeout_secs);
+        }
+        dead
     }
 
     pub fn next_req_id(&self) -> String {
