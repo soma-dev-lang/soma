@@ -37,6 +37,9 @@ enum Commands {
     Check {
         /// Path to the .cell source file
         file: PathBuf,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
     },
     /// Compile a .cell file and generate Rust code
     Build {
@@ -141,6 +144,14 @@ enum Commands {
     Verify {
         /// Path to the .cell source file(s)
         files: Vec<PathBuf>,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Describe a cell: structured output of signals, memory, state machines, scale
+    Describe {
+        /// Path to the .cell source file
+        file: PathBuf,
     },
 }
 
@@ -154,7 +165,7 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Check { file } => commands::check::cmd_check(&file, &mut registry),
+        Commands::Check { file, json } => commands::check::cmd_check(&file, json, &mut registry),
         Commands::Build { file, output } => commands::build::cmd_build(&file, output.as_deref(), &mut registry),
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
@@ -176,11 +187,12 @@ fn main() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
-        Commands::Verify { files } => cmd_verify(&files),
+        Commands::Verify { files, json } => cmd_verify(&files, json),
+        Commands::Describe { file } => commands::describe::cmd_describe(&file),
     }
 }
 
-fn cmd_verify(files: &[PathBuf]) {
+fn cmd_verify(files: &[PathBuf], json: bool) {
     use checker::temporal::*;
 
     let mut all_results = Vec::new();
@@ -269,36 +281,87 @@ fn cmd_verify(files: &[PathBuf]) {
     }
 
     if all_results.is_empty() {
-        eprintln!("No state machines found.");
+        if json {
+            println!("{{\"state_machines\":[], \"temporal\":[], \"passed\": true}}");
+        } else {
+            eprintln!("No state machines found.");
+        }
         return;
-    }
-
-    print!("{}", checker::verify::format_results(&all_results));
-
-    for (name, results) in &all_temporal {
-        print!("{}", format_property_results(name, results));
     }
 
     let has_failures = all_results.iter().any(|r| r.has_failures())
         || all_temporal.iter().any(|(_, rs)| rs.iter().any(|r| !r.passed));
 
-    let total_temporal = all_temporal.iter().map(|(_, rs)| rs.len()).sum::<usize>();
-    let passed_temporal = all_temporal.iter()
-        .flat_map(|(_, rs)| rs.iter())
-        .filter(|r| r.passed)
-        .count();
-    let failed_temporal = total_temporal - passed_temporal;
+    if json {
+        // Machine-readable JSON output for agents
+        let sm_results: Vec<serde_json::Value> = all_results.iter().map(|r| {
+            let checks: Vec<serde_json::Value> = r.checks.iter().map(|c| {
+                match c {
+                    checker::verify::VerifyCheck::Pass(msg) => serde_json::json!({"status": "pass", "message": msg}),
+                    checker::verify::VerifyCheck::Warning(msg) => serde_json::json!({"status": "warning", "message": msg}),
+                    checker::verify::VerifyCheck::Fail(msg, trace) => {
+                        let mut v = serde_json::json!({"status": "fail", "message": msg});
+                        if let Some(t) = trace { v["counter_example"] = serde_json::json!(t); }
+                        v
+                    }
+                }
+            }).collect();
+            serde_json::json!({
+                "name": r.machine_name,
+                "states": r.states,
+                "initial": r.initial,
+                "terminal_states": r.terminal_states,
+                "checks": checks,
+            })
+        }).collect();
 
-    if let Some(cfg) = verify_config {
-        let user_props = cfg.eventually.len() + cfg.never.len() + cfg.always.len()
-            + cfg.after.values().map(|a| a.eventually.len() + a.never.len()).sum::<usize>()
-            + if cfg.deadlock_free { 1 } else { 0 };
-        if user_props > 0 {
-            eprintln!("soma.toml: {} user-defined properties loaded", user_props);
+        let temporal_results: Vec<serde_json::Value> = all_temporal.iter().map(|(name, results)| {
+            let props: Vec<serde_json::Value> = results.iter().map(|r| {
+                let mut v = serde_json::json!({
+                    "property": r.property,
+                    "passed": r.passed,
+                    "message": r.message,
+                });
+                if let Some(ref ce) = r.counter_example {
+                    v["counter_example"] = serde_json::json!(ce);
+                }
+                v
+            }).collect();
+            serde_json::json!({"state_machine": name, "properties": props})
+        }).collect();
+
+        let output = serde_json::json!({
+            "passed": !has_failures,
+            "state_machines": sm_results,
+            "temporal": temporal_results,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        // Human-readable output
+        print!("{}", checker::verify::format_results(&all_results));
+
+        for (name, results) in &all_temporal {
+            print!("{}", format_property_results(name, results));
         }
-    }
 
-    eprintln!("Temporal: {} passed, {} failed", passed_temporal, failed_temporal);
+        let total_temporal = all_temporal.iter().map(|(_, rs)| rs.len()).sum::<usize>();
+        let passed_temporal = all_temporal.iter()
+            .flat_map(|(_, rs)| rs.iter())
+            .filter(|r| r.passed)
+            .count();
+        let failed_temporal = total_temporal - passed_temporal;
+
+        if let Some(cfg) = verify_config {
+            let user_props = cfg.eventually.len() + cfg.never.len() + cfg.always.len()
+                + cfg.after.values().map(|a| a.eventually.len() + a.never.len()).sum::<usize>()
+                + if cfg.deadlock_free { 1 } else { 0 };
+            if user_props > 0 {
+                eprintln!("soma.toml: {} user-defined properties loaded", user_props);
+            }
+        }
+
+        eprintln!("Temporal: {} passed, {} failed", passed_temporal, failed_temporal);
+    }
 
     if has_failures {
         std::process::exit(1);

@@ -595,4 +595,31 @@ impl<'a> Checker<'a> {
 
         output
     }
+
+    /// Machine-readable JSON report for agent consumption
+    pub fn report_json(&self) -> String {
+        let errors: Vec<serde_json::Value> = self.errors.iter().map(|e| {
+            serde_json::json!({
+                "level": "error",
+                "message": format!("{}", e),
+            })
+        }).collect();
+
+        let warnings: Vec<serde_json::Value> = self.warnings.iter().map(|w| {
+            serde_json::json!({
+                "level": "warning",
+                "message": format!("{}", w),
+            })
+        }).collect();
+
+        let output = serde_json::json!({
+            "passed": self.errors.is_empty(),
+            "errors": errors,
+            "warnings": warnings,
+            "error_count": self.errors.len(),
+            "warning_count": self.warnings.len(),
+        });
+
+        serde_json::to_string_pretty(&output).unwrap()
+    }
 }
