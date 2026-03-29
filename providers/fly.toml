@@ -1,0 +1,23 @@
+# Soma Provider: Fly.io
+# Maps memory properties to Fly.io services.
+
+[provider]
+name = "fly"
+compute = "machine"         # Fly Machine (native binary, persistent volume)
+
+[resolve]
+# [persistent, consistent] → SQLite on persistent volume
+# Works as-is — same as local mode
+persistent_consistent = "sqlite"
+
+# [persistent] → SQLite on persistent volume
+persistent = "sqlite"
+
+# [ephemeral, local] → memory
+ephemeral = "memory"
+
+[machine]
+image = "soma-app"
+port = 8080
+memory = "256Mi"
+volume = "/app/.soma_data"  # persistent volume for SQLite

@@ -1,0 +1,28 @@
+# Soma Provider: AWS
+# Maps memory properties to AWS services.
+
+[provider]
+name = "aws"
+compute = "ecs"             # ECS Fargate (container)
+# compute = "lambda"        # Future: Lambda (needs WASM or custom runtime)
+
+[resolve]
+# [persistent, consistent] → DynamoDB (strong consistency option)
+persistent_consistent = "dynamodb"
+
+# [persistent] → DynamoDB (eventual by default)
+persistent = "dynamodb"
+
+# [ephemeral, local] → memory
+ephemeral = "memory"
+
+[services.dynamodb]
+type = "dynamodb"
+table_prefix = "soma_"
+region = "us-east-1"        # overridden by --region flag
+
+[ecs]
+image = "soma-app"
+port = 8080
+cpu = 256                   # overridden by scale { cpu }
+memory = 512                # overridden by scale { memory }

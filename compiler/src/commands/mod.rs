@@ -8,6 +8,7 @@ pub mod props;
 pub mod repl;
 pub mod provider;
 pub mod describe;
+pub mod deploy;
 
 use std::fs;
 use std::path::{Path, PathBuf};

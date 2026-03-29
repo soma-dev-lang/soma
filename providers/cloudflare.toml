@@ -1,0 +1,33 @@
+# Soma Provider: Cloudflare
+# Maps memory properties to Cloudflare services.
+# The .cell file doesn't change — only the resolver does.
+
+[provider]
+name = "cloudflare"
+compute = "container"       # Cloudflare Containers (native binary)
+# compute = "worker"        # Future: WASM in Workers
+
+[resolve]
+# [persistent, consistent] → D1 (SQLite-compatible, zero config)
+# The existing SqliteBackend works as-is with D1
+persistent_consistent = "d1"
+
+# [persistent] → KV (eventually consistent, fast reads)
+persistent = "kv"
+
+# [ephemeral, local] → memory (in-process, node-local)
+ephemeral = "memory"
+
+[services.d1]
+type = "d1"
+name = "soma-db"
+# D1 is SQLite — soma's SqliteBackend works unchanged
+
+[services.kv]
+type = "kv_namespace"
+name = "soma-kv"
+
+[container]
+image = "soma-app"
+port = 8080
+memory = "256Mi"            # overridden by scale { memory }

@@ -147,6 +147,19 @@ enum Commands {
     /// List all registered properties and their rules
     Props,
 
+    // ── Deploy ────────────────────────────────────────────────────
+    /// Deploy to a cloud provider: soma deploy app.cell --target cloudflare
+    Deploy {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// Target provider: cloudflare, fly, aws
+        #[arg(long)]
+        target: String,
+        /// Cloud region (for AWS)
+        #[arg(long)]
+        region: Option<String>,
+    },
+
     // ── Advanced ──────────────────────────────────────────────────
     /// Compile a .cell file and generate Rust code
     Build {
@@ -223,6 +236,7 @@ fn main() {
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
         Commands::Verify { files, json } => cmd_verify(&files, json),
+        Commands::Deploy { file, target, region } => commands::deploy::cmd_deploy(&file, &target, region.as_deref()),
         Commands::Describe { file } => commands::describe::cmd_describe(&file),
     }
 }
