@@ -104,8 +104,8 @@ cell Market {
             let hist_key = sym + "_" + to_string(t)
             history.set(hist_key, to_json(tick))
 
-            // Broadcast to all peers
-            signal price_update(tick)
+            // Send to Trading (direct call in same process)
+            price_update(tick)
         }
     }
 

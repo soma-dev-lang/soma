@@ -50,8 +50,8 @@ cell Broker {
             let updated = order |> with("status", "filled") |> with("filled_at", to_string(t))
             orders.set(order_id, to_json(updated))
 
-            // Notify Booking
-            signal order_filled(fill)
+            // Notify Booking (direct call)
+            order_filled(fill)
 
             // Update stats
             update_stats("fills")
@@ -61,7 +61,7 @@ cell Broker {
             let updated = order |> with("status", "rejected") |> with("reason", reason)
             orders.set(order_id, to_json(updated))
 
-            signal order_rejected(map("id", order_id, "reason", reason))
+            order_rejected(map("id", order_id, "reason", reason))
 
             update_stats("rejects")
         }

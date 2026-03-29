@@ -77,8 +77,8 @@ cell Booking {
             )
             orders.set(order_id, to_json(order))
 
-            // Send to Broker via signal bus
-            signal send_order(order)
+            // Send to Broker (direct call)
+            send_order(order)
         }
     }
 
