@@ -62,6 +62,7 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <div class="links">
 <a href="#manifesto">Manifesto</a>
 <a href="#contracts">Contracts</a>
+<a href="#verify">Verify</a>
 <a href="#foundations">Foundations</a>
 <a href="#syntax">Syntax</a>
 <a href="#pipeline">Pipelines</a>
@@ -204,6 +205,71 @@ and <strong>pipelines are pipes</strong>.
 <span class="dim">&rarr; Descriptive promises generate warnings. Structural promises are enforced.</span></code></pre>
 
 <p>This is what separates Soma from every other dynamic language. The face is a <strong>behavioral type</strong>: it declares what the cell does, and the compiler proves the cell does it. An auditor reads the <code>face</code> and knows the API. Not "what the developer intended" &mdash; what the program <em>guarantees</em>.</p>
+</section>
+
+<!-- ═══════════════════════════════════ VERIFY ═══════════════════════════════════ -->
+<section id="verify">
+<h2>Formal verification</h2>
+
+<p><code>soma verify</code> is a <strong>model checker</strong>. It exhaustively explores every reachable state in your state machine and proves temporal properties. Not testing &mdash; <em>proving</em>.</p>
+
+<div class="vs">
+<div class="side">
+<h4>The code &mdash; app.cell</h4>
+<pre><code><span class="kw">state</span> order {
+    <span class="kw">initial</span>: pending
+    pending &rarr; validated
+    validated &rarr; sent
+    sent &rarr; filled
+    sent &rarr; rejected
+    filled &rarr; settled
+    * &rarr; cancelled
+}</code></pre>
+</div>
+<div class="side">
+<h4>The spec &mdash; soma.toml</h4>
+<pre><code>[verify]
+deadlock_free = true
+eventually = ["settled", "cancelled"]
+never = ["invalid"]
+
+[verify.after.sent]
+eventually = ["filled", "rejected"]
+
+[verify.after.pending]
+eventually = ["validated", "cancelled"]</code></pre>
+</div>
+</div>
+
+<pre><code>$ soma verify app.cell
+
+State machine 'order': 7 states, initial 'pending'
+
+  <span class="green">&#x2713;</span> 7 states, 11 transitions
+  <span class="green">&#x2713;</span> all states reachable from 'pending'
+  <span class="green">&#x2713;</span> no deadlocks
+  <span class="green">&#x2713;</span> liveness: every state can eventually reach a terminal state
+
+  Temporal properties:
+  <span class="green">&#x2713;</span> deadlock_free
+  <span class="green">&#x2713;</span> eventually(settled or cancelled)
+  <span class="green">&#x2713;</span> never(invalid)
+  <span class="green">&#x2713;</span> after('pending', validated or cancelled)
+  <span class="op">&#x2717;</span> after('sent', filled or rejected)
+    <span class="dim">counter-example: pending &rarr; validated &rarr; sent &rarr; cancelled</span>
+    <span class="dim">&rarr; The wildcard * &rarr; cancelled bypasses the expected filled/rejected</span></code></pre>
+
+<p>The model checker found a real bug: after <code>sent</code>, the spec requires the order to reach <code>filled</code> or <code>rejected</code>. But the wildcard <code>* &rarr; cancelled</code> allows skipping directly to <code>cancelled</code> &mdash; violating the spec. The counter-example shows the exact execution path.</p>
+
+<p>This is <strong>CTL model checking</strong> &mdash; the same formalism used by NASA, Intel, and Amazon to verify critical systems. But here, the spec lives in <code>soma.toml</code>, the implementation lives in <code>.cell</code>, and the proof is one command: <code>soma verify</code>.</p>
+
+<table>
+<tr><th>Property</th><th>Meaning</th><th>CTL equivalent</th></tr>
+<tr><td>deadlock_free</td><td>No reachable state has zero exits</td><td>AG(EX true)</td></tr>
+<tr><td>eventually = ["X"]</td><td>All paths reach X</td><td>AF(X)</td></tr>
+<tr><td>never = ["X"]</td><td>X is never reached</td><td>AG(&not;X)</td></tr>
+<tr><td>after.S.eventually = ["X"]</td><td>After S, all paths reach X</td><td>AG(S &rarr; AF(X))</td></tr>
+</table>
 </section>
 
 <!-- ═══════════════════════════════════ FOUNDATIONS ═══════════════════════════════════ -->
