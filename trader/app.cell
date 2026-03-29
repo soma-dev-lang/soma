@@ -22,6 +22,7 @@ cell MarketMaker {
 
     // ---- Quote cycle: every 3s ----
 
+    // Quote cycle: refresh the book every 3s
     every 3s {
         let cycle = to_int(state.get("cycle") ?? "0") + 1
         state.set("cycle", to_string(cycle))
@@ -29,6 +30,37 @@ cell MarketMaker {
         let tickers = list("BTC", "ETH", "SOL", "AVAX")
         for ticker in tickers {
             requote(ticker)
+        }
+
+        // Every 2nd cycle: send an aggressive order that crosses the spread
+        // Simulates another trader hitting our quotes
+        if cycle % 2 == 0 {
+            aggress(cycle)
+        }
+    }
+
+    on aggress(cycle: Int) {
+        // Pick a ticker based on cycle
+        let tickers = list("BTC", "ETH", "SOL", "AVAX")
+        let idx = cycle % 4
+        let ticker = tickers.get(idx)
+        let mid = fair_value(ticker, cycle)
+
+        // Alternate buy/sell aggression
+        if cycle % 4 < 2 {
+            // Aggressive buy: bid above best ask to guarantee fill
+            let price = mid + 300
+            if ticker == "ETH" { price = mid + 30 }
+            if ticker == "SOL" { price = mid + 5 }
+            if ticker == "AVAX" { price = mid + 3 }
+            send_order(ticker, "buy", price, 1)
+        } else {
+            // Aggressive sell: ask below best bid to guarantee fill
+            let price = mid - 300
+            if ticker == "ETH" { price = mid - 30 }
+            if ticker == "SOL" { price = mid - 5 }
+            if ticker == "AVAX" { price = mid - 3 }
+            send_order(ticker, "sell", price, 1)
         }
     }
 
