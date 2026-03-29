@@ -1,0 +1,170 @@
+// ============================================================================
+// Sobol Quasi-Random Monte Carlo — Option Pricing in Soma
+// ============================================================================
+//
+// Sobol sequences are low-discrepancy quasi-random numbers used in finance
+// for faster convergence in Monte Carlo simulations. This example prices
+// a European call option using Sobol-like sequences vs pseudo-random numbers.
+//
+// Run: soma run sobol_monte_carlo.cell
+//
+// Demonstrates: pipelines, lambdas, reduce, math builtins, data transforms
+
+cell SobolMonteCarlo {
+
+    // ---- Sobol-like sequence generator (Van der Corput base 2) ----
+    // True Sobol needs direction numbers; Van der Corput is the 1D component.
+    // For a demo, this gives the low-discrepancy property.
+
+    on van_der_corput(n: Int) {
+        // Reverse bits of n to get quasi-random number in [0, 1)
+        let result = 0.0
+        let base = 0.5
+        let num = n
+        while num > 0 {
+            if num % 2 == 1 {
+                result = result + base
+            }
+            num = num / 2
+            if type_of(num) == "Float" {
+                num = to_int(num)
+            }
+            base = base / 2
+        }
+        return result
+    }
+
+    // ---- Box-Muller transform: uniform [0,1) → standard normal ----
+
+    on inv_norm(u: Float) {
+        // Rational approximation of inverse normal CDF (Beasley-Springer-Moro)
+        if u <= 0.0 { return -8.0 }
+        if u >= 1.0 { return 8.0 }
+        let t = u - 0.5
+        if abs(t) < 0.42 {
+            let r = t * t
+            return t * ((((-25.44106049637 * r + 41.39119773534) * r + -18.61500062529) * r + 2.50662823884) / ((((3.13082909833 * r + -21.06224101826) * r + 23.08336743743) * r + -8.47351093090) * r + 1.0))
+        }
+        let r = u
+        if t > 0 { r = 1.0 - u }
+        let s = log(-log(r))
+        let z = 0.3374754822726147 + s * (0.9761690190917186 + s * (0.1607979714918209 + s * (0.0276438810333863 + s * 0.0038405729373609)))
+        if t < 0 { return -z }
+        return z
+    }
+
+    // ---- Black-Scholes reference price ----
+
+    on bs_d1(S: Float, K: Float, r: Float, sigma: Float, T: Float) {
+        return (log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * sqrt(T))
+    }
+
+    on norm_cdf(x: Float) {
+        // Abramowitz & Stegun approximation (single precision, accurate to 1e-7)
+        if x < -8.0 { return 0.0 }
+        if x > 8.0 { return 1.0 }
+        let b1 = 0.319381530
+        let b2 = -0.356563782
+        let b3 = 1.781477937
+        let b4 = -1.821255978
+        let b5 = 1.330274429
+        let pp = 0.2316419
+        let ax = abs(x)
+        let t_val = 1.0 / (1.0 + pp * ax)
+        let pdf = exp(-ax * ax / 2.0) / 2.5066282746310002
+        let cdf = 1.0 - pdf * t_val * (b1 + t_val * (b2 + t_val * (b3 + t_val * (b4 + t_val * b5))))
+        if x < 0 { return 1.0 - cdf }
+        return cdf
+    }
+
+    on bs_price(S: Float, K: Float, r: Float, sigma: Float, T: Float) {
+        let d1 = bs_d1(S, K, r, sigma, T)
+        let d2 = d1 - sigma * sqrt(T)
+        return S * norm_cdf(d1) - K * exp(-r * T) * norm_cdf(d2)
+    }
+
+    // ---- Monte Carlo pricer ----
+
+    on mc_price(S: Float, K: Float, r: Float, sigma: Float, T: Float, n_paths: Int, use_sobol: Int) {
+        let payoff_sum = 0.0
+        let drift = (r - sigma * sigma / 2) * T
+        let vol = sigma * sqrt(T)
+
+        let i = 1
+        while i <= n_paths {
+            // Generate normal random number
+            let z = 0.0
+            if use_sobol == 1 {
+                let u = van_der_corput(i)
+                z = inv_norm(u)
+            } else {
+                let u = random()
+                if u < 0.0001 { u = 0.0001 }
+                if u > 0.9999 { u = 0.9999 }
+                z = inv_norm(u)
+            }
+
+            // Simulate terminal stock price
+            let ST = S * exp(drift + vol * z)
+
+            // Call payoff
+            let payoff = ST - K
+            if payoff < 0 { payoff = 0.0 }
+
+            payoff_sum = payoff_sum + payoff
+            i = i + 1
+        }
+
+        // Discounted average payoff
+        return exp(-r * T) * payoff_sum / n_paths
+    }
+
+    // ---- Main ----
+
+    on run() {
+        // Option parameters
+        let S = 100.0       // spot price
+        let K = 105.0       // strike
+        let r = 0.05        // risk-free rate
+        let sigma = 0.2     // volatility
+        let T = 1.0         // time to maturity (years)
+
+        print("European Call Option Pricing")
+        print("===========================")
+        print("Spot: {S}  Strike: {K}  Rate: {r}  Vol: {sigma}  T: {T}")
+        print("")
+
+        // Black-Scholes analytical price
+        let bs = bs_price(S, K, r, sigma, T)
+        print("Black-Scholes price: {bs}")
+        print("")
+
+        // Monte Carlo with different path counts
+        for n in list(100, 500, 1000, 5000) {
+            let start = now_ms()
+            let mc_pseudo = mc_price(S, K, r, sigma, T, n, 0)
+            let t1 = now_ms() - start
+
+            let start2 = now_ms()
+            let mc_sobol = mc_price(S, K, r, sigma, T, n, 1)
+            let t2 = now_ms() - start2
+
+            let err_pseudo = abs(mc_pseudo - bs)
+            let err_sobol = abs(mc_sobol - bs)
+
+            print("Paths: {n}")
+            print("  Pseudo-random: {mc_pseudo}  error: {err_pseudo}  ({t1}ms)")
+            print("  Sobol:         {mc_sobol}  error: {err_sobol}  ({t2}ms)")
+            print("")
+        }
+
+        // Show Sobol sequence quality
+        print("First 10 Van der Corput numbers:")
+        let seq = range(1, 11) |> map(i => van_der_corput(i))
+        print(seq)
+
+        print("")
+        print("Notice: Sobol numbers fill [0,1) more uniformly than random().")
+        print("This gives faster convergence for option pricing.")
+    }
+}
