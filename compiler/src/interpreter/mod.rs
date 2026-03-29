@@ -14,7 +14,7 @@ pub enum RuntimeError {
     UndefinedVar(String),
     #[error("undefined function: {0}")]
     UndefinedFn(String),
-    #[error("type error: {0}")]
+    #[error("{0}")]
     TypeError(String),
     #[error("no handler found for signal '{0}' in cell '{1}'")]
     NoHandler(String, String),
@@ -22,6 +22,34 @@ pub enum RuntimeError {
     RequireFailed(String),
     #[error("stack overflow (recursion depth exceeded)")]
     StackOverflow,
+}
+
+/// Return a human-readable type name for a Value (e.g. "String", "Int").
+fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Int(_) => "Int",
+        Value::Big(_) => "BigInt",
+        Value::Float(_) => "Float",
+        Value::String(_) => "String",
+        Value::Bool(_) => "Bool",
+        Value::List(_) => "List",
+        Value::Map(_) => "Map",
+        Value::Lambda { .. } | Value::LambdaBlock { .. } => "Function",
+        Value::Unit => "Null",
+    }
+}
+
+/// Human-readable name for a BinOp verb (e.g. "add", "subtract").
+fn binop_verb(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "add",
+        BinOp::Sub => "subtract",
+        BinOp::Mul => "multiply",
+        BinOp::Div => "divide",
+        BinOp::Mod => "modulo",
+        BinOp::And => "logical-and",
+        BinOp::Or => "logical-or",
+    }
 }
 
 /// Convert a byte offset to line:col using source text
@@ -42,22 +70,44 @@ pub fn span_to_location(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
-/// Format an error with file location if available
+/// Build a source-context snippet with a caret line pointing at the error position.
+/// Returns an empty string if no source is available.
+pub fn format_error_context(source: &str, span_start: usize) -> String {
+    let (line_num, col) = span_to_location(source, span_start);
+    // Extract the source line
+    let line_text = source.split('\n').nth(line_num - 1).unwrap_or("");
+    let line_num_str = format!("{}", line_num);
+    let gutter_width = line_num_str.len();
+    let padding = " ".repeat(gutter_width);
+    let caret_offset = " ".repeat(col.saturating_sub(1));
+    format!(
+        "{} |\n{} | {}\n{} | {}^",
+        padding, line_num_str, line_text, padding, caret_offset
+    )
+}
+
+/// Format an error with file location and source context if available.
 pub fn format_runtime_error(
     err: &RuntimeError,
     source_file: Option<&str>,
     source_text: Option<&str>,
     span: Option<crate::ast::Span>,
 ) -> String {
-    let location = match (source_file, source_text, span) {
+    let (location, context) = match (source_file, source_text, span) {
         (Some(file), Some(text), Some(sp)) => {
             let (line, col) = span_to_location(text, sp.start);
-            format!("{}:{}:{}: ", file, line, col)
+            let loc = format!("  --> {}:{}:{}\n", file, line, col);
+            let ctx = format_error_context(text, sp.start);
+            (loc, ctx)
         }
-        (Some(file), _, _) => format!("{}: ", file),
-        _ => String::new(),
+        (Some(file), _, _) => (format!("  --> {}\n", file), String::new()),
+        _ => (String::new(), String::new()),
     };
-    format!("{}runtime error: {}", location, err)
+    if context.is_empty() {
+        format!("error: {}\n{}", err, location)
+    } else {
+        format!("error: {}\n{}{}", err, location, context)
+    }
 }
 
 /// Check if a Value is truthy (false for Bool(false), Unit, Int(0); true otherwise)
@@ -409,8 +459,10 @@ impl Interpreter {
         if args.len() != params.len() {
             self.current_depth -= 1;
             return Err(RuntimeError::TypeError(format!(
-                "expected {} arguments, got {}",
+                "{}() expected {} argument{}, got {}",
+                signal_name,
                 params.len(),
+                if params.len() == 1 { "" } else { "s" },
                 args.len()
             )));
         }
@@ -1620,8 +1672,8 @@ impl Interpreter {
                 _ => Err(RuntimeError::TypeError("invalid op for bools".to_string())),
             },
             _ => Err(RuntimeError::TypeError(format!(
-                "cannot apply {:?} to {:?} and {:?}",
-                op, l, r
+                "cannot {} {} and {}: {} {} {}",
+                binop_verb(op), value_type_name(l), value_type_name(r), l, op, r
             ))),
         }
     }
@@ -1697,8 +1749,8 @@ impl Interpreter {
                 Ok(Value::Bool(matches!(op, CmpOp::Ne)))
             }
             _ => Err(RuntimeError::TypeError(format!(
-                "cannot compare {:?} and {:?}",
-                l, r
+                "cannot compare {} and {}",
+                value_type_name(l), value_type_name(r)
             ))),
         }
     }

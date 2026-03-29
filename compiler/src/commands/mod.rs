@@ -74,14 +74,15 @@ pub fn lex_with_location(source: &str, file: Option<&str>) -> Vec<lexer::Spanned
         Err(e) => {
             if let Some(pos) = lex_error_position(&e) {
                 let (line, col) = crate::interpreter::span_to_location(source, pos);
-                let prefix = if let Some(f) = file {
-                    format!("{}:{}:{}", f, line, col)
+                let location = if let Some(f) = file {
+                    format!("  --> {}:{}:{}", f, line, col)
                 } else {
-                    format!("{}:{}", line, col)
+                    format!("  --> {}:{}", line, col)
                 };
-                eprintln!("{}: lexer error: {}", prefix, e);
+                let context = crate::interpreter::format_error_context(source, pos);
+                eprintln!("error: {}\n{}\n{}", e, location, context);
             } else {
-                eprintln!("lexer error: {}", e);
+                eprintln!("error: {}", e);
             }
             process::exit(1);
         }
@@ -100,15 +101,16 @@ pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str
             match (&e, source) {
                 (parser::ParseError::Expected { span, .. }, Some(src)) => {
                     let (line, col) = crate::interpreter::span_to_location(src, span.start);
-                    let prefix = if let Some(f) = file {
-                        format!("{}:{}:{}", f, line, col)
+                    let location = if let Some(f) = file {
+                        format!("  --> {}:{}:{}", f, line, col)
                     } else {
-                        format!("{}:{}", line, col)
+                        format!("  --> {}:{}", line, col)
                     };
-                    eprintln!("{}: parse error: {}", prefix, e);
+                    let context = crate::interpreter::format_error_context(src, span.start);
+                    eprintln!("error: {}\n{}\n{}", e, location, context);
                 }
                 _ => {
-                    eprintln!("parse error: {}", e);
+                    eprintln!("error: {}", e);
                 }
             }
             process::exit(1);

@@ -2,9 +2,71 @@ use crate::ast::*;
 use crate::lexer::{DurationUnitTok, SpannedToken, Token};
 use thiserror::Error;
 
+fn display_token(token: &Token) -> String {
+    match token {
+        Token::Eq => "'='".to_string(),
+        Token::EqEq => "'=='".to_string(),
+        Token::Ne => "'!='".to_string(),
+        Token::Lt => "'<'".to_string(),
+        Token::Gt => "'>'".to_string(),
+        Token::Le => "'<='".to_string(),
+        Token::Ge => "'>='".to_string(),
+        Token::Plus => "'+'".to_string(),
+        Token::Minus => "'-'".to_string(),
+        Token::Star => "'*'".to_string(),
+        Token::Slash => "'/'".to_string(),
+        Token::Percent => "'%'".to_string(),
+        Token::Pipe => "'|>'".to_string(),
+        Token::Arrow => "'->'".to_string(),
+        Token::FatArrow => "'=>'".to_string(),
+        Token::LParen => "'('".to_string(),
+        Token::RParen => "')'".to_string(),
+        Token::LBrace => "'{'".to_string(),
+        Token::RBrace => "'}'".to_string(),
+        Token::LBracket => "'['".to_string(),
+        Token::RBracket => "']'".to_string(),
+        Token::Comma => "','".to_string(),
+        Token::Dot => "'.'".to_string(),
+        Token::Colon => "':'".to_string(),
+        Token::Bang => "'!'".to_string(),
+        Token::AndAnd => "'&&'".to_string(),
+        Token::OrOr => "'||'".to_string(),
+        Token::PlusEq => "'+='".to_string(),
+        Token::NullCoal => "'??'".to_string(),
+        Token::IntLit(n) => format!("number '{}'", n),
+        Token::FloatLit(n) => format!("number '{}'", n),
+        Token::StringLit(s) => format!("string \"{}\"", s),
+        Token::Ident(s) => format!("'{}'", s),
+        Token::TypeIdent(s) => format!("'{}'", s),
+        Token::Cell => "'cell'".to_string(),
+        Token::Let => "'let'".to_string(),
+        Token::If => "'if'".to_string(),
+        Token::Else => "'else'".to_string(),
+        Token::Return => "'return'".to_string(),
+        Token::For => "'for'".to_string(),
+        Token::While => "'while'".to_string(),
+        Token::Match => "'match'".to_string(),
+        Token::Break => "'break'".to_string(),
+        Token::Continue => "'continue'".to_string(),
+        Token::Face => "'face'".to_string(),
+        Token::Memory => "'memory'".to_string(),
+        Token::Interior => "'interior'".to_string(),
+        Token::On => "'on'".to_string(),
+        Token::Use => "'use'".to_string(),
+        Token::True => "'true'".to_string(),
+        Token::False => "'false'".to_string(),
+        Token::In => "'in'".to_string(),
+        Token::Try => "'try'".to_string(),
+        Token::Catch => "'catch'".to_string(),
+        Token::Every => "'every'".to_string(),
+        Token::Eof => "end of file".to_string(),
+        _ => format!("{:?}", token),
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ParseError {
-    #[error("expected {expected}, found {found:?}")]
+    #[error("expected {expected}, found {}", display_token(found))]
     Expected {
         expected: String,
         found: Token,
@@ -134,7 +196,7 @@ impl Parser {
             Ok(span)
         } else {
             Err(ParseError::Expected {
-                expected: format!("{:?}", expected),
+                expected: display_token(&expected).to_string(),
                 found: tok.token.clone(),
                 span: tok.span,
             })
