@@ -1187,7 +1187,7 @@ impl Interpreter {
     }
 
     /// Apply a lambda to a value: bind param, eval body
-    pub fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
+    pub(crate) fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
         match lambda {
             Value::Lambda { param, body, env: closed_env } => {
                 let mut env = closed_env.clone();
@@ -1526,7 +1526,7 @@ fn stored_to_value(stored: StoredValue) -> Value {
 
 /// Internal error type to handle return-as-control-flow
 #[derive(Debug)]
-enum ExecError {
+pub(crate) enum ExecError {
     Return(Value),
     Break,
     Continue,
