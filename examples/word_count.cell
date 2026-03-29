@@ -1,0 +1,40 @@
+// ============================================================================
+// Word Count — Big Data Text Processing
+// ============================================================================
+//
+// Reads 10,000 files and counts every word.
+// Same code works sequential or parallel — soma.toml decides.
+//
+// Run: soma run word_count.cell
+//
+// To parallelize, add to soma.toml:
+//   [compute]
+//   backend = "threads"
+//   threads = 8
+
+cell WordCount {
+
+    on run() {
+        let start = now_ms()
+
+        let files = read_files("data", 10000)
+        let counts = files |> word_count()
+
+        let elapsed = now_ms() - start
+
+        let n_files = len(files)
+        let n_unique = len(counts.keys)
+        print("Word Count")
+        print("==========")
+        print("Files: {n_files}")
+        print("Unique words: {n_unique}")
+        print("Time: {elapsed}ms")
+        print("")
+
+        // Show top words
+        let the_count = counts.the ?? 0
+        let is_count = counts.is ?? 0
+        print("  the: {the_count}")
+        print("  is: {is_count}")
+    }
+}

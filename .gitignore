@@ -4,3 +4,4 @@ compiler/target/
 
 # OS
 .DS_Store
+examples/data/
