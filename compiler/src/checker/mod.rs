@@ -1,5 +1,6 @@
 mod properties;
 mod signals;
+pub mod verify;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;

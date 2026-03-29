@@ -134,6 +134,11 @@ enum Commands {
     },
     /// List all registered properties and their rules
     Props,
+    /// Verify state machines: reachability, deadlocks, liveness
+    Verify {
+        /// Path to the .cell source file(s)
+        files: Vec<PathBuf>,
+    },
 }
 
 fn main() {
@@ -168,6 +173,34 @@ fn main() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
+        Commands::Verify { files } => cmd_verify(&files),
+    }
+}
+
+fn cmd_verify(files: &[PathBuf]) {
+    let mut all_results = Vec::new();
+
+    for path in files {
+        let source = commands::read_source(path);
+        let tokens = commands::lex(&source);
+        let mut program = commands::parse(tokens);
+        commands::resolve_imports(&mut program, path);
+
+        eprintln!("Verifying {}...", path.display());
+        let results = checker::verify::verify_program(&program);
+        all_results.extend(results);
+    }
+
+    if all_results.is_empty() {
+        eprintln!("No state machines found.");
+        return;
+    }
+
+    print!("{}", checker::verify::format_results(&all_results));
+
+    let has_failures = all_results.iter().any(|r| r.has_failures());
+    if has_failures {
+        std::process::exit(1);
     }
 }
 
