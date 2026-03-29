@@ -64,6 +64,7 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <a href="#syntax">Language</a>
 <a href="#native">Performance</a>
 <a href="#fractal">Distribution</a>
+<a href="#agent">Agents</a>
 <a href="#reference">Reference</a>
 <a href="/paper.html">Paper</a>
 <a href="https://github.com/soma-dev-lang/soma">GitHub</a>
@@ -784,6 +785,63 @@ State machine 'PricingEngine/scale':
 <p style="margin-top:1.5rem"><strong>Read the paper:</strong> <a href="/paper.html" style="color:var(--accent)">Scale as a Type: Verified Distribution in a Fractal Cell Language</a></p>
 </section>
 
+<!-- ═══════════════════════════════════ AGENT ═══════════════════════════════════ -->
+<section id="agent">
+<h2>Agent-Native</h2>
+<p class="subtitle">The first language where an agent can build a verified distributed system without human supervision &mdash; because the compiler is the supervisor.</p>
+
+<h3>The loop</h3>
+<pre><code>Agent receives: <span class="str">"restaurant booking with waitlist and auto-cancel after 15min"</span>
+
+<span class="cmt">1.</span> Agent generates reservation.cell
+<span class="cmt">2.</span> <span class="kw">soma check</span> app.cell --json
+   &rarr; {<span class="str">"passed"</span>: true}
+
+<span class="cmt">3.</span> <span class="kw">soma verify</span> app.cell --json
+   &rarr; {<span class="str">"passed"</span>: true, <span class="str">"temporal"</span>: [{<span class="str">"property"</span>: <span class="str">"eventually(seated|cancelled)"</span>, <span class="str">"passed"</span>: true}]}
+
+<span class="cmt">4.</span> <span class="kw">soma serve</span> app.cell &rarr; http://localhost:8080
+
+Total: 12 seconds. Zero human intervention.</code></pre>
+
+<p>When <code>soma verify</code> finds a bug, the counter-example is a structured trace the agent can read, understand, and fix:</p>
+
+<pre><code>$ soma verify app.cell --json
+
+{<span class="str">"passed"</span>: false, <span class="str">"temporal"</span>: [{
+  <span class="str">"property"</span>: <span class="str">"after('confirmed', eventually seated|cancelled)"</span>,
+  <span class="str">"passed"</span>: false,
+  <span class="str">"counter_example"</span>: [<span class="str">"confirmed"</span>, <span class="str">"no_show"</span>, <span class="str">"confirmed"</span>, <span class="str">"..."</span>]
+}]}</code></pre>
+
+<p>The agent reads the trace, adds the missing transition, re-verifies. No human needed. No tests to write &mdash; the model checker explores all paths exhaustively.</p>
+
+<h3>Machine-readable by design</h3>
+<table>
+<tr><td><code>soma describe app.cell</code></td><td>JSON: signals, memory, state machines, scale, routes</td></tr>
+<tr><td><code>soma check app.cell --json</code></td><td>JSON: errors, warnings, pass/fail</td></tr>
+<tr><td><code>soma verify app.cell --json</code></td><td>JSON: proofs, counter-examples, temporal properties</td></tr>
+</table>
+
+<p>Every cell is self-describing. An agent reads the <code>face</code> contract and knows exactly what signals a cell accepts, what types they expect, what guarantees it offers. No documentation needed &mdash; the contract <strong>is</strong> the documentation.</p>
+
+<h3>MCP Server</h3>
+<p>Soma ships as an <a href="https://modelcontextprotocol.io" style="color:var(--accent)">MCP server</a> &mdash; any AI agent can use it as a tool:</p>
+
+<pre><code><span class="cmt">// claude_desktop_config.json or Claude Code MCP settings</span>
+{
+  <span class="str">"mcpServers"</span>: {
+    <span class="str">"soma"</span>: {
+      <span class="str">"command"</span>: <span class="str">"python3"</span>,
+      <span class="str">"args"</span>: [<span class="str">"mcp/soma_mcp.py"</span>],
+      <span class="str">"env"</span>: { <span class="str">"SOMA_BIN"</span>: <span class="str">"soma"</span> }
+    }
+  }
+}</code></pre>
+
+<p>9 tools exposed: <code>soma_generate</code>, <code>soma_check</code>, <code>soma_verify</code>, <code>soma_describe</code>, <code>soma_serve</code>, <code>soma_stop</code>, <code>soma_test</code>, <code>soma_run</code>, <code>soma_generate_toml</code>. Plus the language reference as an MCP resource.</p>
+</section>
+
 <!-- ═══════════════════════════════════ EXAMPLES ═══════════════════════════════════ -->
 <section>
 <h2>Built with Soma</h2>
@@ -821,10 +879,14 @@ State machine 'PricingEngine/scale':
 <h2>CLI reference</h2>
 <table>
 <tr><td>soma run file.cell [args]</td><td>Execute a signal</td></tr>
-<tr><td>soma run file.cell --jit</td><td>Bytecode VM (faster)</td></tr>
 <tr><td>soma serve file.cell</td><td>HTTP :8080, WS :8081, Bus :8082</td></tr>
-<tr><td>soma serve file.cell --watch</td><td>Hot reload</td></tr>
+<tr><td>soma serve file.cell --join host:port</td><td>Join a cluster</td></tr>
+<tr><td>soma serve file.cell --watch</td><td>Hot reload on file change</td></tr>
 <tr><td>soma check file.cell</td><td>Verify contracts &amp; properties</td></tr>
+<tr><td>soma check file.cell --json</td><td>Machine-readable errors (for agents)</td></tr>
+<tr><td>soma verify file.cell</td><td>State machine + distribution proofs</td></tr>
+<tr><td>soma verify file.cell --json</td><td>Machine-readable proofs (for agents)</td></tr>
+<tr><td>soma describe file.cell</td><td>JSON: signals, memory, scale, routes</td></tr>
 <tr><td>soma test file.cell</td><td>Run test cells</td></tr>
 <tr><td>soma init [name]</td><td>Create project</td></tr>
 <tr><td>soma add pkg --git url</td><td>Add dependency</td></tr>
@@ -836,16 +898,18 @@ State machine 'PricingEngine/scale':
 <h2>Architecture</h2>
 <pre><code>Source (.cell)
     &rarr; Lexer &rarr; Parser &rarr; AST
-        &rarr; Checker (properties, signals, promises)
+        &rarr; Checker (contracts, properties, scale coherence)
+        &rarr; Verifier (state machines, temporal logic, CAP analysis)
+        &rarr; Describe (JSON cell metadata &mdash; for agents)
         &rarr; Interpreter (soma run)
-        &rarr; Bytecode VM (soma run --jit)
+        &rarr; Native FFI ([native] &rarr; Rust &rarr; .dylib &rarr; 200x)
     &rarr; Registry (stdlib/*.cell &mdash; properties, backends, builtins)
     &rarr; Runtime
-        &rarr; Storage (SQLite | Memory | HTTP Provider)
+        &rarr; Storage (SQLite | Memory)
         &rarr; HTTP server (soma serve)
-        &rarr; SSE streaming (real-time browser push)
-        &rarr; WebSocket server (bidirectional)
-        &rarr; TCP signal bus (inter-process signals)</code></pre>
+        &rarr; Cluster (--join &rarr; hash ring &rarr; signal replication)
+        &rarr; SSE + WebSocket + TCP signal bus
+    &rarr; MCP Server (9 tools for AI agents)</code></pre>
 </section>
 
 </div>
