@@ -13,7 +13,22 @@ unsafe fn _soma_random() -> f64 {
 }
 
 #[no_mangle]
-pub extern "C" fn handler_simulate(n: i64) -> f64 {
+pub extern "C" fn handler_compute_hit(i: i64) -> f64 {
+    let mut x: f64 = unsafe { _soma_random() };
+    let mut y: f64 = unsafe { _soma_random() };
+    if (((x * x) + (y * y)) <= 1f64) {
+        return 1f64;
+    }
+    return 0f64;
+}
+
+#[no_mangle]
+pub extern "C" fn handler_simulate_pipe(n: i64) -> f64 {
+    return ((((0i64..n)).map(|i| -> f64 { handler_compute_hit(i) })).fold(0f64, |_acc, _val| { let _val = _val as f64; (_acc + _val) }) / n as f64 * 4f64);
+}
+
+#[no_mangle]
+pub extern "C" fn handler_simulate_loop(n: i64) -> f64 {
     let mut total: f64 = 0f64;
     let mut i: i64 = 0i64;
     while (i < n) {
@@ -25,27 +40,5 @@ pub extern "C" fn handler_simulate(n: i64) -> f64 {
         i = (i + 1i64);
     }
     return ((4f64 * total) / n as f64);
-}
-
-#[no_mangle]
-pub extern "C" fn handler_simulate_par(n: i64) -> f64 {
-	let _n_threads = 8usize;
-	let _total = n as usize;
-	if _total < _n_threads * 1000 {
-		return handler_simulate(n);
-	}
-	let _chunk = (_total + _n_threads - 1) / _n_threads;
-	let _result: f64 = std::thread::scope(|_s| {
-		let _handles: Vec<_> = (0.._n_threads).map(|_t| {
-			let _start = _t * _chunk;
-			let _end = std::cmp::min((_t + 1) * _chunk, _total);
-			let _chunk_n = (_end - _start) as i64;
-			_s.spawn(move || {
-				handler_simulate(_chunk_n) * _chunk_n as f64
-			})
-		}).collect();
-		_handles.into_iter().map(|h| h.join().unwrap()).sum::<f64>()
-	});
-	(_result / n as f64) as f64
 }
 

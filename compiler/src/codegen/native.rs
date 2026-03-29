@@ -737,113 +737,157 @@ impl FnGenerator {
 
     /// Generate parallel Rust code for pipe expressions.
     /// range(0, n) |> map(f) |> reduce(init, f) → parallel iteration
-    fn gen_pipe(&self, left: &Expr, right: &Expr, target_ty: NativeType) -> String {
-        // right side should be a FnCall: map(lambda), filter(lambda), reduce(init, lambda)
-        match right {
-            Expr::FnCall { name, args } => {
-                let source = self.gen_expr(left, NativeType::Float);
-
-                match name.as_str() {
-                    "map" if args.len() == 1 => {
-                        let lambda = self.gen_expr(&args[0].node, NativeType::Float);
-                        // Parallel map using std::thread::scope
-                        format!(
-                            "{{\n\
-                            let _src: Vec<f64> = {source}.map(|i| i as f64).collect();\n\
-                            let _n = _src.len();\n\
-                            let _ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);\n\
-                            if _n < _ncpu * 1000 {{\n\
-                                _src.iter().map({lambda}).collect::<Vec<f64>>()\n\
-                            }} else {{\n\
-                                let _chunk = (_n + _ncpu - 1) / _ncpu;\n\
-                                std::thread::scope(|_s| {{\n\
-                                    let _handles: Vec<_> = (0.._ncpu).map(|_t| {{\n\
-                                        let _slice = &_src[(_t * _chunk).min(_n)..((_t + 1) * _chunk).min(_n)];\n\
-                                        _s.spawn(move || _slice.iter().map({lambda}).collect::<Vec<f64>>())\n\
-                                    }}).collect();\n\
-                                    _handles.into_iter().flat_map(|h| h.join().unwrap()).collect::<Vec<f64>>()\n\
-                                }})\n\
-                            }}\n\
-                            }}"
-                        )
+    /// Flatten a pipe chain into: (source, [(op_name, args), ...], optional_suffix_expr)
+    fn flatten_pipe<'a>(&self, expr: &'a Expr) -> (String, Vec<(&'a str, &'a [Spanned<Expr>])>) {
+        match expr {
+            Expr::Pipe { left, right } => {
+                let (source, mut ops) = self.flatten_pipe(&left.node);
+                match &right.node {
+                    Expr::FnCall { name, args } => {
+                        ops.push((name.as_str(), args.as_slice()));
                     }
-                    "filter" if args.len() == 1 => {
-                        let lambda = self.gen_expr(&args[0].node, NativeType::Bool);
-                        format!(
-                            "({source}).filter({lambda}).collect::<Vec<_>>()"
-                        )
+                    // Handle: pipe |> reduce(...) / n — arithmetic wrapping a pipe op
+                    Expr::BinaryOp { left: inner_left, .. } => {
+                        if let Expr::FnCall { name, args } = &inner_left.node {
+                            ops.push((name.as_str(), args.as_slice()));
+                        }
+                        // The arithmetic (/ n * 4.0) will be handled by the BinaryOp in gen_expr
+                        // since we only flatten the pipe part
                     }
-                    "reduce" if args.len() == 2 => {
-                        let init = self.gen_expr(&args[0].node, NativeType::Float);
-                        // For reduce, the lambda takes a struct-like thing with .acc and .val
-                        // In native, we'll use a simple fold with (acc, val) tuple
-                        // The user's lambda is: p => p.acc + p.val
-                        // We need to translate p.acc → acc, p.val → val
-                        let lambda_expr = &args[1].node;
-                        let fold_body = self.gen_reduce_lambda(lambda_expr);
-
-                        // Parallel reduce: split into chunks, reduce each, merge
-                        format!(
-                            "{{\n\
-                            let _src: Vec<f64> = {source};\n\
-                            let _n = _src.len();\n\
-                            let _ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);\n\
-                            if _n < _ncpu * 1000 {{\n\
-                                _src.iter().fold({init}f64, |_acc, _val| {{ let _val = *_val; {fold_body} }})\n\
-                            }} else {{\n\
-                                let _chunk = (_n + _ncpu - 1) / _ncpu;\n\
-                                std::thread::scope(|_s| {{\n\
-                                    let _handles: Vec<_> = (0.._ncpu).map(|_t| {{\n\
-                                        let _slice = &_src[(_t * _chunk).min(_n)..((_t + 1) * _chunk).min(_n)];\n\
-                                        _s.spawn(move || _slice.iter().fold(0.0f64, |_acc, _val| {{ let _val = *_val; {fold_body} }}))\n\
-                                    }}).collect();\n\
-                                    let _partial: Vec<f64> = _handles.into_iter().map(|h| h.join().unwrap()).collect();\n\
-                                    _partial.iter().fold({init}f64, |_acc, _val| {{ let _val = *_val; {fold_body} }})\n\
-                                }})\n\
-                            }}\n\
-                            }}"
-                        )
-                    }
-                    _ => {
-                        // Unknown pipe op — fall back to sequential
-                        let arg_strs: Vec<String> = std::iter::once(source)
-                            .chain(args.iter().map(|a| self.gen_expr(&a.node, NativeType::Float)))
-                            .collect();
-                        format!("/* pipe */ {}", arg_strs.join(", "))
-                    }
+                    _ => {}
                 }
+                (source, ops)
             }
-            // Chained pipe: left |> mid |> right → gen_pipe(left |> mid, right)
-            Expr::Pipe { left: mid, right: final_op } => {
-                let inner = self.gen_pipe(left, &mid.node, target_ty);
-                self.gen_pipe_raw(&inner, &final_op.node, target_ty)
+            Expr::FnCall { name, args } if name == "range" && args.len() == 2 => {
+                let a = self.gen_expr(&args[0].node, NativeType::Int);
+                let b = self.gen_expr(&args[1].node, NativeType::Int);
+                (format!("({}..{})", a, b), Vec::new())
             }
-            _ => format!("/* unsupported pipe */ {}", self.gen_expr(left, target_ty)),
+            other => (self.gen_expr(other, NativeType::Float), Vec::new()),
         }
     }
 
-    /// Generate pipe from a raw Rust expression string (for chained pipes)
-    fn gen_pipe_raw(&self, source: &str, right: &Expr, target_ty: NativeType) -> String {
-        match right {
-            Expr::FnCall { name, args } => {
-                match name.as_str() {
-                    "map" if args.len() == 1 => {
-                        let lambda = self.gen_expr(&args[0].node, NativeType::Float);
-                        format!("({source}).into_iter().map({lambda}).collect::<Vec<f64>>()")
-                    }
-                    "filter" if args.len() == 1 => {
-                        let lambda = self.gen_expr(&args[0].node, NativeType::Bool);
-                        format!("({source}).into_iter().filter({lambda}).collect::<Vec<_>>()")
-                    }
-                    "reduce" if args.len() == 2 => {
-                        let init = self.gen_expr(&args[0].node, NativeType::Float);
-                        let fold_body = self.gen_reduce_lambda(&args[1].node);
-                        format!("({source}).iter().fold({init}f64, |_acc, _val| {{ let _val = *_val; {fold_body} }})")
-                    }
-                    _ => format!("/* unknown pipe op: {} */", name),
+    fn gen_pipe(&self, left: &Expr, right: &Expr, _target_ty: NativeType) -> String {
+        // Collect: pipe source + right-side operation
+        let (source, mut ops) = self.flatten_pipe(left);
+
+        // Extract the FnCall from right — it may be wrapped in nested BinaryOps
+        // e.g., reduce(0.0, f) / n * 4.0 → BinaryOp(BinaryOp(reduce, Div, n), Mul, 4.0)
+        let mut suffix = String::new();
+        let mut current = right;
+        // Peel off BinaryOps from outside-in, collecting suffix operations
+        let mut suffix_ops: Vec<(BinOp, String)> = Vec::new();
+        loop {
+            match current {
+                Expr::FnCall { name, args } => {
+                    ops.push((name.as_str(), args.as_slice()));
+                    break;
+                }
+                Expr::BinaryOp { left: inner, op, right: rhs } => {
+                    let op_str = match op {
+                        BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                        BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
+                    };
+                    let rhs_code = self.gen_expr(&rhs.node, NativeType::Float);
+                    suffix_ops.push((*op, rhs_code));
+                    current = &inner.node;
+                }
+                _ => break,
+            }
+        }
+        // Build suffix from innermost to outermost
+        for (op, rhs) in suffix_ops.iter().rev() {
+            let op_str = match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
+            };
+            suffix = format!("{} {} {}", suffix, op_str, rhs);
+        }
+
+        // Build a Rust iterator chain
+        let mut chain = source;
+
+        for (op_name, args) in &ops {
+            match *op_name {
+                "map" if args.len() == 1 => {
+                    let lambda_body = self.gen_map_lambda(&args[0].node);
+                    // Extract the lambda param name
+                    let param_name = match &args[0].node {
+                        Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } => param.clone(),
+                        _ => "_i".to_string(),
+                    };
+                    chain = format!("({}).map(|{}| -> f64 {{ {} }})", chain, param_name, lambda_body);
+                }
+                "filter" if args.len() == 1 => {
+                    let lambda_body = self.gen_expr(&args[0].node, NativeType::Bool);
+                    chain = format!("({}).filter({})", chain, lambda_body);
+                }
+                "reduce" | "fold" if args.len() == 2 => {
+                    let mut init = self.gen_expr(&args[0].node, NativeType::Float);
+                    // Avoid double suffix like 0f64f64
+                    if !init.ends_with("f64") { init = format!("{}f64", init); }
+                    let fold_body = self.gen_reduce_lambda(&args[1].node);
+                    chain = format!("({}).fold({}, |_acc, _val| {{ let _val = _val as f64; {} }})", chain, init, fold_body);
+                }
+                _ => {
+                    chain = format!("/* unknown pipe op: {} */ {}", op_name, chain);
                 }
             }
-            _ => format!("/* unsupported chained pipe */"),
+        }
+
+        // Check if the chain ends with a fold (returns f64) or a map (returns iterator)
+        let last_op = ops.last().map(|(name, _)| *name).unwrap_or("");
+        if last_op != "reduce" && last_op != "fold" {
+            chain = format!("({}).collect::<Vec<f64>>()", chain);
+        }
+
+        // Apply suffix arithmetic (e.g., / n * 4.0)
+        if !suffix.is_empty() {
+            chain = format!("({}{})", chain, suffix);
+        }
+
+        chain
+    }
+
+    /// Generate the body of a map lambda for native pipes.
+    /// Handles both simple lambdas and block lambdas.
+    fn gen_map_lambda(&self, expr: &Expr) -> String {
+        match expr {
+            Expr::Lambda { param: _, body } => {
+                // The lambda body — generate as Rust expression
+                self.gen_map_lambda_body(&body.node)
+            }
+            Expr::LambdaBlock { param: _, stmts, result } => {
+                let mut code = String::new();
+                for stmt in stmts {
+                    code.push_str(&self.gen_stmt(&stmt.node, 3));
+                }
+                code.push_str(&format!("{}", self.gen_map_lambda_body(&result.node)));
+                code
+            }
+            _ => "0.0f64".to_string(),
+        }
+    }
+
+    fn gen_map_lambda_body(&self, expr: &Expr) -> String {
+        match expr {
+            Expr::FnCall { name, args } => {
+                // Call to another native handler or builtin
+                self.gen_fn_call(name, args, NativeType::Float)
+            }
+            Expr::BinaryOp { left, op, right } => {
+                let l = self.gen_map_lambda_body(&left.node);
+                let r = self.gen_map_lambda_body(&right.node);
+                let op_str = match op {
+                    BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                    BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
+                };
+                format!("({} {} {})", l, op_str, r)
+            }
+            Expr::Literal(Literal::Float(f)) => format!("{}f64", f),
+            Expr::Literal(Literal::Int(n)) => format!("{}f64", n),
+            Expr::Ident(name) => format!("{} as f64", name),
+            _ => self.gen_expr(expr, NativeType::Float),
         }
     }
 
