@@ -375,6 +375,159 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 } else { Some(Ok(args[0].clone())) }
             } else { Some(Err(RuntimeError::TypeError("add_rank(list, field)".to_string()))) }
         }
+        "percentile" => {
+            if args.len() >= 3 {
+                if let Value::List(items) = &args[0] {
+                    let field = format!("{}", args[1]);
+                    let pct = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.5 };
+                    let mut vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
+                    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    if vals.is_empty() { return Some(Ok(Value::Unit)); }
+                    let idx = ((vals.len() as f64 - 1.0) * pct).round() as usize;
+                    let idx = idx.min(vals.len() - 1);
+                    Some(Ok(Value::Float(vals[idx])))
+                } else { Some(Ok(Value::Unit)) }
+            } else { Some(Err(RuntimeError::TypeError("percentile(list, field, pct)".to_string()))) }
+        }
+        "median" => {
+            if args.len() >= 2 {
+                if let Value::List(items) = &args[0] {
+                    let field = format!("{}", args[1]);
+                    let mut vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
+                    vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    if vals.is_empty() { return Some(Ok(Value::Unit)); }
+                    let idx = ((vals.len() as f64 - 1.0) * 0.5).round() as usize;
+                    let idx = idx.min(vals.len() - 1);
+                    Some(Ok(Value::Float(vals[idx])))
+                } else { Some(Ok(Value::Unit)) }
+            } else { Some(Err(RuntimeError::TypeError("median(list, field)".to_string()))) }
+        }
+        "std_by" | "stdev" => {
+            if args.len() >= 2 {
+                if let Value::List(items) = &args[0] {
+                    let field = format!("{}", args[1]);
+                    let vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
+                    let n = vals.len() as f64;
+                    if n == 0.0 { return Some(Ok(Value::Unit)); }
+                    let mean = vals.iter().sum::<f64>() / n;
+                    let variance = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+                    Some(Ok(Value::Float(variance.sqrt())))
+                } else { Some(Ok(Value::Unit)) }
+            } else { Some(Err(RuntimeError::TypeError("std_by(list, field)".to_string()))) }
+        }
+        "zscore" => {
+            if args.len() >= 2 {
+                if let Value::List(items) = &args[0] {
+                    let field = format!("{}", args[1]);
+                    let vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
+                    let n = vals.len() as f64;
+                    if n == 0.0 { return Some(Ok(Value::List(vec![]))); }
+                    let mean = vals.iter().sum::<f64>() / n;
+                    let std = (vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
+                    let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
+                        let z = if std > 0.0 { (vals[i] - mean) / std } else { 0.0 };
+                        if let Value::Map(entries) = item {
+                            let mut new_entries = entries.clone();
+                            new_entries.push((format!("{}_z", field), Value::Float(z)));
+                            Value::Map(new_entries)
+                        } else { item.clone() }
+                    }).collect();
+                    Some(Ok(Value::List(result)))
+                } else { Some(Ok(Value::List(vec![]))) }
+            } else { Some(Err(RuntimeError::TypeError("zscore(list, field)".to_string()))) }
+        }
+        "rank" => {
+            if args.len() >= 2 {
+                if let Value::List(items) = &args[0] {
+                    let field = format!("{}", args[1]);
+                    let mut indexed: Vec<(usize, f64)> = items.iter().enumerate()
+                        .map(|(i, item)| (i, map_field_f64(item, &field))).collect();
+                    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let mut ranks = vec![0i64; items.len()];
+                    for (rank_pos, (idx, _)) in indexed.iter().enumerate() {
+                        ranks[*idx] = (rank_pos + 1) as i64;
+                    }
+                    let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
+                        if let Value::Map(entries) = item {
+                            let mut new = entries.clone();
+                            new.push((format!("{}_rank", field), Value::Int(ranks[i])));
+                            Value::Map(new)
+                        } else { item.clone() }
+                    }).collect();
+                    Some(Ok(Value::List(result)))
+                } else { Some(Ok(Value::List(vec![]))) }
+            } else { Some(Err(RuntimeError::TypeError("rank(list, field)".to_string()))) }
+        }
+        "normalize" => {
+            if args.len() >= 4 {
+                if let Value::List(items) = &args[0] {
+                    let field = format!("{}", args[1]);
+                    let min_val = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                    let max_val = match &args[3] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 1.0 };
+                    let vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
+                    let data_min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
+                    let data_max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    let range = data_max - data_min;
+                    let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
+                        let scaled = if range > 0.0 {
+                            (vals[i] - data_min) / range * (max_val - min_val) + min_val
+                        } else { min_val };
+                        if let Value::Map(entries) = item {
+                            let mut new = entries.clone();
+                            new.push((format!("{}_norm", field), Value::Float(scaled)));
+                            Value::Map(new)
+                        } else { item.clone() }
+                    }).collect();
+                    Some(Ok(Value::List(result)))
+                } else { Some(Ok(Value::List(vec![]))) }
+            } else { Some(Err(RuntimeError::TypeError("normalize(list, field, min, max)".to_string()))) }
+        }
+        "winsorize" => {
+            if args.len() >= 4 {
+                if let Value::List(items) = &args[0] {
+                    let field = format!("{}", args[1]);
+                    let lo_pct = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.05 };
+                    let hi_pct = match &args[3] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.95 };
+                    let mut sorted_vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
+                    sorted_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    if sorted_vals.is_empty() { return Some(Ok(Value::List(vec![]))); }
+                    let lo_idx = ((sorted_vals.len() as f64 - 1.0) * lo_pct).round() as usize;
+                    let hi_idx = ((sorted_vals.len() as f64 - 1.0) * hi_pct).round() as usize;
+                    let lo_val = sorted_vals[lo_idx.min(sorted_vals.len() - 1)];
+                    let hi_val = sorted_vals[hi_idx.min(sorted_vals.len() - 1)];
+                    let result: Vec<Value> = items.iter().map(|item| {
+                        if let Value::Map(entries) = item {
+                            let new_entries: Vec<(String, Value)> = entries.iter().map(|(k, v)| {
+                                if k == &field {
+                                    let val = map_field_f64(item, &field);
+                                    let clamped = val.max(lo_val).min(hi_val);
+                                    (k.clone(), Value::Float(clamped))
+                                } else { (k.clone(), v.clone()) }
+                            }).collect();
+                            Value::Map(new_entries)
+                        } else { item.clone() }
+                    }).collect();
+                    Some(Ok(Value::List(result)))
+                } else { Some(Ok(Value::List(vec![]))) }
+            } else { Some(Err(RuntimeError::TypeError("winsorize(list, field, lo_pct, hi_pct)".to_string()))) }
+        }
+        "rename" => {
+            if args.len() >= 3 {
+                if let Value::List(items) = &args[0] {
+                    let old = format!("{}", args[1]);
+                    let new_name = format!("{}", args[2]);
+                    let result: Vec<Value> = items.iter().map(|item| {
+                        if let Value::Map(entries) = item {
+                            let renamed: Vec<(String, Value)> = entries.iter().map(|(k, v)| {
+                                if k == &old { (new_name.clone(), v.clone()) } else { (k.clone(), v.clone()) }
+                            }).collect();
+                            Value::Map(renamed)
+                        } else { item.clone() }
+                    }).collect();
+                    Some(Ok(Value::List(result)))
+                } else { Some(Ok(args[0].clone())) }
+            } else { Some(Err(RuntimeError::TypeError("rename(list, old_name, new_name)".to_string()))) }
+        }
         _ => None,
     }
 }
