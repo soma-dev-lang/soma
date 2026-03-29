@@ -150,11 +150,11 @@ and <strong>pipelines are pipes</strong>.
 <div class="thesis">
 <div class="number">Thesis II &mdash; after Hellerstein</div>
 <h3>Infrastructure is a constraint, not a configuration</h3>
-<p><code>[persistent, consistent]</code> resolves to SQLite. <code>[ephemeral, ttl(30s)]</code> resolves to in-memory with auto-expire. The program never names a database. It declares what it needs. The runtime resolves how. Change the provider from <code>local</code> to <code>aws</code> &mdash; the same properties resolve to DynamoDB and ElastiCache. Zero code changes.</p>
+<p><code>[persistent, consistent]</code> resolves to SQLite. <code>[ephemeral]</code> resolves to in-memory. The program never names a database. It declares what it needs. The runtime resolves how. The provider protocol is extensible &mdash; custom backends can be added as <code>.cell</code> files.</p>
 <pre><code><span class="kw">memory</span> {
-    orders:   Map&lt;String, Order&gt;   [<span class="fn">persistent</span>, <span class="fn">consistent</span>]           <span class="cmt">// &rarr; SQLite | DynamoDB | D1</span>
-    cache:    Map&lt;String, Price&gt;   [<span class="fn">ephemeral</span>, <span class="fn">local</span>, <span class="fn">ttl</span>(<span class="num">30</span>s)]   <span class="cmt">// &rarr; HashMap | Redis | KV</span>
-    audit:    Log&lt;Event&gt;           [<span class="fn">persistent</span>, <span class="fn">append_only</span>]        <span class="cmt">// &rarr; SQLite-WAL | Kafka | S3</span>
+    orders:   Map&lt;String, Order&gt;   [<span class="fn">persistent</span>, <span class="fn">consistent</span>]     <span class="cmt">// &rarr; SQLite</span>
+    cache:    Map&lt;String, Price&gt;   [<span class="fn">ephemeral</span>, <span class="fn">local</span>]          <span class="cmt">// &rarr; in-memory HashMap</span>
+    audit:    Log&lt;Event&gt;           [<span class="fn">persistent</span>]               <span class="cmt">// &rarr; SQLite (WAL mode)</span>
 }</code></pre>
 <blockquote>
 <p>The future of data management lies in the declarative specification of what is wanted, not the procedural specification of how to get it.</p>
@@ -165,18 +165,22 @@ and <strong>pipelines are pipes</strong>.
 <div class="thesis">
 <div class="number">Thesis III &mdash; after Kay</div>
 <h3>Agents build systems, not functions</h3>
-<p>Soma's cell is fractal. The same structure &mdash; face, memory, state, handlers &mdash; works at every scale. A function is a cell. A service is a cell. A datacenter is a cell containing cells. An AI agent doesn't need to learn "how to deploy a distributed system." It needs to learn <em>one thing</em>: the cell. Face contracts guarantee that cells compose correctly. The compiler verifies the composition.</p>
-<pre><code><span class="kw">cell</span> TradingDesk {
-    <span class="kw">interior</span> {
-        <span class="kw">cell</span> MarketData { <span class="cmt">/* face + memory + handlers */</span> }
-        <span class="kw">cell</span> RiskEngine { <span class="cmt">/* face + memory + handlers */</span> }
-        <span class="kw">cell</span> OrderRouter { <span class="cmt">/* face + memory + handlers */</span> }
-    }
-    <span class="kw">runtime</span> {
-        <span class="fn">connect</span> MarketData.price_update &rarr; RiskEngine
-        <span class="fn">connect</span> RiskEngine.approved &rarr; OrderRouter
-    }
-}</code></pre>
+<p>Soma's cell is fractal. The same structure &mdash; face, memory, state, handlers &mdash; works at every scale. A function is a cell. A service is a cell. An AI agent doesn't need to learn "how to deploy a distributed system." It needs to learn <em>one thing</em>: the cell. Independent cells communicate via the TCP signal bus, configured in <code>soma.toml</code>.</p>
+<pre><code><span class="cmt">// Two independent programs, connected via soma.toml</span>
+
+<span class="cmt">// exchange/app.cell</span>
+<span class="kw">cell</span> Exchange {
+    <span class="kw">on</span> order(data: Map) { place_order(data) }
+    <span class="kw">every</span> <span class="num">500</span>ms { <span class="kw">signal</span> trade(match_orders()) }
+}
+
+<span class="cmt">// trader/app.cell</span>
+<span class="kw">cell</span> Trader {
+    <span class="kw">every</span> <span class="num">3</span>s { <span class="kw">signal</span> order(quote) }
+    <span class="kw">on</span> trade(fill: Map) { record_fill(fill) }
+}
+
+<span class="cmt">// trader/soma.toml: [peers] exchange = "localhost:8082"</span></code></pre>
 <blockquote>
 <p>The best way to predict the future is to invent it.</p>
 <cite>&mdash; Alan Kay, Turing Award 2003</cite>
@@ -204,7 +208,7 @@ and <strong>pipelines are pipes</strong>.
 <span class="dim">&rarr; Param counts are verified. Contradictory properties are rejected.</span>
 <span class="dim">&rarr; Descriptive promises generate warnings. Structural promises are enforced.</span></code></pre>
 
-<p>This is what separates Soma from every other dynamic language. The face is a <strong>behavioral type</strong>: it declares what the cell does, and the compiler proves the cell does it. An auditor reads the <code>face</code> and knows the API. Not "what the developer intended" &mdash; what the program <em>guarantees</em>.</p>
+<p>This is what separates Soma from every other dynamic language. The face is a <strong>structural contract</strong>: it declares what signals the cell handles, and the compiler verifies the cell implements them. Signal existence, parameter counts, property contradictions, and structural promises are all checked at compile time. Return types and runtime invariants are not yet verified.</p>
 </section>
 
 <!-- ═══════════════════════════════════ VERIFY ═══════════════════════════════════ -->
@@ -261,7 +265,7 @@ State machine 'order': 7 states, initial 'pending'
 
 <p>The model checker found a real bug: after <code>sent</code>, the spec requires the order to reach <code>filled</code> or <code>rejected</code>. But the wildcard <code>* &rarr; cancelled</code> allows skipping directly to <code>cancelled</code> &mdash; violating the spec. The counter-example shows the exact execution path.</p>
 
-<p>This is <strong>CTL model checking</strong> &mdash; the same formalism used by NASA, Intel, and Amazon to verify critical systems. But here, the spec lives in <code>soma.toml</code>, the implementation lives in <code>.cell</code>, and the proof is one command: <code>soma verify</code>.</p>
+<p>This is <strong>bounded model checking</strong> inspired by CTL temporal logic. It exhaustively explores finite state machine graphs &mdash; not data values or guard expressions. For small state machines (5&ndash;15 states), the verification is instant and complete. The spec lives in <code>soma.toml</code>, the implementation lives in <code>.cell</code>, and the proof is one command: <code>soma verify</code>.</p>
 
 <table>
 <tr><th>Property</th><th>Meaning</th><th>CTL equivalent</th></tr>
@@ -362,22 +366,19 @@ State machine 'order': 7 states, initial 'pending'
 <tr><th>Tool</th><th>Role</th><th>In Soma</th></tr>
 <tr><td>Airflow / Cron</td><td>Scheduling</td><td><code>every 30s { ... }</code></td></tr>
 <tr><td>Spark / Pandas</td><td>Data pipelines</td><td><code>|> filter() |> map() |> sort_by()</code></td></tr>
-<tr><td>Redis</td><td>Cache</td><td><code>[ephemeral, ttl(30s)]</code></td></tr>
-<tr><td>PostgreSQL</td><td>Persistence</td><td><code>[persistent, consistent]</code></td></tr>
-<tr><td>Kafka</td><td>Event log</td><td><code>[persistent, append_only]</code></td></tr>
+<tr><td>SQLite / DB config</td><td>Persistence</td><td><code>[persistent, consistent]</code> &rarr; SQLite auto-resolved</td></tr>
+<tr><td>In-memory cache</td><td>Fast storage</td><td><code>[ephemeral, local]</code> &rarr; HashMap</td></tr>
 <tr><td>Express / Flask</td><td>API server</td><td><code>on request() { match path { ... } }</code></td></tr>
 <tr><td>React</td><td>Dashboard</td><td><code>html(""" ... """)</code></td></tr>
 <tr><td>Celery</td><td>Background jobs</td><td><code>every 1h { rebalance() }</code></td></tr>
-<tr><td>Terraform</td><td>Infrastructure</td><td>Memory properties &rarr; provider resolution</td></tr>
-<tr><td>TLA+</td><td>Verification</td><td><code>state { } + face { promise ... }</code></td></tr>
+<tr><td>TLA+ (basic)</td><td>Verification</td><td><code>soma verify</code> + <code>soma.toml [verify]</code></td></tr>
 </table>
 
 <div class="vs">
 <div class="side">
 <h4>Traditional stack</h4>
-<pre><code>10 tools
-5 languages
-3 teams
+<pre><code>8 tools
+4 languages
 50,000 lines of glue
 Specification: Confluence
 Implementation: somewhere else</code></pre>
