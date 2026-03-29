@@ -62,8 +62,8 @@ enum Commands {
         file: PathBuf,
         /// Arguments to pass (parsed as integers or strings)
         args: Vec<String>,
-        /// Use the bytecode VM instead of the tree-walking interpreter
-        #[arg(long)]
+        /// Deprecated: use [native] on handlers instead. Bytecode VM, minimal speedup.
+        #[arg(long, hide = true)]
         jit: bool,
         /// Signal handler to call (default: auto-detect from first arg or first handler)
         #[arg(long)]

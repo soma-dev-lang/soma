@@ -9,6 +9,12 @@ use crate::vm;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
 pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&str>, registry: &mut Registry) {
+    if use_jit {
+        eprintln!("warning: --jit is deprecated. Use [native] on handlers for 200x performance.");
+        eprintln!("  on simulate(n: Int) [native] {{ ... }}");
+        eprintln!("  See: https://soma-lang.dev#native");
+        eprintln!();
+    }
     let source = read_source(path);
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));
