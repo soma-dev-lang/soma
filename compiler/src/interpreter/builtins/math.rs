@@ -55,6 +55,24 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             })
         }
         "sqrt" => { args.first().map(|a| Ok(Value::Float(match a { Value::Float(n) => n.sqrt(), Value::Int(n) => (*n as f64).sqrt(), _ => 0.0 }))) }
+        "log" | "ln" => {
+            args.first().map(|a| {
+                let n = match a { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                Ok(Value::Float(n.ln()))
+            })
+        }
+        "exp" => {
+            args.first().map(|a| {
+                let n = match a { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                Ok(Value::Float(n.exp()))
+            })
+        }
+        "log10" => {
+            args.first().map(|a| {
+                let n = match a { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                Ok(Value::Float(n.log10()))
+            })
+        }
         "pow" => {
             if args.len() >= 2 {
                 let base = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };

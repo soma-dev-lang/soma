@@ -32,6 +32,36 @@ pub fn call_builtin(interp: &super::Interpreter, name: &str, args: &[Value], cel
 /// Higher-order builtins: map, filter, find, any, each — require mutable interpreter
 /// Called from eval_expr directly (not through call_builtin) because we need &mut self
 pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+    // reduce/fold: (list, initial, lambda)
+    if matches!(name, "reduce" | "fold") {
+        if args.len() >= 3 {
+            if let Some(Value::List(items)) = args.first() {
+                let initial = &args[1];
+                let lambda = match &args[2] {
+                    v @ Value::Lambda { .. } => v,
+                    v @ Value::LambdaBlock { .. } => v,
+                    _ => return Some(Err(RuntimeError::TypeError("reduce: third argument must be a lambda".to_string()))),
+                };
+                let mut acc = initial.clone();
+                for item in items {
+                    let pair = Value::Map(vec![
+                        ("acc".to_string(), acc),
+                        ("val".to_string(), item.clone()),
+                    ]);
+                    match interp.apply_lambda(lambda, pair, cell_name) {
+                        Ok(v) => acc = v,
+                        Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                    }
+                }
+                return Some(Ok(acc));
+            } else {
+                return Some(Err(RuntimeError::TypeError("reduce: first argument must be a list".to_string())));
+            }
+        } else {
+            return Some(Err(RuntimeError::TypeError("reduce expects (list, initial, lambda)".to_string())));
+        }
+    }
+
     // All these expect (list, lambda) as args
     let list = match args.first() {
         Some(Value::List(items)) => items,

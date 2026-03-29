@@ -210,12 +210,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Some(field) = args.get(1) {
                     let field = format!("{}", field);
                     let mut seen = Vec::new();
-                    let result: Vec<Value> = items.iter().filter(|item| {
+                    let mut result: Vec<Value> = Vec::new();
+                    for item in items {
                         let v = if let Value::Map(e) = item {
-                            e.iter().find(|(k,_)| k == &field).map(|(_,v)| format!("{}", v)).unwrap_or_default()
-                        } else { format!("{}", item) };
-                        if seen.contains(&v) { false } else { seen.push(v); true }
-                    }).cloned().collect();
+                            e.iter().find(|(k,_)| k == &field).map(|(_,v)| v.clone()).unwrap_or(Value::Unit)
+                        } else { item.clone() };
+                        let key = format!("{}", v);
+                        if !seen.contains(&key) {
+                            seen.push(key);
+                            result.push(v);
+                        }
+                    }
                     Some(Ok(Value::List(result)))
                 } else {
                     let mut seen = Vec::new();
