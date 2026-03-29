@@ -1,6 +1,6 @@
 [package]
 name = "soma"
-version = "0.27.0"
+version = "0.28.0"
 edition = "2021"
 description = "The Soma language compiler — fractal, declarative, agent-native"
 

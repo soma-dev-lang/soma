@@ -392,29 +392,25 @@ The spec IS the program</code></pre>
 <section id="bus">
 <h2>Inter-process signals</h2>
 
-<p>Independent Soma programs communicate via a <strong>TCP signal bus</strong>. No WebSocket libraries. No message queues. No serialization code. <code>signal</code> to send, <code>on</code> to receive. The runtime delivers.</p>
+<p>Independent Soma programs communicate via <strong>signals</strong>. No WebSocket code. No HTTP polling. No serialization. <code>signal</code> to send, <code>on</code> to receive. Peers declared in <code>soma.toml</code>. Zero transport code in your program.</p>
 
 <div class="vs">
 <div class="side">
-<h4>Exchange</h4>
+<h4>Exchange &mdash; app.cell</h4>
 <pre><code><span class="kw">cell</span> Exchange {
     <span class="kw">on</span> order(data: Map) {
         place_order(data)
     }
 
-    <span class="kw">on</span> run_matching() {
-        <span class="cmt">// ... match bid with ask ...</span>
+    <span class="kw">every</span> <span class="num">500</span>ms {
+        <span class="kw">let</span> fill = match_orders()
         <span class="kw">signal</span> trade(fill)
     }
 }</code></pre>
 </div>
 <div class="side">
-<h4>Trader</h4>
+<h4>Trader &mdash; app.cell</h4>
 <pre><code><span class="kw">cell</span> Trader {
-    <span class="kw">on</span> init() {
-        <span class="fn">link</span>(<span class="str">"localhost:8082"</span>)
-    }
-
     <span class="kw">every</span> <span class="num">3</span>s {
         <span class="kw">signal</span> order(data)
     }
@@ -422,35 +418,33 @@ The spec IS the program</code></pre>
     <span class="kw">on</span> trade(fill: Map) {
         record_fill(fill)
     }
-}</code></pre>
-</div>
-</div>
-
-<p>The exchange emits <code>signal trade(fill)</code>. The trader's <code>on trade(fill)</code> fires. Two independent processes. No shared code. The signal bus handles serialization, transport, and dispatch.</p>
-
-<pre><code><span class="cmt">// Protocol: line-delimited JSON over TCP</span>
-EVENT trade {"ticker": "BTC", "price": 42000, "qty": 1}
-EVENT order_placed {"id": "1", "side": "buy", "price": 41500}
-EVENT book_update {"ticker": "BTC"}
-
-<span class="cmt">// Every soma serve listens on port+2 for bus peers</span>
-<span class="cmt">// Exchange :8080 (HTTP) :8081 (WS) :8082 (bus)</span>
-<span class="cmt">// Trader   :9090 (HTTP)            :9092 (bus) &rarr; connects to :8082</span></code></pre>
-
-<h3>Real-time streaming</h3>
-<p>SSE for browsers, signal bus for programs. Same <code>signal</code> keyword, different transports.</p>
-
-<pre><code><span class="kw">on</span> request(method: String, path: String, body: String) {
-    <span class="kw">match</span> path {
-        <span class="str">"/stream"</span> &rarr; <span class="fn">sse</span>(<span class="str">"trade"</span>, <span class="str">"book_update"</span>)   <span class="cmt">// browser: EventSource</span>
-        <span class="str">"/"</span>       &rarr; <span class="fn">html</span>(dashboard())
-    }
 }
 
-<span class="kw">every</span> <span class="num">500</span>ms {
-    <span class="kw">let</span> fill = match_orders()
-    <span class="kw">signal</span> trade(fill)                             <span class="cmt">// &rarr; SSE clients + bus peers</span>
-}</code></pre>
+<span class="cmt">// soma.toml</span>
+<span class="cmt">// [peers]</span>
+<span class="cmt">// exchange = "localhost:8082"</span></code></pre>
+</div>
+</div>
+
+<p>The exchange emits <code>signal trade(fill)</code>. The trader's <code>on trade(fill)</code> fires automatically. Two independent processes. No shared code. No <code>ws_connect</code>, no <code>http_get</code>, no <code>to_json</code>. <strong>The signal is the transport.</strong></p>
+
+<p>Peers are declared in <code>soma.toml</code>, not in code. Change the address &mdash; zero code changes. Replace TCP with Kafka &mdash; zero code changes. The program contains logic. The configuration contains topology.</p>
+
+<pre><code><span class="cmt">// soma.toml &mdash; topology is configuration, not code</span>
+[package]
+name = <span class="str">"trader"</span>
+
+[peers]
+exchange = <span class="str">"localhost:8082"</span>    <span class="cmt">// auto-connects on soma serve startup</span>
+risk = <span class="str">"localhost:7082"</span>        <span class="cmt">// add more peers &mdash; no code changes</span></code></pre>
+
+<h3>Three transports, one keyword</h3>
+<p><code>signal trade(fill)</code> delivers to all listeners: browsers via SSE, programs via TCP bus, WebSocket clients. Same keyword, runtime resolves the transport.</p>
+
+<pre><code><span class="kw">signal</span> trade(fill)     <span class="cmt">// one emit &rarr; three transports:</span>
+                       <span class="cmt">//   &rarr; SSE: browser EventSource('/stream')</span>
+                       <span class="cmt">//   &rarr; TCP bus: connected peers (soma.toml)</span>
+                       <span class="cmt">//   &rarr; WS: WebSocket clients on :8081</span></code></pre>
 </section>
 
 <!-- ═══════════════════════════════════ EXAMPLES ═══════════════════════════════════ -->
@@ -521,7 +515,7 @@ EVENT book_update {"ticker": "BTC"}
 
 <footer>
 Soma is open source. The specification is the program.<br>
-<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v0.27.0
+<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v0.28.0
 </footer>
 
 </body>
