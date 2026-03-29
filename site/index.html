@@ -522,9 +522,9 @@ The spec IS the program</code></pre>
 
 <!-- ═══════════════════════════════════ NATIVE ═══════════════════════════════════ -->
 <section id="native">
-<h2>Native compilation</h2>
+<h2>When one handler is the bottleneck</h2>
 
-<p>Add <code>[native]</code> to a handler. It compiles to machine code via LLVM. Same Soma syntax &mdash; 200x faster.</p>
+<p>You write Soma for the architecture: cells, state machines, persistence, web server. Then one handler does a million iterations and takes 8 seconds. In every other language, you rewrite it in C++ or Rust. In Soma, you add one word: <code>[native]</code>. It compiles to machine code. Same file. Same syntax. 275x faster.</p>
 
 <div class="vs">
 <div class="side">
