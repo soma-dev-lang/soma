@@ -15,12 +15,14 @@ use lib::broker
 cell TradingBot {
 
     on request(method: String, path: String, body: String) {
-        if path == "/api/prices"    { return prices.values()    |> filter(p => p.symbol != ()) }
-        if path == "/api/targets"   { return targets.values()   |> filter(t => t.symbol != ()) |> sort_by("mid") }
-        if path == "/api/orders"    { return orders.values()    |> filter(o => o.id != ()) |> sort_by("created_at") }
-        if path == "/api/positions" { return positions.values() |> filter(p => p.symbol != ()) }
-        if path == "/api/fills"     { return fills.values()     |> filter(f => f.id != ()) }
-        if path == "/" { return redirect("/static/index.html") }
-        return response(404, map("error", "not found"))
+        match path {
+            "/api/prices"    -> prices.values()    |> filter(p => p.symbol != ())
+            "/api/targets"   -> targets.values()   |> filter(t => t.symbol != ()) |> sort_by("mid")
+            "/api/orders"    -> orders.values()    |> filter(o => o.id != ()) |> sort_by("created_at")
+            "/api/positions" -> positions.values() |> filter(p => p.symbol != ())
+            "/api/fills"     -> fills.values()     |> filter(f => f.id != ())
+            "/"              -> redirect("/static/index.html")
+            _                -> response(404, map("error", "not found"))
+        }
     }
 }
