@@ -20,8 +20,31 @@ use registry::Registry;
 
 #[derive(ClapParser)]
 #[command(name = "soma")]
-#[command(about = "The Soma language compiler — fractal, declarative, agent-native")]
 #[command(version)]
+#[command(about = "The Soma language — fractal, declarative, agent-native")]
+#[command(long_about = "The Soma language — fractal, declarative, agent-native\n\n\
+    Soma is a language where every system is a cell: state, interface, lifecycle,\n\
+    and distribution — in one model, from function to datacenter.\n\n\
+    Quick start:\n  \
+      soma init myapp && cd myapp\n  \
+      soma serve app.cell            # HTTP on :8080\n  \
+      soma check app.cell            # verify contracts\n  \
+      soma verify app.cell           # prove state machines\n\n\
+    Cluster (same code, multiple nodes):\n  \
+      soma serve app.cell -p 8080\n  \
+      soma serve app.cell -p 8081 --join localhost:8082\n\n\
+    Agent integration (MCP server):\n  \
+      pip install mcp\n  \
+      python3 mcp/soma_mcp.py\n\n\
+    Docs: https://soma-lang.dev\n\
+    Paper: https://soma-lang.dev/paper")]
+#[command(after_help = "Examples:\n  \
+    soma serve app.cell                     Start web server\n  \
+    soma serve app.cell --join host:8082    Join a cluster\n  \
+    soma check app.cell --json              Errors as JSON (for agents)\n  \
+    soma verify app.cell --json             Proofs as JSON (for agents)\n  \
+    soma describe app.cell                  Cell structure as JSON\n  \
+    soma run app.cell 42 \"hello\"            Execute a handler")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -33,46 +56,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Check a .cell file for errors
-    Check {
-        /// Path to the .cell source file
-        file: PathBuf,
-        /// Output as JSON (for agents)
-        #[arg(long)]
-        json: bool,
-    },
-    /// Compile a .cell file and generate Rust code
-    Build {
-        /// Path to the .cell source file
-        file: PathBuf,
-        /// Output file (default: stdout)
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-    /// Parse a .cell file and dump the AST
-    Ast {
-        /// Path to the .cell source file
-        file: PathBuf,
-    },
-    /// Tokenize a .cell file and dump tokens
-    Tokens {
-        /// Path to the .cell source file
-        file: PathBuf,
-    },
-    /// Run a .cell file: execute a signal handler with arguments
+    // ── Core ──────────────────────────────────────────────────────
+    /// Run a handler: soma run app.cell [args]
     Run {
         /// Path to the .cell source file
         file: PathBuf,
         /// Arguments to pass (parsed as integers or strings)
         args: Vec<String>,
-        /// Deprecated: use [native] on handlers instead. Bytecode VM, minimal speedup.
+        /// Deprecated: use [native] on handlers instead
         #[arg(long, hide = true)]
         jit: bool,
-        /// Signal handler to call (default: auto-detect from first arg or first handler)
+        /// Signal handler to call (default: auto-detect)
         #[arg(long)]
         signal: Option<String>,
     },
-    /// Serve a .cell file as a web application
+    /// Start HTTP server: soma serve app.cell [-p 8080] [--join host:port]
     Serve {
         /// Path to the .cell source file
         file: PathBuf,
@@ -89,12 +87,44 @@ enum Commands {
         #[arg(long)]
         join: Option<String>,
     },
-    /// Initialize a new Soma project
+
+    // ── Verify ────────────────────────────────────────────────────
+    /// Check contracts, properties, and scale coherence
+    Check {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Prove state machines, temporal logic, CAP properties, quorum
+    Verify {
+        /// Path to the .cell source file(s)
+        files: Vec<PathBuf>,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run test assertions in a .cell file
+    Test {
+        /// Path to the .cell file containing test cells
+        file: PathBuf,
+    },
+
+    // ── Agent ─────────────────────────────────────────────────────
+    /// Describe a cell as structured JSON: signals, memory, state machines, scale, routes
+    Describe {
+        /// Path to the .cell source file
+        file: PathBuf,
+    },
+
+    // ── Project ───────────────────────────────────────────────────
+    /// Create a new Soma project
     Init {
         /// Project name (default: current directory name)
         name: Option<String>,
     },
-    /// Add a dependency
+    /// Add a dependency: soma add pkg --git url
     Add {
         /// Package name or git URL
         package: String,
@@ -108,28 +138,48 @@ enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
-    /// Install all dependencies
+    /// Install all dependencies from soma.toml
     Install,
-    /// Run tests in a .cell file
-    Test {
-        /// Path to the .cell file containing test cells
-        file: PathBuf,
-    },
-    /// List installed packages in the environment
+    /// List installed packages
     Env,
     /// Start an interactive REPL
     Repl,
+    /// List all registered properties and their rules
+    Props,
+
+    // ── Advanced ──────────────────────────────────────────────────
+    /// Compile a .cell file and generate Rust code
+    Build {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Dump the AST (debug)
+    #[command(hide = true)]
+    Ast {
+        file: PathBuf,
+    },
+    /// Dump tokens (debug)
+    #[command(hide = true)]
+    Tokens {
+        file: PathBuf,
+    },
     /// Add a storage provider
+    #[command(hide = true)]
     AddProvider {
         /// Provider name (e.g., aws, gcp, cloudflare)
         name: String,
     },
-    /// Test a storage provider against conformance suite
+    /// Test a storage provider
+    #[command(hide = true)]
     TestProvider {
         /// Provider name
         name: String,
     },
     /// Migrate data between providers
+    #[command(hide = true)]
     Migrate {
         /// Source provider
         #[arg(long)]
@@ -137,21 +187,6 @@ enum Commands {
         /// Target provider
         #[arg(long)]
         to: String,
-    },
-    /// List all registered properties and their rules
-    Props,
-    /// Verify state machines: reachability, deadlocks, liveness
-    Verify {
-        /// Path to the .cell source file(s)
-        files: Vec<PathBuf>,
-        /// Output as JSON (for agents)
-        #[arg(long)]
-        json: bool,
-    },
-    /// Describe a cell: structured output of signals, memory, state machines, scale
-    Describe {
-        /// Path to the .cell source file
-        file: PathBuf,
     },
 }
 
