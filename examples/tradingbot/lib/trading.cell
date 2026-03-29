@@ -60,12 +60,14 @@ cell Trading {
     }
 
     on request(method: String, path: String, body: String) {
-        if path == "/targets" { return targets.values() |> filter(t => t.symbol != ()) |> sort_by("mid") }
-        if path == "/prices" { return prices.values() |> filter(p => p.symbol != ()) |> sort_by("symbol") }
-        if path == "/" {
-            let active = targets.values() |> filter(t => to_int(t.qty ?? 0) > 0)
-            return map("name", "Trading", "active", len(active), "prices", prices.len())
+        match path {
+            "/targets" -> targets.values() |> filter(t => t.symbol != ()) |> sort_by("mid")
+            "/prices"  -> prices.values()  |> filter(p => p.symbol != ()) |> sort_by("symbol")
+            "/" -> {
+                let active = targets.values() |> filter(t => to_int(t.qty ?? 0) > 0)
+                map("name", "Trading", "active", len(active), "prices", prices.len())
+            }
+            _ -> response(404, map("error", "not found"))
         }
-        return response(404, map("error", "not found"))
     }
 }

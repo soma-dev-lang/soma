@@ -103,9 +103,11 @@ cell Booking {
             book_orders()
             return map("status", "booking")
         }
-        if path == "/orders" { return orders.values() |> filter(o => o.id != ()) |> sort_by("created_at") }
-        if path == "/positions" { return positions.values() |> filter(p => p.symbol != ()) |> sort_by("symbol") }
-        if path == "/" { return map("name", "Booking", "orders", orders.len(), "positions", positions.len()) }
-        return response(404, map("error", "not found"))
+        match path {
+            "/orders"    -> orders.values()    |> filter(o => o.id != ())     |> sort_by("created_at")
+            "/positions" -> positions.values() |> filter(p => p.symbol != ()) |> sort_by("symbol")
+            "/"          -> map("name", "Booking", "orders", orders.len(), "positions", positions.len())
+            _            -> response(404, map("error", "not found"))
+        }
     }
 }

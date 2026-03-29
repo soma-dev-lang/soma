@@ -38,17 +38,19 @@ cell Broker {
     }
 
     on request(method: String, path: String, body: String) {
-        if path == "/orders" { return orders.values() |> filter(o => o.id != ()) |> sort_by("received_at") }
-        if path == "/fills" { return fills.values() |> filter(f => f.id != ()) |> sort_by("filled_at") }
-        if path == "/stats" {
-            let all = orders.values() |> filter(o => o.id != ())
-            return map(
-                "total", len(all),
-                "filled", len(all |> filter(o => o.status == "filled")),
-                "rejected", len(all |> filter(o => o.status == "rejected"))
-            )
+        match path {
+            "/orders" -> orders.values() |> filter(o => o.id != ()) |> sort_by("received_at")
+            "/fills"  -> fills.values()  |> filter(f => f.id != ()) |> sort_by("filled_at")
+            "/stats"  -> {
+                let all = orders.values() |> filter(o => o.id != ())
+                map(
+                    "total", len(all),
+                    "filled", len(all |> filter(o => o.status == "filled")),
+                    "rejected", len(all |> filter(o => o.status == "rejected"))
+                )
+            }
+            "/" -> map("name", "Broker", "orders", orders.len(), "fills", fills.len())
+            _  -> response(404, map("error", "not found"))
         }
-        if path == "/" { return map("name", "Broker", "orders", orders.len(), "fills", fills.len()) }
-        return response(404, map("error", "not found"))
     }
 }
