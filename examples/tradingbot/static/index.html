@@ -228,7 +228,7 @@ async function update() {
 
         // ── Orders ──
         const ord = $('ord');
-        const recent = orders.filter(o=>o.id).slice(-20);
+        const recent = orders.filter(o=>o.id).slice(-20).reverse();
         // Rebuild orders (they change status)
         ord.innerHTML = '';
         for (const o of recent) {
