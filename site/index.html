@@ -572,6 +572,20 @@ handlers = [<span class="str">"simulate"</span>]
 
 <p>Four axes. Same pattern. The code declares <strong>what</strong>. The configuration declares <strong>how</strong>. The compiler resolves.</p>
 
+<h3>Text processing at scale</h3>
+
+<pre><code><span class="kw">let</span> files = <span class="fn">read_files</span>(<span class="str">"data"</span>, <span class="num">10000</span>)
+<span class="kw">let</span> counts = files |&gt; <span class="fn">word_count</span>()</code></pre>
+
+<table>
+<tr><th>Method</th><th>10,000 files</th></tr>
+<tr><td>Unix <code>cat | sort | uniq -c</code></td><td>201ms</td></tr>
+<tr><td>Soma sequential</td><td>124ms</td></tr>
+<tr><td>Soma parallel</td><td><strong>81ms</strong></td></tr>
+</table>
+
+<p>Same code. Add <code>[compute] backend = "threads"</code> to soma.toml &rarr; parallel. Numeric hot paths use <code>[native]</code>. Text processing uses Rust builtins. Both parallelize via config.</p>
+
 <h3>What if I use [native] wrong?</h3>
 <pre><code><span class="kw">on</span> bad(name: String) [<span class="fn">native</span>] {
     <span class="fn">print</span>(<span class="str">"hello {name}"</span>)
