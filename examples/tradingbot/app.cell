@@ -95,45 +95,47 @@ cell TradingBot {
             let ret_pct = 0.0
             if cost_basis > 0 { ret_pct = round(pnl / cost_basis * 10000) / 100 }
 
+            let pnl_class = "up"
+            if pnl < 0 { pnl_class = "dn" }
+
             pos_rows = pos_rows + """
             <tr>
                 <td class="sym">{sym}</td>
-                <td class="num">{qty}</td>
-                <td class="num">{to_string(round(avg_price * 100) / 100)}</td>
-                <td class="num">{to_string(current_mid)}</td>
-                <td class="num">{to_string(round(market_val))}</td>
-                <td class="num" style="color:{pnl_color}">{pnl_str}</td>
-                <td class="num" style="color:{pnl_color}">{to_string(ret_pct)}%</td>
+                <td class="r">{qty}</td>
+                <td class="r">{to_string(round(avg_price * 100) / 100)}</td>
+                <td class="r">{to_string(current_mid)}</td>
+                <td class="r">{to_string(round(market_val))}</td>
+                <td class="r {pnl_class}">{pnl_str}</td>
+                <td class="r {pnl_class}">{to_string(ret_pct)}%</td>
             </tr>
             """
         }
         if pos_rows == "" {
-            pos_rows = """<tr><td colspan="7" class="empty">No positions yet — waiting for first trade cycle...</td></tr>"""
+            pos_rows = """<tr><td colspan="7" class="empty">Waiting for first trade cycle...</td></tr>"""
         }
 
         // Order rows (last 15)
         let order_rows = ""
-        let recent_orders = all_orders |> top(15)
+        let recent_orders = all_orders |> top(20)
         for o in recent_orders {
-            let status_color = "#6b7280"
-            if o.status == "filled" { status_color = "#22c55e" }
-            if o.status == "rejected" { status_color = "#ef4444" }
-            if o.status == "pending" { status_color = "#eab308" }
-            let side_color = "#818cf8"
-            if o.side == "sell" { side_color = "#f472b6" }
+            let badge_class = "badge-pend"
+            if o.status == "filled" { badge_class = "badge-fill" }
+            if o.status == "rejected" { badge_class = "badge-rej" }
+            let side_class = "buy"
+            if o.side == "sell" { side_class = "sell" }
 
             order_rows = order_rows + """
             <tr>
                 <td class="sym">{o.symbol}</td>
-                <td style="color:{side_color}">{o.side}</td>
-                <td class="num">{o.qty}</td>
-                <td class="num">{o.price}</td>
-                <td><span class="badge" style="color:{status_color}">{o.status}</span></td>
+                <td class="{side_class}">{uppercase(o.side)}</td>
+                <td class="r">{o.qty}</td>
+                <td class="r">{o.price}</td>
+                <td><span class="badge {badge_class}">{o.status}</span></td>
             </tr>
             """
         }
         if order_rows == "" {
-            order_rows = """<tr><td colspan="5" class="empty">No orders yet</td></tr>"""
+            order_rows = """<tr><td colspan="5" class="empty">No orders</td></tr>"""
         }
 
         // Price rows
@@ -141,15 +143,15 @@ cell TradingBot {
         for p in all_prices {
             let ret = p.get("return") ?? "0"
             let ret_val = to_float(ret)
-            let ret_color = "#22c55e"
-            if ret_val < 0 { ret_color = "#ef4444" }
+            let chg_class = "up"
+            if ret_val < 0 { chg_class = "dn" }
             price_rows = price_rows + """
             <tr>
                 <td class="sym">{p.symbol}</td>
-                <td class="num">{p.bid}</td>
-                <td class="num">{p.ask}</td>
-                <td class="num">{p.mid}</td>
-                <td class="num" style="color:{ret_color}">{ret}%</td>
+                <td class="r">{p.bid}</td>
+                <td class="r">{p.ask}</td>
+                <td class="r">{p.mid}</td>
+                <td class="r {chg_class}">{ret}%</td>
             </tr>
             """
         }
@@ -161,77 +163,109 @@ cell TradingBot {
         let n_filled = len(all_orders |> filter(o => o.status == "filled"))
         let n_rejected = len(all_orders |> filter(o => o.status == "rejected"))
 
+        let pnl_ret = 0.0
+        if total_notional > 0 { pnl_ret = round(total_pnl / total_notional * 10000) / 100 }
+        let pnl_ret_str = to_string(pnl_ret)
+
         return """
         <html>
         <head>
             <meta charset="utf-8">
-            <title>Trading Bot</title>
+            <title>Soma Trading System</title>
             <meta http-equiv="refresh" content="3">
             <style>
-            :root{--bg:#050910;--surface:#0d1117;--border:#21262d;--text:#c9d1d9;--dim:#6e7681;--accent:#818cf8}
             *{margin:0;padding:0;box-sizing:border-box}
-            body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif}
-            .app{max-width:1100px;margin:0 auto;padding:1.5rem}
-            .header{display:flex;justify-content:space-between;align-items:center;padding:1rem 0;border-bottom:1px solid var(--border);margin-bottom:1.5rem}
-            .header h1{font-size:1.1rem;font-weight:800;letter-spacing:4px;color:var(--accent)}
-            .stats{display:flex;gap:1rem;margin-bottom:1.5rem}
-            .stat{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem}
-            .stat .label{font-size:.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:.3rem}
-            .stat .value{font-size:1.4rem;font-weight:700;color:#f0f6fc}
-            .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:1.5rem;overflow:hidden}
-            .panel-header{padding:.8rem 1rem;border-bottom:1px solid var(--border);font-weight:700;font-size:.85rem}
+            body{background:#0b0e11;color:#848e9c;font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px}
+            .wrap{max-width:1280px;margin:0 auto;padding:12px 20px}
+
+            /* Top bar */
+            .topbar{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #1a1e25;margin-bottom:12px}
+            .topbar .brand{font-size:14px;font-weight:700;color:#f0b90b;letter-spacing:2px}
+            .topbar .meta{font-size:11px;color:#5e6673}
+            .topbar .live{display:inline-block;width:6px;height:6px;background:#0ecb81;border-radius:50%;margin-right:6px;animation:pulse 2s infinite}
+            @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+            /* KPI strip */
+            .kpi{display:flex;gap:2px;margin-bottom:12px}
+            .kpi-item{flex:1;background:#1a1e25;padding:12px 16px;border-radius:4px}
+            .kpi-item:first-child{border-radius:4px 0 0 4px}
+            .kpi-item:last-child{border-radius:0 4px 4px 0}
+            .kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#5e6673;margin-bottom:4px}
+            .kpi-val{font-size:20px;font-weight:700;color:#eaecef;font-family:'SF Mono','Fira Code',monospace}
+
+            /* Panels */
+            .panels{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+            .panel{background:#1a1e25;border-radius:4px;overflow:hidden}
+            .panel-full{grid-column:1/-1}
+            .panel-head{padding:10px 16px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#848e9c;border-bottom:1px solid #252930}
+
+            /* Tables */
             table{width:100%;border-collapse:collapse}
-            th{text-align:left;padding:.5rem 1rem;font-size:.65rem;text-transform:uppercase;color:var(--dim);letter-spacing:1px}
-            td{padding:.4rem 1rem;border-top:1px solid var(--border);font-size:.85rem}
-            .sym{color:var(--accent);font-weight:600;font-family:'SF Mono',monospace}
-            .num{text-align:right;font-family:'SF Mono',monospace}
-            .empty{text-align:center;padding:2rem;color:var(--dim)}
-            .badge{font-size:.7rem;font-weight:700;letter-spacing:.5px}
-            .grid2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
-            .footer{text-align:center;color:var(--dim);font-size:.7rem;margin-top:2rem;padding:1rem 0;border-top:1px solid var(--border)}
+            th{text-align:left;padding:6px 16px;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#5e6673;font-weight:600;border-bottom:1px solid #252930}
+            th.r{text-align:right}
+            td{padding:7px 16px;border-bottom:1px solid #1e2329;font-size:12px;color:#eaecef}
+            td.r{text-align:right;font-family:'SF Mono','Fira Code',monospace;font-size:12px}
+            td.sym{font-weight:600;color:#f0b90b;font-family:'SF Mono','Fira Code',monospace}
+            tr:hover{background:#252930}
+            .empty{text-align:center;padding:24px;color:#5e6673}
+
+            /* Colors */
+            .up{color:#0ecb81}.dn{color:#f6465d}
+            .buy{color:#0ecb81;font-weight:600}.sell{color:#f6465d;font-weight:600}
+            .fill{color:#0ecb81}.rej{color:#f6465d}.pend{color:#f0b90b}
+
+            /* Status badges */
+            .badge{display:inline-block;padding:2px 8px;border-radius:2px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+            .badge-fill{background:rgba(14,203,129,.12);color:#0ecb81}
+            .badge-rej{background:rgba(246,70,93,.12);color:#f6465d}
+            .badge-pend{background:rgba(240,185,11,.12);color:#f0b90b}
+
+            .footer{text-align:center;padding:16px 0;color:#363b44;font-size:10px;letter-spacing:1px;border-top:1px solid #1a1e25;margin-top:8px}
             </style>
         </head>
         <body>
-            <div class="app">
-                <div class="header">
-                    <h1>TRADING BOT</h1>
-                    <span style="color:var(--dim);font-size:.8rem">GBM 30% vol | momentum strategy | auto-refresh 3s</span>
-                </div>
-                <div class="stats">
-                    <div class="stat"><div class="label">P&L</div><div class="value" style="color:{pnl_color}">{to_string(round(total_pnl))}</div></div>
-                    <div class="stat"><div class="label">Notional</div><div class="value">{to_string(round(total_notional))}</div></div>
-                    <div class="stat"><div class="label">Fills</div><div class="value" style="color:#22c55e">{to_string(n_filled)}</div></div>
-                    <div class="stat"><div class="label">Rejected</div><div class="value" style="color:#ef4444">{to_string(n_rejected)}</div></div>
-                    <div class="stat"><div class="label">Pending</div><div class="value" style="color:#eab308">{to_string(n_pending)}</div></div>
-                </div>
+        <div class="wrap">
+            <div class="topbar">
+                <div class="brand">SOMA TRADING</div>
+                <div class="meta"><span class="live"></span>LIVE &middot; GBM 60% vol &middot; Momentum &middot; 5 instruments</div>
+            </div>
 
-                <div class="panel">
-                    <div class="panel-header">Positions & P&L</div>
+            <div class="kpi">
+                <div class="kpi-item"><div class="kpi-label">Total P&L</div><div class="kpi-val" style="color:{pnl_color}">{to_string(round(total_pnl))}</div></div>
+                <div class="kpi-item"><div class="kpi-label">Return</div><div class="kpi-val" style="color:{pnl_color}">{pnl_ret_str}%</div></div>
+                <div class="kpi-item"><div class="kpi-label">Exposure</div><div class="kpi-val">{to_string(round(total_notional))}</div></div>
+                <div class="kpi-item"><div class="kpi-label">Fills</div><div class="kpi-val">{to_string(n_filled)}</div></div>
+                <div class="kpi-item"><div class="kpi-label">Rejects</div><div class="kpi-val" style="color:#f6465d">{to_string(n_rejected)}</div></div>
+            </div>
+
+            <div class="panels">
+                <div class="panel panel-full">
+                    <div class="panel-head">Portfolio</div>
                     <table>
-                        <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>Current</th><th>Market Val</th><th>P&L</th><th>Return</th></tr></thead>
+                        <thead><tr><th>Instrument</th><th class="r">Position</th><th class="r">Avg Entry</th><th class="r">Last</th><th class="r">Mkt Value</th><th class="r">Unrl P&L</th><th class="r">Return</th></tr></thead>
                         <tbody>{pos_rows}</tbody>
                     </table>
                 </div>
 
-                <div class="grid2">
                 <div class="panel">
-                    <div class="panel-header">Market Prices</div>
+                    <div class="panel-head">Market Data</div>
                     <table>
-                        <thead><tr><th>Symbol</th><th>Bid</th><th>Ask</th><th>Mid</th><th>Daily</th></tr></thead>
+                        <thead><tr><th>Instrument</th><th class="r">Bid</th><th class="r">Ask</th><th class="r">Last</th><th class="r">Chg</th></tr></thead>
                         <tbody>{price_rows}</tbody>
                     </table>
                 </div>
+
                 <div class="panel">
-                    <div class="panel-header">Orders (last 15)</div>
+                    <div class="panel-head">Order Blotter</div>
                     <table>
-                        <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th></tr></thead>
+                        <thead><tr><th>Instrument</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th></tr></thead>
                         <tbody>{order_rows}</tbody>
                     </table>
                 </div>
-                </div>
-
-                <div class="footer">Soma Trading Bot — 4 cells, 1 signal bus, 1 command: soma serve app.cell</div>
             </div>
+
+            <div class="footer">SOMA TRADING SYSTEM &middot; 4 CELLS &middot; VERIFIED STATE MACHINES &middot; LIVE</div>
+        </div>
         </body>
         </html>
         """
