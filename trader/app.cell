@@ -1,16 +1,13 @@
 // ============================================================================
-// Market Maker Bot — Connected to Exchange via TCP signal bus
+// Market Maker Bot
 // ============================================================================
-// signal order(data) → delivered to Exchange (which has await order)
-// on trade(data) ← received from Exchange (which emits stream trade)
-//
-// No ws_connect. No ws_send. No http_get. No URLs in logic.
-// Just: signal to send, on handler to receive.
+// Peers configured in soma.toml — no addresses in code.
+// signal order(data) → delivered to exchange via bus
+// on trade(data)     ← received from exchange via bus
 //
 // Run: soma serve app.cell -p 9090
 
 use lib::strategy
-use lib::connection
 use lib::templates
 
 cell MarketMaker {
@@ -20,29 +17,17 @@ cell MarketMaker {
         fills: Map<String, String> [ephemeral, local]
     }
 
-    // Connect signal bus on startup
-    on init() {
-        let result = connect_exchange()
-        print("Bus: {result.status} to {result.peer}")
-    }
-
-    // ---- Incoming signals from Exchange ----
+    // ---- Incoming signals from exchange (via bus) ----
 
     on trade(data: Map) {
         let tid = to_string(now()) + "_" + to_string(random(10000))
         fills.set(tid, to_json(data))
-        print("FILL: {data.ticker} @ {data.price} x{data.qty}")
     }
 
-    on order_placed(data: Map) {
-        // Confirmation that our order was placed
-    }
+    on order_placed(data: Map) { }
+    on book_update(data: Map) { }
 
-    on book_update(data: Map) {
-        // Book changed on exchange
-    }
-
-    // ---- Outgoing signals to Exchange ----
+    // ---- Outgoing signals to exchange (via bus) ----
 
     every 3s {
         let cycle = to_int(state.get("cycle") ?? "0") + 1
@@ -60,7 +45,6 @@ cell MarketMaker {
     on requote(ticker: String, cycle: Int) {
         let quotes = generate_quotes(ticker, cycle)
         for q in quotes {
-            // signal order → goes through peer bus → Exchange receives it
             signal order(map("action", "place", "ticker", q.ticker, "side", q.side, "price", q.price, "qty", q.qty))
         }
     }

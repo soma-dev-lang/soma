@@ -1,0 +1,7 @@
+[package]
+name = "trader"
+version = "0.1.0"
+entry = "app.cell"
+
+[peers]
+exchange = "localhost:8082"

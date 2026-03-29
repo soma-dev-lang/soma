@@ -153,39 +153,19 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let stream = match stream { Ok(s) => s, Err(_) => continue };
                 let read_stream = match stream.try_clone() { Ok(s) => s, Err(_) => continue };
 
-                // Register writer for this peer (so our signals get sent to them)
+                // Register writer for this peer on the peer bus
                 let (tx, rx) = std::sync::mpsc::channel::<String>();
                 if let Ok(mut senders) = peer_bus_clone.lock() {
                     senders.push(tx);
                 }
 
-                // Also register on the event bus so SSE/WS broadcasts go to this peer too
-                let (bus_tx, bus_rx) = std::sync::mpsc::channel::<interpreter::BusEvent>();
-                if let Ok(mut senders) = event_bus_clone.lock() {
-                    senders.push(bus_tx);
-                }
-
-                // Writer: event bus events → TCP lines to peer
+                // Writer: peer bus → TCP lines to peer
                 let mut write_stream = stream;
                 std::thread::spawn(move || {
                     use std::io::Write;
-                    loop {
-                        // Check peer bus (direct peer messages)
-                        while let Ok(line) = rx.try_recv() {
-                            if write_stream.write_all(line.as_bytes()).is_err() { return; }
-                        }
-                        // Check event bus (broadcast events)
-                        match bus_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                            Ok(event) => {
-                                let line = format!("EVENT {} {}\n", event.stream, event.data);
-                                if write_stream.write_all(line.as_bytes()).is_err() { return; }
-                                let _ = write_stream.flush();
-                            }
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                                let _ = write_stream.flush();
-                            }
-                            Err(_) => return,
-                        }
+                    for line in rx {
+                        if write_stream.write_all(line.as_bytes()).is_err() { return; }
+                        let _ = write_stream.flush();
                     }
                 });
 
@@ -248,6 +228,29 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
             }
         }
         eprintln!("init: {} executed", init_signal);
+    }
+
+    // Auto-connect to peers declared in soma.toml
+    {
+        let soma_toml = base_dir.join("soma.toml");
+        if soma_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&soma_toml) {
+                if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
+                    for (peer_name, addr) in &manifest.peers {
+                        eprintln!("peer: connecting to {} ({})", peer_name, addr);
+                        let mut interp = interpreter::Interpreter::new(&program);
+                        interp.set_storage_raw(&storage_slots);
+                        interp.ensure_state_machine_storage();
+                        interp.event_bus = Some(event_bus.clone());
+                        interp.peer_bus = Some(peer_bus.clone());
+                        match interp.do_connect(addr, &cell_name) {
+                            Ok(_) => eprintln!("peer: {} linked", peer_name),
+                            Err(e) => eprintln!("peer: {} failed: {}", peer_name, e),
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Check if cell has a `ws` handler

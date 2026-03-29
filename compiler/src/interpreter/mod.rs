@@ -1327,7 +1327,7 @@ impl Interpreter {
 
     /// Apply a lambda to a value: bind param, eval body
     /// Connect to a remote cell via TCP signal bus
-    fn do_connect(&mut self, addr: &str, cell_name: &str) -> Result<Value, RuntimeError> {
+    pub fn do_connect(&mut self, addr: &str, cell_name: &str) -> Result<Value, RuntimeError> {
         let stream = std::net::TcpStream::connect(addr).map_err(|e| {
             RuntimeError::TypeError(format!("connect: {}", e))
         })?;

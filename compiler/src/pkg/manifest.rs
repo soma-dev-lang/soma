@@ -8,6 +8,9 @@ pub struct Manifest {
     pub package: PackageInfo,
     #[serde(default)]
     pub dependencies: HashMap<String, Dependency>,
+    /// Peer connections for the signal bus
+    #[serde(default)]
+    pub peers: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,6 +102,7 @@ impl Manifest {
                 entry: "main.cell".to_string(),
             },
             dependencies: HashMap::new(),
+            peers: HashMap::new(),
         }
     }
 }
