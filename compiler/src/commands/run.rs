@@ -221,6 +221,17 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
     interp.source_file = Some(source_path.display().to_string());
     interp.source_text = Some(source.to_string());
 
+    // Compile and load [native] handlers
+    match interpreter::native_ffi::compile_and_load_natives(&program) {
+        Ok(natives) => {
+            interp.native_handlers = natives;
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(1);
+        }
+    }
+
     match interp.call_signal(&cell_name, &signal_name, actual_args) {
         Ok(val) => println!("{}", val),
         Err(e) => {

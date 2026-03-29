@@ -988,6 +988,27 @@ impl Parser {
         self.expect(Token::LParen)?;
         let params = self.parse_param_list()?;
         self.expect(Token::RParen)?;
+
+        // Parse optional handler properties: [native], [native, pure], etc.
+        let mut properties = Vec::new();
+        if self.check(&Token::LBracket) {
+            self.advance(); // consume [
+            loop {
+                if self.check(&Token::RBracket) {
+                    self.advance();
+                    break;
+                }
+                let (prop_name, _) = self.expect_ident()?;
+                properties.push(prop_name);
+                if self.check(&Token::Comma) {
+                    self.advance();
+                } else {
+                    self.expect(Token::RBracket)?;
+                    break;
+                }
+            }
+        }
+
         self.expect(Token::LBrace)?;
 
         let mut body = Vec::new();
@@ -1000,6 +1021,7 @@ impl Parser {
             signal_name,
             params,
             body,
+            properties,
         })
     }
 

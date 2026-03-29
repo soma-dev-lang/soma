@@ -1,3 +1,5 @@
+pub mod native;
+
 use crate::ast::*;
 
 /// Generates Rust code from a verified Soma AST.

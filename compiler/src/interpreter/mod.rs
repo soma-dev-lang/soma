@@ -1,4 +1,5 @@
 pub mod builtins;
+pub mod native_ffi;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -325,6 +326,8 @@ pub struct Interpreter {
     pub last_span: Option<crate::ast::Span>,
     /// Cached handler for the current recursive call (avoids repeated HashMap lookups)
     current_handler: Option<(String, String, Arc<Vec<Param>>, Arc<Vec<Spanned<Statement>>>)>,
+    /// Loaded [native] handler FFI function pointers, keyed by (cell_name, signal_name)
+    pub native_handlers: HashMap<(String, String), native_ffi::LoadedNative>,
 }
 
 impl Interpreter {
@@ -366,6 +369,7 @@ impl Interpreter {
             source_text: None,
             last_span: None,
             current_handler: None,
+            native_handlers: HashMap::new(),
         }
     }
 
@@ -478,6 +482,14 @@ impl Interpreter {
         signal_name: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        // Check for [native] FFI handler first — fast path
+        let native_key = (cell_name.to_string(), signal_name.to_string());
+        if self.native_handlers.contains_key(&native_key) {
+            let native = self.native_handlers.get(&native_key).unwrap();
+            return native_ffi::call_native(native, &args)
+                .map_err(|e| RuntimeError::TypeError(e));
+        }
+
         // Lookup from pre-computed cache — O(1) instead of scanning sections
         let key = (cell_name.to_string(), signal_name.to_string());
         let (params, body) = {

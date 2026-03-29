@@ -261,6 +261,8 @@ pub struct OnSection {
     pub signal_name: String,
     pub params: Vec<Param>,
     pub body: Vec<Spanned<Statement>>,
+    /// Handler properties: e.g. [native]
+    pub properties: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
