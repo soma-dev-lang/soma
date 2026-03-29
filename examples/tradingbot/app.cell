@@ -1,0 +1,239 @@
+// ============================================================================
+// Trading Bot — soma serve app.cell → live dashboard with P&L
+// ============================================================================
+//
+// Market  → GBM prices (30% vol, each tick = 1 day)
+// Trading → momentum strategy (buy 3 cheapest)
+// Booking → delta orders from positions vs targets
+// Broker  → execution (95% fill rate)
+//
+// Dashboard auto-refreshes every 3s.
+
+use lib::market
+use lib::trading
+use lib::booking
+use lib::broker
+
+cell TradingBot {
+
+    memory {
+        pnl_history: Map<String, String> [ephemeral, local]
+    }
+
+    on request(method: String, path: String, body: String) {
+        if path == "/api/prices" {
+            return prices.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
+        }
+        if path == "/api/targets" {
+            return targets.values() |> map(s => from_json(s)) |> filter(t => t.symbol != ())
+        }
+        if path == "/api/orders" {
+            return orders.values() |> map(s => from_json(s)) |> filter(o => o.id != ()) |> sort_by("created_at")
+        }
+        if path == "/api/positions" {
+            return positions.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
+        }
+        if path == "/api/fills" {
+            return fills.values() |> map(s => from_json(s)) |> filter(f => f.id != ())
+        }
+        if path == "/" {
+            return html(_dashboard())
+        }
+        return response(404, map("error", "not found"))
+    }
+
+    on _dashboard() {
+        // Gather data
+        let all_prices = prices.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
+        let all_positions = positions.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
+        let all_orders = orders.values() |> map(s => from_json(s)) |> filter(o => o.id != ())
+        let all_targets = targets.values() |> map(s => from_json(s)) |> filter(t => t.symbol != ())
+        let all_fills = fills.values() |> map(s => from_json(s)) |> filter(f => f.id != ())
+
+        // Compute P&L
+        let total_pnl = 0.0
+        let total_notional = 0.0
+        let pos_rows = ""
+        for pos in all_positions {
+            let sym = pos.symbol ?? ""
+            let qty = to_int(pos.qty ?? "0")
+            if qty == 0 { continue }
+
+            // Find current price
+            let current_mid = 0.0
+            for p in all_prices {
+                if p.symbol == sym { current_mid = to_float(p.mid ?? "0") }
+            }
+
+            // Find avg fill price
+            let sym_fills = all_fills |> filter(f => f.symbol == sym)
+            let total_cost = 0.0
+            let total_qty = 0
+            for f in sym_fills {
+                let fqty = to_int(f.qty ?? "0")
+                let fprice = to_float(f.price ?? "0")
+                if f.side == "buy" {
+                    total_cost = total_cost + fqty * fprice
+                    total_qty = total_qty + fqty
+                } else {
+                    total_cost = total_cost - fqty * fprice
+                    total_qty = total_qty - fqty
+                }
+            }
+            let avg_price = 0.0
+            if total_qty > 0 { avg_price = total_cost / total_qty }
+
+            let market_val = to_float(qty) * current_mid
+            let cost_basis = to_float(qty) * avg_price
+            let pnl = market_val - cost_basis
+            total_pnl = total_pnl + pnl
+            total_notional = total_notional + abs(market_val)
+
+            let pnl_color = "#22c55e"
+            if pnl < 0 { pnl_color = "#ef4444" }
+            let pnl_str = to_string(round(pnl))
+            let ret_pct = 0.0
+            if cost_basis > 0 { ret_pct = round(pnl / cost_basis * 10000) / 100 }
+
+            pos_rows = pos_rows + """
+            <tr>
+                <td class="sym">{sym}</td>
+                <td class="num">{qty}</td>
+                <td class="num">{to_string(round(avg_price * 100) / 100)}</td>
+                <td class="num">{to_string(current_mid)}</td>
+                <td class="num">{to_string(round(market_val))}</td>
+                <td class="num" style="color:{pnl_color}">{pnl_str}</td>
+                <td class="num" style="color:{pnl_color}">{to_string(ret_pct)}%</td>
+            </tr>
+            """
+        }
+        if pos_rows == "" {
+            pos_rows = """<tr><td colspan="7" class="empty">No positions yet — waiting for first trade cycle...</td></tr>"""
+        }
+
+        // Order rows (last 15)
+        let order_rows = ""
+        let recent_orders = all_orders |> top(15)
+        for o in recent_orders {
+            let status_color = "#6b7280"
+            if o.status == "filled" { status_color = "#22c55e" }
+            if o.status == "rejected" { status_color = "#ef4444" }
+            if o.status == "pending" { status_color = "#eab308" }
+            let side_color = "#818cf8"
+            if o.side == "sell" { side_color = "#f472b6" }
+
+            order_rows = order_rows + """
+            <tr>
+                <td class="sym">{o.symbol}</td>
+                <td style="color:{side_color}">{o.side}</td>
+                <td class="num">{o.qty}</td>
+                <td class="num">{o.price}</td>
+                <td><span class="badge" style="color:{status_color}">{o.status}</span></td>
+            </tr>
+            """
+        }
+        if order_rows == "" {
+            order_rows = """<tr><td colspan="5" class="empty">No orders yet</td></tr>"""
+        }
+
+        // Price rows
+        let price_rows = ""
+        for p in all_prices {
+            let ret = p.get("return") ?? "0"
+            let ret_val = to_float(ret)
+            let ret_color = "#22c55e"
+            if ret_val < 0 { ret_color = "#ef4444" }
+            price_rows = price_rows + """
+            <tr>
+                <td class="sym">{p.symbol}</td>
+                <td class="num">{p.bid}</td>
+                <td class="num">{p.ask}</td>
+                <td class="num">{p.mid}</td>
+                <td class="num" style="color:{ret_color}">{ret}%</td>
+            </tr>
+            """
+        }
+
+        // Summary
+        let pnl_color = "#22c55e"
+        if total_pnl < 0 { pnl_color = "#ef4444" }
+        let n_pending = len(all_orders |> filter(o => o.status == "pending"))
+        let n_filled = len(all_orders |> filter(o => o.status == "filled"))
+        let n_rejected = len(all_orders |> filter(o => o.status == "rejected"))
+
+        return """
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Trading Bot</title>
+            <meta http-equiv="refresh" content="3">
+            <style>
+            :root{--bg:#050910;--surface:#0d1117;--border:#21262d;--text:#c9d1d9;--dim:#6e7681;--accent:#818cf8}
+            *{margin:0;padding:0;box-sizing:border-box}
+            body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif}
+            .app{max-width:1100px;margin:0 auto;padding:1.5rem}
+            .header{display:flex;justify-content:space-between;align-items:center;padding:1rem 0;border-bottom:1px solid var(--border);margin-bottom:1.5rem}
+            .header h1{font-size:1.1rem;font-weight:800;letter-spacing:4px;color:var(--accent)}
+            .stats{display:flex;gap:1rem;margin-bottom:1.5rem}
+            .stat{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem}
+            .stat .label{font-size:.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:.3rem}
+            .stat .value{font-size:1.4rem;font-weight:700;color:#f0f6fc}
+            .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:1.5rem;overflow:hidden}
+            .panel-header{padding:.8rem 1rem;border-bottom:1px solid var(--border);font-weight:700;font-size:.85rem}
+            table{width:100%;border-collapse:collapse}
+            th{text-align:left;padding:.5rem 1rem;font-size:.65rem;text-transform:uppercase;color:var(--dim);letter-spacing:1px}
+            td{padding:.4rem 1rem;border-top:1px solid var(--border);font-size:.85rem}
+            .sym{color:var(--accent);font-weight:600;font-family:'SF Mono',monospace}
+            .num{text-align:right;font-family:'SF Mono',monospace}
+            .empty{text-align:center;padding:2rem;color:var(--dim)}
+            .badge{font-size:.7rem;font-weight:700;letter-spacing:.5px}
+            .grid2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+            .footer{text-align:center;color:var(--dim);font-size:.7rem;margin-top:2rem;padding:1rem 0;border-top:1px solid var(--border)}
+            </style>
+        </head>
+        <body>
+            <div class="app">
+                <div class="header">
+                    <h1>TRADING BOT</h1>
+                    <span style="color:var(--dim);font-size:.8rem">GBM 30% vol | momentum strategy | auto-refresh 3s</span>
+                </div>
+                <div class="stats">
+                    <div class="stat"><div class="label">P&L</div><div class="value" style="color:{pnl_color}">{to_string(round(total_pnl))}</div></div>
+                    <div class="stat"><div class="label">Notional</div><div class="value">{to_string(round(total_notional))}</div></div>
+                    <div class="stat"><div class="label">Fills</div><div class="value" style="color:#22c55e">{to_string(n_filled)}</div></div>
+                    <div class="stat"><div class="label">Rejected</div><div class="value" style="color:#ef4444">{to_string(n_rejected)}</div></div>
+                    <div class="stat"><div class="label">Pending</div><div class="value" style="color:#eab308">{to_string(n_pending)}</div></div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">Positions & P&L</div>
+                    <table>
+                        <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Price</th><th>Current</th><th>Market Val</th><th>P&L</th><th>Return</th></tr></thead>
+                        <tbody>{pos_rows}</tbody>
+                    </table>
+                </div>
+
+                <div class="grid2">
+                <div class="panel">
+                    <div class="panel-header">Market Prices</div>
+                    <table>
+                        <thead><tr><th>Symbol</th><th>Bid</th><th>Ask</th><th>Mid</th><th>Daily</th></tr></thead>
+                        <tbody>{price_rows}</tbody>
+                    </table>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Orders (last 15)</div>
+                    <table>
+                        <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Status</th></tr></thead>
+                        <tbody>{order_rows}</tbody>
+                    </table>
+                </div>
+                </div>
+
+                <div class="footer">Soma Trading Bot — 4 cells, 1 signal bus, 1 command: soma serve app.cell</div>
+            </div>
+        </body>
+        </html>
+        """
+    }
+}
