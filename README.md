@@ -30,23 +30,9 @@ soma verify app.cell         # prove state machines
 
 Soma is designed to be built by agents. The compiler is the supervisor.
 
-**MCP server** — add to Claude Code or Claude Desktop:
-```json
-{
-  "mcpServers": {
-    "soma": {
-      "command": "python3",
-      "args": ["/path/to/soma/mcp/soma_mcp.py"],
-      "env": { "SOMA_BIN": "soma" }
-    }
-  }
-}
-```
-Requires: `pip install mcp`
-
-**Agent guide** — read [AGENT.md](AGENT.md) for the complete reference: syntax rules, do/don't, verification patterns, builtins.
-
-**Language reference** — read [SOMA_REFERENCE.md](SOMA_REFERENCE.md) for full syntax.
+- **Agent guide**: [AGENT.md](AGENT.md) — syntax rules, do/don't, verification patterns, builtins
+- **Language reference**: [SOMA_REFERENCE.md](SOMA_REFERENCE.md) — full syntax
+- **JSON output**: `soma check --json`, `soma verify --json`, `soma describe` — machine-readable
 
 ## What makes Soma different
 

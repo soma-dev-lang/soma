@@ -123,9 +123,31 @@ pub fn cmd_deploy(path: &PathBuf, target: &str, region: Option<&str>) {
     }
 }
 
+/// Find a CLI tool by checking PATH + common locations
+fn find_cli(name: &str, aliases: &[&str]) -> String {
+    let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin",
+                 "/home/linuxbrew/.linuxbrew/bin"];
+
+    // Collect all dirs: from PATH env + extras
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    let all_dirs: Vec<&str> = path_env.split(':')
+        .chain(extra.iter().copied())
+        .collect();
+
+    for cmd in std::iter::once(name).chain(aliases.iter().copied()) {
+        for dir in &all_dirs {
+            let full = format!("{}/{}", dir, cmd);
+            if std::path::Path::new(&full).exists() {
+                return full;
+            }
+        }
+    }
+    name.to_string()
+}
+
 /// Look up an existing D1 database ID by name
 fn get_d1_id(name: &str) -> Option<String> {
-    let output = std::process::Command::new("wrangler")
+    let output = std::process::Command::new(find_cli("wrangler", &[]))
         .args(["d1", "list", "--json"])
         .output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -222,7 +244,7 @@ fn generate_cloudflare(
             let db_name = format!("soma-{}-{}", pkg, slot);
             eprintln!("creating D1 database '{}'...", db_name);
 
-            let output = std::process::Command::new("wrangler")
+            let output = std::process::Command::new(find_cli("wrangler", &[]))
                 .args(["d1", "create", &db_name])
                 .output();
 
@@ -344,7 +366,7 @@ fn generate_fly(
 
     // Launch app
     eprintln!("launching on Fly.io...");
-    let launch = std::process::Command::new("fly")
+    let launch = std::process::Command::new(find_cli("flyctl", &["fly"]))
         .args(["launch", "--copy-config", "--yes", "--no-deploy"])
         .current_dir(base_dir)
         .status();
@@ -356,14 +378,14 @@ fn generate_fly(
 
     // Create volume
     eprintln!("creating volume...");
-    let _ = std::process::Command::new("fly")
+    let _ = std::process::Command::new(find_cli("flyctl", &["fly"]))
         .args(["volumes", "create", "soma_data", "--size", "1", "--yes"])
         .current_dir(base_dir)
         .status();
 
     // Deploy
     eprintln!("deploying...");
-    let deploy = std::process::Command::new("fly")
+    let deploy = std::process::Command::new(find_cli("flyctl", &["fly"]))
         .args(["deploy"])
         .current_dir(base_dir)
         .status();
