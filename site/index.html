@@ -571,6 +571,16 @@ handlers = [<span class="str">"simulate"</span>]
 </table>
 
 <p>Four axes. Same pattern. The code declares <strong>what</strong>. The configuration declares <strong>how</strong>. The compiler resolves.</p>
+
+<h3>What if I use [native] wrong?</h3>
+<pre><code><span class="kw">on</span> bad(name: String) [<span class="fn">native</span>] {
+    <span class="fn">print</span>(<span class="str">"hello {name}"</span>)
+}
+
+<span class="op">error:</span> handler 'bad' is marked [native] but uses unsupported
+       parameter type 'String' for 'name'
+  <span class="dim">&rarr; [native] handlers can only use Int, Float, Bool</span></code></pre>
+<p>The compiler catches it before any code runs. <code>[native]</code> is for numeric hot paths &mdash; the interpreter handles everything else. Same file, same language: the interpreter orchestrates, <code>[native]</code> computes.</p>
 </section>
 
 <!-- ═══════════════════════════════════ WEB ═══════════════════════════════════ -->
