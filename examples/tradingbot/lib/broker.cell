@@ -23,33 +23,29 @@ cell Broker {
         if order_id == "" { return () }
         let t = now()
 
-        // Store order with receive timestamp
-        let order = data |> with("received_at", to_string(t))
-        orders.set(order_id, to_json(order))
+        let order = data |> with("received_at", t)
+        orders.set(order_id, order)
 
-        // Execute: 99% fill, 1% reject
         if random(100) < 99 {
-            let fill = data
-                |> with("status", "filled")
-                |> with("filled_at", to_string(t))
-            fills.set(order_id, to_json(fill))
-            orders.set(order_id, to_json(order |> with("status", "filled") |> with("filled_at", to_string(t))))
+            let fill = data |> with("status", "filled") |> with("filled_at", t)
+            fills.set(order_id, fill)
+            orders.set(order_id, order |> with("status", "filled") |> with("filled_at", t))
             order_filled(fill)
         } else {
-            orders.set(order_id, to_json(order |> with("status", "rejected") |> with("reason", "insufficient liquidity")))
+            orders.set(order_id, order |> with("status", "rejected") |> with("reason", "insufficient liquidity"))
             order_rejected(map("id", order_id, "reason", "insufficient liquidity"))
         }
     }
 
     on request(method: String, path: String, body: String) {
-        if path == "/orders" { return orders.values() |> map(s => from_json(s)) |> filter(o => o.id != ()) |> sort_by("received_at") }
-        if path == "/fills" { return fills.values() |> map(s => from_json(s)) |> filter(f => f.id != ()) |> sort_by("filled_at") }
+        if path == "/orders" { return orders.values() |> filter(o => o.id != ()) |> sort_by("received_at") }
+        if path == "/fills" { return fills.values() |> filter(f => f.id != ()) |> sort_by("filled_at") }
         if path == "/stats" {
-            let all = orders.values() |> map(s => from_json(s)) |> filter(o => o.id != ())
+            let all = orders.values() |> filter(o => o.id != ())
             return map(
-                "total", to_string(len(all)),
-                "filled", to_string(len(all |> filter(o => o.status == "filled"))),
-                "rejected", to_string(len(all |> filter(o => o.status == "rejected")))
+                "total", len(all),
+                "filled", len(all |> filter(o => o.status == "filled")),
+                "rejected", len(all |> filter(o => o.status == "rejected"))
             )
         }
         if path == "/" { return map("name", "Broker", "orders", orders.len(), "fills", fills.len()) }

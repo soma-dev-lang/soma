@@ -1,5 +1,5 @@
 // ============================================================================
-// Trading — pure pipeline strategy: prices → rank → weight → targets
+// Trading — value strategy: buy 3 cheapest, sell the rest
 // ============================================================================
 
 cell Trading {
@@ -7,7 +7,6 @@ cell Trading {
     memory {
         prices: Map<String, String> [ephemeral, local]
         targets: Map<String, String> [persistent, consistent]
-        params: Map<String, String> [persistent]
     }
 
     state strategy {
@@ -24,58 +23,48 @@ cell Trading {
 
     on price_update(data: Map) {
         let sym = data.symbol ?? ""
-        if sym != "" { prices.set(sym, to_json(data)) }
+        if sym != "" { prices.set(sym, data) }
     }
 
     on compute_targets() {
         let budget = 100000
         let top_n = 3
 
-        // The entire strategy is one pipeline:
-        // prices → parse → rank by cheapest → assign weights → compute qty → store
-        let portfolio = prices.values()
-            |> map(s => from_json(s))
-            |> filter(p => p.symbol != () && to_float(p.mid ?? "0") > 0)
+        let sorted = prices.values()
+            |> filter(p => p.symbol != () && to_float(p.mid ?? 0) > 0)
             |> sort_by("mid")
+
+        if len(sorted) == 0 { return () }
+
+        // Top N → buy, rest → qty 0
+        let buys = sorted
+            |> top(top_n)
             |> map(s => {
-                let mid = to_float(s.mid ?? "0")
-                let rank = len(targets.values() |> map(t => from_json(t)) |> filter(t => to_float(t.mid ?? "0") < mid))
-                s |> with("rank", to_string(rank))
-            })
-            |> map(s => {
-                let mid = to_float(s.mid ?? "0")
-                let rank = to_int(s.rank ?? "999")
-                let weight = 0
-                if rank < top_n { weight = 1 }
-                let notional = budget * weight / top_n
-                let qty = floor(notional / mid)
-                s |> with("qty", to_string(qty))
-                  |> with("side", "buy")
-                  |> with("weight", to_string(weight))
-                  |> with("notional", to_string(round(to_float(qty) * mid)))
-                  |> with("computed_at", to_string(now()))
+                let mid = to_float(s.mid ?? 0)
+                let qty = floor(budget / top_n / mid)
+                s |> with("qty", qty) |> with("side", "buy") |> with("computed_at", now())
             })
 
-        // Store targets
-        for t in portfolio {
-            targets.set(t.symbol, to_json(t))
-        }
+        let sells = sorted
+            |> bottom(len(sorted) - top_n)
+            |> map(s => s |> with("qty", 0) |> with("side", "sell") |> with("computed_at", now()))
+
+        // Store all
+        for t in buys { targets.set(t.symbol, t) }
+        for t in sells { targets.set(t.symbol, t) }
 
         // Send to booking
-        let active = portfolio |> filter(t => to_int(t.qty ?? "0") > 0)
-        target_portfolio(map("targets", to_json(active), "time", to_string(now())))
+        let portfolio = buys |> map(t => t)
+        for s in sells { portfolio = push(portfolio, s) }
+        target_portfolio(map("targets", portfolio, "time", now()))
     }
 
     on request(method: String, path: String, body: String) {
-        if path == "/targets" {
-            return targets.values() |> map(s => from_json(s)) |> filter(t => t.symbol != ()) |> sort_by("mid")
-        }
-        if path == "/prices" {
-            return prices.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ()) |> sort_by("symbol")
-        }
+        if path == "/targets" { return targets.values() |> filter(t => t.symbol != ()) |> sort_by("mid") }
+        if path == "/prices" { return prices.values() |> filter(p => p.symbol != ()) |> sort_by("symbol") }
         if path == "/" {
-            let active = targets.values() |> map(s => from_json(s)) |> filter(t => to_int(t.qty ?? "0") > 0)
-            return map("name", "Trading", "targets", len(active), "prices", prices.len())
+            let active = targets.values() |> filter(t => to_int(t.qty ?? 0) > 0)
+            return map("name", "Trading", "active", len(active), "prices", prices.len())
         }
         return response(404, map("error", "not found"))
     }
