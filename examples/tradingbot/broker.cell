@@ -1,0 +1,107 @@
+// ============================================================================
+// Broker — receives orders, executes on market, sends back fills
+// ============================================================================
+// Receives orders from Booking via signal bus.
+// Simulates execution (fill/reject). In production: FIX protocol.
+// Sends fill/reject confirmations back to Booking.
+
+cell Broker {
+
+    memory {
+        orders: Map<String, String> [persistent, consistent]
+        fills: Map<String, String> [persistent, consistent]
+        stats: Map<String, String> [ephemeral, local]
+    }
+
+    state execution {
+        initial: idle
+        idle -> receiving
+        receiving -> executing
+        executing -> done
+        done -> idle
+        * -> error
+    }
+
+    // Receive order from Booking (via signal bus)
+    on send_order(data: Map) {
+        let order_id = data.id ?? ""
+        if order_id == "" { return () }
+
+        // Store the order
+        let order = data |> with("received_at", to_string(now()))
+        orders.set(order_id, to_json(order))
+
+        // Simulate execution: 95% fill, 5% reject
+        let t = now()
+        if random(100) < 95 {
+            // FILLED
+            let fill = map(
+                "id", order_id,
+                "symbol", data.symbol ?? "",
+                "side", data.side ?? "buy",
+                "qty", data.qty ?? "0",
+                "price", data.price ?? "0",
+                "status", "filled",
+                "filled_at", to_string(t)
+            )
+            fills.set(order_id, to_json(fill))
+
+            // Update order status
+            let updated = order |> with("status", "filled") |> with("filled_at", to_string(t))
+            orders.set(order_id, to_json(updated))
+
+            // Notify Booking
+            signal order_filled(fill)
+
+            // Update stats
+            update_stats("fills")
+        } else {
+            // REJECTED
+            let reason = "insufficient liquidity"
+            let updated = order |> with("status", "rejected") |> with("reason", reason)
+            orders.set(order_id, to_json(updated))
+
+            signal order_rejected(map("id", order_id, "reason", reason))
+
+            update_stats("rejects")
+        }
+    }
+
+    on update_stats(event_type: String) {
+        let raw = stats.get("totals")
+        let total_fills = 0
+        let total_rejects = 0
+        let total_notional = 0
+        if raw != () {
+            let s = from_json(raw)
+            total_fills = to_int(s.fills ?? "0")
+            total_rejects = to_int(s.rejects ?? "0")
+            total_notional = to_int(s.notional ?? "0")
+        }
+        if event_type == "fills" { total_fills = total_fills + 1 }
+        if event_type == "rejects" { total_rejects = total_rejects + 1 }
+        stats.set("totals", to_json(map(
+            "fills", to_string(total_fills),
+            "rejects", to_string(total_rejects),
+            "updated_at", to_string(now())
+        )))
+    }
+
+    on request(method: String, path: String, body: String) {
+        if path == "/orders" {
+            return orders.values() |> map(s => from_json(s)) |> filter(o => o.id != ()) |> sort_by("received_at")
+        }
+        if path == "/fills" {
+            return fills.values() |> map(s => from_json(s)) |> filter(f => f.id != ())
+        }
+        if path == "/stats" {
+            let raw = stats.get("totals")
+            if raw != () { return from_json(raw) }
+            return map("fills", "0", "rejects", "0")
+        }
+        if path == "/" {
+            return map("name", "Broker", "orders", orders.len(), "fills", fills.len())
+        }
+        return response(404, map("error", "not found"))
+    }
+}

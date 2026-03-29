@@ -1,0 +1,14 @@
+[package]
+name = "trading-bot"
+
+# ── Signal bus: 4 processes connected via TCP ──
+# Market  :8080 (bus :8082) → emits price_update
+# Trading :8090 (bus :8092) → receives price_update, emits target_portfolio
+# Booking :8100 (bus :8102) → receives target_portfolio, emits send_order
+# Broker  :8110 (bus :8112) → receives send_order, emits order_filled/order_rejected
+
+[verify]
+deadlock_free = true
+
+[verify.after.sent]
+eventually = ["filled", "rejected", "cancelled"]

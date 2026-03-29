@@ -1,0 +1,67 @@
+// ============================================================================
+// Market — listens to market data, broadcasts prices
+// ============================================================================
+// Simulates a market feed. In production: connect to a real exchange via WS.
+// Emits price signals that Trading and Broker consume.
+
+cell Market {
+
+    memory {
+        prices: Map<String, String> [ephemeral, local]
+        ticks: Map<String, String> [ephemeral, local]
+    }
+
+    state feed {
+        initial: disconnected
+        disconnected -> connecting
+        connecting -> live
+        live -> stale
+        stale -> live
+        live -> disconnected
+        * -> halted
+    }
+
+    // Simulate market ticks every 2s
+    every 2s {
+        let t = now()
+        let symbols = list("AAPL", "TSLA", "NVDA", "MSFT", "GOOG")
+
+        for sym in symbols {
+            let base = 0
+            if sym == "AAPL" { base = 185 }
+            if sym == "TSLA" { base = 245 }
+            if sym == "NVDA" { base = 920 }
+            if sym == "MSFT" { base = 420 }
+            if sym == "GOOG" { base = 175 }
+
+            // Random walk: base ± 2%
+            let noise = (random(400) - 200) / 100.0
+            let price = to_float(base) + noise
+            let bid = price - 0.05
+            let ask = price + 0.05
+
+            let tick = map(
+                "symbol", sym,
+                "bid", to_string(round(bid * 100) / 100),
+                "ask", to_string(round(ask * 100) / 100),
+                "mid", to_string(round(price * 100) / 100),
+                "time", to_string(t)
+            )
+            prices.set(sym, to_json(tick))
+            ticks.set(sym + "_" + to_string(t), to_json(tick))
+
+            // Broadcast to all peers (Trading, Broker)
+            signal price_update(tick)
+        }
+    }
+
+    on request(method: String, path: String, body: String) {
+        if path == "/prices" {
+            return prices.values() |> map(s => from_json(s)) |> filter(p => p.symbol != ())
+        }
+        if path == "/" {
+            return map("name", "Market Feed", "symbols", prices.len(), "status", "live")
+        }
+        return response(404, map("error", "not found"))
+    }
+}
