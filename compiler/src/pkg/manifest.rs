@@ -11,6 +11,36 @@ pub struct Manifest {
     /// Peer connections for the signal bus
     #[serde(default)]
     pub peers: HashMap<String, String>,
+    /// Verification properties
+    #[serde(default)]
+    pub verify: VerifyConfig,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct VerifyConfig {
+    /// Check for deadlocks
+    #[serde(default)]
+    pub deadlock_free: bool,
+    /// States that must eventually be reached (OR semantics)
+    #[serde(default)]
+    pub eventually: Vec<String>,
+    /// States that must never be reached
+    #[serde(default)]
+    pub never: Vec<String>,
+    /// States that must always be reachable
+    #[serde(default)]
+    pub always: Vec<String>,
+    /// After reaching state X, must eventually reach one of Y
+    #[serde(default)]
+    pub after: HashMap<String, AfterConfig>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct AfterConfig {
+    #[serde(default)]
+    pub eventually: Vec<String>,
+    #[serde(default)]
+    pub never: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -103,6 +133,7 @@ impl Manifest {
             },
             dependencies: HashMap::new(),
             peers: HashMap::new(),
+            verify: VerifyConfig::default(),
         }
     }
 }

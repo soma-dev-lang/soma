@@ -183,6 +183,16 @@ fn cmd_verify(files: &[PathBuf]) {
     let mut all_results = Vec::new();
     let mut all_temporal = Vec::new();
 
+    // Try to read soma.toml for user-defined properties
+    let manifest = files.first()
+        .and_then(|f| f.parent())
+        .map(|dir| dir.join("soma.toml"))
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|content| toml::from_str::<pkg::manifest::Manifest>(&content).ok());
+
+    let verify_config = manifest.as_ref().map(|m| &m.verify);
+
     for path in files {
         let source = commands::read_source(path);
         let tokens = commands::lex(&source);
@@ -201,22 +211,20 @@ fn cmd_verify(files: &[PathBuf]) {
                     let graph = StateMachineGraph::from_ast(sm);
                     let mut props = Vec::new();
 
-                    // Auto-derive properties from the state machine structure
+                    // Auto-derive: deadlock_free
                     props.push(Property::DeadlockFree);
 
-                    // Every state machine should eventually terminate (or have a valid cycle)
+                    // Auto-derive: eventually(terminal) if terminals exist
                     if !graph.terminals.is_empty() {
-                        let terminal_pred = StatePredicate::InSet(
+                        props.push(Property::Eventually(StatePredicate::InSet(
                             graph.terminals.iter().cloned().collect()
-                        );
-                        props.push(Property::Eventually(terminal_pred));
+                        )));
                     }
 
-                    // If there's a wildcard → cancelled/error state, check it's reachable from everywhere
+                    // Auto-derive: after(state, wildcard_target) for wildcards
                     for t in &sm.transitions {
                         if t.node.from == "*" {
                             let target = &t.node.to;
-                            // after any non-terminal state, the escape hatch is reachable
                             for state in &graph.states {
                                 if !graph.terminals.contains(state) && state != target {
                                     props.push(Property::After(
@@ -225,13 +233,50 @@ fn cmd_verify(files: &[PathBuf]) {
                                     ));
                                 }
                             }
-                            break; // only check first wildcard
+                            break;
                         }
                     }
 
-                    // Check all state pairs for mutual exclusivity of "opposite" states
-                    // (e.g., "filled" and "rejected" should not be reachable from each other
-                    //  without going through a reset)
+                    // User-defined properties from soma.toml [verify]
+                    if let Some(cfg) = verify_config {
+                        if cfg.deadlock_free {
+                            // already added above
+                        }
+
+                        // eventually = ["settled", "cancelled"]
+                        if !cfg.eventually.is_empty() {
+                            props.push(Property::Eventually(StatePredicate::InSet(
+                                cfg.eventually.clone()
+                            )));
+                        }
+
+                        // never = ["error_state"]
+                        for state in &cfg.never {
+                            props.push(Property::Never(StatePredicate::InState(state.clone())));
+                        }
+
+                        // always = ["valid_state"]
+                        for state in &cfg.always {
+                            props.push(Property::Always(StatePredicate::InState(state.clone())));
+                        }
+
+                        // [verify.after.sent]
+                        // eventually = ["filled", "rejected"]
+                        for (trigger, after_cfg) in &cfg.after {
+                            if !after_cfg.eventually.is_empty() {
+                                props.push(Property::After(
+                                    trigger.clone(),
+                                    StatePredicate::InSet(after_cfg.eventually.clone()),
+                                ));
+                            }
+                            for state in &after_cfg.never {
+                                props.push(Property::After(
+                                    trigger.clone(),
+                                    StatePredicate::NotInState(state.clone()),
+                                ));
+                            }
+                        }
+                    }
 
                     let results: Vec<PropertyResult> = props.iter()
                         .map(|p| check_property(&graph, p))
@@ -250,7 +295,6 @@ fn cmd_verify(files: &[PathBuf]) {
 
     print!("{}", checker::verify::format_results(&all_results));
 
-    // Print temporal results
     for (name, results) in &all_temporal {
         print!("{}", format_property_results(name, results));
     }
@@ -265,7 +309,16 @@ fn cmd_verify(files: &[PathBuf]) {
         .count();
     let failed_temporal = total_temporal - passed_temporal;
 
-    eprintln!("\nTemporal: {} passed, {} failed", passed_temporal, failed_temporal);
+    if let Some(cfg) = verify_config {
+        let user_props = cfg.eventually.len() + cfg.never.len() + cfg.always.len()
+            + cfg.after.values().map(|a| a.eventually.len() + a.never.len()).sum::<usize>()
+            + if cfg.deadlock_free { 1 } else { 0 };
+        if user_props > 0 {
+            eprintln!("soma.toml: {} user-defined properties loaded", user_props);
+        }
+    }
+
+    eprintln!("Temporal: {} passed, {} failed", passed_temporal, failed_temporal);
 
     if has_failures {
         std::process::exit(1);
