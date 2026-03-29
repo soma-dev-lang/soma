@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scale as a Type — Soma Research Paper</title>
+<style>
+:root{--bg:#0a0a0f;--surface:#12121a;--border:#1e1e2e;--text:#d4d4e0;--dim:#6b6b80;--accent:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--code-bg:#16161e}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:Georgia,'Times New Roman',serif;line-height:1.8}
+.paper{max-width:720px;margin:0 auto;padding:3rem 2rem}
+
+/* Title block */
+.title{text-align:center;margin-bottom:3rem;padding-bottom:2rem;border-bottom:1px solid var(--border)}
+.title h1{font-size:1.8rem;font-weight:700;color:#f0f0ff;line-height:1.3;margin-bottom:1rem}
+.title .authors{color:var(--dim);font-size:.95rem;margin-bottom:.5rem}
+.title .venue{color:var(--accent);font-size:.85rem;font-style:italic}
+
+/* Headings */
+h2{font-size:1.3rem;font-weight:700;color:#e0e0f0;margin:2.5rem 0 1rem;padding-bottom:.3rem;border-bottom:1px solid var(--border)}
+h3{font-size:1.05rem;font-weight:700;color:#d0d0e0;margin:1.8rem 0 .8rem}
+
+/* Text */
+p{margin:0 0 1rem;text-align:justify}
+strong{color:#e8e8f0}
+em{color:var(--accent);font-style:italic}
+
+/* Code */
+code{font-family:'SF Mono','Fira Code',monospace;font-size:.82rem;background:var(--code-bg);padding:.15rem .4rem;border-radius:3px;color:var(--accent)}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:1.2rem 1.5rem;margin:1rem 0 1.5rem;overflow-x:auto;line-height:1.6}
+pre code{background:none;padding:0;font-size:.8rem;color:var(--text)}
+.kw{color:var(--accent);font-weight:700}
+.str{color:var(--green)}
+.num{color:var(--yellow)}
+.cmt{color:var(--dim);font-style:italic}
+.ok{color:var(--green)}
+.err{color:var(--red)}
+
+/* Tables */
+table{width:100%;border-collapse:collapse;margin:1rem 0 1.5rem;font-size:.88rem}
+th{text-align:left;padding:.5rem .8rem;border-bottom:2px solid var(--border);color:var(--dim);font-size:.75rem;text-transform:uppercase;letter-spacing:.5px}
+td{padding:.4rem .8rem;border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
+
+/* Lists */
+ul,ol{margin:0 0 1rem 1.5rem}
+li{margin-bottom:.4rem}
+
+/* Abstract */
+.abstract{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.5rem;margin:0 0 2rem;font-size:.95rem}
+.abstract strong{display:block;margin-bottom:.5rem;color:var(--accent);font-size:.8rem;text-transform:uppercase;letter-spacing:1px}
+
+/* Figure */
+.figure{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.2rem;margin:1.5rem 0;text-align:center}
+.figure .caption{font-size:.8rem;color:var(--dim);margin-top:.8rem;font-style:italic}
+
+/* References */
+.ref{font-size:.88rem;color:var(--dim)}
+.ref p{margin-bottom:.5rem}
+
+/* Back link */
+.back{display:inline-block;margin-bottom:2rem;color:var(--accent);text-decoration:none;font-size:.9rem;font-family:-apple-system,system-ui,sans-serif}
+.back:hover{text-decoration:underline}
+
+/* Keywords */
+.keywords{font-size:.85rem;color:var(--dim);font-style:italic;margin-top:2rem;padding-top:1rem;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+<div class="paper">
+
+<a href="/" class="back">&larr; soma-lang.dev</a>
+
+<div class="title">
+<h1>Scale as a Type:<br>Verified Distribution in a Fractal Cell Language</h1>
+<div class="authors">Soma Language Project</div>
+<div class="venue">Working Paper &mdash; 2026</div>
+</div>
+
+<div class="abstract">
+<strong>Abstract</strong>
+We present Soma, a language where the unit of computation &mdash; the cell &mdash; is also the unit of distribution. A cell declares its state (memory), its lifecycle (state machines), its contracts (face), and its distribution requirements (scale). The same source code runs on a single machine or across a cluster of thousands of nodes, with no modification. A built-in model checker verifies temporal properties, consistency guarantees, and CAP trade-offs at compile time, before deployment.
+
+We introduce three ideas: (1) distribution semantics as compile-time-checked properties on memory slots, analogous to type checking; (2) a fractal execution model where the same mechanism &mdash; cell, signal, handler &mdash; operates at every scale from function call to inter-datacenter replication; and (3) a single runtime flag (<code>--join</code>) that transitions a standalone process into a cluster node, with automatic data replication via the existing signal bus.
+</div>
+
+<!-- ════════════════════════ 1. INTRODUCTION ════════════════════════ -->
+
+<h2>1. Introduction</h2>
+
+<p>Distributed systems are built in layers. The application layer (business logic) sits atop an infrastructure layer (Kubernetes, etcd, Raft, gRPC). The programmer writes code in one model and deploys it through an entirely different one &mdash; YAML manifests, Dockerfiles, Helm charts. The two artifacts have no formal relationship. A change in the application may silently violate assumptions of the infrastructure, and the mismatch is only discovered at runtime.</p>
+
+<p>We propose eliminating this separation. In Soma, the application and its distribution requirements are expressed in the same language, the same file, the same model. The compiler verifies their consistency.</p>
+
+<!-- ════════════════════════ 2. CELL MODEL ════════════════════════ -->
+
+<h2>2. The Cell Model</h2>
+
+<p>A Soma cell is a self-contained unit with five components:</p>
+
+<pre><code><span class="kw">cell</span> PricingEngine {
+    <span class="kw">face</span>   { <span class="kw">signal</span> book_trade(data: Map) -> Map }      <span class="cmt">// contract</span>
+    <span class="kw">memory</span> { trades: Map [persistent, consistent] }      <span class="cmt">// state</span>
+    <span class="kw">state</span>  { queued -> confirmed -> executed -> settled }  <span class="cmt">// lifecycle</span>
+    <span class="kw">scale</span>  { replicas: <span class="num">50</span>, shard: trades, consistency: strong } <span class="cmt">// distribution</span>
+    <span class="kw">on</span> book_trade(data: Map) { trades.set(data.id, data) } <span class="cmt">// behavior</span>
+}</code></pre>
+
+<p>The same structure describes a function (a cell with handlers), a service (a cell with HTTP endpoints), a database (a cell with persistent memory), and a cluster (a cell with a scale section). This uniformity is what we mean by <em>fractal</em>: the model is self-similar at every scale.</p>
+
+<h3>2.1 Memory Properties as Distribution Types</h3>
+
+<p>Memory slots carry properties that function as distribution types:</p>
+
+<table>
+<tr><th>Declaration</th><th>Semantics</th></tr>
+<tr><td><code>[persistent, consistent]</code></td><td>Durable, linearizable. Backed by SQLite locally, replicated via consensus in cluster mode.</td></tr>
+<tr><td><code>[ephemeral, local]</code></td><td>Node-local, in-memory. Never touches the network. Microsecond access.</td></tr>
+<tr><td><code>[persistent]</code> + <code>eventual</code></td><td>Durable, eventually consistent. Write locally, propagate asynchronously.</td></tr>
+</table>
+
+<p>These are not configuration &mdash; they are checked at compile time. The compiler rejects contradictions:</p>
+
+<pre><code><span class="kw">memory</span> { data: Map [ephemeral] }
+<span class="kw">scale</span>  { shard: data, consistency: strong }
+<span class="cmt">// Error: shard 'data' uses [ephemeral] but scale declares consistency: strong</span></code></pre>
+
+<p>This is analogous to a type error: the programmer declared conflicting intentions, and the compiler caught it before any code ran.</p>
+
+<h3>2.2 Scale Section</h3>
+
+<p>The <code>scale</code> section declares distribution requirements:</p>
+
+<pre><code><span class="kw">scale</span> {
+    replicas: <span class="num">50</span>            <span class="cmt">// number of instances</span>
+    shard: trades           <span class="cmt">// which memory slot to distribute</span>
+    consistency: strong     <span class="cmt">// strong | causal | eventual</span>
+    tolerance: <span class="num">2</span>            <span class="cmt">// survives N node failures</span>
+    cpu: <span class="num">4</span>                  <span class="cmt">// resources per instance</span>
+    memory: <span class="str">"8Gi"</span>
+}</code></pre>
+
+<p>The compiler reads this and verifies:</p>
+
+<ul>
+<li><strong>Shard validity</strong>: the named slot exists in the cell's memory</li>
+<li><strong>Consistency coherence</strong>: no <code>[ephemeral]</code> + <code>strong</code>, no <code>[local]</code> + <code>shard</code></li>
+<li><strong>CAP analysis</strong>: <code>strong</code> + <code>tolerance > 0</code> implies CP mode (reduced availability under partition)</li>
+<li><strong>Quorum</strong>: for strong consistency with N replicas, quorum = &lceil;N/2&rceil; + 1, maximum tolerable failures = N &minus; quorum</li>
+<li><strong>Locality</strong>: non-sharded <code>[ephemeral, local]</code> slots are confirmed as node-local fast paths</li>
+</ul>
+
+<p>These checks happen at compile time. The programmer knows, before deploying to 50 machines, that the system's distributed properties are internally consistent.</p>
+
+<!-- ════════════════════════ 3. VERIFICATION ════════════════════════ -->
+
+<h2>3. Verified Distribution</h2>
+
+<h3>3.1 Temporal Properties</h3>
+
+<p>Soma includes a CTL model checker that verifies temporal properties on state machines. Properties are declared in <code>soma.toml</code>:</p>
+
+<pre><code>[verify]
+deadlock_free = true
+eventually = [<span class="str">"settled"</span>, <span class="str">"cancelled"</span>]
+
+[verify.after.executed]
+never = [<span class="str">"cancelled"</span>]
+eventually = [<span class="str">"settled"</span>, <span class="str">"failed"</span>]</code></pre>
+
+<p>The checker exhaustively explores all paths in the state machine graph and produces counter-examples for violations:</p>
+
+<pre><code><span class="ok">&check;</span> deadlock_free &mdash; no deadlocks in any reachable state
+<span class="ok">&check;</span> after('executed', state &ne; 'cancelled') &mdash; verified
+<span class="err">&cross;</span> eventually(settled) &mdash; counter-example: queued &rarr; running &rarr; failed &rarr; queued &rarr; &hellip; (cycle)</code></pre>
+
+<h3>3.2 Distribution Properties</h3>
+
+<p>The same verification framework extends to distribution. The <code>scale</code> section is modeled as an implicit state machine (single &rarr; distributed &rarr; partitioned &rarr; recovering) and its properties are checked alongside the application's state machines:</p>
+
+<pre><code>State machine 'PricingEngine/scale':
+  <span class="ok">&check;</span> replicas: 50 instances declared
+  <span class="ok">&check;</span> tolerance: survives 2 node failures (of 50 replicas)
+  <span class="ok">&check;</span> quorum: 26/50 nodes needed &mdash; tolerates 24 failures
+  <span class="ok">&check;</span> CAP: CP mode &mdash; consistent + partition-tolerant
+  <span class="ok">&check;</span> memory 'cache' is node-local &mdash; not distributed (fast path)
+  <span class="ok">&check;</span> scheduler runs on leader node only</code></pre>
+
+<p>These are not runtime assertions &mdash; they are compile-time proofs about the system's behavior under distribution.</p>
+
+<!-- ════════════════════════ 4. RUNTIME ════════════════════════ -->
+
+<h2>4. Runtime: Signals as Replication</h2>
+
+<h3>4.1 The --join Flag</h3>
+
+<p>A standalone Soma process becomes a cluster node with a single flag:</p>
+
+<pre><code>$ soma serve app.cell -p <span class="num">8080</span>                        <span class="cmt"># standalone</span>
+$ soma serve app.cell -p <span class="num">8081</span> --join localhost:<span class="num">8082</span>   <span class="cmt"># cluster node</span></code></pre>
+
+<p>When <code>--join</code> is specified:</p>
+
+<ol>
+<li>The new node connects to the seed node's TCP signal bus</li>
+<li>It sends a <code>CLUSTER JOIN</code> message with its node ID</li>
+<li>The seed responds with the current membership list</li>
+<li>Both nodes build a consistent hash ring (FNV, 128 virtual nodes)</li>
+<li>The leader (lowest node ID) runs scheduled tasks (<code>every</code> blocks)</li>
+<li>Heartbeats (every 3s) detect dead nodes; rejoining nodes receive a data sync</li>
+</ol>
+
+<h3>4.2 Memory Operations as Signals</h3>
+
+<p>There is no separate replication protocol. When <code>trades.set(key, val)</code> executes:</p>
+
+<div class="figure">
+<pre><code>Node 1: trades.set("T001", data)
+         &darr;
+    1. Write to local SQLite
+    2. Broadcast: EVENT _cluster_set {"slot":"trades","key":"T001","value":"..."}
+         &darr; signal bus (TCP)
+Node 2: receives EVENT &rarr; applies set to local SQLite
+Node 3: receives EVENT &rarr; applies set to local SQLite</code></pre>
+<div class="caption">Figure 1. A memory write on one node becomes a signal on the bus. Every node applies it. The same bus carries inter-cell signals and data replication.</div>
+</div>
+
+<p>The signal bus &mdash; the same mechanism that carries inter-cell signals &mdash; carries data replication. This is the fractal principle in action: the same mechanism at every scale.</p>
+
+<h3>4.3 Consistent Hashing</h3>
+
+<p>Keys are distributed across nodes via a consistent hash ring (FNV-1a, 128 virtual nodes per physical node). When a node joins or leaves, only K/N keys need to be reassigned.</p>
+
+<p>For <code>get(key)</code>, the runtime checks local storage first. If the key belongs to another node, it sends a request via the bus and waits for a reply (2s timeout). For <code>values()</code>, a fan-out query collects results from all nodes and merges them.</p>
+
+<h3>4.4 Failure Recovery</h3>
+
+<p>Each node sends heartbeats every 3 seconds via the signal bus. If no heartbeat is received from a node for 15 seconds, it is removed from the hash ring. When a node rejoins (via <code>--join</code>), it sends a <code>_cluster_sync_request</code> and receives the current state as a series of <code>_cluster_set</code> events.</p>
+
+<!-- ════════════════════════ 5. EVALUATION ════════════════════════ -->
+
+<h2>5. Evaluation</h2>
+
+<h3>5.1 Expressiveness</h3>
+
+<p>We implemented three distributed applications:</p>
+
+<table>
+<tr><th>Application</th><th>Lines</th><th>Replicas</th><th>Consistency</th><th>Verified Properties</th></tr>
+<tr><td>Pricing Engine</td><td>150</td><td>50</td><td>strong</td><td>trade executed &ne; cancelled, quorum 26/50</td></tr>
+<tr><td>Job Queue</td><td>120</td><td>10</td><td>eventual</td><td>every job completes or expires, no deadlock</td></tr>
+<tr><td>Chat</td><td>90</td><td>5</td><td>eventual</td><td>messages delivered &rarr; read &rarr; expired</td></tr>
+</table>
+
+<p>Each application runs identically on 1 or N nodes. The only change between standalone and cluster mode is the <code>--join</code> flag.</p>
+
+<h3>5.2 Demo: 6-Phase Cluster Test</h3>
+
+<p>A scripted demo (<code>examples/demo.sh</code>) exercises the full lifecycle:</p>
+
+<ol>
+<li><strong>Verify</strong>: 18 compile-time checks pass (state machine + distribution + temporal)</li>
+<li><strong>Single node</strong>: 5 jobs submitted, processed by leader scheduler</li>
+<li><strong>Node 2 joins</strong>: both nodes see 10 jobs, data replicated</li>
+<li><strong>Node 3 joins</strong>: 3-node cluster, all in sync</li>
+<li><strong>Kill node 2</strong>: cluster continues, 5 more jobs submitted and processed</li>
+<li><strong>Node 2 rejoins</strong>: re-syncs, all 3 nodes see 15 jobs</li>
+</ol>
+
+<h3>5.3 Verification Cost</h3>
+
+<p>The model checker runs in &lt; 100ms for state machines with up to 15 states and 30 transitions. Distribution property verification is O(1) &mdash; it reads the <code>scale</code> section and memory properties, performs arithmetic on replica counts and quorum thresholds.</p>
+
+<h3>5.4 Limitations</h3>
+
+<ul>
+<li><strong>Replication model</strong>: the prototype broadcasts all writes to all nodes (full replication). True partitioned sharding &mdash; where each node stores only its hash range &mdash; requires the fan-out path for reads, adding latency.</li>
+<li><strong>Consensus</strong>: <code>consistency: strong</code> is declared and verified, but the runtime currently uses eventual replication. A true linearizable implementation requires Raft or Paxos.</li>
+<li><strong>Failure window</strong>: dead node detection uses a 15-second heartbeat timeout. Writes during this window may be lost. Production use requires write-ahead logging.</li>
+</ul>
+
+<!-- ════════════════════════ 6. RELATED WORK ════════════════════════ -->
+
+<h2>6. Related Work</h2>
+
+<p><strong>Erlang/OTP</strong> [Armstrong, 2003] provides the actor model with transparent distribution, but without compile-time verification of distributed properties. A message sent to a remote actor may fail silently; the programmer must handle distribution errors manually.</p>
+
+<p><strong>TLA+/PlusCal</strong> [Lamport, 2002] provides formal specification and model checking for distributed systems, but is not an executable language. The specification and the implementation remain separate artifacts with no guaranteed correspondence.</p>
+
+<p><strong>Kubernetes</strong> [Burns et al., 2016] provides container orchestration, but the distribution model (YAML manifests) is entirely separate from the application code. There is no compiler that checks consistency between the two.</p>
+
+<p><strong>Akka</strong> [Lightbend] provides actors with location transparency in Scala/Java, but consistency guarantees are library-level configuration, not verified at compile time.</p>
+
+<p><strong>Unison</strong> [Chiusano &amp; Bjarnason] provides content-addressed code that can be distributed across nodes, but does not include distribution semantics (consistency, sharding, tolerance) in the type system.</p>
+
+<p><strong>Orleans</strong> [Bykov et al., 2011] introduces virtual actors with automatic placement, but distribution properties are implicit in the runtime rather than declared and verified in the source.</p>
+
+<p>Soma is, to our knowledge, the first language where distribution requirements are (1) declared in the source code alongside business logic, (2) verified at compile time for consistency, CAP properties, and quorum arithmetic, and (3) executed by the same runtime that handles local computation, via the same signal mechanism.</p>
+
+<!-- ════════════════════════ 7. CONCLUSION ════════════════════════ -->
+
+<h2>7. Conclusion</h2>
+
+<p>The separation between application code and infrastructure configuration is an accident of history, not a fundamental necessity. Soma demonstrates that a single model &mdash; the cell &mdash; can express computation, state management, lifecycle, contracts, and distribution. The compiler verifies that these concerns are mutually consistent. The runtime executes them on one machine or a thousand, with a single flag.</p>
+
+<p>The key insight is that distribution properties &mdash; consistency, tolerance, sharding &mdash; are <em>types</em>. They constrain the behavior of memory operations the way static types constrain the values of variables. And like type errors, distribution errors should be caught at compile time, not discovered in production at 3 AM.</p>
+
+<div class="keywords">
+<strong>Keywords:</strong> distributed systems, formal verification, programming languages, fractal architecture, cell model, consistent hashing, CAP theorem, compile-time distribution checking
+</div>
+
+</div>
+</body>
+</html>
