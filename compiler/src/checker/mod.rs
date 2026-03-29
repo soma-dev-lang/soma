@@ -245,11 +245,9 @@ impl<'a> Checker<'a> {
     }
 
     fn all_slots_have_property(&self, cell: &CellDef, prop_name: &str) -> bool {
-        let mut found_any = false;
         for section in &cell.sections {
             if let Section::Memory(ref mem) = section.node {
                 for slot in &mem.slots {
-                    found_any = true;
                     let has_prop = slot.node.properties.iter()
                         .any(|p| p.node.name() == prop_name);
                     if !has_prop {
@@ -258,8 +256,8 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // If no slots, the promise vacuously holds
-        !found_any || true
+        // All slots checked (or none exist — vacuously true)
+        true
     }
 
     fn run_custom_checkers(&mut self, cell: &CellDef) {

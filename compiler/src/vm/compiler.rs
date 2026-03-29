@@ -173,7 +173,17 @@ impl BytecodeCompiler {
             }
 
             Statement::Break | Statement::Continue => {
-                // TODO: implement break/continue in bytecode VM
+                // Break/continue not yet supported in bytecode VM — emit
+                // a runtime error string and return so the handler stops
+                // instead of silently ignoring the statement.
+                let msg = if matches!(stmt, Statement::Break) {
+                    "break is not supported in the bytecode VM"
+                } else {
+                    "continue is not supported in the bytecode VM"
+                };
+                let idx = chunk.add_constant(Constant::String(msg.to_string()));
+                chunk.emit_u16(Op::Const, idx);
+                chunk.emit(Op::Return);
             }
         }
     }
@@ -196,13 +206,49 @@ impl BytecodeCompiler {
                 self.compile_expr(chunk, &left.node);
                 self.compile_expr(chunk, &right.node);
                 match op {
-                    BinOp::Add => chunk.emit(Op::Add),
-                    BinOp::Sub => chunk.emit(Op::Sub),
-                    BinOp::Mul => chunk.emit(Op::Mul),
-                    BinOp::Div => chunk.emit(Op::Div),
-                    BinOp::Mod => chunk.emit(Op::Mod),
-                    BinOp::And => chunk.emit(Op::Mul), // truthy multiply
-                    BinOp::Or => chunk.emit(Op::Add),  // truthy add
+                    BinOp::Add => { chunk.emit(Op::Add); },
+                    BinOp::Sub => { chunk.emit(Op::Sub); },
+                    BinOp::Mul => { chunk.emit(Op::Mul); },
+                    BinOp::Div => { chunk.emit(Op::Div); },
+                    BinOp::Mod => { chunk.emit(Op::Mod); },
+                    BinOp::And => {
+                        // Stack: [a, b]. b is on top.
+                        // Convert b to bool and check it
+                        chunk.emit(Op::Not);
+                        chunk.emit(Op::Not);
+                        // Stack: [a, bool_b]
+                        let jump_b_false = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);
+                        // b was truthy — result depends on a
+                        // Stack: [a]
+                        chunk.emit(Op::Not);
+                        chunk.emit(Op::Not);
+                        // Stack: [bool_a] — this is the AND result
+                        let jump_end = chunk.emit_u16(Op::Jump, 0xFFFF);
+                        // b was falsy — result is false, but a is still on stack
+                        chunk.patch_jump(jump_b_false, chunk.len() as u16);
+                        chunk.emit(Op::Pop);
+                        chunk.emit(Op::False);
+                        chunk.patch_jump(jump_end, chunk.len() as u16);
+                    }
+                    BinOp::Or => {
+                        // Stack: [a, b]. b is on top.
+                        // Convert b to bool and check it
+                        chunk.emit(Op::Not);
+                        chunk.emit(Op::Not);
+                        // Stack: [a, bool_b]
+                        let jump_b_false = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);
+                        // b was truthy — result is true, discard a
+                        chunk.emit(Op::Pop);
+                        chunk.emit(Op::True);
+                        let jump_end = chunk.emit_u16(Op::Jump, 0xFFFF);
+                        // b was falsy — result depends on a
+                        chunk.patch_jump(jump_b_false, chunk.len() as u16);
+                        // Stack: [a]
+                        chunk.emit(Op::Not);
+                        chunk.emit(Op::Not);
+                        // Stack: [bool_a] — this is the OR result
+                        chunk.patch_jump(jump_end, chunk.len() as u16);
+                    }
                 };
             }
 

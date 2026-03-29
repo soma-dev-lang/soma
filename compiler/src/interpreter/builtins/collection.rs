@@ -4,10 +4,14 @@ use std::collections::HashMap;
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
         "list" => {
-            if let Some(Value::List(existing)) = args.first() {
-                let mut result = existing.clone();
-                result.extend(args[1..].to_vec());
-                Some(Ok(Value::List(result)))
+            if args.len() > 1 {
+                if let Some(Value::List(existing)) = args.first() {
+                    let mut result = existing.clone();
+                    result.extend(args[1..].to_vec());
+                    Some(Ok(Value::List(result)))
+                } else {
+                    Some(Ok(Value::List(args.to_vec())))
+                }
             } else {
                 Some(Ok(Value::List(args.to_vec())))
             }
@@ -151,10 +155,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             let vars: HashMap<String, String> = entries.iter()
                                 .map(|(k, v)| (k.clone(), format!("{}", v)))
                                 .collect();
-                            let bytes = template.as_bytes();
                             let mut pos = 0;
-                            while pos < bytes.len() {
-                                if bytes[pos] == b'{' {
+                            while pos < template.len() {
+                                if template.as_bytes()[pos] == b'{' {
                                     if let Some(end) = template[pos+1..].find('}') {
                                         let key = &template[pos+1..pos+1+end];
                                         if let Some(val) = vars.get(key) {
@@ -164,8 +167,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                         }
                                     }
                                 }
-                                result.push(bytes[pos] as char);
-                                pos += 1;
+                                if let Some(c) = template[pos..].chars().next() {
+                                    result.push(c);
+                                    pos += c.len_utf8();
+                                } else {
+                                    pos += 1;
+                                }
                             }
                         }
                     }

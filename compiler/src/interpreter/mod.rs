@@ -325,6 +325,9 @@ impl Interpreter {
             for section in &cell.node.sections {
                 if let Section::OnSignal(ref on) = section.node {
                     let key = (cell.node.name.clone(), on.signal_name.clone());
+                    if handler_cache.contains_key(&key) {
+                        eprintln!("warning: duplicate handler '{}' in cell '{}' (last definition wins)", on.signal_name, cell.node.name);
+                    }
                     let value = (on.params.clone(), on.body.clone());
                     handler_cache.insert(key, value);
                 }
@@ -339,7 +342,7 @@ impl Interpreter {
         Self {
             cells,
             handler_cache,
-            max_depth: 10_000,
+            max_depth: 512,
             current_depth: 0,
             emitted_signals: Vec::new(),
             storage: HashMap::new(),
@@ -647,6 +650,14 @@ impl Interpreter {
                 // Convert to iterable items
                 let items = match iter_val {
                     Value::List(items) => items,
+                    Value::Map(entries) => {
+                        entries.into_iter().map(|(k, v)| {
+                            Value::Map(vec![
+                                ("key".to_string(), Value::String(k)),
+                                ("value".to_string(), v),
+                            ])
+                        }).collect()
+                    }
                     Value::String(s) => {
                         if s.contains('\n') {
                             s.split('\n')
@@ -1321,11 +1332,10 @@ impl Interpreter {
     /// Interpolate {var} in a string from the local scope.
     /// If var is not found in scope, leave {var} as-is (for render() compatibility).
     fn interpolate_string(&mut self, s: &str, env: &mut HashMap<String, Value>, cell_name: &str, signal_name: &str) -> String {
-        let bytes = s.as_bytes();
         let mut result = String::with_capacity(s.len());
         let mut pos = 0;
-        while pos < bytes.len() {
-            if bytes[pos] == b'{' {
+        while pos < s.len() {
+            if s.as_bytes()[pos] == b'{' {
                 if let Some(end) = s[pos + 1..].find('}') {
                     let expr_str = &s[pos + 1..pos + 1 + end];
 
@@ -1345,8 +1355,14 @@ impl Interpreter {
                     }
                 }
             }
-            result.push(bytes[pos] as char);
-            pos += 1;
+            // Properly handle multi-byte UTF-8 characters
+            let ch = &s[pos..];
+            if let Some(c) = ch.chars().next() {
+                result.push(c);
+                pos += c.len_utf8();
+            } else {
+                pos += 1;
+            }
         }
         result
     }
@@ -1355,7 +1371,10 @@ impl Interpreter {
     fn eval_interpolation_expr(&mut self, expr_str: &str, env: &mut HashMap<String, Value>, cell_name: &str, signal_name: &str) -> Option<Value> {
         // Fast path: simple variable name
         if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return env.get(expr_str).cloned();
+            return match env.get(expr_str) {
+                Some(val) => Some(val.clone()),
+                None => Some(Value::String(format!("<error: undefined variable: {}>", expr_str))),
+            };
         }
         // Fast path: var.field
         if expr_str.contains('.') && !expr_str.contains('(') && !expr_str.contains(' ') {
@@ -1375,28 +1394,43 @@ impl Interpreter {
                         }
                         _ => {}
                     }
+                    return Some(Value::String(format!("<error: no field '{}' on {}>", parts[1], parts[0])));
+                } else {
+                    return Some(Value::String(format!("<error: undefined variable: {}>", parts[0])));
                 }
             }
         }
         // Full expression: parse and eval
         let wrapped = format!("cell _T {{ on _e() {{ return {} }} }}", expr_str);
         let mut lexer = crate::lexer::Lexer::new(&wrapped);
-        let tokens = lexer.tokenize().ok()?;
+        let tokens = match lexer.tokenize() {
+            Ok(t) => t,
+            Err(e) => return Some(Value::String(format!("<error: parse error in '{{{}}}': {}>", expr_str, e))),
+        };
         let mut parser = crate::parser::Parser::new(tokens);
-        let program = parser.parse_program().ok()?;
-        let cell = program.cells.first()?;
-        let section = cell.node.sections.first()?;
+        let program = match parser.parse_program() {
+            Ok(p) => p,
+            Err(e) => return Some(Value::String(format!("<error: parse error in '{{{}}}': {}>", expr_str, e))),
+        };
+        let cell = match program.cells.first() {
+            Some(c) => c,
+            None => return Some(Value::String(format!("<error: failed to parse '{{{}}}'>", expr_str))),
+        };
+        let section = match cell.node.sections.first() {
+            Some(s) => s,
+            None => return Some(Value::String(format!("<error: failed to parse '{{{}}}'>", expr_str))),
+        };
         if let crate::ast::Section::OnSignal(ref on) = section.node {
             if let Some(stmt) = on.body.first() {
                 if let crate::ast::Statement::Return { ref value } = stmt.node {
                     match self.eval_expr(&value.node, env, cell_name, signal_name) {
                         Ok(val) => return Some(val),
-                        Err(_) => return None,
+                        Err(e) => return Some(Value::String(format!("<error: {:?}>", e))),
                     }
                 }
             }
         }
-        None
+        Some(Value::String(format!("<error: failed to evaluate '{{{}}}'>", expr_str)))
     }
 
     fn eval_literal(&self, lit: &Literal) -> Value {

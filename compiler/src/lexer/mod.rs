@@ -614,9 +614,19 @@ impl<'a> Lexer<'a> {
                 span: Span::new(start, self.pos),
             })
         } else {
-            let val: i64 = num_str
-                .parse()
-                .map_err(|_| LexError::InvalidNumber { pos: start })?;
+            let val: i64 = match num_str.parse::<i64>() {
+                Ok(v) => v,
+                Err(_) => {
+                    // Handle 9223372036854775808 which is only valid as the
+                    // operand of unary minus (producing i64::MIN).  Store it
+                    // as i64::MIN; the parser's negation uses wrapping_neg
+                    // which maps i64::MIN back to itself.
+                    match num_str.parse::<u64>() {
+                        Ok(u) if u == (i64::MAX as u64) + 1 => i64::MIN,
+                        _ => return Err(LexError::InvalidNumber { pos: start }),
+                    }
+                }
+            };
             Ok(SpannedToken {
                 token: Token::IntLit(val),
                 span: Span::new(start, self.pos),

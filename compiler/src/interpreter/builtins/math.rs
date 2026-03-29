@@ -5,20 +5,55 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
     match name {
         "abs" => {
             args.first().map(|arg| match arg {
-                Value::Int(n) => Ok(Value::Int(n.abs())),
+                Value::Int(n) => n.checked_abs()
+                    .map(Value::Int)
+                    .ok_or_else(|| RuntimeError::TypeError("abs: integer overflow (i64::MIN has no positive equivalent)".to_string())),
                 Value::Float(n) => Ok(Value::Float(n.abs())),
                 _ => Err(RuntimeError::TypeError("abs expects a number".to_string())),
             })
         }
         "round" => {
             args.first().map(|a| match a {
-                Value::Float(n) => Ok(Value::Int(n.round() as i64)),
+                Value::Float(n) => {
+                    let r = n.round();
+                    if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
+                        Ok(Value::Int(r as i64))
+                    } else {
+                        Err(RuntimeError::TypeError(format!("round: {} is out of integer range", n)))
+                    }
+                }
                 Value::Int(n) => Ok(Value::Int(*n)),
                 _ => Ok(Value::Int(0)),
             })
         }
-        "floor" => { args.first().map(|a| Ok(Value::Int(match a { Value::Float(n) => n.floor() as i64, Value::Int(n) => *n, _ => 0 }))) }
-        "ceil" => { args.first().map(|a| Ok(Value::Int(match a { Value::Float(n) => n.ceil() as i64, Value::Int(n) => *n, _ => 0 }))) }
+        "floor" => {
+            args.first().map(|a| match a {
+                Value::Float(n) => {
+                    let r = n.floor();
+                    if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
+                        Ok(Value::Int(r as i64))
+                    } else {
+                        Err(RuntimeError::TypeError(format!("floor: {} is out of integer range", n)))
+                    }
+                }
+                Value::Int(n) => Ok(Value::Int(*n)),
+                _ => Ok(Value::Int(0)),
+            })
+        }
+        "ceil" => {
+            args.first().map(|a| match a {
+                Value::Float(n) => {
+                    let r = n.ceil();
+                    if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
+                        Ok(Value::Int(r as i64))
+                    } else {
+                        Err(RuntimeError::TypeError(format!("ceil: {} is out of integer range", n)))
+                    }
+                }
+                Value::Int(n) => Ok(Value::Int(*n)),
+                _ => Ok(Value::Int(0)),
+            })
+        }
         "sqrt" => { args.first().map(|a| Ok(Value::Float(match a { Value::Float(n) => n.sqrt(), Value::Int(n) => (*n as f64).sqrt(), _ => 0.0 }))) }
         "pow" => {
             if args.len() >= 2 {
@@ -83,12 +118,26 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         // random(max) → int 0..max (exclusive)
         // random(min, max) → int min..max (exclusive)
         "random" | "rand" => {
+            use std::cell::Cell;
             use std::time::{SystemTime, UNIX_EPOCH};
-            // Simple PRNG: use system time nanos as seed
+
+            thread_local! {
+                static RAND_COUNTER: Cell<u64> = Cell::new(0);
+            }
+
+            // Simple PRNG: use system time nanos as seed, mixed with a
+            // per-thread counter so rapid successive calls differ.
             let nanos = SystemTime::now().duration_since(UNIX_EPOCH)
                 .unwrap_or_default().subsec_nanos() as u64;
+
+            let mut x = RAND_COUNTER.with(|c| {
+                let count = c.get();
+                c.set(count.wrapping_add(1));
+                nanos ^ count
+            });
+
             // xorshift-style mixing
-            let mut x = nanos ^ (nanos >> 7) ^ (nanos << 13);
+            x = x ^ (x >> 7) ^ (x << 13);
             x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
 
             if args.is_empty() {

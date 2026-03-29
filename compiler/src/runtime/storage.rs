@@ -73,49 +73,49 @@ impl MemoryBackend {
 
 impl StorageBackend for MemoryBackend {
     fn get(&self, key: &str) -> Option<StoredValue> {
-        self.map.read().unwrap().get(key).cloned()
+        self.map.read().unwrap_or_else(|e| e.into_inner()).get(key).cloned()
     }
 
     fn set(&self, key: &str, value: StoredValue) {
-        self.map.write().unwrap().insert(key.to_string(), value);
+        self.map.write().unwrap_or_else(|e| e.into_inner()).insert(key.to_string(), value);
     }
 
     fn delete(&self, key: &str) -> bool {
-        self.map.write().unwrap().remove(key).is_some()
+        self.map.write().unwrap_or_else(|e| e.into_inner()).remove(key).is_some()
     }
 
     fn append(&self, value: StoredValue) {
-        self.log.write().unwrap().push(value);
+        self.log.write().unwrap_or_else(|e| e.into_inner()).push(value);
     }
 
     fn list(&self) -> Vec<StoredValue> {
-        let log = self.log.read().unwrap();
+        let log = self.log.read().unwrap_or_else(|e| e.into_inner());
         if !log.is_empty() {
             return log.clone();
         }
         // Fall back to map values when log is empty (data was added via set())
-        self.map.read().unwrap().iter()
+        self.map.read().unwrap_or_else(|e| e.into_inner()).iter()
             .filter(|(k, _)| !k.starts_with("__"))
             .map(|(_, v)| v.clone())
             .collect()
     }
 
     fn keys(&self) -> Vec<String> {
-        self.map.read().unwrap().keys()
+        self.map.read().unwrap_or_else(|e| e.into_inner()).keys()
             .filter(|k| !k.starts_with("__"))
             .cloned().collect()
     }
 
     fn values(&self) -> Vec<StoredValue> {
-        self.map.read().unwrap().values().cloned().collect()
+        self.map.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
     }
 
     fn has(&self, key: &str) -> bool {
-        self.map.read().unwrap().contains_key(key)
+        self.map.read().unwrap_or_else(|e| e.into_inner()).contains_key(key)
     }
 
     fn len(&self) -> usize {
-        self.map.read().unwrap().len() + self.log.read().unwrap().len()
+        self.map.read().unwrap_or_else(|e| e.into_inner()).len() + self.log.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     fn backend_name(&self) -> &str {

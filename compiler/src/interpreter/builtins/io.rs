@@ -45,11 +45,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     vars.insert(key, val);
                     i += 2;
                 }
-                let bytes = template.as_bytes();
                 let mut result = String::with_capacity(template.len());
                 let mut pos = 0;
-                while pos < bytes.len() {
-                    if bytes[pos] == b'{' {
+                while pos < template.len() {
+                    if template.as_bytes()[pos] == b'{' {
                         if let Some(end) = template[pos+1..].find('}') {
                             let key = &template[pos+1..pos+1+end];
                             if let Some(val) = vars.get(key) {
@@ -59,8 +58,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             }
                         }
                     }
-                    result.push(bytes[pos] as char);
-                    pos += 1;
+                    if let Some(c) = template[pos..].chars().next() {
+                        result.push(c);
+                        pos += c.len_utf8();
+                    } else {
+                        pos += 1;
+                    }
                 }
                 Some(Ok(Value::String(result)))
             } else {

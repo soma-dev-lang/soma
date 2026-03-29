@@ -374,7 +374,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                                         }
                                     }
                                     Err(e) => {
-                                        let err_msg = format!("{{\"error\":\"{}\"}}", e);
+                                        let err_msg = format!("{{\"error\":\"{}\"}}", format!("{}", e).replace('\\', "\\\\").replace('"', "\\\""));
                                         if let Ok(mut ws_w) = ws_write.lock() {
                                             let _ = ws_w.send(tungstenite::Message::Text(err_msg));
                                         }
@@ -494,6 +494,23 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
 
         if url.starts_with("/static/") {
             let file_path = base_dir.join(&url[1..]);
+            // Canonicalize to prevent path traversal attacks
+            let canonical = match file_path.canonicalize() {
+                Ok(p) => p,
+                Err(_) => {
+                    let resp = tiny_http::Response::from_string("not found")
+                        .with_status_code(404);
+                    let _ = request.respond(resp);
+                    return;
+                }
+            };
+            let base_canonical = base_dir.canonicalize().unwrap_or_else(|_| base_dir.as_ref().clone());
+            if !canonical.starts_with(&base_canonical) {
+                let resp = tiny_http::Response::from_string("forbidden")
+                    .with_status_code(403);
+                let _ = request.respond(resp);
+                return;
+            }
             if file_path.exists() && file_path.is_file() {
                 let content = std::fs::read(&file_path).unwrap_or_default();
                 let mime = match file_path.extension().and_then(|e| e.to_str()) {
@@ -788,7 +805,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let _ = request.respond(resp);
             }
             Err(e) => {
-                let body = format!("{{\"error\": \"{}\"}}", e);
+                let body = format!("{{\"error\": \"{}\"}}", format!("{}", e).replace('\\', "\\\\").replace('"', "\\\""));
                 let mut resp = tiny_http::Response::from_string(body)
                     .with_status_code(500)
                     .with_header(
@@ -808,21 +825,20 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
 }
 
 fn urlencoding_decode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.bytes();
-    while let Some(b) = chars.next() {
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut iter = s.bytes();
+    while let Some(b) = iter.next() {
         match b {
             b'%' => {
-                let hi = chars.next().unwrap_or(b'0');
-                let lo = chars.next().unwrap_or(b'0');
-                let byte = (hex_val(hi) << 4) | hex_val(lo);
-                result.push(byte as char);
+                let hi = iter.next().unwrap_or(b'0');
+                let lo = iter.next().unwrap_or(b'0');
+                bytes.push((hex_val(hi) << 4) | hex_val(lo));
             }
-            b'+' => result.push(' '),
-            _ => result.push(b as char),
+            b'+' => bytes.push(b' '),
+            _ => bytes.push(b),
         }
     }
-    result
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 fn hex_val(b: u8) -> u8 {

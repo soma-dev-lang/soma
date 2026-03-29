@@ -1534,6 +1534,30 @@ impl Parser {
         if self.check(&Token::Minus) {
             let start = self.peek_span();
             self.advance();
+            // Optimise: if the next token is an integer or float literal,
+            // fold the negation directly so that i64::MIN (-9223372036854775808)
+            // can be written as a literal without overflow.
+            match self.peek().clone() {
+                Token::IntLit(n) => {
+                    let end = self.peek_span();
+                    self.advance();
+                    let span = start.merge(end);
+                    return Ok(Spanned::new(
+                        Expr::Literal(Literal::Int(n.wrapping_neg())),
+                        span,
+                    ));
+                }
+                Token::FloatLit(n) => {
+                    let end = self.peek_span();
+                    self.advance();
+                    let span = start.merge(end);
+                    return Ok(Spanned::new(
+                        Expr::Literal(Literal::Float(-n)),
+                        span,
+                    ));
+                }
+                _ => {}
+            }
             let expr = self.parse_unary()?;
             let span = start.merge(expr.span);
             return Ok(Spanned::new(

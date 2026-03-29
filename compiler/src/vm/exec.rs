@@ -353,11 +353,10 @@ impl VM {
     fn interpolate_vm_string(&self, s: &str, base: usize) -> String {
         let frame = self.frames.last().unwrap();
         let chunk = &self.chunks[frame.chunk_idx];
-        let bytes = s.as_bytes();
         let mut result = String::with_capacity(s.len());
         let mut pos = 0;
-        while pos < bytes.len() {
-            if bytes[pos] == b'{' {
+        while pos < s.len() {
+            if s.as_bytes()[pos] == b'{' {
                 if let Some(end) = s[pos + 1..].find('}') {
                     let key = &s[pos + 1..pos + 1 + end];
                     if !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
@@ -385,8 +384,12 @@ impl VM {
                     }
                 }
             }
-            result.push(bytes[pos] as char);
-            pos += 1;
+            if let Some(c) = s[pos..].chars().next() {
+                result.push(c);
+                pos += c.len_utf8();
+            } else {
+                pos += 1;
+            }
         }
         result
     }
@@ -417,6 +420,18 @@ impl VM {
         let a = self.stack.pop().unwrap_or(Value::Unit);
         let result = match (&a, &b) {
             (Value::Int(a), Value::Int(b)) => f(*a, *b),
+            (Value::Float(a), Value::Float(b)) => {
+                let ord = a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+                f(ord as i64, 0)
+            }
+            (Value::Int(a), Value::Float(b)) => {
+                let ord = (*a as f64).partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+                f(ord as i64, 0)
+            }
+            (Value::Float(a), Value::Int(b)) => {
+                let ord = a.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal);
+                f(ord as i64, 0)
+            }
             (Value::Unit, Value::Unit) => f(0, 0),
             (Value::Unit, _) => f(0, 1), // Unit != anything
             (_, Value::Unit) => f(1, 0),
@@ -465,11 +480,10 @@ impl VM {
                         vars.insert(format!("{}", args[i]), format!("{}", args[i + 1]));
                         i += 2;
                     }
-                    let bytes = template.as_bytes();
                     let mut result = String::with_capacity(template.len());
                     let mut pos = 0;
-                    while pos < bytes.len() {
-                        if bytes[pos] == b'{' {
+                    while pos < template.len() {
+                        if template.as_bytes()[pos] == b'{' {
                             if let Some(end) = template[pos+1..].find('}') {
                                 let key = &template[pos+1..pos+1+end];
                                 if let Some(val) = vars.get(key) {
@@ -479,8 +493,12 @@ impl VM {
                                 }
                             }
                         }
-                        result.push(bytes[pos] as char);
-                        pos += 1;
+                        if let Some(c) = template[pos..].chars().next() {
+                            result.push(c);
+                            pos += c.len_utf8();
+                        } else {
+                            pos += 1;
+                        }
                     }
                     Value::String(result)
                 } else {
