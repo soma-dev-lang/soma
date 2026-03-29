@@ -106,6 +106,14 @@ else
     echo "  ✓ stdlib installed to $HOME/.soma/stdlib"
 fi
 
+# Remove old installations that would shadow ~/.soma/bin
+for OLD_SOMA in /usr/local/bin/soma "$HOME/.local/bin/soma"; do
+    if [ -f "$OLD_SOMA" ]; then
+        echo "  → removing old installation: $OLD_SOMA"
+        rm -f "$OLD_SOMA" 2>/dev/null || sudo rm -f "$OLD_SOMA" 2>/dev/null || echo "  ⚠ could not remove $OLD_SOMA (remove manually)"
+    fi
+done
+
 # Add to PATH if not already there
 PATH_LINE="export PATH=\"\$HOME/.soma/bin:\$PATH\""
 
@@ -128,11 +136,15 @@ else
         echo "$PATH_LINE" > "$SHELL_RC"
         echo "  ✓ created $SHELL_RC"
     fi
-
-    # Also add to current session
-    export PATH="$HOME/.soma/bin:$PATH"
-    echo "  ✓ PATH updated for current session"
 fi
+
+# Ensure ~/.soma/bin is first in PATH for current session
+export PATH="$HOME/.soma/bin:$PATH"
+
+echo ""
+echo "  ✓ soma $(${INSTALL_DIR}/soma --version 2>/dev/null || echo 'installed')"
+echo ""
+echo "  ⚠ run 'source ${SHELL_RC}' or open a new terminal to use soma"
 
 echo ""
 echo "  verify:"
