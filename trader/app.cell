@@ -1,12 +1,11 @@
 // ============================================================================
-// Market Maker Bot — Automated trading via WebSocket to Exchange
+// Market Maker Bot — Connects to Exchange via WebSocket
 // ============================================================================
-// Connects to the Exchange on localhost:8080
-// Places bids and asks around fair value on multiple tickers
-// Re-quotes every cycle to maintain presence in the book
+// Connects to Exchange WS on ws://localhost:8081
+// Sends orders, receives fills and book updates in real-time
 //
 // Run: soma serve app.cell -p 9090
-//   (Exchange must be running on :8080)
+//   (Exchange must be running: cd exchange && soma serve app.cell)
 
 use lib::strategy
 use lib::connection
@@ -20,9 +19,46 @@ cell MarketMaker {
         fills: Map<String, String> [ephemeral, local]
     }
 
-    // ---- Quote cycle: every 3s ----
+    // ---- Connect to exchange on startup ----
+    on init() {
+        let result = connect_exchange()
+        print("WS: {result.status} to exchange")
+        return result
+    }
 
-    // Quote cycle: refresh the book every 3s
+    // ---- Incoming WS messages from exchange ----
+    on ws(message: String) {
+        let data = from_json(message)
+        let event = data.event ?? ""
+
+        match event {
+            "trade" -> {
+                // A trade happened — record if we're involved
+                let trade = data.data
+                if trade != () {
+                    let tid = to_string(now())
+                    fills.set(tid, to_json(trade))
+                    print("FILL: {trade.ticker} @ {trade.price} x{trade.qty}")
+                }
+            }
+            "order_placed" -> {
+                // Another participant placed an order
+            }
+            "book_update" -> {
+                // Book changed
+            }
+            _ -> {
+                // Direct response to our order placement
+                if data.status != () {
+                    if data.order_id != () {
+                        my_orders.set(data.order_id, message)
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Quote cycle: every 3s ----
     every 3s {
         let cycle = to_int(state.get("cycle") ?? "0") + 1
         state.set("cycle", to_string(cycle))
@@ -32,136 +68,73 @@ cell MarketMaker {
             requote(ticker)
         }
 
-        // Every 2nd cycle: send an aggressive order that crosses the spread
-        // Simulates another trader hitting our quotes
+        // Every 2nd cycle: aggressive order that crosses the spread
         if cycle % 2 == 0 {
             aggress(cycle)
         }
     }
 
+    on requote(ticker: String) {
+        let cycle = to_int(state.get("cycle") ?? "0")
+        let quotes = generate_quotes(ticker, cycle)
+
+        for quote in quotes {
+            send_order(quote.ticker, quote.side, quote.price, quote.qty)
+        }
+    }
+
     on aggress(cycle: Int) {
-        // Pick a ticker based on cycle
         let tickers = list("BTC", "ETH", "SOL", "AVAX")
         let idx = cycle % 4
         let ticker = tickers.get(idx)
         let mid = fair_value(ticker, cycle)
 
-        // Alternate buy/sell aggression
+        // Alternate buy/sell
         if cycle % 4 < 2 {
-            // Aggressive buy: bid above best ask to guarantee fill
-            let price = mid + 300
-            if ticker == "ETH" { price = mid + 30 }
-            if ticker == "SOL" { price = mid + 5 }
-            if ticker == "AVAX" { price = mid + 3 }
+            let price = mid + 500
+            if ticker == "ETH" { price = mid + 50 }
+            if ticker == "SOL" { price = mid + 10 }
+            if ticker == "AVAX" { price = mid + 5 }
             send_order(ticker, "buy", price, 1)
         } else {
-            // Aggressive sell: ask below best bid to guarantee fill
-            let price = mid - 300
-            if ticker == "ETH" { price = mid - 30 }
-            if ticker == "SOL" { price = mid - 5 }
-            if ticker == "AVAX" { price = mid - 3 }
+            let price = mid - 500
+            if ticker == "ETH" { price = mid - 50 }
+            if ticker == "SOL" { price = mid - 10 }
+            if ticker == "AVAX" { price = mid - 5 }
             send_order(ticker, "sell", price, 1)
         }
     }
 
-    on requote(ticker: String) {
-        // Cancel previous orders for this ticker before re-quoting
-        let prev = my_orders.values()
-            |> map(s => from_json(s))
-            |> filter(o => o.ticker == ticker)
-        for old in prev {
-            cancel_order(old.id)
-            my_orders.delete(old.id)
-        }
-
-        let cycle = to_int(state.get("cycle") ?? "0")
-        let quotes = generate_quotes(ticker, cycle)
-
-        for quote in quotes {
-            let result = send_order(quote.ticker, quote.side, quote.price, quote.qty)
-            if result.order_id != () {
-                my_orders.set(result.order_id, to_json(map(
-                    "id", result.order_id,
-                    "ticker", quote.ticker,
-                    "side", quote.side,
-                    "price", quote.price,
-                    "qty", quote.qty,
-                    "status", "sent"
-                )))
-            }
-        }
-    }
-
     // ---- Data ----
-
-    on get_positions() {
-        let tickers = list("BTC", "ETH", "SOL", "AVAX")
-        let positions = list()
-        for ticker in tickers {
-            let filled_buys = my_orders.values()
-                |> map(s => from_json(s))
-                |> filter(o => o.ticker == ticker && o.side == "buy")
-            let filled_sells = my_orders.values()
-                |> map(s => from_json(s))
-                |> filter(o => o.ticker == ticker && o.side == "sell")
-
-            let buy_qty = 0
-            let buy_cost = 0
-            for b in filled_buys {
-                buy_qty = buy_qty + b.qty
-                buy_cost = buy_cost + b.price * b.qty
-            }
-            let sell_qty = 0
-            let sell_revenue = 0
-            for s in filled_sells {
-                sell_qty = sell_qty + s.qty
-                sell_revenue = sell_revenue + s.price * s.qty
-            }
-
-            let net_qty = buy_qty - sell_qty
-            let cycle = to_int(state.get("cycle") ?? "0")
-            let mid = fair_value(ticker, cycle)
-            let avg_price = 0
-            if buy_qty > 0 { avg_price = buy_cost / buy_qty }
-            let pnl = sell_revenue - buy_cost + net_qty * mid
-
-            if buy_qty > 0 {
-                positions = push(positions, map(
-                    "ticker", ticker,
-                    "qty", net_qty,
-                    "avg_price", avg_price,
-                    "pnl", pnl
-                ))
-            }
-        }
-        return positions
-    }
-
-    on get_pnl() {
-        let positions = get_positions()
-        let total = 0
-        for p in positions {
-            total = total + p.pnl
-        }
-        let color = "#22c55e"
-        if total < 0 { color = "#ef4444" }
-        let open_count = len(my_orders.keys())
-        let trade_count = len(fills.keys())
-        return map("total", total, "color", color, "trades", trade_count, "open_orders", open_count)
+    on get_fills() {
+        return fills.values()
+            |> map(s => from_json(s))
+            |> filter(t => t.ticker != ())
     }
 
     on get_recent_orders() {
         return my_orders.values()
             |> map(s => from_json(s))
+            |> filter(o => o.ticker != ())
             |> top(20)
     }
 
-    // ---- HTTP dashboard ----
+    on get_pnl() {
+        let fill_list = get_fills()
+        let total_trades = len(fill_list)
+        let order_count = len(my_orders.keys())
+        return map("total", 0, "color", "#22c55e", "trades", total_trades, "open_orders", order_count)
+    }
 
+    on get_positions() {
+        return get_fills()
+    }
+
+    // ---- HTTP dashboard ----
     on request(method: String, path: String, body: String) {
         match path {
             "/"              -> html(page_dashboard())
-            "/api/positions" -> get_positions()
+            "/api/fills"     -> get_fills()
             "/api/pnl"       -> get_pnl()
             "/api/orders"    -> get_recent_orders()
             _                -> response(404, map("error", "not found"))

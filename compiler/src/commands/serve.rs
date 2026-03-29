@@ -127,6 +127,27 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
     // Create shared event bus for SSE + WebSocket
     let event_bus = interpreter::new_event_bus();
 
+    // Shared WS client output (set by ws_connect, used by ws_send across all interpreters)
+    let shared_ws_out: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Sender<String>>>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+
+    // Run init() handler if it exists (may call ws_connect)
+    if handler_names.contains(&"init".to_string()) || handler_names.contains(&"start".to_string()) {
+        let init_signal = if handler_names.contains(&"init".to_string()) { "init" } else { "start" };
+        let mut interp = interpreter::Interpreter::new(&program);
+        interp.set_storage_raw(&storage_slots);
+        interp.ensure_state_machine_storage();
+        interp.event_bus = Some(event_bus.clone());
+        let _ = interp.call_signal(&cell_name, init_signal, vec![]);
+        // Capture ws_out if ws_connect was called
+        if let Some(ref out) = interp.ws_out {
+            if let Ok(mut shared) = shared_ws_out.lock() {
+                *shared = Some(out.clone());
+            }
+        }
+        eprintln!("init: {} executed", init_signal);
+    }
+
     // Check if cell has a `ws` handler
     let has_ws_handler = handler_names.contains(&"ws".to_string());
     let ws_port = port + 1;
@@ -273,6 +294,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let slots = storage_slots.clone();
                 let cname = cell_name.clone();
                 let bus = event_bus.clone();
+                let ws = shared_ws_out.clone();
                 eprintln!("scheduler: every {}ms", interval);
 
                 std::thread::spawn(move || {
@@ -282,6 +304,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                         interp.set_storage_raw(&slots);
                         interp.ensure_state_machine_storage();
                         interp.event_bus = Some(bus.clone());
+                        // Inherit WS client connection if available
+                        if let Ok(ws_guard) = ws.lock() {
+                            interp.ws_out = ws_guard.clone();
+                        }
                         let mut env = std::collections::HashMap::new();
                         let _ = interp.exec_every(&body, &mut env, &cname);
                     }
@@ -298,6 +324,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         let cell_name = cell_name.clone();
         let base_dir = base_dir.clone();
         let event_bus = event_bus.clone();
+        let shared_ws = shared_ws_out.clone();
 
         std::thread::spawn(move || {
         let method = request.method().to_string();
@@ -362,6 +389,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
         interp.event_bus = Some(event_bus.clone());
+        if let Ok(ws_guard) = shared_ws.lock() {
+            interp.ws_out = ws_guard.clone();
+        }
 
         let (signal_name, args) = if url.starts_with("/signal/") {
             let signal = url.trim_start_matches("/signal/");

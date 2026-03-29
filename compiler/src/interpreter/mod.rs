@@ -227,6 +227,8 @@ pub struct Interpreter {
     pub(crate) state_machines: HashMap<(String, String), StateMachineSection>,
     /// Broadcast bus for SSE/real-time events
     pub event_bus: Option<EventBus>,
+    /// WebSocket client outgoing channel (for ws_send)
+    pub ws_out: Option<Arc<std::sync::Mutex<std::sync::mpsc::Sender<String>>>>,
     /// Source file path for error reporting
     pub source_file: Option<String>,
     /// Source text for line:col conversion
@@ -265,6 +267,7 @@ impl Interpreter {
             storage: HashMap::new(),
             state_machines,
             event_bus: None,
+            ws_out: None,
             source_file: None,
             source_text: None,
             last_span: None,
@@ -684,6 +687,29 @@ impl Interpreter {
                 let mut arg_vals = Vec::new();
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
+                }
+
+                // WebSocket builtins — need &mut self
+                if name == "ws_connect" {
+                    if let Some(Value::String(url)) = arg_vals.first() {
+                        return self.do_ws_connect(url, cell_name)
+                            .map_err(ExecError::Runtime);
+                    }
+                    return Err(ExecError::Runtime(RuntimeError::TypeError("ws_connect(url)".to_string())));
+                }
+                if name == "ws_send" {
+                    if let Some(ref out) = self.ws_out {
+                        let msg = match arg_vals.first() {
+                            Some(Value::String(s)) => s.clone(),
+                            Some(v) => format!("{}", v),
+                            None => "{}".to_string(),
+                        };
+                        if let Ok(sender) = out.lock() {
+                            let _ = sender.send(msg);
+                        }
+                        return Ok(Value::Unit);
+                    }
+                    return Err(ExecError::Runtime(RuntimeError::TypeError("ws_send: not connected".to_string())));
                 }
 
                 // Check lambda builtins first (map, filter, find, etc.) — need &mut self
@@ -1218,6 +1244,97 @@ impl Interpreter {
             Literal::Percentage(p) => Value::Float(*p),
             Literal::Unit => Value::Unit,
         }
+    }
+
+    /// Open a persistent WebSocket client connection
+    fn do_ws_connect(&mut self, url: &str, cell_name: &str) -> Result<Value, RuntimeError> {
+        use tungstenite::connect;
+
+        // Parse URL to get host:port, then connect raw TcpStream
+        let parsed = url::Url::parse(url).map_err(|e| {
+            RuntimeError::TypeError(format!("ws_connect: invalid URL: {}", e))
+        })?;
+        let host = parsed.host_str().unwrap_or("localhost");
+        let port = parsed.port().unwrap_or(80);
+        let addr = format!("{}:{}", host, port);
+
+        let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
+            RuntimeError::TypeError(format!("ws_connect: {}", e))
+        })?;
+        let read_stream = stream.try_clone().map_err(|e| {
+            RuntimeError::TypeError(format!("ws clone: {}", e))
+        })?;
+
+        // Handshake on the write stream
+        let (ws, _) = tungstenite::client::client(url, stream).map_err(|e| {
+            RuntimeError::TypeError(format!("ws handshake: {}", e))
+        })?;
+
+        // We need to get the underlying stream back for the writer
+        // The handshake consumed `stream`, but we have `ws` which owns it now
+        // Use the ws directly for writing in a shared Arc<Mutex>
+        let ws_shared = Arc::new(std::sync::Mutex::new(ws));
+
+        // Outgoing channel: ws_send() pushes here, writer thread sends on WS
+        let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
+        self.ws_out = Some(Arc::new(std::sync::Mutex::new(out_tx)));
+
+        // Writer thread: reads from channel, sends on the shared WS
+        let ws_write = ws_shared.clone();
+        std::thread::spawn(move || {
+            for msg in out_rx {
+                if let Ok(mut ws) = ws_write.lock() {
+                    if ws.send(tungstenite::Message::Text(msg)).is_err() { break; }
+                }
+            }
+        });
+
+        // Reader thread: reads from cloned TcpStream via a new WS, dispatches to on ws()
+        let cells = self.cells.clone();
+        let storage: HashMap<String, Arc<dyn StorageBackend>> = self.storage.iter()
+            .map(|(k, v)| (k.clone(), v.clone())).collect();
+        let state_machines = self.state_machines.clone();
+        let event_bus = self.event_bus.clone();
+        let ws_out_clone = self.ws_out.clone();
+        let cname = cell_name.to_string();
+
+        std::thread::spawn(move || {
+            let mut reader_ws = tungstenite::WebSocket::from_raw_socket(
+                read_stream,
+                tungstenite::protocol::Role::Client,
+                None,
+            );
+            loop {
+                match reader_ws.read() {
+                    Ok(tungstenite::Message::Text(text)) => {
+                        let prog = Program { imports: vec![], cells: cells.values().map(|c| {
+                            Spanned::new(c.clone(), Span::new(0, 0))
+                        }).collect() };
+                        let mut interp = Interpreter::new(&prog);
+                        for (k, v) in &storage {
+                            interp.storage.insert(k.clone(), v.clone());
+                        }
+                        interp.state_machines = state_machines.clone();
+                        interp.event_bus = event_bus.clone();
+                        interp.ws_out = ws_out_clone.clone();
+
+                        let args = vec![Value::String(text)];
+                        let _ = interp.call_signal(&cname, "ws", args);
+                    }
+                    Ok(tungstenite::Message::Close(_)) | Err(_) => {
+                        eprintln!("ws: disconnected");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        eprintln!("ws: connected to {}", url);
+        Ok(Value::Map(vec![
+            ("status".to_string(), Value::String("connected".to_string())),
+            ("url".to_string(), Value::String(url.to_string())),
+        ]))
     }
 
     /// Apply a lambda to a value: bind param, eval body
