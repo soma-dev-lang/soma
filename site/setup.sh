@@ -107,7 +107,7 @@ else
 fi
 
 # Remove old installations that would shadow ~/.soma/bin
-for OLD_SOMA in /usr/local/bin/soma "$HOME/.local/bin/soma"; do
+for OLD_SOMA in /usr/local/bin/soma "$HOME/.local/bin/soma" "$HOME/bin/soma" "$HOME/.cargo/bin/soma"; do
     if [ -f "$OLD_SOMA" ]; then
         echo "  → removing old installation: $OLD_SOMA"
         rm -f "$OLD_SOMA" 2>/dev/null || sudo rm -f "$OLD_SOMA" 2>/dev/null || echo "  ⚠ could not remove $OLD_SOMA (remove manually)"
@@ -125,15 +125,20 @@ else
 
     if [ -f "$SHELL_RC" ]; then
         if ! grep -q '.soma/bin' "$SHELL_RC" 2>/dev/null; then
-            echo "" >> "$SHELL_RC"
-            echo "# Soma" >> "$SHELL_RC"
-            echo "$PATH_LINE" >> "$SHELL_RC"
-            echo "  ✓ added to $SHELL_RC"
+            # Prepend to top of file so ~/.soma/bin has highest priority
+            TMP_RC=$(mktemp)
+            echo "# Soma" > "$TMP_RC"
+            echo "$PATH_LINE" >> "$TMP_RC"
+            echo "" >> "$TMP_RC"
+            cat "$SHELL_RC" >> "$TMP_RC"
+            mv "$TMP_RC" "$SHELL_RC"
+            echo "  ✓ added to top of $SHELL_RC"
         else
             echo "  ✓ already in $SHELL_RC"
         fi
     else
-        echo "$PATH_LINE" > "$SHELL_RC"
+        echo "# Soma" > "$SHELL_RC"
+        echo "$PATH_LINE" >> "$SHELL_RC"
         echo "  ✓ created $SHELL_RC"
     fi
 fi
