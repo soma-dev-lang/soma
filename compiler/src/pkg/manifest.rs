@@ -14,6 +14,41 @@ pub struct Manifest {
     /// Verification properties
     #[serde(default)]
     pub verify: VerifyConfig,
+    /// Compute configuration
+    #[serde(default)]
+    pub compute: ComputeConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ComputeConfig {
+    /// Backend: "threads", "spark", "ray", "gpu"
+    #[serde(default = "default_compute_backend")]
+    pub backend: String,
+    /// Number of threads (for backend = "threads")
+    #[serde(default)]
+    pub threads: usize,
+    /// Parallel handlers configuration
+    #[serde(default)]
+    pub parallel: ParallelConfig,
+}
+
+impl Default for ComputeConfig {
+    fn default() -> Self {
+        Self {
+            backend: "sequential".to_string(),
+            threads: 0,
+            parallel: ParallelConfig::default(),
+        }
+    }
+}
+
+fn default_compute_backend() -> String { "sequential".to_string() }
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ParallelConfig {
+    /// Handler names to parallelize
+    #[serde(default)]
+    pub handlers: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -134,6 +169,7 @@ impl Manifest {
             dependencies: HashMap::new(),
             peers: HashMap::new(),
             verify: VerifyConfig::default(),
+            compute: ComputeConfig::default(),
         }
     }
 }

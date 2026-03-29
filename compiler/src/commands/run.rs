@@ -221,8 +221,25 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
     interp.source_file = Some(source_path.display().to_string());
     interp.source_text = Some(source.to_string());
 
+    // Read compute config from soma.toml
+    let parallel_config = {
+        let soma_toml = source_path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+        if soma_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&soma_toml) {
+                if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
+                    let c = &manifest.compute;
+                    crate::codegen::native::ParallelConfig {
+                        enabled: c.backend == "threads" && !c.parallel.handlers.is_empty(),
+                        handlers: c.parallel.handlers.clone(),
+                        threads: c.threads,
+                    }
+                } else { crate::codegen::native::ParallelConfig::default() }
+            } else { crate::codegen::native::ParallelConfig::default() }
+        } else { crate::codegen::native::ParallelConfig::default() }
+    };
+
     // Compile and load [native] handlers
-    match interpreter::native_ffi::compile_and_load_natives(&program) {
+    match interpreter::native_ffi::compile_and_load_natives_with_config(&program, &parallel_config) {
         Ok(natives) => {
             interp.native_handlers = natives;
         }

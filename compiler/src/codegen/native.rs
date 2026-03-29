@@ -40,8 +40,20 @@ pub struct NativeSig {
     pub return_type: NativeType,
 }
 
+/// Parallel configuration for code generation
+#[derive(Debug, Clone, Default)]
+pub struct ParallelConfig {
+    pub enabled: bool,
+    pub handlers: Vec<String>,
+    pub threads: usize,
+}
+
 /// Generate Rust source for a set of native handlers in one cell.
 pub fn generate_native_source(handlers: &[NativeHandler]) -> (String, Vec<NativeSig>) {
+    generate_native_source_with_config(handlers, &ParallelConfig::default())
+}
+
+pub fn generate_native_source_with_config(handlers: &[NativeHandler], parallel: &ParallelConfig) -> (String, Vec<NativeSig>) {
     let mut out = String::new();
     let mut sigs = Vec::new();
 
@@ -113,10 +125,97 @@ pub fn generate_native_source(handlers: &[NativeHandler]) -> (String, Vec<Native
 
         out.push_str("}\n\n");
 
+        // Generate parallel version if handler is in the parallel list
+        let is_parallel = parallel.enabled && parallel.handlers.contains(&handler.signal_name);
+        if is_parallel && !handler.params.is_empty() {
+            let n_threads = if parallel.threads > 0 { parallel.threads } else { 0 };
+            let threads_expr = if n_threads > 0 {
+                format!("{}usize", n_threads)
+            } else {
+                "std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)".to_string()
+            };
+
+            // Parallel strategy: split the FIRST param (iteration count) across threads.
+            // Each thread calls the sequential handler with chunk_size.
+            // Results are averaged (weighted by chunk size).
+            // This works for any Monte Carlo / accumulation handler.
+            let first_param = &handler.params[0].name;
+            let other_params: Vec<String> = handler.params[1..].iter()
+                .map(|p| format!("{}: {}", p.name, type_expr_to_native(&p.ty.node).rust_str()))
+                .collect();
+            let other_args: Vec<String> = handler.params[1..].iter()
+                .map(|p| p.name.clone())
+                .collect();
+
+            let full_param_str: String = handler.params.iter()
+                .map(|p| format!("{}: {}", p.name, type_expr_to_native(&p.ty.node).rust_str()))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let other_args_str = if other_args.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", other_args.join(", "))
+            };
+
+            out.push_str(&format!(
+                "#[no_mangle]\npub extern \"C\" fn {fn_name}_par({full_param_str}) -> {} {{\n\
+                \tlet _n_threads = {threads_expr};\n\
+                \tlet _total = {first_param} as usize;\n\
+                \tif _total < _n_threads * 1000 {{\n\
+                \t\treturn {fn_name}({first_param}{other_args_str});\n\
+                \t}}\n\
+                \tlet _chunk = (_total + _n_threads - 1) / _n_threads;\n\
+                \tlet _result: f64 = std::thread::scope(|_s| {{\n\
+                \t\tlet _handles: Vec<_> = (0.._n_threads).map(|_t| {{\n\
+                \t\t\tlet _start = _t * _chunk;\n\
+                \t\t\tlet _end = std::cmp::min((_t + 1) * _chunk, _total);\n\
+                \t\t\tlet _chunk_n = (_end - _start) as i64;\n\
+                \t\t\t_s.spawn(move || {{\n\
+                \t\t\t\t{fn_name}(_chunk_n{other_args_str}) * _chunk_n as f64\n\
+                \t\t\t}})\n\
+                \t\t}}).collect();\n\
+                \t\t_handles.into_iter().map(|h| h.join().unwrap()).sum::<f64>()\n\
+                \t}});\n\
+                \t(_result / {first_param} as f64) as {}\n\
+                }}\n\n",
+                ret_type.rust_str(), ret_type.rust_str()
+            ));
+        }
+
         let param_types: Vec<NativeType> = handler.params.iter()
             .map(|p| type_expr_to_native(&p.ty.node))
             .collect();
 
+        // Use parallel version if available
+        if is_parallel {
+            if param_types.len() > 3 {
+                // Generate array wrapper for the parallel version
+                out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}_par_arr(args: *const f64, _count: i64) -> f64 {{\n", fn_name));
+                out.push_str("    unsafe {\n");
+                let call_args: Vec<String> = handler.params.iter().enumerate().map(|(i, p)| {
+                    let ty = type_expr_to_native(&p.ty.node);
+                    match ty {
+                        NativeType::Int => format!("*args.add({}) as i64", i),
+                        NativeType::Float => format!("*args.add({})", i),
+                        NativeType::Bool => format!("*args.add({}) != 0.0", i),
+                    }
+                }).collect();
+                out.push_str(&format!("        let r = {}_par({});\n", fn_name, call_args.join(", ")));
+                out.push_str("        r as f64\n    }\n}\n\n");
+                sigs.push(NativeSig {
+                    fn_name: format!("{}_par_arr", fn_name),
+                    param_types: param_types.clone(),
+                    return_type: ret_type,
+                });
+            } else {
+                sigs.push(NativeSig {
+                    fn_name: format!("{}_par", fn_name),
+                    param_types: param_types.clone(),
+                    return_type: ret_type,
+                });
+            }
+        } else
         // For >3 params, generate an array-based wrapper
         if param_types.len() > 3 {
             out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}_arr(args: *const f64, _count: i64) -> f64 {{\n", fn_name));
@@ -493,6 +592,28 @@ impl FnGenerator {
             Expr::FnCall { name, args } => {
                 self.gen_fn_call(name, args, target_ty)
             }
+            Expr::Pipe { left, right } => {
+                self.gen_pipe(&left.node, &right.node, target_ty)
+            }
+            Expr::Lambda { param, body } => {
+                // Inline lambda: |param| { body }
+                let body_code = self.gen_expr(&body.node, NativeType::Float);
+                format!("|{}| {{ {} }}", param, body_code)
+            }
+            Expr::LambdaBlock { param, stmts, result } => {
+                let mut code = format!("|{}| {{\n", param);
+                for stmt in stmts {
+                    code.push_str(&self.gen_stmt(&stmt.node, 2));
+                }
+                code.push_str(&format!("        {}\n    }}", self.gen_expr(&result.node, NativeType::Float)));
+                code
+            }
+            Expr::FieldAccess { target, field } => {
+                // For lambda params accessing map fields — in native, these are struct fields
+                // For now, treat as tuple access or direct field
+                let t = self.gen_expr(&target.node, target_ty);
+                format!("{}.{}", t, field)
+            }
             _ => "/* unsupported expr */ 0".to_string(),
         }
     }
@@ -613,6 +734,173 @@ impl FnGenerator {
             }
         }
     }
+
+    /// Generate parallel Rust code for pipe expressions.
+    /// range(0, n) |> map(f) |> reduce(init, f) → parallel iteration
+    fn gen_pipe(&self, left: &Expr, right: &Expr, target_ty: NativeType) -> String {
+        // right side should be a FnCall: map(lambda), filter(lambda), reduce(init, lambda)
+        match right {
+            Expr::FnCall { name, args } => {
+                let source = self.gen_expr(left, NativeType::Float);
+
+                match name.as_str() {
+                    "map" if args.len() == 1 => {
+                        let lambda = self.gen_expr(&args[0].node, NativeType::Float);
+                        // Parallel map using std::thread::scope
+                        format!(
+                            "{{\n\
+                            let _src: Vec<f64> = {source}.map(|i| i as f64).collect();\n\
+                            let _n = _src.len();\n\
+                            let _ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);\n\
+                            if _n < _ncpu * 1000 {{\n\
+                                _src.iter().map({lambda}).collect::<Vec<f64>>()\n\
+                            }} else {{\n\
+                                let _chunk = (_n + _ncpu - 1) / _ncpu;\n\
+                                std::thread::scope(|_s| {{\n\
+                                    let _handles: Vec<_> = (0.._ncpu).map(|_t| {{\n\
+                                        let _slice = &_src[(_t * _chunk).min(_n)..((_t + 1) * _chunk).min(_n)];\n\
+                                        _s.spawn(move || _slice.iter().map({lambda}).collect::<Vec<f64>>())\n\
+                                    }}).collect();\n\
+                                    _handles.into_iter().flat_map(|h| h.join().unwrap()).collect::<Vec<f64>>()\n\
+                                }})\n\
+                            }}\n\
+                            }}"
+                        )
+                    }
+                    "filter" if args.len() == 1 => {
+                        let lambda = self.gen_expr(&args[0].node, NativeType::Bool);
+                        format!(
+                            "({source}).filter({lambda}).collect::<Vec<_>>()"
+                        )
+                    }
+                    "reduce" if args.len() == 2 => {
+                        let init = self.gen_expr(&args[0].node, NativeType::Float);
+                        // For reduce, the lambda takes a struct-like thing with .acc and .val
+                        // In native, we'll use a simple fold with (acc, val) tuple
+                        // The user's lambda is: p => p.acc + p.val
+                        // We need to translate p.acc → acc, p.val → val
+                        let lambda_expr = &args[1].node;
+                        let fold_body = self.gen_reduce_lambda(lambda_expr);
+
+                        // Parallel reduce: split into chunks, reduce each, merge
+                        format!(
+                            "{{\n\
+                            let _src: Vec<f64> = {source};\n\
+                            let _n = _src.len();\n\
+                            let _ncpu = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);\n\
+                            if _n < _ncpu * 1000 {{\n\
+                                _src.iter().fold({init}f64, |_acc, _val| {{ let _val = *_val; {fold_body} }})\n\
+                            }} else {{\n\
+                                let _chunk = (_n + _ncpu - 1) / _ncpu;\n\
+                                std::thread::scope(|_s| {{\n\
+                                    let _handles: Vec<_> = (0.._ncpu).map(|_t| {{\n\
+                                        let _slice = &_src[(_t * _chunk).min(_n)..((_t + 1) * _chunk).min(_n)];\n\
+                                        _s.spawn(move || _slice.iter().fold(0.0f64, |_acc, _val| {{ let _val = *_val; {fold_body} }}))\n\
+                                    }}).collect();\n\
+                                    let _partial: Vec<f64> = _handles.into_iter().map(|h| h.join().unwrap()).collect();\n\
+                                    _partial.iter().fold({init}f64, |_acc, _val| {{ let _val = *_val; {fold_body} }})\n\
+                                }})\n\
+                            }}\n\
+                            }}"
+                        )
+                    }
+                    _ => {
+                        // Unknown pipe op — fall back to sequential
+                        let arg_strs: Vec<String> = std::iter::once(source)
+                            .chain(args.iter().map(|a| self.gen_expr(&a.node, NativeType::Float)))
+                            .collect();
+                        format!("/* pipe */ {}", arg_strs.join(", "))
+                    }
+                }
+            }
+            // Chained pipe: left |> mid |> right → gen_pipe(left |> mid, right)
+            Expr::Pipe { left: mid, right: final_op } => {
+                let inner = self.gen_pipe(left, &mid.node, target_ty);
+                self.gen_pipe_raw(&inner, &final_op.node, target_ty)
+            }
+            _ => format!("/* unsupported pipe */ {}", self.gen_expr(left, target_ty)),
+        }
+    }
+
+    /// Generate pipe from a raw Rust expression string (for chained pipes)
+    fn gen_pipe_raw(&self, source: &str, right: &Expr, target_ty: NativeType) -> String {
+        match right {
+            Expr::FnCall { name, args } => {
+                match name.as_str() {
+                    "map" if args.len() == 1 => {
+                        let lambda = self.gen_expr(&args[0].node, NativeType::Float);
+                        format!("({source}).into_iter().map({lambda}).collect::<Vec<f64>>()")
+                    }
+                    "filter" if args.len() == 1 => {
+                        let lambda = self.gen_expr(&args[0].node, NativeType::Bool);
+                        format!("({source}).into_iter().filter({lambda}).collect::<Vec<_>>()")
+                    }
+                    "reduce" if args.len() == 2 => {
+                        let init = self.gen_expr(&args[0].node, NativeType::Float);
+                        let fold_body = self.gen_reduce_lambda(&args[1].node);
+                        format!("({source}).iter().fold({init}f64, |_acc, _val| {{ let _val = *_val; {fold_body} }})")
+                    }
+                    _ => format!("/* unknown pipe op: {} */", name),
+                }
+            }
+            _ => format!("/* unsupported chained pipe */"),
+        }
+    }
+
+    /// Translate a reduce lambda (p => p.acc + p.val) into Rust fold body
+    /// The lambda parameter accesses .acc and .val — we replace with _acc and _val
+    fn gen_reduce_lambda(&self, expr: &Expr) -> String {
+        match expr {
+            Expr::Lambda { param, body } => {
+                // Replace param.acc → _acc, param.val → _val in the body
+                self.gen_reduce_body(&body.node, param)
+            }
+            Expr::LambdaBlock { param, stmts: _, result } => {
+                self.gen_reduce_body(&result.node, param)
+            }
+            _ => "_acc + _val".to_string(),
+        }
+    }
+
+    fn gen_reduce_body(&self, expr: &Expr, param: &str) -> String {
+        match expr {
+            Expr::BinaryOp { left, op, right } => {
+                let l = self.gen_reduce_body(&left.node, param);
+                let r = self.gen_reduce_body(&right.node, param);
+                let op_str = match op {
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    BinOp::Div => "/",
+                    BinOp::Mod => "%",
+                    _ => "+",
+                };
+                format!("({} {} {})", l, op_str, r)
+            }
+            Expr::FieldAccess { target, field } => {
+                if let Expr::Ident(name) = &target.node {
+                    if name == param {
+                        match field.as_str() {
+                            "acc" => "_acc".to_string(),
+                            "val" => "_val".to_string(),
+                            _ => format!("/* unknown field {} */", field),
+                        }
+                    } else {
+                        format!("{}.{}", name, field)
+                    }
+                } else {
+                    "_acc".to_string()
+                }
+            }
+            Expr::Ident(name) => name.clone(),
+            Expr::Literal(Literal::Int(n)) => format!("{}i64 as f64", n),
+            Expr::Literal(Literal::Float(f)) => format!("{}f64", f),
+            Expr::FnCall { name, args } => {
+                self.gen_fn_call(name, args, NativeType::Float)
+            }
+            _ => "_acc + _val".to_string(),
+        }
+    }
 }
 
 /// Check if a handler body uses random() anywhere
@@ -651,3 +939,4 @@ fn expr_uses_random(expr: &Expr) -> bool {
         _ => false,
     }
 }
+

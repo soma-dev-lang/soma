@@ -52,6 +52,13 @@ fn dylib_ext() -> &'static str {
 /// Scan a program for [native] handlers, validate, codegen, compile, and load them.
 /// Returns a map from (cell_name, signal_name) → LoadedNative.
 pub fn compile_and_load_natives(program: &Program) -> Result<HashMap<(String, String), LoadedNative>, String> {
+    compile_and_load_natives_with_config(program, &native::ParallelConfig::default())
+}
+
+pub fn compile_and_load_natives_with_config(
+    program: &Program,
+    parallel_config: &native::ParallelConfig,
+) -> Result<HashMap<(String, String), LoadedNative>, String> {
     let mut result = HashMap::new();
 
     for cell in &program.cells {
@@ -92,7 +99,7 @@ pub fn compile_and_load_natives(program: &Program) -> Result<HashMap<(String, St
         }
 
         // Step 2: Generate Rust source
-        let (rust_source, sigs) = native::generate_native_source(&native_handlers);
+        let (rust_source, sigs) = native::generate_native_source_with_config(&native_handlers, parallel_config);
 
         // Step 3: Check cache
         let source_hash = hash_source(&rust_source);
@@ -148,11 +155,13 @@ pub fn compile_and_load_natives(program: &Program) -> Result<HashMap<(String, St
                 *sym
             };
 
-            let handler_name = sig.fn_name
-                .strip_prefix("handler_").unwrap_or(&sig.fn_name)
-                .strip_suffix("_arr").unwrap_or(
-                    sig.fn_name.strip_prefix("handler_").unwrap_or(&sig.fn_name)
-                );
+            let raw_name = sig.fn_name
+                .strip_prefix("handler_").unwrap_or(&sig.fn_name);
+            let handler_name = raw_name
+                .strip_suffix("_par_arr")
+                .or_else(|| raw_name.strip_suffix("_par"))
+                .or_else(|| raw_name.strip_suffix("_arr"))
+                .unwrap_or(raw_name);
             let key = (cell.node.name.clone(), handler_name.to_string());
 
             // We need to keep the library alive. Since multiple functions share one lib,

@@ -55,6 +55,10 @@ fn is_native_type(ty: &TypeExpr) -> bool {
 const ALLOWED_BUILTINS: &[&str] = &[
     "sqrt", "log", "exp", "pow", "abs", "min", "max", "random",
     "len", "nth", "range", "floor", "ceil", "round", "sin", "cos",
+    // Pipe operations (generate parallel native code)
+    "map", "filter", "reduce", "fold",
+    // Type conversions
+    "to_float", "to_int",
 ];
 
 /// Validate all statements in a [native] handler body.
@@ -148,13 +152,26 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
             for arg in args { check_expr(handler_name, &arg.node, siblings)?; }
             Ok(())
         }
-        Expr::Pipe { .. } => Err(NativeCheckError {
+        Expr::Pipe { left, right } => {
+            // Pipes are allowed in native — they generate parallel code
+            check_expr(handler_name, &left.node, siblings)?;
+            check_expr(handler_name, &right.node, siblings)
+        }
+        Expr::Lambda { param: _, body } => {
+            // Lambdas allowed for pipe operations (map, filter, reduce)
+            check_expr(handler_name, &body.node, siblings)
+        }
+        Expr::LambdaBlock { param: _, stmts, result } => {
+            for stmt in stmts { check_stmt(handler_name, &stmt.node, siblings)?; }
+            check_expr(handler_name, &result.node, siblings)
+        }
+        Expr::FieldAccess { target, .. } => {
+            // Field access allowed for lambda params (p.acc, p.val, s.price)
+            check_expr(handler_name, &target.node, siblings)
+        }
+        Expr::MethodCall { .. } => Err(NativeCheckError {
             handler_name: handler_name.to_string(),
-            reason: "uses pipe operator |> (not allowed in native handlers)".to_string(),
-        }),
-        Expr::FieldAccess { .. } | Expr::MethodCall { .. } => Err(NativeCheckError {
-            handler_name: handler_name.to_string(),
-            reason: "uses field/method access (not allowed in native handlers)".to_string(),
+            reason: "uses method call (not allowed in native handlers)".to_string(),
         }),
         Expr::Record { .. } => Err(NativeCheckError {
             handler_name: handler_name.to_string(),
@@ -167,10 +184,6 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
         Expr::Match { .. } => Err(NativeCheckError {
             handler_name: handler_name.to_string(),
             reason: "uses match expression (not allowed in native handlers)".to_string(),
-        }),
-        Expr::Lambda { .. } | Expr::LambdaBlock { .. } => Err(NativeCheckError {
-            handler_name: handler_name.to_string(),
-            reason: "uses lambda (not allowed in native handlers)".to_string(),
         }),
     }
 }
