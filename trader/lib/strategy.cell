@@ -4,13 +4,13 @@
 cell Strategy {
 
     on fair_value(ticker: String, cycle: Int) {
-        // Add small random walk based on cycle to simulate price movement
-        let jitter = (cycle * 7 + 3) % 11 - 5
+        // Simulate price movement: pseudo-random walk
+        let wave = (cycle * 13 + 7) % 21 - 10
         match ticker {
-            "BTC"  -> 42000 + jitter * 10
-            "ETH"  -> 3200 + jitter * 2
-            "SOL"  -> 145 + jitter
-            "AVAX" -> 38
+            "BTC"  -> 42000 + wave * 50
+            "ETH"  -> 3200 + wave * 5
+            "SOL"  -> 145 + wave
+            "AVAX" -> 38 + (wave / 3)
             _      -> 100
         }
     }
@@ -20,27 +20,29 @@ cell Strategy {
 
         // Different spread per ticker, wide enough to not self-match
         let spread = match ticker {
-            "BTC"  -> 400
-            "ETH"  -> 40
-            "SOL"  -> 6
-            "AVAX" -> 3
+            "BTC"  -> 200
+            "ETH"  -> 20
+            "SOL"  -> 4
+            "AVAX" -> 2
             _      -> 4
         }
         let half = spread / 2
+        let step = spread / 4
+        if step < 1 { step = 1 }
         let base_size = match ticker {
-            "BTC"  -> 2
-            "ETH"  -> 8
-            "SOL"  -> 30
-            "AVAX" -> 50
+            "BTC"  -> 3
+            "ETH"  -> 10
+            "SOL"  -> 40
+            "AVAX" -> 80
             _      -> 10
         }
 
-        // 3 levels of bids and asks
+        // 4 levels of bids and asks
         let quotes = list()
         let i = 0
-        while i < 3 {
-            let bid_price = mid - half - i * (spread / 2)
-            let ask_price = mid + half + i * (spread / 2)
+        while i < 4 {
+            let bid_price = mid - half - i * step
+            let ask_price = mid + half + i * step
             let qty = base_size - i
             if qty < 1 { qty = 1 }
 

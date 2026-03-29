@@ -99,12 +99,15 @@ cell Exchange {
     // ---- Data helpers ----
 
     on load_orders() {
-        return orders.values() |> map(s => from_json(s))
+        return orders.values()
+            |> map(s => from_json(s))
+            |> filter(o => o.status == "open" || o.status == "partial")
     }
 
     on load_trades() {
         return trades.values()
             |> map(s => from_json(s))
+            |> filter(t => t.ticker != ())
             |> sort_by("time", "desc")
             |> top(50)
     }

@@ -33,6 +33,15 @@ cell MarketMaker {
     }
 
     on requote(ticker: String) {
+        // Cancel previous orders for this ticker before re-quoting
+        let prev = my_orders.values()
+            |> map(s => from_json(s))
+            |> filter(o => o.ticker == ticker)
+        for old in prev {
+            cancel_order(old.id)
+            my_orders.delete(old.id)
+        }
+
         let cycle = to_int(state.get("cycle") ?? "0")
         let quotes = generate_quotes(ticker, cycle)
 
