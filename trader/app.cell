@@ -87,7 +87,8 @@ cell MarketMaker {
             }
 
             let net_qty = buy_qty - sell_qty
-            let mid = fair_value(ticker)
+            let cycle = to_int(state.get("cycle") ?? "0")
+            let mid = fair_value(ticker, cycle)
             let avg_price = 0
             if buy_qty > 0 { avg_price = buy_cost / buy_qty }
             let pnl = sell_revenue - buy_cost + net_qty * mid
