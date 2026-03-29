@@ -117,11 +117,39 @@ pub fn generate_native_source(handlers: &[NativeHandler]) -> (String, Vec<Native
             .map(|p| type_expr_to_native(&p.ty.node))
             .collect();
 
-        sigs.push(NativeSig {
-            fn_name,
-            param_types,
-            return_type: ret_type,
-        });
+        // For >3 params, generate an array-based wrapper
+        if param_types.len() > 3 {
+            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}_arr(args: *const f64, _count: i64) -> f64 {{\n", fn_name));
+            out.push_str("    unsafe {\n");
+            let call_args: Vec<String> = handler.params.iter().enumerate().map(|(i, p)| {
+                let ty = type_expr_to_native(&p.ty.node);
+                match ty {
+                    NativeType::Int => format!("*args.add({}) as i64", i),
+                    NativeType::Float => format!("*args.add({})", i),
+                    NativeType::Bool => format!("*args.add({}) != 0.0", i),
+                }
+            }).collect();
+            out.push_str(&format!("        let r = {}({});\n", fn_name, call_args.join(", ")));
+            match ret_type {
+                NativeType::Float => out.push_str("        r\n"),
+                NativeType::Int => out.push_str("        r as f64\n"),
+                NativeType::Bool => out.push_str("        if r { 1.0 } else { 0.0 }\n"),
+            }
+            out.push_str("    }\n}\n\n");
+
+            // Use the array wrapper as the exported symbol
+            sigs.push(NativeSig {
+                fn_name: format!("{}_arr", fn_name),
+                param_types,
+                return_type: ret_type,
+            });
+        } else {
+            sigs.push(NativeSig {
+                fn_name,
+                param_types,
+                return_type: ret_type,
+            });
+        }
     }
 
     (out, sigs)

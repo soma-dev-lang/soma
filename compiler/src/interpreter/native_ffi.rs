@@ -148,7 +148,11 @@ pub fn compile_and_load_natives(program: &Program) -> Result<HashMap<(String, St
                 *sym
             };
 
-            let handler_name = sig.fn_name.strip_prefix("handler_").unwrap_or(&sig.fn_name);
+            let handler_name = sig.fn_name
+                .strip_prefix("handler_").unwrap_or(&sig.fn_name)
+                .strip_suffix("_arr").unwrap_or(
+                    sig.fn_name.strip_prefix("handler_").unwrap_or(&sig.fn_name)
+                );
             let key = (cell.node.name.clone(), handler_name.to_string());
 
             // We need to keep the library alive. Since multiple functions share one lib,
@@ -267,7 +271,12 @@ unsafe fn call_raw(
         1 => call_1(fn_ptr, args, param_types, ret_type),
         2 => call_2(fn_ptr, args, param_types, ret_type),
         3 => call_3(fn_ptr, args, param_types, ret_type),
-        _ => Err(format!("[native] unsupported parameter count: {} (max 3 for now)", args.len())),
+        _ => {
+            // Generic fallback: pack all args as f64 into an array, call via (ptr, count) -> f64
+            // This works because our codegen generates a wrapper that unpacks
+            // Actually, use direct transmute with known sizes up to 12 params
+            call_generic(fn_ptr, args, param_types, ret_type)
+        }
     }
 }
 
@@ -358,5 +367,34 @@ unsafe fn call_3(fn_ptr: *const (), args: &[u64], ptypes: &[NativeType], ret: Na
             let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
             Ok(f(args[0] as i64, args[1] as i64, args[2] as i64) as u64)
         }
+    }
+}
+
+/// Generic multi-param dispatch: converts all args to f64, passes as array pointer.
+/// The generated Rust wrapper unpacks from *const f64.
+unsafe fn call_generic(
+    fn_ptr: *const (),
+    args: &[u64],
+    param_types: &[NativeType],
+    ret_type: NativeType,
+) -> Result<u64, String> {
+    // Convert all args to f64 representation
+    let mut float_args: Vec<f64> = Vec::with_capacity(args.len());
+    for (i, (arg, ty)) in args.iter().zip(param_types.iter()).enumerate() {
+        match ty {
+            NativeType::Int => float_args.push(*arg as i64 as f64),
+            NativeType::Float => float_args.push(f64::from_bits(*arg)),
+            NativeType::Bool => float_args.push(if *arg != 0 { 1.0 } else { 0.0 }),
+        }
+    }
+
+    // Call as fn(*const f64, i64) -> f64
+    let f: extern "C" fn(*const f64, i64) -> f64 = std::mem::transmute(fn_ptr);
+    let result = f(float_args.as_ptr(), float_args.len() as i64);
+
+    match ret_type {
+        NativeType::Float => Ok(result.to_bits()),
+        NativeType::Int => Ok(result as i64 as u64),
+        NativeType::Bool => Ok(if result != 0.0 { 1 } else { 0 }),
     }
 }
