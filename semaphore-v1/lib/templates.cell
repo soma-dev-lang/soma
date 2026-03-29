@@ -1,0 +1,214 @@
+// HTML templates — composable rendering by named pieces
+
+cell Templates {
+
+    // ---- Atomic helpers ----
+
+    on bulb_class(actual: String, target: String) {
+        if actual == target { return " active-{target}" }
+        return ""
+    }
+
+    on render_light(color: String, direction: String) {
+        let r = bulb_class(color, "red")
+        let y = bulb_class(color, "yellow")
+        let g = bulb_class(color, "green")
+        let horiz = ""
+        if direction == "east" { horiz = " horizontal" }
+        if direction == "west" { horiz = " horizontal" }
+        return "<div class='tl {direction}'><div class='tl-housing{horiz}'><div class='tl-bulb{r}'></div><div class='tl-bulb{y}'></div><div class='tl-bulb{g}'></div></div></div>"
+    }
+
+    // ---- Components ----
+
+    on render_header(active_path: String) {
+        let dash_cls = ""
+        let evt_cls = ""
+        if active_path == "/" { dash_cls = " active" }
+        if active_path == "/events" { evt_cls = " active" }
+        return "<div class='header'><h1>SEMAPHORE</h1><nav><a href='/'{dash_cls}>Dashboard</a><a href='/events'{evt_cls}>Events</a><a href='/api/status'>API</a></nav></div>"
+    }
+
+    on render_status_bar(mode: String, cycle: String, main_phase: String, sec_phase: String) {
+        let mb = mode_badge(mode)
+        return "<div class='status-bar'><div class='stat-card'><div class='label'>Mode</div><div class='value'>{mb}</div></div><div class='stat-card'><div class='label'>Cycle</div><div class='value'>#{cycle}</div></div><div class='stat-card'><div class='label'>Main</div><div class='value'>{phase_label(main_phase)}</div></div><div class='stat-card'><div class='label'>2nd</div><div class='value'>{phase_label(sec_phase)}</div></div></div>"
+    }
+
+    on render_intersection_card(info: Map) {
+        let phase = info.phase
+        let name = info.name
+        let label = phase_label(phase)
+        let icon = phase_icon(phase)
+
+        let ln = render_light(info.north, "north")
+        let ls = render_light(info.south, "south")
+        let le = render_light(info.east, "east")
+        let lw = render_light(info.west, "west")
+
+        let visual = "<div class='intersection-visual'>"
+        visual = visual + "<div class='road road-v'></div><div class='road road-h'></div><div class='road-center'></div>"
+        visual = visual + "<div class='lane-marking lane-v top'></div><div class='lane-marking lane-v bottom'></div>"
+        visual = visual + "<div class='lane-marking lane-h left'></div><div class='lane-marking lane-h right'></div>"
+        visual = visual + "<span class='dir-label n'>N</span><span class='dir-label s'>S</span>"
+        visual = visual + "<span class='dir-label e'>E</span><span class='dir-label w'>W</span>"
+        visual = visual + ln + ls + le + lw + "</div>"
+
+        let card = "<div class='intersection-card {phase}'>"
+        card = card + "<div class='card-header'><h2>{icon} {name}</h2><span class='phase-tag'>{label}</span></div>"
+        card = card + visual
+        card = card + "</div>"
+        return card
+    }
+
+    on render_controls(mode: String) {
+        let mode_btns = ""
+        if mode == "auto" {
+            mode_btns = "<button class='btn btn-emergency' onclick='emergency()'>EMERGENCY STOP</button>"
+            mode_btns = mode_btns + "<button class='btn btn-night' onclick='night()'>NIGHT MODE</button>"
+        } else if mode == "night" {
+            mode_btns = "<button class='btn btn-resume' onclick='resume()'>RESUME AUTO</button>"
+            mode_btns = mode_btns + "<button class='btn btn-emergency' onclick='emergency()'>EMERGENCY</button>"
+        } else {
+            mode_btns = "<button class='btn btn-resume' onclick='resume()'>RESUME AUTO</button>"
+            mode_btns = mode_btns + "<button class='btn btn-night' onclick='night()'>NIGHT MODE</button>"
+        }
+
+        let force_btns = "<button class='btn' onclick=\"forcePhase('main','green_ns')\">Main &#x25B2; N-S</button>"
+        force_btns = force_btns + "<button class='btn' onclick=\"forcePhase('main','green_ew')\">Main &#x25B6; E-W</button>"
+        force_btns = force_btns + "<button class='btn' onclick=\"forcePhase('secondary','green_ns')\">2nd &#x25B2; N-S</button>"
+        force_btns = force_btns + "<button class='btn' onclick=\"forcePhase('secondary','green_ew')\">2nd &#x25B6; E-W</button>"
+
+        return "<div class='controls'>{mode_btns}{force_btns}</div>"
+    }
+
+    // ---- Pages ----
+
+    on render_dashboard(mode: String, cycle: String, main_i: Map, sec_i: Map) {
+        let head = "<html><head><meta charset='utf-8'><title>Semaphore Agent</title>"
+        let css = render_css()
+        let header = render_header("/")
+        let stats = render_status_bar(mode, cycle, main_i.phase, sec_i.phase)
+        let cards = "<div class='intersections'>" + render_intersection_card(main_i) + render_intersection_card(sec_i) + "</div>"
+        let controls = render_controls(mode)
+        let footer = "<div class='footer'>Soma v0.23 -- Semaphore Agent</div>"
+        let script = render_script()
+
+        return head + css + "</head><body><div class='app'>" + header + stats + cards + controls + footer + "</div>" + script + "</body></html>"
+    }
+
+    on render_events(evts: List) {
+        let head = "<html><head><meta charset='utf-8'><title>Events -- Semaphore</title>"
+        let css = render_css()
+        let header = render_header("/events")
+
+        let rows = ""
+        for evt in evts {
+            rows = rows + render_event_row(evt)
+        }
+        if rows == "" {
+            rows = "<tr><td colspan='4' style='text-align:center;padding:2rem;color:var(--text-dim)'>No events yet</td></tr>"
+        }
+
+        let table = "<div class='intersection-card'><div class='card-header'><h2>Event Log</h2></div>"
+        table = table + "<table class='events-table'><thead><tr><th></th><th>Type</th><th>Message</th><th>Time</th></tr></thead>"
+        table = table + "<tbody>" + rows + "</tbody></table></div>"
+
+        let footer = "<div class='footer'>Soma v0.23 -- Semaphore Agent</div>"
+        let script = render_script()
+
+        return head + css + "</head><body><div class='app'>" + header + table + footer + "</div>" + script + "</body></html>"
+    }
+
+    // ---- CSS & JS (static assets) ----
+
+    on render_css() {
+        let vars = ":root{--bg:#060a14;--surface:#0d1117;--surface2:#161b22;--border:#21262d;--text:#c9d1d9;--text-dim:#6e7681;--accent:#818cf8;--green:#22c55e;--yellow:#eab308;--red:#ef4444;--blue:#3b82f6}"
+        let reset = "*{margin:0;padding:0;box-sizing:border-box}"
+        let body = "body{background:var(--bg);color:var(--text);font-family:-apple-system,'SF Pro Display',system-ui,sans-serif;min-height:100vh}"
+        let app = ".app{max-width:1100px;margin:0 auto;padding:1.5rem}"
+
+        let hdr = ".header{display:flex;justify-content:space-between;align-items:center;padding:1rem 0;border-bottom:1px solid var(--border);margin-bottom:1.5rem}"
+        hdr = hdr + ".header h1{font-size:1.2rem;font-weight:700;letter-spacing:3px;color:var(--accent)}"
+        hdr = hdr + ".header nav{display:flex;gap:1rem}"
+        hdr = hdr + ".header nav a{color:var(--text-dim);text-decoration:none;font-size:.85rem;padding:.4rem .8rem;border-radius:6px;transition:all .2s}"
+        hdr = hdr + ".header nav a:hover,.header nav a.active{color:var(--text);background:var(--surface2)}"
+
+        let badges = ".badge{display:inline-block;padding:.2rem .6rem;border-radius:4px;font-size:.7rem;font-weight:700;letter-spacing:1px;text-transform:uppercase}"
+        badges = badges + ".badge-auto{background:rgba(34,197,94,.15);color:var(--green)}"
+        badges = badges + ".badge-manual{background:rgba(239,68,68,.15);color:var(--red)}"
+        badges = badges + ".badge-night{background:rgba(234,179,8,.15);color:var(--yellow)}"
+
+        let stat = ".status-bar{display:flex;gap:1rem;margin-bottom:1.5rem}"
+        stat = stat + ".stat-card{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem}"
+        stat = stat + ".stat-card .label{font-size:.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-bottom:.3rem}"
+        stat = stat + ".stat-card .value{font-size:1.4rem;font-weight:700;color:#f0f6fc}"
+
+        let cards = ".intersections{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem}"
+        cards = cards + ".intersection-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.5rem;position:relative;overflow:hidden}"
+        cards = cards + ".intersection-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}"
+        cards = cards + ".intersection-card.green_ns::before,.intersection-card.green_ew::before{background:var(--green)}"
+        cards = cards + ".intersection-card.yellow_ns::before,.intersection-card.yellow_ew::before{background:var(--yellow)}"
+        cards = cards + ".intersection-card.emergency_red::before{background:var(--red)}"
+        cards = cards + ".card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.2rem}"
+        cards = cards + ".card-header h2{font-size:.95rem;font-weight:600}"
+        cards = cards + ".phase-tag{font-size:.75rem;padding:.2rem .5rem;border-radius:4px;background:var(--surface2);color:var(--text-dim)}"
+
+        let road = ".intersection-visual{position:relative;width:220px;height:220px;margin:0 auto 1rem}"
+        road = road + ".road{position:absolute;background:#1a1f2e;border-radius:3px}"
+        road = road + ".road-v{width:52px;height:100%;left:50%;transform:translateX(-50%)}"
+        road = road + ".road-h{height:52px;width:100%;top:50%;transform:translateY(-50%)}"
+        road = road + ".road-center{position:absolute;width:52px;height:52px;left:50%;top:50%;transform:translate(-50%,-50%);background:#232838;z-index:1}"
+        road = road + ".lane-marking{position:absolute;background:#2d3548;z-index:1}"
+        road = road + ".lane-v{width:2px;height:30%;left:50%;transform:translateX(-50%)}.lane-v.top{top:5%}.lane-v.bottom{bottom:5%}"
+        road = road + ".lane-h{height:2px;width:30%;top:50%;transform:translateY(-50%)}.lane-h.left{left:5%}.lane-h.right{right:5%}"
+
+        let tl = ".tl{position:absolute;z-index:3;display:flex;flex-direction:column;align-items:center;gap:2px}"
+        tl = tl + ".tl-housing{background:#1a1f2e;border-radius:6px;padding:4px;display:flex;flex-direction:column;gap:3px;border:1px solid #2d3548}"
+        tl = tl + ".tl-housing.horizontal{flex-direction:row}"
+        tl = tl + ".tl-bulb{width:14px;height:14px;border-radius:50%;background:#1a1f2e;transition:all .4s ease}"
+        tl = tl + ".tl-bulb.active-red{background:var(--red);box-shadow:0 0 12px 4px rgba(239,68,68,.5)}"
+        tl = tl + ".tl-bulb.active-yellow{background:var(--yellow);box-shadow:0 0 12px 4px rgba(234,179,8,.5)}"
+        tl = tl + ".tl-bulb.active-green{background:var(--green);box-shadow:0 0 12px 4px rgba(34,197,94,.5)}"
+        tl = tl + ".tl.north{left:50%;top:4px;transform:translateX(-50%)}"
+        tl = tl + ".tl.south{left:50%;bottom:4px;transform:translateX(-50%)}"
+        tl = tl + ".tl.east{right:4px;top:50%;transform:translateY(-50%)}"
+        tl = tl + ".tl.west{left:4px;top:50%;transform:translateY(-50%)}"
+
+        let dir = ".dir-label{position:absolute;font-size:.6rem;color:var(--text-dim);font-weight:600;z-index:4;letter-spacing:1px}"
+        dir = dir + ".dir-label.n{top:-14px;left:50%;transform:translateX(-50%)}"
+        dir = dir + ".dir-label.s{bottom:-14px;left:50%;transform:translateX(-50%)}"
+        dir = dir + ".dir-label.e{right:-14px;top:50%;transform:translateY(-50%)}"
+        dir = dir + ".dir-label.w{left:-14px;top:50%;transform:translateY(-50%)}"
+
+        let btn = ".controls{display:flex;gap:.6rem;flex-wrap:wrap;justify-content:center;margin-top:1.5rem}"
+        btn = btn + ".btn{padding:.55rem 1.1rem;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:.78rem;font-weight:600;cursor:pointer;transition:all .15s;font-family:inherit;letter-spacing:.5px}"
+        btn = btn + ".btn:hover{background:var(--surface2);border-color:var(--accent)}"
+        btn = btn + ".btn-emergency{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.3);color:var(--red)}"
+        btn = btn + ".btn-emergency:hover{background:rgba(239,68,68,.2)}"
+        btn = btn + ".btn-resume{background:rgba(34,197,94,.1);border-color:rgba(34,197,94,.3);color:var(--green)}"
+        btn = btn + ".btn-resume:hover{background:rgba(34,197,94,.2)}"
+        btn = btn + ".btn-night{background:rgba(234,179,8,.1);border-color:rgba(234,179,8,.3);color:var(--yellow)}"
+        btn = btn + ".btn-night:hover{background:rgba(234,179,8,.2)}"
+
+        let evt = ".events-table{width:100%;border-collapse:collapse}"
+        evt = evt + ".events-table th{text-align:left;padding:.6rem;font-size:.7rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);border-bottom:1px solid var(--border)}"
+        evt = evt + ".events-table td{padding:.5rem .6rem;border-bottom:1px solid var(--border);font-size:.85rem}"
+        evt = evt + ".event-type{font-weight:600;text-transform:uppercase;font-size:.7rem;letter-spacing:.5px}"
+        evt = evt + ".ts{color:var(--text-dim);font-family:'SF Mono',monospace;font-size:.75rem}"
+
+        let foot = ".footer{text-align:center;color:var(--text-dim);font-size:.7rem;margin-top:2rem;padding:1rem 0;border-top:1px solid var(--border)}"
+        let anim = "@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}.tl-bulb.active-yellow{animation:pulse 1s ease-in-out infinite}"
+
+        return "<style>" + vars + reset + body + app + hdr + badges + stat + cards + road + tl + dir + btn + evt + foot + anim + "</style>"
+    }
+
+    on render_script() {
+        let api_fn = "function api(u,o){fetch(u,o).then(r=>r.json()).then(()=>setTimeout(()=>location.reload(),300))}"
+        let actions = "function emergency(){api('/api/emergency')}"
+        actions = actions + "function resume(){api('/api/resume')}"
+        actions = actions + "function night(){api('/api/night')}"
+        actions = actions + "function forcePhase(i,p){api('/api/force',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({intersection:i,phase:p})})}"
+        let refresh = "setTimeout(()=>location.reload(),3000)"
+        return "<script>" + api_fn + actions + refresh + "</script>"
+    }
+}

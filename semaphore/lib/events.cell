@@ -1,23 +1,27 @@
-// Event log and rendering
+// Event log rendering
 
 cell Events {
 
     on event_icon(event_type: String) {
-        if event_type == "emergency" { return "&#x1F6A8;" }
-        if event_type == "resume" { return "&#x25B6;" }
-        if event_type == "force" { return "&#x270B;" }
-        if event_type == "mode" { return "&#x263E;" }
-        if event_type == "system" { return "&#x2699;" }
-        return "&#x2022;"
+        match event_type {
+            "emergency" -> "&#x1F6A8;"
+            "resume"    -> "&#x25B6;"
+            "force"     -> "&#x270B;"
+            "mode"      -> "&#x263E;"
+            "system"    -> "&#x2699;"
+            _           -> "&#x2022;"
+        }
     }
 
     on event_color(event_type: String) {
-        if event_type == "emergency" { return "#ef4444" }
-        if event_type == "resume" { return "#22c55e" }
-        if event_type == "force" { return "#f59e0b" }
-        if event_type == "mode" { return "#818cf8" }
-        if event_type == "system" { return "#6b7280" }
-        return "#9ca3af"
+        match event_type {
+            "emergency" -> "#ef4444"
+            "resume"    -> "#22c55e"
+            "force"     -> "#f59e0b"
+            "mode"      -> "#818cf8"
+            "system"    -> "#6b7280"
+            _           -> "#9ca3af"
+        }
     }
 
     on render_event_row(evt: Map) {
@@ -25,6 +29,13 @@ cell Events {
         let color = event_color(evt.type)
         let ts = evt.time ?? ""
         let short_ts = substring(ts, 0, 10)
-        return "<tr><td style='color:{color};font-size:1.2rem;text-align:center'>{icon}</td><td><span class='event-type' style='color:{color}'>{evt.type}</span></td><td>{evt.message}</td><td class='ts'>{short_ts}</td></tr>"
+        return """
+        <tr>
+            <td style="color:{color};font-size:1.2rem;text-align:center">{icon}</td>
+            <td><span class="event-type" style="color:{color}">{evt.type}</span></td>
+            <td>{evt.message}</td>
+            <td class="ts">{short_ts}</td>
+        </tr>
+        """
     }
 }

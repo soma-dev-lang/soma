@@ -1,47 +1,56 @@
-// Light configuration and phase logic
-// Single source of truth for phase transitions and light mappings
+// Light configuration — single source of truth
 
 cell Lights {
 
     on next_phase(current: String) {
-        if current == "green_ns" { return "yellow_ns" }
-        if current == "yellow_ns" { return "green_ew" }
-        if current == "green_ew" { return "yellow_ew" }
-        if current == "yellow_ew" { return "green_ns" }
-        if current == "emergency_red" { return "green_ns" }
-        return current
+        match current {
+            "green_ns"      -> "yellow_ns"
+            "yellow_ns"     -> "green_ew"
+            "green_ew"      -> "yellow_ew"
+            "yellow_ew"     -> "green_ns"
+            "emergency_red" -> "green_ns"
+            _               -> current
+        }
     }
 
     on lights_for_phase(phase: String) {
-        if phase == "green_ns" { return map("north", "green", "south", "green", "east", "red", "west", "red") }
-        if phase == "yellow_ns" { return map("north", "yellow", "south", "yellow", "east", "red", "west", "red") }
-        if phase == "green_ew" { return map("north", "red", "south", "red", "east", "green", "west", "green") }
-        if phase == "yellow_ew" { return map("north", "red", "south", "red", "east", "yellow", "west", "yellow") }
-        return map("north", "red", "south", "red", "east", "red", "west", "red")
+        match phase {
+            "green_ns"  -> map("north", "green", "south", "green", "east", "red",    "west", "red")
+            "yellow_ns" -> map("north", "yellow","south", "yellow","east", "red",    "west", "red")
+            "green_ew"  -> map("north", "red",   "south", "red",   "east", "green",  "west", "green")
+            "yellow_ew" -> map("north", "red",   "south", "red",   "east", "yellow", "west", "yellow")
+            _           -> map("north", "red",   "south", "red",   "east", "red",    "west", "red")
+        }
     }
 
     on phase_label(phase: String) {
-        if phase == "green_ns" { return "N-S Green" }
-        if phase == "yellow_ns" { return "N-S Yellow" }
-        if phase == "green_ew" { return "E-W Green" }
-        if phase == "yellow_ew" { return "E-W Yellow" }
-        if phase == "emergency_red" { return "EMERGENCY" }
-        return phase
+        match phase {
+            "green_ns"      -> "N-S Green"
+            "yellow_ns"     -> "N-S Yellow"
+            "green_ew"      -> "E-W Green"
+            "yellow_ew"     -> "E-W Yellow"
+            "emergency_red" -> "EMERGENCY"
+            _               -> phase
+        }
     }
 
     on phase_icon(phase: String) {
-        if phase == "green_ns" { return "&#x25B2;" }
-        if phase == "yellow_ns" { return "&#x25B2;" }
-        if phase == "green_ew" { return "&#x25B6;" }
-        if phase == "yellow_ew" { return "&#x25B6;" }
-        if phase == "emergency_red" { return "&#x2716;" }
-        return "?"
+        match phase {
+            "green_ns"      -> "&#x25B2;"
+            "yellow_ns"     -> "&#x25B2;"
+            "green_ew"      -> "&#x25B6;"
+            "yellow_ew"     -> "&#x25B6;"
+            "emergency_red" -> "&#x2716;"
+            _               -> "?"
+        }
     }
 
     on mode_badge(mode: String) {
-        if mode == "auto" { return "<span class='badge badge-auto'>AUTO</span>" }
-        if mode == "manual" { return "<span class='badge badge-manual'>MANUAL</span>" }
-        if mode == "night" { return "<span class='badge badge-night'>NIGHT</span>" }
-        return "<span class='badge'>{mode}</span>"
+        match mode {
+            "auto"   -> """<span class="badge badge-auto">AUTO</span>"""
+            "manual" -> """<span class="badge badge-manual">MANUAL</span>"""
+            "night"  -> """<span class="badge badge-night">NIGHT</span>"""
+            _        -> """<span class="badge">{mode}</span>"""
+        }
     }
 }
