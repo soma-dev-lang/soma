@@ -1250,85 +1250,40 @@ impl Interpreter {
     fn do_ws_connect(&mut self, url: &str, cell_name: &str) -> Result<Value, RuntimeError> {
         use tungstenite::connect;
 
-        // Parse URL to get host:port, then connect raw TcpStream
+        // Connect raw TcpStream and do WS handshake
         let parsed = url::Url::parse(url).map_err(|e| {
-            RuntimeError::TypeError(format!("ws_connect: invalid URL: {}", e))
+            RuntimeError::TypeError(format!("ws_connect: bad URL: {}", e))
         })?;
         let host = parsed.host_str().unwrap_or("localhost");
         let port = parsed.port().unwrap_or(80);
-        let addr = format!("{}:{}", host, port);
 
-        let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
+        let stream = std::net::TcpStream::connect(format!("{}:{}", host, port)).map_err(|e| {
             RuntimeError::TypeError(format!("ws_connect: {}", e))
         })?;
-        let read_stream = stream.try_clone().map_err(|e| {
-            RuntimeError::TypeError(format!("ws clone: {}", e))
-        })?;
+        // Set read timeout so read() doesn't block forever — allows checking outgoing channel
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(50))).ok();
 
-        // Handshake on the write stream
         let (ws, _) = tungstenite::client::client(url, stream).map_err(|e| {
             RuntimeError::TypeError(format!("ws handshake: {}", e))
         })?;
 
-        // We need to get the underlying stream back for the writer
-        // The handshake consumed `stream`, but we have `ws` which owns it now
-        // Use the ws directly for writing in a shared Arc<Mutex>
-        let ws_shared = Arc::new(std::sync::Mutex::new(ws));
-
-        // Outgoing channel: ws_send() pushes here, writer thread sends on WS
+        // Outgoing channel
         let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
         self.ws_out = Some(Arc::new(std::sync::Mutex::new(out_tx)));
 
-        // Writer thread: reads from channel, sends on the shared WS
-        let ws_write = ws_shared.clone();
+        // Writer thread: owns the WS, sends outgoing messages
+        // Incoming messages are handled via SSE (separate channel)
         std::thread::spawn(move || {
+            let mut ws = ws;
             for msg in out_rx {
-                if let Ok(mut ws) = ws_write.lock() {
-                    if ws.send(tungstenite::Message::Text(msg)).is_err() { break; }
-                }
+                if ws.send(tungstenite::Message::Text(msg)).is_err() { break; }
+                let _ = ws.flush();
             }
+            eprintln!("ws: writer thread ended");
         });
 
-        // Reader thread: reads from cloned TcpStream via a new WS, dispatches to on ws()
-        let cells = self.cells.clone();
-        let storage: HashMap<String, Arc<dyn StorageBackend>> = self.storage.iter()
-            .map(|(k, v)| (k.clone(), v.clone())).collect();
-        let state_machines = self.state_machines.clone();
-        let event_bus = self.event_bus.clone();
-        let ws_out_clone = self.ws_out.clone();
-        let cname = cell_name.to_string();
-
-        std::thread::spawn(move || {
-            let mut reader_ws = tungstenite::WebSocket::from_raw_socket(
-                read_stream,
-                tungstenite::protocol::Role::Client,
-                None,
-            );
-            loop {
-                match reader_ws.read() {
-                    Ok(tungstenite::Message::Text(text)) => {
-                        let prog = Program { imports: vec![], cells: cells.values().map(|c| {
-                            Spanned::new(c.clone(), Span::new(0, 0))
-                        }).collect() };
-                        let mut interp = Interpreter::new(&prog);
-                        for (k, v) in &storage {
-                            interp.storage.insert(k.clone(), v.clone());
-                        }
-                        interp.state_machines = state_machines.clone();
-                        interp.event_bus = event_bus.clone();
-                        interp.ws_out = ws_out_clone.clone();
-
-                        let args = vec![Value::String(text)];
-                        let _ = interp.call_signal(&cname, "ws", args);
-                    }
-                    Ok(tungstenite::Message::Close(_)) | Err(_) => {
-                        eprintln!("ws: disconnected");
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        });
+        // Note: incoming WS messages not yet supported in client mode.
+        // Use http_get to poll exchange APIs for trade data.
 
         eprintln!("ws: connected to {}", url);
         Ok(Value::Map(vec![

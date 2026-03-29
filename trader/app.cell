@@ -1,8 +1,8 @@
 // ============================================================================
-// Market Maker Bot — Connects to Exchange via WebSocket
+// Market Maker Bot — WS orders out, HTTP polling for fills
 // ============================================================================
-// Connects to Exchange WS on ws://localhost:8081
-// Sends orders, receives fills and book updates in real-time
+// Sends orders via WebSocket to Exchange ws://localhost:8081
+// Polls exchange HTTP API for trades to track fills
 //
 // Run: soma serve app.cell -p 9090
 //   (Exchange must be running: cd exchange && soma serve app.cell)
@@ -19,65 +19,36 @@ cell MarketMaker {
         fills: Map<String, String> [ephemeral, local]
     }
 
-    // ---- Connect to exchange on startup ----
+    // Connect to exchange on startup
     on init() {
         let result = connect_exchange()
-        print("WS: {result.status} to exchange")
+        print("WS: {result.status}")
         return result
     }
 
-    // ---- Incoming WS messages from exchange ----
-    on ws(message: String) {
-        let data = from_json(message)
-        let event = data.event ?? ""
-
-        match event {
-            "trade" -> {
-                // A trade happened — record if we're involved
-                let trade = data.data
-                if trade != () {
-                    let tid = to_string(now())
-                    fills.set(tid, to_json(trade))
-                    print("FILL: {trade.ticker} @ {trade.price} x{trade.qty}")
-                }
-            }
-            "order_placed" -> {
-                // Another participant placed an order
-            }
-            "book_update" -> {
-                // Book changed
-            }
-            _ -> {
-                // Direct response to our order placement
-                if data.status != () {
-                    if data.order_id != () {
-                        my_orders.set(data.order_id, message)
-                    }
-                }
-            }
-        }
-    }
-
-    // ---- Quote cycle: every 3s ----
+    // ---- Quote + poll cycle: every 3s ----
     every 3s {
         let cycle = to_int(state.get("cycle") ?? "0") + 1
         state.set("cycle", to_string(cycle))
 
+        // Re-quote on all tickers
         let tickers = list("BTC", "ETH", "SOL", "AVAX")
         for ticker in tickers {
             requote(ticker)
         }
 
-        // Every 2nd cycle: aggressive order that crosses the spread
+        // Aggressive order every 2nd cycle
         if cycle % 2 == 0 {
             aggress(cycle)
         }
+
+        // Poll exchange for new trades
+        poll_trades()
     }
 
     on requote(ticker: String) {
         let cycle = to_int(state.get("cycle") ?? "0")
         let quotes = generate_quotes(ticker, cycle)
-
         for quote in quotes {
             send_order(quote.ticker, quote.side, quote.price, quote.qty)
         }
@@ -89,7 +60,6 @@ cell MarketMaker {
         let ticker = tickers.get(idx)
         let mid = fair_value(ticker, cycle)
 
-        // Alternate buy/sell
         if cycle % 4 < 2 {
             let price = mid + 500
             if ticker == "ETH" { price = mid + 50 }
@@ -102,6 +72,20 @@ cell MarketMaker {
             if ticker == "SOL" { price = mid - 10 }
             if ticker == "AVAX" { price = mid - 5 }
             send_order(ticker, "sell", price, 1)
+        }
+    }
+
+    on poll_trades() {
+        let trades = http_get("http://localhost:8080/api/trades")
+        if type_of(trades) == "List" {
+            for trade in trades {
+                if trade.ticker != () {
+                    let tid = trade.id ?? to_string(trade.time)
+                    if fills.get(tid) == () {
+                        fills.set(tid, to_json(trade))
+                    }
+                }
+            }
         }
     }
 
