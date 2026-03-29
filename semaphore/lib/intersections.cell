@@ -1,0 +1,42 @@
+// Intersection helper functions
+
+cell Intersections {
+    on phase_label(phase: String) {
+        if phase == "green_ns" { return "N-S Green" }
+        if phase == "yellow_ns" { return "N-S Yellow" }
+        if phase == "green_ew" { return "E-W Green" }
+        if phase == "yellow_ew" { return "E-W Yellow" }
+        if phase == "emergency_red" { return "EMERGENCY" }
+        return phase
+    }
+
+    on phase_icon(phase: String) {
+        if phase == "green_ns" { return "&#x25B2;" }
+        if phase == "yellow_ns" { return "&#x25B2;" }
+        if phase == "green_ew" { return "&#x25B6;" }
+        if phase == "yellow_ew" { return "&#x25B6;" }
+        if phase == "emergency_red" { return "&#x2716;" }
+        return "?"
+    }
+
+    on light_glow(color: String) {
+        if color == "green" { return "0 0 24px 8px rgba(34,197,94,.5)" }
+        if color == "yellow" { return "0 0 24px 8px rgba(234,179,8,.5)" }
+        if color == "red" { return "0 0 24px 8px rgba(239,68,68,.5)" }
+        return "none"
+    }
+
+    on light_hex(color: String) {
+        if color == "green" { return "#22c55e" }
+        if color == "yellow" { return "#eab308" }
+        if color == "red" { return "#ef4444" }
+        return "#1f2937"
+    }
+
+    on mode_badge(mode: String) {
+        if mode == "auto" { return "<span class='badge badge-auto'>AUTO</span>" }
+        if mode == "manual" { return "<span class='badge badge-manual'>MANUAL</span>" }
+        if mode == "night" { return "<span class='badge badge-night'>NIGHT</span>" }
+        return "<span class='badge'>{mode}</span>"
+    }
+}
