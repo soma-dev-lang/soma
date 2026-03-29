@@ -3,22 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Soma — The language agents write</title>
-<meta name="description" content="Soma is a declarative language designed for AI agents to build persistent web apps and data pipelines. Zero config. One file. Pipe operator. SQLite. HTMX.">
+<title>Soma — The specification is the program</title>
+<meta name="description" content="Soma is a language where infrastructure is a constraint, compliance is a state machine, and pipelines are pipes. One program replaces ten tools.">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0a0e1a;--bg2:#111827;--bg3:#1f2937;--text:#e5e7eb;--muted:#9ca3af;--dim:#6b7280;--accent:#818cf8;--accent2:#a78bfa;--green:#34d399;--yellow:#fbbf24;--red:#f87171;--border:rgba(255,255,255,.06);--r:12px}
+:root{--bg:#060910;--bg2:#0d1117;--bg3:#161b22;--text:#e5e7eb;--muted:#9ca3af;--dim:#6b7280;--accent:#818cf8;--accent2:#a78bfa;--green:#34d399;--yellow:#fbbf24;--red:#f87171;--border:rgba(255,255,255,.06);--r:12px}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
 a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-nav{background:rgba(10,14,26,.9);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 2rem;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+nav{background:rgba(6,9,16,.9);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 2rem;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
 .logo{font-family:'JetBrains Mono';font-size:1.25rem;font-weight:800;color:var(--accent)}
 nav .links a{color:var(--muted);margin-left:2rem;font-size:.875rem;font-weight:500}nav .links a:hover{color:var(--text);text-decoration:none}
 .container{max-width:900px;margin:0 auto;padding:2rem}
-.hero{text-align:center;padding:5rem 1rem 3rem}
-.hero h1{font-size:4rem;font-weight:900;letter-spacing:-3px;background:linear-gradient(135deg,#e0e7ff,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:.5rem}
-.hero .sub{color:var(--muted);font-size:1.25rem;font-weight:300;max-width:600px;margin:0 auto}
-.hero .tagline{font-family:'JetBrains Mono';color:var(--dim);font-size:.875rem;margin-top:1.5rem}
+.hero{text-align:center;padding:6rem 1rem 2rem}
+.hero h1{font-size:5rem;font-weight:900;letter-spacing:-4px;background:linear-gradient(135deg,#e0e7ff,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:1rem}
+.hero .manifesto{color:var(--text);font-size:1.5rem;font-weight:300;max-width:700px;margin:0 auto;line-height:1.6}
+.hero .manifesto strong{color:#f0f6fc;font-weight:600}
+.hero .tagline{font-family:'JetBrains Mono';color:var(--dim);font-size:.8rem;margin-top:2rem;letter-spacing:1px}
 .install-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem 1.5rem;margin:2rem auto;max-width:600px;font-family:'JetBrains Mono';font-size:.9375rem;display:flex;align-items:center;gap:1rem}
 .install-box .prompt{color:var(--dim)}
 .install-box code{color:var(--green);flex:1}
@@ -28,41 +29,38 @@ section{padding:3rem 0;border-top:1px solid var(--border)}
 section h2{font-size:1.75rem;font-weight:800;margin-bottom:1.5rem;letter-spacing:-.5px}
 section h3{font-size:1.125rem;font-weight:700;color:var(--accent);margin:2rem 0 .75rem}
 p{color:var(--muted);margin-bottom:1rem}
+blockquote{border-left:3px solid var(--accent);padding:.75rem 1.25rem;margin:1.5rem 0;background:var(--bg2);border-radius:0 var(--r) var(--r) 0}
+blockquote p{margin:0;color:var(--text);font-size:1.05rem;font-style:italic}
+blockquote cite{display:block;color:var(--dim);font-size:.8rem;margin-top:.5rem;font-style:normal}
 pre{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem;margin:1rem 0 1.5rem;overflow-x:auto;font-family:'JetBrains Mono';font-size:.8125rem;line-height:1.8;color:var(--text)}
 code{font-family:'JetBrains Mono';font-size:.875em;background:var(--bg3);padding:.125rem .375rem;border-radius:4px}
 pre code{background:none;padding:0}
-.kw{color:var(--accent)}
-.str{color:var(--green)}
-.num{color:var(--yellow)}
-.cmt{color:var(--dim)}
-.fn{color:var(--accent2)}
-.op{color:var(--red)}
+.kw{color:var(--accent)}.str{color:var(--green)}.num{color:var(--yellow)}.cmt{color:var(--dim)}.fn{color:var(--accent2)}.op{color:var(--red)}
 table{width:100%;border-collapse:collapse;margin:1rem 0 1.5rem;font-size:.875rem}
 th{text-align:left;padding:.625rem;background:var(--bg2);color:var(--dim);font-size:.75rem;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
 td{padding:.625rem;border-bottom:1px solid var(--border);color:var(--muted)}
 td:first-child{font-family:'JetBrains Mono';color:var(--accent);font-size:.8125rem}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin:1.5rem 0}
 .card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.5rem}
 .card h4{font-size:.9375rem;font-weight:700;margin-bottom:.5rem}
 .card p{font-size:.875rem}
+.thesis{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:2rem;margin:2rem 0}
+.thesis h3{margin-top:0;font-size:1.2rem}
+.thesis .number{font-family:'JetBrains Mono';color:var(--accent);font-size:.75rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:.5rem}
+.vs{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin:1.5rem 0}
+.vs .side{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem}
+.vs .side h4{font-size:.8rem;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.75rem}
 .badge{display:inline-block;background:rgba(129,140,248,.1);color:var(--accent);padding:.125rem .5rem;border-radius:4px;font-size:.75rem;font-weight:600;font-family:'JetBrains Mono'}
-.why-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin:1.5rem 0}
-.why-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem;text-align:center}
-.why-card .icon{font-size:2rem;margin-bottom:.75rem}
-.why-card h4{font-size:.875rem;font-weight:700;margin-bottom:.375rem}
-.why-card p{font-size:.8125rem;color:var(--dim)}
-.comparison{margin:1.5rem 0}
-.comparison pre{margin:.5rem 0}
-.comparison .label{font-family:'JetBrains Mono';font-size:.75rem;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-top:1rem}
 footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:var(--dim);font-size:.8125rem}
-@media(max-width:768px){.hero h1{font-size:2.5rem}.grid2,.why-grid{grid-template-columns:1fr}}
+@media(max-width:768px){.hero h1{font-size:3rem}.grid2,.grid3,.vs{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <nav>
 <div class="logo">soma</div>
 <div class="links">
-<a href="#install">Install</a>
+<a href="#manifesto">Manifesto</a>
 <a href="#syntax">Syntax</a>
 <a href="#pipeline">Pipelines</a>
 <a href="#web">Web</a>
@@ -71,12 +69,17 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 </div>
 </nav>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
 <div class="container">
+
+<!-- ═══════════════════════════════════ HERO ═══════════════════════════════════ -->
 <div class="hero">
 <h1>soma</h1>
-<p class="sub">A declarative language designed for AI agents to build persistent web apps and data pipelines.</p>
-<p class="tagline">zero config · one file · pipe operator · SQLite · HTMX</p>
+<p class="manifesto">
+A language where <strong>infrastructure is a constraint</strong>,
+<strong>compliance is a state machine</strong>,
+and <strong>pipelines are pipes</strong>.
+</p>
+<p class="tagline">the specification is the program</p>
 </div>
 
 <div class="install-box">
@@ -85,542 +88,369 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <button class="copy" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
 </div>
 
-<pre><code><span class="cmt">// A complete REST API with persistence. One file. One command.</span>
-<span class="kw">cell</span> App {
+<pre><code><span class="kw">cell</span> Fund {
     <span class="kw">memory</span> {
-        users: Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>]
+        positions: Map&lt;String, Position&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>]   <span class="cmt">// &rarr; SQLite. Automatically.</span>
+        prices:    Map&lt;String, Float&gt;    [<span class="fn">ephemeral</span>, <span class="fn">ttl</span>(<span class="num">30</span>s)]     <span class="cmt">// &rarr; in-memory, auto-expire</span>
     }
 
-    <span class="kw">on</span> create(name: String, email: String) {
-        <span class="kw">let</span> id = <span class="fn">next_id</span>()
-        users.<span class="fn">set</span>(<span class="fn">to_string</span>(id), <span class="fn">to_json</span>(<span class="fn">map</span>(<span class="str">"id"</span>, id, <span class="str">"name"</span>, name, <span class="str">"email"</span>, email)))
-        <span class="kw">return</span> <span class="fn">map</span>(<span class="str">"id"</span>, id, <span class="str">"name"</span>, name, <span class="str">"email"</span>, email)
+    <span class="kw">state</span> regime {
+        <span class="kw">initial</span>: neutral
+        neutral &rarr; risk_on
+        neutral &rarr; risk_off
+        * &rarr; crisis
+        crisis &rarr; neutral
     }
 
-    <span class="kw">on</span> get(id: String) {
-        <span class="kw">let</span> raw = users.<span class="fn">get</span>(id)
-        <span class="kw">if</span> raw == () { <span class="kw">return</span> <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>)) }
-        <span class="kw">return</span> <span class="fn">from_json</span>(raw)
+    <span class="kw">every</span> <span class="num">1</span>h { rebalance() }
+
+    <span class="kw">on</span> rebalance() {
+        <span class="kw">let</span> portfolio = universe()
+            |&gt; <span class="fn">map</span>(s =&gt; score(s))
+            |&gt; <span class="fn">filter</span>(s =&gt; s.composite &gt; <span class="num">50</span>)
+            |&gt; <span class="fn">sort_by</span>(<span class="str">"composite"</span>, <span class="str">"desc"</span>)
+            |&gt; <span class="fn">top</span>(<span class="num">15</span>)
+
+        <span class="kw">for</span> stock <span class="kw">in</span> portfolio { execute(stock) }
     }
 
-    <span class="kw">on</span> list() {
-        <span class="kw">let</span> items = <span class="fn">list</span>()
-        <span class="kw">for</span> key <span class="kw">in</span> users.<span class="fn">keys</span>() { items = <span class="fn">list</span>(items, <span class="fn">from_json</span>(users.<span class="fn">get</span>(key))) }
-        <span class="kw">return</span> items
+    <span class="kw">on</span> request(method: String, path: String, body: String) {
+        <span class="kw">match</span> path {
+            <span class="str">"/"</span>         &rarr; <span class="fn">html</span>(dashboard())
+            <span class="str">"/api/risk"</span> &rarr; risk_report()
+            _           &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+        }
     }
 }</code></pre>
 
-<pre><code><span class="prompt">$</span> soma serve app.cell
-<span class="dim">listening on http://localhost:8080   # SQLite auto-resolved from [persistent, consistent]</span>
+<!-- ═══════════════════════════════════ MANIFESTO ═══════════════════════════════════ -->
+<section id="manifesto">
+<h2>The problem</h2>
 
-<span class="prompt">$</span> curl -X POST localhost:8080/create -d '{"name":"Alice","email":"alice@example.com"}'
-<span class="green">{"id": 1, "name": "Alice", "email": "alice@example.com"}</span></code></pre>
+<p>A quantitative fund today needs Python + Pandas + Redis + PostgreSQL + Kafka + Flask + React + Celery + Airflow + Terraform. Ten tools, five languages, three teams. Fifty thousand lines of glue code. The specification lives in Confluence. The code lives somewhere else. They drift apart.</p>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<section id="why">
-<h2>Why agents should use Soma</h2>
+<p>An AI agent can write a function. Maybe a file. But it cannot write a <em>system</em> &mdash; services that coordinate, maintain state, handle failures, and evolve. The gap is not intelligence. The gap is that programming languages separate intent from infrastructure, specification from implementation, contract from code.</p>
 
-<div class="why-grid">
-<div class="why-card"><div class="icon">📐</div><h4>15 keywords</h4><p>The entire language fits in an agent's context window. Learn it in one pass.</p></div>
-<div class="why-card"><div class="icon">🗄️</div><h4>Declare storage</h4><p>[persistent, consistent] → SQLite. [ephemeral] → memory. No config.</p></div>
-<div class="why-card"><div class="icon">🔗</div><h4>Pipe operator</h4><p>data |> filter_by() |> sort_by() |> top(10). Spark in 5 lines.</p></div>
-<div class="why-card"><div class="icon">🌐</div><h4>Web built-in</h4><p>soma serve = HTTP server + HTMX + JSON API. Zero framework.</p></div>
-<div class="why-card"><div class="icon">✅</div><h4>Compile-time checks</h4><p>Property contradictions, signal wiring, promise verification — before runtime.</p></div>
-<div class="why-card"><div class="icon">🌱</div><h4>Self-growing</h4><p>Properties, checkers, backends defined as .cell files. The language extends itself.</p></div>
+<p><strong>Soma closes that gap.</strong></p>
+
+<div class="thesis">
+<div class="number">Thesis I &mdash; after Lamport</div>
+<h3>The specification is the program</h3>
+<p>In Soma, you don't write specs then implement them. The <code>face</code> contract is the API. The <code>state</code> machine is the protocol. The <code>memory</code> properties are the infrastructure requirements. The compiler checks all three. The same artifact that describes what the system should do is the artifact that runs.</p>
+<blockquote>
+<p>Everyone thinks they mean the same thing by "specification" until they try to make it precise.</p>
+<cite>&mdash; Leslie Lamport, Turing Lecture 2014</cite>
+</blockquote>
 </div>
 
-<h3>What agents struggle with today</h3>
-<p>An agent building a web app in Express needs to coordinate: a JS file, a package.json, npm install, a database connection string, SQL migrations, route configuration, JSON parsing middleware, and error handling. That's 7 files, 3 languages, and 4 tools — any of which can be inconsistent.</p>
-<p>In Soma, the agent writes <strong>one file</strong>. Memory properties declare the database. Signal handlers are the routes. The compiler verifies consistency. <code>soma serve</code> runs it.</p>
-
-<div class="comparison">
-<div class="label">Same app — lines of code</div>
-<table>
-<tr><th>Language</th><th>Lines</th><th>Dependencies</th><th>Files</th><th>Setup commands</th></tr>
-<tr><td>Soma</td><td><strong>74</strong></td><td><strong>0</strong></td><td><strong>1</strong></td><td><strong>1</strong> (soma serve app.cell)</td></tr>
-<tr><td>Express</td><td>87</td><td>2</td><td>3+</td><td>3</td></tr>
-<tr><td>Flask</td><td>112</td><td>1</td><td>2+</td><td>2</td></tr>
-<tr><td>Go</td><td>152</td><td>1</td><td>3+</td><td>3</td></tr>
-</table>
-<div class="label">What you don't write in Soma</div>
-<p>0 SQL statements. 0 imports. 0 database config. 0 route declarations. 0 JSON marshaling.</p>
-</div>
-</section>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<section id="install">
-<h2>Install</h2>
-
-<h3>macOS</h3>
-<pre><code>curl -fsSL https://soma-lang.dev/install.sh | sh
-<span class="cmt"># or</span>
-brew install soma</code></pre>
-
-<h3>Linux</h3>
-<pre><code>curl -fsSL https://soma-lang.dev/install.sh | sh</code></pre>
-
-<h3>From source</h3>
-<pre><code>git clone https://github.com/soma-dev-lang/soma
-cd soma/compiler
-cargo build --release
-cp target/release/soma /usr/local/bin/</code></pre>
-
-<h3>Verify</h3>
-<pre><code>soma --version
-<span class="dim">soma 0.1.0</span></code></pre>
-</section>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<section id="syntax">
-<h2>Syntax reference</h2>
-
-<p>Soma has <strong>one structure</strong>: the cell. Every cell has a face (contract), memory (state), and signal handlers (behavior).</p>
-
-<h3>Cell</h3>
-<pre><code><span class="kw">cell</span> Counter {
-    <span class="kw">face</span> {
-        <span class="kw">signal</span> increment(amount: Int)
-        <span class="kw">signal</span> get() -> Int
-        <span class="kw">promise</span> value >= <span class="num">0</span>
-    }
-
-    <span class="kw">memory</span> {
-        value: Int [<span class="fn">persistent</span>, <span class="fn">consistent</span>]
-    }
-
-    <span class="kw">on</span> increment(amount: Int) {
-        <span class="kw">let</span> current = value.<span class="fn">get</span>(<span class="str">"count"</span>) ?? <span class="num">0</span>
-        value.<span class="fn">set</span>(<span class="str">"count"</span>, current + amount)
-        <span class="kw">return</span> current + amount
-    }
-
-    <span class="kw">on</span> get() {
-        <span class="kw">return</span> value.<span class="fn">get</span>(<span class="str">"count"</span>) ?? <span class="num">0</span>
-    }
-}</code></pre>
-
-<h3>Types</h3>
-<table>
-<tr><td>Int</td><td>64-bit integer</td></tr>
-<tr><td>BigInt</td><td>Arbitrary precision (declare in params to activate)</td></tr>
-<tr><td>Float</td><td>64-bit float</td></tr>
-<tr><td>String</td><td>UTF-8 text with {interpolation}</td></tr>
-<tr><td>Bool</td><td>true / false</td></tr>
-<tr><td>List</td><td>Ordered collection</td></tr>
-<tr><td>Map</td><td>Key-value pairs</td></tr>
-<tr><td>()</td><td>Unit / null</td></tr>
-</table>
-
-<h3>Variables</h3>
-<pre><code><span class="kw">let</span> x = <span class="num">42</span>
-x = x + <span class="num">1</span>                      <span class="cmt">// reassignment</span>
-<span class="kw">let</span> name = <span class="str">"world"</span>
-<span class="kw">let</span> greeting = <span class="str">"hello {name}"</span>   <span class="cmt">// string interpolation</span>
-<span class="kw">let</span> user = <span class="fn">map</span>(<span class="str">"name"</span>, <span class="str">"Alice"</span>, <span class="str">"age"</span>, <span class="num">30</span>)
-<span class="kw">let</span> info = <span class="str">"{user.name} is {user.age}"</span>  <span class="cmt">// field interpolation</span></code></pre>
-
-<h3>Control flow</h3>
-<pre><code><span class="kw">if</span> x > <span class="num">10</span> {
-    <span class="kw">return</span> <span class="str">"big"</span>
-} <span class="kw">else</span> {
-    <span class="kw">return</span> <span class="str">"small"</span>
-}
-
-<span class="kw">while</span> i < n {
-    sum += i
-    i = i + <span class="num">1</span>
-}
-
-<span class="kw">for</span> item <span class="kw">in</span> items {
-    <span class="fn">print</span>(item)
-}</code></pre>
-
-<h3>Operators</h3>
-<table>
-<tr><td>+ - * / %</td><td>Arithmetic</td></tr>
-<tr><td>== != < > <= >=</td><td>Comparison</td></tr>
-<tr><td>&&  ||  !</td><td>Logic</td></tr>
-<tr><td>|></td><td>Pipe: a |> f(b) → f(a, b)</td></tr>
-<tr><td>??</td><td>Null coalescing: x ?? default</td></tr>
-<tr><td>+=</td><td>Append: s += "more"</td></tr>
-</table>
-
-<h3>Memory properties</h3>
+<div class="thesis">
+<div class="number">Thesis II &mdash; after Hellerstein</div>
+<h3>Infrastructure is a constraint, not a configuration</h3>
+<p><code>[persistent, consistent]</code> resolves to SQLite. <code>[ephemeral, ttl(30s)]</code> resolves to in-memory with auto-expire. The program never names a database. It declares what it needs. The runtime resolves how. Change the provider from <code>local</code> to <code>aws</code> &mdash; the same properties resolve to DynamoDB and ElastiCache. Zero code changes.</p>
 <pre><code><span class="kw">memory</span> {
-    data:     Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>]     <span class="cmt">// → SQLite</span>
-    cache:    Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">local</span>]          <span class="cmt">// → in-memory HashMap</span>
-    secrets:  Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">encrypted</span>]     <span class="cmt">// → encrypted at rest</span>
-    logs:     Log&lt;String&gt;         [<span class="fn">persistent</span>, <span class="fn">immutable</span>]     <span class="cmt">// → append-only</span>
-    sessions: Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">ttl</span>(<span class="num">30</span>min)]    <span class="cmt">// → auto-expire</span>
+    orders:   Map&lt;String, Order&gt;   [<span class="fn">persistent</span>, <span class="fn">consistent</span>]           <span class="cmt">// &rarr; SQLite | DynamoDB | D1</span>
+    cache:    Map&lt;String, Price&gt;   [<span class="fn">ephemeral</span>, <span class="fn">local</span>, <span class="fn">ttl</span>(<span class="num">30</span>s)]   <span class="cmt">// &rarr; HashMap | Redis | KV</span>
+    audit:    Log&lt;Event&gt;           [<span class="fn">persistent</span>, <span class="fn">append_only</span>]        <span class="cmt">// &rarr; SQLite-WAL | Kafka | S3</span>
 }</code></pre>
-<p>The compiler verifies: <code>[persistent, ephemeral]</code> → error (contradiction). <code>[immutable]</code> → implies consistent. <code>[retain(7years), ttl(30d)]</code> → error (ttl &lt; retain).</p>
+<blockquote>
+<p>The future of data management lies in the declarative specification of what is wanted, not the procedural specification of how to get it.</p>
+<cite>&mdash; Joseph Hellerstein, The Declarative Imperative, 2010</cite>
+</blockquote>
+</div>
 
-<h3>Imports</h3>
-<pre><code><span class="kw">use</span> lib::helpers            <span class="cmt">// local: lib/helpers.cell</span>
-<span class="kw">use</span> math                    <span class="cmt">// package: .soma_env/packages/math/</span>
-<span class="kw">use</span> std::builtins           <span class="cmt">// stdlib</span></code></pre>
+<div class="thesis">
+<div class="number">Thesis III &mdash; after Kay</div>
+<h3>Agents build systems, not functions</h3>
+<p>Soma's cell is fractal. The same structure &mdash; face, memory, state, handlers &mdash; works at every scale. A function is a cell. A service is a cell. A datacenter is a cell containing cells. An AI agent doesn't need to learn "how to deploy a distributed system." It needs to learn <em>one thing</em>: the cell. Face contracts guarantee that cells compose correctly. The compiler verifies the composition.</p>
+<pre><code><span class="kw">cell</span> TradingDesk {
+    <span class="kw">interior</span> {
+        <span class="kw">cell</span> MarketData { <span class="cmt">/* face + memory + handlers */</span> }
+        <span class="kw">cell</span> RiskEngine { <span class="cmt">/* face + memory + handlers */</span> }
+        <span class="kw">cell</span> OrderRouter { <span class="cmt">/* face + memory + handlers */</span> }
+    }
+    <span class="kw">runtime</span> {
+        <span class="fn">connect</span> MarketData.price_update &rarr; RiskEngine
+        <span class="fn">connect</span> RiskEngine.approved &rarr; OrderRouter
+    }
+}</code></pre>
+<blockquote>
+<p>The best way to predict the future is to invent it.</p>
+<cite>&mdash; Alan Kay, Turing Award 2003</cite>
+</blockquote>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════ WHAT IT REPLACES ═══════════════════════════════════ -->
+<section>
+<h2>What one Soma program replaces</h2>
+
+<table>
+<tr><th>Tool</th><th>Role</th><th>In Soma</th></tr>
+<tr><td>Airflow / Cron</td><td>Scheduling</td><td><code>every 30s { ... }</code></td></tr>
+<tr><td>Spark / Pandas</td><td>Data pipelines</td><td><code>|> filter() |> map() |> sort_by()</code></td></tr>
+<tr><td>Redis</td><td>Cache</td><td><code>[ephemeral, ttl(30s)]</code></td></tr>
+<tr><td>PostgreSQL</td><td>Persistence</td><td><code>[persistent, consistent]</code></td></tr>
+<tr><td>Kafka</td><td>Event log</td><td><code>[persistent, append_only]</code></td></tr>
+<tr><td>Express / Flask</td><td>API server</td><td><code>on request() { match path { ... } }</code></td></tr>
+<tr><td>React</td><td>Dashboard</td><td><code>html(""" ... """)</code></td></tr>
+<tr><td>Celery</td><td>Background jobs</td><td><code>every 1h { rebalance() }</code></td></tr>
+<tr><td>Terraform</td><td>Infrastructure</td><td>Memory properties &rarr; provider resolution</td></tr>
+<tr><td>TLA+</td><td>Verification</td><td><code>state { } + face { promise ... }</code></td></tr>
+</table>
+
+<div class="vs">
+<div class="side">
+<h4>Traditional stack</h4>
+<pre><code>10 tools
+5 languages
+3 teams
+50,000 lines of glue
+Specification: Confluence
+Implementation: somewhere else</code></pre>
+</div>
+<div class="side">
+<h4>Soma</h4>
+<pre><code>1 language
+1 file (or a few)
+1 command: soma serve
+~300 lines
+The spec IS the program</code></pre>
+</div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════ SYNTAX ═══════════════════════════════════ -->
+<section id="syntax">
+<h2>The language</h2>
+
+<p>Soma has one structure: <strong>the cell</strong>. Face (contract), memory (state), state machines (protocol), signal handlers (behavior). Everything is a cell, from a function to a datacenter.</p>
+
+<h3>Match expressions</h3>
+<pre><code><span class="kw">on</span> request(method: String, path: String, body: String) {
+    <span class="kw">match</span> path {
+        <span class="str">"/"</span>              &rarr; <span class="fn">html</span>(dashboard())
+        <span class="str">"/api/portfolio"</span> &rarr; get_portfolio()
+        <span class="str">"/api/risk"</span>      &rarr; risk_report()
+        _                &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+    }
+}</code></pre>
+
+<h3>Lambdas + higher-order pipes</h3>
+<pre><code><span class="kw">let</span> portfolio = stocks
+    |&gt; <span class="fn">filter</span>(s =&gt; s.market_cap &gt; <span class="num">1e9</span>)
+    |&gt; <span class="fn">map</span>(s =&gt; score(s))
+    |&gt; <span class="fn">sort_by</span>(<span class="str">"alpha"</span>, <span class="str">"desc"</span>)
+    |&gt; <span class="fn">top</span>(<span class="num">15</span>)
+
+<span class="kw">let</span> names = users |&gt; <span class="fn">map</span>(u =&gt; u.name) |&gt; <span class="fn">join</span>(<span class="str">", "</span>)
+<span class="kw">let</span> active = users |&gt; <span class="fn">filter</span>(u =&gt; u.status == <span class="str">"active"</span>)
+<span class="kw">let</span> found = users |&gt; <span class="fn">find</span>(u =&gt; u.id == target)
+<span class="kw">let</span> valid = orders |&gt; <span class="fn">all</span>(o =&gt; o.total &gt; <span class="num">0</span>)</code></pre>
+
+<h3>Multi-line strings</h3>
+<pre><code><span class="kw">let</span> html = <span class="str">"""
+&lt;div class="card"&gt;
+    &lt;h2&gt;{stock.ticker}&lt;/h2&gt;
+    &lt;p class="price"&gt;${stock.price}&lt;/p&gt;
+    &lt;span class="change {cls}"&gt;{stock.momentum}%&lt;/span&gt;
+&lt;/div&gt;
+"""</span></code></pre>
 
 <h3>State machines</h3>
-<pre><code><span class="kw">state</span> status {
-    <span class="kw">initial</span>: draft
-
-    draft -> submitted
-    submitted -> approved
-    approved -> shipped
-    shipped -> delivered
-    * -> cancelled              <span class="cmt">// from any state</span>
+<pre><code><span class="kw">state</span> order {
+    <span class="kw">initial</span>: pending
+    pending &rarr; validated { <span class="kw">guard</span> { risk_check_passed } }
+    validated &rarr; sent
+    sent &rarr; filled
+    sent &rarr; rejected
+    filled &rarr; settled
+    * &rarr; cancelled
 }
 
-<span class="cmt">// Runtime enforces valid transitions</span>
-<span class="fn">transition</span>(order_id, <span class="str">"submitted"</span>)   <span class="cmt">// ✓ draft → submitted</span>
-<span class="fn">transition</span>(order_id, <span class="str">"shipped"</span>)     <span class="cmt">// ✗ error: draft → shipped not allowed</span></code></pre>
+<span class="cmt">// Runtime enforces: you cannot reach 'sent' without passing 'validated'.</span>
+<span class="cmt">// The auditor reads the .cell file and sees the policy.</span>
+<span class="cmt">// The policy IS the code.</span></code></pre>
 
-<h3>Tests</h3>
-<pre><code><span class="kw">cell</span> <span class="kw">test</span> MathTests {
-    <span class="kw">rules</span> {
-        <span class="kw">assert</span> <span class="fn">square</span>(<span class="num">5</span>) == <span class="num">25</span>
-        <span class="kw">assert</span> <span class="fn">factorial</span>(<span class="num">10</span>) == <span class="num">3628800</span>
-    }
+<h3>Declarative storage</h3>
+<pre><code><span class="kw">memory</span> {
+    data:     Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>]     <span class="cmt">// &rarr; SQLite</span>
+    cache:    Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">local</span>]          <span class="cmt">// &rarr; in-memory</span>
+    sessions: Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">ttl</span>(<span class="num">30</span>min)]    <span class="cmt">// &rarr; auto-expire</span>
 }
 
-<span class="cmt">// $ soma test tests.cell</span>
-<span class="cmt">//   ✓ assert square(5) == 25</span>
-<span class="cmt">//   ✓ assert factorial(10) == 3628800</span>
-<span class="cmt">// 2 tests: 2 passed, 0 failed</span></code></pre>
+<span class="cmt">// The compiler verifies: [persistent, ephemeral] &rarr; contradiction.</span>
+<span class="cmt">// Properties are defined in .cell files. The language grows itself.</span></code></pre>
 
-<h3>Typed records</h3>
-<p>Named maps with compile-time type tags. No more stringly-typed <code>Map&lt;String, String&gt;</code>.</p>
-<pre><code><span class="cmt">// Create a typed record</span>
-<span class="kw">let</span> user = <span class="fn">User</span> { name: <span class="str">"Alice"</span>, age: <span class="num">30</span>, email: <span class="str">"alice@test.com"</span> }
+<h3>Types &amp; variables</h3>
+<pre><code><span class="kw">let</span> x = <span class="num">42</span>                             <span class="cmt">// Int</span>
+<span class="kw">let</span> price = <span class="num">3.14</span>                       <span class="cmt">// Float</span>
+<span class="kw">let</span> sci = <span class="num">1.5e3</span>                        <span class="cmt">// Scientific: 1500.0</span>
+<span class="kw">let</span> name = <span class="str">"world"</span>                     <span class="cmt">// String with {interpolation}</span>
+<span class="kw">let</span> user = <span class="fn">User</span> { name: <span class="str">"Alice"</span>, age: <span class="num">30</span> }  <span class="cmt">// Typed record</span>
+<span class="kw">let</span> dur = <span class="num">5</span>s                            <span class="cmt">// Duration &rarr; 5000ms</span>
 
-<span class="cmt">// Field access</span>
-user.name              <span class="cmt">// → "Alice"</span>
-user._type             <span class="cmt">// → "User"</span>
+<span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="num">0</span>, <span class="num">10</span>) { <span class="cmt">/* ... */</span> }   <span class="cmt">// range, break, continue</span>
+<span class="kw">while</span> running { <span class="kw">if</span> done { <span class="kw">break</span> } }   <span class="cmt">// loops</span></code></pre>
 
-<span class="cmt">// Type checking at runtime</span>
-<span class="fn">is_type</span>(user, <span class="str">"User"</span>)  <span class="cmt">// → true</span>
-<span class="fn">is_type</span>(user, <span class="str">"Order"</span>) <span class="cmt">// → false</span>
+<h3>Self-growing language</h3>
+<pre><code><span class="cmt">// Properties, checkers, and backends are .cell files, not compiler code.</span>
 
-<span class="cmt">// Records compose with pipes and with()</span>
-<span class="kw">let</span> updated = user |> <span class="fn">with</span>(<span class="str">"age"</span>, <span class="num">31</span>)
-<span class="kw">let</span> clean = user |> <span class="fn">without</span>(<span class="str">"email"</span>)
-
-<span class="cmt">// Use in collections</span>
-<span class="kw">let</span> users = <span class="fn">list</span>(
-    <span class="fn">User</span> { name: <span class="str">"Alice"</span>, role: <span class="str">"admin"</span> },
-    <span class="fn">User</span> { name: <span class="str">"Bob"</span>, role: <span class="str">"user"</span> }
-)
-<span class="kw">let</span> admins = users |> <span class="fn">filter_by</span>(<span class="str">"role"</span>, <span class="str">"="</span>, <span class="str">"admin"</span>)</code></pre>
-
-<h3>Error handling</h3>
-<p><code>try { }</code> catches runtime errors and returns them as values. No exceptions, no panics — errors are data.</p>
-<pre><code><span class="cmt">// try wraps errors into a map with value/error fields</span>
-<span class="kw">let</span> result = <span class="kw">try</span> { <span class="fn">stock</span>(ticker) }
-
-<span class="kw">if</span> result.error != () {
-    <span class="cmt">// Error occurred — handle it</span>
-    <span class="kw">return</span> <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, result.error))
-}
-
-<span class="cmt">// Success — use the value</span>
-<span class="kw">let</span> data = result.value
-
-<span class="cmt">// Works with any expression</span>
-<span class="kw">let</span> safe_divide = <span class="kw">try</span> { a / b }
-<span class="kw">let</span> answer = safe_divide.value ?? <span class="num">0</span>  <span class="cmt">// default to 0 on error</span></code></pre>
-
-<h3>HTML templates</h3>
-<p>Separate HTML from logic. Load external files with variable substitution.</p>
-<pre><code><span class="cmt">// templates/page.html:</span>
-<span class="cmt">// &lt;h1&gt;{title}&lt;/h1&gt;</span>
-<span class="cmt">// &lt;ul&gt;{items}&lt;/ul&gt;</span>
-<span class="cmt">// &lt;p&gt;By {author}&lt;/p&gt;</span>
-
-<span class="cmt">// Load and render with variables</span>
-<span class="kw">let</span> page = <span class="fn">load_template</span>(<span class="str">"templates/page.html"</span>,
-    <span class="str">"title"</span>, <span class="str">"Dashboard"</span>,
-    <span class="str">"items"</span>, rows,
-    <span class="str">"author"</span>, <span class="str">"Soma"</span>
-)
-<span class="kw">return</span> <span class="fn">html</span>(page)</code></pre>
-</section>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<section id="pipeline">
-<h2>Data pipelines</h2>
-
-<p>Soma replaces PySpark for in-memory data processing. Same operations, fraction of the code.</p>
-
-<h3>Filter → Sort → Top</h3>
-<pre><code><span class="kw">let</span> portfolio = stocks
-    |> <span class="fn">filter_by</span>(<span class="str">"market_cap"</span>, <span class="str">">"</span>, <span class="num">20000</span>)
-    |> <span class="fn">filter_by</span>(<span class="str">"momentum"</span>, <span class="str">">"</span>, -<span class="num">10</span>)
-    |> <span class="fn">sort_by</span>(<span class="str">"composite"</span>, <span class="str">"desc"</span>)
-    |> <span class="fn">top</span>(<span class="num">10</span>)</code></pre>
-
-<h3>Join → Aggregate (GROUP BY)</h3>
-<pre><code><span class="kw">let</span> by_sector = trades
-    |> <span class="fn">join</span>(prices, <span class="str">"ticker"</span>)
-    |> <span class="fn">filter_by</span>(<span class="str">"volume"</span>, <span class="str">">"</span>, <span class="num">1000</span>)
-    |> <span class="fn">agg</span>(<span class="str">"sector"</span>, <span class="str">"volume:sum"</span>, <span class="str">"price:avg"</span>)
-    |> <span class="fn">sort_by</span>(<span class="str">"volume_sum"</span>, <span class="str">"desc"</span>)</code></pre>
-
-<h3>All pipeline operations</h3>
-<table>
-<tr><td>filter_by(list, field, op, val)</td><td>Filter rows: &gt; &gt;= &lt; &lt;= == !=</td></tr>
-<tr><td>sort_by(list, field, "desc")</td><td>Sort by field</td></tr>
-<tr><td>top(list, n)</td><td>First N elements</td></tr>
-<tr><td>join(left, right, key)</td><td>Inner join on key</td></tr>
-<tr><td>left_join(left, right, key)</td><td>Left outer join</td></tr>
-<tr><td>agg(list, group, "col:func"...)</td><td>GROUP BY + sum/avg/min/max/count</td></tr>
-<tr><td>select(list, fields...)</td><td>Pick columns</td></tr>
-<tr><td>pluck(list, field)</td><td>Extract one field</td></tr>
-<tr><td>distinct(list, field)</td><td>Unique values</td></tr>
-<tr><td>group_by(list, field)</td><td>Group into map</td></tr>
-<tr><td>sum_by(list, field)</td><td>Sum field values</td></tr>
-<tr><td>avg_by(list, field)</td><td>Average</td></tr>
-<tr><td>min_by / max_by(list, field)</td><td>Extremes</td></tr>
-<tr><td>count_by(list, field, val)</td><td>Count matches</td></tr>
-<tr><td>with(map, k, v)</td><td>Update field</td></tr>
-<tr><td>without(map, keys...)</td><td>Remove fields</td></tr>
-<tr><td>merge(map1, map2)</td><td>Combine maps</td></tr>
-<tr><td>flatten(list)</td><td>Flatten nested lists</td></tr>
-<tr><td>zip(list1, list2)</td><td>Pair elements</td></tr>
-<tr><td>enumerate(list)</td><td>Add index</td></tr>
-</table>
-</section>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<section id="web">
-<h2>Web applications</h2>
-
-<p>Signal handlers become HTTP routes automatically. <code>soma serve</code> gives you a threaded HTTP server with SQLite, CORS, HTMX, static files, and hot reload.</p>
-
-<h3>JSON API</h3>
-<pre><code><span class="kw">cell</span> API {
-    <span class="kw">memory</span> { items: Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>] }
-
-    <span class="kw">on</span> create(data: Map&lt;String, String&gt;) {
-        <span class="kw">let</span> id = <span class="fn">next_id</span>()
-        items.<span class="fn">set</span>(<span class="fn">to_string</span>(id), <span class="fn">to_json</span>(data))
-        <span class="kw">return</span> data |> <span class="fn">with</span>(<span class="str">"id"</span>, id)
-    }
-
-    <span class="kw">on</span> get(id: String) {
-        <span class="kw">let</span> raw = items.<span class="fn">get</span>(id)
-        <span class="kw">if</span> raw == () { <span class="kw">return</span> <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>)) }
-        <span class="kw">return</span> <span class="fn">from_json</span>(raw)
-    }
-
-    <span class="kw">on</span> list() {
-        <span class="kw">let</span> items = <span class="fn">list</span>()
-        <span class="kw">for</span> key <span class="kw">in</span> items.<span class="fn">keys</span>() { items = <span class="fn">list</span>(items, <span class="fn">from_json</span>(items.<span class="fn">get</span>(key))) }
-        <span class="kw">return</span> items
-    }
-}
-
-<span class="cmt">// $ soma serve api.cell</span>
-<span class="cmt">// POST /create  →  create({"name":"Alice"})</span>
-<span class="cmt">// GET  /get/1   →  get("1")</span>
-<span class="cmt">// GET  /list    →  list()</span></code></pre>
-
-<h3>HTML + HTMX</h3>
-<pre><code><span class="kw">on</span> page() {
-    <span class="kw">return</span> <span class="fn">html</span>(<span class="str">"&lt;div hx-get='/items' hx-trigger='load'&gt;&lt;/div&gt;"</span>)
-}
-
-<span class="kw">on</span> items() {
-    <span class="kw">let</span> rows = <span class="str">""</span>
-    <span class="kw">for</span> item <span class="kw">in</span> data.<span class="fn">keys</span>() {
-        <span class="kw">let</span> name = data.<span class="fn">get</span>(item)
-        rows += <span class="str">"&lt;li&gt;{name}&lt;/li&gt;"</span>
-    }
-    <span class="kw">return</span> <span class="fn">html</span>(<span class="str">"&lt;ul&gt;{rows}&lt;/ul&gt;"</span>)
-}</code></pre>
-
-<h3>Response control</h3>
-<pre><code><span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))    <span class="cmt">// status code</span>
-<span class="fn">html</span>(<span class="str">"&lt;h1&gt;Hello&lt;/h1&gt;"</span>)                          <span class="cmt">// text/html</span>
-<span class="fn">redirect</span>(<span class="str">"/"</span>)                                    <span class="cmt">// 302 redirect</span></code></pre>
-
-<h3>Serve options</h3>
-<pre><code>soma serve app.cell                <span class="cmt"># HTTP server on :8080</span>
-soma serve app.cell -p <span class="num">3000</span>       <span class="cmt"># custom port</span>
-soma serve app.cell --watch        <span class="cmt"># hot reload on file change</span></code></pre>
-</section>
-
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<section id="reference">
-<h2>CLI reference</h2>
-<table>
-<tr><td>soma run file.cell [args]</td><td>Execute a signal handler</td></tr>
-<tr><td>soma run file.cell --jit</td><td>Execute with bytecode VM (2.7x faster)</td></tr>
-<tr><td>soma serve file.cell</td><td>HTTP server</td></tr>
-<tr><td>soma serve file.cell --watch</td><td>Hot reload</td></tr>
-<tr><td>soma check file.cell</td><td>Verify contracts, properties, signals</td></tr>
-<tr><td>soma test file.cell</td><td>Run test cells</td></tr>
-<tr><td>soma build file.cell</td><td>Generate Rust code</td></tr>
-<tr><td>soma init [name]</td><td>Create project + isolated env</td></tr>
-<tr><td>soma add pkg --git url</td><td>Add dependency</td></tr>
-<tr><td>soma install</td><td>Install dependencies</td></tr>
-<tr><td>soma env</td><td>Show environment</td></tr>
-<tr><td>soma props</td><td>List all properties + backends + builtins</td></tr>
-<tr><td>soma add-provider &lt;name&gt;</td><td>Scaffold a storage provider</td></tr>
-<tr><td>soma test-provider &lt;name&gt;</td><td>Run provider conformance tests</td></tr>
-<tr><td>soma migrate --from a --to b</td><td>Migrate data between providers</td></tr>
-<tr><td>soma repl</td><td>Interactive expression evaluator</td></tr>
-</table>
-
-<h2>All builtins</h2>
-<table>
-<tr><td>print(args...)</td><td>Output to stdout</td></tr>
-<tr><td>to_string(v) / to_int(v) / to_float(v)</td><td>Type conversion</td></tr>
-<tr><td>concat(a, b)</td><td>String concatenation</td></tr>
-<tr><td>len(s) / split(s, d) / replace(s, a, b)</td><td>String operations</td></tr>
-<tr><td>contains(s, sub) / starts_with(s, p)</td><td>String search</td></tr>
-<tr><td>lowercase(s) / uppercase(s) / trim(s)</td><td>String transform</td></tr>
-<tr><td>index_of(s, sub) / substring(s, start, end)</td><td>String indexing</td></tr>
-<tr><td>to_json(v) / from_json(s)</td><td>JSON serialization</td></tr>
-<tr><td>list(items...) / map(k, v, ...)</td><td>Collection constructors</td></tr>
-<tr><td>next_id()</td><td>Auto-increment counter</td></tr>
-<tr><td>type_of(v)</td><td>Type introspection</td></tr>
-<tr><td>abs(n)</td><td>Absolute value</td></tr>
-<tr><td>response(status, body) / html(body) / redirect(url)</td><td>HTTP responses</td></tr>
-<tr><td>render(template, k, v, ...)</td><td>Template rendering</td></tr>
-<tr><td>transition(id, state) / get_status(id)</td><td>State machine</td></tr>
-<tr><td>is_type(val, "TypeName")</td><td>Record type check</td></tr>
-<tr><td>load_template(path, k1, v1, ...)</td><td>Load HTML file with variable substitution</td></tr>
-<tr><td>try { expr }</td><td>Catch errors as values (.value / .error)</td></tr>
-<tr><td>with(map, k, v) / without(map, k) / merge(m1, m2)</td><td>Map operations</td></tr>
-<tr><td>filter_by / sort_by / top / join / agg / ...</td><td>Pipeline ops (see above)</td></tr>
-</table>
-
-<h2>Meta-cells (self-growing)</h2>
-<pre><code><span class="cmt">// Define a custom property</span>
 <span class="kw">cell</span> <span class="kw">property</span> geo_replicated {
-    <span class="kw">face</span> { <span class="kw">promise</span> <span class="str">"data replicated across regions"</span> }
     <span class="kw">rules</span> {
         <span class="fn">implies</span> [persistent, consistent]
         <span class="fn">contradicts</span> [ephemeral, local]
     }
 }
 
-<span class="cmt">// Define a custom checker</span>
-<span class="kw">cell</span> <span class="kw">checker</span> auth_required {
-    <span class="kw">face</span> { <span class="kw">promise</span> <span class="str">"every cell with signals must have auth"</span> }
-    <span class="kw">rules</span> { <span class="kw">check</span> { <span class="kw">require</span> has_auth <span class="kw">else</span> MissingAuth } }
-}
-
-<span class="cmt">// Define a custom backend</span>
 <span class="kw">cell</span> <span class="kw">backend</span> redis {
     <span class="kw">rules</span> {
         <span class="fn">matches</span> [ephemeral, ttl]
         <span class="fn">native</span> <span class="str">"redis"</span>
     }
-}</code></pre>
+}
+
+<span class="cmt">// Add geo_replicated to your memory &mdash; the compiler now checks it.</span>
+<span class="cmt">// Add a redis backend &mdash; the runtime now resolves to it.</span>
+<span class="cmt">// No compiler changes needed. The language grew.</span></code></pre>
 </section>
 
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<section>
-<!-- ═══════════════════════════════════════════════════════════════════ -->
-<section id="providers">
-<h2>Storage providers</h2>
+<!-- ═══════════════════════════════════ PIPELINES ═══════════════════════════════════ -->
+<section id="pipeline">
+<h2>Data pipelines</h2>
 
-<p>Write once, deploy anywhere. Same Soma code on SQLite, DynamoDB, Firestore, D1. The developer writes properties. The provider resolves them to services.</p>
+<p>Soma replaces Pandas for in-memory analytics. Same operations, fraction of the code. Every pipeline is composable via <code>|></code>.</p>
 
-<pre><code><span class="cmt">// Your code — doesn't change between providers</span>
-<span class="kw">memory</span> {
-    users:    Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>]
-    cache:    Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">local</span>]
-    secrets:  Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">encrypted</span>]
-    sessions: Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">ttl</span>(<span class="num">30</span>min)]
-}</code></pre>
-
-<h3>Configure in soma.toml</h3>
-<pre><code><span class="cmt"># Default — zero config, uses SQLite</span>
-[storage]
-provider = <span class="str">"local"</span>
-
-<span class="cmt"># AWS — resolves to DynamoDB + ElastiCache</span>
-[storage]
-provider = <span class="str">"aws"</span>
-[storage.config]
-region = <span class="str">"eu-west-1"</span>
-
-<span class="cmt"># Cloudflare — resolves to D1 + KV</span>
-[storage]
-provider = <span class="str">"cloudflare"</span></code></pre>
-
-<h3>Resolution</h3>
+<h3>Pipeline operators</h3>
 <table>
-<tr><th>Properties</th><th>local</th><th>AWS</th><th>GCP</th><th>Cloudflare</th></tr>
-<tr><td>[persistent, consistent]</td><td>SQLite</td><td>DynamoDB</td><td>Firestore</td><td>D1</td></tr>
-<tr><td>[ephemeral]</td><td>Memory</td><td>ElastiCache</td><td>Memorystore</td><td>Workers KV</td></tr>
-<tr><td>[persistent, encrypted]</td><td>SQLite</td><td>DynamoDB+KMS</td><td>Firestore+CMEK</td><td>D1</td></tr>
-<tr><td>[persistent, immutable]</td><td>SQLite</td><td>S3+ObjectLock</td><td>GCS+Retention</td><td>R2</td></tr>
-<tr><td>[ephemeral, ttl(30min)]</td><td>Memory</td><td>ElastiCache+TTL</td><td>Memorystore+TTL</td><td>KV+TTL</td></tr>
+<tr><th>Operation</th><th>Syntax</th></tr>
+<tr><td>map(list, lambda)</td><td><code>data |> map(s => s.name)</code></td></tr>
+<tr><td>filter(list, lambda)</td><td><code>data |> filter(s => s.score > 50)</code></td></tr>
+<tr><td>find(list, lambda)</td><td><code>data |> find(s => s.id == target)</code></td></tr>
+<tr><td>any / all / count</td><td><code>data |> any(s => s.active)</code></td></tr>
+<tr><td>filter_by(field, op, val)</td><td><code>data |> filter_by("price", ">", 100)</code></td></tr>
+<tr><td>sort_by(field, dir)</td><td><code>data |> sort_by("score", "desc")</code></td></tr>
+<tr><td>top(n) / bottom(n)</td><td><code>data |> top(10)</code></td></tr>
+<tr><td>agg(group, "col:func"...)</td><td><code>data |> agg("sector", "vol:sum", "price:avg")</code></td></tr>
+<tr><td>group_by(field)</td><td><code>data |> group_by("region")</code></td></tr>
+<tr><td>join(left, right, key)</td><td><code>orders |> join(prices, "ticker")</code></td></tr>
+<tr><td>with(key, val)</td><td><code>record |> with("score", 95)</code></td></tr>
+<tr><td>describe(field)</td><td><code>data |> describe("price") &rarr; {sum, avg, min, max, count}</code></td></tr>
+<tr><td>flatten / zip / reverse</td><td><code>nested |> flatten()</code></td></tr>
 </table>
 
-<h3>Provider manifest (soma-provider.toml)</h3>
-<pre><code>[provider]
-name = <span class="str">"aws"</span>
-
-[[backend]]
-name = <span class="str">"dynamodb"</span>
-requires = [<span class="str">"persistent"</span>, <span class="str">"consistent"</span>]
-optional = [<span class="str">"encrypted"</span>, <span class="str">"ttl"</span>]
-native = <span class="str">"http://dynamo-sidecar:8000"</span>  <span class="cmt">// or native Rust impl</span>
-
-[[backend]]
-name = <span class="str">"elasticache"</span>
-requires = [<span class="str">"ephemeral"</span>]
-optional = [<span class="str">"ttl"</span>, <span class="str">"local"</span>]
-native = <span class="str">"http://redis-sidecar:6380"</span></code></pre>
-
-<h3>HTTP provider protocol</h3>
-<p>Any language can be a provider. Just expose 5 HTTP endpoints:</p>
-<pre><code><span class="cmt">// Provider sidecar — implement in any language</span>
-POST /get     { <span class="str">"table"</span>: <span class="str">"T_data"</span>, <span class="str">"key"</span>: <span class="str">"k"</span> }     → { <span class="str">"value"</span>: <span class="str">"v"</span> }
-POST /set     { <span class="str">"table"</span>: <span class="str">"T_data"</span>, <span class="str">"key"</span>: <span class="str">"k"</span>, <span class="str">"value"</span>: <span class="str">"v"</span> } → { <span class="str">"ok"</span>: <span class="kw">true</span> }
-POST /delete  { <span class="str">"table"</span>: <span class="str">"T_data"</span>, <span class="str">"key"</span>: <span class="str">"k"</span> }     → { <span class="str">"ok"</span>: <span class="kw">true</span> }
-POST /keys    { <span class="str">"table"</span>: <span class="str">"T_data"</span> }                  → { <span class="str">"keys"</span>: [<span class="str">"a"</span>, <span class="str">"b"</span>] }
-POST /len     { <span class="str">"table"</span>: <span class="str">"T_data"</span> }                  → { <span class="str">"len"</span>: <span class="num">42</span> }</code></pre>
-
-<h3>Commands</h3>
-<pre><code>soma add-provider aws           <span class="cmt"># scaffold provider manifest</span>
-soma test-provider aws          <span class="cmt"># run 5 conformance tests</span>
-soma test-provider local        <span class="cmt"># test built-in (5/5 pass)</span>
-soma migrate --from local --to aws  <span class="cmt"># migrate data</span></code></pre>
+<h3>Real example: portfolio construction</h3>
+<pre><code><span class="kw">let</span> portfolio = universe()
+    |&gt; <span class="fn">filter</span>(s =&gt; s.market_cap &gt; <span class="num">1e9</span>)
+    |&gt; <span class="fn">map</span>(s =&gt; score(s))
+    |&gt; <span class="fn">sort_by</span>(<span class="str">"composite"</span>, <span class="str">"desc"</span>)
+    |&gt; <span class="fn">top</span>(<span class="num">15</span>)
+    |&gt; <span class="fn">map</span>(s =&gt; {
+        <span class="kw">let</span> weight = <span class="fn">clamp</span>(s.composite * exposure / total, <span class="num">0</span>, <span class="num">15</span>)
+        s |&gt; <span class="fn">with</span>(<span class="str">"weight"</span>, weight)
+    })</code></pre>
 </section>
 
+<!-- ═══════════════════════════════════ WEB ═══════════════════════════════════ -->
+<section id="web">
+<h2>Web applications</h2>
+
+<p><code>soma serve app.cell</code> &mdash; threaded HTTP server, SQLite, CORS, auto-routing, HTML templates. Zero framework.</p>
+
+<pre><code><span class="kw">cell</span> App {
+    <span class="kw">memory</span> { tasks: Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>] }
+
+    <span class="kw">on</span> request(method: String, path: String, body: String) {
+        <span class="kw">match</span> path {
+            <span class="str">"/"</span>     &rarr; <span class="fn">html</span>(dashboard())
+            <span class="str">"/api"</span>  &rarr; tasks.<span class="fn">values</span>() |&gt; <span class="fn">map</span>(s =&gt; <span class="fn">from_json</span>(s))
+            _       &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+        }
+    }
+
+    <span class="kw">on</span> dashboard() {
+        <span class="kw">let</span> rows = tasks.<span class="fn">values</span>()
+            |&gt; <span class="fn">map</span>(s =&gt; <span class="fn">from_json</span>(s))
+            |&gt; <span class="fn">map</span>(t =&gt; <span class="str">"""&lt;tr&gt;&lt;td&gt;{t.name}&lt;/td&gt;&lt;td&gt;{t.status}&lt;/td&gt;&lt;/tr&gt;"""</span>)
+            |&gt; <span class="fn">join</span>(<span class="str">""</span>)
+        <span class="kw">return</span> <span class="str">"""
+        &lt;html&gt;
+            &lt;body&gt;
+                &lt;h1&gt;Tasks&lt;/h1&gt;
+                &lt;table&gt;{rows}&lt;/table&gt;
+            &lt;/body&gt;
+        &lt;/html&gt;
+        """</span>
+    }
+}
+
+<span class="cmt">// $ soma serve app.cell</span>
+<span class="cmt">// listening on http://localhost:8080</span></code></pre>
+</section>
+
+<!-- ═══════════════════════════════════ EXAMPLES ═══════════════════════════════════ -->
 <section>
+<h2>Built with Soma</h2>
+
+<div class="grid3">
+<div class="card">
+<h4>Trading Desk</h4>
+<p>20-stock universe, screener, ranker, state machine orders, real-time dashboard. 413 lines.</p>
+</div>
+<div class="card">
+<h4>Quant Fund</h4>
+<p>Multi-regime adaptive momentum. Factor scoring, regime state machine, auto-rebalancing. 300 lines.</p>
+</div>
+<div class="card">
+<h4>Semaphore Agent</h4>
+<p>2-intersection traffic controller. State machines, night mode, emergency, live dashboard. 4 files.</p>
+</div>
+<div class="card">
+<h4>Car Rental</h4>
+<p>Multi-file booking system. Vehicle inventory, reservations, HTML pages. 5 files.</p>
+</div>
+<div class="card">
+<h4>Portfolio Allocator</h4>
+<p>Full pipeline: universe &rarr; screen &rarr; rank &rarr; optimize. Factor investing in pure Soma. 4 files.</p>
+</div>
+<div class="card">
+<h4>100 Examples</h4>
+<p>From hello world to HTMX apps. Every example parses, checks, and runs. Trains models.</p>
+</div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════ REFERENCE ═══════════════════════════════════ -->
+<section id="reference">
+<h2>CLI reference</h2>
+<table>
+<tr><td>soma run file.cell [args]</td><td>Execute a signal</td></tr>
+<tr><td>soma run file.cell --jit</td><td>Bytecode VM (faster)</td></tr>
+<tr><td>soma serve file.cell</td><td>HTTP server on :8080</td></tr>
+<tr><td>soma serve file.cell --watch</td><td>Hot reload</td></tr>
+<tr><td>soma check file.cell</td><td>Verify contracts &amp; properties</td></tr>
+<tr><td>soma test file.cell</td><td>Run test cells</td></tr>
+<tr><td>soma init [name]</td><td>Create project</td></tr>
+<tr><td>soma add pkg --git url</td><td>Add dependency</td></tr>
+<tr><td>soma install</td><td>Install deps</td></tr>
+<tr><td>soma props</td><td>List properties + backends</td></tr>
+<tr><td>soma repl</td><td>Interactive evaluator</td></tr>
+</table>
+
 <h2>Architecture</h2>
 <pre><code>Source (.cell)
-    │
-    ├──→ Lexer → Parser → AST
-    │         │
-    │         ├──→ Checker (properties, signals, promises)
-    │         │
-    │         ├──→ Tree-walking Interpreter (soma run)
-    │         │
-    │         ├──→ Bytecode Compiler → VM (soma run --jit, 2.7x faster)
-    │         │
-    │         └──→ Rust Codegen (soma build)
-    │
-    ├──→ Registry (loads stdlib/*.cell — properties, backends, builtins)
-    │
-    └──→ Runtime
-           ├── SQLite backend ([persistent])
-           ├── Memory backend ([ephemeral])
-           ├── HTTP server (soma serve)
-           └── Bytecode cache (.soma_cache/)</code></pre>
+    &rarr; Lexer &rarr; Parser &rarr; AST
+        &rarr; Checker (properties, signals, promises)
+        &rarr; Interpreter (soma run)
+        &rarr; Bytecode VM (soma run --jit)
+    &rarr; Registry (stdlib/*.cell &mdash; properties, backends, builtins)
+    &rarr; Runtime (SQLite | Memory | HTTP Provider)</code></pre>
 </section>
 
 </div>
 
 <footer>
-Soma is open source. Built by humans and agents together.<br>
-<a href="https://github.com/soma-dev-lang/soma">GitHub</a> · MIT License
+Soma is open source. The specification is the program.<br>
+<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v0.25.0
 </footer>
 
 </body>
