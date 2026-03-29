@@ -113,6 +113,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 ("Location".to_string(), Value::String(url)),
             ])))
         }
+        "sse" => {
+            // sse("stream1", "stream2", ...) — returns a marker value
+            // The server detects _sse and opens a persistent SSE connection
+            let streams: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            Some(Ok(Value::Map(vec![
+                ("_sse".to_string(), Value::Bool(true)),
+                ("_streams".to_string(), Value::List(
+                    streams.iter().map(|s| Value::String(s.clone())).collect()
+                )),
+            ])))
+        }
         _ => None,
     }
 }

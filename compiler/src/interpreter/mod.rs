@@ -197,6 +197,20 @@ struct ReturnSignal(Value);
 type HandlerKey = (String, String);
 type HandlerValue = (Vec<Param>, Vec<Spanned<Statement>>);
 
+/// A broadcast event emitted by `emit` — sent to all SSE clients and connected cells
+#[derive(Debug, Clone)]
+pub struct BusEvent {
+    pub stream: String,
+    pub data: Value,
+}
+
+/// Shared broadcast bus for real-time event distribution
+pub type EventBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::Sender<BusEvent>>>>;
+
+pub fn new_event_bus() -> EventBus {
+    Arc::new(std::sync::Mutex::new(Vec::new()))
+}
+
 pub struct Interpreter {
     /// All cells in the program, by name
     cells: HashMap<String, CellDef>,
@@ -211,6 +225,8 @@ pub struct Interpreter {
     pub(crate) storage: HashMap<String, Arc<dyn StorageBackend>>,
     /// State machines: (cell_name, machine_name) → definition
     pub(crate) state_machines: HashMap<(String, String), StateMachineSection>,
+    /// Broadcast bus for SSE/real-time events
+    pub event_bus: Option<EventBus>,
     /// Source file path for error reporting
     pub source_file: Option<String>,
     /// Source text for line:col conversion
@@ -248,6 +264,7 @@ impl Interpreter {
             emitted_signals: Vec::new(),
             storage: HashMap::new(),
             state_machines,
+            event_bus: None,
             source_file: None,
             source_text: None,
             last_span: None,
@@ -578,7 +595,24 @@ impl Interpreter {
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
-                self.emitted_signals.push((sig.clone(), arg_vals));
+                self.emitted_signals.push((sig.clone(), arg_vals.clone()));
+                // Broadcast to event bus (SSE clients)
+                if let Some(ref bus) = self.event_bus {
+                    let event = BusEvent {
+                        stream: sig.clone(),
+                        data: if arg_vals.len() == 1 {
+                            arg_vals[0].clone()
+                        } else {
+                            Value::List(arg_vals)
+                        },
+                    };
+                    if let Ok(senders) = bus.lock() {
+                        // Remove dead senders
+                        for sender in senders.iter() {
+                            let _ = sender.send(event.clone());
+                        }
+                    }
+                }
                 Ok(Value::Unit)
             }
 

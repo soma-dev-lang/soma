@@ -124,6 +124,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
     );
 
+    // Create shared event bus for SSE
+    let event_bus = interpreter::new_event_bus();
+
     // Spawn scheduler threads for `every` sections
     for cell_spanned in &program.cells {
         if cell_spanned.node.kind != ast::CellKind::Cell { continue; }
@@ -134,6 +137,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let prog = program.clone();
                 let slots = storage_slots.clone();
                 let cname = cell_name.clone();
+                let bus = event_bus.clone();
                 eprintln!("scheduler: every {}ms", interval);
 
                 std::thread::spawn(move || {
@@ -142,6 +146,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                         let mut interp = interpreter::Interpreter::new(&prog);
                         interp.set_storage_raw(&slots);
                         interp.ensure_state_machine_storage();
+                        interp.event_bus = Some(bus.clone());
                         let mut env = std::collections::HashMap::new();
                         let _ = interp.exec_every(&body, &mut env, &cname);
                     }
@@ -157,6 +162,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         let handler_params = handler_params.clone();
         let cell_name = cell_name.clone();
         let base_dir = base_dir.clone();
+        let event_bus = event_bus.clone();
 
         std::thread::spawn(move || {
         let method = request.method().to_string();
@@ -220,6 +226,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         let mut interp = interpreter::Interpreter::new(&program);
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
+        interp.event_bus = Some(event_bus.clone());
 
         let (signal_name, args) = if url.starts_with("/signal/") {
             let signal = url.trim_start_matches("/signal/");
@@ -342,6 +349,52 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
 
         match interp.call_signal(&cell_name, &signal_name, args) {
             Ok(val) => {
+                // Check for SSE response
+                let is_sse = if let interpreter::Value::Map(ref entries) = val {
+                    entries.iter().any(|(k, v)| k == "_sse" && matches!(v, interpreter::Value::Bool(true)))
+                } else {
+                    false
+                };
+
+                if is_sse {
+                    eprintln!("{} {} → SSE stream", method, url);
+
+                    let (tx, rx) = std::sync::mpsc::channel::<interpreter::BusEvent>();
+                    if let Ok(mut senders) = event_bus.lock() {
+                        senders.push(tx);
+                    }
+
+                    // Get raw TCP stream from tiny_http request
+                    let mut writer = request.into_writer();
+
+                    // Write HTTP headers directly
+                    use std::io::Write;
+                    let _ = write!(writer, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n");
+                    let _ = writer.flush();
+
+                    // Send initial event
+                    let _ = write!(writer, "event: connected\ndata: {{\"status\":\"connected\"}}\n\n");
+                    let _ = writer.flush();
+
+                    // Stream events until client disconnects
+                    loop {
+                        match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+                            Ok(event) => {
+                                let json = format!("{}", event.data);
+                                let msg = format!("event: {}\ndata: {}\n\n", event.stream, json);
+                                if write!(writer, "{}", msg).is_err() { break; }
+                                if writer.flush().is_err() { break; }
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                if write!(writer, ": keepalive\n\n").is_err() { break; }
+                                if writer.flush().is_err() { break; }
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                    return;
+                }
+
                 let is_response = if let interpreter::Value::Map(ref entries) = val {
                     entries.iter().any(|(k, _)| k == "_status")
                 } else {
