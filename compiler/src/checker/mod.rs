@@ -65,6 +65,22 @@ pub enum CheckError {
         span: Span,
     },
 
+    #[error("face contract: signal '{signal}' declared in cell '{cell}' has no handler")]
+    MissingHandler {
+        cell: String,
+        signal: String,
+        span: Span,
+    },
+
+    #[error("face contract: signal '{signal}' in cell '{cell}' declares {expected} params, handler has {actual}")]
+    ParamCountMismatch {
+        cell: String,
+        signal: String,
+        expected: usize,
+        actual: usize,
+        span: Span,
+    },
+
     #[error("checker '{checker}' failed: {reason}")]
     CustomCheckerFailed {
         checker: String,
@@ -103,6 +119,11 @@ pub enum CheckWarning {
         promise: String,
         span: Span,
     },
+    AwaitWithoutHandler {
+        cell: String,
+        signal: String,
+        span: Span,
+    },
 }
 
 impl std::fmt::Display for CheckWarning {
@@ -119,6 +140,9 @@ impl std::fmt::Display for CheckWarning {
             }
             Self::UnverifiablePromise { cell, promise, .. } => {
                 write!(f, "warning: promise on '{cell}' is descriptive only, not machine-verifiable: \"{promise}\"")
+            }
+            Self::AwaitWithoutHandler { cell, signal, .. } => {
+                write!(f, "warning: cell '{cell}' declares await '{signal}' but has no handler for it (will it be delivered via bus?)")
             }
         }
     }
@@ -184,11 +208,78 @@ impl<'a> Checker<'a> {
             }
         }
 
-        // 5. Verify structural promises
+        // 5. Verify face contracts: signals have handlers, param counts match
+        self.check_face_contracts(cell);
+
+        // 6. Verify structural promises
         self.check_promises(cell);
 
-        // 6. Run custom checkers from registry
+        // 7. Run custom checkers from registry
         self.run_custom_checkers(cell);
+    }
+
+    /// Verify face contracts: every declared signal has a handler with matching params
+    fn check_face_contracts(&mut self, cell: &CellDef) {
+        // Collect face signal declarations
+        let mut face_signals: Vec<(&SignalDecl, Span)> = Vec::new();
+        let mut face_awaits: Vec<(&AwaitDecl, Span)> = Vec::new();
+
+        for section in &cell.sections {
+            if let Section::Face(ref face) = section.node {
+                for decl in &face.declarations {
+                    match &decl.node {
+                        FaceDecl::Signal(sig) => face_signals.push((sig, decl.span)),
+                        FaceDecl::Await(aw) => face_awaits.push((aw, decl.span)),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Collect handlers
+        let handlers: Vec<(&OnSection, Span)> = cell.sections.iter()
+            .filter_map(|s| {
+                if let Section::OnSignal(ref on) = s.node { Some((on, s.span)) } else { None }
+            })
+            .collect();
+
+        // Check: every face signal has a handler
+        for (sig, span) in &face_signals {
+            let handler = handlers.iter().find(|(h, _)| h.signal_name == sig.name);
+            match handler {
+                None => {
+                    self.errors.push(CheckError::MissingHandler {
+                        cell: cell.name.clone(),
+                        signal: sig.name.clone(),
+                        span: *span,
+                    });
+                }
+                Some((h, _)) => {
+                    // Check param count matches
+                    if h.params.len() != sig.params.len() {
+                        self.errors.push(CheckError::ParamCountMismatch {
+                            cell: cell.name.clone(),
+                            signal: sig.name.clone(),
+                            expected: sig.params.len(),
+                            actual: h.params.len(),
+                            span: *span,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Check: every await has a handler (warning, not error — might come via bus)
+        for (aw, span) in &face_awaits {
+            let has_handler = handlers.iter().any(|(h, _)| h.signal_name == aw.name);
+            if !has_handler {
+                self.warnings.push(CheckWarning::AwaitWithoutHandler {
+                    cell: cell.name.clone(),
+                    signal: aw.name.clone(),
+                    span: *span,
+                });
+            }
+        }
     }
 
     /// Verify structural promises — promises that can be checked at compile time.
