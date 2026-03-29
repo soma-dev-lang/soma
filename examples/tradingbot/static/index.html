@@ -5,22 +5,17 @@
 <title>Soma Trading</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0b0e11;--surface:#141821;--border:#1e2530;--text:#a0a8b8;--bright:#eaecef;--dim:#4a5568;--gold:#f0b90b;--up:#0ecb81;--dn:#f6465d;--blue:#3b82f6;--mono:'SF Mono','Fira Code','Cascadia Code',monospace}
-body{background:var(--bg);color:var(--text);font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px;overflow-x:hidden}
+:root{--bg:#0b0e11;--surface:#141821;--border:#1e2530;--text:#8a92a0;--bright:#eaecef;--dim:#4a5568;--gold:#f0b90b;--up:#0ecb81;--dn:#f6465d;--mono:'SF Mono','Fira Code','Cascadia Code',monospace}
+body{background:var(--bg);color:var(--text);font-family:'Helvetica Neue',Arial,sans-serif;font-size:13px}
 
-/* Layout */
 .wrap{max-width:1400px;margin:0 auto;padding:10px 16px}
-.grid{display:grid;gap:8px}
-.g-2{grid-template-columns:1fr 1fr}
-.g-3{grid-template-columns:1fr 1fr 1fr}
-.g-full{grid-column:1/-1}
 
 /* Top bar */
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:10px}
 .brand{font-size:13px;font-weight:800;color:var(--gold);letter-spacing:3px}
 .status{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim)}
-.dot{width:5px;height:5px;border-radius:50%;background:var(--up);animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
+.dot{width:5px;height:5px;border-radius:50%;background:var(--up);animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
 
 /* KPI */
 .kpi-row{display:flex;gap:2px;margin-bottom:10px}
@@ -28,41 +23,40 @@ body{background:var(--bg);color:var(--text);font-family:'Helvetica Neue',Arial,s
 .kpi:first-child{border-radius:4px 0 0 4px}
 .kpi:last-child{border-radius:0 4px 4px 0}
 .kpi-label{font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--dim);margin-bottom:2px}
-.kpi-val{font-size:18px;font-weight:700;font-family:var(--mono);color:var(--bright)}
+.kpi-val{font-size:18px;font-weight:700;font-family:var(--mono);color:var(--bright);transition:color .3s}
 
 /* Panel */
-.panel{background:var(--surface);border-radius:4px;overflow:hidden}
-.panel-head{padding:8px 14px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:var(--dim);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
-.panel-head .count{color:var(--gold);font-family:var(--mono)}
+.panel{background:var(--surface);border-radius:4px;overflow:hidden;margin-bottom:8px}
+.panel-head{padding:8px 14px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:var(--dim);border-bottom:1px solid var(--border);display:flex;justify-content:space-between}
+.panel-head .ct{color:var(--gold);font-family:var(--mono)}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 
 /* Table */
 table{width:100%;border-collapse:collapse}
 th{text-align:left;padding:5px 14px;font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);font-weight:600}
 th.r{text-align:right}
-td{padding:6px 14px;font-size:12px;color:var(--bright);border-bottom:1px solid rgba(30,37,48,.5)}
-td.r{text-align:right;font-family:var(--mono)}
-td.sym{font-weight:700;color:var(--gold);font-family:var(--mono);font-size:11px;letter-spacing:.5px}
+td{padding:6px 14px;font-size:12px;color:var(--bright);border-bottom:1px solid rgba(30,37,48,.4);font-family:var(--mono);transition:color .3s,background .5s}
+td.r{text-align:right}
+td.sym{font-weight:700;color:var(--gold);font-size:11px;letter-spacing:.5px}
+td.lbl{font-family:'Helvetica Neue',Arial,sans-serif}
 tr:hover td{background:rgba(240,185,11,.03)}
 
-/* State transitions — the magic */
-.cell-val{transition:color .3s ease,background .3s ease;padding:2px 4px;border-radius:2px;display:inline-block}
-.flash-up{animation:flashUp .6s ease-out;color:var(--up) !important}
-.flash-dn{animation:flashDn .6s ease-out;color:var(--dn) !important}
-@keyframes flashUp{0%{background:rgba(14,203,129,.25)}100%{background:transparent}}
-@keyframes flashDn{0%{background:rgba(246,70,93,.25)}100%{background:transparent}}
+/* Flash: background pulse on change */
+td.tick-up{background:rgba(14,203,129,.18) !important;color:var(--up) !important}
+td.tick-dn{background:rgba(246,70,93,.18) !important;color:var(--dn) !important}
+.kpi-val.tick-up{background:rgba(14,203,129,.15);border-radius:4px}
+.kpi-val.tick-dn{background:rgba(246,70,93,.15);border-radius:4px}
 
-/* Badge */
+/* Steady colors */
+.up{color:var(--up)}.dn{color:var(--dn)}
+.buy{color:var(--up);font-weight:700;font-size:10px}.sell{color:var(--dn);font-weight:700;font-size:10px}
+
 .badge{display:inline-block;padding:1px 6px;border-radius:2px;font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
 .b-fill{background:rgba(14,203,129,.1);color:var(--up)}
 .b-rej{background:rgba(246,70,93,.1);color:var(--dn)}
 .b-pend{background:rgba(240,185,11,.1);color:var(--gold)}
-.b-new{animation:fadeIn .4s ease-out}
-@keyframes fadeIn{0%{opacity:0;transform:translateY(-4px)}100%{opacity:1;transform:translateY(0)}}
 
-/* Side */
-.buy{color:var(--up);font-weight:700;font-size:10px}.sell{color:var(--dn);font-weight:700;font-size:10px}
-.up{color:var(--up)}.dn{color:var(--dn)}
-
+.empty{text-align:center;padding:24px;color:var(--dim);font-family:'Helvetica Neue',sans-serif}
 .footer{text-align:center;padding:12px 0;color:#2a2f38;font-size:9px;letter-spacing:2px;text-transform:uppercase;margin-top:6px}
 </style>
 </head>
@@ -74,217 +68,190 @@ tr:hover td{background:rgba(240,185,11,.03)}
     </div>
 
     <div class="kpi-row">
-        <div class="kpi"><div class="kpi-label">Total P&L</div><div class="kpi-val" id="kpi-pnl">—</div></div>
-        <div class="kpi"><div class="kpi-label">Return</div><div class="kpi-val" id="kpi-ret">—</div></div>
-        <div class="kpi"><div class="kpi-label">Exposure</div><div class="kpi-val" id="kpi-exp">—</div></div>
-        <div class="kpi"><div class="kpi-label">Positions</div><div class="kpi-val" id="kpi-pos">—</div></div>
-        <div class="kpi"><div class="kpi-label">Orders</div><div class="kpi-val" id="kpi-ord">—</div></div>
+        <div class="kpi"><div class="kpi-label">Total P&L</div><div class="kpi-val" id="k-pnl">—</div></div>
+        <div class="kpi"><div class="kpi-label">Return</div><div class="kpi-val" id="k-ret">—</div></div>
+        <div class="kpi"><div class="kpi-label">Exposure</div><div class="kpi-val" id="k-exp">—</div></div>
+        <div class="kpi"><div class="kpi-label">Positions</div><div class="kpi-val" id="k-pos">—</div></div>
+        <div class="kpi"><div class="kpi-label">Orders</div><div class="kpi-val" id="k-ord">—</div></div>
     </div>
 
-    <div class="grid g-full" style="margin-bottom:8px">
-        <div class="panel">
-            <div class="panel-head">Portfolio <span class="count" id="port-count"></span></div>
-            <table>
-                <thead><tr><th>Instrument</th><th class="r">Pos</th><th class="r">Entry</th><th class="r">Last</th><th class="r">Mkt Val</th><th class="r">P&L</th><th class="r">Ret</th></tr></thead>
-                <tbody id="portfolio"></tbody>
-            </table>
-        </div>
+    <div class="panel">
+        <div class="panel-head">Portfolio <span class="ct" id="pc"></span></div>
+        <table><thead><tr><th>Instrument</th><th class="r">Pos</th><th class="r">Entry</th><th class="r">Last</th><th class="r">Mkt Val</th><th class="r">P&L</th><th class="r">Ret</th></tr></thead>
+        <tbody id="port"></tbody></table>
     </div>
 
-    <div class="grid g-2">
-        <div class="panel">
-            <div class="panel-head">Market Data</div>
-            <table>
-                <thead><tr><th>Instrument</th><th class="r">Bid</th><th class="r">Ask</th><th class="r">Last</th><th class="r">Chg</th></tr></thead>
-                <tbody id="prices"></tbody>
-            </table>
-        </div>
-        <div class="panel">
-            <div class="panel-head">Order Blotter <span class="count" id="order-count"></span></div>
-            <table>
-                <thead><tr><th>Instrument</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th></tr></thead>
-                <tbody id="orders"></tbody>
-            </table>
-        </div>
+    <div class="g2">
+    <div class="panel">
+        <div class="panel-head">Market Data</div>
+        <table><thead><tr><th>Instrument</th><th class="r">Bid</th><th class="r">Ask</th><th class="r">Last</th><th class="r">Chg</th></tr></thead>
+        <tbody id="mkt"></tbody></table>
+    </div>
+    <div class="panel">
+        <div class="panel-head">Order Blotter <span class="ct" id="oc"></span></div>
+        <table><thead><tr><th>Instrument</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th></tr></thead>
+        <tbody id="ord"></tbody></table>
+    </div>
     </div>
 
-    <div class="footer">Soma Trading System &middot; Cells are components &middot; State machines are verified</div>
+    <div class="footer">Soma Trading System &middot; Verified State Machines &middot; Live</div>
 </div>
 
 <script>
-// Previous values for diff/flash
-let prev = { prices: {}, positions: {}, pnl: null };
+const $ = id => document.getElementById(id);
+const fmt = n => Number(n).toLocaleString('en-US', {maximumFractionDigits:2});
+let prev = {};
 
-function flash(el, direction) {
-    el.classList.remove('flash-up', 'flash-dn');
-    void el.offsetWidth; // reflow
-    el.classList.add(direction === 'up' ? 'flash-up' : 'flash-dn');
+// Tick: flash a cell briefly, then fade out
+function tick(el, dir) {
+    const cls = dir === 'up' ? 'tick-up' : 'tick-dn';
+    el.classList.add(cls);
+    setTimeout(() => el.classList.remove(cls), 600);
 }
 
-function cv(val, cls) {
-    return `<span class="cell-val ${cls || ''}">${val}</span>`;
+// Update a single cell: set text, flash if changed
+function setCell(id, val, signed) {
+    let el = document.getElementById(id);
+    if (!el) return;
+    const old = prev[id];
+    const numVal = parseFloat(String(val).replace(/[+,]/g, ''));
+    const numOld = old !== undefined ? parseFloat(String(old).replace(/[+,]/g, '')) : undefined;
+
+    let text = val;
+    if (signed && numVal >= 0) text = '+' + val;
+
+    el.textContent = text;
+
+    // Color: steady up/dn class
+    if (signed || id.startsWith('p-pnl') || id.startsWith('p-ret') || id.startsWith('m-chg')) {
+        el.classList.remove('up', 'dn');
+        el.classList.add(numVal >= 0 ? 'up' : 'dn');
+    }
+
+    // Flash on change
+    if (numOld !== undefined && numOld !== numVal && !isNaN(numVal) && !isNaN(numOld)) {
+        tick(el, numVal > numOld ? 'up' : 'dn');
+    }
+    prev[id] = val;
 }
 
-function fmt(n) {
-    return Number(n).toLocaleString('en-US', {maximumFractionDigits: 2});
+// Ensure a row exists in tbody, return it
+function ensureRow(tbody, key, ncols) {
+    let row = document.getElementById(key);
+    if (!row) {
+        row = document.createElement('tr');
+        row.id = key;
+        for (let i = 0; i < ncols; i++) {
+            const td = document.createElement('td');
+            td.id = key + '-' + i;
+            row.appendChild(td);
+        }
+        tbody.appendChild(row);
+    }
+    return row;
 }
 
 async function update() {
     try {
-        const [pricesRes, posRes, ordersRes, fillsRes] = await Promise.all([
-            fetch('/api/prices').then(r => r.json()),
-            fetch('/api/positions').then(r => r.json()),
-            fetch('/api/orders').then(r => r.json()),
-            fetch('/api/fills').then(r => r.json()),
+        const [prices, positions, orders, fills] = await Promise.all([
+            fetch('/api/prices').then(r=>r.json()),
+            fetch('/api/positions').then(r=>r.json()),
+            fetch('/api/orders').then(r=>r.json()),
+            fetch('/api/fills').then(r=>r.json()),
         ]);
 
         // ── Market Data ──
-        const pricesTbody = document.getElementById('prices');
-        let priceHtml = '';
-        const sortedPrices = pricesRes.filter(p => p.symbol).sort((a,b) => (a.symbol||'').localeCompare(b.symbol||''));
-        for (const p of sortedPrices) {
-            const ret = parseFloat(p['return'] || '0');
-            const cls = ret >= 0 ? 'up' : 'dn';
-            const prevMid = prev.prices[p.symbol];
-            const midCls = prevMid !== undefined ? (parseFloat(p.mid) > prevMid ? 'up' : parseFloat(p.mid) < prevMid ? 'dn' : '') : '';
-            prev.prices[p.symbol] = parseFloat(p.mid);
-
-            priceHtml += `<tr>
-                <td class="sym">${p.symbol}</td>
-                <td class="r">${p.bid}</td>
-                <td class="r">${p.ask}</td>
-                <td class="r" data-key="price-${p.symbol}">${p.mid}</td>
-                <td class="r ${cls}">${ret >= 0 ? '+' : ''}${ret}%</td>
-            </tr>`;
-        }
-        pricesTbody.innerHTML = priceHtml;
-
-        // Flash price cells that changed
-        for (const p of sortedPrices) {
-            const el = document.querySelector(`[data-key="price-${p.symbol}"]`);
-            if (el) {
-                const prevMid = prev.prices[p.symbol];
-                const curMid = parseFloat(p.mid);
-                if (prevMid !== undefined && prevMid !== curMid) {
-                    flash(el, curMid > prevMid ? 'up' : 'dn');
-                }
-            }
+        const mkt = $('mkt');
+        const syms = prices.filter(p=>p.symbol).sort((a,b)=>(a.symbol||'').localeCompare(b.symbol));
+        for (const p of syms) {
+            const s = p.symbol;
+            ensureRow(mkt, 'm-'+s, 5);
+            const r = document.getElementById('m-'+s);
+            r.children[0].className = 'sym'; r.children[0].textContent = s;
+            r.children[1].className = 'r'; setCell('m-'+s+'-1', p.bid);
+            r.children[2].className = 'r'; setCell('m-'+s+'-2', p.ask);
+            r.children[3].className = 'r'; setCell('m-'+s+'-3', p.mid);
+            const ret = parseFloat(p['return']||'0');
+            r.children[4].className = 'r'; r.children[4].id = 'm-chg-'+s;
+            setCell('m-chg-'+s, ret.toFixed(2)+'%', true);
         }
 
-        // ── Positions + P&L ──
-        const positions = posRes.filter(p => p.symbol);
-        const fills = fillsRes.filter(f => f.id);
-        let totalPnl = 0, totalNotional = 0;
-        let portHtml = '';
+        // ── Portfolio ──
+        const port = $('port');
+        let totalPnl = 0, totalExp = 0, posCount = 0;
+        const posArr = positions.filter(p=>p.symbol).sort((a,b)=>(a.symbol||'').localeCompare(b.symbol));
 
-        for (const pos of positions.sort((a,b) => (a.symbol||'').localeCompare(b.symbol||''))) {
-            const qty = parseInt(pos.qty || '0');
+        for (const pos of posArr) {
+            const s = pos.symbol, qty = parseInt(pos.qty||'0');
             if (qty === 0) continue;
-            const price = sortedPrices.find(p => p.symbol === pos.symbol);
+            posCount++;
+            const price = syms.find(p=>p.symbol===s);
             const mid = price ? parseFloat(price.mid) : 0;
 
-            // Avg fill price
-            const symFills = fills.filter(f => f.symbol === pos.symbol);
-            let totalCost = 0, totalQty = 0;
-            for (const f of symFills) {
-                const fq = parseInt(f.qty || '0'), fp = parseFloat(f.price || '0');
-                if (f.side === 'buy') { totalCost += fq * fp; totalQty += fq; }
-                else { totalCost -= fq * fp; totalQty -= fq; }
+            const sf = fills.filter(f=>f.symbol===s);
+            let tc=0, tq=0;
+            for (const f of sf) {
+                const fq=parseInt(f.qty||'0'), fp=parseFloat(f.price||'0');
+                if (f.side==='buy'){tc+=fq*fp;tq+=fq}else{tc-=fq*fp;tq-=fq}
             }
-            const avg = totalQty > 0 ? totalCost / totalQty : 0;
-            const mktVal = qty * mid;
-            const costBasis = qty * avg;
-            const pnl = mktVal - costBasis;
-            const ret = costBasis > 0 ? (pnl / costBasis * 100) : 0;
-            totalPnl += pnl;
-            totalNotional += Math.abs(mktVal);
+            const avg = tq>0?tc/tq:0;
+            const mv = qty*mid, cb = qty*avg, pnl = mv-cb;
+            const ret = cb>0?(pnl/cb*100):0;
+            totalPnl += pnl; totalExp += Math.abs(mv);
 
-            const cls = pnl >= 0 ? 'up' : 'dn';
-            const prevPnl = prev.positions[pos.symbol];
-            prev.positions[pos.symbol] = pnl;
-
-            portHtml += `<tr>
-                <td class="sym">${pos.symbol}</td>
-                <td class="r">${fmt(qty)}</td>
-                <td class="r">${avg.toFixed(2)}</td>
-                <td class="r" data-key="pos-mid-${pos.symbol}">${mid.toFixed(2)}</td>
-                <td class="r">${fmt(Math.round(mktVal))}</td>
-                <td class="r ${cls}" data-key="pos-pnl-${pos.symbol}">${pnl >= 0 ? '+' : ''}${fmt(Math.round(pnl))}</td>
-                <td class="r ${cls}">${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%</td>
-            </tr>`;
+            ensureRow(port, 'p-'+s, 7);
+            const row = document.getElementById('p-'+s);
+            row.children[0].className='sym'; row.children[0].textContent=s;
+            row.children[1].className='r'; row.children[1].textContent=fmt(qty);
+            row.children[2].className='r'; row.children[2].textContent=avg.toFixed(2);
+            row.children[3].className='r'; row.children[3].id='p-mid-'+s;
+            setCell('p-mid-'+s, mid.toFixed(2));
+            row.children[4].className='r'; row.children[4].textContent=fmt(Math.round(mv));
+            row.children[5].className='r'; row.children[5].id='p-pnl-'+s;
+            setCell('p-pnl-'+s, fmt(Math.round(pnl)), true);
+            row.children[6].className='r'; row.children[6].id='p-ret-'+s;
+            setCell('p-ret-'+s, ret.toFixed(2)+'%', true);
         }
-        if (!portHtml) portHtml = '<tr><td colspan="7" style="text-align:center;padding:20px;color:#4a5568">Waiting for first trade cycle...</td></tr>';
-        document.getElementById('portfolio').innerHTML = portHtml;
-        document.getElementById('port-count').textContent = positions.filter(p => parseInt(p.qty||'0') !== 0).length;
-
-        // Flash P&L cells
-        for (const pos of positions) {
-            const el = document.querySelector(`[data-key="pos-pnl-${pos.symbol}"]`);
-            const prevPnl = prev.positions[pos.symbol];
-            if (el && prevPnl !== undefined) {
-                const curPnl = parseFloat(el.textContent.replace(/[+,]/g, ''));
-                if (Math.round(prevPnl) !== Math.round(curPnl)) {
-                    flash(el, curPnl > prevPnl ? 'up' : 'dn');
-                }
-            }
+        if (posCount===0 && !port.querySelector('tr')) {
+            port.innerHTML='<tr><td colspan="7" class="empty">Waiting for first trade cycle...</td></tr>';
         }
+        $('pc').textContent = posCount;
 
         // ── KPIs ──
-        const pnlEl = document.getElementById('kpi-pnl');
-        const pnlCls = totalPnl >= 0 ? 'up' : 'dn';
-        pnlEl.className = `kpi-val ${pnlCls}`;
-        const newPnl = Math.round(totalPnl);
-        if (prev.pnl !== null && prev.pnl !== newPnl) flash(pnlEl, newPnl > prev.pnl ? 'up' : 'dn');
-        prev.pnl = newPnl;
-        pnlEl.textContent = `${totalPnl >= 0 ? '+' : ''}${fmt(newPnl)}`;
-
-        const retPct = totalNotional > 0 ? (totalPnl / totalNotional * 100) : 0;
-        const retEl = document.getElementById('kpi-ret');
-        retEl.className = `kpi-val ${pnlCls}`;
-        retEl.textContent = `${retPct >= 0 ? '+' : ''}${retPct.toFixed(2)}%`;
-
-        document.getElementById('kpi-exp').textContent = fmt(Math.round(totalNotional));
-        document.getElementById('kpi-pos').textContent = positions.filter(p => parseInt(p.qty||'0') !== 0).length;
+        const retPct = totalExp>0?(totalPnl/totalExp*100):0;
+        setCell('k-pnl', fmt(Math.round(totalPnl)), true);
+        setCell('k-ret', retPct.toFixed(2)+'%', true);
+        setCell('k-exp', fmt(Math.round(totalExp)));
+        $('k-pos').textContent = posCount;
+        $('k-ord').textContent = orders.filter(o=>o.id).length;
 
         // ── Orders ──
-        const orders = ordersRes.filter(o => o.id).slice(-20).reverse();
-        let ordHtml = '';
-        for (const o of orders) {
-            const sideCls = o.side === 'sell' ? 'sell' : 'buy';
-            let badgeCls = 'b-pend';
-            if (o.status === 'filled') badgeCls = 'b-fill';
-            if (o.status === 'rejected') badgeCls = 'b-rej';
-
-            ordHtml += `<tr>
-                <td class="sym">${o.symbol}</td>
-                <td class="${sideCls}">${(o.side||'').toUpperCase()}</td>
-                <td class="r">${o.qty}</td>
-                <td class="r">${parseFloat(o.price||'0').toFixed(2)}</td>
-                <td><span class="badge ${badgeCls}">${o.status}</span></td>
-            </tr>`;
+        const ord = $('ord');
+        const recent = orders.filter(o=>o.id).slice(-20).reverse();
+        // Rebuild orders (they change status)
+        ord.innerHTML = '';
+        for (const o of recent) {
+            const tr = document.createElement('tr');
+            const sideCls = o.side==='sell'?'sell':'buy';
+            let bc = 'b-pend';
+            if (o.status==='filled') bc='b-fill';
+            if (o.status==='rejected') bc='b-rej';
+            tr.innerHTML = `<td class="sym">${o.symbol}</td><td class="lbl ${sideCls}">${(o.side||'').toUpperCase()}</td><td class="r">${o.qty}</td><td class="r">${parseFloat(o.price||0).toFixed(2)}</td><td class="lbl"><span class="badge ${bc}">${o.status}</span></td>`;
+            ord.appendChild(tr);
         }
-        if (!ordHtml) ordHtml = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#4a5568">No orders</td></tr>';
-        document.getElementById('orders').innerHTML = ordHtml;
-        document.getElementById('order-count').textContent = orders.length;
-        document.getElementById('kpi-ord').textContent = ordersRes.filter(o => o.id).length;
+        if (!recent.length) ord.innerHTML='<tr><td colspan="5" class="empty">No orders</td></tr>';
+        $('oc').textContent = recent.length;
 
-    } catch (e) {
-        console.error('fetch error:', e);
-    }
+    } catch(e) { console.error(e); }
 }
 
-// Clock
-function updateClock() {
+setInterval(() => {
     const d = new Date();
-    document.getElementById('clock').textContent =
-        ` ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
-}
+    $('clock').textContent = ` ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+}, 1000);
 
-// Initial + interval
 update();
 setInterval(update, 2000);
-setInterval(updateClock, 1000);
-updateClock();
 </script>
 </body>
 </html>
