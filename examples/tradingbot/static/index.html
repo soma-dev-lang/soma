@@ -90,7 +90,7 @@ td.tick-dn{background:rgba(246,70,93,.18) !important;color:var(--dn) !important}
     </div>
     <div class="panel">
         <div class="panel-head">Order Blotter <span class="ct" id="oc"></span></div>
-        <table><thead><tr><th>Instrument</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th></tr></thead>
+        <table><thead><tr><th>Time</th><th>Instrument</th><th>Side</th><th class="r">Qty</th><th class="r">Price</th><th>Status</th></tr></thead>
         <tbody id="ord"></tbody></table>
     </div>
     </div>
@@ -237,10 +237,12 @@ async function update() {
             let bc = 'b-pend';
             if (o.status==='filled') bc='b-fill';
             if (o.status==='rejected') bc='b-rej';
-            tr.innerHTML = `<td class="sym">${o.symbol}</td><td class="lbl ${sideCls}">${(o.side||'').toUpperCase()}</td><td class="r">${o.qty}</td><td class="r">${parseFloat(o.price||0).toFixed(2)}</td><td class="lbl"><span class="badge ${bc}">${o.status}</span></td>`;
+            const ts = o.created_at || o.filled_at || '';
+            const time = ts ? new Date(parseInt(ts)*1000).toLocaleTimeString('en-GB') : '';
+            tr.innerHTML = `<td style="color:var(--dim);font-size:11px">${time}</td><td class="sym">${o.symbol}</td><td class="lbl ${sideCls}">${(o.side||'').toUpperCase()}</td><td class="r">${o.qty}</td><td class="r">${parseFloat(o.price||0).toFixed(2)}</td><td class="lbl"><span class="badge ${bc}">${o.status}</span></td>`;
             ord.appendChild(tr);
         }
-        if (!recent.length) ord.innerHTML='<tr><td colspan="5" class="empty">No orders</td></tr>';
+        if (!recent.length) ord.innerHTML='<tr><td colspan="6" class="empty">No orders</td></tr>';
         $('oc').textContent = recent.length;
 
     } catch(e) { console.error(e); }
