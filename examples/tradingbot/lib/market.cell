@@ -35,9 +35,8 @@ cell Market {
             let base = nth(bases, i)
             i = i + 1
 
-            let prev_raw = last_price.get(sym)
-            let prev = to_float(base)
-            if prev_raw != () { prev = to_float(prev_raw) }
+            let prev = last_price.get(sym)
+            if prev == () { prev = base }
 
             // Marsaglia polar method inline
             let s = 2.0
@@ -52,13 +51,13 @@ cell Market {
             let z = rx * sqrt(-2.0 * log(s) / s)
 
             let log_return = drift_dt + vol_dt * z
-            let mid = prev * exp(log_return)
+            let mid = to_float(prev) * exp(log_return)
             mid = round(mid * 100.0) / 100.0
             let spread = mid * 0.0005
             let bid = round((mid - spread) * 100.0) / 100.0
             let ask = round((mid + spread) * 100.0) / 100.0
 
-            last_price.set(sym, to_string(mid))
+            last_price.set(sym, mid)
 
             let tick = map(
                 "symbol", sym,

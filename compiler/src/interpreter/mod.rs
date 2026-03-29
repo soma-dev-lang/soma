@@ -2074,6 +2074,16 @@ impl Interpreter {
             return Ok(Value::Bool(result));
         }
 
+        // Handle Unit comparisons first (before type coercion)
+        if matches!(l, Value::Unit) || matches!(r, Value::Unit) {
+            let result = match op {
+                CmpOp::Eq => matches!((l, r), (Value::Unit, Value::Unit)),
+                CmpOp::Ne => !matches!((l, r), (Value::Unit, Value::Unit)),
+                _ => false,
+            };
+            return Ok(Value::Bool(result));
+        }
+
         match (l, r) {
             (Value::Int(a), Value::Int(b)) => {
                 let result = match op {
