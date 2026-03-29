@@ -1,11 +1,11 @@
 // ============================================================================
-// Market Maker Bot — WS orders out, WS subscribe for fills
+// Market Maker Bot — Connected to Exchange via TCP signal bus
 // ============================================================================
-// Sends orders via ws_send → Exchange WS :8081
-// Receives trades via subscribe → Exchange WS :8081 (separate connection)
+// signal order(data) → delivered to Exchange (which has await order)
+// on trade(data) ← received from Exchange (which emits stream trade)
 //
-// When exchange emits `signal trade(data)`, it broadcasts to all WS clients.
-// The subscribe() connection receives it and dispatches to `on trade(data)`.
+// No ws_connect. No ws_send. No http_get. No URLs in logic.
+// Just: signal to send, on handler to receive.
 //
 // Run: soma serve app.cell -p 9090
 
@@ -20,13 +20,14 @@ cell MarketMaker {
         fills: Map<String, String> [ephemeral, local]
     }
 
-    // ---- Connect on startup ----
+    // Connect signal bus on startup
     on init() {
         let result = connect_exchange()
-        print("Exchange: send={result.send}, recv={result.recv}")
+        print("Bus: {result.status} to {result.peer}")
     }
 
-    // ---- Incoming events from exchange (via subscribe) ----
+    // ---- Incoming signals from Exchange ----
+
     on trade(data: Map) {
         let tid = to_string(now()) + "_" + to_string(random(10000))
         fills.set(tid, to_json(data))
@@ -34,20 +35,21 @@ cell MarketMaker {
     }
 
     on order_placed(data: Map) {
-        // Another order was placed on the exchange
+        // Confirmation that our order was placed
     }
 
     on book_update(data: Map) {
-        // Book changed
+        // Book changed on exchange
     }
 
-    // ---- Quote cycle ----
+    // ---- Outgoing signals to Exchange ----
+
     every 3s {
         let cycle = to_int(state.get("cycle") ?? "0") + 1
         state.set("cycle", to_string(cycle))
 
         for ticker in list("BTC", "ETH", "SOL", "AVAX") {
-            requote(ticker)
+            requote(ticker, cycle)
         }
 
         if cycle % 2 == 0 {
@@ -55,11 +57,11 @@ cell MarketMaker {
         }
     }
 
-    on requote(ticker: String) {
-        let cycle = to_int(state.get("cycle") ?? "0")
+    on requote(ticker: String, cycle: Int) {
         let quotes = generate_quotes(ticker, cycle)
         for q in quotes {
-            send_order(q.ticker, q.side, q.price, q.qty)
+            // signal order → goes through peer bus → Exchange receives it
+            signal order(map("action", "place", "ticker", q.ticker, "side", q.side, "price", q.price, "qty", q.qty))
         }
     }
 
@@ -83,10 +85,12 @@ cell MarketMaker {
         if ticker == "AVAX" {
             if side == "buy" { price = mid + 5 } else { price = mid - 5 }
         }
-        send_order(ticker, side, price, 1)
+
+        signal order(map("action", "place", "ticker", ticker, "side", side, "price", price, "qty", 1))
     }
 
     // ---- Data ----
+
     on get_fills() {
         return fills.values()
             |> map(s => from_json(s))
@@ -94,15 +98,14 @@ cell MarketMaker {
     }
 
     on get_pnl() {
-        let fill_list = get_fills()
-        return map("total", 0, "color", "#22c55e", "trades", len(fill_list), "open_orders", 0)
+        let n = len(get_fills())
+        return map("total", 0, "color", "#22c55e", "trades", n, "open_orders", 0)
     }
 
-    on get_positions() {
-        return get_fills()
-    }
+    on get_positions() { return get_fills() }
 
-    // ---- HTTP ----
+    // ---- HTTP dashboard ----
+
     on request(method: String, path: String, body: String) {
         match path {
             "/"          -> html(page_dashboard())

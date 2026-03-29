@@ -127,17 +127,119 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
     // Create shared event bus for SSE + WebSocket
     let event_bus = interpreter::new_event_bus();
 
+    // Create peer bus for inter-process signal delivery
+    let peer_bus = interpreter::new_peer_bus();
+    let bus_port = port + 2;
+
+    // TCP bus listener: accepts incoming peer connections
+    {
+        let peer_bus_clone = peer_bus.clone();
+        let event_bus_clone = event_bus.clone();
+        let prog = program.clone();
+        let slots = storage_slots.clone();
+        let cname = cell_name.clone();
+
+        std::thread::spawn(move || {
+            let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{}", bus_port)) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("bus: cannot bind port {}: {}", bus_port, e);
+                    return;
+                }
+            };
+            eprintln!("bus: listening on :{}", bus_port);
+
+            for stream in listener.incoming() {
+                let stream = match stream { Ok(s) => s, Err(_) => continue };
+                let read_stream = match stream.try_clone() { Ok(s) => s, Err(_) => continue };
+
+                // Register writer for this peer (so our signals get sent to them)
+                let (tx, rx) = std::sync::mpsc::channel::<String>();
+                if let Ok(mut senders) = peer_bus_clone.lock() {
+                    senders.push(tx);
+                }
+
+                // Also register on the event bus so SSE/WS broadcasts go to this peer too
+                let (bus_tx, bus_rx) = std::sync::mpsc::channel::<interpreter::BusEvent>();
+                if let Ok(mut senders) = event_bus_clone.lock() {
+                    senders.push(bus_tx);
+                }
+
+                // Writer: event bus events → TCP lines to peer
+                let mut write_stream = stream;
+                std::thread::spawn(move || {
+                    use std::io::Write;
+                    loop {
+                        // Check peer bus (direct peer messages)
+                        while let Ok(line) = rx.try_recv() {
+                            if write_stream.write_all(line.as_bytes()).is_err() { return; }
+                        }
+                        // Check event bus (broadcast events)
+                        match bus_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                            Ok(event) => {
+                                let line = format!("EVENT {} {}\n", event.stream, event.data);
+                                if write_stream.write_all(line.as_bytes()).is_err() { return; }
+                                let _ = write_stream.flush();
+                            }
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                let _ = write_stream.flush();
+                            }
+                            Err(_) => return,
+                        }
+                    }
+                });
+
+                // Reader: TCP lines from peer → dispatch to handlers
+                let prog2 = prog.clone();
+                let slots2 = slots.clone();
+                let cname2 = cname.clone();
+                let ebus = event_bus_clone.clone();
+                let pbus = peer_bus_clone.clone();
+
+                std::thread::spawn(move || {
+                    use std::io::BufRead;
+                    let reader = std::io::BufReader::new(read_stream);
+                    eprintln!("bus: peer connected");
+                    for line in reader.lines() {
+                        let line = match line { Ok(l) => l, Err(_) => break };
+                        if line.starts_with("EVENT ") {
+                            let rest = &line[6..];
+                            if let Some(space) = rest.find(' ') {
+                                let event_name = &rest[..space];
+                                let json_data = &rest[space+1..];
+                                let data = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                                    interpreter::builtins::serde_json_to_value(&parsed)
+                                } else {
+                                    interpreter::Value::String(json_data.to_string())
+                                };
+
+                                let mut interp = interpreter::Interpreter::new(&prog2);
+                                interp.set_storage_raw(&slots2);
+                                interp.ensure_state_machine_storage();
+                                interp.event_bus = Some(ebus.clone());
+                                interp.peer_bus = Some(pbus.clone());
+                                let _ = interp.call_signal(&cname2, event_name, vec![data]);
+                            }
+                        }
+                    }
+                    eprintln!("bus: peer disconnected");
+                });
+            }
+        });
+    }
+
     // Shared WS client output (set by ws_connect, used by ws_send across all interpreters)
     let shared_ws_out: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Sender<String>>>>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
 
-    // Run init() handler if it exists (may call ws_connect)
+    // Run init() handler if it exists (may call connect/ws_connect)
     if handler_names.contains(&"init".to_string()) || handler_names.contains(&"start".to_string()) {
         let init_signal = if handler_names.contains(&"init".to_string()) { "init" } else { "start" };
         let mut interp = interpreter::Interpreter::new(&program);
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
         interp.event_bus = Some(event_bus.clone());
+        interp.peer_bus = Some(peer_bus.clone());
         let _ = interp.call_signal(&cell_name, init_signal, vec![]);
         // Capture ws_out if ws_connect was called
         if let Some(ref out) = interp.ws_out {
@@ -303,6 +405,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let slots = storage_slots.clone();
                 let cname = cell_name.clone();
                 let bus = event_bus.clone();
+                let pbus = peer_bus.clone();
                 let ws = shared_ws_out.clone();
                 eprintln!("scheduler: every {}ms", interval);
 
@@ -313,7 +416,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                         interp.set_storage_raw(&slots);
                         interp.ensure_state_machine_storage();
                         interp.event_bus = Some(bus.clone());
-                        // Inherit WS client connection if available
+                        interp.peer_bus = Some(pbus.clone());
                         if let Ok(ws_guard) = ws.lock() {
                             interp.ws_out = ws_guard.clone();
                         }
@@ -333,6 +436,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         let cell_name = cell_name.clone();
         let base_dir = base_dir.clone();
         let event_bus = event_bus.clone();
+        let peer_bus = peer_bus.clone();
         let shared_ws = shared_ws_out.clone();
 
         std::thread::spawn(move || {
@@ -398,6 +502,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
         interp.event_bus = Some(event_bus.clone());
+        interp.peer_bus = Some(peer_bus.clone());
         if let Ok(ws_guard) = shared_ws.lock() {
             interp.ws_out = ws_guard.clone();
         }

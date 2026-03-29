@@ -1,24 +1,9 @@
-// Connection to Exchange — WS send + subscribe receive
+// Connection to Exchange via TCP signal bus
 
 cell Connection {
 
     on connect_exchange() {
-        // Send channel: orders go out via WS
-        let send = ws_connect("ws://localhost:8081")
-
-        // Receive channel: trades/events come in via separate WS subscription
-        let recv = subscribe("ws://localhost:8081")
-
-        return map("send", send.status, "recv", recv.status)
-    }
-
-    on send_order(ticker: String, side: String, price: Int, qty: Int) {
-        let payload = to_json(map("action", "place", "ticker", ticker, "side", side, "price", price, "qty", qty))
-        ws_send(payload)
-        return map("status", "sent")
-    }
-
-    on cancel_order(order_id: String) {
-        ws_send(to_json(map("action", "cancel", "id", order_id)))
+        // Connect to exchange's signal bus (port 8082 = HTTP 8080 + 2)
+        return link("localhost:8082")
     }
 }

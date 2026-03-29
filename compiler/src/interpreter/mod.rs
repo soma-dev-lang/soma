@@ -207,7 +207,14 @@ pub struct BusEvent {
 /// Shared broadcast bus for real-time event distribution
 pub type EventBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::Sender<BusEvent>>>>;
 
+/// TCP peer connections for inter-process signal bus
+pub type PeerBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::Sender<String>>>>;
+
 pub fn new_event_bus() -> EventBus {
+    Arc::new(std::sync::Mutex::new(Vec::new()))
+}
+
+pub fn new_peer_bus() -> PeerBus {
     Arc::new(std::sync::Mutex::new(Vec::new()))
 }
 
@@ -227,6 +234,8 @@ pub struct Interpreter {
     pub(crate) state_machines: HashMap<(String, String), StateMachineSection>,
     /// Broadcast bus for SSE/real-time events
     pub event_bus: Option<EventBus>,
+    /// Peer bus for inter-process signal delivery
+    pub peer_bus: Option<PeerBus>,
     /// WebSocket client outgoing channel (for ws_send)
     pub ws_out: Option<Arc<std::sync::Mutex<std::sync::mpsc::Sender<String>>>>,
     /// Source file path for error reporting
@@ -267,6 +276,7 @@ impl Interpreter {
             storage: HashMap::new(),
             state_machines,
             event_bus: None,
+            peer_bus: None,
             ws_out: None,
             source_file: None,
             source_text: None,
@@ -599,23 +609,28 @@ impl Interpreter {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
                 self.emitted_signals.push((sig.clone(), arg_vals.clone()));
+                // Prepare data for broadcast
+                let broadcast_data = if arg_vals.len() == 1 { arg_vals[0].clone() } else { Value::List(arg_vals) };
                 // Broadcast to event bus (SSE clients)
                 if let Some(ref bus) = self.event_bus {
                     let event = BusEvent {
                         stream: sig.clone(),
-                        data: if arg_vals.len() == 1 {
-                            arg_vals[0].clone()
-                        } else {
-                            Value::List(arg_vals)
-                        },
+                        data: broadcast_data.clone(),
                     };
                     if let Ok(senders) = bus.lock() {
-                        let count = senders.len();
+                        if !senders.is_empty() {
+                        }
                         for sender in senders.iter() {
                             let _ = sender.send(event.clone());
                         }
-                        if count > 0 {
-
+                    }
+                }
+                // Send to peer bus (inter-process)
+                if let Some(ref peers) = self.peer_bus {
+                    let line = format!("EVENT {} {}\n", sig, broadcast_data);
+                    if let Ok(senders) = peers.lock() {
+                        for sender in senders.iter() {
+                            let _ = sender.send(line.clone());
                         }
                     }
                 }
@@ -713,6 +728,14 @@ impl Interpreter {
                         return Ok(Value::Unit);
                     }
                     return Err(ExecError::Runtime(RuntimeError::TypeError("ws_send: not connected".to_string())));
+                }
+                // connect(host:port) — open a TCP signal bus link
+                if name == "link" {
+                    if let Some(Value::String(addr)) = arg_vals.first() {
+                        return self.do_connect(addr, cell_name)
+                            .map_err(ExecError::Runtime);
+                    }
+                    return Err(ExecError::Runtime(RuntimeError::TypeError("connect(\"host:port\")".to_string())));
                 }
                 if name == "subscribe" {
                     if let Some(Value::String(url)) = arg_vals.first() {
@@ -1303,6 +1326,105 @@ impl Interpreter {
     }
 
     /// Apply a lambda to a value: bind param, eval body
+    /// Connect to a remote cell via TCP signal bus
+    fn do_connect(&mut self, addr: &str, cell_name: &str) -> Result<Value, RuntimeError> {
+        let stream = std::net::TcpStream::connect(addr).map_err(|e| {
+            RuntimeError::TypeError(format!("connect: {}", e))
+        })?;
+        let read_stream = stream.try_clone().map_err(|e| {
+            RuntimeError::TypeError(format!("connect clone: {}", e))
+        })?;
+
+        // Writer: sends outgoing signals to this peer
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+
+        // Register this peer's sender in the peer bus
+        if let Some(ref peers) = self.peer_bus {
+            if let Ok(mut senders) = peers.lock() {
+                senders.push(tx);
+            }
+        }
+
+        // Writer thread
+        let mut write_stream = stream;
+        std::thread::spawn(move || {
+            use std::io::Write;
+            for line in rx {
+                if write_stream.write_all(line.as_bytes()).is_err() { break; }
+                if write_stream.flush().is_err() { break; }
+            }
+        });
+
+        // Reader thread: reads EVENT lines, dispatches to handlers
+        let cells = self.cells.clone();
+        let storage: HashMap<String, Arc<dyn StorageBackend>> = self.storage.iter()
+            .map(|(k, v)| (k.clone(), v.clone())).collect();
+        let state_machines = self.state_machines.clone();
+        let event_bus = self.event_bus.clone();
+        let peer_bus = self.peer_bus.clone();
+        let ws_out = self.ws_out.clone();
+        let cname = cell_name.to_string();
+
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(read_stream);
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => break,
+                };
+                // Parse: EVENT name json_data
+                if line.starts_with("EVENT ") {
+                    let rest = &line[6..];
+                    if let Some(space) = rest.find(' ') {
+                        let event_name = &rest[..space];
+                        let json_data = &rest[space+1..];
+
+                        let data = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                            builtins::serde_json_to_value(&parsed)
+                        } else {
+                            Value::String(json_data.to_string())
+                        };
+
+                        // Dispatch to on event_name(data) handler
+                        let prog = Program { imports: vec![], cells: cells.values().map(|c| {
+                            Spanned::new(c.clone(), Span::new(0, 0))
+                        }).collect() };
+                        let mut interp = Interpreter::new(&prog);
+                        for (k, v) in &storage {
+                            interp.storage.insert(k.clone(), v.clone());
+                        }
+                        interp.state_machines = state_machines.clone();
+                        interp.event_bus = event_bus.clone();
+                        interp.peer_bus = peer_bus.clone();
+                        interp.ws_out = ws_out.clone();
+
+                        // Try all cells to find the handler
+                        let mut handled = false;
+                        for cn in interp.cells.keys().cloned().collect::<Vec<_>>() {
+                            if interp.handler_cache.contains_key(&(cn.clone(), event_name.to_string())) {
+                                match interp.call_signal(&cn, event_name, vec![data.clone()]) {
+                                    Ok(_) => { handled = true; break; }
+                                    Err(_) => {}
+                                }
+                            }
+                        }
+                        if !handled {
+                            eprintln!("[bus] no handler for '{}'", event_name);
+                        }
+                    }
+                }
+            }
+            eprintln!("connect: peer disconnected");
+        });
+
+        eprintln!("connect: linked to {}", addr);
+        Ok(Value::Map(vec![
+            ("status".to_string(), Value::String("connected".to_string())),
+            ("peer".to_string(), Value::String(addr.to_string())),
+        ]))
+    }
+
     /// Subscribe to a remote WS stream — dedicated read-only connection
     /// Incoming messages are parsed as {"event":"name","data":{...}} and dispatched to on name() handlers
     fn do_subscribe(&mut self, url: &str, cell_name: &str) -> Result<Value, RuntimeError> {

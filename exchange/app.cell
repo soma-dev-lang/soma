@@ -112,7 +112,31 @@ cell Exchange {
             |> top(50)
     }
 
-    // ---- WebSocket handler ----
+    // ---- Signal bus handler: receives orders from connected peers ----
+
+    on order(data: Map) {
+        let action = data.action ?? "place"
+        match action {
+            "place" -> {
+                let id = to_string(next_id())
+                let order = make_order(id, data.ticker, data.side, to_int(data.price), to_int(data.qty))
+                orders.set(id, to_json(order))
+                signal order_placed(order)
+                run_matching(data.ticker)
+            }
+            "cancel" -> {
+                let raw = orders.get(data.id)
+                if raw != () {
+                    let cancelled = from_json(raw) |> with("status", "cancelled")
+                    orders.set(data.id, to_json(cancelled))
+                    signal order_cancelled(map("id", data.id))
+                }
+            }
+            _ -> { }
+        }
+    }
+
+    // ---- WebSocket handler (for browser/external clients) ----
 
     on ws(message: String) {
         let data = from_json(message)

@@ -1,0 +1,18 @@
+use lib::connection
+cell BusTest {
+    memory { fills: Map<String, String> [ephemeral, local] }
+    on init() {
+        connect_exchange()
+        print("CONNECTED")
+    }
+    on trade(data: Map) {
+        print("GOT TRADE: {data}")
+        fills.set(to_string(now()), "ok")
+    }
+    on order_placed(data: Map) {
+        print("GOT ORDER_PLACED")
+    }
+    on request(method: String, path: String, body: String) {
+        return map("fills", len(fills.keys()))
+    }
+}
