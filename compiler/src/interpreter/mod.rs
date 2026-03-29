@@ -110,6 +110,23 @@ pub fn format_runtime_error(
     }
 }
 
+/// Compute Levenshtein edit distance between two strings.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let (m, n) = (a.len(), b.len());
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
+}
+
 /// Check if a Value is truthy (false for Bool(false), Unit, Int(0); true otherwise)
 pub fn is_truthy(val: &Value) -> bool {
     match val {
@@ -117,6 +134,8 @@ pub fn is_truthy(val: &Value) -> bool {
         Value::Unit => false,
         Value::Int(n) => *n != 0,
         Value::Big(n) => !n.is_zero(),
+        Value::String(s) => !s.is_empty(),
+        Value::List(l) => !l.is_empty(),
         _ => true,
     }
 }
@@ -512,6 +531,41 @@ impl Interpreter {
         Ok(last_value)
     }
 
+    /// Execute a body with proper block scoping:
+    /// - `let` declarations are local to the block
+    /// - assignments to pre-existing variables propagate to outer scope
+    fn exec_body_scoped(
+        &mut self,
+        body: &[Spanned<Statement>],
+        env: &mut HashMap<String, Value>,
+        cell_name: &str,
+        signal_name: &str,
+    ) -> Result<Value, ExecError> {
+        let outer_keys: std::collections::HashSet<String> = env.keys().cloned().collect();
+        let snapshot: HashMap<String, Value> = env.clone();
+        let result = self.exec_body(body, env, cell_name, signal_name);
+        // Collect keys to remove (new `let` bindings that should not leak)
+        let to_remove: Vec<String> = env.keys()
+            .filter(|k| !outer_keys.contains(*k))
+            .cloned()
+            .collect();
+        for key in to_remove {
+            env.remove(&key);
+        }
+        // Restore any outer variable that was re-declared with `let` (shadowed):
+        // If a `let` in this block shadows an outer variable, restore the outer value
+        for stmt in body {
+            if let Statement::Let { name, .. } = &stmt.node {
+                if outer_keys.contains(name) {
+                    if let Some(original) = snapshot.get(name) {
+                        env.insert(name.clone(), original.clone());
+                    }
+                }
+            }
+        }
+        result
+    }
+
     fn exec_stmt(
         &mut self,
         stmt: &Statement,
@@ -577,10 +631,10 @@ impl Interpreter {
             } => {
                 self.last_span = Some(condition.span);
                 let cond = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
-                if cond.as_bool().map_err(ExecError::Runtime)? {
-                    self.exec_body(then_body, env, cell_name, signal_name)
+                if is_truthy(&cond) {
+                    self.exec_body_scoped(then_body, env, cell_name, signal_name)
                 } else if !else_body.is_empty() {
-                    self.exec_body(else_body, env, cell_name, signal_name)
+                    self.exec_body_scoped(else_body, env, cell_name, signal_name)
                 } else {
                     Ok(Value::Unit)
                 }
@@ -609,7 +663,7 @@ impl Interpreter {
                 let mut last = Value::Unit;
                 for item in items {
                     env.insert(var.clone(), item);
-                    match self.exec_body(body, env, cell_name, signal_name) {
+                    match self.exec_body_scoped(body, env, cell_name, signal_name) {
                         Ok(val) => last = val,
                         Err(ExecError::Break) => break,
                         Err(ExecError::Continue) => continue,
@@ -624,10 +678,10 @@ impl Interpreter {
                 let mut iterations = 0;
                 loop {
                     let cond = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
-                    if !cond.as_bool().map_err(ExecError::Runtime)? {
+                    if !is_truthy(&cond) {
                         break;
                     }
-                    match self.exec_body(body, env, cell_name, signal_name) {
+                    match self.exec_body_scoped(body, env, cell_name, signal_name) {
                         Ok(_) => {}
                         Err(ExecError::Break) => break,
                         Err(ExecError::Continue) => {}
@@ -835,7 +889,37 @@ impl Interpreter {
                         self.call_signal(&target_cell, name, arg_vals)
                             .map_err(ExecError::Runtime)
                     } else {
-                        Err(ExecError::Runtime(RuntimeError::UndefinedFn(name.clone())))
+                        // Collect known names for "did you mean?" suggestion
+                        let mut all_names: Vec<String> = self.handler_cache.keys()
+                            .map(|(_, sig)| sig.clone())
+                            .collect();
+                        let builtins = [
+                            "print", "len", "push", "map", "list", "filter", "sort_by", "filter_by",
+                            "to_string", "to_int", "to_float", "from_json", "to_json", "reverse", "range",
+                            "random", "abs", "round", "floor", "ceil", "min", "max", "clamp", "pow", "sqrt",
+                            "contains", "starts_with", "ends_with", "replace", "split", "trim", "join",
+                            "uppercase", "lowercase", "substring", "index_of", "concat", "type_of",
+                            "now", "now_ms", "http_get", "http_post", "html", "response", "redirect",
+                            "next_id", "transition", "get_status", "valid_transitions", "is_type",
+                            "top", "bottom", "agg", "group_by", "distinct", "describe", "flatten", "zip",
+                            "sum_by", "avg_by", "min_by", "max_by", "count_by", "escape_html",
+                            "each", "find", "any", "all", "count", "sse", "link", "ws_connect", "ws_send",
+                            "subscribe", "length", "keys", "values", "sort", "append", "sleep",
+                        ];
+                        for b in &builtins { all_names.push(b.to_string()); }
+
+                        let suggestion = all_names.iter()
+                            .filter(|n| levenshtein(n, name) <= 2)
+                            .min_by_key(|n| levenshtein(n, name))
+                            .cloned();
+
+                        if let Some(did_you_mean) = suggestion {
+                            Err(ExecError::Runtime(RuntimeError::UndefinedFn(
+                                format!("{} (did you mean '{}'?)", name, did_you_mean)
+                            )))
+                        } else {
+                            Err(ExecError::Runtime(RuntimeError::UndefinedFn(name.clone())))
+                        }
                     }
                 }
             }

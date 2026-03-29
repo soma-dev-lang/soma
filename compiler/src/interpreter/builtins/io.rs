@@ -73,7 +73,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             } else {
                 (Value::Int(200), args.first().map(|a| format!("{}", a)).unwrap_or_default())
             };
-            if body.contains("hx-") && !body.contains("htmx.org") {
+            // Only inject HTMX on full pages, not fragments
+            let inject_htmx = body.contains("<html") || body.contains("<!DOCTYPE") || body.contains("<!doctype");
+            if inject_htmx && body.contains("hx-") && !body.contains("htmx.org") {
                 let htmx_tag = "<script src=\"https://unpkg.com/htmx.org@2.0.4\"></script>";
                 if let Some(pos) = body.find("</head>") {
                     body.insert_str(pos, htmx_tag);

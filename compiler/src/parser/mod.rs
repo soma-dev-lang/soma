@@ -1759,8 +1759,13 @@ impl Parser {
                 self.expect(Token::LBrace)?;
                 let mut arms = Vec::new();
                 while !self.check(&Token::RBrace) && !self.is_at_end() {
-                    // Parse pattern: literal, _ (wildcard), or negative number
-                    let pattern = if let Token::Ident(ref id) = self.peek().clone() {
+                    // Parse pattern: literal, _ (wildcard), () (unit), or negative number
+                    let pattern = if self.check(&Token::LParen) {
+                        // () — unit/null pattern
+                        self.advance();
+                        self.expect(Token::RParen)?;
+                        MatchPattern::Literal(Literal::Unit)
+                    } else if let Token::Ident(ref id) = self.peek().clone() {
                         if id == "_" {
                             self.advance();
                             MatchPattern::Wildcard

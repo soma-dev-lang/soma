@@ -13,6 +13,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 } else {
                     return Some(Ok(Value::List(items.clone())));
                 };
+                match op.as_str() {
+                    ">" | ">=" | "<" | "<=" | "==" | "=" | "!=" => {}
+                    _ => return Some(Err(RuntimeError::TypeError(
+                        format!("filter_by: unknown operator '{}' (use >, >=, <, <=, ==, !=)", op)
+                    ))),
+                }
                 let result: Vec<Value> = items.iter().filter(|item| {
                     if let Value::Map(entries) = item {
                         let val = entries.iter().find(|(k, _)| k == &field).map(|(_, v)| v);
@@ -28,7 +34,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                     "<=" => a <= b,
                                     "==" | "=" => (a - b).abs() < f64::EPSILON,
                                     "!=" => (a - b).abs() >= f64::EPSILON,
-                                    _ => true,
+                                    _ => false,
                                 }
                             } else {
                                 let a = val_to_i64(val);
@@ -40,7 +46,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                     "<=" => a <= b,
                                     "==" | "=" => format!("{}", val) == format!("{}", threshold),
                                     "!=" => format!("{}", val) != format!("{}", threshold),
-                                    _ => true,
+                                    _ => false,
                                 }
                             }
                         } else { false }
@@ -120,7 +126,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
-                    if items.is_empty() { return Some(Ok(Value::Int(0))); }
+                    if items.is_empty() { return Some(Ok(Value::Unit)); }
                     let total: i64 = items.iter().map(|item| map_field_i64(item, &field)).sum();
                     Some(Ok(Value::Int(total / items.len() as i64)))
                 } else { Some(Ok(Value::Int(0))) }

@@ -465,6 +465,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
             } else {
                 None
             }
+        } else if !body_raw.is_empty() && !body_raw.starts_with('{') && body_raw.contains('=') {
+            // Parse as form-encoded: key=value&key2=value2
+            let mut form_data = Vec::new();
+            for pair in body_raw.split('&') {
+                if let Some((key, val)) = pair.split_once('=') {
+                    let key = urlencoding_decode(key);
+                    let val = urlencoding_decode(val);
+                    form_data.push((key, interpreter::Value::String(val)));
+                }
+            }
+            Some(interpreter::Value::Map(form_data))
         } else {
             None
         };
@@ -523,6 +534,19 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         let (signal_name, args) = if url.starts_with("/signal/") {
             let signal = url.trim_start_matches("/signal/");
             let (sig_name, query) = signal.split_once('?').unwrap_or((signal, ""));
+            if sig_name.starts_with('_') {
+                let resp = tiny_http::Response::from_string(
+                    format!("{{\"error\": \"no handler for '{}'\"}}", url)
+                )
+                .with_status_code(404)
+                .with_header(
+                    tiny_http::Header::from_bytes(
+                        &b"Content-Type"[..], &b"application/json"[..]
+                    ).unwrap()
+                );
+                let _ = request.respond(resp);
+                return;
+            }
             let args: Vec<interpreter::Value> = if query.is_empty() {
                 vec![]
             } else {
@@ -540,7 +564,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
             let (url_path, query_string) = url.split_once('?').unwrap_or((&url, ""));
             let path = url_path.trim_start_matches('/');
             let (sig, rest) = path.split_once('/').unwrap_or((path, ""));
-            if handler_names.contains(&sig.to_string()) {
+            if handler_names.contains(&sig.to_string()) && !sig.starts_with('_') {
                 let mut args: Vec<interpreter::Value> = if rest.is_empty() {
                     vec![]
                 } else {
