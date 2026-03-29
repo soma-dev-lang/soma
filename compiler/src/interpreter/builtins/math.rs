@@ -79,6 +79,36 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("clamp expects (value, min, max)".to_string())))
             }
         }
+        // random() → float 0.0..1.0
+        // random(max) → int 0..max (exclusive)
+        // random(min, max) → int min..max (exclusive)
+        "random" | "rand" => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            // Simple PRNG: use system time nanos as seed
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH)
+                .unwrap_or_default().subsec_nanos() as u64;
+            // xorshift-style mixing
+            let mut x = nanos ^ (nanos >> 7) ^ (nanos << 13);
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+
+            if args.is_empty() {
+                // random() → float 0.0..1.0
+                let f = (x % 1_000_000) as f64 / 1_000_000.0;
+                Some(Ok(Value::Float(f)))
+            } else if args.len() == 1 {
+                // random(max) → int 0..max
+                let max = val_to_i64(&args[0]);
+                if max <= 0 { return Some(Ok(Value::Int(0))); }
+                Some(Ok(Value::Int((x % max as u64) as i64)))
+            } else {
+                // random(min, max) → int min..max
+                let min = val_to_i64(&args[0]);
+                let max = val_to_i64(&args[1]);
+                if max <= min { return Some(Ok(Value::Int(min))); }
+                let range = (max - min) as u64;
+                Some(Ok(Value::Int(min + (x % range) as i64)))
+            }
+        }
         _ => None,
     }
 }
