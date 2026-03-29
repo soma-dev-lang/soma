@@ -1,0 +1,12 @@
+[package]
+name = "soma-jobqueue"
+
+[verify]
+deadlock_free = true
+eventually = ["claimed", "cancelled", "expired"]
+
+[verify.after.running]
+eventually = ["completed", "failed", "expired"]
+
+[verify.after.failed]
+eventually = ["queued", "expired"]

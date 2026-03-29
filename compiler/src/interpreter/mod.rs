@@ -328,6 +328,10 @@ pub struct Interpreter {
     current_handler: Option<(String, String, Arc<Vec<Param>>, Arc<Vec<Spanned<Statement>>>)>,
     /// Loaded [native] handler FFI function pointers, keyed by (cell_name, signal_name)
     pub native_handlers: HashMap<(String, String), native_ffi::LoadedNative>,
+    /// Cluster node for distributed storage (None = standalone mode)
+    pub cluster: Option<Arc<crate::runtime::cluster::ClusterNode>>,
+    /// Which memory slots are sharded (slot_name → true)
+    pub sharded_slots: HashMap<String, bool>,
 }
 
 impl Interpreter {
@@ -370,6 +374,8 @@ impl Interpreter {
             last_span: None,
             current_handler: None,
             native_handlers: HashMap::new(),
+            cluster: None,
+            sharded_slots: HashMap::new(),
         }
     }
 
@@ -403,6 +409,12 @@ impl Interpreter {
         for (key, backend) in slots {
             self.storage.insert(key.clone(), backend.clone());
         }
+    }
+
+    /// Configure cluster mode — enables distributed storage operations
+    pub fn set_cluster(&mut self, cluster: Arc<crate::runtime::cluster::ClusterNode>, sharded: &HashMap<String, bool>) {
+        self.cluster = Some(cluster);
+        self.sharded_slots = sharded.clone();
     }
 
     /// Execute an `every` block's body
@@ -1276,7 +1288,6 @@ impl Interpreter {
         method: &str,
         args: &[Value],
     ) -> Result<Value, ExecError> {
-        // Look up the storage backend: cell-prefixed FIRST (avoids cross-cell collisions)
         let prefixed = format!("{}.{}", cell_name, slot_name);
         let backend = self.storage.get(&prefixed)
             .or_else(|| self.storage.get(slot_name));
@@ -1290,6 +1301,10 @@ impl Interpreter {
             }
         };
 
+        // Is this slot sharded across the cluster?
+        let is_sharded = self.cluster.is_some()
+            && (self.sharded_slots.contains_key(slot_name) || self.sharded_slots.contains_key(&prefixed));
+
         match method {
             "get" => {
                 let key = args.first()
@@ -1297,6 +1312,23 @@ impl Interpreter {
                         "get() requires a key argument".to_string()
                     )))?;
                 let key_str = format!("{}", key);
+
+                // In cluster mode: check local first, then ask peers if not found
+                if is_sharded {
+                    if let Some(stored) = backend.get(&key_str) {
+                        return Ok(stored_to_value(stored));
+                    }
+                    // Not found locally — request from cluster
+                    if let Some(ref cluster) = self.cluster {
+                        if !cluster.owns_key(&key_str) {
+                            if let Some(val) = self.cluster_remote_get(slot_name, &key_str) {
+                                return Ok(val);
+                            }
+                        }
+                    }
+                    return Ok(Value::Unit);
+                }
+
                 match backend.get(&key_str) {
                     Some(stored) => Ok(stored_to_value(stored)),
                     None => Ok(Value::Unit),
@@ -1312,7 +1344,15 @@ impl Interpreter {
                         "set() requires key and value arguments".to_string()
                     )))?;
                 let key_str = format!("{}", key);
+                let val_str = format!("{}", val);
+
+                // Always write locally
                 backend.set(&key_str, value_to_stored(val));
+
+                // In cluster mode: broadcast to peers via EVENT bus
+                if is_sharded {
+                    self.cluster_broadcast_set(slot_name, &key_str, &val_str);
+                }
                 Ok(Value::Unit)
             }
             "delete" | "remove" => {
@@ -1322,6 +1362,11 @@ impl Interpreter {
                     )))?;
                 let key_str = format!("{}", key);
                 let removed = backend.delete(&key_str);
+
+                // Broadcast delete to cluster
+                if is_sharded {
+                    self.cluster_broadcast_del(slot_name, &key_str);
+                }
                 Ok(Value::Bool(removed))
             }
             "append" | "push" => {
@@ -1344,6 +1389,10 @@ impl Interpreter {
                 Ok(Value::List(keys.into_iter().map(Value::String).collect()))
             }
             "values" => {
+                // In cluster mode: fan-out to all peers, merge with local
+                if is_sharded {
+                    return self.cluster_fan_out_values(slot_name, backend);
+                }
                 let vals = backend.values();
                 Ok(Value::List(vals.into_iter().map(stored_to_value).collect()))
             }
@@ -1356,7 +1405,11 @@ impl Interpreter {
                 Ok(Value::Bool(backend.has(&key_str)))
             }
             "backend" => {
-                Ok(Value::String(backend.backend_name().to_string()))
+                if is_sharded {
+                    Ok(Value::String("cluster".to_string()))
+                } else {
+                    Ok(Value::String(backend.backend_name().to_string()))
+                }
             }
             _ => {
                 Err(ExecError::Runtime(RuntimeError::TypeError(
@@ -1364,6 +1417,116 @@ impl Interpreter {
                 )))
             }
         }
+    }
+
+    // ── Cluster storage helpers ──────────────────────────────────────
+
+    /// Broadcast a set operation to all peers via EVENT bus
+    fn cluster_broadcast_set(&self, slot: &str, key: &str, value: &str) {
+        if let Some(ref peers) = self.peer_bus {
+            let msg = format!("EVENT _cluster_set {}\n",
+                serde_json::json!({"slot": slot, "key": key, "value": value}));
+            if let Ok(senders) = peers.lock() {
+                for tx in senders.iter() {
+                    let _ = tx.send(msg.clone());
+                }
+            }
+        }
+    }
+
+    /// Broadcast a delete operation to all peers
+    fn cluster_broadcast_del(&self, slot: &str, key: &str) {
+        if let Some(ref peers) = self.peer_bus {
+            let msg = format!("EVENT _cluster_del {}\n",
+                serde_json::json!({"slot": slot, "key": key}));
+            if let Ok(senders) = peers.lock() {
+                for tx in senders.iter() {
+                    let _ = tx.send(msg.clone());
+                }
+            }
+        }
+    }
+
+    /// Request a value from the cluster (blocking with timeout)
+    fn cluster_remote_get(&self, slot: &str, key: &str) -> Option<Value> {
+        let cluster = self.cluster.as_ref()?;
+        let req_id = cluster.next_req_id();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        cluster.pending.lock().unwrap().insert(req_id.clone(), tx);
+
+        if let Some(ref peers) = self.peer_bus {
+            let msg = format!("EVENT _cluster_get {}\n",
+                serde_json::json!({"slot": slot, "key": key, "req_id": req_id}));
+            if let Ok(senders) = peers.lock() {
+                for sender in senders.iter() {
+                    let _ = sender.send(msg.clone());
+                }
+            }
+        }
+
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(value) => {
+                cluster.pending.lock().unwrap().remove(&req_id);
+                if value.is_empty() { None } else { Some(Value::String(value)) }
+            }
+            Err(_) => {
+                cluster.pending.lock().unwrap().remove(&req_id);
+                None
+            }
+        }
+    }
+
+    /// Fan-out values() to all peers, merge with local
+    fn cluster_fan_out_values(&self, slot: &str, local_backend: &Arc<dyn StorageBackend>) -> Result<Value, ExecError> {
+        // Start with local values
+        let mut all_values: Vec<Value> = local_backend.values()
+            .into_iter().map(stored_to_value).collect();
+
+        // Fan-out to peers
+        if let (Some(ref cluster), Some(ref peers)) = (&self.cluster, &self.peer_bus) {
+            let req_id = cluster.next_req_id();
+            let (tx, rx) = std::sync::mpsc::channel();
+            cluster.pending.lock().unwrap().insert(req_id.clone(), tx);
+
+            let msg = format!("EVENT _cluster_values {}\n",
+                serde_json::json!({"slot": slot, "req_id": req_id}));
+            let peer_count = if let Ok(senders) = peers.lock() {
+                for sender in senders.iter() {
+                    let _ = sender.send(msg.clone());
+                }
+                senders.len()
+            } else {
+                0
+            };
+
+            // Collect replies with timeout (best-effort)
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut replies = 0;
+            while replies < peer_count {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() { break; }
+                match rx.recv_timeout(remaining) {
+                    Ok(json_str) => {
+                        replies += 1;
+                        // Parse the values array from the reply
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                            if let Some(arr) = parsed.as_array() {
+                                for v in arr {
+                                    if let Some(s) = v.as_str() {
+                                        all_values.push(Value::String(s.to_string()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            cluster.pending.lock().unwrap().remove(&req_id);
+        }
+
+        Ok(Value::List(all_values))
     }
 
     /// Evaluate a constraint expression, returning true/false

@@ -1,0 +1,217 @@
+// ============================================================================
+// Soma Cluster — Mini Kubernetes in 200 lines
+// ============================================================================
+//
+// Cells are pods. State machines are pod lifecycles.
+// The scheduler is the controller loop. Signals are the service mesh.
+// soma verify proves the cluster never deadlocks.
+//
+// Run: soma serve app.cell
+// Verify: soma verify app.cell
+//
+// API:
+//   POST /deploy  {"name": "api", "image": "nginx:1.25", "replicas": 3}
+//   POST /scale   {"name": "api", "replicas": 5}
+//   POST /delete  {"name": "api"}
+//   GET  /pods
+//   GET  /deployments
+//   GET  /
+
+use lib::pods
+use lib::templates
+
+cell Cluster {
+
+    memory {
+        pods: Map<String, String> [persistent, consistent]
+        deployments: Map<String, String> [persistent, consistent]
+        events: Map<String, String> [ephemeral, local]
+    }
+
+    // ---- Orchestration: Kubernetes IS a distributed system ----
+    scale {
+        replicas: 3
+        shard: pods
+        consistency: eventual
+        tolerance: 1
+    }
+
+    state pod_lifecycle {
+        initial: pending
+        pending -> pulling
+        pulling -> running
+        running -> succeeded
+        running -> failed
+        failed -> pending
+        * -> terminated
+    }
+
+    // ---- Controller loop: reconcile desired vs actual state ----
+
+    every 2s {
+        reconcile()
+    }
+
+    on reconcile() {
+        let all_deploys = deployments.values() |> map(s => from_json(s)) |> filter(d => d.name != ())
+
+        for deploy in all_deploys {
+            let desired = to_int(deploy.replicas ?? "0")
+            let deploy_pods = get_deploy_pods(deploy.name)
+            let actual = len(deploy_pods)
+
+            // Scale up: create missing pods
+            if actual < desired {
+                let i = actual
+                while i < desired {
+                    let pod_name = "{deploy.name}-{to_string(random(10000))}"
+                    let pod = make_pod(pod_name, deploy.image, deploy.name)
+                    pods.set(pod_name, to_json(pod))
+                    log_event("pulling", "Pulling image {deploy.image} for {pod_name}")
+                    i = i + 1
+                }
+            }
+
+            // Scale down: terminate excess pods
+            if actual > desired {
+                let excess = actual - desired
+                let i = 0
+                for pod in deploy_pods {
+                    if i >= excess { break }
+                    let updated = pod |> with("status", "terminated")
+                    pods.set(pod.name, to_json(updated))
+                    log_event("terminated", "Pod {pod.name} terminated (scale down)")
+                    i = i + 1
+                }
+            }
+
+            // Advance pod states: pending → pulling → running
+            for pod in deploy_pods {
+                if pod.status == "pending" {
+                    let updated = pod |> with("status", "pulling")
+                    pods.set(pod.name, to_json(updated))
+                } else if pod.status == "pulling" {
+                    let updated = pod |> with("status", "running")
+                    pods.set(pod.name, to_json(updated))
+                    log_event("running", "Pod {pod.name} is running")
+                } else if pod.status == "failed" {
+                    // Restart failed pods
+                    let restarts = to_int(pod.restarts ?? "0") + 1
+                    let updated = pod |> with("status", "pending") |> with("restarts", to_string(restarts))
+                    pods.set(pod.name, to_json(updated))
+                    log_event("pending", "Restarting {pod.name} (attempt {restarts})")
+                }
+            }
+
+            // Update deployment ready count
+            let running = len(deploy_pods |> filter(p => p.status == "running"))
+            let updated_deploy = deploy |> with("ready", to_string(running))
+            deployments.set(deploy.name, to_json(updated_deploy))
+        }
+
+        // Simulate random failures (5% chance per running pod)
+        let all_pods = pods.values() |> map(s => from_json(s)) |> filter(p => p.name != ())
+        for pod in all_pods {
+            if pod.status == "running" {
+                if random(100) < 5 {
+                    let updated = pod |> with("status", "failed")
+                    pods.set(pod.name, to_json(updated))
+                    log_event("failed", "Pod {pod.name} crashed (OOMKilled)")
+                }
+            }
+        }
+    }
+
+    // ---- Helpers ----
+
+    on get_deploy_pods(deploy_name: String) {
+        return pods.values()
+            |> map(s => from_json(s))
+            |> filter(p => p.deployment == deploy_name && p.status != "terminated")
+    }
+
+    on log_event(event_type: String, message: String) {
+        let t = now()
+        let id = to_string(t) + "_" + to_string(random(10000))
+        events.set(id, to_json(map("type", event_type, "message", message, "time", to_string(t))))
+    }
+
+    on get_events() {
+        return events.values()
+            |> map(s => from_json(s))
+            |> filter(e => e.type != ())
+            |> top(20)
+    }
+
+    // ---- API ----
+
+    on deploy(data: Map) {
+        let name = data.name
+        let image = data.image ?? "nginx:latest"
+        let replicas = data.replicas ?? 3
+        let strategy = data.strategy ?? "RollingUpdate"
+
+        let deployment = map(
+            "name", name,
+            "image", image,
+            "replicas", to_string(replicas),
+            "ready", "0",
+            "strategy", strategy
+        )
+        deployments.set(name, to_json(deployment))
+        log_event("pulling", "Deployment {name} created: {replicas} replicas of {image}")
+        return map("status", "created", "deployment", name, "replicas", replicas)
+    }
+
+    on scale(data: Map) {
+        let name = data.name
+        let raw = deployments.get(name)
+        if raw == () { return map("error", "deployment not found") }
+        let deploy = from_json(raw)
+        let updated = deploy |> with("replicas", to_string(data.replicas))
+        deployments.set(name, to_json(updated))
+        log_event("running", "Scaled {name} to {data.replicas} replicas")
+        return map("status", "scaled", "deployment", name, "replicas", data.replicas)
+    }
+
+    on delete_deploy(data: Map) {
+        let name = data.name
+        // Terminate all pods
+        let deploy_pods = get_deploy_pods(name)
+        for pod in deploy_pods {
+            let updated = pod |> with("status", "terminated")
+            pods.set(pod.name, to_json(updated))
+        }
+        deployments.delete(name)
+        log_event("terminated", "Deployment {name} deleted")
+        return map("status", "deleted", "deployment", name)
+    }
+
+    // ---- HTTP ----
+
+    on request(method: String, path: String, body: String) {
+        if method == "POST" {
+            if path == "/deploy" { return deploy(body) }
+            if path == "/scale" { return scale(body) }
+            if path == "/delete" { return delete_deploy(body) }
+            return response(404, map("error", "not found"))
+        } else {
+            match path {
+                "/" -> html(page_dashboard())
+                "/pods" -> pods.values() |> map(s => from_json(s)) |> filter(p => p.name != ())
+                "/deployments" -> deployments.values() |> map(s => from_json(s)) |> filter(d => d.name != ())
+                "/events" -> get_events()
+                _ -> response(404, map("error", "not found"))
+            }
+        }
+    }
+
+    on page_dashboard() {
+        let all_pods = pods.values() |> map(s => from_json(s)) |> filter(p => p.name != () && p.status != "terminated")
+        let all_deploys = deployments.values() |> map(s => from_json(s)) |> filter(d => d.name != ())
+        let evts = get_events()
+        let n_running = len(all_pods |> filter(p => p.status == "running"))
+        let n_total = len(all_pods)
+        return render_dashboard(all_pods, all_deploys, evts, n_running, n_total)
+    }
+}

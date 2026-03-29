@@ -1,0 +1,20 @@
+[package]
+name = "pricing-engine"
+
+[verify]
+deadlock_free = true
+eventually = ["confirmed", "cancelled", "eod_frozen"]
+
+[verify.after.executed]
+eventually = ["settled", "failed", "eod_frozen"]
+never = ["cancelled"]
+
+[verify.after.failed]
+eventually = ["pending", "eod_frozen"]
+
+# ── Single machine mode (default) ────────────────────────────
+# Nothing needed. Just run: soma serve app.cell
+
+# ── Cluster mode (uncomment for distributed) ─────────────────
+# [cluster]
+# seeds = ["node1:8082", "node2:8082", "node3:8082"]

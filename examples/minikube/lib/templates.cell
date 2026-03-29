@@ -1,0 +1,124 @@
+// Dashboard templates
+
+cell Templates {
+
+    on render_pod_row(pod: Map) {
+        let color = pod_status_color(pod.status)
+        let label = pod_status_label(pod.status)
+        return """
+        <tr>
+            <td class="pod-name">{pod.name}</td>
+            <td><span class="status-badge" style="background:{color}22;color:{color}">{label}</span></td>
+            <td class="dim">{pod.image}</td>
+            <td class="dim">{pod.deployment}</td>
+            <td class="num">{pod.restarts}</td>
+            <td class="num">{pod.cpu}m</td>
+            <td class="num">{pod.memory}Mi</td>
+        </tr>
+        """
+    }
+
+    on render_dashboard(pods: List, deployments: List, events: List, n_running: Int, n_total: Int) {
+        let pod_rows = ""
+        for pod in pods {
+            pod_rows = pod_rows + render_pod_row(pod)
+        }
+        if pod_rows == "" {
+            pod_rows = """<tr><td colspan="7" class="empty">No pods running</td></tr>"""
+        }
+
+        let deploy_rows = ""
+        for d in deployments {
+            let ready = d.ready ?? "0"
+            let replicas = d.replicas ?? "0"
+            deploy_rows = deploy_rows + """
+            <tr>
+                <td class="pod-name">{d.name}</td>
+                <td>{d.image}</td>
+                <td>{ready}/{replicas}</td>
+                <td><span class="status-badge" style="background:#22c55e22;color:#22c55e">{d.strategy}</span></td>
+            </tr>
+            """
+        }
+
+        let event_rows = ""
+        for evt in events {
+            let ec = pod_status_color(evt.type ?? "pending")
+            event_rows = event_rows + """
+            <tr>
+                <td style="color:{ec}">{evt.type}</td>
+                <td>{evt.message}</td>
+                <td class="dim">{evt.time}</td>
+            </tr>
+            """
+        }
+
+        return """
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Soma Cluster</title>
+            <meta http-equiv="refresh" content="3">
+            <style>
+            :root{--bg:#050910;--surface:#0d1117;--border:#21262d;--text:#c9d1d9;--dim:#6e7681;--accent:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308}
+            *{margin:0;padding:0;box-sizing:border-box}
+            body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,sans-serif}
+            .app{max-width:1100px;margin:0 auto;padding:1.5rem}
+            .header{display:flex;justify-content:space-between;align-items:center;padding:1rem 0;border-bottom:1px solid var(--border);margin-bottom:1.5rem}
+            .header h1{font-size:1.1rem;font-weight:800;letter-spacing:4px;color:var(--accent)}
+            .stats{display:flex;gap:1rem;margin-bottom:1.5rem}
+            .stat{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1rem}
+            .stat .label{font-size:.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:.3rem}
+            .stat .value{font-size:1.4rem;font-weight:700;color:#f0f6fc}
+            .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:1.5rem;overflow:hidden}
+            .panel-header{padding:.8rem 1rem;border-bottom:1px solid var(--border);font-weight:700;font-size:.85rem}
+            table{width:100%;border-collapse:collapse}
+            th{text-align:left;padding:.5rem 1rem;font-size:.65rem;text-transform:uppercase;color:var(--dim);letter-spacing:1px}
+            td{padding:.4rem 1rem;border-top:1px solid var(--border);font-size:.85rem}
+            .pod-name{color:var(--accent);font-weight:600;font-family:'SF Mono',monospace}
+            .dim{color:var(--dim)}
+            .num{text-align:right;font-family:'SF Mono',monospace;color:var(--dim)}
+            .status-badge{display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.7rem;font-weight:700;letter-spacing:.5px}
+            .empty{text-align:center;padding:2rem;color:var(--dim)}
+            .footer{text-align:center;color:var(--dim);font-size:.7rem;margin-top:2rem;padding:1rem 0;border-top:1px solid var(--border)}
+            </style>
+        </head>
+        <body>
+            <div class="app">
+                <div class="header">
+                    <h1>SOMA CLUSTER</h1>
+                    <span style="color:var(--dim);font-size:.8rem">{n_running}/{n_total} pods running</span>
+                </div>
+                <div class="stats">
+                    <div class="stat"><div class="label">Pods</div><div class="value">{n_total}</div></div>
+                    <div class="stat"><div class="label">Running</div><div class="value" style="color:var(--green)">{n_running}</div></div>
+                    <div class="stat"><div class="label">Deployments</div><div class="value">{len(deployments)}</div></div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Pods</div>
+                    <table>
+                        <thead><tr><th>Name</th><th>Status</th><th>Image</th><th>Deployment</th><th>Restarts</th><th>CPU</th><th>Memory</th></tr></thead>
+                        <tbody>{pod_rows}</tbody>
+                    </table>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Deployments</div>
+                    <table>
+                        <thead><tr><th>Name</th><th>Image</th><th>Ready</th><th>Strategy</th></tr></thead>
+                        <tbody>{deploy_rows}</tbody>
+                    </table>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Events</div>
+                    <table>
+                        <thead><tr><th>Type</th><th>Message</th><th>Time</th></tr></thead>
+                        <tbody>{event_rows}</tbody>
+                    </table>
+                </div>
+                <div class="footer">Soma Cluster -- Cells are pods. State machines are lifecycles. Signals are the service mesh.</div>
+            </div>
+        </body>
+        </html>
+        """
+    }
+}

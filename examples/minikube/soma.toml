@@ -1,0 +1,12 @@
+[package]
+name = "soma-cluster"
+
+[verify]
+deadlock_free = true
+eventually = ["running", "terminated"]
+
+[verify.after.succeeded]
+eventually = ["terminated"]
+
+[verify.after.failed]
+eventually = ["pending", "terminated"]

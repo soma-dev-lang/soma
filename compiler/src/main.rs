@@ -82,6 +82,9 @@ enum Commands {
         /// Show parsed parameters and response body
         #[arg(long)]
         verbose: bool,
+        /// Join an existing cluster node (host:port of its bus)
+        #[arg(long)]
+        join: Option<String>,
     },
     /// Initialize a new Soma project
     Init {
@@ -156,11 +159,11 @@ fn main() {
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
         Commands::Run { file, args, jit, signal } => commands::run::cmd_run(&file, &args, jit, signal.as_deref(), &mut registry),
-        Commands::Serve { file, port, watch, verbose } => {
+        Commands::Serve { file, port, watch, verbose, join } => {
             if watch {
                 commands::serve::cmd_serve_watch(&file, port, &mut registry);
             } else {
-                commands::serve::cmd_serve(&file, port, verbose, &mut registry);
+                commands::serve::cmd_serve(&file, port, verbose, join.as_deref(), &mut registry);
             }
         }
         Commands::Test { file } => commands::test_cmd::cmd_test(&file, &mut registry),
@@ -213,29 +216,6 @@ fn cmd_verify(files: &[PathBuf]) {
 
                     // Auto-derive: deadlock_free
                     props.push(Property::DeadlockFree);
-
-                    // Auto-derive: eventually(terminal) if terminals exist
-                    if !graph.terminals.is_empty() {
-                        props.push(Property::Eventually(StatePredicate::InSet(
-                            graph.terminals.iter().cloned().collect()
-                        )));
-                    }
-
-                    // Auto-derive: after(state, wildcard_target) for wildcards
-                    for t in &sm.transitions {
-                        if t.node.from == "*" {
-                            let target = &t.node.to;
-                            for state in &graph.states {
-                                if !graph.terminals.contains(state) && state != target {
-                                    props.push(Property::After(
-                                        state.clone(),
-                                        StatePredicate::InState(target.clone()),
-                                    ));
-                                }
-                            }
-                            break;
-                        }
-                    }
 
                     // User-defined properties from soma.toml [verify]
                     if let Some(cfg) = verify_config {

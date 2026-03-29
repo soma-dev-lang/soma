@@ -91,6 +91,21 @@ pub enum CheckError {
         span: Span,
     },
 
+    #[error("scale: shard '{slot}' is not a declared memory slot in cell '{cell}'")]
+    ScaleShardNotFound {
+        cell: String,
+        slot: String,
+        span: Span,
+    },
+
+    #[error("scale: shard '{slot}' uses [{prop}] but scale declares consistency: {consistency} — contradictory")]
+    ScaleConsistencyMismatch {
+        slot: String,
+        prop: String,
+        consistency: String,
+        span: Span,
+    },
+
     #[error("structural promise violated in cell '{cell}': promise '{promise}' is not satisfied")]
     PromiseViolation {
         cell: String,
@@ -127,6 +142,11 @@ pub enum CheckWarning {
         signal: String,
         span: Span,
     },
+    ScaleEventualConsistency {
+        cell: String,
+        slot: String,
+        span: Span,
+    },
 }
 
 impl std::fmt::Display for CheckWarning {
@@ -146,6 +166,9 @@ impl std::fmt::Display for CheckWarning {
             }
             Self::AwaitWithoutHandler { cell, signal, .. } => {
                 write!(f, "warning: cell '{cell}' declares await '{signal}' but has no handler for it (will it be delivered via bus?)")
+            }
+            Self::ScaleEventualConsistency { cell, slot, .. } => {
+                write!(f, "warning: cell '{cell}' uses eventual consistency on shard '{slot}' — reads after writes may return stale data")
             }
         }
     }
@@ -219,6 +242,9 @@ impl<'a> Checker<'a> {
 
         // 7. Run custom checkers from registry
         self.run_custom_checkers(cell);
+
+        // 8. Verify scale section
+        self.check_scale(cell);
     }
 
     /// Verify face contracts: every declared signal has a handler with matching params
@@ -352,6 +378,64 @@ impl<'a> Checker<'a> {
         }
         // All slots checked (or none exist — vacuously true)
         true
+    }
+
+    /// Verify scale section: shard references valid memory, consistency matches properties
+    fn check_scale(&mut self, cell: &CellDef) {
+        // Collect memory slot names and their properties
+        let mut slots: Vec<(String, Vec<String>, Span)> = Vec::new();
+        for section in &cell.sections {
+            if let Section::Memory(ref mem) = section.node {
+                for slot in &mem.slots {
+                    let props: Vec<String> = slot.node.properties.iter()
+                        .map(|p| p.node.name().to_string())
+                        .collect();
+                    slots.push((slot.node.name.clone(), props, slot.span));
+                }
+            }
+        }
+
+        for section in &cell.sections {
+            if let Section::Scale(ref scale) = section.node {
+                // Check shard references a valid memory slot
+                if let Some(ref shard_name) = scale.shard {
+                    let slot = slots.iter().find(|(name, _, _)| name == shard_name);
+                    match slot {
+                        None => {
+                            self.errors.push(CheckError::ScaleShardNotFound {
+                                cell: cell.name.clone(),
+                                slot: shard_name.clone(),
+                                span: section.span,
+                            });
+                        }
+                        Some((_, props, _slot_span)) => {
+                            // Check consistency coherence
+                            let has_consistent = props.iter().any(|p| p == "consistent");
+                            let has_ephemeral = props.iter().any(|p| p == "ephemeral");
+
+                            // [ephemeral] + strong consistency is contradictory
+                            if has_ephemeral && scale.consistency == ScaleConsistency::Strong {
+                                self.errors.push(CheckError::ScaleConsistencyMismatch {
+                                    slot: shard_name.clone(),
+                                    prop: "ephemeral".to_string(),
+                                    consistency: "strong".to_string(),
+                                    span: section.span,
+                                });
+                            }
+
+                            // [consistent] + eventual is a warning (you declared consistent but accept stale reads)
+                            if has_consistent && scale.consistency == ScaleConsistency::Eventual {
+                                self.warnings.push(CheckWarning::ScaleEventualConsistency {
+                                    cell: cell.name.clone(),
+                                    slot: shard_name.clone(),
+                                    span: section.span,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn run_custom_checkers(&mut self, cell: &CellDef) {

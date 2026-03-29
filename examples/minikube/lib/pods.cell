@@ -1,0 +1,41 @@
+// Pod lifecycle and management
+
+cell Pods {
+
+    on pod_status_label(status: String) {
+        match status {
+            "pending"    -> "PENDING"
+            "pulling"    -> "PULLING"
+            "running"    -> "RUNNING"
+            "succeeded"  -> "DONE"
+            "failed"     -> "FAILED"
+            "terminated" -> "KILLED"
+            _            -> status
+        }
+    }
+
+    on pod_status_color(status: String) {
+        match status {
+            "pending"    -> "#eab308"
+            "pulling"    -> "#818cf8"
+            "running"    -> "#22c55e"
+            "succeeded"  -> "#6b7280"
+            "failed"     -> "#ef4444"
+            "terminated" -> "#6b7280"
+            _            -> "#9ca3af"
+        }
+    }
+
+    on make_pod(name: String, image: String, deployment: String) {
+        return map(
+            "name", name,
+            "image", image,
+            "deployment", deployment,
+            "status", "pending",
+            "restarts", 0,
+            "created_at", to_string(now()),
+            "cpu", to_string(random(10, 80)),
+            "memory", to_string(random(50, 500))
+        )
+    }
+}

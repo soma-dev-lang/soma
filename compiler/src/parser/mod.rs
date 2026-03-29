@@ -59,6 +59,7 @@ fn display_token(token: &Token) -> String {
         Token::Try => "'try'".to_string(),
         Token::Catch => "'catch'".to_string(),
         Token::Every => "'every'".to_string(),
+        Token::Scale => "'scale'".to_string(),
         Token::Eof => "end of file".to_string(),
         _ => format!("{:?}", token),
     }
@@ -234,6 +235,7 @@ impl Parser {
             Token::Matches => { let span = tok.span; self.advance(); Ok(("matches".to_string(), span)) }
             Token::Native => { let span = tok.span; self.advance(); Ok(("native".to_string(), span)) }
             Token::Checker => { let span = tok.span; self.advance(); Ok(("checker".to_string(), span)) }
+            Token::Scale => { let span = tok.span; self.advance(); Ok(("scale".to_string(), span)) }
             _ => Err(ParseError::Expected {
                 expected: "identifier".to_string(),
                 found: tok.token.clone(),
@@ -283,6 +285,7 @@ impl Parser {
             Token::Backend => "backend".to_string(),
             Token::Builtin => "builtin".to_string(),
             Token::Runtime => "runtime".to_string(),
+            Token::Scale => "scale".to_string(),
             _ => {
                 return Err(ParseError::Expected {
                     expected: "name".to_string(),
@@ -418,6 +421,10 @@ impl Parser {
             Token::Every => {
                 let ev = self.parse_every_section()?;
                 Ok(Spanned::new(Section::Every(ev), start.merge(self.prev_span())))
+            }
+            Token::Scale => {
+                let sc = self.parse_scale_section()?;
+                Ok(Spanned::new(Section::Scale(sc), start.merge(self.prev_span())))
             }
             Token::Assert => {
                 // In test cells, `assert expr` is syntactic sugar for a Rules section with Assert rules
@@ -965,6 +972,106 @@ impl Parser {
         Ok(EverySection { interval_ms, body })
     }
 
+    // ── Scale (Orchestration) ───────────────────────────────────────
+
+    fn parse_scale_section(&mut self) -> Result<ScaleSection, ParseError> {
+        self.expect(Token::Scale)?;
+        self.expect(Token::LBrace)?;
+
+        let mut replicas: u64 = 1;
+        let mut shard: Option<String> = None;
+        let mut consistency = ScaleConsistency::Strong;
+        let mut tolerance: u64 = 0;
+        let mut cpu: Option<u64> = None;
+        let mut memory_res: Option<String> = None;
+        let mut disk: Option<String> = None;
+
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let (key, _) = self.expect_ident()?;
+            self.expect(Token::Colon)?;
+            match key.as_str() {
+                "replicas" | "tolerance" | "cpu" => {
+                    if let Token::IntLit(n) = self.peek().clone() {
+                        match key.as_str() {
+                            "replicas" => replicas = n as u64,
+                            "tolerance" => tolerance = n as u64,
+                            "cpu" => cpu = Some(n as u64),
+                            _ => {}
+                        }
+                        self.advance();
+                    } else {
+                        return Err(ParseError::Expected {
+                            expected: "integer".to_string(),
+                            found: self.peek().clone(),
+                            span: self.peek_span(),
+                        });
+                    }
+                }
+                "shard" => {
+                    let (name, _) = self.expect_ident()?;
+                    shard = Some(name);
+                }
+                "consistency" => {
+                    let (val, _) = self.expect_ident()?;
+                    consistency = match val.as_str() {
+                        "strong" => ScaleConsistency::Strong,
+                        "causal" => ScaleConsistency::Causal,
+                        "eventual" => ScaleConsistency::Eventual,
+                        _ => {
+                            return Err(ParseError::Expected {
+                                expected: "strong, causal, or eventual".to_string(),
+                                found: Token::Ident(val),
+                                span: self.prev_span(),
+                            });
+                        }
+                    };
+                }
+                "memory" | "disk" => {
+                    // Parse size literal: "8Gi", "512Mi", "1Ti" or just a string
+                    let val = match self.peek().clone() {
+                        Token::StringLit(s) => { self.advance(); s }
+                        Token::Ident(s) => { self.advance(); s }
+                        // Handle patterns like 8Gi parsed as IntLit + Ident
+                        Token::IntLit(n) => {
+                            self.advance();
+                            // Check for unit suffix
+                            if let Token::Ident(unit) = self.peek().clone() {
+                                if unit == "Gi" || unit == "Mi" || unit == "Ti" || unit == "Ki" {
+                                    self.advance();
+                                    format!("{}{}", n, unit)
+                                } else {
+                                    format!("{}", n)
+                                }
+                            } else {
+                                format!("{}", n)
+                            }
+                        }
+                        _ => {
+                            // Try DurationLit-style: might be parsed as something else
+                            let (name, _) = self.expect_ident()?;
+                            name
+                        }
+                    };
+                    match key.as_str() {
+                        "memory" => memory_res = Some(val),
+                        "disk" => disk = Some(val),
+                        _ => {}
+                    }
+                }
+                other => {
+                    return Err(ParseError::Expected {
+                        expected: "replicas, shard, consistency, tolerance, cpu, memory, or disk".to_string(),
+                        found: Token::Ident(other.to_string()),
+                        span: self.prev_span(),
+                    });
+                }
+            }
+        }
+        self.expect(Token::RBrace)?;
+
+        Ok(ScaleSection { replicas, shard, consistency, tolerance, cpu, memory: memory_res, disk })
+    }
+
     // ── Interior ─────────────────────────────────────────────────────
 
     fn parse_interior_section(&mut self) -> Result<InteriorSection, ParseError> {
@@ -1153,7 +1260,7 @@ impl Parser {
             Token::Start | Token::Test | Token::Backend | Token::Builtin |
             Token::Check | Token::Memory | Token::Face |
             Token::Property | Token::Rules | Token::Runtime | Token::Matches |
-            Token::Native | Token::Checker => {
+            Token::Native | Token::Checker | Token::Scale => {
                 // Could be: assignment, target.method(args), fn_call(args), or bare expr
                 let save_pos = self.pos;
                 let (name, name_span) = self.expect_ident()?;
@@ -1775,7 +1882,7 @@ impl Parser {
             Token::Start | Token::Test | Token::Backend | Token::Builtin |
             Token::Signal | Token::Emit | Token::Check | Token::Memory | Token::Face |
             Token::Property | Token::Rules | Token::Runtime | Token::Matches |
-            Token::Native | Token::Checker => {
+            Token::Native | Token::Checker | Token::Scale => {
                 let name = format!("{:?}", self.peek()).to_lowercase();
                 // Get the keyword as a string name
                 let name = match self.peek() {
@@ -1785,7 +1892,7 @@ impl Parser {
                     Token::Signal => "signal", Token::Emit => "emit", Token::Check => "check", Token::Memory => "memory",
                     Token::Face => "face", Token::Property => "property", Token::Rules => "rules",
                     Token::Runtime => "runtime", Token::Matches => "matches", Token::Native => "native",
-                    Token::Checker => "checker",
+                    Token::Checker => "checker", Token::Scale => "scale",
                     _ => unreachable!(),
                 }.to_string();
                 self.advance();

@@ -41,7 +41,7 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
     }
 }
 
-pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Registry) {
+pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, registry: &mut Registry) {
     let source = read_source(path);
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));
@@ -101,6 +101,77 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         }
     }
 
+    // ── Cluster mode ──────────────────────────────────────────────────
+    // Three ways to form a cluster (in priority order):
+    //   1. --join host:port          (CLI flag)
+    //   2. SOMA_SEEDS=a:p,b:p,...    (env var, for containers)
+    //   3. [cluster] seeds = [...]   (soma.toml)
+    // If none specified, runs standalone.
+
+    let base_dir_path = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    let soma_toml_path = base_dir_path.join("soma.toml");
+
+    // Extract scale section from the main cell
+    let scale_section = cell.node.sections.iter().find_map(|s| {
+        if let ast::Section::Scale(ref sc) = s.node { Some(sc.clone()) } else { None }
+    });
+
+    let bus_port = if (port as u32) + 2 <= 65535 { port + 2 } else { 0 };
+
+    // Determine node_id and seeds to join
+    let node_id = std::env::var("SOMA_NODE_ID")
+        .unwrap_or_else(|_| format!("localhost:{}", bus_port));
+
+    let seeds_to_join: Vec<String> = if let Some(join_addr) = join {
+        // --join flag: single seed
+        vec![join_addr.to_string()]
+    } else if let Ok(env_seeds) = std::env::var("SOMA_SEEDS") {
+        // SOMA_SEEDS env var
+        env_seeds.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    } else if let Some(manifest) = soma_toml_path.exists().then(|| {
+        std::fs::read_to_string(&soma_toml_path).ok()
+            .and_then(|c| toml::from_str::<crate::pkg::manifest::Manifest>(&c).ok())
+    }).flatten() {
+        manifest.cluster.seeds.clone()
+    } else {
+        vec![]
+    };
+
+    // Cluster mode activates when: --join is specified, OR env SOMA_SEEDS, OR cell has scale { }
+    let is_cluster_mode = !seeds_to_join.is_empty() || scale_section.is_some();
+
+    let cluster_node: Option<std::sync::Arc<runtime::cluster::ClusterNode>> =
+        if is_cluster_mode {
+            let cluster = std::sync::Arc::new(runtime::cluster::ClusterNode::new(&node_id));
+
+            // NOTE: join_cluster calls happen AFTER bus listener starts (see below)
+            // Storage is NOT wrapped — replication uses the signal bus (EVENT protocol)
+            // The interpreter intercepts storage ops and broadcasts via peer bus
+
+            eprintln!("cluster: node '{}' ({} nodes, leader: {})",
+                node_id,
+                cluster.ring.read().unwrap().node_count(),
+                if cluster.is_leader() { "yes" } else { "no" });
+
+            Some(cluster)
+        } else {
+            None
+        };
+
+    let is_cluster_leader = cluster_node.as_ref().map_or(true, |c| c.is_leader());
+
+    // Build sharded slots map from scale section
+    let sharded_slots: std::collections::HashMap<String, bool> = scale_section.as_ref()
+        .and_then(|s| s.shard.as_ref())
+        .map(|shard_name| {
+            let mut m = std::collections::HashMap::new();
+            m.insert(shard_name.clone(), true);
+            m.insert(format!("{}.{}", cell_name, shard_name), true);
+            m
+        })
+        .unwrap_or_default();
+    let sharded_slots = std::sync::Arc::new(sharded_slots);
+
     let addr = format!("0.0.0.0:{}", port);
     let server = tiny_http::Server::http(&addr).unwrap_or_else(|e| {
         eprintln!("error: cannot start server on {}: {}", addr, e);
@@ -110,6 +181,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
     eprintln!("soma serve v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("cell: {}", cell_name);
     eprintln!("handlers: [{}]", handler_names.join(", "));
+    if scale_section.is_some() {
+        eprintln!("scale: replicas={} shard={} consistency={}",
+            scale_section.as_ref().unwrap().replicas,
+            scale_section.as_ref().unwrap().shard.as_deref().unwrap_or("none"),
+            scale_section.as_ref().unwrap().consistency);
+    }
     eprintln!("database: {}", std::path::Path::new(".soma_data/soma.db").canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(".soma_data/soma.db")).display());
     eprintln!("listening on http://localhost:{}", port);
@@ -129,10 +206,6 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
 
     // Create peer bus for inter-process signal delivery
     let peer_bus = interpreter::new_peer_bus();
-    let bus_port = if (port as u32) + 2 <= 65535 { port + 2 } else {
-        eprintln!("warning: bus port {} exceeds 65535, disabled", (port as u32) + 2);
-        0
-    };
 
     // TCP bus listener: accepts incoming peer connections
     if bus_port > 0 {
@@ -141,6 +214,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         let prog = program.clone();
         let slots = storage_slots.clone();
         let cname = cell_name.clone();
+        let cluster_for_bus = cluster_node.clone();
+        let sharded_for_bus = sharded_slots.clone();
+        let my_node_id = if is_cluster_mode { node_id.clone() } else { String::new() };
 
         std::thread::spawn(move || {
             let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{}", bus_port)) {
@@ -154,12 +230,25 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
 
             for stream in listener.incoming() {
                 let stream = match stream { Ok(s) => s, Err(_) => continue };
+                stream.set_nodelay(true).ok();
                 let read_stream = match stream.try_clone() { Ok(s) => s, Err(_) => continue };
 
                 // Register writer for this peer on the peer bus
                 let (tx, rx) = std::sync::mpsc::channel::<String>();
                 if let Ok(mut senders) = peer_bus_clone.lock() {
                     senders.push(tx);
+                }
+
+                // If cluster mode, register this connection in the cluster node
+                if let Some(ref cluster) = cluster_for_bus {
+                    if let Ok(writer_clone) = stream.try_clone() {
+                        // We'll get the peer's node_id from the CLUSTER JOIN message
+                        // For now, register with the remote addr
+                        let peer_addr = stream.peer_addr()
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|_| "unknown".to_string());
+                        cluster.peers.lock().unwrap().insert(peer_addr, writer_clone);
+                    }
                 }
 
                 // Writer: peer bus → TCP lines to peer
@@ -177,6 +266,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let slots2 = slots.clone();
                 let cname2 = cname.clone();
                 let ebus = event_bus_clone.clone();
+                let cluster_for_reader = cluster_for_bus.clone();
+                let sharded_for_reader = sharded_for_bus.clone();
+                let my_nid = my_node_id.clone();
                 let pbus = peer_bus_clone.clone();
 
                 std::thread::spawn(move || {
@@ -185,11 +277,159 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                     eprintln!("bus: peer connected");
                     for line in reader.lines() {
                         let line = match line { Ok(l) => l, Err(_) => break };
+
+                        // Handle cluster membership protocol
+                        if line.starts_with("CLUSTER ") {
+                            if let Some(msg) = runtime::cluster::ClusterMsg::decode(&line) {
+                                match msg {
+                                    runtime::cluster::ClusterMsg::Join(peer_id) => {
+                                        eprintln!("cluster: node '{}' joined", peer_id);
+                                        if let Some(ref cluster) = cluster_for_reader {
+                                            cluster.ring.write().unwrap().add_node(&peer_id);
+                                            let nodes = cluster.ring.read().unwrap().nodes().to_vec();
+                                            let reply = runtime::cluster::ClusterMsg::Members(nodes);
+                                            if let Ok(peers) = pbus.lock() {
+                                                let encoded = reply.encode();
+                                                for tx in peers.iter() {
+                                                    let _ = tx.send(encoded.clone());
+                                                }
+                                            }
+                                            // Connect back to the peer for bidirectional EVENT routing
+                                            // peer_id format is "host:bus_port" (e.g., "node2:8084")
+                                            let pbus_back = pbus.clone();
+                                            let pid = peer_id.clone();
+                                            std::thread::spawn(move || {
+                                                if let Ok(stream) = std::net::TcpStream::connect(&pid) {
+                                                    stream.set_nodelay(true).ok();
+                                                    let (tx, rx) = std::sync::mpsc::channel::<String>();
+                                                    if let Ok(mut senders) = pbus_back.lock() {
+                                                        senders.push(tx);
+                                                    }
+                                                    let mut writer = stream;
+                                                    for line in rx {
+                                                        use std::io::Write;
+                                                        if writer.write_all(line.as_bytes()).is_err() { return; }
+                                                        let _ = writer.flush();
+                                                    }
+                                                }
+                                            });
+                                            eprintln!("cluster: {} nodes, leader: {}",
+                                                cluster.ring.read().unwrap().node_count(),
+                                                if cluster.is_leader() { &my_nid } else { "other" });
+                                        }
+                                    }
+                                    runtime::cluster::ClusterMsg::Members(nodes) => {
+                                        if let Some(ref cluster) = cluster_for_reader {
+                                            let mut ring = cluster.ring.write().unwrap();
+                                            for node in &nodes {
+                                                ring.add_node(node);
+                                            }
+                                            eprintln!("cluster: updated membership — {} nodes", ring.node_count());
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Handle all EVENT messages — both signals AND storage replication
+                        // Storage events: _cluster_set, _cluster_del, _cluster_get, _cluster_get_reply, _cluster_values, _cluster_values_reply
                         if line.starts_with("EVENT ") {
                             let rest = &line[6..];
                             if let Some(space) = rest.find(' ') {
                                 let event_name = &rest[..space];
                                 let json_data = &rest[space+1..];
+
+                                // Storage replication events — apply directly to local storage
+                                if event_name == "_cluster_set" {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                                        let slot = parsed.get("slot").and_then(|v| v.as_str()).unwrap_or("");
+                                        let key = parsed.get("key").and_then(|v| v.as_str()).unwrap_or("");
+                                        let value = parsed.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                                        let slot_key = format!("{}.{}", cname2, slot);
+                                        if let Some(backend) = slots2.get(&slot_key).or_else(|| slots2.get(slot)) {
+                                            backend.set(key, runtime::storage::StoredValue::String(value.to_string()));
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if event_name == "_cluster_del" {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                                        let slot = parsed.get("slot").and_then(|v| v.as_str()).unwrap_or("");
+                                        let key = parsed.get("key").and_then(|v| v.as_str()).unwrap_or("");
+                                        let slot_key = format!("{}.{}", cname2, slot);
+                                        if let Some(backend) = slots2.get(&slot_key).or_else(|| slots2.get(slot)) {
+                                            backend.delete(key);
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if event_name == "_cluster_get" {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                                        let slot = parsed.get("slot").and_then(|v| v.as_str()).unwrap_or("");
+                                        let key = parsed.get("key").and_then(|v| v.as_str()).unwrap_or("");
+                                        let req_id = parsed.get("req_id").and_then(|v| v.as_str()).unwrap_or("");
+                                        let slot_key = format!("{}.{}", cname2, slot);
+                                        let value = slots2.get(&slot_key).or_else(|| slots2.get(slot))
+                                            .and_then(|b| b.get(key))
+                                            .map(|v| format!("{}", v))
+                                            .unwrap_or_default();
+                                        // Reply via bus
+                                        let reply = format!("EVENT _cluster_get_reply {}\n",
+                                            serde_json::json!({"req_id": req_id, "value": value}));
+                                        if let Ok(peers) = pbus.lock() {
+                                            for tx in peers.iter() {
+                                                let _ = tx.send(reply.clone());
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if event_name == "_cluster_get_reply" {
+                                    // Route reply to pending request
+                                    if let Some(ref cluster) = cluster_for_reader {
+                                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                                            let req_id = parsed.get("req_id").and_then(|v| v.as_str()).unwrap_or("");
+                                            let value = parsed.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                                            if let Some(tx) = cluster.pending.lock().unwrap().remove(req_id) {
+                                                let _ = tx.send(value.to_string());
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if event_name == "_cluster_values" {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                                        let slot = parsed.get("slot").and_then(|v| v.as_str()).unwrap_or("");
+                                        let req_id = parsed.get("req_id").and_then(|v| v.as_str()).unwrap_or("");
+                                        let slot_key = format!("{}.{}", cname2, slot);
+                                        let vals: Vec<String> = slots2.get(&slot_key).or_else(|| slots2.get(slot))
+                                            .map(|b| b.values().iter().map(|v| format!("{}", v)).collect())
+                                            .unwrap_or_default();
+                                        let reply = format!("EVENT _cluster_values_reply {}\n",
+                                            serde_json::json!({"req_id": req_id, "values": vals}));
+                                        if let Ok(peers) = pbus.lock() {
+                                            for tx in peers.iter() {
+                                                let _ = tx.send(reply.clone());
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if event_name == "_cluster_values_reply" {
+                                    if let Some(ref cluster) = cluster_for_reader {
+                                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
+                                            let req_id = parsed.get("req_id").and_then(|v| v.as_str()).unwrap_or("");
+                                            let values = parsed.get("values").and_then(|v| v.as_str()).unwrap_or("[]");
+                                            if let Some(tx) = cluster.pending.lock().unwrap().remove(req_id) {
+                                                let _ = tx.send(values.to_string());
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+
+                                // Regular signal — dispatch to handler
                                 let data = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
                                     interpreter::builtins::serde_json_to_value(&parsed)
                                 } else {
@@ -201,6 +441,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                                 interp.ensure_state_machine_storage();
                                 interp.event_bus = Some(ebus.clone());
                                 interp.peer_bus = Some(pbus.clone());
+                                if let Some(ref c) = cluster_for_reader { interp.set_cluster(c.clone(), &sharded_for_reader); }
                                 let _ = interp.call_signal(&cname2, event_name, vec![data]);
                             }
                         }
@@ -209,6 +450,44 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 });
             }
         });
+    }
+
+    // ── Cluster join (after bus is listening) ──────────────────────────
+    if let Some(ref cluster) = cluster_node {
+        // Give bus listener thread time to bind
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        for seed in &seeds_to_join {
+            if seed == &node_id { continue; }
+            eprintln!("cluster: connecting to {}...", seed);
+            match cluster.join_cluster(seed) {
+                Ok(()) => {
+                    eprintln!("cluster: joined {}", seed);
+                    // Also connect our peer bus to the seed for bidirectional EVENT routing
+                    // This ensures _cluster_set events flow from this node to the seed
+                    if let Ok(stream) = std::net::TcpStream::connect(seed) {
+                        stream.set_nodelay(true).ok();
+                        let (tx, rx) = std::sync::mpsc::channel::<String>();
+                        if let Ok(mut senders) = peer_bus.lock() {
+                            senders.push(tx);
+                        }
+                        // Writer thread: peer bus → TCP
+                        let mut writer = stream;
+                        std::thread::spawn(move || {
+                            use std::io::Write;
+                            for line in rx {
+                                if writer.write_all(line.as_bytes()).is_err() { return; }
+                                let _ = writer.flush();
+                            }
+                        });
+                    }
+                }
+                Err(e) => eprintln!("cluster: {} (will accept incoming connections)", e),
+            }
+        }
+        let count = cluster.ring.read().unwrap().node_count();
+        if count > 1 {
+            eprintln!("cluster: {} nodes active", count);
+        }
     }
 
     // Shared WS client output (set by ws_connect, used by ws_send across all interpreters)
@@ -223,6 +502,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         interp.ensure_state_machine_storage();
         interp.event_bus = Some(event_bus.clone());
         interp.peer_bus = Some(peer_bus.clone());
+        if let Some(ref c) = cluster_node { interp.set_cluster(c.clone(), &sharded_slots); }
         let _ = interp.call_signal(&cell_name, init_signal, vec![]);
         // Capture ws_out if ws_connect was called
         if let Some(ref out) = interp.ws_out {
@@ -246,6 +526,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                         interp.ensure_state_machine_storage();
                         interp.event_bus = Some(event_bus.clone());
                         interp.peer_bus = Some(peer_bus.clone());
+                        if let Some(ref c) = cluster_node { interp.set_cluster(c.clone(), &sharded_slots); }
                         match interp.do_connect(addr, &cell_name) {
                             Ok(_) => eprintln!("peer: {} linked", peer_name),
                             Err(e) => eprintln!("peer: {} failed: {}", peer_name, e),
@@ -404,10 +685,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
     }
 
     // Spawn scheduler threads for `every` sections
+    // In cluster mode, only the leader runs `every` blocks
     for cell_spanned in &program.cells {
         if cell_spanned.node.kind != ast::CellKind::Cell { continue; }
         for section in &cell_spanned.node.sections {
             if let ast::Section::Every(ref every) = section.node {
+                if !is_cluster_leader {
+                    eprintln!("scheduler: every {}ms (skipped — not leader)", every.interval_ms);
+                    continue;
+                }
                 let interval = every.interval_ms;
                 let body = every.body.clone();
                 let prog = program.clone();
@@ -416,6 +702,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                 let bus = event_bus.clone();
                 let pbus = peer_bus.clone();
                 let ws = shared_ws_out.clone();
+                let cluster_for_sched = cluster_node.clone();
+                let sharded_for_sched = sharded_slots.clone();
                 eprintln!("scheduler: every {}ms", interval);
 
                 std::thread::spawn(move || {
@@ -425,6 +713,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                     interp.ensure_state_machine_storage();
                     interp.event_bus = Some(bus.clone());
                     interp.peer_bus = Some(pbus.clone());
+                    if let Some(ref c) = cluster_for_sched { interp.set_cluster(c.clone(), &sharded_for_sched); }
                     if let Ok(ws_guard) = ws.lock() {
                         interp.ws_out = ws_guard.clone();
                     }
@@ -457,6 +746,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         let event_bus = event_bus.clone();
         let peer_bus = peer_bus.clone();
         let shared_ws = shared_ws_out.clone();
+        let cluster_for_http = cluster_node.clone();
+        let sharded_for_http = sharded_slots.clone();
 
         std::thread::spawn(move || {
         let method = request.method().to_string();
@@ -550,6 +841,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
         interp.ensure_state_machine_storage();
         interp.event_bus = Some(event_bus.clone());
         interp.peer_bus = Some(peer_bus.clone());
+        if let Some(ref c) = cluster_for_http { interp.set_cluster(c.clone(), &sharded_for_http); }
         if let Ok(ws_guard) = shared_ws.lock() {
             interp.ws_out = ws_guard.clone();
         }
@@ -615,12 +907,21 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, registry: &mut Regist
                         if let Some(param_names) = handler_params.get(sig) {
                             if let interpreter::Value::Map(ref entries) = bv {
                                 let remaining_params = &param_names[args.len()..];
-                                for pname in remaining_params {
-                                    let val = entries.iter()
-                                        .find(|(k, _)| k == pname)
-                                        .map(|(_, v)| v.clone())
-                                        .unwrap_or(interpreter::Value::Unit);
-                                    args.push(val);
+                                // If there's exactly one remaining param and it doesn't
+                                // match any key in the body, pass the whole Map
+                                // (e.g. `on deploy(data: Map)` with body {"name":"x",...})
+                                if remaining_params.len() == 1
+                                    && !entries.iter().any(|(k, _)| k == &remaining_params[0])
+                                {
+                                    args.push(bv.clone());
+                                } else {
+                                    for pname in remaining_params {
+                                        let val = entries.iter()
+                                            .find(|(k, _)| k == pname)
+                                            .map(|(_, v)| v.clone())
+                                            .unwrap_or(interpreter::Value::Unit);
+                                        args.push(val);
+                                    }
                                 }
                             } else {
                                 args.push(bv.clone());

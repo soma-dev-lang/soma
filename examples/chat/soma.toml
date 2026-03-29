@@ -1,0 +1,6 @@
+[package]
+name = "soma-chat"
+
+[verify]
+deadlock_free = true
+eventually = ["delivered", "read", "expired"]

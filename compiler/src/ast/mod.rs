@@ -86,12 +86,45 @@ pub enum Section {
     State(StateMachineSection),
     /// Scheduled execution: every 30s { ... }
     Every(EverySection),
+    /// Orchestration: scale { replicas: 100, shard: data, ... }
+    Scale(ScaleSection),
 }
 
 #[derive(Debug, Clone)]
 pub struct EverySection {
     pub interval_ms: u64,
     pub body: Vec<Spanned<Statement>>,
+}
+
+// ── Scale (Orchestration) ───────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ScaleSection {
+    pub replicas: u64,
+    pub shard: Option<String>,
+    pub consistency: ScaleConsistency,
+    pub tolerance: u64,
+    // Resources per instance
+    pub cpu: Option<u64>,           // cores
+    pub memory: Option<String>,     // "8Gi", "512Mi"
+    pub disk: Option<String>,       // "100Gi", "1Ti"
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScaleConsistency {
+    Strong,
+    Causal,
+    Eventual,
+}
+
+impl std::fmt::Display for ScaleConsistency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScaleConsistency::Strong => write!(f, "strong"),
+            ScaleConsistency::Causal => write!(f, "causal"),
+            ScaleConsistency::Eventual => write!(f, "eventual"),
+        }
+    }
 }
 
 // ── Face (Contract) ──────────────────────────────────────────────────

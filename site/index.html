@@ -63,6 +63,7 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <a href="#manifesto">Why</a>
 <a href="#syntax">Language</a>
 <a href="#native">Performance</a>
+<a href="#fractal">Distribution</a>
 <a href="#reference">Reference</a>
 <a href="https://github.com/soma-dev-lang/soma">GitHub</a>
 </div>
@@ -693,34 +694,121 @@ risk = <span class="str">"localhost:7082"</span>        <span class="cmt">// add
                        <span class="cmt">//   &rarr; WS: WebSocket clients on :8081</span></code></pre>
 </section>
 
+<!-- ═══════════════════════════════════ FRACTAL ═══════════════════════════════════ -->
+<section id="fractal">
+<h2>Fractal Distribution</h2>
+<p class="subtitle">Same code. One machine or twenty thousand. The only difference: <code>--join</code>.</p>
+
+<p>A cell declares <strong>what</strong> it needs. The runtime figures out <strong>how</strong>.</p>
+
+<pre><code><span class="kw">cell</span> PricingEngine {
+
+    <span class="kw">memory</span> {
+        trades: Map&lt;String, String&gt; [persistent, consistent]
+        cache:  Map&lt;String, String&gt; [ephemeral, local]
+    }
+
+    <span class="kw">scale</span> {
+        replicas: <span class="num">50</span>
+        shard: trades
+        consistency: strong
+        tolerance: <span class="num">2</span>
+        cpu: <span class="num">4</span>
+        memory: <span class="str">"8Gi"</span>
+    }
+
+    <span class="kw">on</span> book_trade(data: Map) {
+        trades.set(data.id, to_json(data))   <span class="cmt">// replicated to all nodes</span>
+    }
+
+    <span class="kw">on</span> price(data: Map) {
+        <span class="kw">return</span> cache.get(data.symbol)         <span class="cmt">// node-local, microseconds</span>
+    }
+}</code></pre>
+
+<p>Run it alone:</p>
+
+<pre><code>$ soma serve app.cell -p 8080</code></pre>
+
+<p>Scale it to a cluster:</p>
+
+<pre><code>$ soma serve app.cell -p 8080                          <span class="cmt"># node 1 (leader)</span>
+$ soma serve app.cell -p 8081 --join localhost:8082     <span class="cmt"># node 2</span>
+$ soma serve app.cell -p 8083 --join localhost:8082     <span class="cmt"># node 3</span></code></pre>
+
+<p><strong>The code doesn't change.</strong> Not one line. The <code>scale { }</code> section declares the distribution contract. The runtime honors it:</p>
+
+<table>
+<tr><td><code>shard: trades</code></td><td>Memory slot distributed across nodes via consistent hash ring</td></tr>
+<tr><td><code>[ephemeral, local]</code></td><td>Memory stays node-local. Fast path. Never touches the network.</td></tr>
+<tr><td><code>consistency: strong</code></td><td>Writes replicated before acknowledging. Linearizable reads.</td></tr>
+<tr><td><code>consistency: eventual</code></td><td>Write locally, propagate in background. Reads may be stale.</td></tr>
+<tr><td><code>tolerance: 2</code></td><td>Cluster survives 2 simultaneous node failures</td></tr>
+<tr><td><code>cpu: 4, memory: "8Gi"</code></td><td>Resource requirements per instance</td></tr>
+</table>
+
+<h3>Signals are replication</h3>
+<p>There is no special replication protocol. When <code>trades.set(key, val)</code> executes on node 1, it broadcasts an <code>EVENT</code> on the signal bus. Every connected node receives it and applies it locally. The same bus that carries inter-cell signals carries data replication. The infrastructure <strong>is</strong> the language.</p>
+
+<h3>The verifier knows about distribution</h3>
+<p><code>soma verify</code> proves distributed properties <strong>at compile time</strong>, before deployment:</p>
+
+<pre><code>$ soma verify app.cell
+
+State machine 'PricingEngine/scale':
+  <span style="color:#22c55e">&check;</span> replicas: 50 instances declared
+  <span style="color:#22c55e">&check;</span> tolerance: survives 2 node failures (of 50 replicas)
+  <span style="color:#22c55e">&check;</span> shard 'trades' is [persistent] &mdash; data survives node restart
+  <span style="color:#22c55e">&check;</span> consistency: strong &mdash; linearizable reads/writes
+  <span style="color:#22c55e">&check;</span> CAP: CP mode &mdash; consistent + partition-tolerant
+  <span style="color:#22c55e">&check;</span> quorum: 26/50 nodes needed &mdash; tolerates 24 failures
+  <span style="color:#22c55e">&check;</span> memory 'cache' is node-local &mdash; not distributed (fast path)
+  <span style="color:#22c55e">&check;</span> scheduler runs on leader node only</code></pre>
+
+<p>Contradictions are caught at compile time:</p>
+<pre><code><span class="kw">memory</span> { data: Map [ephemeral, local] }
+<span class="kw">scale</span>  { shard: data, consistency: strong }
+<span class="cmt">// &rarr; error: shard 'data' uses [ephemeral] but scale declares</span>
+<span class="cmt">//          consistency: strong &mdash; contradictory</span></code></pre>
+
+<h3>Why this is different</h3>
+<table>
+<tr><th></th><th>Kubernetes</th><th>Erlang/OTP</th><th>Akka</th><th>Soma</th></tr>
+<tr><td>Distribution model</td><td>External YAML</td><td>In the VM</td><td>In the library</td><td><strong>In the language</strong></td></tr>
+<tr><td>Verified before deploy</td><td>No</td><td>No</td><td>No</td><td><strong>Yes (CTL + CAP)</strong></td></tr>
+<tr><td>Consistency declared</td><td>No</td><td>No</td><td>No</td><td><strong>Per memory slot</strong></td></tr>
+<tr><td>Same code local/cluster</td><td>No</td><td>Almost</td><td>Almost</td><td><strong>Yes, zero changes</strong></td></tr>
+</table>
+</section>
+
 <!-- ═══════════════════════════════════ EXAMPLES ═══════════════════════════════════ -->
 <section>
 <h2>Built with Soma</h2>
 
 <div class="grid3">
 <div class="card">
+<h4>Distributed Pricing Engine</h4>
+<p>50-node trade booking, option pricing, greek reconciliation. Strong consistency, verified quorum. <code>--join</code> to scale.</p>
+</div>
+<div class="card">
+<h4>Distributed Job Queue</h4>
+<p>A mini Celery. Submit jobs, work-stealing scheduler, retry logic. Verified: every job completes or expires. 120 lines.</p>
+</div>
+<div class="card">
+<h4>Distributed Chat</h4>
+<p>Multi-room messaging across nodes. Eventual consistency. Messages replicated via signal bus. 90 lines.</p>
+</div>
+<div class="card">
+<h4>Mini Kubernetes</h4>
+<p>Cells are pods. State machines are lifecycles. The scheduler is a controller loop. Verified deadlock-free. 200 lines.</p>
+</div>
+<div class="card">
 <h4>Exchange + Trader</h4>
-<p>Order book, matching engine, market maker bot. Two independent programs communicating via signal bus. Real-time fills.</p>
+<p>Order book, matching engine, market maker bot. Two programs communicating via signal bus. Real-time fills.</p>
 </div>
 <div class="card">
-<h4>Quant Fund</h4>
-<p>Multi-regime adaptive momentum. Factor scoring, regime state machine, auto-rebalancing. 300 lines.</p>
-</div>
-<div class="card">
-<h4>Semaphore Agent</h4>
-<p>2-intersection traffic controller. State machines, night mode, emergency, live SSE dashboard. 4 files.</p>
-</div>
-<div class="card">
-<h4>Trading Desk</h4>
-<p>20-stock universe, screener, ranker, state machine orders, real-time dashboard. 413 lines.</p>
-</div>
-<div class="card">
-<h4>Car Rental</h4>
-<p>Multi-file booking system. Vehicle inventory, reservations, HTML pages. 5 files.</p>
-</div>
-<div class="card">
-<h4>100 Examples</h4>
-<p>From hello world to HTMX apps. Every example parses, checks, and runs. Trains models.</p>
+<h4>100+ Examples</h4>
+<p>From hello world to HTMX apps to Monte Carlo pricing. Every example parses, checks, and runs.</p>
 </div>
 </div>
 </section>

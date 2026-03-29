@@ -1,0 +1,182 @@
+// ============================================================================
+// Distributed Pricing Engine — Fractal Scale Demo
+// ============================================================================
+//
+// Same code runs on 1 machine or 50 nodes.
+// `scale { }` declares WHAT to distribute.
+// `soma.toml [cluster]` declares WHERE.
+//
+// Single machine:  soma serve app.cell
+// 3-node cluster:  soma serve app.cell -p 8080  (on each node, with [cluster] in soma.toml)
+//
+// Verify:  soma verify app.cell
+// Check:   soma check app.cell
+//
+// API:
+//   POST /book_trade  {"id": "T001", "symbol": "AAPL", "side": "buy", "qty": 100, "price": 185.50}
+//   POST /price       {"symbol": "AAPL", "vol": 0.25, "spot": 185.50}
+//   GET  /trades
+//   GET  /greeks
+//   GET  /
+
+cell PricingEngine {
+
+    memory {
+        // Trades: distributed across nodes, strongly consistent, auditable
+        trades: Map<String, String> [persistent, consistent]
+
+        // Greeks cache: eventual consistency suffices (risk view converges)
+        greeks: Map<String, String> [persistent]
+
+        // Local price cache: each node has its own (fast path)
+        price_cache: Map<String, String> [ephemeral, local]
+
+        // Events log
+        events: Map<String, String> [ephemeral, local]
+    }
+
+    // ---- Orchestration: this IS the distributed contract ----
+    scale {
+        replicas: 50
+        shard: trades
+        consistency: strong
+        tolerance: 2
+        cpu: 4
+        memory: "8Gi"
+        disk: "100Gi"
+    }
+
+    // ---- Trade lifecycle: formally verified ----
+    state trade_lifecycle {
+        initial: pending
+        pending -> confirmed
+        confirmed -> executed
+        executed -> settled
+        pending -> cancelled
+        confirmed -> cancelled
+        executed -> failed
+        failed -> pending
+        * -> eod_frozen
+    }
+
+    // ---- Controller: runs on leader only ----
+    every 5s {
+        reconcile_greeks()
+    }
+
+    on reconcile_greeks() {
+        let all_trades = trades.values()
+            |> map(s => from_json(s))
+            |> filter(t => t.id != () && t.status == "executed")
+
+        let symbols = all_trades |> map(t => t.symbol) |> distinct()
+
+        for sym in symbols {
+            let sym_trades = all_trades |> filter(t => t.symbol == sym)
+            let total_qty = sym_trades
+                |> map(t => to_float(t.qty ?? "0"))
+                |> reduce(0, s => s.acc + s.val)
+            let avg_price = sym_trades
+                |> map(t => to_float(t.price ?? "0"))
+                |> reduce(0, s => s.acc + s.val)
+            let n = len(sym_trades)
+            let avg = 0
+            if n > 0 { avg = avg_price / n }
+
+            let greek = map(
+                "symbol", sym,
+                "delta", to_string(total_qty),
+                "avg_price", to_string(avg),
+                "positions", to_string(n),
+                "updated_at", to_string(now())
+            )
+            greeks.set(sym, to_json(greek))
+        }
+    }
+
+    // ---- API ----
+
+    on book_trade(data: Map) {
+        let id = data.id ?? to_string(now())
+        let trade = map(
+            "id", id,
+            "symbol", data.symbol ?? "UNKNOWN",
+            "side", data.side ?? "buy",
+            "qty", to_string(data.qty ?? 0),
+            "price", to_string(data.price ?? 0),
+            "status", "executed",
+            "booked_at", to_string(now())
+        )
+        trades.set(id, to_json(trade))
+        log_event("trade", "Booked {data.side} {data.qty} {data.symbol} @ {data.price}")
+        return map("status", "booked", "trade_id", id)
+    }
+
+    on price(data: Map) {
+        let symbol = data.symbol ?? "UNKNOWN"
+        let vol = to_float(data.vol ?? "0.2")
+        let spot = to_float(data.spot ?? "100")
+
+        // Check cache first (node-local, microseconds)
+        let cached = price_cache.get(symbol)
+        if cached != () {
+            return from_json(cached)
+        }
+
+        // Simple Black-Scholes-like pricing
+        let d1 = (log(spot / 100.0) + (0.05 + vol * vol / 2) * 1.0) / (vol * sqrt(1.0))
+        let call_price = spot * 0.5 * (1 + d1) - 100.0 * 0.9512 * 0.5 * (1 + d1 - vol)
+
+        let result = map(
+            "symbol", symbol,
+            "spot", to_string(spot),
+            "vol", to_string(vol),
+            "call", to_string(call_price),
+            "delta", to_string(0.5 * (1 + d1)),
+            "gamma", to_string(0.4 / (spot * vol * sqrt(1.0))),
+            "vega", to_string(spot * sqrt(1.0) * 0.4)
+        )
+
+        // Cache locally
+        price_cache.set(symbol, to_json(result))
+        return result
+    }
+
+    // ---- Helpers ----
+
+    on log_event(event_type: String, message: String) {
+        let t = now()
+        let id = to_string(t) + "_" + to_string(random(10000))
+        events.set(id, to_json(map("type", event_type, "message", message, "time", to_string(t))))
+    }
+
+    on get_events() {
+        return events.values()
+            |> map(s => from_json(s))
+            |> filter(e => e.type != ())
+            |> top(20)
+    }
+
+    // ---- HTTP ----
+
+    on request(method: String, path: String, body: String) {
+        if method == "POST" {
+            if path == "/book_trade" { return book_trade(body) }
+            if path == "/price" { return price(body) }
+            return response(404, map("error", "not found"))
+        } else {
+            match path {
+                "/trades" -> trades.values() |> map(s => from_json(s)) |> filter(t => t.id != ())
+                "/greeks" -> greeks.values() |> map(s => from_json(s)) |> filter(g => g.symbol != ())
+                "/events" -> get_events()
+                "/" -> map(
+                    "name", "PricingEngine",
+                    "trades", trades.len(),
+                    "symbols", len(greeks.keys()),
+                    "status", "running"
+                )
+                _ -> response(404, map("error", "not found"))
+            }
+        }
+    }
+}

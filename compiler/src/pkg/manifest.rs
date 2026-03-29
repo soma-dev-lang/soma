@@ -17,6 +17,9 @@ pub struct Manifest {
     /// Compute configuration
     #[serde(default)]
     pub compute: ComputeConfig,
+    /// Cluster configuration for distributed execution
+    #[serde(default)]
+    pub cluster: ClusterConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,6 +46,22 @@ impl Default for ComputeConfig {
 }
 
 fn default_compute_backend() -> String { "sequential".to_string() }
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ClusterConfig {
+    /// Seed node addresses for cluster discovery
+    #[serde(default)]
+    pub seeds: Vec<String>,
+    /// Node ID for this instance (auto-generated if not set)
+    #[serde(default)]
+    pub node_id: Option<String>,
+}
+
+impl ClusterConfig {
+    pub fn is_enabled(&self) -> bool {
+        !self.seeds.is_empty()
+    }
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ParallelConfig {
@@ -170,6 +189,7 @@ impl Manifest {
             peers: HashMap::new(),
             verify: VerifyConfig::default(),
             compute: ComputeConfig::default(),
+            cluster: ClusterConfig::default(),
         }
     }
 }

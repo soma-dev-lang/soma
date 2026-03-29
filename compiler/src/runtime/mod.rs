@@ -1,4 +1,5 @@
 pub mod storage;
+pub mod cluster;
 
 use std::collections::HashMap;
 use std::sync::Arc;

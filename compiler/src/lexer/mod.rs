@@ -60,6 +60,8 @@ pub enum Token {
     Builtin,
     Test,
     Assert,
+    // Orchestration
+    Scale,
     // State machine
     State,
     Guard,
@@ -465,6 +467,7 @@ impl<'a> Lexer<'a> {
                     "builtin" => Token::Builtin,
                     "test" => Token::Test,
                     "assert" => Token::Assert,
+                    "scale" => Token::Scale,
                     "state" => Token::State,
                     "guard" => Token::Guard,
                     "effect" => Token::Effect,

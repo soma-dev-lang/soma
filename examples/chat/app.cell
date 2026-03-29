@@ -1,0 +1,99 @@
+// ============================================================================
+// Distributed Chat — same code, 1 node or 100
+// ============================================================================
+//
+// Node 1:  soma serve app.cell -p 8080
+// Node 2:  soma serve app.cell -p 8081 --join localhost:8082
+//
+// POST /send  {"user": "alice", "text": "hello"}
+// GET  /messages
+// GET  /rooms
+// GET  /
+
+cell Chat {
+
+    memory {
+        messages: Map<String, String> [persistent, consistent]
+        rooms: Map<String, String> [persistent, consistent]
+        online: Map<String, String> [ephemeral, local]
+    }
+
+    scale {
+        replicas: 5
+        shard: messages
+        consistency: eventual
+        tolerance: 1
+        cpu: 1
+        memory: "256Mi"
+    }
+
+    state message_lifecycle {
+        initial: sent
+        sent -> delivered
+        delivered -> read
+        * -> expired
+    }
+
+    on send(data: Map) {
+        let user = data.user ?? "anonymous"
+        let text = data.text ?? ""
+        let room = data.room ?? "general"
+        let t = now()
+        let id = to_string(t) + "_" + to_string(random(10000))
+
+        let msg = map(
+            "id", id,
+            "user", user,
+            "text", text,
+            "room", room,
+            "time", to_string(t),
+            "status", "sent"
+        )
+        messages.set(id, to_json(msg))
+
+        // Update room metadata
+        let room_data = rooms.get(room)
+        let count = 1
+        if room_data != () {
+            let rd = from_json(room_data)
+            count = to_int(rd.count ?? "0") + 1
+        }
+        rooms.set(room, to_json(map(
+            "name", room,
+            "last_message", text,
+            "last_user", user,
+            "count", to_string(count),
+            "updated_at", to_string(t)
+        )))
+
+        return map("status", "sent", "id", id, "room", room)
+    }
+
+    on get_messages(data: Map) {
+        let room = data.room ?? "general"
+        let all = messages.values()
+            |> map(s => from_json(s))
+            |> filter(m => m.room == room && m.id != ())
+            |> sort_by("time")
+            |> top(50)
+        return all
+    }
+
+    on request(method: String, path: String, body: String) {
+        if method == "POST" {
+            if path == "/send" { return send(body) }
+            return response(404, map("error", "not found"))
+        } else {
+            if path == "/messages" {
+                return messages.values() |> map(s => from_json(s)) |> filter(m => m.id != ()) |> sort_by("time") |> top(100)
+            }
+            if path == "/rooms" {
+                return rooms.values() |> map(s => from_json(s)) |> filter(r => r.name != ())
+            }
+            if path == "/" {
+                return map("name", "Soma Chat", "messages", messages.len(), "rooms", rooms.len(), "status", "running")
+            }
+            return response(404, map("error", "not found"))
+        }
+    }
+}
