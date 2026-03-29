@@ -826,20 +826,54 @@ Total: 12 seconds. Zero human intervention.</code></pre>
 <p>Every cell is self-describing. An agent reads the <code>face</code> contract and knows exactly what signals a cell accepts, what types they expect, what guarantees it offers. No documentation needed &mdash; the contract <strong>is</strong> the documentation.</p>
 
 <h3>MCP Server</h3>
-<p>Soma ships as an <a href="https://modelcontextprotocol.io" style="color:var(--accent)">MCP server</a> &mdash; any AI agent can use it as a tool:</p>
+<p>Soma is an <a href="https://modelcontextprotocol.io" style="color:var(--accent)">MCP server</a>. Any AI agent (Claude Code, Claude Desktop, Cursor, etc.) can use it as a tool to generate, verify, and serve Soma programs.</p>
 
-<pre><code><span class="cmt">// claude_desktop_config.json or Claude Code MCP settings</span>
-{
+<h4>Install</h4>
+<pre><code><span class="cmt"># 1. Install Soma</span>
+git clone https://github.com/soma-dev-lang/soma.git
+cd soma/compiler && cargo build --release
+sudo cp target/release/soma /usr/local/bin/
+
+<span class="cmt"># 2. Install the MCP server dependency</span>
+pip install mcp</code></pre>
+
+<h4>Configure</h4>
+<p>Add to your Claude Code settings (<code>~/.claude.json</code>) or Claude Desktop config:</p>
+
+<pre><code>{
   <span class="str">"mcpServers"</span>: {
     <span class="str">"soma"</span>: {
       <span class="str">"command"</span>: <span class="str">"python3"</span>,
-      <span class="str">"args"</span>: [<span class="str">"mcp/soma_mcp.py"</span>],
-      <span class="str">"env"</span>: { <span class="str">"SOMA_BIN"</span>: <span class="str">"soma"</span> }
+      <span class="str">"args"</span>: [<span class="str">"/path/to/soma/mcp/soma_mcp.py"</span>],
+      <span class="str">"env"</span>: {
+        <span class="str">"SOMA_BIN"</span>: <span class="str">"/usr/local/bin/soma"</span>,
+        <span class="str">"SOMA_WORKDIR"</span>: <span class="str">"/tmp/soma_agent"</span>
+      }
     }
   }
 }</code></pre>
 
-<p>9 tools exposed: <code>soma_generate</code>, <code>soma_check</code>, <code>soma_verify</code>, <code>soma_describe</code>, <code>soma_serve</code>, <code>soma_stop</code>, <code>soma_test</code>, <code>soma_run</code>, <code>soma_generate_toml</code>. Plus the language reference as an MCP resource.</p>
+<h4>Tools available to the agent</h4>
+<table>
+<tr><td><code>soma_generate(file, code)</code></td><td>Write a .cell file + auto-check</td></tr>
+<tr><td><code>soma_generate_toml(file, content)</code></td><td>Write soma.toml for verification properties</td></tr>
+<tr><td><code>soma_check(file)</code></td><td>Check for errors &rarr; JSON</td></tr>
+<tr><td><code>soma_verify(file)</code></td><td>Verify state machines + distribution &rarr; JSON with counter-examples</td></tr>
+<tr><td><code>soma_describe(file)</code></td><td>Describe cell structure &rarr; JSON</td></tr>
+<tr><td><code>soma_serve(file, port)</code></td><td>Start HTTP server</td></tr>
+<tr><td><code>soma_stop()</code></td><td>Stop the running server</td></tr>
+<tr><td><code>soma_test(file)</code></td><td>Run test assertions</td></tr>
+<tr><td><code>soma_run(file, args)</code></td><td>Execute a handler</td></tr>
+</table>
+
+<p>Plus one MCP resource: <code>soma://reference</code> &mdash; the full language reference the agent reads before generating code.</p>
+
+<h4>Try it</h4>
+<p>Once configured, tell your agent:</p>
+<pre><code><span class="str">"Build me a restaurant reservation system with waitlist,
+ confirmation, and auto-cancel after 15 minutes.
+ Use Soma."</span></code></pre>
+<p>The agent will call <code>soma_generate</code>, <code>soma_check</code>, <code>soma_verify</code>, <code>soma_serve</code> &mdash; and you'll have a verified, running system in seconds.</p>
 </section>
 
 <!-- ═══════════════════════════════════ EXAMPLES ═══════════════════════════════════ -->
