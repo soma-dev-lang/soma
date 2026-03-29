@@ -66,6 +66,7 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <a href="#foundations">Foundations</a>
 <a href="#syntax">Syntax</a>
 <a href="#pipeline">Pipelines</a>
+<a href="#native">Native</a>
 <a href="#web">Web</a>
 <a href="#bus">Signals</a>
 <a href="#reference">Reference</a>
@@ -525,6 +526,59 @@ The spec IS the program</code></pre>
     })</code></pre>
 </section>
 
+<!-- ═══════════════════════════════════ NATIVE ═══════════════════════════════════ -->
+<section id="native">
+<h2>Native compilation</h2>
+
+<p>Add <code>[native]</code> to a handler. It compiles to machine code via LLVM. Same Soma syntax &mdash; 200x faster.</p>
+
+<div class="vs">
+<div class="side">
+<h4>The code &mdash; app.cell</h4>
+<pre><code><span class="kw">on</span> simulate(n: Int) [<span class="fn">native</span>] {
+    <span class="kw">return</span> <span class="fn">range</span>(<span class="num">0</span>, n)
+        |&gt; <span class="fn">map</span>(i =&gt; compute_hit(i))
+        |&gt; <span class="fn">reduce</span>(<span class="num">0.0</span>, p =&gt; p.acc + p.val)
+        / n * <span class="num">4.0</span>
+}</code></pre>
+</div>
+<div class="side">
+<h4>The config &mdash; soma.toml</h4>
+<pre><code><span class="cmt"># Sequential: 177ms for 50M paths</span>
+<span class="cmt"># Just add:</span>
+
+[compute]
+backend = <span class="str">"threads"</span>
+threads = <span class="num">8</span>
+
+[compute.parallel]
+handlers = [<span class="str">"simulate"</span>]
+
+<span class="cmt"># Now: 29ms for 50M paths</span></code></pre>
+</div>
+</div>
+
+<table>
+<tr><th>Mode</th><th>50M Monte Carlo paths</th><th>vs interpreted</th></tr>
+<tr><td>Interpreted</td><td>~8,000ms</td><td>1x</td></tr>
+<tr><td>[native]</td><td>177ms</td><td>45x faster</td></tr>
+<tr><td>[native] + parallel (8 cores)</td><td><strong>29ms</strong></td><td><strong>275x faster</strong></td></tr>
+</table>
+
+<p>The code is the same in all three rows. The first line is <code>soma run app.cell</code>. The second is the same code with <code>[native]</code> on the handler. The third adds two lines to <code>soma.toml</code>. No threads, no mutexes, no <code>async</code>/<code>await</code> &mdash; just a property.</p>
+
+<p>This is the fourth axis of the Soma property system:</p>
+<table>
+<tr><th>Axis</th><th>Code</th><th>Configuration</th><th>Resolved to</th></tr>
+<tr><td>Storage</td><td><code>[persistent]</code></td><td><code>soma.toml [storage]</code></td><td>SQLite</td></tr>
+<tr><td>Transport</td><td><code>signal / on</code></td><td><code>soma.toml [peers]</code></td><td>TCP bus</td></tr>
+<tr><td>Verification</td><td><code>state { }</code></td><td><code>soma.toml [verify]</code></td><td>Model checker</td></tr>
+<tr><td>Compute</td><td><code>[native]</code></td><td><code>soma.toml [compute]</code></td><td>LLVM + threads</td></tr>
+</table>
+
+<p>Four axes. Same pattern. The code declares <strong>what</strong>. The configuration declares <strong>how</strong>. The compiler resolves.</p>
+</section>
+
 <!-- ═══════════════════════════════════ WEB ═══════════════════════════════════ -->
 <section id="web">
 <h2>Web applications</h2>
@@ -689,7 +743,7 @@ risk = <span class="str">"localhost:7082"</span>        <span class="cmt">// add
 
 <footer>
 Soma is open source. The specification is the program.<br>
-<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v0.30.0<br>
+<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v2.1.0<br>
 <span style="margin-top:.5rem;display:inline-block">Built on: Actors (Hewitt 1973) &middot; Relational Model (Codd 1970) &middot; TLA+ (Lamport) &middot; Unix Pipes (McIlroy 1978) &middot; Smalltalk (Kay)</span>
 </footer>
 
