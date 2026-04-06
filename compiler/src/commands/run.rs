@@ -219,10 +219,11 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
                     slots.insert(slot.node.name.clone(), backend);
                 }
                 interp.set_storage(&prog_cell.node.name, &slots);
-                interp.ensure_state_machine_storage();
             }
         }
     }
+    // Always ensure state machine storage exists (even without memory section)
+    interp.ensure_state_machine_storage();
 
     interp.source_file = Some(source_path.display().to_string());
     interp.source_text = Some(source.to_string());

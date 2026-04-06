@@ -191,14 +191,52 @@ fn agent_think(
         )));
     }
 
-    let api_url = std::env::var("SOMA_LLM_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
+    // ── Mock mode: SOMA_LLM_MOCK enables offline testing ──────────
+    // echo: returns the prompt back. fixed:TEXT: returns TEXT.
+    if let Ok(mock) = std::env::var("SOMA_LLM_MOCK") {
+        let response = if mock == "echo" {
+            prompt.to_string()
+        } else if let Some(text) = mock.strip_prefix("fixed:") {
+            text.to_string()
+        } else {
+            format!("[mock] {}", prompt)
+        };
+        // Track mock call in trace
+        interp.agent_trace.push(super::super::map_from_pairs(vec![
+            ("event".to_string(), Value::String("think".to_string())),
+            ("prompt".to_string(), Value::String(prompt.to_string())),
+            ("mock".to_string(), Value::Bool(true)),
+            ("response".to_string(), Value::String(response.clone())),
+        ]));
+        // Multi-turn: add to conversation
+        if interp.agent_conversation.is_empty() {
+            interp.agent_conversation.push(serde_json::json!({"role": "system", "content": "mock"}));
+        }
+        interp.agent_conversation.push(serde_json::json!({"role": "user", "content": prompt}));
+        interp.agent_conversation.push(serde_json::json!({"role": "assistant", "content": &response}));
+        if json_mode {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {
+                return Ok(super::super::json_to_value(&parsed));
+            }
+        }
+        return Ok(Value::String(response));
+    }
+
+    // ── Fail-fast: check API key BEFORE any network calls ─────────
     let api_key = std::env::var("SOMA_LLM_KEY")
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
         .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
         .map_err(|_| RuntimeError::TypeError(
-            "think() requires SOMA_LLM_KEY or OPENAI_API_KEY env var".to_string()
+            "think() requires SOMA_LLM_KEY env var (or set SOMA_LLM_MOCK=echo for offline testing)".to_string()
         ))?;
+    if api_key.is_empty() {
+        return Err(RuntimeError::TypeError(
+            "think() API key is empty. Set SOMA_LLM_KEY or use SOMA_LLM_MOCK=echo for offline testing.".to_string()
+        ));
+    }
+
+    let api_url = std::env::var("SOMA_LLM_URL")
+        .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
     let model = std::env::var("SOMA_LLM_MODEL")
         .unwrap_or_else(|_| "gpt-4o-mini".to_string());
     let max_retries: usize = std::env::var("SOMA_LLM_RETRIES")
