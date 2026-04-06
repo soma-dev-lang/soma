@@ -549,8 +549,14 @@ impl Interpreter {
         let native_key = (cell_name.to_string(), signal_name.to_string());
         if self.native_handlers.contains_key(&native_key) {
             let native = self.native_handlers.get(&native_key).unwrap();
-            return native_ffi::call_native(native, &args)
-                .map_err(|e| RuntimeError::TypeError(e));
+            match native_ffi::call_native(native, &args) {
+                Ok(val) => return Ok(val),
+                Err(e) if e.contains("overflow_rerun") => {
+                    // i128 overflow — fall through to interpreted path for BigInt
+                    eprintln!("[native] i128 overflow, falling back to interpreted BigInt");
+                }
+                Err(e) => return Err(RuntimeError::TypeError(e)),
+            }
         }
 
         // Lookup from pre-computed cache — O(1) instead of scanning sections

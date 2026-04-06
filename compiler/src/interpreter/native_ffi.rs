@@ -113,20 +113,32 @@ pub fn compile_and_load_natives_with_config(
             std::fs::write(&rs_path, &rust_source)
                 .map_err(|e| format!("failed to write native source: {}", e))?;
 
-            // Compile with rustc
+            // Compile with cargo (enables num-bigint for BigInt support)
             eprintln!("[native] compiling {} handler(s) for cell '{}'...",
                 native_handlers.len(), cell.node.name);
 
-            let output = std::process::Command::new("rustc")
-                .args([
-                    "--crate-type=cdylib",
-                    "-O",
-                    rs_path.to_str().unwrap(),
-                    "-o",
-                    dylib_path.to_str().unwrap(),
-                ])
+            // Create a mini cargo project for this native compilation
+            let proj_dir = cache_dir.join("proj");
+            let proj_src = proj_dir.join("src");
+            std::fs::create_dir_all(&proj_src).ok();
+
+            // Write Cargo.toml with num-bigint dependency
+            let cargo_toml = format!(
+                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nnum-bigint = \"0.4\"\nnum-traits = \"0.2\"\n\n[profile.release]\nopt-level = 3\noverflow-checks = true\npanic = \"unwind\"\n"
+            );
+            std::fs::write(proj_dir.join("Cargo.toml"), &cargo_toml)
+                .map_err(|e| format!("cannot write Cargo.toml: {}", e))?;
+
+            // Write the generated source as lib.rs
+            std::fs::write(proj_src.join("lib.rs"), &rust_source)
+                .map_err(|e| format!("cannot write lib.rs: {}", e))?;
+
+            // Build with cargo
+            let output = std::process::Command::new("cargo")
+                .args(["build", "--release", "--quiet"])
+                .current_dir(&proj_dir)
                 .output()
-                .map_err(|e| format!("rustc not found: {} — install Rust to use [native] handlers", e))?;
+                .map_err(|e| format!("cargo not found: {}", e))?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -135,6 +147,15 @@ pub fn compile_and_load_natives_with_config(
                     cell.node.name, stderr, rust_source
                 ));
             }
+
+            // Copy the built dylib to the cache
+            let built_dylib = if cfg!(target_os = "macos") {
+                proj_dir.join("target/release/libsoma_native.dylib")
+            } else {
+                proj_dir.join("target/release/libsoma_native.so")
+            };
+            std::fs::copy(&built_dylib, &dylib_path)
+                .map_err(|e| format!("cannot copy dylib: {}", e))?;
 
             eprintln!("[native] compiled → {}", dylib_path.display());
         } else {
@@ -246,13 +267,8 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
             }).unwrap_or(false);
 
             if has_overflow {
-                let hi = native.lib.as_ref().and_then(|lib| unsafe {
-                    let hi_fn: Result<libloading::Symbol<unsafe extern "C" fn() -> i64>, _> =
-                        lib.get(hi_fn_name.as_bytes());
-                    hi_fn.ok().map(|f| f())
-                }).unwrap_or(0);
-                let full: i128 = ((hi as i128) << 64) | (raw_result as u64 as i128);
-                Ok(Value::Big(num_bigint::BigInt::from(full)))
+                // Signal the interpreter to re-run via interpreted path (BigInt)
+                return Err("overflow_rerun".to_string());
             } else {
                 Ok(Value::Int(raw_result as i64))
             }
