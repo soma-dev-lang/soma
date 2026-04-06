@@ -2106,8 +2106,10 @@ impl Interpreter {
         match lit {
             Literal::Int(n) => Value::Int(SomaInt::from_i64(*n)),
             Literal::BigInt(s) => {
-                let bi = s.parse::<BigInt>().unwrap_or_default();
-                Value::Int(SomaInt::from_bigint(&bi))
+                match s.parse::<rug::Integer>() {
+                    Ok(r) => Value::Int(SomaInt::from_rug(r)),
+                    Err(_) => Value::Int(SomaInt::from_i64(0)),
+                }
             }
             Literal::Float(n) => Value::Float(*n),
             Literal::String(s) => Value::String(s.clone()),

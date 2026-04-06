@@ -661,15 +661,6 @@ impl<'a> Lexer<'a> {
                     span: Span::new(start, self.pos),
                 }),
                 Err(_) => {
-                    // Handle 9223372036854775808 (i64::MIN as positive, used with unary minus)
-                    if let Ok(u) = num_str.parse::<u64>() {
-                        if u == (i64::MAX as u64) + 1 {
-                            return Ok(SpannedToken {
-                                token: Token::IntLit(i64::MIN),
-                                span: Span::new(start, self.pos),
-                            });
-                        }
-                    }
                     // Number overflows i64 — emit as BigInt literal
                     Ok(SpannedToken {
                         token: Token::BigIntLit(num_str),
