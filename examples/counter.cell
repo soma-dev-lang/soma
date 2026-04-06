@@ -5,10 +5,26 @@ cell Counter {
         signal increment(amount: Int)
         signal decrement(amount: Int)
         signal get() -> Int
-        promise value >= 0
     }
 
     memory {
         value: Int [persistent, consistent]
+    }
+
+    on increment(amount: Int) {
+        let current = to_int(value.get("counter") ?? "0")
+        value.set("counter", to_string(current + amount))
+        map("value", current + amount)
+    }
+
+    on decrement(amount: Int) {
+        let current = to_int(value.get("counter") ?? "0")
+        value.set("counter", to_string(current - amount))
+        map("value", current - amount)
+    }
+
+    on get() {
+        let current = to_int(value.get("counter") ?? "0")
+        map("value", current)
     }
 }

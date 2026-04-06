@@ -32,7 +32,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     let mut results = Vec::new();
 
     for cell in &program.cells {
-        if cell.node.kind != CellKind::Cell { continue; }
+        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
         for section in &cell.node.sections {
             if let Section::State(ref sm) = section.node {
                 results.push(verify_state_machine(sm, &cell.node));

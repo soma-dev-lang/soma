@@ -44,6 +44,7 @@ fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
     // Face section data
     let mut face_signals = Vec::new();
     let mut face_promises = Vec::new();
+    let mut face_tools: Vec<serde_json::Value> = Vec::new();
 
     for section in &cell.sections {
         let section_line = span_to_line(source, section.span.start);
@@ -176,8 +177,22 @@ fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
                         FaceDecl::Given(_g) => {
                             // given declarations are requirements, not part of signals/promises
                         }
-                        FaceDecl::Await(_a) => {
-                            // await declarations handled separately if needed
+                        FaceDecl::Await(_a) => {}
+                        FaceDecl::Tool(tool) => {
+                            let params: Vec<String> = tool.params.iter()
+                                .map(|p| format!("{}: {}", p.name, format_type(&p.ty.node)))
+                                .collect();
+                            let mut t = serde_json::json!({
+                                "name": tool.name,
+                                "params": params,
+                            });
+                            if let Some(ref ret) = tool.return_type {
+                                t["returns"] = serde_json::json!(format_type(&ret.node));
+                            }
+                            if let Some(ref desc) = tool.description {
+                                t["description"] = serde_json::json!(desc);
+                            }
+                            face_tools.push(t);
                         }
                     }
                 }
@@ -216,11 +231,18 @@ fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
     if !scheduled.is_empty() {
         result["scheduled"] = serde_json::json!(scheduled);
     }
-    if !face_signals.is_empty() || !face_promises.is_empty() {
-        result["face"] = serde_json::json!({
+    if !face_signals.is_empty() || !face_promises.is_empty() || !face_tools.is_empty() {
+        let mut face = serde_json::json!({
             "signals": face_signals,
             "promises": face_promises,
         });
+        if !face_tools.is_empty() {
+            face["tools"] = serde_json::json!(face_tools);
+        }
+        result["face"] = face;
+    }
+    if cell.kind == CellKind::Agent {
+        result["kind"] = serde_json::json!("agent");
     }
     if has_request {
         result["web"] = serde_json::json!(true);

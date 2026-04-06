@@ -298,7 +298,7 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
 
         // Run temporal property checks on each state machine
         for cell in &program.cells {
-            if cell.node.kind != ast::CellKind::Cell { continue; }
+            if !matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
             for section in &cell.node.sections {
                 if let ast::Section::State(ref sm) = section.node {
                     let graph = StateMachineGraph::from_ast(sm);

@@ -124,7 +124,7 @@ impl Registry {
             CellKind::Checker => self.register_checker(cell),
             CellKind::Backend => self.register_backend(cell),
             CellKind::Builtin => self.register_builtin(cell),
-            CellKind::Type | CellKind::Test => Ok(()),
+            CellKind::Type | CellKind::Test | CellKind::Agent => Ok(()),
             CellKind::Cell => Ok(()),
         }
     }

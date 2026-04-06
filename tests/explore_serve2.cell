@@ -1,0 +1,27 @@
+// Exploration 4b: simpler HTTP test
+cell SimpleApp {
+    memory {
+        items: Map<String, String> [persistent]
+    }
+
+    on request(method: String, path: String, body: String) {
+        if path == "/" {
+            return html("<h1>Hello</h1>")
+        }
+        if path == "/echo" {
+            return map("method", method, "path", path, "body", body)
+        }
+        if method == "POST" && path == "/api/items" {
+            let data = from_json(body)
+            let id = to_string(next_id())
+            let item = map("id", id, "text", data.text)
+            items.set(id, to_json(item))
+            return item
+        }
+        if path == "/api/items" {
+            let vals = items.values()
+            return vals |> map(s => from_json(s))
+        }
+        return response(404, map("error", "nope"))
+    }
+}

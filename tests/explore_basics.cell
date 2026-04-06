@@ -1,0 +1,136 @@
+// Exploration 1: basic data types and operations
+cell Basics {
+    on types() {
+        let i = 42
+        let f = 3.14
+        let s = "hello {i}"
+        let b = true
+        let n = ()
+        let d = 5s
+
+        return map(
+            "int", i,
+            "float", f,
+            "string", s,
+            "bool", b,
+            "null", n,
+            "duration", d
+        )
+    }
+
+    on math_ops() {
+        let a = 10
+        let b = 3
+        return map(
+            "add", a + b,
+            "sub", a - b,
+            "mul", a * b,
+            "div", a / b,
+            "mod", a % b
+        )
+    }
+
+    on string_ops() {
+        let s = "Hello, World!"
+        return map(
+            "len", len(s),
+            "upper", uppercase(s),
+            "lower", lowercase(s),
+            "contains", contains(s, "World"),
+            "split", split(s, ", "),
+            "starts", starts_with(s, "Hello"),
+            "replace", replace(s, "World", "Soma")
+        )
+    }
+
+    on list_ops() {
+        let xs = [1, 2, 3, 4, 5]
+        let doubled = xs |> map(x => x * 2)
+        let evens = xs |> filter(x => x % 2 == 0)
+        let total = xs |> reduce(0, p => p.acc + p.val)
+        return map(
+            "original", xs,
+            "doubled", doubled,
+            "evens", evens,
+            "total", total,
+            "len", len(xs)
+        )
+    }
+
+    on null_coalesce() {
+        let a = ()
+        let b = a ?? "default"
+        let c = 42
+        let d = c ?? "default"
+        return map("b", b, "d", d)
+    }
+
+    on control_flow() {
+        let results = []
+        for i in range(1, 6) {
+            if i % 2 == 0 {
+                results = list(results, i)
+            }
+        }
+        return results
+    }
+
+    on match_expr() {
+        let status = "active"
+        let label = match status {
+            "active" -> "Running"
+            "paused" -> "On Hold"
+            "done" -> "Complete"
+            _ -> "Unknown"
+        }
+        return label
+    }
+
+    on try_catch() {
+        let good = try { 42 / 2 }
+        let bad = try { 42 / 0 }
+        return map(
+            "good_val", good.value,
+            "good_err", good.error,
+            "bad_val", bad.value,
+            "bad_err", bad.error
+        )
+    }
+
+    on pipes_advanced() {
+        let data = [
+            map("name", "Alice", "score", 85),
+            map("name", "Bob", "score", 62),
+            map("name", "Carol", "score", 91),
+            map("name", "Dave", "score", 45),
+            map("name", "Eve", "score", 78)
+        ]
+        let top_scorers = data
+            |> filter(x => x.score >= 70)
+            |> sort_by("score", "desc")
+            |> map_by("name")
+        return top_scorers
+    }
+
+    on record_types() {
+        let user = User { name: "Alice", age: 30, active: true }
+        return map(
+            "user", user,
+            "is_user", is_type(user, "User"),
+            "name", user.name
+        )
+    }
+
+    on big_numbers() {
+        // Int overflow auto-promotes at runtime
+        let big = 1000000000000000000
+        let huge = big * big
+        let mixed = huge + 1.5
+        return map(
+            "big", big,
+            "huge", huge,
+            "mixed_with_float", mixed,
+            "huge_gt_float", huge > 0.0
+        )
+    }
+}

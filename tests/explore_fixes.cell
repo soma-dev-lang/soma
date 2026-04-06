@@ -1,0 +1,80 @@
+// Test all 4 bug fixes
+
+// === Bug 1: storage values() no longer leaks __next_id ===
+cell StorageLeak {
+    memory {
+        items: Map<String, String> [persistent]
+    }
+
+    on add_items() {
+        let id1 = to_string(next_id())
+        let id2 = to_string(next_id())
+        items.set(id1, "first")
+        items.set(id2, "second")
+        let vals = items.values()
+        return map("values", vals, "count", items.len())
+    }
+}
+
+// === Bug 2: storage.method() |> pipe now works ===
+cell PipeAfterMethod {
+    memory {
+        data: Map<String, String> [persistent]
+    }
+
+    on pipe_from_values() {
+        data.set("a", to_json(map("name", "Alice", "score", 90)))
+        data.set("b", to_json(map("name", "Bob", "score", 60)))
+        data.set("c", to_json(map("name", "Carol", "score", 85)))
+        // This used to fail to parse:
+        return data.values() |> map(s => from_json(s)) |> filter(x => x.score > 70) |> map_by("name")
+    }
+}
+
+// === Bug 3: match arm blocks with if statements return values ===
+cell MatchReturn {
+    on classify(n: Int) {
+        return match n {
+            0 -> "zero"
+            _ -> {
+                if n > 0 {
+                    "positive"
+                } else {
+                    "negative"
+                }
+            }
+        }
+    }
+
+    on nested_match(method: String, path: String) {
+        return match path {
+            "/api" -> {
+                if method == "POST" {
+                    map("action", "create")
+                } else {
+                    map("action", "list")
+                }
+            }
+            _ -> map("action", "not_found")
+        }
+    }
+}
+
+// === Bug 4: BigInt literals ===
+cell BigIntLiterals {
+    on huge_number() {
+        let x = 99999999999999999999999999999
+        return x
+    }
+
+    on huge_arithmetic() {
+        let a = 99999999999999999999
+        let b = 88888888888888888888
+        return a + b
+    }
+
+    on negative_huge() {
+        let x = -99999999999999999999999999999
+        return x
+    }
+}

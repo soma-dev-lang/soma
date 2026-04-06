@@ -1,0 +1,14 @@
+// PRAGMA edge case test
+cell test PragmaEdge {
+    // Test 1: nested pipes
+    assert [1, 2, 3] |> map(x => x * 2) |> filter(x => x > 2) |> len() == 2
+
+    // Test 2: string len with unicode
+    assert len("hello") == 5
+
+    // Test 3: null coalescing
+    assert (()) ?? 42 == 42
+
+    // Test 4: BigInt auto-promotion on overflow
+    assert 9223372036854775807 + 1 > 0
+}

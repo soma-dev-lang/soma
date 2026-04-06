@@ -194,7 +194,7 @@ impl<'a> Checker<'a> {
     pub fn check(&mut self, program: &Program) {
         for cell in &program.cells {
             // Skip meta-cells (they define the language, not the program)
-            if cell.node.kind != CellKind::Cell {
+            if cell.node.kind != CellKind::Cell && cell.node.kind != CellKind::Agent {
                 continue;
             }
             self.check_cell(&cell.node);

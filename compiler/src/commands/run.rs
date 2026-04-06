@@ -43,7 +43,7 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
     let regular_cells: Vec<&ast::CellDef> = program
         .cells
         .iter()
-        .filter(|c| c.node.kind == ast::CellKind::Cell)
+        .filter(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent))
         .map(|c| &c.node)
         .collect();
 
@@ -76,14 +76,14 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
     };
 
     let cell = program.cells.iter()
-        .find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+        .find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
             if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "run" } else { false }
         }))
-        .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+        .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
             if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "request" } else { false }
         })))
-        .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
-        .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell))
+        .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
+        .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent)))
         .unwrap_or_else(|| { eprintln!("error: no cell found"); process::exit(1); });
     let cell_name = cell.node.name.clone();
 
@@ -144,17 +144,17 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None }
     });
     let cell = requested_signal.as_ref().and_then(|sig| {
-        program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+        program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
             if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == *sig } else { false }
         }))
     })
-    .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+    .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
         if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "run" } else { false }
     })))
-    .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+    .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
         if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "request" } else { false }
     })))
-    .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
+    .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
         .unwrap_or_else(|| {
             eprintln!("error: no runnable cell found");
             process::exit(1);
@@ -205,7 +205,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
     let mut interp = interpreter::Interpreter::new(&program);
 
     for prog_cell in &program.cells {
-        if prog_cell.node.kind != ast::CellKind::Cell { continue; }
+        if !matches!(prog_cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
         for section in &prog_cell.node.sections {
             if let ast::Section::Memory(ref mem) = section.node {
                 let mut slots = std::collections::HashMap::new();

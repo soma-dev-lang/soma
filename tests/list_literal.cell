@@ -1,0 +1,32 @@
+cell ListHelper {
+    on empty_list_len() {
+        let xs = []
+        return len(xs)
+    }
+
+    on make_list_len() {
+        let xs = [1, 2, 3]
+        return len(xs)
+    }
+
+    on list_first() {
+        let xs = [1, 2, 3]
+        return xs.first
+    }
+
+    on concat_len() {
+        let a = [1, 2]
+        let b = [3, 4]
+        let c = a + b
+        return len(c)
+    }
+}
+
+cell test ListLiteralTests {
+    rules {
+        assert empty_list_len() == 0
+        assert make_list_len() == 3
+        assert list_first() == 1
+        assert concat_len() == 4
+    }
+}

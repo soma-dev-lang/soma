@@ -145,6 +145,13 @@ impl CodeGen {
                                 aw.name, params
                             ));
                         }
+                        FaceDecl::Tool(tool) => {
+                            let params = self.params_to_rust(&tool.params);
+                            self.emit_line(&format!(
+                                "// tool: {}({})",
+                                tool.name, params
+                            ));
+                        }
                     }
                 }
 

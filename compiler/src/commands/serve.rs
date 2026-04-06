@@ -52,10 +52,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
     let cell = program
         .cells
         .iter()
-        .find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| {
+        .find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
             if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "request" } else { false }
         }))
-        .or_else(|| program.cells.iter().find(|c| c.node.kind == ast::CellKind::Cell && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
+        .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| matches!(s.node, ast::Section::OnSignal(_)))))
         .unwrap_or_else(|| {
             eprintln!("error: no cell found");
             process::exit(1);
@@ -84,7 +84,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
 
     let mut storage_slots = std::collections::HashMap::new();
     for prog_cell in &program.cells {
-        if prog_cell.node.kind != ast::CellKind::Cell { continue; }
+        if !matches!(prog_cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
         for section in &prog_cell.node.sections {
             if let ast::Section::Memory(ref mem) = section.node {
                 for slot in &mem.slots {
@@ -762,7 +762,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
     // Spawn scheduler threads for `every` sections
     // In cluster mode, only the leader runs `every` blocks
     for cell_spanned in &program.cells {
-        if cell_spanned.node.kind != ast::CellKind::Cell { continue; }
+        if !matches!(cell_spanned.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
         for section in &cell_spanned.node.sections {
             if let ast::Section::Every(ref every) = section.node {
                 if !is_cluster_leader {

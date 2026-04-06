@@ -416,6 +416,65 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                 Some(Err(RuntimeError::TypeError("par_word_count(list)".to_string())))
             }
         }
+        // ── AI Agent: think() — LLM integration ─────────────────────
+        "think" => {
+            if let Some(Value::String(prompt)) = args.first() {
+                Some(call_llm(prompt, &args[1..]))
+            } else {
+                Some(Err(RuntimeError::TypeError("think(prompt: String) requires a string argument".to_string())))
+            }
+        }
         _ => None,
+    }
+}
+
+/// Call an OpenAI-compatible LLM API.
+/// Config: SOMA_LLM_KEY (or OPENAI_API_KEY), SOMA_LLM_URL, SOMA_LLM_MODEL
+fn call_llm(prompt: &str, extra_args: &[Value]) -> Result<Value, RuntimeError> {
+    let api_url = std::env::var("SOMA_LLM_URL")
+        .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
+    let api_key = std::env::var("SOMA_LLM_KEY")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        .map_err(|_| RuntimeError::TypeError(
+            "think() requires SOMA_LLM_KEY or OPENAI_API_KEY environment variable".to_string()
+        ))?;
+    let model = std::env::var("SOMA_LLM_MODEL")
+        .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+
+    let system = if let Some(Value::String(sys)) = extra_args.first() {
+        sys.clone()
+    } else {
+        "You are a helpful AI agent. Respond concisely.".to_string()
+    };
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 2048
+    });
+
+    match ureq::post(&api_url)
+        .set("Authorization", &format!("Bearer {}", api_key))
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+    {
+        Ok(response) => {
+            let text = response.into_string()
+                .map_err(|e| RuntimeError::TypeError(format!("think() response error: {}", e)))?;
+            let json: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| RuntimeError::TypeError(format!("think() JSON error: {}", e)))?;
+            if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
+                Ok(Value::String(content.to_string()))
+            } else if let Some(err) = json["error"]["message"].as_str() {
+                Err(RuntimeError::TypeError(format!("LLM error: {}", err)))
+            } else {
+                Ok(Value::String(text))
+            }
+        }
+        Err(e) => Err(RuntimeError::TypeError(format!("think() HTTP error: {}", e))),
     }
 }

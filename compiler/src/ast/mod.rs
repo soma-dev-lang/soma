@@ -61,6 +61,8 @@ pub enum CellKind {
     Builtin,
     /// Test cell: `cell test MyTests { assert expr == expected }`
     Test,
+    /// AI Agent cell: `cell agent Researcher { ... }` — has think() and tool declarations
+    Agent,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +144,16 @@ pub enum FaceDecl {
     Promise(PromiseDecl),
     Signal(SignalDecl),
     Await(AwaitDecl),
+    /// Tool declaration: `tool search(query: String) -> List` — exposed to LLM in agent cells
+    Tool(ToolDecl),
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolDecl {
+    pub name: String,
+    pub description: Option<String>,
+    pub params: Vec<Param>,
+    pub return_type: Option<Spanned<TypeExpr>>,
 }
 
 #[derive(Debug, Clone)]

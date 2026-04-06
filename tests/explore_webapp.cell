@@ -1,0 +1,82 @@
+// Exploration 2: full web app with state machine
+cell TaskManager {
+    memory {
+        tasks: Map<String, String> [persistent]
+    }
+
+    state task_state {
+        initial: open
+        open -> in_progress
+        in_progress -> review
+        review -> done
+        review -> in_progress
+        open -> cancelled
+        in_progress -> cancelled
+    }
+
+    on create(title: String) {
+        let id = to_string(next_id())
+        let task = map(
+            "id", id,
+            "title", title,
+            "status", "open",
+            "created", to_string(now())
+        )
+        tasks.set(id, to_json(task))
+        return task
+    }
+
+    on advance(id: String) {
+        let raw = tasks.get(id)
+        if raw == () { return map("error", "not found") }
+        let task = from_json(raw)
+        let next = match task.status {
+            "open" -> "in_progress"
+            "in_progress" -> "review"
+            "review" -> "done"
+            _ -> ()
+        }
+        if next == () { return map("error", "cannot advance from {task.status}") }
+        let updated = task |> with("status", next)
+        tasks.set(id, to_json(updated))
+        return updated
+    }
+
+    on list_all() {
+        return tasks.values()
+            |> map(s => from_json(s))
+            |> sort_by("created", "desc")
+    }
+
+    on by_status(status: String) {
+        return tasks.values()
+            |> map(s => from_json(s))
+            |> filter(t => t.status == status)
+    }
+
+    on stats() {
+        let all = tasks.values() |> map(s => from_json(s))
+        return map(
+            "total", len(all),
+            "open", all |> count(t => t.status == "open"),
+            "in_progress", all |> count(t => t.status == "in_progress"),
+            "review", all |> count(t => t.status == "review"),
+            "done", all |> count(t => t.status == "done")
+        )
+    }
+
+    on request(method: String, path: String, body: String) {
+        match path {
+            "/api/tasks" -> {
+                if method == "POST" {
+                    let data = from_json(body)
+                    create(data.title ?? "Untitled")
+                } else {
+                    list_all()
+                }
+            }
+            "/api/stats" -> stats()
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

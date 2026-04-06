@@ -1,0 +1,84 @@
+// Verified AI Agent — the Soma specialty
+//
+// This agent has a state machine that the compiler PROVES terminates.
+// No other agent framework can do this.
+//
+// Run: SOMA_LLM_KEY=sk-... soma run agent.cell
+// Verify: soma verify agent.cell (with soma.toml below)
+
+cell agent Researcher {
+    face {
+        signal research(topic: String) -> Map
+        tool search(query: String) -> String "Search the web for information"
+        tool summarize(text: String) -> String "Summarize text concisely"
+        promise "agent always reaches done or failed state"
+    }
+
+    memory {
+        findings: Map<String, String> [persistent]
+        log: Map<String, String> [ephemeral]
+    }
+
+    state workflow {
+        initial: idle
+        idle -> researching
+        researching -> analyzing
+        analyzing -> done
+        * -> failed
+    }
+
+    on research(topic: String) {
+        // Transition through verified states
+        transition("task", "researching")
+        log.set("status", "researching {topic}")
+
+        // Call LLM to research — ? propagates errors
+        let research = try { think("Research this topic thoroughly: {topic}. Provide key facts and findings.") }
+        if research.error != () {
+            transition("task", "failed")
+            return map("status", "failed", "error", research.error)
+        }
+
+        transition("task", "analyzing")
+        log.set("status", "analyzing findings")
+
+        // Call LLM to synthesize
+        let summary = try { think("Synthesize these research findings into 3 key insights: {research.value}") }
+        if summary.error != () {
+            transition("task", "failed")
+            return map("status", "failed", "error", summary.error)
+        }
+
+        // Store results — auto-serialized
+        findings.set(topic, map(
+            "topic", topic,
+            "research", research.value,
+            "summary", summary.value,
+            "timestamp", to_string(now())
+        ))
+
+        transition("task", "done")
+        map("status", "done", "topic", topic, "summary", summary.value)
+    }
+
+    on status() {
+        map(
+            "state", log.get("status") ?? "idle",
+            "findings_count", to_string(findings.len()),
+            "findings", findings.keys
+        )
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"} -> status()
+            {method: "POST", path: "/research"} -> {
+                let data = from_json(body)
+                research(data.topic ?? "AI agents")
+            }
+            {method: "GET", path: "/findings"} -> findings.values
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

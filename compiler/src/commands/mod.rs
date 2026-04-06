@@ -210,7 +210,7 @@ pub fn load_meta_cells_from_program(program: &ast::Program, registry: &mut Regis
                     eprintln!("warning: failed to register {}: {}", cell.node.name, e);
                 }
             }
-            ast::CellKind::Cell => {}
+            ast::CellKind::Cell | ast::CellKind::Agent => {}
         }
     }
 }

@@ -66,6 +66,8 @@ fn display_token(token: &Token) -> String {
         Token::Every => "'every'".to_string(),
         Token::After => "'after'".to_string(),
         Token::Ensure => "'ensure'".to_string(),
+        Token::Tool => "'tool'".to_string(),
+        Token::AgentKw => "'agent'".to_string(),
         Token::Scale => "'scale'".to_string(),
         Token::Eof => "end of file".to_string(),
         _ => format!("{:?}", token),
@@ -367,6 +369,11 @@ impl Parser {
                 let (name, _) = self.expect_ident()?;
                 (CellKind::Test, name, vec![])
             }
+            Token::AgentKw => {
+                self.advance();
+                let (name, _) = self.expect_ident()?;
+                (CellKind::Agent, name, vec![])
+            }
             _ => {
                 let (name, _) = self.expect_ident()?;
                 (CellKind::Cell, name, vec![])
@@ -493,8 +500,12 @@ impl Parser {
                 let decl = self.parse_await_decl()?;
                 Ok(Spanned::new(FaceDecl::Await(decl), start.merge(self.prev_span())))
             }
+            Token::Tool => {
+                let decl = self.parse_tool_decl()?;
+                Ok(Spanned::new(FaceDecl::Tool(decl), start.merge(self.prev_span())))
+            }
             _ => Err(ParseError::Expected {
-                expected: "given, promise, signal, or await".to_string(),
+                expected: "given, promise, signal, await, or tool".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -562,6 +573,37 @@ impl Parser {
 
         Ok(SignalDecl {
             name,
+            params,
+            return_type,
+        })
+    }
+
+    fn parse_tool_decl(&mut self) -> Result<ToolDecl, ParseError> {
+        self.expect(Token::Tool)?;
+        let (name, _) = self.expect_ident()?;
+        self.expect(Token::LParen)?;
+        let params = self.parse_param_list()?;
+        self.expect(Token::RParen)?;
+
+        let return_type = if self.check(&Token::Arrow) {
+            self.advance();
+            Some(self.parse_type_expr()?)
+        } else {
+            None
+        };
+
+        // Optional description string
+        let description = if let Token::StringLit(ref s) = self.peek().clone() {
+            let d = s.clone();
+            self.advance();
+            Some(d)
+        } else {
+            None
+        };
+
+        Ok(ToolDecl {
+            name,
+            description,
             params,
             return_type,
         })

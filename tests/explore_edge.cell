@@ -1,0 +1,118 @@
+// Exploration 3: edge cases, error boundaries, quirks
+cell EdgeCases {
+    // Empty list operations
+    on empty_list_ops() {
+        let xs = []
+        let filtered = xs |> filter(x => x > 0)
+        let mapped = xs |> map(x => x * 2)
+        let total = xs |> reduce(0, p => p.acc + p.val)
+        return map(
+            "filtered", filtered,
+            "mapped", mapped,
+            "reduced", total,
+            "first", xs.first,
+            "last", xs.last
+        )
+    }
+
+    // Nested map access
+    on nested_maps() {
+        let data = map(
+            "user", map(
+                "name", "Alice",
+                "address", map(
+                    "city", "Paris",
+                    "zip", "75001"
+                )
+            )
+        )
+        return map(
+            "name", data.user.name,
+            "city", data.user.address.city
+        )
+    }
+
+    // Type coercion edge cases
+    on coercion() {
+        let int_float = 5 + 3.14
+        let float_int = 3.14 + 5
+        let str_concat = "count: " + to_string(42)
+        return map(
+            "int_plus_float", int_float,
+            "float_plus_int", float_int,
+            "str_concat", str_concat
+        )
+    }
+
+    // What happens with list of mixed types?
+    on mixed_list() {
+        let xs = [1, "two", 3.0, true, (), [4, 5]]
+        return map(
+            "list", xs,
+            "len", len(xs),
+            "types", xs |> map(x => type_of(x))
+        )
+    }
+
+    // Deep pipeline
+    on deep_pipeline() {
+        let data = [
+            map("name", "Alice", "dept", "eng", "salary", 120000),
+            map("name", "Bob", "dept", "eng", "salary", 110000),
+            map("name", "Carol", "dept", "sales", "salary", 95000),
+            map("name", "Dave", "dept", "sales", "salary", 85000),
+            map("name", "Eve", "dept", "eng", "salary", 130000)
+        ]
+        let result = data
+            |> group_by("dept")
+        return result
+    }
+
+    // Boolean edge cases
+    on bool_ops() {
+        let a = true && false
+        let b = true || false
+        let c = !true
+        return map("and", a, "or", b, "not", c)
+    }
+
+    // Multiple returns / early return
+    on early_return(n: Int) {
+        if n < 0 { return "negative" }
+        if n == 0 { return "zero" }
+        if n > 100 { return "big" }
+        return "normal"
+    }
+
+    // Recursive function
+    on fib(n: Int) {
+        if n <= 1 { return n }
+        return fib(n - 1) + fib(n - 2)
+    }
+
+    // String interpolation edge cases
+    on interpolation() {
+        let x = 42
+        let nested = map("a", 1)
+        return map(
+            "simple", "x is {x}",
+            "expr", "double is {x * 2}",
+            "nested_field", "a is {nested.a}"
+        )
+    }
+
+    // Match with block bodies
+    on match_blocks(action: String) {
+        return match action {
+            "greet" -> {
+                let name = "World"
+                "Hello, {name}!"
+            }
+            "count" -> {
+                let total = [1, 2, 3] |> reduce(0, p => p.acc + p.val)
+                "Total: {total}"
+            }
+            _ -> "Unknown action"
+        }
+    }
+}

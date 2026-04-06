@@ -1,0 +1,26 @@
+// Exploration 4: actual HTTP serving
+cell NotesApp {
+    memory {
+        notes: Map<String, String> [persistent]
+    }
+
+    on request(method: String, path: String, body: String) {
+        match path {
+            "/" -> html("<h1>Notes</h1><p>GET /api/notes | POST /api/notes</p>")
+            "/api/notes" -> {
+                if method == "POST" {
+                    let data = from_json(body)
+                    let id = to_string(next_id())
+                    let note = map("id", id, "text", data.text ?? "empty", "created", to_string(now()))
+                    notes.set(id, to_json(note))
+                    response(201, note)
+                } else {
+                    let all = notes.values()
+                    all |> map(s => from_json(s)) |> filter(n => n.id != ())
+                }
+            }
+            "/api/count" -> map("count", notes.len())
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

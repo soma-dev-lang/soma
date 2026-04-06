@@ -1,0 +1,84 @@
+// Verified Multi-Agent Pipeline
+//
+// Three agents with verified handoffs:
+//   Researcher -> Writer -> Reviewer
+//
+// soma verify proves: the pipeline ALWAYS terminates.
+// No infinite loops. No stuck states. No deadlocks.
+//
+// Run:   SOMA_LLM_KEY=sk-... soma run agent_pipeline.cell "quantum computing"
+// Serve: SOMA_LLM_KEY=sk-... soma serve agent_pipeline.cell
+
+cell agent Pipeline {
+    memory {
+        results: Map<String, String> [persistent]
+    }
+
+    state pipeline {
+        initial: idle
+        idle -> researching
+        researching -> writing
+        writing -> reviewing
+        reviewing -> done
+        * -> failed
+    }
+
+    on run(topic: String) {
+        transition("job", "researching")
+        print("1/3 Researching: {topic}")
+
+        let research = try { think("Research '{topic}' in depth. List 5 key facts.") }
+        if research.error != () {
+            transition("job", "failed")
+            return map("status", "failed", "stage", "research", "error", research.error)
+        }
+
+        transition("job", "writing")
+        print("2/3 Writing article...")
+
+        let article = try { think("Write a concise article about '{topic}' based on these facts: {research.value}") }
+        if article.error != () {
+            transition("job", "failed")
+            return map("status", "failed", "stage", "writing", "error", article.error)
+        }
+
+        transition("job", "reviewing")
+        print("3/3 Reviewing...")
+
+        let review = try { think("Review this article for accuracy and suggest improvements: {article.value}") }
+        if review.error != () {
+            transition("job", "failed")
+            return map("status", "failed", "stage", "review", "error", review.error)
+        }
+
+        transition("job", "done")
+
+        let result = map(
+            "topic", topic,
+            "article", article.value,
+            "review", review.value,
+            "status", "done"
+        )
+        results.set(topic, result)
+
+        print("Done! Article on '{topic}' complete.")
+        result
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"} -> map(
+                "name", "Agent Pipeline",
+                "stages", list("research", "write", "review"),
+                "results", results.len()
+            )
+            {method: "POST", path: "/run"} -> {
+                let data = from_json(body)
+                run(data.topic ?? "artificial intelligence")
+            }
+            {method: "GET", path: "/results"} -> results.values
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

@@ -1,0 +1,14 @@
+[package]
+name = "researcher-agent"
+version = "0.1.0"
+description = "Verified AI research agent"
+
+[verify]
+deadlock_free = true
+eventually = ["done", "failed"]
+
+[verify.after.researching]
+eventually = ["analyzing", "failed"]
+
+[verify.after.analyzing]
+eventually = ["done", "failed"]
