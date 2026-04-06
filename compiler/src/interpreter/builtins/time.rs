@@ -1,5 +1,6 @@
 use super::super::{Value, RuntimeError};
 use super::val_to_i64;
+use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
@@ -8,14 +9,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            Some(Ok(Value::Int(ts)))
+            Some(Ok(Value::Int(SomaInt::from_i64(ts))))
         }
         "now_ms" => {
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as i64;
-            Some(Ok(Value::Int(ts)))
+            Some(Ok(Value::Int(SomaInt::from_i64(ts))))
         }
         "sleep" | "wait" => {
             if let Some(ms) = args.first().map(|a| val_to_i64(a)) {

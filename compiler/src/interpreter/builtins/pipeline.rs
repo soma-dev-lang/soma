@@ -1,5 +1,6 @@
 use super::super::{Value, RuntimeError, map_from_pairs};
 use super::{val_to_i64, val_to_f64, map_field_i64, map_field_f64};
+use crate::interpreter::soma_int::SomaInt;
 use indexmap::IndexMap;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
@@ -117,8 +118,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     let total: i64 = items.iter().map(|item| map_field_i64(item, &field)).sum();
-                    Some(Ok(Value::Int(total)))
-                } else { Some(Ok(Value::Int(0))) }
+                    Some(Ok(Value::Int(SomaInt::from_i64(total))))
+                } else { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
             } else {
                 Some(Err(RuntimeError::TypeError("sum_by expects (list, field)".to_string())))
             }
@@ -132,7 +133,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let avg = total / items.len() as f64;
                     // Return Int if whole number, Float otherwise
                     if avg == (avg as i64) as f64 {
-                        Some(Ok(Value::Int(avg as i64)))
+                        Some(Ok(Value::Int(SomaInt::from_i64(avg as i64))))
                     } else {
                         Some(Ok(Value::Float(avg)))
                     }
@@ -181,8 +182,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             entries.get(&field).map(|v| format!("{}", v) == target).unwrap_or(false)
                         } else { false }
                     }).count();
-                    Some(Ok(Value::Int(count as i64)))
-                } else { Some(Ok(Value::Int(0))) }
+                    Some(Ok(Value::Int(SomaInt::from_i64(count as i64))))
+                } else { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
             } else {
                 Some(Err(RuntimeError::TypeError("count_by expects (list, field, value)".to_string())))
             }
@@ -273,16 +274,16 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let result: Vec<Value> = groups.iter().map(|(gk, items)| {
                         let mut row = IndexMap::new();
                         row.insert(group_field.clone(), Value::String(gk.clone()));
-                        row.insert("count".to_string(), Value::Int(items.len() as i64));
+                        row.insert("count".to_string(), Value::Int(SomaInt::from_i64(items.len() as i64)));
                         for (col, func) in &agg_specs {
                             let vals: Vec<i64> = items.iter().map(|i| map_field_i64(i, col)).collect();
                             let agg_val = match func.as_str() {
-                                "sum" => Value::Int(vals.iter().sum()),
-                                "avg" => Value::Int(if vals.is_empty() { 0 } else { vals.iter().sum::<i64>() / vals.len() as i64 }),
-                                "min" => Value::Int(vals.iter().copied().min().unwrap_or(0)),
-                                "max" => Value::Int(vals.iter().copied().max().unwrap_or(0)),
-                                "count" => Value::Int(vals.len() as i64),
-                                _ => Value::Int(vals.iter().sum()),
+                                "sum" => Value::Int(SomaInt::from_i64(vals.iter().sum())),
+                                "avg" => Value::Int(SomaInt::from_i64(if vals.is_empty() { 0 } else { vals.iter().sum::<i64>() / vals.len() as i64 })),
+                                "min" => Value::Int(SomaInt::from_i64(vals.iter().copied().min().unwrap_or(0))),
+                                "max" => Value::Int(SomaInt::from_i64(vals.iter().copied().max().unwrap_or(0))),
+                                "count" => Value::Int(SomaInt::from_i64(vals.len() as i64)),
+                                _ => Value::Int(SomaInt::from_i64(vals.iter().sum())),
                             };
                             row.insert(format!("{}_{}", col, func), agg_val);
                         }
@@ -303,7 +304,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         if let Value::Map(entries) = item {
                             let src_val = entries.get(&source).map(val_to_i64).unwrap_or(0);
                             let computed = match op.as_str() { "*" => src_val * operand, "+" => src_val + operand, "-" => src_val - operand, "/" => if operand != 0 { src_val / operand } else { 0 }, _ => src_val };
-                            let mut e = entries.clone(); e.insert(new_field.clone(), Value::Int(computed)); Value::Map(e)
+                            let mut e = entries.clone(); e.insert(new_field.clone(), Value::Int(SomaInt::from_i64(computed))); Value::Map(e)
                         } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
@@ -317,8 +318,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let vals: Vec<i64> = items.iter().map(|i| map_field_i64(i, &field)).collect();
                     let n = vals.len() as i64; let sum: i64 = vals.iter().sum();
                     let avg = if n > 0 { sum / n } else { 0 };
-                    Some(Ok(map_from_pairs(vec![("count".into(), Value::Int(n)), ("sum".into(), Value::Int(sum)), ("avg".into(), Value::Int(avg)),
-                        ("min".into(), Value::Int(vals.iter().copied().min().unwrap_or(0))), ("max".into(), Value::Int(vals.iter().copied().max().unwrap_or(0)))])))
+                    Some(Ok(map_from_pairs(vec![("count".into(), Value::Int(SomaInt::from_i64(n))), ("sum".into(), Value::Int(SomaInt::from_i64(sum))), ("avg".into(), Value::Int(SomaInt::from_i64(avg))),
+                        ("min".into(), Value::Int(SomaInt::from_i64(vals.iter().copied().min().unwrap_or(0)))), ("max".into(), Value::Int(SomaInt::from_i64(vals.iter().copied().max().unwrap_or(0))))])))
                 } else { Some(Ok(Value::Unit)) }
             } else { Some(Err(RuntimeError::TypeError("describe(list, field)".to_string()))) }
         }
@@ -342,7 +343,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         let start = if i >= size { i - size + 1 } else { 0 };
                         let w = &vals[start..=i];
                         let v = match func.as_str() { "avg" => w.iter().sum::<i64>() / w.len() as i64, "sum" => w.iter().sum(), "min" => w.iter().copied().min().unwrap_or(0), "max" => w.iter().copied().max().unwrap_or(0), _ => 0 };
-                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert(out.clone(), Value::Int(v)); Value::Map(ne) } else { item.clone() }
+                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert(out.clone(), Value::Int(SomaInt::from_i64(v))); Value::Map(ne) } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
                 } else { Some(Ok(args[0].clone())) }
@@ -355,7 +356,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut cum = 0i64;
                     let result: Vec<Value> = items.iter().map(|item| {
                         cum += map_field_i64(item, &field);
-                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert(out.clone(), Value::Int(cum)); Value::Map(ne) } else { item.clone() }
+                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert(out.clone(), Value::Int(SomaInt::from_i64(cum))); Value::Map(ne) } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
                 } else { Some(Ok(args[0].clone())) }
@@ -370,7 +371,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut ranks = vec![0usize; items.len()];
                     for (r, (i, _)) in idx.iter().enumerate() { ranks[*i] = r + 1; }
                     let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
-                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert("_rank".into(), Value::Int(ranks[i] as i64)); Value::Map(ne) } else { item.clone() }
+                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert("_rank".into(), Value::Int(SomaInt::from_i64(ranks[i] as i64))); Value::Map(ne) } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
                 } else { Some(Ok(args[0].clone())) }
@@ -380,7 +381,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 3 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
-                    let pct = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.5 };
+                    let pct = match &args[2] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.5 };
                     let mut vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
                     vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                     if vals.is_empty() { return Some(Ok(Value::Unit)); }
@@ -451,7 +452,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
                         if let Value::Map(entries) = item {
                             let mut new = entries.clone();
-                            new.insert(format!("{}_rank", field), Value::Int(ranks[i]));
+                            new.insert(format!("{}_rank", field), Value::Int(SomaInt::from_i64(ranks[i])));
                             Value::Map(new)
                         } else { item.clone() }
                     }).collect();
@@ -463,8 +464,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 4 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
-                    let min_val = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
-                    let max_val = match &args[3] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 1.0 };
+                    let min_val = match &args[2] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+                    let max_val = match &args[3] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 1.0 };
                     let vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
                     let data_min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
                     let data_max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -487,8 +488,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 4 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
-                    let lo_pct = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.05 };
-                    let hi_pct = match &args[3] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.95 };
+                    let lo_pct = match &args[2] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.05 };
+                    let hi_pct = match &args[3] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.95 };
                     let mut sorted_vals: Vec<f64> = items.iter().map(|i| map_field_f64(i, &field)).collect();
                     sorted_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                     if sorted_vals.is_empty() { return Some(Ok(Value::List(vec![]))); }

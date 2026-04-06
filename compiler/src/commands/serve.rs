@@ -1005,7 +1005,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                         .map(|s| {
                             let decoded = urlencoding_decode(s);
                             if let Ok(n) = decoded.parse::<i64>() {
-                                interpreter::Value::Int(n)
+                                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
                             } else {
                                 interpreter::Value::String(decoded)
                             }
@@ -1160,7 +1160,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                 let (status_code, body_str, content_type, extra_headers) = if is_response {
                     let entries = if let interpreter::Value::Map(ref e) = val { e } else { unreachable!() };
                     let status = entries.get("_status")
-                        .and_then(|v| if let interpreter::Value::Int(n) = v { Some(*n as u16) } else { None })
+                        .and_then(|v| if let interpreter::Value::Int(si) = v { si.to_i64().map(|n| n as u16) } else { None })
                         .unwrap_or(200);
                     let content_type = entries.get("_content_type")
                         .and_then(|v| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None })
@@ -1277,7 +1277,7 @@ fn json_request_to_value(v: &serde_json::Value) -> interpreter::Value {
         serde_json::Value::Bool(b) => interpreter::Value::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                interpreter::Value::Int(i)
+                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i))
             } else {
                 interpreter::Value::Float(n.as_f64().unwrap_or(0.0))
             }

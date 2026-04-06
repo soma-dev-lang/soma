@@ -1,4 +1,5 @@
 use super::super::{Value, RuntimeError, Interpreter};
+use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     match name {
@@ -17,9 +18,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     .unwrap_or(0);
                 let next = current + 1;
                 backend.set(counter_key, crate::runtime::storage::StoredValue::Int(next));
-                Some(Ok(Value::Int(next)))
+                Some(Ok(Value::Int(SomaInt::from_i64(next))))
             } else {
-                Some(Ok(Value::Int(1)))
+                Some(Ok(Value::Int(SomaInt::from_i64(1))))
             }
         }
         "transition" => {
@@ -122,7 +123,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     let _ = interp.call_signal(&target, &signal_name, vec![data.clone()]);
                     count += 1;
                 }
-                Some(Ok(Value::Int(count)))
+                Some(Ok(Value::Int(SomaInt::from_i64(count))))
             } else {
                 Some(Err(RuntimeError::TypeError("broadcast(signal_name, data)".to_string())))
             }
@@ -141,8 +142,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         // ── Agent: set_budget(max_tokens) ──────────────────────────
         "set_budget" => {
-            if let Some(Value::Int(n)) = args.first() {
-                interp.agent_token_budget = *n;
+            if let Some(Value::Int(si)) = args.first() {
+                interp.agent_token_budget = si.to_i64().unwrap_or(0);
                 interp.agent_tokens_used = 0;
                 Some(Ok(Value::Unit))
             } else {
@@ -150,13 +151,13 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             }
         }
         "tokens_used" => {
-            Some(Ok(Value::Int(interp.agent_tokens_used)))
+            Some(Ok(Value::Int(SomaInt::from_i64(interp.agent_tokens_used))))
         }
         "tokens_remaining" => {
             if interp.agent_token_budget > 0 {
-                Some(Ok(Value::Int(interp.agent_token_budget - interp.agent_tokens_used)))
+                Some(Ok(Value::Int(SomaInt::from_i64(interp.agent_token_budget - interp.agent_tokens_used))))
             } else {
-                Some(Ok(Value::Int(-1))) // unlimited
+                Some(Ok(Value::Int(SomaInt::from_i64(-1)))) // unlimited
             }
         }
         // ── Agent: trace() — get execution log ──────────────────────
@@ -184,8 +185,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     ("event".to_string(), Value::String("approval".to_string())),
                     ("action".to_string(), Value::String(action.clone())),
                     ("result".to_string(), Value::String("auto_approved".to_string())),
-                    ("timestamp".to_string(), Value::Int(std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)),
+                    ("timestamp".to_string(), Value::Int(SomaInt::from_i64(std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64))),
                 ]));
                 Some(Ok(Value::Bool(true)))
             } else {
@@ -411,7 +412,7 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
                         arg_values.push(match val {
                             Some(serde_json::Value::String(s)) => Value::String(s.clone()),
                             Some(serde_json::Value::Number(n)) => {
-                                if let Some(i) = n.as_i64() { Value::Int(i) }
+                                if let Some(i) = n.as_i64() { Value::Int(SomaInt::from_i64(i)) }
                                 else { Value::Float(n.as_f64().unwrap_or(0.0)) }
                             }
                             Some(serde_json::Value::Bool(b)) => Value::Bool(*b),

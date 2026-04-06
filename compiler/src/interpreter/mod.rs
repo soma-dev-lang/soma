@@ -11,8 +11,8 @@ use indexmap::IndexMap;
 type Env = FxHashMap<String, Value>;
 use crate::ast::*;
 use crate::runtime::storage::{StorageBackend, StoredValue};
+use crate::interpreter::soma_int::SomaInt;
 use num_bigint::BigInt;
-use num_traits::{ToPrimitive, Zero};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -34,8 +34,7 @@ pub enum RuntimeError {
 /// Return a human-readable type name for a Value (e.g. "String", "Int").
 fn value_type_name(v: &Value) -> &'static str {
     match v {
-        Value::Int(_) => "Int",
-        Value::Big(_) => "BigInt",
+        Value::Int(si) => if si.is_small() { "Int" } else { "BigInt" },
         Value::Float(_) => "Float",
         Value::String(_) => "String",
         Value::Bool(_) => "Bool",
@@ -139,8 +138,7 @@ pub fn is_truthy(val: &Value) -> bool {
     match val {
         Value::Bool(b) => *b,
         Value::Unit => false,
-        Value::Int(n) => *n != 0,
-        Value::Big(n) => !n.is_zero(),
+        Value::Int(si) => si.to_i64() != Some(0),
         Value::String(s) => !s.is_empty(),
         Value::List(l) => !l.is_empty(),
         _ => true,
@@ -150,8 +148,7 @@ pub fn is_truthy(val: &Value) -> bool {
 /// Runtime values
 #[derive(Debug, Clone)]
 pub enum Value {
-    Int(i64),
-    Big(BigInt),
+    Int(SomaInt),
     Float(f64),
     String(String),
     Bool(bool),
@@ -182,8 +179,7 @@ pub fn map_from_pairs(pairs: Vec<(String, Value)>) -> Value {
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Int(n) => write!(f, "{}", n),
-            Value::Big(n) => write!(f, "{}", n),
+            Value::Int(si) => write!(f, "{}", si),
             Value::Float(n) => {
                 if n.fract() == 0.0 && n.is_finite() {
                     write!(f, "{:.1}", n)
@@ -233,25 +229,19 @@ impl std::fmt::Display for Value {
 impl Value {
     pub fn as_int(&self) -> Result<i64, RuntimeError> {
         match self {
-            Value::Int(n) => Ok(*n),
-            Value::Big(n) => n.to_i64().ok_or_else(|| RuntimeError::TypeError("BigInt too large for i64".to_string())),
+            Value::Int(si) => si.to_i64().ok_or_else(|| RuntimeError::TypeError("BigInt too large for i64".to_string())),
             other => Err(RuntimeError::TypeError(format!("expected Int, got {:?}", other))),
         }
     }
 
-    fn as_bigint(&self) -> Result<BigInt, RuntimeError> {
-        match self {
-            Value::Big(n) => Ok(n.clone()),
-            Value::Int(n) => Ok(BigInt::from(*n)),
-            other => Err(RuntimeError::TypeError(format!("expected BigInt, got {:?}", other))),
-        }
+    pub fn as_soma_int(&self) -> Option<SomaInt> {
+        if let Value::Int(si) = self { Some(*si) } else { None }
     }
 
     fn as_float(&self) -> Result<f64, RuntimeError> {
         match self {
             Value::Float(n) => Ok(*n),
-            Value::Int(n) => Ok(*n as f64),
-            Value::Big(n) => Ok(n.to_string().parse::<f64>().unwrap_or(f64::INFINITY)),
+            Value::Int(si) => Ok(si.to_f64()),
             other => Err(RuntimeError::TypeError(format!("expected Float, got {:?}", other))),
         }
     }
@@ -259,15 +249,14 @@ impl Value {
     fn as_bool(&self) -> Result<bool, RuntimeError> {
         match self {
             Value::Bool(b) => Ok(*b),
-            Value::Int(n) => Ok(*n != 0),
-            Value::Big(n) => Ok(!n.is_zero()),
+            Value::Int(si) => Ok(si.to_i64() != Some(0)),
             other => Err(RuntimeError::TypeError(format!("expected Bool, got {:?}", other))),
         }
     }
 
-    /// Promote Int to Big if needed for mixed operations
-    fn is_big(&self) -> bool {
-        matches!(self, Value::Big(_))
+    /// Check if this is a big (non-inline) integer
+    pub fn is_big(&self) -> bool {
+        if let Value::Int(si) = self { !si.is_small() } else { false }
     }
 }
 
@@ -612,17 +601,9 @@ impl Interpreter {
             )));
         }
 
-        // Bind parameters, promoting Int → BigInt if the type declares BigInt
+        // Bind parameters (BigInt type annotation is now a no-op since SomaInt handles both)
         let mut env = FxHashMap::with_capacity_and_hasher(params.len() + 4, Default::default());
         for (param, val) in params.iter().zip(args) {
-            let val = if is_bigint_type(&param.ty.node) {
-                match val {
-                    Value::Int(n) => Value::Big(BigInt::from(n)),
-                    other => other,
-                }
-            } else {
-                val
-            };
             env.insert(param.name.clone(), val);
         }
 
@@ -748,21 +729,12 @@ impl Interpreter {
                             if let Some(Value::Int(current)) = env.get(name) {
                                 let current = *current;
                                 let rhs_val = self.eval_expr(&right.node, env, cell_name, signal_name)?;
-                                if let Value::Int(rhs_int) = rhs_val {
+                                if let Value::Int(rhs_si) = rhs_val {
                                     let result = match op {
-                                        BinOp::Add => match current.checked_add(rhs_int) {
-                                            Some(v) => v,
-                                            None => { let val = self.eval_expr(&value.node, env, cell_name, signal_name)?; env.insert(name.clone(), val); return Ok(Value::Unit); }
-                                        },
-                                        BinOp::Sub => match current.checked_sub(rhs_int) {
-                                            Some(v) => v,
-                                            None => { let val = self.eval_expr(&value.node, env, cell_name, signal_name)?; env.insert(name.clone(), val); return Ok(Value::Unit); }
-                                        },
-                                        BinOp::Mul => match current.checked_mul(rhs_int) {
-                                            Some(v) => v,
-                                            None => { let val = self.eval_expr(&value.node, env, cell_name, signal_name)?; env.insert(name.clone(), val); return Ok(Value::Unit); }
-                                        },
-                                        BinOp::Div if rhs_int != 0 => current / rhs_int,
+                                        BinOp::Add => current.add(rhs_si),
+                                        BinOp::Sub => current.sub(rhs_si),
+                                        BinOp::Mul => current.mul(rhs_si),
+                                        BinOp::Div if rhs_si.to_i64() != Some(0) => current.div(rhs_si),
                                         _ => {
                                             let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
                                             env.insert(name.clone(), val);
@@ -849,13 +821,12 @@ impl Interpreter {
                     if fn_name == "range" && fn_args.len() >= 2 {
                         let start_val = self.eval_expr(&fn_args[0].node, env, cell_name, signal_name)?;
                         let end_val = self.eval_expr(&fn_args[1].node, env, cell_name, signal_name)?;
-                        if let (Value::Int(start), Value::Int(end)) = (&start_val, &end_val) {
-                            let (start, end) = (*start, *end);
+                        if let (Some(start), Some(end)) = (start_val.as_int().ok(), end_val.as_int().ok()) {
                             let mut last = Value::Unit;
                             let mut i = start;
                             let needs_scope = body_has_let(body);
                             while i < end {
-                                env.insert(var.clone(), Value::Int(i));
+                                env.insert(var.clone(), Value::Int(SomaInt::from_i64(i)));
                                 let result = if needs_scope {
                                     self.exec_body_scoped(body, env, cell_name, signal_name)
                                 } else {
@@ -940,15 +911,19 @@ impl Interpreter {
                             }
                         }
 
-                        // Check if ALL referenced vars are ints and body is only int assigns
+                        // Check if ALL referenced vars are small ints and body is only int assigns
                         let all_ints = var_names.iter().all(|n| {
-                            matches!(env.get(n), Some(Value::Int(_)) | None)
+                            match env.get(n) {
+                                Some(Value::Int(si)) => si.is_small(),
+                                None => true,
+                                _ => false,
+                            }
                         });
 
                         if all_ints && !needs_scope && var_names.len() <= 8 {
                             // Pull vars into local Rust Vec
                             let mut locals: Vec<i64> = var_names.iter().map(|n| {
-                                match env.get(n) { Some(Value::Int(v)) => *v, _ => 0 }
+                                match env.get(n) { Some(Value::Int(si)) => si.to_i64().unwrap_or(0), _ => 0 }
                             }).collect();
 
                             // Run the loop with direct array access
@@ -980,19 +955,19 @@ impl Interpreter {
                                                         match checked {
                                                             Some(v) => locals[idx] = v,
                                                             None => {
-                                                                // Overflow — promote to BigInt register loop
+                                                                // Overflow — promote to SomaInt register loop
                                                                 let mut vals: Vec<Value> = locals.iter()
-                                                                    .map(|v| Value::Int(*v)).collect();
-                                                                // Apply this operation with BigInt
-                                                                let lhs_big = BigInt::from(locals[idx]);
-                                                                let rhs_big = BigInt::from(rhs_val);
-                                                                let result_big = match op {
-                                                                    BinOp::Add => lhs_big + rhs_big,
-                                                                    BinOp::Sub => lhs_big - rhs_big,
-                                                                    BinOp::Mul => lhs_big * rhs_big,
+                                                                    .map(|v| Value::Int(SomaInt::from_i64(*v))).collect();
+                                                                // Apply this operation with SomaInt
+                                                                let lhs_si = SomaInt::from_i64(locals[idx]);
+                                                                let rhs_si = SomaInt::from_i64(rhs_val);
+                                                                let result_si = match op {
+                                                                    BinOp::Add => lhs_si.add(rhs_si),
+                                                                    BinOp::Sub => lhs_si.sub(rhs_si),
+                                                                    BinOp::Mul => lhs_si.mul(rhs_si),
                                                                     _ => { break 'fast_while; }
                                                                 };
-                                                                vals[idx] = Value::Big(result_big);
+                                                                vals[idx] = Value::Int(result_si);
                                                                 // Continue with Value-based register loop
                                                                 // Push to env and use the standard fast path
                                                                 for (ii, n) in var_names.iter().enumerate() {
@@ -1010,7 +985,7 @@ impl Interpreter {
                                     // Non-optimizable statement — fall back to general path
                                     // Push locals back to env first
                                     for (i, n) in var_names.iter().enumerate() {
-                                        env.insert(n.clone(), Value::Int(locals[i]));
+                                        env.insert(n.clone(), Value::Int(SomaInt::from_i64(locals[i])));
                                     }
                                     // Run remaining body via general path
                                     break 'fast_while;
@@ -1019,7 +994,7 @@ impl Interpreter {
 
                             // Push final values back to env
                             for (i, n) in var_names.iter().enumerate() {
-                                env.insert(n.clone(), Value::Int(locals[i]));
+                                env.insert(n.clone(), Value::Int(SomaInt::from_i64(locals[i])));
                             }
                             // Check if loop completed (counter >= limit)
                             if locals[0] >= limit {
@@ -1028,14 +1003,13 @@ impl Interpreter {
 
                             // Overflowed to BigInt — run Value-based register loop (no HashMap per iteration)
                             let mut vals: Vec<Value> = var_names.iter()
-                                .map(|n| env.get(n).cloned().unwrap_or(Value::Int(0)))
+                                .map(|n| env.get(n).cloned().unwrap_or(Value::Int(SomaInt::from_i64(0))))
                                 .collect();
 
                             'bigint_loop: loop {
                                 // Check counter < limit
                                 let counter_done = match &vals[0] {
-                                    Value::Int(v) => *v >= limit,
-                                    Value::Big(v) => *v >= BigInt::from(limit),
+                                    Value::Int(si) => si.cmp(SomaInt::from_i64(limit)) >= 0,
                                     _ => true,
                                 };
                                 if counter_done { break; }
@@ -1049,22 +1023,22 @@ impl Interpreter {
                                                     if let Some(idx) = idx {
                                                         // Resolve RHS from registers
                                                         let rhs_val = match &rhs.node {
-                                                            Expr::Literal(Literal::Int(n)) => Value::Int(*n),
+                                                            Expr::Literal(Literal::Int(n)) => Value::Int(SomaInt::from_i64(*n)),
                                                             Expr::Ident(ref rn) => {
                                                                 var_names.iter().position(|n| n == rn)
                                                                     .map(|ri| vals[ri].clone())
-                                                                    .unwrap_or(Value::Int(0))
+                                                                    .unwrap_or(Value::Int(SomaInt::from_i64(0)))
                                                             }
                                                             Expr::BinaryOp { left: inner_l, op: inner_op, right: inner_r } => {
                                                                 // Handle i * i, i * i * i etc
                                                                 let l = match &inner_l.node {
-                                                                    Expr::Ident(ref n) => var_names.iter().position(|vn| vn == n).map(|i| vals[i].clone()).unwrap_or(Value::Int(0)),
-                                                                    Expr::Literal(Literal::Int(n)) => Value::Int(*n),
+                                                                    Expr::Ident(ref n) => var_names.iter().position(|vn| vn == n).map(|i| vals[i].clone()).unwrap_or(Value::Int(SomaInt::from_i64(0))),
+                                                                    Expr::Literal(Literal::Int(n)) => Value::Int(SomaInt::from_i64(*n)),
                                                                     _ => { break 'bigint_loop; }
                                                                 };
                                                                 let r = match &inner_r.node {
-                                                                    Expr::Ident(ref n) => var_names.iter().position(|vn| vn == n).map(|i| vals[i].clone()).unwrap_or(Value::Int(0)),
-                                                                    Expr::Literal(Literal::Int(n)) => Value::Int(*n),
+                                                                    Expr::Ident(ref n) => var_names.iter().position(|vn| vn == n).map(|i| vals[i].clone()).unwrap_or(Value::Int(SomaInt::from_i64(0))),
+                                                                    Expr::Literal(Literal::Int(n)) => Value::Int(SomaInt::from_i64(*n)),
                                                                     _ => { break 'bigint_loop; }
                                                                 };
                                                                 self.eval_binop_val(&l, inner_op.clone(), &r)
@@ -1092,8 +1066,7 @@ impl Interpreter {
                             }
                             // Check if done
                             let counter_done = match &vals[0] {
-                                Value::Int(v) => *v >= limit,
-                                Value::Big(v) => *v >= BigInt::from(limit),
+                                Value::Int(si) => si.cmp(SomaInt::from_i64(limit)) >= 0,
                                 _ => true,
                             };
                             if counter_done {
@@ -1103,8 +1076,8 @@ impl Interpreter {
 
                         // Standard fast path: direct int comparison, skip eval_expr on condition
                         loop {
-                            if let Some(Value::Int(current)) = env.get(&cn) {
-                                if *current >= limit { break; }
+                            if let Some(Value::Int(si)) = env.get(&cn) {
+                                if si.cmp(SomaInt::from_i64(limit)) >= 0 { break; }
                             } else { break; }
                             let result = if needs_scope {
                                 self.exec_body_scoped(body, env, cell_name, signal_name)
@@ -1597,7 +1570,7 @@ impl Interpreter {
                         match field.as_str() {
                             "keys" => return Ok(Value::List(entries.keys().map(|k| Value::String(k.clone())).collect())),
                             "values" => return Ok(Value::List(entries.values().cloned().collect())),
-                            "length" | "len" | "size" => return Ok(Value::Int(entries.len() as i64)),
+                            "length" | "len" | "size" => return Ok(Value::Int(SomaInt::from_i64(entries.len() as i64))),
                             _ => {}
                         }
                         let val = entries.get(field).cloned().unwrap_or(Value::Unit);
@@ -1606,7 +1579,7 @@ impl Interpreter {
                     Value::List(ref items) => {
                         // list.length, list.len, list.first, list.last
                         match field.as_str() {
-                            "length" | "len" => Ok(Value::Int(items.len() as i64)),
+                            "length" | "len" => Ok(Value::Int(SomaInt::from_i64(items.len() as i64))),
                             "first" => Ok(items.first().cloned().unwrap_or(Value::Unit)),
                             "last" => Ok(items.last().cloned().unwrap_or(Value::Unit)),
                             _ => {
@@ -1621,7 +1594,7 @@ impl Interpreter {
                     }
                     Value::String(ref s) => {
                         match field.as_str() {
-                            "length" | "len" => Ok(Value::Int(s.chars().count() as i64)),
+                            "length" | "len" => Ok(Value::Int(SomaInt::from_i64(s.chars().count() as i64))),
                             _ => Ok(Value::Unit),
                         }
                     }
@@ -1648,14 +1621,14 @@ impl Interpreter {
                 let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
                 match (&target_val, method.as_str()) {
                     (Value::List(items), "get") => {
-                        if let Some(Value::Int(idx)) = arg_vals.first() {
-                            Ok(items.get(*idx as usize).cloned().unwrap_or(Value::Unit))
+                        if let Some(Value::Int(si)) = arg_vals.first() {
+                            Ok(items.get(si.to_i64().unwrap_or(0) as usize).cloned().unwrap_or(Value::Unit))
                         } else {
                             Ok(Value::Unit)
                         }
                     }
                     (Value::List(items), "len" | "length") => {
-                        Ok(Value::Int(items.len() as i64))
+                        Ok(Value::Int(SomaInt::from_i64(items.len() as i64)))
                     }
                     (Value::Map(entries), "get") => {
                         if let Some(key) = arg_vals.first() {
@@ -1679,7 +1652,7 @@ impl Interpreter {
                             Ok(Value::Bool(false))
                         }
                     }
-                    (Value::String(s), "len" | "length") => Ok(Value::Int(s.chars().count() as i64)),
+                    (Value::String(s), "len" | "length") => Ok(Value::Int(SomaInt::from_i64(s.chars().count() as i64))),
                     (Value::String(s), "split") => {
                         if let Some(Value::String(delim)) = arg_vals.first() {
                             Ok(Value::List(s.split(delim.as_str()).map(|p| Value::String(p.to_string())).collect()))
@@ -1791,7 +1764,7 @@ impl Interpreter {
                         for inv in &invs {
                             // Provide slot metadata as env variables for invariant evaluation
                             let mut env = FxHashMap::default();
-                            env.insert("_slot_len".to_string(), Value::Int(inv_backend.len() as i64));
+                            env.insert("_slot_len".to_string(), Value::Int(SomaInt::from_i64(inv_backend.len() as i64)));
                             env.insert("_slot_name".to_string(), Value::String(slot_name.to_string()));
                             env.insert("_key".to_string(), Value::String(key_str.clone()));
                             let result = self.eval_expr(inv, &mut env, cell_name, "");
@@ -1833,7 +1806,7 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
             "len" | "size" | "count" => {
-                Ok(Value::Int(backend.len() as i64))
+                Ok(Value::Int(SomaInt::from_i64(backend.len() as i64)))
             }
             "list" | "all" | "entries" => {
                 let items = backend.list();
@@ -2085,8 +2058,8 @@ impl Interpreter {
                     // Try .length etc
                     match parts[1] {
                         "length" | "len" => {
-                            if let Value::List(items) = val { return Some(Value::Int(items.len() as i64)); }
-                            if let Value::String(s) = val { return Some(Value::Int(s.len() as i64)); }
+                            if let Value::List(items) = val { return Some(Value::Int(SomaInt::from_i64(items.len() as i64))); }
+                            if let Value::String(s) = val { return Some(Value::Int(SomaInt::from_i64(s.len() as i64))); }
                         }
                         _ => {}
                     }
@@ -2131,8 +2104,11 @@ impl Interpreter {
 
     fn eval_literal(&self, lit: &Literal) -> Value {
         match lit {
-            Literal::Int(n) => Value::Int(*n),
-            Literal::BigInt(s) => Value::Big(s.parse::<BigInt>().unwrap_or_default()),
+            Literal::Int(n) => Value::Int(SomaInt::from_i64(*n)),
+            Literal::BigInt(s) => {
+                let bi = s.parse::<BigInt>().unwrap_or_default();
+                Value::Int(SomaInt::from_bigint(&bi))
+            }
             Literal::Float(n) => Value::Float(*n),
             Literal::String(s) => Value::String(s.clone()),
             Literal::Bool(b) => Value::Bool(*b),
@@ -2145,7 +2121,7 @@ impl Interpreter {
                     DurationUnit::Days => d.value * 86_400_000.0,
                     DurationUnit::Years => d.value * 365.25 * 86_400_000.0,
                 };
-                Value::Int(ms as i64)
+                Value::Int(SomaInt::from_i64(ms as i64))
             }
             Literal::Percentage(p) => Value::Float(*p),
             Literal::Unit => Value::Unit,
@@ -2198,7 +2174,13 @@ impl Interpreter {
             }
             MatchPattern::Range { from, to } => {
                 match val {
-                    Value::Int(i) => (*from <= *i && *i <= *to, vec![]),
+                    Value::Int(si) => {
+                        if let Some(i) = si.to_i64() {
+                            (*from <= i && i <= *to, vec![])
+                        } else {
+                            (false, vec![])
+                        }
+                    }
                     Value::Float(f) => ((*from as f64) <= *f && *f <= (*to as f64), vec![]),
                     _ => (false, vec![]),
                 }
@@ -2471,12 +2453,9 @@ impl Interpreter {
     fn values_equal(&self, a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => x == y,
-            (Value::Big(x), Value::Big(y)) => x == y,
-            (Value::Big(x), Value::Int(y)) => *x == BigInt::from(*y),
-            (Value::Int(x), Value::Big(y)) => BigInt::from(*x) == *y,
             (Value::Float(x), Value::Float(y)) => x == y,
-            (Value::Int(x), Value::Float(y)) => (*x as f64) == *y,
-            (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
+            (Value::Int(x), Value::Float(y)) => x.to_f64() == *y,
+            (Value::Float(x), Value::Int(y)) => *x == y.to_f64(),
             (Value::String(x), Value::String(y)) => x == y,
             (Value::Bool(x), Value::Bool(y)) => x == y,
             (Value::Unit, Value::Unit) => true,
@@ -2490,73 +2469,38 @@ impl Interpreter {
     }
 
     fn eval_binop(&self, l: &Value, op: BinOp, r: &Value) -> Result<Value, RuntimeError> {
-        // BigInt + Float → promote both to Float
-        if (l.is_big() && matches!(r, Value::Float(_))) || (matches!(l, Value::Float(_)) && r.is_big()) {
-            let a = l.as_float()?;
-            let b = r.as_float()?;
-            return match op {
-                BinOp::Add => Ok(Value::Float(a + b)),
-                BinOp::Sub => Ok(Value::Float(a - b)),
-                BinOp::Mul => Ok(Value::Float(a * b)),
-                BinOp::Div => Ok(Value::Float(a / b)),
-                BinOp::Mod => Ok(Value::Float(a % b)),
-                _ => Err(RuntimeError::TypeError("invalid op for floats".to_string())),
-            };
-        }
-
-        // If either operand is BigInt, promote both
-        if l.is_big() || r.is_big() {
-            let a = l.as_bigint()?;
-            let b = r.as_bigint()?;
-            return match op {
-                BinOp::Add => Ok(Value::Big(a + b)),
-                BinOp::Sub => Ok(Value::Big(a - b)),
-                BinOp::Mul => Ok(Value::Big(a * b)),
-                BinOp::Div => {
-                    if b.is_zero() {
-                        Err(RuntimeError::TypeError("division by zero".to_string()))
-                    } else {
-                        Ok(Value::Big(a / b))
-                    }
-                }
-                BinOp::Mod => {
-                    if b.is_zero() {
-                        Err(RuntimeError::TypeError("modulo by zero".to_string()))
-                    } else {
-                        Ok(Value::Big(a % b))
-                    }
-                }
-                BinOp::And => Ok(Value::Bool(!a.is_zero() && !b.is_zero())),
-                BinOp::Or => Ok(Value::Bool(!a.is_zero() || !b.is_zero())),
-            };
-        }
-
         match (l, r) {
             (Value::Int(a), Value::Int(b)) => match op {
-                BinOp::Add => Ok(a.checked_add(*b).map(Value::Int)
-                    .unwrap_or_else(|| Value::Big(BigInt::from(*a) + BigInt::from(*b)))),
-                BinOp::Sub => Ok(a.checked_sub(*b).map(Value::Int)
-                    .unwrap_or_else(|| Value::Big(BigInt::from(*a) - BigInt::from(*b)))),
-                BinOp::Mul => Ok(a.checked_mul(*b).map(Value::Int)
-                    .unwrap_or_else(|| Value::Big(BigInt::from(*a) * BigInt::from(*b)))),
+                BinOp::Add => Ok(Value::Int(a.add(*b))),
+                BinOp::Sub => Ok(Value::Int(a.sub(*b))),
+                BinOp::Mul => Ok(Value::Int(a.mul(*b))),
                 BinOp::Div => {
-                    if *b == 0 {
+                    if b.to_i64() == Some(0) {
                         Err(RuntimeError::TypeError("division by zero".to_string()))
-                    } else if a % b == 0 {
-                        Ok(Value::Int(a / b))
+                    } else if let (Some(ai), Some(bi)) = (a.to_i64(), b.to_i64()) {
+                        if ai % bi == 0 {
+                            Ok(Value::Int(a.div(*b)))
+                        } else {
+                            Ok(Value::Float(ai as f64 / bi as f64))
+                        }
                     } else {
-                        Ok(Value::Float(*a as f64 / *b as f64))
+                        Ok(Value::Int(a.div(*b)))
                     }
                 }
                 BinOp::Mod => {
-                    if *b == 0 {
+                    if b.to_i64() == Some(0) {
                         Err(RuntimeError::TypeError("modulo by zero".to_string()))
+                    } else if let (Some(ai), Some(bi)) = (a.to_i64(), b.to_i64()) {
+                        Ok(Value::Int(SomaInt::from_i64(ai % bi)))
                     } else {
-                        Ok(Value::Int(a % b))
+                        // For big ints, use BigInt modulo
+                        let abi = a.to_bigint();
+                        let bbi = b.to_bigint();
+                        Ok(Value::Int(SomaInt::from_bigint(&(abi % bbi))))
                     }
                 }
-                BinOp::And => Ok(Value::Bool(*a != 0 && *b != 0)),
-                BinOp::Or => Ok(Value::Bool(*a != 0 || *b != 0)),
+                BinOp::And => Ok(Value::Bool(a.to_i64() != Some(0) && b.to_i64() != Some(0))),
+                BinOp::Or => Ok(Value::Bool(a.to_i64() != Some(0) || b.to_i64() != Some(0))),
             },
             (Value::Float(_), _) | (_, Value::Float(_)) => {
                 let a = l.as_float()?;
@@ -2603,36 +2547,6 @@ impl Interpreter {
     }
 
     fn eval_cmpop(&self, l: &Value, op: CmpOp, r: &Value) -> Result<Value, RuntimeError> {
-        // BigInt + Float comparison → promote to Float
-        if (l.is_big() && matches!(r, Value::Float(_))) || (matches!(l, Value::Float(_)) && r.is_big()) {
-            let a = l.as_float()?;
-            let b = r.as_float()?;
-            let result = match op {
-                CmpOp::Lt => a < b,
-                CmpOp::Gt => a > b,
-                CmpOp::Le => a <= b,
-                CmpOp::Ge => a >= b,
-                CmpOp::Eq => a == b,
-                CmpOp::Ne => a != b,
-            };
-            return Ok(Value::Bool(result));
-        }
-
-        // BigInt comparisons (both BigInt or Int+BigInt)
-        if l.is_big() || r.is_big() {
-            let a = l.as_bigint()?;
-            let b = r.as_bigint()?;
-            let result = match op {
-                CmpOp::Lt => a < b,
-                CmpOp::Gt => a > b,
-                CmpOp::Le => a <= b,
-                CmpOp::Ge => a >= b,
-                CmpOp::Eq => a == b,
-                CmpOp::Ne => a != b,
-            };
-            return Ok(Value::Bool(result));
-        }
-
         // Handle Unit comparisons first (before type coercion)
         if matches!(l, Value::Unit) || matches!(r, Value::Unit) {
             let result = match op {
@@ -2645,13 +2559,14 @@ impl Interpreter {
 
         match (l, r) {
             (Value::Int(a), Value::Int(b)) => {
+                let c = a.cmp(*b);
                 let result = match op {
-                    CmpOp::Lt => a < b,
-                    CmpOp::Gt => a > b,
-                    CmpOp::Le => a <= b,
-                    CmpOp::Ge => a >= b,
-                    CmpOp::Eq => a == b,
-                    CmpOp::Ne => a != b,
+                    CmpOp::Lt => c < 0,
+                    CmpOp::Gt => c > 0,
+                    CmpOp::Le => c <= 0,
+                    CmpOp::Ge => c >= 0,
+                    CmpOp::Eq => c == 0,
+                    CmpOp::Ne => c != 0,
                 };
                 Ok(Value::Bool(result))
             }
@@ -2870,16 +2785,16 @@ impl Interpreter {
     }
 }
 
-/// Check if a type expression refers to BigInt
-fn is_bigint_type(ty: &TypeExpr) -> bool {
-    matches!(ty, TypeExpr::Simple(name) if name == "BigInt")
-}
-
 /// Convert a runtime Value to a StoredValue
 pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
     match val {
-        Value::Int(n) => StoredValue::Int(*n),
-        Value::Big(n) => StoredValue::String(n.to_string()),
+        Value::Int(si) => {
+            if let Some(n) = si.to_i64() {
+                StoredValue::Int(n)
+            } else {
+                StoredValue::String(format!("{}", si))
+            }
+        }
         Value::Float(n) => StoredValue::Float(*n),
         Value::String(s) => StoredValue::String(s.clone()),
         Value::Bool(b) => StoredValue::Bool(*b),
@@ -2894,7 +2809,7 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
 
 pub(crate) fn stored_to_value(stored: StoredValue) -> Value {
     match stored {
-        StoredValue::Int(n) => Value::Int(n),
+        StoredValue::Int(n) => Value::Int(SomaInt::from_i64(n)),
         StoredValue::Float(n) => Value::Float(n),
         StoredValue::String(s) => Value::String(s),
         StoredValue::Bool(b) => Value::Bool(b),
@@ -2930,7 +2845,7 @@ pub fn json_to_value(v: &serde_json::Value) -> Value {
         serde_json::Value::Bool(b) => Value::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Value::Int(i)
+                Value::Int(SomaInt::from_i64(i))
             } else {
                 Value::Float(n.as_f64().unwrap_or(0.0))
             }
@@ -2963,6 +2878,30 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
+    /// Convert big SomaInt values to strings before crossing thread boundaries,
+    /// then reconstruct on the receiving side. Small ints (inline) survive as-is.
+    enum PortableValue {
+        Small(Value),
+        BigIntStr(String),
+    }
+
+    fn to_portable(val: Value) -> PortableValue {
+        match &val {
+            Value::Int(si) if !si.is_small() => PortableValue::BigIntStr(format!("{}", si)),
+            _ => PortableValue::Small(val),
+        }
+    }
+
+    fn from_portable(pv: PortableValue) -> Value {
+        match pv {
+            PortableValue::Small(v) => v,
+            PortableValue::BigIntStr(s) => {
+                let bi = s.parse::<num_bigint::BigInt>().unwrap_or_default();
+                Value::Int(SomaInt::from_bigint(&bi))
+            }
+        }
+    }
+
     fn run(source: &str, cell: &str, signal: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // Run on a thread with 8 MB stack so recursive tests don't SIGABRT
         let source = source.to_string();
@@ -2991,11 +2930,13 @@ mod tests {
                     }
                 }
                 interp.ensure_state_machine_storage();
-                interp.call_signal(&cell, &signal, args)
+                // Convert big SomaInt to portable form before thread exit
+                interp.call_signal(&cell, &signal, args).map(to_portable)
             })
             .expect("failed to spawn test thread")
             .join()
             .expect("test thread panicked")
+            .map(from_portable)
     }
 
     #[test]
@@ -3010,7 +2951,7 @@ mod tests {
                 }
             }
         "#;
-        let result = run(source, "Fact", "compute", vec![Value::Int(5)]).unwrap();
+        let result = run(source, "Fact", "compute", vec![Value::Int(SomaInt::from_i64(5))]).unwrap();
         assert_eq!(result.as_int().unwrap(), 120);
     }
 
@@ -3025,10 +2966,10 @@ mod tests {
                 }
             }
         "#;
-        let result = run(source, "Fact", "compute", vec![Value::Int(30)]);
+        let result = run(source, "Fact", "compute", vec![Value::Int(SomaInt::from_i64(30))]);
         assert!(result.is_ok());
         let val = result.unwrap();
-        assert!(matches!(val, Value::Big(_)));
+        assert!(val.is_big());
         assert_eq!(val.to_string(), "265252859812191058636308480000000");
     }
 
@@ -3043,8 +2984,8 @@ mod tests {
                 }
             }
         "#;
-        let result = run(source, "Fact", "compute", vec![Value::Int(30)]).unwrap();
-        assert!(matches!(result, Value::Big(_)));
+        let result = run(source, "Fact", "compute", vec![Value::Int(SomaInt::from_i64(30))]).unwrap();
+        assert!(result.is_big());
         assert_eq!(
             result.to_string(),
             "265252859812191058636308480000000"
@@ -3063,7 +3004,7 @@ mod tests {
                 }
             }
         "#;
-        let result = run(source, "Fib", "compute", vec![Value::Int(10)]).unwrap();
+        let result = run(source, "Fib", "compute", vec![Value::Int(SomaInt::from_i64(10))]).unwrap();
         assert_eq!(result.as_int().unwrap(), 55);
     }
 
@@ -3077,7 +3018,7 @@ mod tests {
                 }
             }
         "#;
-        let result = run(source, "Math", "add", vec![Value::Int(3), Value::Int(4)]).unwrap();
+        let result = run(source, "Math", "add", vec![Value::Int(SomaInt::from_i64(3)), Value::Int(SomaInt::from_i64(4))]).unwrap();
         assert_eq!(result.as_int().unwrap(), 14);
     }
 
@@ -3094,7 +3035,7 @@ mod tests {
                 }
             }
         "#;
-        let result = run(source, "Logic", "max", vec![Value::Int(3), Value::Int(7)]).unwrap();
+        let result = run(source, "Logic", "max", vec![Value::Int(SomaInt::from_i64(3)), Value::Int(SomaInt::from_i64(7))]).unwrap();
         assert_eq!(result.as_int().unwrap(), 7);
     }
 
@@ -3111,7 +3052,7 @@ mod tests {
                 }
             }
         "#;
-        let result = run(source, "T", "run", vec![Value::Int(7)]).unwrap();
+        let result = run(source, "T", "run", vec![Value::Int(SomaInt::from_i64(7))]).unwrap();
         assert_eq!(result.as_int().unwrap(), 107);
     }
 
@@ -3183,11 +3124,11 @@ mod tests {
                 }
             }
         "#;
-        let pos = run(source, "T", "run", vec![Value::Int(5)]).unwrap();
+        let pos = run(source, "T", "run", vec![Value::Int(SomaInt::from_i64(5))]).unwrap();
         assert_eq!(pos.to_string(), "positive");
-        let neg = run(source, "T", "run", vec![Value::Int(-3)]).unwrap();
+        let neg = run(source, "T", "run", vec![Value::Int(SomaInt::from_i64(-3))]).unwrap();
         assert_eq!(neg.to_string(), "negative");
-        let zero = run(source, "T", "run", vec![Value::Int(0)]).unwrap();
+        let zero = run(source, "T", "run", vec![Value::Int(SomaInt::from_i64(0))]).unwrap();
         assert_eq!(zero.to_string(), "zero");
     }
 
@@ -3203,9 +3144,9 @@ mod tests {
                 }
             }
         "#;
-        let small = run(source, "T", "run", vec![Value::Int(5)]).unwrap();
+        let small = run(source, "T", "run", vec![Value::Int(SomaInt::from_i64(5))]).unwrap();
         assert_eq!(small.to_string(), "small");
-        let big = run(source, "T", "run", vec![Value::Int(15)]).unwrap();
+        let big = run(source, "T", "run", vec![Value::Int(SomaInt::from_i64(15))]).unwrap();
         assert_eq!(big.to_string(), "big");
     }
 

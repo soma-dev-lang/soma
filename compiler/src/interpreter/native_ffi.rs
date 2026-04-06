@@ -224,7 +224,7 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
         match expected_ty {
             NativeType::Int => {
                 let val = match arg {
-                    Value::Int(n) => *n,
+                    Value::Int(si) => si.to_i64().unwrap_or(0),
                     Value::Float(f) => *f as i64,
                     Value::Bool(b) => if *b { 1 } else { 0 },
                     _ => return Err(format!("[native] arg {} must be Int", i)),
@@ -234,7 +234,7 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
             NativeType::Float => {
                 let val = match arg {
                     Value::Float(f) => *f,
-                    Value::Int(n) => *n as f64,
+                    Value::Int(si) => si.to_f64(),
                     _ => return Err(format!("[native] arg {} must be Float", i)),
                 };
                 raw_args.push(val.to_bits());
@@ -242,7 +242,7 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
             NativeType::Bool => {
                 let val = match arg {
                     Value::Bool(b) => *b,
-                    Value::Int(n) => *n != 0,
+                    Value::Int(si) => si.to_i64().unwrap_or(0) != 0,
                     _ => return Err(format!("[native] arg {} must be Bool", i)),
                 };
                 raw_args.push(if val { 1 } else { 0 });
@@ -270,7 +270,7 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
                 // Signal the interpreter to re-run via interpreted path (BigInt)
                 return Err("overflow_rerun".to_string());
             } else {
-                Ok(Value::Int(raw_result as i64))
+                Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(raw_result as i64)))
             }
         }
         NativeType::Float => Ok(Value::Float(f64::from_bits(raw_result))),

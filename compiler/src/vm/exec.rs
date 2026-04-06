@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::bytecode::*;
 use crate::interpreter::{Value, map_from_pairs};
+use crate::interpreter::soma_int::SomaInt;
 use crate::runtime::storage::StorageBackend;
 use indexmap::IndexMap;
 
@@ -132,7 +133,7 @@ impl VM {
                 x if x == Op::Const as u8 => {
                     let idx = self.read_u16() as usize;
                     let val = match &self.chunks[chunk_idx].constants[idx] {
-                        Constant::Int(n) => Value::Int(*n),
+                        Constant::Int(n) => Value::Int(SomaInt::from_i64(*n)),
                         Constant::Float(n) => Value::Float(*n),
                         Constant::String(s) => {
                             // String interpolation: resolve {var} from locals
@@ -218,34 +219,34 @@ impl VM {
 
                 // Arithmetic
                 x if x == Op::Add as u8 => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(a), Value::Int(b)) => a.checked_add(b).map(Value::Int).unwrap_or(Value::Float(a as f64 + b as f64)),
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a.add(b)),
                     (Value::Float(a), Value::Float(b)) => Value::Float(a + b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a.to_f64() + b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a + b.to_f64()),
                     (Value::String(a), Value::String(b)) => { let mut s = a; s.push_str(&b); Value::String(s) }
                     (a, b) => Value::String(format!("{}{}", a, b)),
                 }),
                 x if x == Op::Sub as u8 => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(a), Value::Int(b)) => a.checked_sub(b).map(Value::Int).unwrap_or(Value::Float(a as f64 - b as f64)),
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a.sub(b)),
                     (Value::Float(a), Value::Float(b)) => Value::Float(a - b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a.to_f64() - b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a - b.to_f64()),
                     _ => Value::Unit,
                 }),
                 x if x == Op::Mul as u8 => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(a), Value::Int(b)) => a.checked_mul(b).map(Value::Int).unwrap_or(Value::Float(a as f64 * b as f64)),
+                    (Value::Int(a), Value::Int(b)) => Value::Int(a.mul(b)),
                     (Value::Float(a), Value::Float(b)) => Value::Float(a * b),
-                    (Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
-                    (Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
+                    (Value::Int(a), Value::Float(b)) => Value::Float(a.to_f64() * b),
+                    (Value::Float(a), Value::Int(b)) => Value::Float(a * b.to_f64()),
                     _ => Value::Unit,
                 }),
                 x if x == Op::Div as u8 => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(a), Value::Int(b)) => if b != 0 { Value::Int(a / b) } else { Value::Unit },
+                    (Value::Int(a), Value::Int(b)) => if b.to_i64() != Some(0) { Value::Int(a.div(b)) } else { Value::Unit },
                     (Value::Float(a), Value::Float(b)) => Value::Float(a / b),
                     _ => Value::Unit,
                 }),
                 x if x == Op::Mod as u8 => self.binary_op(|a, b| match (a, b) {
-                    (Value::Int(a), Value::Int(b)) => if b != 0 { Value::Int(a % b) } else { Value::Unit },
+                    (Value::Int(a), Value::Int(b)) => if b.to_i64() != Some(0) { if let (Some(ai), Some(bi)) = (a.to_i64(), b.to_i64()) { Value::Int(SomaInt::from_i64(ai % bi)) } else { Value::Unit } } else { Value::Unit },
                     _ => Value::Unit,
                 }),
 
@@ -467,17 +468,17 @@ impl VM {
         let b = self.stack.pop().unwrap_or(Value::Unit);
         let a = self.stack.pop().unwrap_or(Value::Unit);
         let result = match (&a, &b) {
-            (Value::Int(a), Value::Int(b)) => f(*a, *b),
+            (Value::Int(a), Value::Int(b)) => { let c = a.cmp(*b) as i64; f(c, 0) },
             (Value::Float(a), Value::Float(b)) => {
                 let ord = a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
                 f(ord as i64, 0)
             }
             (Value::Int(a), Value::Float(b)) => {
-                let ord = (*a as f64).partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+                let ord = a.to_f64().partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
                 f(ord as i64, 0)
             }
             (Value::Float(a), Value::Int(b)) => {
-                let ord = a.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal);
+                let ord = a.partial_cmp(&b.to_f64()).unwrap_or(std::cmp::Ordering::Equal);
                 f(ord as i64, 0)
             }
             (Value::Unit, Value::Unit) => f(0, 0),
@@ -556,13 +557,13 @@ impl VM {
             "html" => {
                 let body = args.first().map(|a| format!("{}", a)).unwrap_or_default();
                 map_from_pairs(vec![
-                    ("_status".to_string(), Value::Int(200)),
+                    ("_status".to_string(), Value::Int(SomaInt::from_i64(200))),
                     ("_body".to_string(), Value::String(body)),
                     ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
                 ])
             }
             "response" => {
-                let status = args.first().cloned().unwrap_or(Value::Int(200));
+                let status = args.first().cloned().unwrap_or(Value::Int(SomaInt::from_i64(200)));
                 let body = args.get(1).cloned().unwrap_or(Value::Unit);
                 map_from_pairs(vec![
                     ("_status".to_string(), status),
@@ -572,7 +573,7 @@ impl VM {
             "redirect" => {
                 let url = args.first().map(|a| format!("{}", a)).unwrap_or("/".to_string());
                 map_from_pairs(vec![
-                    ("_status".to_string(), Value::Int(302)),
+                    ("_status".to_string(), Value::Int(SomaInt::from_i64(302))),
                     ("_body".to_string(), Value::String(String::new())),
                     ("Location".to_string(), Value::String(url)),
                 ])
@@ -690,7 +691,7 @@ impl VM {
             }
             "keys" => Value::List(backend.keys().into_iter().map(Value::String).collect()),
             "values" => Value::List(backend.values().into_iter().map(stored_to_value).collect()),
-            "len" | "size" => Value::Int(backend.len() as i64),
+            "len" | "size" => Value::Int(SomaInt::from_i64(backend.len() as i64)),
             "has" => {
                 let key = args.first().map(|a| format!("{}", a)).unwrap_or_default();
                 Value::Bool(backend.has(&key))
@@ -761,7 +762,7 @@ impl VM {
 
     fn dispatch_method(&self, obj: Value, method: &str, args: Vec<Value>) -> Value {
         match (&obj, method) {
-            (Value::List(items), "len" | "length") => Value::Int(items.len() as i64),
+            (Value::List(items), "len" | "length") => Value::Int(SomaInt::from_i64(items.len() as i64)),
             (Value::List(items), "first") => items.first().cloned().unwrap_or(Value::Unit),
             (Value::List(items), "last") => items.last().cloned().unwrap_or(Value::Unit),
             (Value::Map(entries), "keys") => {
@@ -771,7 +772,7 @@ impl VM {
                 let key = args.first().map(|a| format!("{}", a)).unwrap_or_default();
                 entries.get(&key).cloned().unwrap_or(Value::Unit)
             }
-            (Value::String(s), "len" | "length") => Value::Int(s.chars().count() as i64),
+            (Value::String(s), "len" | "length") => Value::Int(SomaInt::from_i64(s.chars().count() as i64)),
             _ => Value::Unit,
         }
     }
@@ -783,7 +784,7 @@ impl Value {
     pub fn is_truthy(&self) -> bool {
         match self {
             Value::Bool(b) => *b,
-            Value::Int(n) => *n != 0,
+            Value::Int(si) => si.to_i64() != Some(0),
             Value::Unit => false,
             Value::String(s) => !s.is_empty(),
             _ => true,
@@ -807,7 +808,7 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self, other) {
-            (Value::Int(a), Value::Int(b)) => a.partial_cmp(b),
+            (Value::Int(a), Value::Int(b)) => { let c = a.cmp(*b); Some(c.cmp(&0)) },
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
             (Value::String(a), Value::String(b)) => a.partial_cmp(b),
             _ => None,
@@ -819,21 +820,21 @@ use crate::runtime::storage::StoredValue;
 
 fn value_to_stored(val: &Value) -> StoredValue {
     match val {
-        Value::Int(n) => StoredValue::Int(*n),
+        Value::Int(si) => { if let Some(n) = si.to_i64() { StoredValue::Int(n) } else { StoredValue::String(format!("{}", si)) } },
         Value::Float(n) => StoredValue::Float(*n),
         Value::String(s) => StoredValue::String(s.clone()),
         Value::Bool(b) => StoredValue::Bool(*b),
         Value::Unit => StoredValue::Null,
         Value::List(items) => StoredValue::List(items.iter().map(value_to_stored).collect()),
         Value::Map(entries) => StoredValue::Map(entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()),
-        Value::Big(n) => StoredValue::String(n.to_string()),
+        
         Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
     }
 }
 
 fn stored_to_value(stored: StoredValue) -> Value {
     match stored {
-        StoredValue::Int(n) => Value::Int(n),
+        StoredValue::Int(n) => Value::Int(SomaInt::from_i64(n)),
         StoredValue::Float(n) => Value::Float(n),
         StoredValue::String(s) => Value::String(s),
         StoredValue::Bool(b) => Value::Bool(b),
@@ -848,7 +849,7 @@ fn json_to_value(v: &serde_json::Value) -> Value {
         serde_json::Value::Null => Value::Unit,
         serde_json::Value::Bool(b) => Value::Bool(*b),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { Value::Int(i) }
+            if let Some(i) = n.as_i64() { Value::Int(SomaInt::from_i64(i)) }
             else { Value::Float(n.as_f64().unwrap_or(0.0)) }
         }
         serde_json::Value::String(s) => Value::String(s.clone()),

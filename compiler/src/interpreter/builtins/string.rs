@@ -1,5 +1,6 @@
 use super::super::{Value, RuntimeError};
 use super::json_to_value;
+use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
@@ -112,12 +113,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         Some(byte_pos) => {
                             // Convert byte offset to char offset
                             let char_pos = s[..byte_pos].chars().count();
-                            Value::Int(char_pos as i64)
+                            Value::Int(SomaInt::from_i64(char_pos as i64))
                         }
-                        None => Value::Int(-1),
+                        None => Value::Int(SomaInt::from_i64(-1)),
                     }))
                 } else {
-                    Some(Ok(Value::Int(-1)))
+                    Some(Ok(Value::Int(SomaInt::from_i64(-1))))
                 }
             } else {
                 Some(Err(RuntimeError::TypeError("index_of(string, substring)".to_string())))
@@ -125,10 +126,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "substring" | "substr" => {
             if args.len() >= 3 {
-                if let (Value::String(s), Value::Int(start), Value::Int(end)) = (&args[0], &args[1], &args[2]) {
-                    let start = (*start).max(0) as usize;
+                if let (Value::String(s), Value::Int(start_si), Value::Int(end_si)) = (&args[0], &args[1], &args[2]) {
+                    let start = start_si.to_i64().unwrap_or(0).max(0) as usize;
                     let char_count = s.chars().count();
-                    let end = (*end).min(char_count as i64) as usize;
+                    let end = end_si.to_i64().unwrap_or(0).min(char_count as i64) as usize;
                     let result: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
                     Some(Ok(Value::String(result)))
                 } else {
@@ -140,9 +141,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "len" => {
             args.first().map(|arg| match arg {
-                Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
-                Value::List(items) => Ok(Value::Int(items.len() as i64)),
-                Value::Map(entries) => Ok(Value::Int(entries.len() as i64)),
+                Value::String(s) => Ok(Value::Int(SomaInt::from_i64(s.chars().count() as i64))),
+                Value::List(items) => Ok(Value::Int(SomaInt::from_i64(items.len() as i64))),
+                Value::Map(entries) => Ok(Value::Int(SomaInt::from_i64(entries.len() as i64))),
                 _ => Err(RuntimeError::TypeError("len expects a string, list, or map".to_string())),
             })
         }
@@ -151,25 +152,25 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "to_int" | "int" => {
             args.first().map(|arg| match arg {
-                Value::Int(n) => Ok(Value::Int(*n)),
-                Value::Float(n) => Ok(Value::Int(*n as i64)),
+                Value::Int(si) => Ok(Value::Int(*si)),
+                Value::Float(n) => Ok(Value::Int(SomaInt::from_i64(*n as i64))),
                 Value::String(s) => {
                     if let Ok(n) = s.parse::<i64>() {
-                        Ok(Value::Int(n))
+                        Ok(Value::Int(SomaInt::from_i64(n)))
                     } else if let Ok(f) = s.parse::<f64>() {
-                        Ok(Value::Int(f as i64))
+                        Ok(Value::Int(SomaInt::from_i64(f as i64)))
                     } else {
                         Ok(Value::Unit)
                     }
                 },
-                Value::Bool(b) => Ok(Value::Int(if *b { 1 } else { 0 })),
+                Value::Bool(b) => Ok(Value::Int(SomaInt::from_i64(if *b { 1 } else { 0 }))),
                 _ => Ok(Value::Unit),
             })
         }
         "to_float" | "float" => {
             args.first().map(|arg| match arg {
                 Value::Float(n) => Ok(Value::Float(*n)),
-                Value::Int(n) => Ok(Value::Float(*n as f64)),
+                Value::Int(si) => Ok(Value::Float(si.to_f64())),
                 Value::String(s) => {
                     if let Ok(f) = s.parse::<f64>() {
                         Ok(Value::Float(f))
@@ -196,8 +197,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "type_of" => {
             args.first().map(|arg| {
                 let t = match arg {
-                    Value::Int(_) => "Int",
-                    Value::Big(_) => "BigInt",
+                    Value::Int(si) => if si.is_small() { "Int" } else { "BigInt" },
                     Value::Float(_) => "Float",
                     Value::String(_) => "String",
                     Value::Bool(_) => "Bool",

@@ -278,7 +278,7 @@ impl Runtime {
 /// Convert an AST expression to a runtime value (for simple literal args)
 fn expr_to_value(expr: &Expr) -> Value {
     match expr {
-        Expr::Literal(Literal::Int(n)) => Value::Int(*n),
+        Expr::Literal(Literal::Int(n)) => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*n)),
         Expr::Literal(Literal::Float(n)) => Value::Float(*n),
         Expr::Literal(Literal::String(s)) => Value::String(s.clone()),
         Expr::Literal(Literal::Bool(b)) => Value::Bool(*b),

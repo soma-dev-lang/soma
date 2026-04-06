@@ -2,6 +2,7 @@
 //! Handles OpenAI, Anthropic, and Ollama API differences.
 
 use super::super::{Value, RuntimeError, map_from_pairs};
+use crate::interpreter::soma_int::SomaInt;
 
 /// Resolved LLM configuration
 pub struct LlmConfig {
@@ -212,12 +213,12 @@ pub fn trace_think(iteration: i64, prompt: &str, tokens: i64, total: i64, finish
         .unwrap_or_default().as_secs() as i64;
     map_from_pairs(vec![
         ("event".to_string(), Value::String("think".to_string())),
-        ("iteration".to_string(), Value::Int(iteration)),
+        ("iteration".to_string(), Value::Int(SomaInt::from_i64(iteration))),
         ("prompt".to_string(), Value::String(prompt.to_string())),
-        ("tokens".to_string(), Value::Int(tokens)),
-        ("total_tokens".to_string(), Value::Int(total)),
+        ("tokens".to_string(), Value::Int(SomaInt::from_i64(tokens))),
+        ("total_tokens".to_string(), Value::Int(SomaInt::from_i64(total))),
         ("finish_reason".to_string(), Value::String(finish.to_string())),
-        ("timestamp".to_string(), Value::Int(ts)),
+        ("timestamp".to_string(), Value::Int(SomaInt::from_i64(ts))),
     ])
 }
 
@@ -230,6 +231,6 @@ pub fn trace_tool_call(name: &str, args: &str, result: &str) -> Value {
         ("tool".to_string(), Value::String(name.to_string())),
         ("args".to_string(), Value::String(args.to_string())),
         ("result".to_string(), Value::String(result.to_string())),
-        ("timestamp".to_string(), Value::Int(ts)),
+        ("timestamp".to_string(), Value::Int(SomaInt::from_i64(ts))),
     ])
 }

@@ -148,7 +148,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                     Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
                 }
             }
-            Some(Ok(Value::Int(n)))
+            Some(Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))))
         }
         _ => None,
     }
@@ -159,7 +159,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
 /// Extract an i64 from a Value
 pub fn val_to_i64(v: &Value) -> i64 {
     match v {
-        Value::Int(n) => *n,
+        Value::Int(si) => si.to_i64().unwrap_or(0),
         Value::Float(n) => *n as i64,
         Value::String(s) => s.parse::<i64>().unwrap_or_else(|_| s.parse::<f64>().unwrap_or(0.0) as i64),
         Value::Bool(b) => if *b { 1 } else { 0 },
@@ -171,7 +171,7 @@ pub fn val_to_i64(v: &Value) -> i64 {
 pub fn val_to_f64(v: &Value) -> f64 {
     match v {
         Value::Float(n) => *n,
-        Value::Int(n) => *n as f64,
+        Value::Int(si) => si.to_f64(),
         Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
         Value::Bool(b) => if *b { 1.0 } else { 0.0 },
         _ => 0.0,
@@ -207,7 +207,7 @@ pub fn serde_json_to_value(v: &serde_json::Value) -> Value {
         serde_json::Value::Bool(b) => Value::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Value::Int(i)
+                Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i))
             } else {
                 Value::Float(n.as_f64().unwrap_or(0.0))
             }

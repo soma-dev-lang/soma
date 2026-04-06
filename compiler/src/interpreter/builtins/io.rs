@@ -1,4 +1,5 @@
 use super::super::{Value, RuntimeError, map_from_pairs};
+use crate::interpreter::soma_int::SomaInt;
 use std::collections::HashMap;
 use indexmap::IndexMap;
 
@@ -75,7 +76,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let (status, mut body) = if args.len() >= 2 {
                 (args[0].clone(), format!("{}", args[1]))
             } else {
-                (Value::Int(200), args.first().map(|a| format!("{}", a)).unwrap_or_default())
+                (Value::Int(SomaInt::from_i64(200)), args.first().map(|a| format!("{}", a)).unwrap_or_default())
             };
             // Only inject HTMX on full pages, not fragments
             let inject_htmx = body.contains("<html") || body.contains("<!DOCTYPE") || body.contains("<!doctype");
@@ -96,7 +97,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             ])))
         }
         "response" => {
-            let status = args.first().cloned().unwrap_or(Value::Int(200));
+            let status = args.first().cloned().unwrap_or(Value::Int(SomaInt::from_i64(200)));
             let body = args.get(1).cloned().unwrap_or(Value::Unit);
             let mut entries = IndexMap::new();
             entries.insert("_status".to_string(), status);
@@ -113,7 +114,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "redirect" => {
             let url = args.first().map(|a| format!("{}", a)).unwrap_or("/".to_string());
             Some(Ok(map_from_pairs(vec![
-                ("_status".to_string(), Value::Int(302)),
+                ("_status".to_string(), Value::Int(SomaInt::from_i64(302))),
                 ("_body".to_string(), Value::String(String::new())),
                 ("Location".to_string(), Value::String(url)),
             ])))
@@ -177,7 +178,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                 let val = values.get(i).map(|s| s.trim()).unwrap_or("");
                                 // Try to parse as number
                                 if let Ok(n) = val.parse::<i64>() {
-                                    entries.insert(header.clone(), Value::Int(n));
+                                    entries.insert(header.clone(), Value::Int(SomaInt::from_i64(n)));
                                 } else if let Ok(n) = val.parse::<f64>() {
                                     entries.insert(header.clone(), Value::Float(n));
                                 } else {
@@ -257,12 +258,13 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
             // read_files(glob_pattern) → list of {path, content}
             // read_files(dir, count) → read first N files from dir
             if args.len() >= 2 {
-                if let (Value::String(dir), Value::Int(count)) = (&args[0], &args[1]) {
+                if let (Value::String(dir), Value::Int(count_si)) = (&args[0], &args[1]) {
+                    let count_limit = count_si.to_i64().unwrap_or(0);
                     let mut results = Vec::new();
                     if let Ok(entries) = std::fs::read_dir(dir) {
                         let mut n = 0i64;
                         for entry in entries {
-                            if n >= *count { break; }
+                            if n >= count_limit { break; }
                             if let Ok(entry) = entry {
                                 let path = entry.path();
                                 if path.is_file() {
@@ -297,7 +299,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                         *counts.entry(w).or_insert(0) += 1;
                     }
                     let map: IndexMap<String, Value> = counts.into_iter()
-                        .map(|(k, v)| (k, Value::Int(v)))
+                        .map(|(k, v)| (k, Value::Int(SomaInt::from_i64(v))))
                         .collect();
                     Some(Ok(Value::Map(map)))
                 }
@@ -321,7 +323,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                         }
                     }
                     let map: IndexMap<String, Value> = counts.into_iter()
-                        .map(|(k, v)| (k, Value::Int(v)))
+                        .map(|(k, v)| (k, Value::Int(SomaInt::from_i64(v))))
                         .collect();
                     Some(Ok(Value::Map(map)))
                 }
@@ -331,12 +333,13 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
         "par_read_files" => {
             // Parallel file reading using threads
             if args.len() >= 2 {
-                if let (Value::String(dir), Value::Int(count)) = (&args[0], &args[1]) {
+                if let (Value::String(dir), Value::Int(count_si)) = (&args[0], &args[1]) {
+                    let count_limit = count_si.to_i64().unwrap_or(0) as usize;
                     let paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
                         .map(|entries| {
                             entries.filter_map(|e| e.ok())
                                 .filter(|e| e.path().is_file())
-                                .take(*count as usize)
+                                .take(count_limit)
                                 .map(|e| e.path())
                                 .collect()
                         })
@@ -409,7 +412,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                 });
 
                 let map: IndexMap<String, Value> = merged.into_iter()
-                    .map(|(k, v)| (k, Value::Int(v)))
+                    .map(|(k, v)| (k, Value::Int(SomaInt::from_i64(v))))
                     .collect();
                 Some(Ok(Value::Map(map)))
             } else {

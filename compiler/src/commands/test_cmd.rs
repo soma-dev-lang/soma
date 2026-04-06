@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 use std::process;
 
-use num_bigint::BigInt;
-
 use crate::ast;
 use crate::interpreter;
 use crate::registry::Registry;

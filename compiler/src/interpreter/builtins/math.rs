@@ -1,13 +1,26 @@
 use super::super::{Value, RuntimeError};
 use super::val_to_i64;
+use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
         "abs" => {
             args.first().map(|arg| match arg {
-                Value::Int(n) => n.checked_abs()
-                    .map(Value::Int)
-                    .ok_or_else(|| RuntimeError::TypeError("abs: integer overflow (i64::MIN has no positive equivalent)".to_string())),
+                Value::Int(si) => {
+                    if let Some(n) = si.to_i64() {
+                        n.checked_abs()
+                            .map(|v| Value::Int(SomaInt::from_i64(v)))
+                            .ok_or_else(|| RuntimeError::TypeError("abs: integer overflow (i64::MIN has no positive equivalent)".to_string()))
+                    } else {
+                        // Big int: negate if negative
+                        let s = format!("{}", si);
+                        if s.starts_with('-') {
+                            Ok(Value::Int(SomaInt::from_i64(0).sub(*si).mul(SomaInt::from_i64(-1)).mul(SomaInt::from_i64(-1))))
+                        } else {
+                            Ok(Value::Int(*si))
+                        }
+                    }
+                }
                 Value::Float(n) => Ok(Value::Float(n.abs())),
                 _ => Err(RuntimeError::TypeError("abs expects a number".to_string())),
             })
@@ -17,13 +30,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Float(n) => {
                     let r = n.round();
                     if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
-                        Ok(Value::Int(r as i64))
+                        Ok(Value::Int(SomaInt::from_i64(r as i64)))
                     } else {
                         Err(RuntimeError::TypeError(format!("round: {} is out of integer range", n)))
                     }
                 }
-                Value::Int(n) => Ok(Value::Int(*n)),
-                _ => Ok(Value::Int(0)),
+                Value::Int(si) => Ok(Value::Int(*si)),
+                _ => Ok(Value::Int(SomaInt::from_i64(0))),
             })
         }
         "floor" => {
@@ -31,13 +44,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Float(n) => {
                     let r = n.floor();
                     if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
-                        Ok(Value::Int(r as i64))
+                        Ok(Value::Int(SomaInt::from_i64(r as i64)))
                     } else {
                         Err(RuntimeError::TypeError(format!("floor: {} is out of integer range", n)))
                     }
                 }
-                Value::Int(n) => Ok(Value::Int(*n)),
-                _ => Ok(Value::Int(0)),
+                Value::Int(si) => Ok(Value::Int(*si)),
+                _ => Ok(Value::Int(SomaInt::from_i64(0))),
             })
         }
         "ceil" => {
@@ -45,38 +58,38 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Float(n) => {
                     let r = n.ceil();
                     if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
-                        Ok(Value::Int(r as i64))
+                        Ok(Value::Int(SomaInt::from_i64(r as i64)))
                     } else {
                         Err(RuntimeError::TypeError(format!("ceil: {} is out of integer range", n)))
                     }
                 }
-                Value::Int(n) => Ok(Value::Int(*n)),
-                _ => Ok(Value::Int(0)),
+                Value::Int(si) => Ok(Value::Int(*si)),
+                _ => Ok(Value::Int(SomaInt::from_i64(0))),
             })
         }
-        "sqrt" => { args.first().map(|a| Ok(Value::Float(match a { Value::Float(n) => n.sqrt(), Value::Int(n) => (*n as f64).sqrt(), _ => 0.0 }))) }
+        "sqrt" => { args.first().map(|a| Ok(Value::Float(match a { Value::Float(n) => n.sqrt(), Value::Int(si) => si.to_f64().sqrt(), _ => 0.0 }))) }
         "log" | "ln" => {
             args.first().map(|a| {
-                let n = match a { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                let n = match a { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                 Ok(Value::Float(n.ln()))
             })
         }
         "exp" => {
             args.first().map(|a| {
-                let n = match a { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                let n = match a { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                 Ok(Value::Float(n.exp()))
             })
         }
         "log10" => {
             args.first().map(|a| {
-                let n = match a { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                let n = match a { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                 Ok(Value::Float(n.log10()))
             })
         }
         "pow" => {
             if args.len() >= 2 {
-                let base = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
-                let exp = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                let base = match &args[0] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+                let exp = match &args[1] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                 Some(Ok(Value::Float(base.powf(exp))))
             } else { Some(Ok(Value::Float(0.0))) }
         }
@@ -84,11 +97,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 match (&args[0], &args[1]) {
                     (Value::Float(_), _) | (_, Value::Float(_)) => {
-                        let a = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
-                        let b = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                        let a = match &args[0] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+                        let b = match &args[1] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                         Some(Ok(Value::Float(a.min(b))))
                     }
-                    _ => { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(a.min(b)))) }
+                    (Value::Int(a), Value::Int(b)) => {
+                        if a.cmp(*b) <= 0 { Some(Ok(Value::Int(*a))) } else { Some(Ok(Value::Int(*b))) }
+                    }
+                    _ => { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(SomaInt::from_i64(a.min(b))))) }
                 }
             }
             else { args.first().map(|a| Ok(a.clone())) }
@@ -97,11 +113,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 match (&args[0], &args[1]) {
                     (Value::Float(_), _) | (_, Value::Float(_)) => {
-                        let a = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
-                        let b = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                        let a = match &args[0] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+                        let b = match &args[1] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                         Some(Ok(Value::Float(a.max(b))))
                     }
-                    _ => { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(a.max(b)))) }
+                    (Value::Int(a), Value::Int(b)) => {
+                        if a.cmp(*b) >= 0 { Some(Ok(Value::Int(*a))) } else { Some(Ok(Value::Int(*b))) }
+                    }
+                    _ => { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(SomaInt::from_i64(a.max(b))))) }
                 }
             }
             else { args.first().map(|a| Ok(a.clone())) }
@@ -110,9 +129,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 3 {
                 match (&args[0], &args[1], &args[2]) {
                     (Value::Float(_), _, _) | (_, Value::Float(_), _) | (_, _, Value::Float(_)) => {
-                        let v = match &args[0] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
-                        let lo = match &args[1] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
-                        let hi = match &args[2] { Value::Float(n) => *n, Value::Int(n) => *n as f64, _ => 0.0 };
+                        let v = match &args[0] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+                        let lo = match &args[1] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+                        let hi = match &args[2] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
                         if lo > hi {
                             return Some(Err(RuntimeError::TypeError(format!("clamp: min ({}) must be <= max ({})", lo, hi))));
                         }
@@ -125,7 +144,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         if lo > hi {
                             return Some(Err(RuntimeError::TypeError(format!("clamp: min ({}) must be <= max ({})", lo, hi))));
                         }
-                        Some(Ok(Value::Int(v.max(lo).min(hi))))
+                        Some(Ok(Value::Int(SomaInt::from_i64(v.max(lo).min(hi)))))
                     }
                 }
             } else {
@@ -165,15 +184,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             } else if args.len() == 1 {
                 // random(max) → int 0..max
                 let max = val_to_i64(&args[0]);
-                if max <= 0 { return Some(Ok(Value::Int(0))); }
-                Some(Ok(Value::Int((x % max as u64) as i64)))
+                if max <= 0 { return Some(Ok(Value::Int(SomaInt::from_i64(0)))); }
+                Some(Ok(Value::Int(SomaInt::from_i64((x % max as u64) as i64))))
             } else {
                 // random(min, max) → int min..max
                 let min = val_to_i64(&args[0]);
                 let max = val_to_i64(&args[1]);
-                if max <= min { return Some(Ok(Value::Int(min))); }
+                if max <= min { return Some(Ok(Value::Int(SomaInt::from_i64(min)))); }
                 let range = (max - min) as u64;
-                Some(Ok(Value::Int(min + (x % range) as i64)))
+                Some(Ok(Value::Int(SomaInt::from_i64(min + (x % range) as i64))))
             }
         }
         _ => None,

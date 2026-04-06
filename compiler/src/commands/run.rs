@@ -27,7 +27,7 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
         .iter()
         .map(|a| {
             if let Ok(n) = a.parse::<i64>() {
-                interpreter::Value::Int(n)
+                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
             } else if let Ok(n) = a.parse::<f64>() {
                 interpreter::Value::Float(n)
             } else if a == "true" {

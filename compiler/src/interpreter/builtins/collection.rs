@@ -1,6 +1,7 @@
 use super::super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;
 use indexmap::IndexMap;
+use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
@@ -135,7 +136,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "enumerate" => {
             if let Some(Value::List(items)) = args.first() {
                 let result: Vec<Value> = items.iter().enumerate().map(|(i, v)| {
-                    map_from_pairs(vec![("index".to_string(), Value::Int(i as i64)), ("value".to_string(), v.clone())])
+                    map_from_pairs(vec![("index".to_string(), Value::Int(SomaInt::from_i64(i as i64))), ("value".to_string(), v.clone())])
                 }).collect();
                 Some(Ok(Value::List(result)))
             } else { Some(Ok(Value::List(vec![]))) }
@@ -241,9 +242,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "range" => {
             if args.len() >= 2 {
-                let start = match &args[0] { Value::Int(n) => *n, Value::Float(n) => *n as i64, _ => 0 };
-                let end = match &args[1] { Value::Int(n) => *n, Value::Float(n) => *n as i64, _ => 0 };
-                let result: Vec<Value> = (start..end).map(Value::Int).collect();
+                let start = match &args[0] { Value::Int(si) => si.to_i64().unwrap_or(0), Value::Float(n) => *n as i64, _ => 0 };
+                let end = match &args[1] { Value::Int(si) => si.to_i64().unwrap_or(0), Value::Float(n) => *n as i64, _ => 0 };
+                let result: Vec<Value> = (start..end).map(|i| Value::Int(SomaInt::from_i64(i))).collect();
                 Some(Ok(Value::List(result)))
             } else {
                 Some(Err(RuntimeError::TypeError("range expects (start, end)".to_string())))
@@ -255,7 +256,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let desc = args.get(1).map(|a| format!("{}", a) == "desc").unwrap_or(false);
                 sorted.sort_by(|a, b| {
                     let ordering = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+                        (Value::Int(x), Value::Int(y)) => { let c = x.cmp(*y); c.cmp(&0) }
                         (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
                         (Value::String(x), Value::String(y)) => x.cmp(y),
                         _ => std::cmp::Ordering::Equal,
@@ -271,7 +272,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let idx = match &args[1] {
-                        Value::Int(n) => *n as usize,
+                        Value::Int(si) => si.to_i64().unwrap_or(0) as usize,
                         _ => return Some(Err(RuntimeError::TypeError("nth: index must be Int".to_string()))),
                     };
                     if idx < items.len() {
