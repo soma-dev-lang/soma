@@ -34,7 +34,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         "get_status" => {
             if let Some(id) = args.first() {
                 let id_str = format!("{}", id);
-                Some(interp.do_get_status(&id_str))
+                Some(interp.do_get_status_for(cell_name, &id_str))
             } else {
                 Some(Err(RuntimeError::TypeError("get_status(id) requires 1 arg".to_string())))
             }
@@ -42,7 +42,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         "valid_transitions" => {
             if let Some(id) = args.first() {
                 let id_str = format!("{}", id);
-                Some(Ok(interp.do_valid_transitions(&id_str)))
+                Some(Ok(interp.do_valid_transitions_for(cell_name, &id_str)))
             } else {
                 Some(Err(RuntimeError::TypeError("valid_transitions(id) requires 1 arg".to_string())))
             }

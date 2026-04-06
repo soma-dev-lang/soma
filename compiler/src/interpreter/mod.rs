@@ -2500,7 +2500,11 @@ impl Interpreter {
     }
 
     pub(crate) fn do_get_status(&self, id: &str) -> Result<Value, RuntimeError> {
-        let (sm, status_slot) = self.find_state_machine()
+        self.do_get_status_for("", id)
+    }
+
+    pub(crate) fn do_get_status_for(&self, cell_name: &str, id: &str) -> Result<Value, RuntimeError> {
+        let (sm, status_slot) = self.find_state_machine_for(cell_name)
             .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
 
         let current = status_slot.get(id)
@@ -2514,7 +2518,11 @@ impl Interpreter {
     }
 
     pub(crate) fn do_valid_transitions(&self, id: &str) -> Value {
-        let Some((sm, status_slot)) = self.find_state_machine() else {
+        self.do_valid_transitions_for("", id)
+    }
+
+    pub(crate) fn do_valid_transitions_for(&self, cell_name: &str, id: &str) -> Value {
+        let Some((sm, status_slot)) = self.find_state_machine_for(cell_name) else {
             return Value::List(vec![]);
         };
 
@@ -3246,6 +3254,40 @@ mod tests {
         "#;
         let result = run(source, "Main", "run", vec![]).unwrap();
         assert_eq!(result.as_int().unwrap(), 50);
+    }
+
+    #[test]
+    fn test_state_machine_isolation_between_cells() {
+        let source = r#"
+            cell agent A {
+                state sa { initial: idle  idle -> doneA  * -> fail }
+                on go() {
+                    transition("t", "doneA")
+                    return get_status("t")
+                }
+            }
+            cell agent B {
+                state sb { initial: idle  idle -> doneB  * -> fail }
+                on go() {
+                    transition("t", "doneB")
+                    return get_status("t")
+                }
+            }
+            cell Main {
+                on run() {
+                    let a = delegate("A", "go")
+                    let b = delegate("B", "go")
+                    return list(a, b)
+                }
+            }
+        "#;
+        let result = run(source, "Main", "run", vec![]).unwrap();
+        if let Value::List(items) = result {
+            assert_eq!(items[0].to_string(), "doneA");
+            assert_eq!(items[1].to_string(), "doneB");
+        } else {
+            panic!("expected list");
+        }
     }
 
     // ── Mock mode ──────────────────────────────────────────────────
