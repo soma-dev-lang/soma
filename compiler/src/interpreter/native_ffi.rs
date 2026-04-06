@@ -257,20 +257,52 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
     // Convert result back to Value
     match native.sig.return_type {
         NativeType::Int => {
-            // Check for overflow: call {fn}_overflow() and {fn}_hi()
-            let overflow_fn_name = format!("{}_overflow", native.sig.fn_name);
-            let hi_fn_name = format!("{}_hi", native.sig.fn_name);
-            let has_overflow = native.lib.as_ref().and_then(|lib| unsafe {
-                let overflow_fn: Result<libloading::Symbol<unsafe extern "C" fn() -> i64>, _> =
-                    lib.get(overflow_fn_name.as_bytes());
-                overflow_fn.ok().map(|f| f() != 0)
-            }).unwrap_or(false);
+            let result_i64 = raw_result as i64;
+            if result_i64 == i64::MIN {
+                // Sentinel: result overflowed i64, read BigInt string from buffer
+                let bigint_len_fn = format!("{}_bigint_len", native.sig.fn_name);
+                let bigint_ptr_fn = format!("{}_bigint_result", native.sig.fn_name);
 
-            if has_overflow {
-                // Signal the interpreter to re-run via interpreted path (BigInt)
-                return Err("overflow_rerun".to_string());
+                let bigint_str = native.lib.as_ref().and_then(|lib| unsafe {
+                    let len_fn: libloading::Symbol<unsafe extern "C" fn() -> i64> =
+                        lib.get(bigint_len_fn.as_bytes()).ok()?;
+                    let ptr_fn: libloading::Symbol<unsafe extern "C" fn() -> *const u8> =
+                        lib.get(bigint_ptr_fn.as_bytes()).ok()?;
+                    let len = len_fn() as usize;
+                    let ptr = ptr_fn();
+                    if ptr.is_null() || len == 0 { return None; }
+                    let bytes = std::slice::from_raw_parts(ptr, len);
+                    String::from_utf8(bytes.to_vec()).ok()
+                });
+
+                if let Some(s) = bigint_str {
+                    // Parse the BigInt string into SomaInt
+                    // Convert decimal string to limbs
+                    let negative = s.starts_with('-');
+                    let digits = if negative { &s[1..] } else { &s };
+                    if let Ok(big) = digits.parse::<num_bigint::BigInt>() {
+                        use num_bigint::Sign;
+                        let (_, limbs_u32) = big.to_u32_digits();
+                        // Convert u32 limbs to u64 limbs
+                        let mut limbs_u64 = Vec::new();
+                        let mut i = 0;
+                        while i < limbs_u32.len() {
+                            let lo = limbs_u32[i] as u64;
+                            let hi = if i + 1 < limbs_u32.len() { (limbs_u32[i + 1] as u64) << 32 } else { 0 };
+                            limbs_u64.push(lo | hi);
+                            i += 2;
+                        }
+                        Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_limbs(&limbs_u64, negative)))
+                    } else {
+                        // Fallback: return as string
+                        Ok(Value::String(s))
+                    }
+                } else {
+                    // No BigInt buffer — actual i64::MIN value
+                    Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i64::MIN)))
+                }
             } else {
-                Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(raw_result as i64)))
+                Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
             }
         }
         NativeType::Float => Ok(Value::Float(f64::from_bits(raw_result))),

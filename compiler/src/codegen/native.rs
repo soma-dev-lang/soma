@@ -87,7 +87,7 @@ pub fn generate_native_source_with_config(handlers: &[NativeHandler], parallel: 
     let siblings: HashSet<String> = handlers.iter().map(|h| h.signal_name.clone()).collect();
 
     for handler in handlers {
-        let mut gen = FnGenerator::new(&handler.params, &siblings);
+        let mut gen = FnGenerator::new(&handler.params, &siblings, &format!("handler_{}", handler.signal_name));
 
         // Infer types from params
         for p in &handler.params {
@@ -311,10 +311,11 @@ fn type_expr_to_native(ty: &TypeExpr) -> NativeType {
 struct FnGenerator {
     var_types: HashMap<String, NativeType>,
     siblings: HashSet<String>,
+    fn_name_upper: Option<String>,
 }
 
 impl FnGenerator {
-    fn new(params: &[Param], siblings: &HashSet<String>) -> Self {
+    fn new(params: &[Param], siblings: &HashSet<String>, fn_name: &str) -> Self {
         let mut var_types = HashMap::new();
         for p in params {
             var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
@@ -322,6 +323,7 @@ impl FnGenerator {
         Self {
             var_types,
             siblings: siblings.clone(),
+            fn_name_upper: Some(fn_name.to_uppercase()),
         }
     }
 
@@ -461,8 +463,22 @@ impl FnGenerator {
             Statement::Return { value } => {
                 let ret_ty = self.infer_expr_type(&value.node);
                 let expr = self.gen_expr(&value.node, ret_ty);
-                // Don't cast — the wrapper handles i128 → i64 conversion
-                format!("{}return {};\n", ind, expr)
+                if ret_ty == NativeType::Int {
+                    let upper = self.fn_name_upper.as_deref().unwrap_or("UNKNOWN");
+                    let mut s = String::new();
+                    s.push_str(&format!("{}{{ let _ret_val = {};\n", ind, expr));
+                    s.push_str(&format!("{}use num_traits::ToPrimitive;\n", ind));
+                    s.push_str(&format!("{}match _ret_val.to_i64() {{\n", ind));
+                    s.push_str(&format!("{}    Some(v) => return v,\n", ind));
+                    s.push_str(&format!("{}    None => {{\n", ind));
+                    s.push_str(&format!("{}        unsafe {{ _RESULT_{} = Some(_ret_val.to_string()); }}\n", ind, upper));
+                    s.push_str(&format!("{}        return i64::MIN;\n", ind));
+                    s.push_str(&format!("{}    }}\n", ind));
+                    s.push_str(&format!("{}}}}}\n", ind));
+                    s
+                } else {
+                    format!("{}return {};\n", ind, expr)
+                }
             }
             Statement::If { condition, then_body, else_body } => {
                 let cond = self.gen_expr(&condition.node, NativeType::Bool);
@@ -528,7 +544,7 @@ impl FnGenerator {
                 if target_ty == NativeType::Float {
                     format!("{}.0f64", n)
                 } else {
-                    format!("{}i128", n)
+                    format!("BigInt::from({}i64)", n)
                 }
             }
             Expr::Literal(Literal::Float(f)) => format!("{}f64", f),
@@ -536,9 +552,12 @@ impl FnGenerator {
             Expr::Ident(name) => {
                 let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
                 if target_ty == NativeType::Float && var_ty == NativeType::Int {
-                    format!("{} as f64", name)
+                    format!("{}.to_i64().unwrap_or(0) as f64", name)
                 } else if target_ty == NativeType::Int && var_ty == NativeType::Float {
-                    format!("{} as i128", name)
+                    format!("BigInt::from({} as i64)", name)
+                } else if var_ty == NativeType::Int {
+                    // BigInt needs .clone() because it doesn't impl Copy
+                    format!("{}.clone()", name)
                 } else {
                     name.clone()
                 }
@@ -729,15 +748,15 @@ impl FnGenerator {
             }
             "floor" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Float);
-                format!("({}).floor() as i128", a)
+                format!("BigInt::from(({}).floor() as i64)", a)
             }
             "ceil" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Float);
-                format!("({}).ceil() as i128", a)
+                format!("BigInt::from(({}).ceil() as i64)", a)
             }
             "round" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Float);
-                format!("({}).round() as i128", a)
+                format!("BigInt::from(({}).round() as i64)", a)
             }
             "sin" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Float);
@@ -749,7 +768,7 @@ impl FnGenerator {
             }
             "len" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Int);
-                format!("/* len */ 0i128") // simplified — lists not yet supported in codegen
+                format!("BigInt::from(0i64)") // simplified — lists not yet supported in codegen
             }
             "nth" => {
                 format!("/* nth */ 0") // simplified
