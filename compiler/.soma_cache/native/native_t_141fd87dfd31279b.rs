@@ -94,13 +94,13 @@ impl std::fmt::Display for V {
 #[no_mangle]
 pub extern "C" fn handler_f(n: i64) -> i64 {
     let n = V::S(n);
-    let mut s: V = V::S(0i64);
-    let mut i: V = V::S(0i64);
-    while i.lt_v(&n) {
-        { let mut _t = s.clone_v(); _t.add_v(&(((&i) * (&i)) * (&i); s = _t; }
+    let mut r: V = V::S(1i64);
+    let mut i: V = V::S(1i64);
+    while i.le_v(&n) {
+        r.mul_v(&i);
         i.add(1i64);
     }
-    { let _ret_val = s.clone_v();
+    { let _ret_val = r.clone_v();
     use num_traits::ToPrimitive;
     match _ret_val.to_i64() {
         Some(v) => return v,

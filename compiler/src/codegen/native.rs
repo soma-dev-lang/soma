@@ -113,52 +113,124 @@ pub fn generate_native_source_with_config(handlers: &[NativeHandler], parallel: 
         let ret_type = gen.infer_return_type(&handler.body);
 
         if ret_type == NativeType::Int {
-            // V8-style speculative optimization:
-            // First try i64 (fast). On overflow, restart with BigInt (correct).
+            // Inline overflow caching: use i64 until overflow, then promote
+            // to BigInt and continue from the exact overflow point. No restart.
 
             out.push_str(&format!("static mut _RESULT_{}: Option<String> = None;\n\n", fn_name.to_uppercase()));
 
-            // V8-style: fast i64 path with catch_unwind, slow BigInt fallback
-            // Cargo.toml has overflow-checks=true so i64 overflow panics
+            // Helper: checked i64 ops that promote to BigInt on overflow
+            out.push_str("
+/// A value that starts as i64 and promotes to BigInt on overflow
+enum V { S(i64), B(BigInt) }
+impl V {
+    fn add(&mut self, other: i64) {
+        *self = match self {
+            V::S(a) => match a.checked_add(other) {
+                Some(r) => V::S(r),
+                None => V::B(BigInt::from(*a) + other),
+            },
+            V::B(a) => { *a += other; return; }
+        };
+    }
+    fn sub(&mut self, other: i64) {
+        *self = match self {
+            V::S(a) => match a.checked_sub(other) {
+                Some(r) => V::S(r),
+                None => V::B(BigInt::from(*a) - other),
+            },
+            V::B(a) => { *a -= other; return; }
+        };
+    }
+    fn mul_v(&mut self, other: &V) {
+        *self = match (&*self, other) {
+            (V::S(a), V::S(b)) => match a.checked_mul(*b) {
+                Some(r) => V::S(r),
+                None => V::B(BigInt::from(*a) * *b),
+            },
+            (V::S(a), V::B(b)) => V::B(BigInt::from(*a) * b),
+            (V::B(a), V::S(b)) => V::B(a.clone() * *b),
+            (V::B(a), V::B(b)) => V::B(a.clone() * b),
+        };
+    }
+    fn add_v(&mut self, other: &V) {
+        *self = match (&*self, other) {
+            (V::S(a), V::S(b)) => match a.checked_add(*b) {
+                Some(r) => V::S(r),
+                None => V::B(BigInt::from(*a) + *b),
+            },
+            (V::S(a), V::B(b)) => V::B(BigInt::from(*a) + b),
+            (V::B(a), V::S(b)) => V::B(a.clone() + *b),
+            (V::B(a), V::B(b)) => V::B(a.clone() + b),
+        };
+    }
+    fn sub_v(&mut self, other: &V) {
+        *self = match (&*self, other) {
+            (V::S(a), V::S(b)) => match a.checked_sub(*b) {
+                Some(r) => V::S(r),
+                None => V::B(BigInt::from(*a) - *b),
+            },
+            (V::S(a), V::B(b)) => V::B(BigInt::from(*a) - b),
+            (V::B(a), V::S(b)) => V::B(a.clone() - *b),
+            (V::B(a), V::B(b)) => V::B(a.clone() - b),
+        };
+    }
+    fn to_i64(&self) -> Option<i64> {
+        match self { V::S(n) => Some(*n), V::B(n) => n.to_i64() }
+    }
+    fn to_bigint(&self) -> BigInt {
+        match self { V::S(n) => BigInt::from(*n), V::B(n) => n.clone() }
+    }
+    fn le_v(&self, other: &V) -> bool {
+        match (self, other) {
+            (V::S(a), V::S(b)) => *a <= *b,
+            (V::S(a), V::B(b)) => BigInt::from(*a) <= *b,
+            (V::B(a), V::S(b)) => *a <= BigInt::from(*b),
+            (V::B(a), V::B(b)) => *a <= *b,
+        }
+    }
+    fn lt_v(&self, other: &V) -> bool {
+        match (self, other) {
+            (V::S(a), V::S(b)) => *a < *b,
+            (V::S(a), V::B(b)) => BigInt::from(*a) < *b,
+            (V::B(a), V::S(b)) => *a < BigInt::from(*b),
+            (V::B(a), V::B(b)) => *a < *b,
+        }
+    }
+    fn clone_v(&self) -> V {
+        match self { V::S(n) => V::S(*n), V::B(n) => V::B(n.clone()) }
+    }
+}
+impl std::fmt::Display for V {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self { V::S(n) => write!(f, \"{}\"  , n), V::B(n) => write!(f, \"{}\"  , n) }
+    }
+}
+");
 
-            // Wrapper function
+            // Generate function using V type for auto-promoting arithmetic
             out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}({}) -> i64 {{\n", fn_name, param_str));
 
-            // Try i64 fast path (inline)
-            out.push_str("    // Suppress panic messages for expected overflow\n");
-            out.push_str("    std::panic::set_hook(Box::new(|_| {}));\n");
-            out.push_str("    let _fast = std::panic::catch_unwind(|| -> i64 {\n");
-            for stmt in &handler.body {
-                let code = gen.gen_stmt(&stmt.node, 2);
-                // Rewrite BigInt → i64
-                let code = code.replace(": BigInt", ": i64")
-                    .replace("BigInt::from(", "(")
-                    .replace("(&", "(")
-                    .replace("use num_traits::ToPrimitive;\n", "")
-                    .replace("_ret_val.to_i64()", "Some(_ret_val)");
-                out.push_str(&code);
-            }
-            {
-                let last_is_return = handler.body.last()
-                    .map(|s| matches!(s.node, Statement::Return { .. }))
-                    .unwrap_or(false);
-                if !last_is_return { out.push_str("        0i64\n"); }
-            }
-            out.push_str("    });\n");
-            out.push_str("    let _ = std::panic::take_hook(); // restore default hook\n");
-            out.push_str("    if let Ok(v) = _fast { return v; }\n\n");
-
-            // BigInt slow path
-            out.push_str("    // Overflow — BigInt fallback\n");
+            // Convert i64 params to V
             for p in &handler.params {
                 let ty = type_expr_to_native(&p.ty.node);
                 if ty == NativeType::Int {
-                    out.push_str(&format!("    let {} = BigInt::from({});\n", p.name, p.name));
+                    out.push_str(&format!("    let {} = V::S({});\n", p.name, p.name));
                 }
             }
-            // Generate BigInt body but with return writing to buffer
+
+            // Generate body with V type
             for stmt in &handler.body {
-                out.push_str(&gen.gen_stmt(&stmt.node, 1));
+                let code = gen.gen_stmt(&stmt.node, 1);
+                // Transform BigInt code → V code
+                let code = code
+                    .replace(": BigInt", ": V")
+                    .replace("BigInt::from(", "V::S(");
+
+                // Transform assignment arithmetic patterns:
+                // x = ((&x) OP (&y));  →  x.OP_v(&y); (in-place)
+                // x = ((&x) OP V::S(N));  →  x.OP(N); (in-place with literal)
+                let code = transform_v_arithmetic(&code);
+                out.push_str(&code);
             }
             {
                 let last_is_return = handler.body.last()
@@ -1073,3 +1145,137 @@ fn expr_uses_random(expr: &Expr) -> bool {
     }
 }
 
+
+/// Transform generated BigInt-style arithmetic to V-type in-place ops.
+/// Patterns:
+///   x = ((&x) * (&y));     → x.mul_v(&y);
+///   x = ((&x) + V::S(1));  → x.add(1);
+///   x = ((&x) + (&y));     → x.add_v(&y);
+///   x = ((&x) - (&y));     → x.sub_v(&y);
+///   Also handles: let t = (&b) patterns for temp variables
+fn transform_v_arithmetic(code: &str) -> String {
+    let mut result = String::new();
+    for line in code.lines() {
+        let trimmed = line.trim();
+        // Pattern: x = ((&x) OP (&y));
+        if let Some(eq_pos) = trimmed.find(" = ") {
+            let lhs = trimmed[..eq_pos].trim();
+            let rhs = trimmed[eq_pos + 3..].trim().trim_end_matches(';');
+
+            // x = ((&x) + V::S(N)); → x.add(N);
+            if let Some(rest) = rhs.strip_prefix(&format!("((&{}) + V::S(", lhs)) {
+                if let Some(n) = rest.strip_suffix("))") {
+                    result.push_str(&format!("{}{};\n", &line[..line.len()-trimmed.len()],
+                        format!("{}.add({})", lhs, n)));
+                    continue;
+                }
+            }
+            if let Some(rest) = rhs.strip_prefix(&format!("((&{}) - V::S(", lhs)) {
+                if let Some(n) = rest.strip_suffix("))") {
+                    result.push_str(&format!("{}{};\n", &line[..line.len()-trimmed.len()],
+                        format!("{}.sub({})", lhs, n)));
+                    continue;
+                }
+            }
+
+            // x = ((&x) * (&y)); → x.mul_v(&y);
+            if let Some(rest) = rhs.strip_prefix(&format!("((&{}) * (&", lhs)) {
+                if let Some(y) = rest.strip_suffix("))") {
+                    result.push_str(&format!("{}{};\n", &line[..line.len()-trimmed.len()],
+                        format!("{}.mul_v(&{})", lhs, y)));
+                    continue;
+                }
+            }
+            // x = ((&x) + (&y)); → x.add_v(&y);
+            if let Some(rest) = rhs.strip_prefix(&format!("((&{}) + (&", lhs)) {
+                if let Some(y) = rest.strip_suffix("))") {
+                    result.push_str(&format!("{}{};\n", &line[..line.len()-trimmed.len()],
+                        format!("{}.add_v(&{})", lhs, y)));
+                    continue;
+                }
+            }
+            // x = ((&x) - (&y)); → x.sub_v(&y);
+            if let Some(rest) = rhs.strip_prefix(&format!("((&{}) - (&", lhs)) {
+                if let Some(y) = rest.strip_suffix("))") {
+                    result.push_str(&format!("{}{};\n", &line[..line.len()-trimmed.len()],
+                        format!("{}.sub_v(&{})", lhs, y)));
+                    continue;
+                }
+            }
+
+            // let x: V = (&y);  →  let x: V = y.clone_v();
+            if trimmed.starts_with("let ") && rhs.starts_with("(&") && rhs.ends_with(")") {
+                let var = &rhs[2..rhs.len()-1];
+                result.push_str(&format!("{}{} = {}.clone_v();\n", &line[..line.len()-trimmed.len()], &trimmed[..eq_pos], var));
+                continue;
+            }
+
+            // x = (&y); → x = y.clone_v();
+            if rhs.starts_with("(&") && rhs.ends_with(")") {
+                let var = &rhs[2..rhs.len()-1];
+                result.push_str(&format!("{}{} = {}.clone_v();\n", &line[..line.len()-trimmed.len()], lhs, var));
+                continue;
+            }
+        }
+
+        // while ((&i) <= (&n)) → while i.le_v(n) (if n is param)
+        // while ((&i) < (&n)) → while i.lt_v(n)
+        if trimmed.starts_with("while ") {
+            let cond = trimmed.strip_prefix("while ").unwrap().trim_end_matches(" {").trim();
+            if let Some(rest) = cond.strip_prefix("((&") {
+                if let Some(inner) = rest.strip_suffix("))") {
+                    if inner.contains(") <= (&") {
+                        let parts: Vec<&str> = inner.splitn(2, ") <= (&").collect();
+                        if parts.len() == 2 {
+                            let indent = &line[..line.len()-trimmed.len()];
+                            result.push_str(&format!("{}while {}.le_v(&{}) {{\n", indent, parts[0], parts[1]));
+                            continue;
+                        }
+                    }
+                    if inner.contains(") < (&") {
+                        let parts: Vec<&str> = inner.splitn(2, ") < (&").collect();
+                        if parts.len() == 2 {
+                            let indent = &line[..line.len()-trimmed.len()];
+                            result.push_str(&format!("{}while {}.lt_v(&{}) {{\n", indent, parts[0], parts[1]));
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Return: convert V to i64 or write BigInt buffer
+        if trimmed.contains("_ret_val.to_i64()") {
+            let line = line.replace("_ret_val.to_i64()", "_ret_val.to_i64()");
+            result.push_str(&line);
+            result.push('\n');
+            continue;
+        }
+
+        // General: x = ((&y) OP (&z)); where OP is +,-,*
+        if let Some(eq_pos) = trimmed.find(" = ") {
+            let lhs = trimmed[..eq_pos].trim();
+            let rhs = trimmed[eq_pos + 3..].trim().trim_end_matches(';');
+            if rhs.starts_with("((&") && rhs.ends_with("))") {
+                let inner = &rhs[1..rhs.len()-1]; // strip outer parens
+                let mut matched = false;
+                for (op_str, method) in [(" + ", "add_v"), (" - ", "sub_v"), (" * ", "mul_v")] {
+                    if let Some(pos) = inner.find(op_str) {
+                        let left = inner[..pos].trim().trim_start_matches("(&").trim_end_matches(')');
+                        let right = inner[pos+op_str.len()..].trim().trim_start_matches("(&").trim_end_matches(')');
+                        let indent = &line[..line.len()-trimmed.len()];
+                        result.push_str(&format!("{}{{ let mut _t = {}.clone_v(); _t.{}(&{}); {} = _t; }}\n",
+                            indent, left, method, right, lhs));
+                        matched = true;
+                        break;
+                    }
+                }
+                if matched { continue; }
+            }
+        }
+
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
+}
