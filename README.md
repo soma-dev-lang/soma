@@ -1,15 +1,22 @@
 # soma
 
-A fractal, declarative language for verified distributed systems.
-Built for AI agents. The compiler is the collaborator.
+The first language where AI agent behavior is formally verified.
+
+`cell agent` + `think()` + state machine = **proven termination**.
 
 ```
-soma serve app.cell -p 8080                        # one node
-soma serve app.cell -p 8081 --join localhost:8082   # cluster
+soma serve agent.cell -p 8080                     # serve agent
+soma verify agent.cell                            # PROVE it terminates
+soma serve app.cell -p 8081 --join localhost:8082  # cluster
 ```
 
 ## Install
 
+```bash
+curl -fsSL https://soma-lang.dev/install.sh | sh
+```
+
+Or build from source:
 ```bash
 git clone https://github.com/soma-dev-lang/soma.git
 cd soma/compiler && cargo build --release
@@ -21,32 +28,68 @@ sudo cp target/release/soma /usr/local/bin/
 ```bash
 soma init myapp && cd myapp
 soma serve app.cell          # http://localhost:8080
-soma check app.cell          # verify contracts
 soma fix app.cell            # auto-repair errors
 soma verify app.cell         # prove state machines
 soma lint app.cell           # catch anti-patterns
 ```
 
-## Agent workflow
+## Verified AI Agents
+
+```soma
+cell agent Researcher {
+    face {
+        signal research(topic: String) -> Map
+        tool search(query: String) -> String "Search the web"
+    }
+
+    state workflow {
+        initial: idle
+        idle -> researching -> analyzing -> done
+        * -> failed
+    }
+
+    on search(query: String) {
+        http_get("https://api.search.com?q={query}")
+    }
+
+    on research(topic: String) {
+        set_budget(5000)                          // hard token cap
+        transition("t", "researching")
+        let facts = think("Research: {topic}")    // LLM + tool calling
+        transition("t", "analyzing")
+        let summary = think("Synthesize: {facts}") // multi-turn context
+        transition("t", "done")
+        map("summary", summary, "tokens", tokens_used())
+    }
+}
+```
 
 ```
-generate  ->  fix  ->  check  ->  verify  ->  serve
+$ soma verify agent.cell
+
+✓ no deadlocks
+✓ eventually(done | failed)     ← PROVEN: agent always terminates
+✓ after(researching, analyzing | failed)
+4 passed, 0 failed
 ```
 
-`soma fix` auto-repairs missing handlers, contradictory properties. `soma lint` catches redundant `to_json`, unchecked `.get()`, if-chains that should be `match`. The compiler does the work.
+No other agent framework can prove this.
 
-## What makes Soma different
+## Agent Runtime
 
-| | Kubernetes | Erlang | Akka | Soma |
-|---|---|---|---|---|
-| Distribution model | External YAML | In the VM | In the library | **In the language** |
-| Verified before deploy | No | No | No | **Yes (CTL + CAP)** |
-| Same code local/cluster | No | Almost | Almost | **Yes, zero changes** |
-| Agent-first tooling | No | No | No | **Yes (fix, lint, describe)** |
+| Builtin | What it does |
+|---------|-------------|
+| `think(prompt)` | LLM call with auto tool dispatch + retry |
+| `think_json(prompt)` | LLM returns structured Map |
+| `delegate(cell, signal, args)` | Cross-agent task dispatch |
+| `set_budget(n)` / `tokens_used()` | Hard token cap enforcement |
+| `remember(k, v)` / `recall(k)` | Persistent agent memory |
+| `approve(action)` | Human-in-the-loop gate |
+| `trace()` | Full execution log |
 
-## Pattern matching
+Config: `SOMA_LLM_KEY`, `SOMA_LLM_URL` (OpenAI or ollama), `SOMA_LLM_MODEL`
 
-Soma has pattern matching that rivals Rust and Elixir:
+## Pattern Matching
 
 ```soma
 on request(method: String, path: String, body: String) {
@@ -55,38 +98,47 @@ on request(method: String, path: String, body: String) {
         {method: "GET", path: "/"}                   -> home()
         {method: "GET", path: "/api/" + resource}    -> list(resource)
         {method: "POST", path: "/api/" + resource}   -> create(resource, body)
-        {method: "DELETE", path: "/api/" + resource}  -> delete(resource)
+        n if n.method == "OPTIONS"                   -> cors()
         _ -> response(404, map("error", "not found"))
     }
 }
 ```
 
-Map destructuring, string prefix patterns, guard clauses, or-patterns, range patterns, variable binding -- all composable.
+Map destructuring, string prefix, guard clauses, or-patterns, range patterns — all composable.
 
-## Storage
+## Agent Workflow
 
-Auto-serializes. No `to_json`/`from_json` needed:
-
-```soma
-memory { users: Map<String, String> [persistent, consistent] }
-
-users.set("alice", map("name", "Alice", "score", 95))
-let user = users.get("alice")
-print(user.name)   // "Alice" — auto-deserialized
 ```
+generate  →  fix  →  lint  →  check  →  verify  →  serve
+```
+
+- `soma fix` auto-repairs missing handlers, contradictory properties
+- `soma lint` catches redundant to_json, unchecked .get(), if-chains
+- `soma check --json` returns errors with `kind` + `fix` fields
+- `soma describe` outputs rich JSON: handlers, memory, state machines, tools
+- `soma verify` proves state machine properties with CTL model checking
+
+## What makes Soma different
+
+| | LangChain | CrewAI | Kubernetes | Soma |
+|---|---|---|---|---|
+| Agent termination proof | No | No | No | **Yes (CTL)** |
+| Tool calling verified | No | No | No | **Compiler-checked** |
+| Distribution model | No | No | YAML | **In the language** |
+| Auto-repair | No | No | No | **soma fix** |
+| Same code local/cluster | N/A | N/A | No | **Yes** |
 
 ## For AI agents
 
-- **Agent guide**: [AGENT.md](AGENT.md) -- syntax, do/don't, verification patterns
-- **Language reference**: [SOMA_REFERENCE.md](SOMA_REFERENCE.md) -- full syntax
-- **JSON output**: `soma check --json`, `soma describe`, `soma lint --json` -- machine-readable
-- **Vision**: [VISION.md](VISION.md) -- roadmap for intent compilation, diagnostic agents, live verification
-
-## Docs
-
-- **Website**: [soma-lang.dev](https://soma-lang.dev)
+- **Agent guide**: [AGENT.md](AGENT.md)
+- **Language reference**: [SOMA_REFERENCE.md](SOMA_REFERENCE.md)
+- **LLM reference**: [llms.txt](https://soma-lang.dev/llms.txt)
 - **Paper**: [Scale as a Type](https://soma-lang.dev/paper)
-- **Examples**: `examples/` -- pricing engine, job queue, chat, mini kubernetes, 100+ more
+- **Examples**: `examples/` — agents, pipelines, pricing engine, chat, 100+ more
+
+## Test Suite
+
+90 tests: 68 unit + 19 integration + 3 agent (live LLM via ollama/gemma3)
 
 ## License
 
