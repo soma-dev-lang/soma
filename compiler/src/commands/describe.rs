@@ -260,7 +260,7 @@ fn span_to_line(source: &str, offset: usize) -> usize {
     line
 }
 
-fn format_type(ty: &TypeExpr) -> String {
+pub fn format_type(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Simple(name) => name.clone(),
         TypeExpr::Generic { name, args } => {

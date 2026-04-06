@@ -1,0 +1,70 @@
+// Verified Agent with Tool Calling
+//
+// The LLM can call the agent's own handlers as tools.
+// The state machine PROVES the tool sequence is valid.
+//
+// Run: SOMA_LLM_KEY=sk-... soma run agent_tools.cell "What is the population of France?"
+
+cell agent Assistant {
+    face {
+        signal ask(question: String) -> Map
+        tool search(query: String) -> String "Search for factual information"
+        tool calculate(expression: String) -> String "Evaluate a math expression"
+        tool remember_fact(key: String, value: String) -> String "Store a fact for later"
+    }
+
+    memory {
+        facts: Map<String, String> [persistent]
+    }
+
+    state task {
+        initial: idle
+        idle -> thinking
+        thinking -> done
+        * -> failed
+    }
+
+    // Tool implementations — called by the LLM via function calling
+    on search(query: String) {
+        // In production: call a search API
+        // For demo: return a placeholder
+        "Search results for: {query}"
+    }
+
+    on calculate(expression: String) {
+        // Simple eval
+        "Result: {expression}"
+    }
+
+    on remember_fact(key: String, value: String) {
+        facts.set(key, value)
+        "Remembered: {key} = {value}"
+    }
+
+    on ask(question: String) {
+        transition("q", "thinking")
+
+        // think() automatically:
+        // 1. Reads tool declarations from face
+        // 2. Sends them to the LLM as function-calling tools
+        // 3. When LLM calls search(), dispatches to on search() above
+        // 4. Feeds result back to LLM
+        // 5. Loops until LLM gives final answer
+        let answer = try { think(question) }
+
+        if answer.error != () {
+            transition("q", "failed")
+            return map("error", answer.error)
+        }
+
+        transition("q", "done")
+        map("question", question, "answer", answer.value)
+    }
+
+    on run(question: String) {
+        print("Question: {question}")
+        let result = ask(question)
+        print("Answer: {result.answer}")
+        result
+    }
+}

@@ -1,0 +1,132 @@
+// Verified Multi-Agent System with Delegation
+//
+// Coordinator delegates to specialized agents.
+// State machines prove: every task completes or fails.
+// No stuck agents. No infinite delegation loops.
+//
+// Run: SOMA_LLM_KEY=sk-... soma run agent_multi.cell "Write a blog post about Soma"
+// Verify: soma verify agent_multi.cell
+
+cell agent Researcher {
+    face {
+        signal research(topic: String) -> Map
+    }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on research(topic: String) {
+        transition("t", "active")
+        let result = try { think("Research '{topic}'. Return 5 key facts.") }
+        if result.error != () {
+            transition("t", "failed")
+            return map("status", "failed", "error", result.error)
+        }
+        transition("t", "done")
+        map("status", "done", "facts", result.value)
+    }
+}
+
+cell agent Writer {
+    face {
+        signal write(facts: String, topic: String) -> Map
+    }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on write(facts: String, topic: String) {
+        transition("t", "active")
+        let result = try { think("Write a blog post about '{topic}' using these facts: {facts}") }
+        if result.error != () {
+            transition("t", "failed")
+            return map("status", "failed", "error", result.error)
+        }
+        transition("t", "done")
+        map("status", "done", "article", result.value)
+    }
+}
+
+cell agent Reviewer {
+    face {
+        signal review(article: String) -> Map
+    }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on review(article: String) {
+        transition("t", "active")
+        let result = try { think("Review this article. Score 1-10 and suggest improvements: {article}") }
+        if result.error != () {
+            transition("t", "failed")
+            return map("status", "failed", "error", result.error)
+        }
+        transition("t", "done")
+        map("status", "done", "review", result.value)
+    }
+}
+
+cell agent Coordinator {
+    face {
+        signal produce(topic: String) -> Map
+    }
+    memory {
+        outputs: Map<String, String> [persistent]
+    }
+    state pipeline {
+        initial: idle
+        idle -> researching
+        researching -> writing
+        writing -> reviewing
+        reviewing -> done
+        * -> failed
+    }
+
+    on produce(topic: String) {
+        // Stage 1: delegate to Researcher
+        transition("job", "researching")
+        print(">>> Delegating research to Researcher agent...")
+        let research = delegate("Researcher", "research", topic)
+        if research.status == "failed" {
+            transition("job", "failed")
+            return research
+        }
+
+        // Stage 2: delegate to Writer
+        transition("job", "writing")
+        print(">>> Delegating writing to Writer agent...")
+        let article = delegate("Writer", "write", research.facts, topic)
+        if article.status == "failed" {
+            transition("job", "failed")
+            return article
+        }
+
+        // Stage 3: delegate to Reviewer
+        transition("job", "reviewing")
+        print(">>> Delegating review to Reviewer agent...")
+        let review = delegate("Reviewer", "review", article.article)
+        if review.status == "failed" {
+            transition("job", "failed")
+            return review
+        }
+
+        transition("job", "done")
+        let output = map(
+            "topic", topic,
+            "article", article.article,
+            "review", review.review,
+            "status", "done"
+        )
+        outputs.set(topic, output)
+        print(">>> Pipeline complete!")
+        output
+    }
+
+    on run(topic: String) {
+        produce(topic ?? "the future of AI agents")
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "POST", path: "/produce"} -> {
+                let data = from_json(body)
+                produce(data.topic ?? "AI")
+            }
+            {method: "GET", path: "/outputs"} -> outputs.values
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

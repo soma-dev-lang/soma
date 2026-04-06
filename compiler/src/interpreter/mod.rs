@@ -308,7 +308,7 @@ pub fn new_peer_bus() -> PeerBus {
 
 pub struct Interpreter {
     /// All cells in the program, by name
-    cells: HashMap<String, CellDef>,
+    pub(crate) cells: HashMap<String, CellDef>,
     /// Pre-computed handler lookup — avoids scanning sections on every call
     handler_cache: HashMap<HandlerKey, HandlerValue>,
     /// Maximum recursion depth
@@ -2518,7 +2518,7 @@ fn is_bigint_type(ty: &TypeExpr) -> bool {
 }
 
 /// Convert a runtime Value to a StoredValue
-fn value_to_stored(val: &Value) -> StoredValue {
+pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
     match val {
         Value::Int(n) => StoredValue::Int(*n),
         Value::Big(n) => StoredValue::String(n.to_string()),
@@ -2534,7 +2534,7 @@ fn value_to_stored(val: &Value) -> StoredValue {
     }
 }
 
-fn stored_to_value(stored: StoredValue) -> Value {
+pub(crate) fn stored_to_value(stored: StoredValue) -> Value {
     match stored {
         StoredValue::Int(n) => Value::Int(n),
         StoredValue::Float(n) => Value::Float(n),
@@ -2551,7 +2551,7 @@ fn stored_to_value(stored: StoredValue) -> Value {
 /// Auto-deserialize: if a Value::String looks like JSON (starts with { or [),
 /// parse it into a Map or List. This handles the common case where old code
 /// used to_json() before .set(), making .get() return a raw JSON string.
-fn auto_deserialize(val: Value) -> Value {
+pub(crate) fn auto_deserialize(val: Value) -> Value {
     if let Value::String(ref s) = val {
         let trimmed = s.trim();
         if (trimmed.starts_with('{') && trimmed.ends_with('}'))
@@ -2566,7 +2566,7 @@ fn auto_deserialize(val: Value) -> Value {
 }
 
 /// Convert serde_json::Value to interpreter Value
-fn json_to_value(v: &serde_json::Value) -> Value {
+pub fn json_to_value(v: &serde_json::Value) -> Value {
     match v {
         serde_json::Value::Null => Value::Unit,
         serde_json::Value::Bool(b) => Value::Bool(*b),

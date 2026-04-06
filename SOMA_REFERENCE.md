@@ -317,6 +317,13 @@ let value = result.value
 let value = try { risky_operation() }?
 // Equivalent to: if result has error, return error map; else unwrap value
 
+// Agent builtins
+let answer = think("What is 2+2?")           // call LLM (OpenAI-compatible)
+let data = think_json("Return as JSON: ...")  // LLM returns Map, not String
+delegate("Writer", "write", facts, topic)     // call another agent's handler
+remember("key", value)                        // persistent agent memory
+let val = recall("key")                       // recall from agent memory
+
 // Postconditions: ensure (checked at point of execution)
 on withdraw(balance: Int, amount: Int) {
     let result = balance - amount

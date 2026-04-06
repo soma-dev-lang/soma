@@ -416,14 +416,8 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                 Some(Err(RuntimeError::TypeError("par_word_count(list)".to_string())))
             }
         }
-        // ── AI Agent: think() — LLM integration ─────────────────────
-        "think" => {
-            if let Some(Value::String(prompt)) = args.first() {
-                Some(call_llm(prompt, &args[1..]))
-            } else {
-                Some(Err(RuntimeError::TypeError("think(prompt: String) requires a string argument".to_string())))
-            }
-        }
+        // think() and think_json() are handled in storage.rs (needs interpreter access for tool calling)
+
         _ => None,
     }
 }
