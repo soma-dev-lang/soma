@@ -486,11 +486,12 @@ impl Interpreter {
     /// Ensure state machine storage slots exist
     /// Uses persistent backend (SQLite) if any existing slot is persistent, otherwise memory
     pub fn ensure_state_machine_storage(&mut self) {
-        // Check if any existing slot uses a persistent backend
         let has_persistent = self.storage.values().any(|b| b.backend_name() == "sqlite" || b.backend_name() == "file");
         for ((cell_name, sm_name), _) in self.state_machines.clone() {
-            let key = format!("__sm_{}", sm_name);
-            if !self.storage.contains_key(&key) {
+            // Use cell-scoped key to prevent collisions between agents
+            let key = format!("__sm_{}_{}", cell_name, sm_name);
+            let legacy_key = format!("__sm_{}", sm_name);
+            if !self.storage.contains_key(&key) && !self.storage.contains_key(&legacy_key) {
                 let backend: Arc<dyn crate::runtime::storage::StorageBackend> = if has_persistent {
                     Arc::new(crate::runtime::storage::SqliteBackend::new(&cell_name, &format!("_sm_{}", sm_name)))
                 } else {
@@ -864,6 +865,7 @@ impl Interpreter {
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
+                let dispatch_args = arg_vals.clone();
                 self.emitted_signals.push((sig.clone(), arg_vals.clone()));
                 // Prepare data for broadcast
                 let broadcast_data = if arg_vals.len() == 1 { arg_vals[0].clone() } else { Value::List(arg_vals) };
@@ -889,6 +891,14 @@ impl Interpreter {
                             let _ = sender.send(line.clone());
                         }
                     }
+                }
+                // Dispatch to sibling cells with matching handler (intra-process)
+                let matching_cells: Vec<String> = self.handler_cache.keys()
+                    .filter(|(c, s)| s == sig && c != cell_name)
+                    .map(|(c, _)| c.clone())
+                    .collect();
+                for target_cell in matching_cells {
+                    let _ = self.call_signal(&target_cell, sig, dispatch_args.clone());
                 }
                 Ok(Value::Unit)
             }
@@ -2402,8 +2412,11 @@ impl Interpreter {
 
     /// Execute a state transition
     pub(crate) fn do_transition(&mut self, id: &str, target: &str) -> Result<Value, RuntimeError> {
-        // Find the state machine and its storage
-        let (sm, status_slot) = self.find_state_machine()
+        self.do_transition_for("", id, target)
+    }
+
+    pub(crate) fn do_transition_for(&mut self, cell_name: &str, id: &str, target: &str) -> Result<Value, RuntimeError> {
+        let (sm, status_slot) = self.find_state_machine_for(cell_name)
             .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
 
         // Get current state
@@ -2467,7 +2480,7 @@ impl Interpreter {
         }
 
         // Re-find state machine storage after potential mutation from eval_expr
-        let (_sm, status_slot) = self.find_state_machine()
+        let (_sm, status_slot) = self.find_state_machine_for(cell_name)
             .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
 
         // Perform transition
@@ -2516,11 +2529,31 @@ impl Interpreter {
 
     /// Find the first state machine and its backing storage slot
     pub(crate) fn find_state_machine(&self) -> Option<(&StateMachineSection, &Arc<dyn StorageBackend>)> {
-        for ((_cell_name, sm_name), sm) in &self.state_machines {
-            // State machines use a DEDICATED slot: __sm_{name}
-            // This prevents confusion with user data slots
-            let slot_name = format!("__sm_{}", sm_name);
-            if let Some(backend) = self.storage.get(&slot_name) {
+        self.find_state_machine_for("")
+    }
+
+    pub(crate) fn find_state_machine_for(&self, cell_name: &str) -> Option<(&StateMachineSection, &Arc<dyn StorageBackend>)> {
+        // First: try cell-scoped key (multi-cell programs)
+        if !cell_name.is_empty() {
+            for ((cn, sm_name), sm) in &self.state_machines {
+                if cn == cell_name {
+                    let scoped_key = format!("__sm_{}_{}", cn, sm_name);
+                    if let Some(backend) = self.storage.get(&scoped_key) {
+                        return Some((sm, backend));
+                    }
+                    // Fallback to legacy key
+                    let legacy_key = format!("__sm_{}", sm_name);
+                    if let Some(backend) = self.storage.get(&legacy_key) {
+                        return Some((sm, backend));
+                    }
+                }
+            }
+        }
+        // Fallback: any state machine (backwards compat)
+        for ((cn, sm_name), sm) in &self.state_machines {
+            let scoped_key = format!("__sm_{}_{}", cn, sm_name);
+            let legacy_key = format!("__sm_{}", sm_name);
+            if let Some(backend) = self.storage.get(&scoped_key).or_else(|| self.storage.get(&legacy_key)) {
                 return Some((sm, backend));
             }
         }
