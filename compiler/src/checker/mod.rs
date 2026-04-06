@@ -147,6 +147,10 @@ pub enum CheckWarning {
         slot: String,
         span: Span,
     },
+    AgentMissingStateMachine {
+        cell: String,
+        span: Span,
+    },
 }
 
 impl std::fmt::Display for CheckWarning {
@@ -169,6 +173,9 @@ impl std::fmt::Display for CheckWarning {
             }
             Self::ScaleEventualConsistency { cell, slot, .. } => {
                 write!(f, "warning: cell '{cell}' uses eventual consistency on shard '{slot}' — reads after writes may return stale data")
+            }
+            Self::AgentMissingStateMachine { cell, .. } => {
+                write!(f, "warning: agent cell '{cell}' has no state machine — add a state section for verified behavior")
             }
         }
     }
@@ -245,6 +252,45 @@ impl<'a> Checker<'a> {
 
         // 8. Verify scale section
         self.check_scale(cell);
+
+        // 9. Agent-specific checks
+        if cell.kind == CellKind::Agent {
+            self.check_agent_contracts(cell);
+        }
+    }
+
+    /// Verify agent cells have required structure
+    fn check_agent_contracts(&mut self, cell: &CellDef) {
+        // Agent cells SHOULD have a state machine (warning, not error — for flexibility)
+        let has_state = cell.sections.iter().any(|s| matches!(s.node, Section::State(_)));
+        if !has_state {
+            self.warnings.push(CheckWarning::AgentMissingStateMachine {
+                cell: cell.name.clone(),
+                span: Span { start: 0, end: 0 },
+            });
+        }
+
+        // Every tool declaration MUST have a matching handler
+        for section in &cell.sections {
+            if let Section::Face(face) = &section.node {
+                for decl in &face.declarations {
+                    if let FaceDecl::Tool(tool) = &decl.node {
+                        let has_handler = cell.sections.iter().any(|s| {
+                            if let Section::OnSignal(on) = &s.node {
+                                on.signal_name == tool.name
+                            } else { false }
+                        });
+                        if !has_handler {
+                            self.errors.push(CheckError::MissingHandler {
+                                cell: cell.name.clone(),
+                                signal: format!("{} (tool)", tool.name),
+                                span: decl.span,
+                            });
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Verify face contracts: every declared signal has a handler with matching params
@@ -704,6 +750,10 @@ impl<'a> Checker<'a> {
             CheckWarning::UnverifiablePromise { promise, .. } => (
                 format!("{}", warn),
                 format!("Replace the descriptive promise \"{promise}\" with a machine-verifiable constraint, or accept this as documentation."),
+            ),
+            CheckWarning::AgentMissingStateMachine { cell, .. } => (
+                format!("{}", warn),
+                format!("Add a state machine to agent cell '{}' to enable verified behavior:\n\n    state workflow {{\n        initial: idle\n        idle -> active\n        active -> done\n        * -> failed\n    }}", cell),
             ),
             _ => (
                 format!("{}", warn),

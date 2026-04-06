@@ -2740,4 +2740,339 @@ mod tests {
         let result = run(source, "Logic", "max", vec![Value::Int(3), Value::Int(7)]).unwrap();
         assert_eq!(result.as_int().unwrap(), 7);
     }
+
+    // ── Match patterns ──────────────────────────────────────────────
+
+    #[test]
+    fn test_match_variable_binding() {
+        let source = r#"
+            cell T {
+                on run(x: Int) {
+                    return match x {
+                        name -> name + 100
+                    }
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![Value::Int(7)]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 107);
+    }
+
+    #[test]
+    fn test_match_or_pattern() {
+        let source = r#"
+            cell T {
+                on run(s: String) {
+                    return match s {
+                        "a" || "b" -> "matched"
+                        _ -> "no"
+                    }
+                }
+            }
+        "#;
+        let a = run(source, "T", "run", vec![Value::String("a".into())]).unwrap();
+        assert_eq!(a.to_string(), "matched");
+        let b = run(source, "T", "run", vec![Value::String("b".into())]).unwrap();
+        assert_eq!(b.to_string(), "matched");
+        let c = run(source, "T", "run", vec![Value::String("z".into())]).unwrap();
+        assert_eq!(c.to_string(), "no");
+    }
+
+    #[test]
+    fn test_match_map_destructure() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let req = map("method", "GET", "path", "/home")
+                    return match req {
+                        {method: "GET", path} -> path
+                        _ -> "other"
+                    }
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.to_string(), "/home");
+    }
+
+    #[test]
+    fn test_match_string_prefix() {
+        let source = r#"
+            cell T {
+                on run(s: String) {
+                    return match s {
+                        "/api/" + rest -> rest
+                        _ -> "no match"
+                    }
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![Value::String("/api/users".into())]).unwrap();
+        assert_eq!(result.to_string(), "users");
+        let miss = run(source, "T", "run", vec![Value::String("/home".into())]).unwrap();
+        assert_eq!(miss.to_string(), "no match");
+    }
+
+    #[test]
+    fn test_match_guard_clause() {
+        let source = r#"
+            cell T {
+                on run(n: Int) {
+                    return match n {
+                        x if x > 0 -> "positive"
+                        x if x < 0 -> "negative"
+                        _ -> "zero"
+                    }
+                }
+            }
+        "#;
+        let pos = run(source, "T", "run", vec![Value::Int(5)]).unwrap();
+        assert_eq!(pos.to_string(), "positive");
+        let neg = run(source, "T", "run", vec![Value::Int(-3)]).unwrap();
+        assert_eq!(neg.to_string(), "negative");
+        let zero = run(source, "T", "run", vec![Value::Int(0)]).unwrap();
+        assert_eq!(zero.to_string(), "zero");
+    }
+
+    #[test]
+    fn test_match_range_pattern() {
+        let source = r#"
+            cell T {
+                on run(n: Int) {
+                    return match n {
+                        0..10 -> "small"
+                        _ -> "big"
+                    }
+                }
+            }
+        "#;
+        let small = run(source, "T", "run", vec![Value::Int(5)]).unwrap();
+        assert_eq!(small.to_string(), "small");
+        let big = run(source, "T", "run", vec![Value::Int(15)]).unwrap();
+        assert_eq!(big.to_string(), "big");
+    }
+
+    #[test]
+    fn test_match_nested_destructure() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let req = map("method", "POST", "path", "/api/orders")
+                    return match req {
+                        {method: "POST", path: "/api/" + r} -> r
+                        _ -> "no"
+                    }
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.to_string(), "orders");
+    }
+
+    // ── Expressions ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_if_expression() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let x = if true { 42 } else { 0 }
+                    return x
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 42);
+    }
+
+    #[test]
+    fn test_if_expression_else_if() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let x = if false { 1 } else if true { 2 } else { 3 }
+                    return x
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_match_as_expression() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let x = match "a" {
+                        "a" -> 1
+                        _ -> 0
+                    }
+                    return x
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 1);
+    }
+
+    // ── Operators ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_compound_minus_eq() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let x = 10
+                    x -= 3
+                    return x
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 7);
+    }
+
+    #[test]
+    fn test_compound_star_eq() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let x = 5
+                    x *= 2
+                    return x
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 10);
+    }
+
+    #[test]
+    fn test_compound_slash_eq() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let x = 20
+                    x /= 4
+                    return x
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 5);
+    }
+
+    #[test]
+    fn test_try_propagate() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let v = try { 42 }?
+                    return v
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 42);
+    }
+
+    #[test]
+    fn test_try_propagate_error() {
+        let source = r#"
+            cell T {
+                on run() {
+                    let v = try { 1 / 0 }?
+                    return v
+                }
+            }
+        "#;
+        // Division by zero causes try to wrap an error, then ? propagates it
+        // The result should be a map with an error field (returned via early return)
+        let result = run(source, "T", "run", vec![]).unwrap();
+        // ? propagates by returning the error map
+        assert!(matches!(result, Value::Map(_)));
+        if let Value::Map(ref entries) = result {
+            assert!(entries.get("error").is_some());
+            let err = entries.get("error").unwrap();
+            assert!(!matches!(err, Value::Unit));
+        }
+    }
+
+    #[test]
+    fn test_null_coalesce_precedence() {
+        // () ?? 5 should evaluate to 5, and then == 5 should be true
+        // This tests that ?? binds tighter than == (or at least correctly)
+        let source = r#"
+            cell T {
+                on run() {
+                    let x = () ?? 5
+                    return x
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 5);
+    }
+
+    // ── Statements ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_ensure_pass() {
+        let source = r#"
+            cell T {
+                on run() {
+                    ensure true
+                    return "ok"
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.to_string(), "ok");
+    }
+
+    #[test]
+    fn test_ensure_fail() {
+        let source = r#"
+            cell T {
+                on run() {
+                    ensure false
+                    return "ok"
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_implicit_return() {
+        // Handler without explicit return should return the last expression
+        let source = r#"
+            cell T {
+                on run() {
+                    let x = 10
+                    let y = 20
+                    x + y
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 30);
+    }
+
+    // ── Storage auto-deserialize ────────────────────────────────────
+
+    #[test]
+    fn test_auto_deserialize_json_string() {
+        // auto_deserialize should parse a JSON string back into a Map
+        let json_str = r#"{"name": "alice", "age": 30}"#;
+        let val = Value::String(json_str.to_string());
+        let result = auto_deserialize(val);
+        assert!(matches!(result, Value::Map(_)));
+        if let Value::Map(ref entries) = result {
+            assert_eq!(entries.get("name").unwrap().to_string(), "alice");
+            assert_eq!(entries.get("age").unwrap().as_int().unwrap(), 30);
+        }
+    }
 }

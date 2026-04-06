@@ -27,7 +27,7 @@ impl CodeGen {
 
         for cell in &program.cells {
             // Skip meta-cells — they define the language, not the program
-            if cell.node.kind != CellKind::Cell {
+            if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
                 continue;
             }
             self.generate_cell(&cell.node, true);

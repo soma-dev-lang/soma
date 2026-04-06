@@ -30,7 +30,7 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
     let mut interp = interpreter::Interpreter::new(&program);
 
     for cell in &program.cells {
-        if cell.node.kind == ast::CellKind::Cell {
+        if matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
             for section in &cell.node.sections {
                 if let ast::Section::Memory(ref mem) = section.node {
                     let mut slots = std::collections::HashMap::new();

@@ -77,7 +77,7 @@ impl<'a> LintPass<'a> {
 
     fn check_program(&mut self, program: &ast::Program) {
         for cell in &program.cells {
-            if cell.node.kind == ast::CellKind::Cell {
+            if matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
                 self.check_cell(&cell.node);
             }
         }

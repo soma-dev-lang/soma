@@ -162,3 +162,169 @@ fn test_assignment() {
     assert_eq!(code, 0);
     assert_eq!(out.trim(), "22"); // (1+10)*2
 }
+
+// ── Fix command ─────────────────────────────────────────────────────
+
+#[test]
+fn test_fix_missing_handler() {
+    let tmp = std::env::temp_dir().join("test_fix_missing_handler.cell");
+    // A cell that declares a signal in face but has no handler for it
+    std::fs::write(&tmp, r#"
+        cell Broken {
+            face {
+                signal greet(name: String) -> String
+            }
+        }
+    "#).unwrap();
+
+    // Check should fail (missing handler)
+    let (_, _, code) = soma(&["check", tmp.to_str().unwrap()]);
+    assert_ne!(code, 0);
+
+    // Fix should auto-generate the missing handler
+    let (_, _, fix_code) = soma(&["fix", tmp.to_str().unwrap()]);
+    assert_eq!(fix_code, 0);
+
+    // After fix, check should pass
+    let (out, _, code) = soma(&["check", tmp.to_str().unwrap()]);
+    assert_eq!(code, 0, "check should pass after fix, got: {}", out);
+    assert!(out.contains("All checks passed"));
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+// ── Lint command ────────────────────────────────────────────────────
+
+#[test]
+fn test_lint_redundant_to_json() {
+    let tmp = std::env::temp_dir().join("test_lint_redundant.cell");
+    std::fs::write(&tmp, r#"
+        cell Store {
+            memory {
+                items: Map<String, String> [persistent]
+            }
+            on save(id: String) {
+                let data = map("name", "alice")
+                items.set(id, to_json(data))
+            }
+        }
+    "#).unwrap();
+
+    let (out, _, code) = soma(&["lint", "--json", tmp.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    let parsed: serde_json::Value = serde_json::from_str(&out)
+        .expect("lint --json should produce valid JSON");
+    let lints = parsed["lints"].as_array().expect("should have lints array");
+    let found = lints.iter().any(|l| {
+        l["rule"].as_str().unwrap_or("").contains("redundant_to_json")
+    });
+    assert!(found, "should detect redundant to_json lint, got: {}", out);
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+// ── Describe command ────────────────────────────────────────────────
+
+#[test]
+fn test_describe_agent_cell() {
+    let tmp = std::env::temp_dir().join("test_describe_agent.cell");
+    std::fs::write(&tmp, r#"
+        cell agent Helper {
+            face {
+                signal run(query: String) -> String
+                tool search(q: String) -> String "Search the web"
+            }
+            memory {
+                log: Map<String, String> [ephemeral]
+            }
+            on run(query: String) {
+                return "done"
+            }
+        }
+    "#).unwrap();
+
+    let (out, _, code) = soma(&["describe", tmp.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    let parsed: serde_json::Value = serde_json::from_str(&out)
+        .expect("describe should produce valid JSON");
+    // Agent cells should have kind: "agent"
+    let cells = parsed["cells"].as_array().expect("describe returns object with cells array");
+    assert!(!cells.is_empty());
+    let cell = &cells[0];
+    assert_eq!(cell["kind"].as_str(), Some("agent"), "agent cell should have kind=agent");
+    // Should have tools in face
+    let tools = &cell["face"]["tools"];
+    assert!(tools.is_array(), "agent face should have tools array");
+    assert!(!tools.as_array().unwrap().is_empty(), "tools should not be empty");
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+// ── Check --json ────────────────────────────────────────────────────
+
+#[test]
+fn test_check_json_has_fix_field() {
+    let tmp = std::env::temp_dir().join("test_check_json_fix.cell");
+    std::fs::write(&tmp, r#"
+        cell Broken {
+            face {
+                signal greet(name: String) -> String
+            }
+        }
+    "#).unwrap();
+
+    let (out, _, code) = soma(&["check", "--json", tmp.to_str().unwrap()]);
+    assert_ne!(code, 0);
+    let parsed: serde_json::Value = serde_json::from_str(&out)
+        .expect("check --json should produce valid JSON");
+    let errors = parsed["errors"].as_array().expect("should have errors array");
+    assert!(!errors.is_empty());
+    for err in errors {
+        assert!(err.get("fix").is_some(), "error should have 'fix' field: {:?}", err);
+        assert!(err.get("kind").is_some(), "error should have 'kind' field: {:?}", err);
+    }
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+// ── Verify command ──────────────────────────────────────────────────
+
+#[test]
+fn test_verify_agent_state_machine() {
+    let dir = std::env::temp_dir().join("test_verify_agent");
+    let _ = std::fs::create_dir_all(&dir);
+
+    let cell_path = dir.join("agent.cell");
+    std::fs::write(&cell_path, r#"
+        cell agent Searcher {
+            face {
+                signal research(topic: String) -> String
+                tool search(query: String) -> String "Search the web"
+            }
+            memory {
+                findings: Map<String, String> [persistent]
+            }
+            state workflow {
+                initial: idle
+                idle -> researching
+                researching -> done
+                * -> failed
+            }
+            on research(topic: String) {
+                return "researched"
+            }
+        }
+    "#).unwrap();
+
+    let toml_path = dir.join("soma.toml");
+    std::fs::write(&toml_path, r#"
+        [package]
+        name = "test-verify"
+        version = "0.1.0"
+    "#).unwrap();
+
+    let (_, _, code) = soma(&["verify", cell_path.to_str().unwrap()]);
+    assert_eq!(code, 0, "verify should pass for well-formed agent state machine");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

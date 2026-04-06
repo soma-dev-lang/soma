@@ -42,7 +42,7 @@ pub fn cmd_deploy(path: &PathBuf, target: &str, region: Option<&str>) {
 
     // Find the main cell
     let cell = program.cells.iter()
-        .find(|c| c.node.kind == ast::CellKind::Cell)
+        .find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent))
         .unwrap_or_else(|| { eprintln!("error: no cell found"); std::process::exit(1); });
 
     let scale = cell.node.sections.iter().find_map(|s| {

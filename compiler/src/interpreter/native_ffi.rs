@@ -62,7 +62,7 @@ pub fn compile_and_load_natives_with_config(
     let mut result = HashMap::new();
 
     for cell in &program.cells {
-        if cell.node.kind != CellKind::Cell {
+        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
 

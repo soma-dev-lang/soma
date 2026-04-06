@@ -36,7 +36,7 @@ impl Runtime {
 
         for cell_spanned in &program.cells {
             let cell = &cell_spanned.node;
-            if cell.kind != CellKind::Cell {
+            if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
                 continue;
             }
             let instance = Self::instantiate_cell(cell, "");
@@ -75,7 +75,7 @@ impl Runtime {
                 }
                 Section::Interior(interior) => {
                     for child in &interior.cells {
-                        if child.node.kind == CellKind::Cell {
+                        if matches!(child.node.kind, CellKind::Cell | CellKind::Agent) {
                             let child_instance = Self::instantiate_cell(&child.node, &cell_path);
                             children.insert(child.node.name.clone(), child_instance);
                         }

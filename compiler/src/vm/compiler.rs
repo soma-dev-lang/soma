@@ -24,7 +24,7 @@ impl BytecodeCompiler {
     /// Compile all handlers in a program
     pub fn compile_program(&mut self, program: &Program) {
         for cell in &program.cells {
-            if cell.node.kind != CellKind::Cell {
+            if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
                 continue;
             }
             self.compile_cell(&cell.node);

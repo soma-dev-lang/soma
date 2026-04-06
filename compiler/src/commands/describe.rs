@@ -17,7 +17,7 @@ pub fn cmd_describe(path: &PathBuf) {
     let mut cells = Vec::new();
 
     for cell in &program.cells {
-        if cell.node.kind != CellKind::Cell { continue; }
+        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
         cells.push(describe_cell(&cell.node, &source));
     }
 
