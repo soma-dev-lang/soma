@@ -973,9 +973,23 @@ impl Interpreter {
                                                         match checked {
                                                             Some(v) => locals[idx] = v,
                                                             None => {
-                                                                // Overflow — push locals back, fall to general path (BigInt)
+                                                                // Overflow — promote to BigInt register loop
+                                                                let mut vals: Vec<Value> = locals.iter()
+                                                                    .map(|v| Value::Int(*v)).collect();
+                                                                // Apply this operation with BigInt
+                                                                let lhs_big = BigInt::from(locals[idx]);
+                                                                let rhs_big = BigInt::from(rhs_val);
+                                                                let result_big = match op {
+                                                                    BinOp::Add => lhs_big + rhs_big,
+                                                                    BinOp::Sub => lhs_big - rhs_big,
+                                                                    BinOp::Mul => lhs_big * rhs_big,
+                                                                    _ => { break 'fast_while; }
+                                                                };
+                                                                vals[idx] = Value::Big(result_big);
+                                                                // Continue with Value-based register loop
+                                                                // Push to env and use the standard fast path
                                                                 for (ii, n) in var_names.iter().enumerate() {
-                                                                    env.insert(n.clone(), Value::Int(locals[ii]));
+                                                                    env.insert(n.clone(), vals[ii].clone());
                                                                 }
                                                                 break 'fast_while;
                                                             }
@@ -1004,7 +1018,80 @@ impl Interpreter {
                             if locals[0] >= limit {
                                 return Ok(Value::Unit);
                             }
-                            // If we broke out early (non-optimizable stmt), fall through to general path
+
+                            // Overflowed to BigInt — run Value-based register loop (no HashMap per iteration)
+                            let mut vals: Vec<Value> = var_names.iter()
+                                .map(|n| env.get(n).cloned().unwrap_or(Value::Int(0)))
+                                .collect();
+
+                            'bigint_loop: loop {
+                                // Check counter < limit
+                                let counter_done = match &vals[0] {
+                                    Value::Int(v) => *v >= limit,
+                                    Value::Big(v) => *v >= BigInt::from(limit),
+                                    _ => true,
+                                };
+                                if counter_done { break; }
+
+                                for stmt in body.iter() {
+                                    if let Statement::Assign { name, value: val_expr } = &stmt.node {
+                                        if let Expr::BinaryOp { left: lhs, op, right: rhs } = &val_expr.node {
+                                            if let Expr::Ident(ref lhs_name) = lhs.node {
+                                                if lhs_name == name {
+                                                    let idx = var_names.iter().position(|n| n == name);
+                                                    if let Some(idx) = idx {
+                                                        // Resolve RHS from registers
+                                                        let rhs_val = match &rhs.node {
+                                                            Expr::Literal(Literal::Int(n)) => Value::Int(*n),
+                                                            Expr::Ident(ref rn) => {
+                                                                var_names.iter().position(|n| n == rn)
+                                                                    .map(|ri| vals[ri].clone())
+                                                                    .unwrap_or(Value::Int(0))
+                                                            }
+                                                            Expr::BinaryOp { left: inner_l, op: inner_op, right: inner_r } => {
+                                                                // Handle i * i, i * i * i etc
+                                                                let l = match &inner_l.node {
+                                                                    Expr::Ident(ref n) => var_names.iter().position(|vn| vn == n).map(|i| vals[i].clone()).unwrap_or(Value::Int(0)),
+                                                                    Expr::Literal(Literal::Int(n)) => Value::Int(*n),
+                                                                    _ => { break 'bigint_loop; }
+                                                                };
+                                                                let r = match &inner_r.node {
+                                                                    Expr::Ident(ref n) => var_names.iter().position(|vn| vn == n).map(|i| vals[i].clone()).unwrap_or(Value::Int(0)),
+                                                                    Expr::Literal(Literal::Int(n)) => Value::Int(*n),
+                                                                    _ => { break 'bigint_loop; }
+                                                                };
+                                                                self.eval_binop_val(&l, inner_op.clone(), &r)
+                                                            }
+                                                            _ => { break 'bigint_loop; }
+                                                        };
+                                                        vals[idx] = self.eval_binop_val(&vals[idx], op.clone(), &rhs_val);
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Can't optimize this stmt — push back and fall through
+                                    for (ii, n) in var_names.iter().enumerate() {
+                                        env.insert(n.clone(), vals[ii].clone());
+                                    }
+                                    break 'bigint_loop;
+                                }
+                            }
+
+                            // Push final values back
+                            for (i, n) in var_names.iter().enumerate() {
+                                env.insert(n.clone(), vals[i].clone());
+                            }
+                            // Check if done
+                            let counter_done = match &vals[0] {
+                                Value::Int(v) => *v >= limit,
+                                Value::Big(v) => *v >= BigInt::from(limit),
+                                _ => true,
+                            };
+                            if counter_done {
+                                return Ok(Value::Unit);
+                            }
                         }
 
                         // Standard fast path: direct int comparison, skip eval_expr on condition
@@ -2388,6 +2475,11 @@ impl Interpreter {
             (Value::Unit, Value::Unit) => true,
             _ => false,
         }
+    }
+
+    /// Convenience wrapper that returns Value (panics on error — for register loop only)
+    fn eval_binop_val(&self, l: &Value, op: BinOp, r: &Value) -> Value {
+        self.eval_binop(l, op, r).unwrap_or(Value::Unit)
     }
 
     fn eval_binop(&self, l: &Value, op: BinOp, r: &Value) -> Result<Value, RuntimeError> {
