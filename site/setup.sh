@@ -88,7 +88,30 @@ else
     echo "  → cloning soma..."
     git clone --quiet --depth 1 https://github.com/${REPO}.git "$TMPDIR/soma"
 
-    echo "  → building (this takes ~30 seconds)..."
+    # Install GMP (required for BigInt via rug/GMP)
+    if ! pkg-config --exists gmp 2>/dev/null; then
+        echo "  → installing GMP (for BigInt)..."
+        if [ "$OS" = "darwin" ]; then
+            if command -v brew > /dev/null 2>&1; then
+                brew install gmp --quiet 2>/dev/null
+            else
+                echo "  ⚠ install GMP manually: brew install gmp"
+            fi
+        elif [ "$OS" = "linux" ]; then
+            if command -v apt-get > /dev/null 2>&1; then
+                sudo apt-get install -y libgmp-dev >/dev/null 2>&1
+            elif command -v dnf > /dev/null 2>&1; then
+                sudo dnf install -y gmp-devel >/dev/null 2>&1
+            elif command -v pacman > /dev/null 2>&1; then
+                sudo pacman -S --noconfirm gmp >/dev/null 2>&1
+            else
+                echo "  ⚠ install GMP manually: apt install libgmp-dev"
+            fi
+        fi
+        echo "  ✓ GMP installed"
+    fi
+
+    echo "  → building (this takes ~60 seconds)..."
     cd "$TMPDIR/soma/compiler"
     cargo build --release --quiet
 
