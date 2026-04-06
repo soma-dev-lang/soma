@@ -118,7 +118,7 @@ pub fn compile_and_load_natives_with_config(
                 native_handlers.len(), cell.node.name);
 
             // Create a mini cargo project for this native compilation
-            let proj_dir = cache_dir.join("proj");
+            let proj_dir = cache_dir().join("proj");
             let proj_src = proj_dir.join("src");
             std::fs::create_dir_all(&proj_src).ok();
 

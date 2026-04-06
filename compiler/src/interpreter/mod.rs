@@ -1,5 +1,6 @@
 pub mod builtins;
 pub mod native_ffi;
+pub mod soma_int;
 
 use std::collections::HashMap;
 use std::sync::Arc;
