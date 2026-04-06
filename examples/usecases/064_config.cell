@@ -1,0 +1,30 @@
+// Configuration management with defaults
+cell Config {
+    memory {
+        settings: Map<String, String> [persistent, consistent]
+    }
+
+    on set_config(key: String, value: String) {
+        settings.set(key, value)
+    }
+
+    on get_config(key: String, default_val: String) {
+        return settings.get(key) ?? default_val
+    }
+
+    on run() {
+        set_config("app.name", "MyApp")
+        set_config("app.port", "8080")
+        set_config("app.debug", "true")
+
+        let name = get_config("app.name", "unknown")
+        let port = get_config("app.port", "3000")
+        let debug = get_config("app.debug", "false")
+        let timeout = get_config("app.timeout", "30s")
+        print("name:    {name}")
+        print("port:    {port}")
+        print("debug:   {debug}")
+        print("timeout: {timeout}")
+        return "done"
+    }
+}

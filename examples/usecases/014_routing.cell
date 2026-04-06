@@ -1,0 +1,17 @@
+// 014: Routing — match on method + path patterns
+cell Router {
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"} -> html("<h1>Home</h1>")
+            {method: "GET", path: "/about"} -> html("<h1>About</h1>")
+            {method: "GET", path: "/health"} -> map("status", "ok")
+            {method: "POST", path: "/echo"} -> map("body", body)
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+    on run() {
+        print("Router cell. Use: soma serve examples/usecases/014_routing.cell")
+        return "done"
+    }
+}

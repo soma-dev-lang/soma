@@ -1,0 +1,29 @@
+// 020: Middleware — request logging + auth check pattern
+cell Middleware {
+    on _log(method: String, path: String) {
+        print("[LOG] {method} {path}")
+    }
+    on _check_auth(path: String) {
+        if starts_with(path, "/admin") {
+            return false
+        }
+        return true
+    }
+    on request(method: String, path: String, body: String) {
+        _log(method, path)
+        let allowed = _check_auth(path)
+        if !allowed {
+            return response(403, map("error", "forbidden"))
+        }
+        let req = map("path", path)
+        match req {
+            {path: "/"} -> map("msg", "welcome")
+            {path: "/api"} -> map("data", "public")
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+    on run() {
+        print("Middleware pattern. Use: soma serve")
+        return "done"
+    }
+}

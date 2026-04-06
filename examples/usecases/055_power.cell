@@ -1,0 +1,24 @@
+// Fast exponentiation by squaring
+cell Power {
+    on power(base: Int, exp: Int) {
+        let result = 1
+        let b = base
+        let e = exp
+        while e > 0 {
+            if e % 2 == 1 {
+                result = result * b
+            }
+            b = b * b
+            e = idiv(e, 2)
+        }
+        return result
+    }
+
+    on run() {
+        print("2^10 = {power(2, 10)}")
+        print("3^5  = {power(3, 5)}")
+        print("5^3  = {power(5, 3)}")
+        print("7^0  = {power(7, 0)}")
+        return "done"
+    }
+}

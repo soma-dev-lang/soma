@@ -1,0 +1,24 @@
+// 028: Window functions — zscore, rank, normalize
+cell WindowDemo {
+    on run() {
+        let data = list(
+            map("name", "A", "score", 50),
+            map("name", "B", "score", 80),
+            map("name", "C", "score", 60),
+            map("name", "D", "score", 90),
+            map("name", "E", "score", 70)
+        )
+        // rank by score
+        let ranked = rank(data, "score")
+        for r in ranked {
+            print("{r.name}: score={r.score} rank={r.score_rank}")
+        }
+        // normalize to 0-1
+        let normed = normalize(data, "score", 0, 1)
+        print("normalized:")
+        for n in normed {
+            print("  {n.name}: {n.score_norm}")
+        }
+        return "done"
+    }
+}

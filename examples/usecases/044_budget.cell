@@ -1,0 +1,26 @@
+// 044: Budget — set_budget + tokens_used
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/044_budget.cell
+cell agent BudgetAgent {
+    face {
+        signal research(topic: String) -> Map
+    }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on research(topic: String) {
+        transition("t", "active")
+        set_budget(1000)
+        let r = try { think("Research: {topic}") }
+        if r.error != () {
+            transition("t", "failed")
+            return map("error", r.error)
+        }
+        let used = tokens_used()
+        print("tokens used: {used}")
+        transition("t", "done")
+        map("status", "done", "result", r.value, "tokens", used)
+    }
+    on run() {
+        let r = research("quantum computing")
+        print("status: {r.status}")
+        return "done"
+    }
+}

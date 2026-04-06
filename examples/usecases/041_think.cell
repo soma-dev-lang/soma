@@ -1,0 +1,23 @@
+// 041: Think — basic think() call with SOMA_LLM_MOCK=echo
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/041_think.cell
+cell agent Thinker {
+    face {
+        signal ask(prompt: String) -> Map
+    }
+    state task { initial: idle  idle -> thinking  thinking -> done  * -> failed }
+    on ask(prompt: String) {
+        transition("t", "thinking")
+        let result = try { think(prompt) }
+        if result.error != () {
+            transition("t", "failed")
+            return map("error", result.error)
+        }
+        transition("t", "done")
+        return map("answer", result.value)
+    }
+    on run() {
+        let r = ask("What is Soma?")
+        print("answer: {r.answer}")
+        return "done"
+    }
+}

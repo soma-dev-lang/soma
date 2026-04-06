@@ -1,0 +1,19 @@
+// Classify inputs using match with multiple pattern types
+cell Classifier {
+    on classify(val: String) {
+        return match val {
+            "" -> "empty"
+            "yes" || "true" || "1" -> "truthy"
+            "no" || "false" || "0" -> "falsy"
+            "error:" + msg -> "error: {msg}"
+            _ -> "other: {val}"
+        }
+    }
+
+    on run() {
+        for v in list("", "yes", "true", "no", "0", "error:timeout", "hello") {
+            print("'{v}' -> {classify(v)}")
+        }
+        return "done"
+    }
+}

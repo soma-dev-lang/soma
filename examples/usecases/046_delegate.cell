@@ -1,0 +1,35 @@
+// 046: Delegate — delegate to another cell
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/046_delegate.cell
+cell agent Worker {
+    face {
+        signal process(data: String) -> Map
+    }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on process(data: String) {
+        transition("t", "active")
+        let r = try { think("Process: {data}") }
+        if r.error != () {
+            transition("t", "failed")
+            return map("error", r.error)
+        }
+        transition("t", "done")
+        map("status", "done", "output", r.value)
+    }
+}
+cell agent Manager {
+    face {
+        signal run_task(task: String) -> Map
+    }
+    state mgr { initial: idle  idle -> delegating  delegating -> done  * -> failed }
+    on run_task(task: String) {
+        transition("t", "delegating")
+        let result = delegate("Worker", "process", task)
+        transition("t", "done")
+        map("status", "done", "worker_output", result.output)
+    }
+    on run() {
+        let r = run_task("clean dataset")
+        print("manager done: {r.worker_output}")
+        return "done"
+    }
+}

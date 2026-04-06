@@ -1,0 +1,22 @@
+// 027: Transform — with, select, rename
+cell TransformDemo {
+    on run() {
+        let people = list(
+            map("first_name", "Alice", "age", 30, "city", "Paris"),
+            map("first_name", "Bob", "age", 25, "city", "London")
+        )
+        // select only name and city
+        let subset = select(people, "first_name", "city")
+        print("selected: {subset}")
+        // rename first_name to name
+        let renamed = rename(people, "first_name", "name")
+        print("renamed: {renamed}")
+        // add computed column: double the age
+        let enriched = with_column(people, "age_doubled", "age", "*", 2)
+        print("enriched:")
+        for p in enriched {
+            print("  {p.first_name}: age_doubled={p.age_doubled}")
+        }
+        return "done"
+    }
+}

@@ -1,0 +1,24 @@
+// Fibonacci sequence — iterative for efficiency
+cell Fibonacci {
+    on fib(n: Int) {
+        if n <= 0 { return 0 }
+        if n == 1 { return 1 }
+        let a = 0
+        let b = 1
+        let i = 2
+        while i <= n {
+            let tmp = a + b
+            a = b
+            b = tmp
+            i += 1
+        }
+        return b
+    }
+
+    on run() {
+        for i in range(0, 15) {
+            print("fib({i}) = {fib(i)}")
+        }
+        return "done"
+    }
+}

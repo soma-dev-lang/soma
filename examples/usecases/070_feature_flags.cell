@@ -1,0 +1,32 @@
+// Feature flag system with overrides
+cell FeatureFlags {
+    memory {
+        flags: Map<String, String> [persistent, consistent]
+    }
+
+    on set_flag(name: String, enabled: String) {
+        flags.set(name, enabled)
+    }
+
+    on is_enabled(name: String) {
+        let v = flags.get(name)
+        if v == "true" { return true }
+        return false
+    }
+
+    on run() {
+        set_flag("dark_mode", "true")
+        set_flag("new_checkout", "false")
+        set_flag("beta_api", "true")
+
+        for flag in list("dark_mode", "new_checkout", "beta_api", "unknown_flag") {
+            let enabled = is_enabled(flag)
+            let status = match enabled {
+                true -> "ON"
+                false -> "OFF"
+            }
+            print("  {flag}: {status}")
+        }
+        return "done"
+    }
+}

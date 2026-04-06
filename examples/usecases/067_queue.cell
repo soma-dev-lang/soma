@@ -1,0 +1,46 @@
+// FIFO job queue with state machine
+cell JobQueue {
+    memory {
+        jobs: Map<String, String> [persistent, consistent]
+    }
+
+    state job_status {
+        initial: queued
+        queued -> running
+        running -> done
+        running -> failed
+        failed -> queued
+    }
+
+    on enqueue(task: String) {
+        let id = to_string(next_id())
+        jobs.set(id, task)
+        return map("id", id, "task", task, "status", "queued")
+    }
+
+    on process(id: String) {
+        let task = jobs.get(id)
+        if task == () { return map("error", "job not found") }
+        let r = transition(id, "running")
+        return map("id", id, "task", task, "status", "running")
+    }
+
+    on finish(id: String) {
+        let r = transition(id, "done")
+        return map("id", id, "status", "done")
+    }
+
+    on run() {
+        let j1 = enqueue("send email")
+        let j2 = enqueue("resize image")
+        let j3 = enqueue("generate report")
+        print("Enqueued: {j1.id}, {j2.id}, {j3.id}")
+        process(j1.id)
+        print("Job {j1.id} running")
+        finish(j1.id)
+        print("Job {j1.id} done")
+        process(j2.id)
+        print("Job {j2.id} running")
+        return "done"
+    }
+}

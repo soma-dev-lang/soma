@@ -1,0 +1,16 @@
+// Ensure postconditions on handler results
+cell EnsureDemo {
+    on withdraw(balance: Int, amount: Int) {
+        let new_balance = balance - amount
+        ensure new_balance >= 0
+        return new_balance
+    }
+
+    on run() {
+        let r1 = try { withdraw(100, 30) }
+        print("Withdraw 30 from 100: {r1.value}")
+        let r2 = try { withdraw(100, 150) }
+        print("Withdraw 150 from 100: error={r2.error}")
+        return "done"
+    }
+}

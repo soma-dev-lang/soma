@@ -1,0 +1,29 @@
+// BigInt overflow demo: 2^100 and 100!
+cell BigIntDemo {
+    on big_power(base: BigInt, exp: Int) {
+        let result = 1
+        let b = base
+        let e = exp
+        while e > 0 {
+            if e % 2 == 1 {
+                result = result * b
+            }
+            b = b * b
+            e = idiv(e, 2)
+        }
+        return result
+    }
+
+    on factorial(n: BigInt) {
+        if n <= 1 { return 1 }
+        return n * factorial(n - 1)
+    }
+
+    on run() {
+        let two_100 = big_power(2, 100)
+        print("2^100 = {two_100}")
+        let fact_100 = factorial(100)
+        print("100!  = {fact_100}")
+        return "done"
+    }
+}

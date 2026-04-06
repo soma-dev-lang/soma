@@ -1,0 +1,18 @@
+// 002: Variables — let bindings, types, string interpolation
+cell Variables {
+    on run() {
+        let name = "soma"
+        let age = 1
+        let pi = 3.14
+        let active = true
+        let nothing = ()
+        print("name: {name}")
+        print("age: {age}")
+        print("pi: {pi}")
+        print("active: {active}")
+        print("nothing: {nothing}")
+        let greeting = "hello {name}, version {age}"
+        print(greeting)
+        return "done"
+    }
+}

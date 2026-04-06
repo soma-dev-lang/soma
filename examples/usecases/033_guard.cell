@@ -1,0 +1,28 @@
+// 033: Guard conditions — state machine with guard declarations
+// Guards are checked by `soma verify` at compile time.
+// Here we demonstrate the syntax and exercise un-guarded transitions.
+cell GuardState {
+    state review {
+        initial: draft
+        draft -> submitted {
+            guard { content != "" }
+        }
+        submitted -> approved {
+            guard { role == "admin" }
+        }
+        approved -> published
+        * -> rejected
+    }
+    on run() {
+        let id = "doc"
+        let s1 = get_status(id)
+        print("initial:", s1)
+        // Use the wildcard transition (not guarded)
+        transition(id, "rejected")
+        let s2 = get_status(id)
+        print("rejected:", s2)
+        // Show valid transitions are defined
+        print("guard syntax demonstrated")
+        return "done"
+    }
+}

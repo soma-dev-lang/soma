@@ -1,0 +1,29 @@
+// Moving average calculation
+cell MovingAvg {
+    on sma_calc(prices: List, window: Int) {
+        let result = list()
+        let n = len(prices)
+        let i = window - 1
+        while i < n {
+            let sum = 0
+            let j = 0
+            while j < window {
+                sum += nth(prices, i - j)
+                j += 1
+            }
+            result = push(result, idiv(sum, window))
+            i += 1
+        }
+        return result
+    }
+
+    on run() {
+        let prices = list(100, 102, 104, 103, 105, 108, 107, 110, 112, 111)
+        print("Prices: {prices}")
+        let sma3 = sma_calc(prices, 3)
+        print("SMA(3): {sma3}")
+        let sma5 = sma_calc(prices, 5)
+        print("SMA(5): {sma5}")
+        return "done"
+    }
+}

@@ -1,0 +1,25 @@
+// Collatz conjecture: sequence from n until reaching 1
+cell Collatz {
+    on collatz_seq(n: Int) {
+        let seq = list(n)
+        let x = n
+        while x != 1 {
+            if x % 2 == 0 {
+                x = idiv(x, 2)
+            } else {
+                x = 3 * x + 1
+            }
+            seq = push(seq, x)
+        }
+        return seq
+    }
+
+    on run() {
+        for start in list(7, 27, 97) {
+            let seq = collatz_seq(start)
+            print("collatz({start}): {len(seq)} steps")
+            print("  sequence: {seq}")
+        }
+        return "done"
+    }
+}

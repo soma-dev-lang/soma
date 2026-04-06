@@ -1,0 +1,11 @@
+// 011: Hello Web — simplest soma serve (on request -> html)
+cell HelloWeb {
+    on request(method: String, path: String, body: String) {
+        return html("<h1>Hello from Soma</h1><p>You requested: {path}</p>")
+    }
+    on run() {
+        print("This cell is meant for soma serve.")
+        print("Run: soma serve examples/usecases/011_hello_web.cell")
+        return "done"
+    }
+}

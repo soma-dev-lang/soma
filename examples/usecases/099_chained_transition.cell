@@ -1,0 +1,37 @@
+// Chained state transitions: a -> b -> c -> d
+cell Pipeline {
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+
+    state pipeline {
+        initial: draft
+        draft -> review -> approved -> published
+        * -> archived
+    }
+
+    on create(name: String) {
+        let id = to_string(next_id())
+        items.set(id, name)
+        return map("id", id, "name", name, "status", "draft")
+    }
+
+    on advance(id: String, to: String) {
+        let name = items.get(id)
+        if name == () { return map("error", "not found") }
+        let r = transition(id, to)
+        return map("id", id, "name", name, "transition", r)
+    }
+
+    on run() {
+        let doc = create("my-article")
+        print("Created: {doc.id} ({doc.status})")
+        let r1 = advance(doc.id, "review")
+        print("Advanced to review: {r1.transition}")
+        let r2 = advance(doc.id, "approved")
+        print("Advanced to approved: {r2.transition}")
+        let r3 = advance(doc.id, "published")
+        print("Advanced to published: {r3.transition}")
+        return "done"
+    }
+}

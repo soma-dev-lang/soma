@@ -1,0 +1,22 @@
+// 013: JSON API — from_json(body) and return map (auto-JSON)
+cell JsonAPI {
+    face {
+        signal echo(data: String) -> String
+    }
+    on echo(data: String) {
+        let parsed = from_json(data)
+        let name = parsed.name ?? "anonymous"
+        return map("greeting", "hello {name}", "original", parsed)
+    }
+    on request(method: String, path: String, body: String) {
+        match map("method", method) {
+            {method: "POST"} -> echo(body)
+            _ -> map("usage", "POST a JSON body with a name field")
+        }
+    }
+    on run() {
+        let result = echo("{\"name\": \"Alice\"}")
+        print(to_json(result))
+        return "done"
+    }
+}

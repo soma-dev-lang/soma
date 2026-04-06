@@ -1,0 +1,17 @@
+// 017: Redirect — redirect() and response() helpers
+cell RedirectDemo {
+    on request(method: String, path: String, body: String) {
+        let req = map("path", path)
+        match req {
+            {path: "/"} -> html("<h1>Home</h1><a href='/old'>Old page</a>")
+            {path: "/old"} -> redirect("/new")
+            {path: "/new"} -> html("<h1>New Page</h1>")
+            {path: "/forbidden"} -> response(403, map("error", "forbidden"))
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+    on run() {
+        print("Redirect demo. Use: soma serve")
+        return "done"
+    }
+}

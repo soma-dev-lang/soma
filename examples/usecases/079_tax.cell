@@ -1,0 +1,34 @@
+// Tax calculation with progressive brackets
+cell Tax {
+    on calc_tax(income: Int) {
+        // Brackets: 0-10000 @ 0%, 10001-40000 @ 20%, 40001-80000 @ 30%, 80001+ @ 40%
+        let brackets = list(
+            map("limit", 10000, "rate", 0),
+            map("limit", 40000, "rate", 20),
+            map("limit", 80000, "rate", 30),
+            map("limit", 999999999, "rate", 40)
+        )
+        let tax = 0
+        let remaining = income
+        let prev_limit = 0
+        for b in brackets {
+            if remaining <= 0 { break }
+            let bracket_size = b.limit - prev_limit
+            let taxable = remaining
+            if taxable > bracket_size { taxable = bracket_size }
+            tax += idiv(taxable * b.rate, 100)
+            remaining -= taxable
+            prev_limit = b.limit
+        }
+        return tax
+    }
+
+    on run() {
+        for income in list(5000, 25000, 60000, 100000) {
+            let tax = calc_tax(income)
+            let effective = idiv(tax * 100, income)
+            print("Income {income}: tax={tax}, effective rate={effective}%")
+        }
+        return "done"
+    }
+}

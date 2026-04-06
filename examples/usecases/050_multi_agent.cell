@@ -1,0 +1,62 @@
+// 050: Multi-Agent — 3 agents coordinating via delegate
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/050_multi_agent.cell
+cell agent Planner {
+    face { signal plan(goal: String) -> Map }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on plan(goal: String) {
+        transition("t", "active")
+        let r = try { think("Plan steps for: {goal}") }
+        if r.error != () {
+            transition("t", "failed")
+            return map("status", "failed")
+        }
+        transition("t", "done")
+        map("status", "done", "plan", r.value)
+    }
+}
+cell agent Executor {
+    face { signal execute(plan: String) -> Map }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on execute(plan: String) {
+        transition("t", "active")
+        let r = try { think("Execute plan: {plan}") }
+        if r.error != () {
+            transition("t", "failed")
+            return map("status", "failed")
+        }
+        transition("t", "done")
+        map("status", "done", "result", r.value)
+    }
+}
+cell agent Coordinator {
+    face { signal run_pipeline(goal: String) -> Map }
+    state pipeline {
+        initial: idle
+        idle -> planning
+        planning -> executing
+        executing -> done
+        * -> failed
+    }
+    on run_pipeline(goal: String) {
+        transition("t", "planning")
+        let plan = delegate("Planner", "plan", goal)
+        if plan.status == "failed" {
+            transition("t", "failed")
+            return plan
+        }
+        transition("t", "executing")
+        let result = delegate("Executor", "execute", plan.plan)
+        if result.status == "failed" {
+            transition("t", "failed")
+            return result
+        }
+        transition("t", "done")
+        print("pipeline complete")
+        map("status", "done", "plan", plan.plan, "result", result.result)
+    }
+    on run() {
+        let r = run_pipeline("build a recommendation system")
+        print("final status: {r.status}")
+        return "done"
+    }
+}

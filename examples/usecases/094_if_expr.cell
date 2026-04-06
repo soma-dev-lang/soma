@@ -1,0 +1,20 @@
+// If and match used as expressions (return values)
+cell IfExpr {
+    on abs_val(n: Int) {
+        return if n < 0 { -1 * n } else { n }
+    }
+
+    on sign(n: Int) {
+        return match n {
+            0 -> "zero"
+            _ -> if n > 0 { "positive" } else { "negative" }
+        }
+    }
+
+    on run() {
+        for n in list(-5, 0, 7, -12, 3) {
+            print("abs({n}) = {abs_val(n)}, sign = {sign(n)}")
+        }
+        return "done"
+    }
+}

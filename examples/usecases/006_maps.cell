@@ -1,0 +1,20 @@
+// 006: Maps — map(), field access, with, keys, values
+cell MapDemo {
+    on run() {
+        let m = map("name", "Alice", "age", 30)
+        print("map: {m}")
+        print("name: {m.name}")
+        print("age: {m.age}")
+        let m2 = with(m, "email", "alice@example.com")
+        print("with email: {m2}")
+        let k = m.keys
+        let v = m.values
+        print("keys:", k)
+        print("values:", v)
+        let m3 = without(m2, "email")
+        print("without email: {m3}")
+        let merged = merge(m, map("city", "Paris"))
+        print("merged: {merged}")
+        return "done"
+    }
+}

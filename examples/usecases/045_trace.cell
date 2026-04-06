@@ -1,0 +1,25 @@
+// 045: Trace — trace() execution log
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/045_trace.cell
+cell agent Tracer {
+    face {
+        signal work(task: String) -> Map
+    }
+    state flow { initial: idle  idle -> active  active -> done  * -> failed }
+    on work(task: String) {
+        transition("t", "active")
+        let r = try { think("Do: {task}") }
+        if r.error != () {
+            transition("t", "failed")
+            return map("error", r.error)
+        }
+        transition("t", "done")
+        let t = trace()
+        print("trace entries: {len(t)}")
+        map("status", "done", "result", r.value)
+    }
+    on run() {
+        let r = work("analyze data")
+        print("status: {r.status}")
+        return "done"
+    }
+}

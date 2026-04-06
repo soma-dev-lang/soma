@@ -1,0 +1,31 @@
+// 012: REST API — CRUD with match on method and path
+cell RestAPI {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+    }
+    memory {
+        items: Map<String, String> [persistent, consistent]
+    }
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/items"} -> items.keys()
+            {method: "POST", path: "/items"} -> {
+                let data = from_json(body)
+                let id = to_string(next_id())
+                items.set(id, body)
+                map("id", id, "created", true)
+            }
+            {method: "DELETE", path: "/items"} -> {
+                let data = from_json(body)
+                items.delete(to_string(data.id))
+                map("deleted", true)
+            }
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+    on run() {
+        print("REST API cell. Use: soma serve examples/usecases/012_rest_api.cell")
+        return "done"
+    }
+}

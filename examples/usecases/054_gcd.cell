@@ -1,0 +1,25 @@
+// Greatest common divisor using Euclidean algorithm
+cell GCD {
+    on gcd(a: Int, b: Int) {
+        let x = a
+        let y = b
+        while y != 0 {
+            let tmp = y
+            y = x % y
+            x = tmp
+        }
+        return x
+    }
+
+    on lcm(a: Int, b: Int) {
+        return idiv(a * b, gcd(a, b))
+    }
+
+    on run() {
+        print("gcd(48, 18) = {gcd(48, 18)}")
+        print("gcd(100, 75) = {gcd(100, 75)}")
+        print("lcm(12, 18) = {lcm(12, 18)}")
+        print("lcm(4, 6) = {lcm(4, 6)}")
+        return "done"
+    }
+}

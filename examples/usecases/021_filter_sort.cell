@@ -1,0 +1,20 @@
+// 021: Filter & Sort — filter_by + sort_by + top on record lists
+cell FilterSort {
+    on run() {
+        let people = list(
+            map("name", "Alice", "score", 85),
+            map("name", "Bob", "score", 62),
+            map("name", "Charlie", "score", 95),
+            map("name", "Diana", "score", 78),
+            map("name", "Eve", "score", 91)
+        )
+        let passing = filter_by(people, "score", ">", 75)
+        print("passing: {len(passing)}")
+        let ranked = sort_by(passing, "score", "desc")
+        let top2 = top(ranked, 2)
+        for p in top2 {
+            print("{p.name}: {p.score}")
+        }
+        return "done"
+    }
+}

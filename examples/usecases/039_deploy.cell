@@ -1,0 +1,24 @@
+// 039: Deploy — deployment: staging -> testing -> production -> rollback
+cell DeployState {
+    state deploy {
+        initial: staging
+        staging -> testing
+        testing -> production
+        production -> rollback
+        rollback -> staging
+    }
+    on run() {
+        let id = "v1"
+        print("{get_status(id)}")
+        transition(id, "testing")
+        print("{get_status(id)}")
+        transition(id, "production")
+        print("{get_status(id)}")
+        // rollback!
+        transition(id, "rollback")
+        print("rollback: {get_status(id)}")
+        transition(id, "staging")
+        print("back to staging: {get_status(id)}")
+        return "done"
+    }
+}

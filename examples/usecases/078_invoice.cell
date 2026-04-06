@@ -1,0 +1,26 @@
+// Invoice generator with line items
+cell Invoice {
+    on run() {
+        let items = list(
+            map("desc", "Widget A", "qty", 5, "unit_price", 25),
+            map("desc", "Widget B", "qty", 3, "unit_price", 40),
+            map("desc", "Service Fee", "qty", 1, "unit_price", 100)
+        )
+        let subtotal = 0
+        print("=== INVOICE #1001 ===")
+        print("Customer: Acme Corp")
+        print("---")
+        for item in items {
+            let line_total = item.qty * item.unit_price
+            subtotal += line_total
+            print("  {item.desc} x{item.qty} @ {item.unit_price} = {line_total}")
+        }
+        let tax = idiv(subtotal * 20, 100)
+        let total = subtotal + tax
+        print("---")
+        print("  Subtotal: {subtotal}")
+        print("  Tax (20%): {tax}")
+        print("  Total:    {total}")
+        return "done"
+    }
+}

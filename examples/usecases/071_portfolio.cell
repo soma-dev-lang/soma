@@ -1,0 +1,26 @@
+// Portfolio value calculation with weights
+cell Portfolio {
+    on run() {
+        let holdings = list(
+            map("ticker", "AAPL", "shares", 50, "price", 175),
+            map("ticker", "GOOGL", "shares", 20, "price", 140),
+            map("ticker", "MSFT", "shares", 30, "price", 380),
+            map("ticker", "AMZN", "shares", 15, "price", 185)
+        )
+        let total = 0
+        print("=== PORTFOLIO ===")
+        for h in holdings {
+            let value = h.shares * h.price
+            total += value
+            print("  {h.ticker}: {h.shares} x {h.price} = {value}")
+        }
+        print("Total value: {total}")
+        // Weights
+        for h in holdings {
+            let value = h.shares * h.price
+            let pct = idiv(value * 100, total)
+            print("  {h.ticker} weight: {pct}%")
+        }
+        return "done"
+    }
+}

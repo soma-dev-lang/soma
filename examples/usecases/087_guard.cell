@@ -1,0 +1,19 @@
+// Guard clauses in match: pattern if condition -> result
+cell GuardMatch {
+    on classify(n: Int) {
+        return match n {
+            x if x < 0 -> "negative"
+            0 -> "zero"
+            x if x <= 10 -> "small"
+            x if x <= 100 -> "medium"
+            _ -> "large"
+        }
+    }
+
+    on run() {
+        for n in list(-5, 0, 3, 50, 200) {
+            print("{n} is {classify(n)}")
+        }
+        return "done"
+    }
+}

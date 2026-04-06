@@ -1,0 +1,28 @@
+// 037: Verified — state machine that soma verify can check
+// Run: soma verify examples/usecases/037_verified.cell (with soma.toml)
+cell VerifiedState {
+    face {
+        signal process(id: String) -> String
+        promise "all tasks reach done or failed"
+    }
+    state task {
+        initial: pending
+        pending -> running
+        running -> done
+        * -> failed
+    }
+    on process(id: String) {
+        transition(id, "running")
+        let result = try { transition(id, "done") }
+        if result.error != () {
+            transition(id, "failed")
+            return "failed"
+        }
+        return "done"
+    }
+    on run() {
+        let r = process("task1")
+        print("task1: {r}")
+        return "done"
+    }
+}

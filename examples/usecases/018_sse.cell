@@ -1,0 +1,15 @@
+// 018: SSE — Server-Sent Events stream pattern
+cell SSEDemo {
+    on request(method: String, path: String, body: String) {
+        let req = map("path", path)
+        match req {
+            {path: "/"} -> html("<h1>SSE Demo</h1><p>Connect to /stream for events</p>")
+            {path: "/stream"} -> sse("updates")
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+    on run() {
+        print("SSE demo. Use: soma serve")
+        return "done"
+    }
+}

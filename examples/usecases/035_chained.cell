@@ -1,0 +1,17 @@
+// 035: Chained transitions — a -> b -> c -> d
+cell ChainedState {
+    state pipeline {
+        initial: a
+        a -> b
+        b -> c
+        c -> d
+    }
+    on run() {
+        let id = "job"
+        for target in list("b", "c", "d") {
+            transition(id, target)
+            print("{id}: {get_status(id)}")
+        }
+        return "done"
+    }
+}

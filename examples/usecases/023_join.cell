@@ -1,0 +1,20 @@
+// 023: Join — join two lists on a shared key
+cell JoinDemo {
+    on run() {
+        let users = list(
+            map("id", 1, "name", "Alice"),
+            map("id", 2, "name", "Bob"),
+            map("id", 3, "name", "Charlie")
+        )
+        let scores = list(
+            map("id", 1, "score", 95),
+            map("id", 2, "score", 82),
+            map("id", 3, "score", 78)
+        )
+        let joined = join(users, scores, "id")
+        for row in joined {
+            print("{row.name}: {row.score}")
+        }
+        return "done"
+    }
+}

@@ -1,0 +1,27 @@
+// Simplified Black-Scholes-Merton option pricing
+cell Pricing {
+    on bs_call(spot: Float, strike: Float, vol: Float, r: Float, t: Float) {
+        // Simplified: use intrinsic + time value approximation
+        let d1 = (log(spot / strike) + (r + 0.5 * vol * vol) * t) / (vol * sqrt(t))
+        // Approximate N(d1) with sigmoid
+        let nd1 = 1.0 / (1.0 + exp(-1.7 * d1))
+        let d2 = d1 - vol * sqrt(t)
+        let nd2 = 1.0 / (1.0 + exp(-1.7 * d2))
+        let call = spot * nd1 - strike * exp(-1.0 * r * t) * nd2
+        return call
+    }
+
+    on run() {
+        let spot = 100.0
+        let r = 0.05
+        let vol = 0.20
+        let t = 1.0
+        print("=== Option Pricing (approx BSM) ===")
+        print("Spot: {spot}, Vol: {vol}, Rate: {r}, T: {t}y")
+        for strike in list(90.0, 95.0, 100.0, 105.0, 110.0) {
+            let price = bs_call(spot, strike, vol, r, t)
+            print("  Strike {strike}: call = {round(price * 100) / 100}")
+        }
+        return "done"
+    }
+}

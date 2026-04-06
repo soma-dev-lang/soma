@@ -1,0 +1,20 @@
+// 032: Order lifecycle — pending -> confirmed -> shipped -> delivered
+cell OrderState {
+    state order {
+        initial: pending
+        pending -> confirmed
+        confirmed -> shipped
+        shipped -> delivered
+    }
+    on run() {
+        let id = "order1"
+        print("created: {get_status(id)}")
+        transition(id, "confirmed")
+        print("confirmed: {get_status(id)}")
+        transition(id, "shipped")
+        print("shipped: {get_status(id)}")
+        transition(id, "delivered")
+        print("delivered: {get_status(id)}")
+        return "done"
+    }
+}

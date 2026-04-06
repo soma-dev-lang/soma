@@ -1,0 +1,28 @@
+// 004: Strings — len, split, replace, contains, trim, uppercase
+cell StringDemo {
+    on run() {
+        let s = "hello world"
+        print("len:", len(s))
+        let up = uppercase(s)
+        print("upper:", up)
+        let low = lowercase("HELLO")
+        print("lower:", low)
+        let has = contains(s, "world")
+        print("contains:", has)
+        let rep = replace(s, "world", "soma")
+        print("replace:", rep)
+        let tr = trim("  padded  ")
+        print("trim:", tr)
+        let sw = starts_with(s, "hello")
+        print("starts:", sw)
+        let ew = ends_with(s, "world")
+        print("ends:", ew)
+        let parts = split("a,b,c", ",")
+        print("split:", parts)
+        let idx = index_of(s, "world")
+        print("index_of:", idx)
+        let sub = substring(s, 0, 5)
+        print("substring:", sub)
+        return "done"
+    }
+}

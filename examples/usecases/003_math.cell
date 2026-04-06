@@ -1,0 +1,20 @@
+// 003: Math — arithmetic, abs, round, floor, ceil, sqrt
+cell MathDemo {
+    on run() {
+        let a = 10
+        let b = 3
+        print("add: {a + b}")
+        print("sub: {a - b}")
+        print("mul: {a * b}")
+        print("div: {a / b}")
+        print("mod: {a % b}")
+        print("abs: {abs(-7)}")
+        print("sqrt: {sqrt(16.0)}")
+        print("floor: {floor(3.7)}")
+        print("ceil: {ceil(3.2)}")
+        print("round: {round(3.5)}")
+        print("min: {min(5, 9)}")
+        print("max: {max(5, 9)}")
+        return "done"
+    }
+}

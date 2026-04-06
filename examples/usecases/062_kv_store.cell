@@ -1,0 +1,34 @@
+// Key-value store API with get, put, delete, list
+cell KV {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+
+    on put(key: String, value: String) {
+        data.set(key, value)
+        return map("key", key, "value", value)
+    }
+
+    on get_val(key: String) {
+        let v = data.get(key)
+        if v == () { return map("error", "not found") }
+        return map("key", key, "value", v)
+    }
+
+    on delete_key(key: String) {
+        data.delete(key)
+        return map("deleted", key)
+    }
+
+    on run() {
+        put("name", "Alice")
+        put("city", "Paris")
+        put("lang", "Soma")
+        let r = get_val("name")
+        print("Get name: {r.value}")
+        delete_key("city")
+        print("Keys: {data.keys()}")
+        print("Count: {data.len()}")
+        return "done"
+    }
+}

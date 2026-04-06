@@ -1,0 +1,41 @@
+// URL shortener with random IDs stored in memory
+cell URLShortener {
+    memory {
+        urls: Map<String, String> [persistent, consistent]
+    }
+
+    on make_id() {
+        let chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+        let id = ""
+        let i = 0
+        while i < 6 {
+            let idx = to_int(random() * 36) % 36
+            id = id + substring(chars, idx, idx + 1)
+            i += 1
+        }
+        return id
+    }
+
+    on shorten(url: String) {
+        let id = make_id()
+        urls.set(id, url)
+        return map("short", id, "url", url)
+    }
+
+    on resolve(id: String) {
+        let url = urls.get(id)
+        if url == () { return map("error", "not found") }
+        return map("id", id, "url", url)
+    }
+
+    on run() {
+        let s1 = shorten("https://example.com/long/path")
+        let s2 = shorten("https://soma-lang.dev/docs")
+        print("Shortened: {s1.short} -> {s1.url}")
+        print("Shortened: {s2.short} -> {s2.url}")
+        let r = resolve(s1.short)
+        print("Resolved: {r.id} -> {r.url}")
+        print("Total URLs: {urls.len()}")
+        return "done"
+    }
+}

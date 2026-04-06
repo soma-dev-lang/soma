@@ -1,0 +1,15 @@
+// Recursive factorial using BigInt for arbitrary precision
+cell Factorial {
+    on factorial(n: BigInt) {
+        if n <= 1 { return 1 }
+        return n * factorial(n - 1)
+    }
+
+    on run() {
+        for i in list(1, 5, 10, 20, 50) {
+            let r = factorial(i)
+            print("{i}! = {r}")
+        }
+        return "done"
+    }
+}

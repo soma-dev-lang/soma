@@ -1,0 +1,34 @@
+// 047: Broadcast — broadcast to all cells
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/047_broadcast.cell
+cell agent ListenerA {
+    face { signal notify(msg: String) -> Map }
+    state work { initial: idle  idle -> done }
+    on notify(msg: String) {
+        transition("t", "done")
+        print("A got: {msg}")
+        map("cell", "A", "msg", msg)
+    }
+}
+cell agent ListenerB {
+    face { signal notify(msg: String) -> Map }
+    state work { initial: idle  idle -> done }
+    on notify(msg: String) {
+        transition("t", "done")
+        print("B got: {msg}")
+        map("cell", "B", "msg", msg)
+    }
+}
+cell agent Broadcaster {
+    face { signal send_all(msg: String) -> Map }
+    state work { initial: idle  idle -> done  * -> failed }
+    on send_all(msg: String) {
+        transition("t", "done")
+        broadcast("notify", msg)
+        map("status", "sent")
+    }
+    on run() {
+        let r = send_all("hello everyone")
+        print("broadcast: {r.status}")
+        return "done"
+    }
+}

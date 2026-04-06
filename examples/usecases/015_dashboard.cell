@@ -1,0 +1,21 @@
+// 015: Dashboard — html() with multi-line string template
+cell Dashboard {
+    on request(method: String, path: String, body: String) {
+        return html("<!DOCTYPE html>
+<html>
+<head><title>Soma Dashboard</title></head>
+<body>
+  <h1>Dashboard</h1>
+  <ul>
+    <li>Status: running</li>
+    <li>Uptime: healthy</li>
+    <li>Path: {path}</li>
+  </ul>
+</body>
+</html>")
+    }
+    on run() {
+        print("Dashboard cell. Use: soma serve")
+        return "done"
+    }
+}

@@ -1,0 +1,24 @@
+// Map destructuring in match
+cell MapMatch {
+    on handle(req: Map) {
+        return match req {
+            {method: "GET", path: "/"} -> "Home page"
+            {method: "GET", path: "/about"} -> "About page"
+            {method: "POST", path: "/login"} -> "Login attempt"
+            _ -> "Unknown request"
+        }
+    }
+
+    on run() {
+        let reqs = list(
+            map("method", "GET", "path", "/"),
+            map("method", "GET", "path", "/about"),
+            map("method", "POST", "path", "/login"),
+            map("method", "DELETE", "path", "/users")
+        )
+        for r in reqs {
+            print("{r.method} {r.path} -> {handle(r)}")
+        }
+        return "done"
+    }
+}

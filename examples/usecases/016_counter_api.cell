@@ -1,0 +1,29 @@
+// 016: Counter API — persistent counter with GET/POST
+cell CounterAPI {
+    memory {
+        store: Map<String, Int> [persistent, consistent]
+    }
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/count"} -> {
+                let val = store.get("count") ?? 0
+                map("count", val)
+            }
+            {method: "POST", path: "/increment"} -> {
+                let current = to_int(store.get("count") ?? "0")
+                store.set("count", to_string(current + 1))
+                map("count", current + 1)
+            }
+            {method: "POST", path: "/reset"} -> {
+                store.set("count", "0")
+                map("count", 0)
+            }
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+    on run() {
+        print("Counter API. Use: soma serve")
+        return "done"
+    }
+}

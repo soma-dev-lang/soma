@@ -1,0 +1,23 @@
+// 034: Wildcard — * -> cancelled pattern (any state can cancel)
+cell WildcardState {
+    state task {
+        initial: open
+        open -> in_progress
+        in_progress -> done
+        * -> cancelled
+    }
+    on run() {
+        transition("t1", "in_progress")
+        let s1 = get_status("t1")
+        print("t1:", s1)
+        // cancel from in_progress
+        transition("t1", "cancelled")
+        let s2 = get_status("t1")
+        print("t1 cancelled:", s2)
+        // cancel from open directly
+        transition("t2", "cancelled")
+        let s3 = get_status("t2")
+        print("t2 cancelled:", s3)
+        return "done"
+    }
+}

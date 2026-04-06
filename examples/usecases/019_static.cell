@@ -1,0 +1,19 @@
+// 019: Static — serve static file content pattern
+cell StaticFiles {
+    on _page(title: String, content: String) {
+        return html("<!DOCTYPE html><html><head><title>{title}</title></head><body>{content}</body></html>")
+    }
+    on request(method: String, path: String, body: String) {
+        let req = map("path", path)
+        match req {
+            {path: "/"} -> _page("Home", "<h1>Welcome</h1><nav><a href='/about'>About</a></nav>")
+            {path: "/about"} -> _page("About", "<h1>About Us</h1><p>Built with Soma.</p>")
+            {path: "/style.css"} -> response(200, "body { font-family: sans-serif; }", "_content_type", "text/css")
+            _ -> response(404, _page("404", "<h1>Not Found</h1>"))
+        }
+    }
+    on run() {
+        print("Static files pattern. Use: soma serve")
+        return "done"
+    }
+}

@@ -1,0 +1,26 @@
+// Profit and loss calculation
+cell PnL {
+    on run() {
+        let trades = list(
+            map("ticker", "AAPL", "side", "buy", "qty", 100, "price", 150),
+            map("ticker", "AAPL", "side", "sell", "qty", 50, "price", 170),
+            map("ticker", "GOOGL", "side", "buy", "qty", 30, "price", 130),
+            map("ticker", "GOOGL", "side", "sell", "qty", 30, "price", 125)
+        )
+        let total_pnl = 0
+        let buys = filter_by(trades, "side", "=", "buy")
+        let sells = filter_by(trades, "side", "=", "sell")
+        let buy_cost = 0
+        let sell_rev = 0
+        for t in buys { buy_cost += t.qty * t.price }
+        for t in sells { sell_rev += t.qty * t.price }
+        print("Buy cost:     {buy_cost}")
+        print("Sell revenue: {sell_rev}")
+        print("Realized P&L: {sell_rev - buy_cost}")
+        // Remaining positions
+        print("AAPL remaining: 50 shares @ avg 150")
+        let unrealized = 50 * (175 - 150)
+        print("Unrealized (at 175): {unrealized}")
+        return "done"
+    }
+}

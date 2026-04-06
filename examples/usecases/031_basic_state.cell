@@ -1,0 +1,20 @@
+// 031: Basic State Machine — simple 3-state machine
+cell BasicState {
+    state workflow {
+        initial: idle
+        idle -> running
+        running -> done
+    }
+    on run() {
+        let id = "task"
+        let s1 = get_status(id)
+        print("state:", s1)
+        transition(id, "running")
+        let s2 = get_status(id)
+        print("state:", s2)
+        transition(id, "done")
+        let s3 = get_status(id)
+        print("state:", s3)
+        return "done"
+    }
+}

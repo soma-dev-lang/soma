@@ -1,0 +1,24 @@
+// 042: Agent — cell agent with state machine
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/042_agent.cell
+cell agent Analyst {
+    face {
+        signal analyze(topic: String) -> Map
+    }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on analyze(topic: String) {
+        transition("t", "active")
+        let result = try { think("Analyze: {topic}") }
+        if result.error != () {
+            transition("t", "failed")
+            return map("status", "failed")
+        }
+        transition("t", "done")
+        map("status", "done", "analysis", result.value)
+    }
+    on run() {
+        let r = analyze("market trends")
+        print("status: {r.status}")
+        print("analysis: {r.analysis}")
+        return "done"
+    }
+}

@@ -1,0 +1,18 @@
+// String prefix patterns: "/api/" + rest
+cell PrefixMatch {
+    on route(path: String) {
+        return match path {
+            "/api/" + rest -> "API endpoint: {rest}"
+            "/admin/" + page -> "Admin page: {page}"
+            "/" -> "Home"
+            _ -> "Not found"
+        }
+    }
+
+    on run() {
+        for p in list("/", "/api/users", "/api/orders", "/admin/settings", "/other") {
+            print("{p} -> {route(p)}")
+        }
+        return "done"
+    }
+}

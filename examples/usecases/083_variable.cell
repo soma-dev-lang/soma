@@ -1,0 +1,16 @@
+// Variable binding in match: captures the value
+cell VarMatch {
+    on greet(input: String) {
+        return match input {
+            "admin" -> "Welcome back, admin!"
+            name -> "Hello, {name}!"
+        }
+    }
+
+    on run() {
+        print(greet("admin"))
+        print(greet("Alice"))
+        print(greet("Bob"))
+        return "done"
+    }
+}

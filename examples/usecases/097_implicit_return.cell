@@ -1,0 +1,21 @@
+// Implicit return: last expression in handler is returned
+cell ImplicitReturn {
+    on double(n: Int) {
+        n * 2
+    }
+
+    on greeting(name: String) {
+        "Hello, {name}!"
+    }
+
+    on max_of(a: Int, b: Int) {
+        if a > b { a } else { b }
+    }
+
+    on run() {
+        print(double(21))
+        print(greeting("Soma"))
+        print(max_of(10, 20))
+        return "done"
+    }
+}

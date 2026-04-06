@@ -1,0 +1,23 @@
+// Error handling with try and recovery
+cell ErrorHandling {
+    on safe_divide(a: Int, b: Int) {
+        let r = try { a / b }
+        if r.error != () {
+            return map("ok", false, "error", r.error)
+        }
+        return map("ok", true, "value", r.value)
+    }
+
+    on run() {
+        let r1 = safe_divide(10, 3)
+        print("10/3: {r1}")
+        let r2 = safe_divide(10, 0)
+        print("10/0: {r2}")
+
+        // Chained try
+        let result = try { 100 / 0 }
+        let val = result.value ?? -1
+        print("Recovered value: {val}")
+        return "done"
+    }
+}

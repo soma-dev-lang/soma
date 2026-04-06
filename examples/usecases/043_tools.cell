@@ -1,0 +1,31 @@
+// 043: Tools — tool declarations in face
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/043_tools.cell
+cell agent ToolUser {
+    face {
+        signal query(q: String) -> Map
+        tool lookup(key: String) -> String "Look up a value by key"
+        tool calculate(expr: String) -> String "Calculate a math expression"
+    }
+    state work { initial: idle  idle -> active  active -> done  * -> failed }
+    on lookup(key: String) {
+        "Value for {key}: 42"
+    }
+    on calculate(expr: String) {
+        "Result of {expr}: computed"
+    }
+    on query(q: String) {
+        transition("t", "active")
+        let r = try { think(q) }
+        if r.error != () {
+            transition("t", "failed")
+            return map("error", r.error)
+        }
+        transition("t", "done")
+        map("answer", r.value)
+    }
+    on run() {
+        let r = query("look up the meaning of life")
+        print("answer: {r.answer}")
+        return "done"
+    }
+}

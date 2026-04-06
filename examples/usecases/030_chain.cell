@@ -1,0 +1,24 @@
+// 030: Chain — long pipe chain: filter -> sort -> top -> describe
+cell ChainDemo {
+    on run() {
+        let items = list(
+            map("name", "A", "price", 120, "qty", 5),
+            map("name", "B", "price", 80, "qty", 10),
+            map("name", "C", "price", 200, "qty", 3),
+            map("name", "D", "price", 50, "qty", 20),
+            map("name", "E", "price", 150, "qty", 7),
+            map("name", "F", "price", 90, "qty", 15)
+        )
+        // chain: filter expensive, sort by qty desc, take top 3
+        let expensive = filter_by(items, "price", ">", 70)
+        let sorted = sort_by(expensive, "qty", "desc")
+        let top3 = top(sorted, 3)
+        print("top 3 expensive by qty:")
+        for item in top3 {
+            print("  {item.name}: price={item.price} qty={item.qty}")
+        }
+        let stats = describe(top3, "price")
+        print("price stats: sum={stats.sum} avg={stats.avg}")
+        return "done"
+    }
+}

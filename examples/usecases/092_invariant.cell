@@ -1,0 +1,34 @@
+// Memory invariants — structural promises on storage
+cell Vault {
+    face {
+        promise all_persistent
+        promise all_encrypted
+        signal store(key: String, value: String)
+        signal retrieve(key: String) -> String
+    }
+
+    memory {
+        secrets: Map<String, String> [persistent, consistent, encrypted]
+    }
+
+    on store(key: String, value: String) {
+        secrets.set(key, value)
+        return map("stored", key)
+    }
+
+    on retrieve(key: String) {
+        return secrets.get(key) ?? "(not found)"
+    }
+
+    on run() {
+        store("api_key", "sk-abc123")
+        store("db_pass", "p@ssw0rd")
+        let a = retrieve("api_key")
+        let b = retrieve("db_pass")
+        let c = retrieve("nope")
+        print("api_key = {a}")
+        print("db_pass = {b}")
+        print("missing = {c}")
+        return "done"
+    }
+}

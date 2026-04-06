@@ -1,0 +1,24 @@
+// Compound interest calculator
+cell CompoundInterest {
+    on compound(principal: Int, rate_pct: Int, years: Int) {
+        let amount = principal
+        for y in range(1, years + 1) {
+            let interest = idiv(amount * rate_pct, 100)
+            amount += interest
+        }
+        return amount
+    }
+
+    on run() {
+        let principal = 10000
+        let rate = 5
+        print("=== COMPOUND INTEREST ===")
+        print("Principal: {principal}, Rate: {rate}%")
+        for y in list(1, 5, 10, 20, 30) {
+            let final_val = compound(principal, rate, y)
+            let gain = final_val - principal
+            print("  After {y} years: {final_val} (gain: {gain})")
+        }
+        return "done"
+    }
+}

@@ -1,0 +1,23 @@
+// 036: Parallel — two independent state machines
+cell ParallelState {
+    state build {
+        initial: queued
+        queued -> building
+        building -> done
+        * -> failed
+    }
+    on run() {
+        // run two independent jobs through the same machine
+        transition("job_a", "building")
+        transition("job_b", "building")
+        let sa = get_status("job_a")
+        let sb = get_status("job_b")
+        print("a:", sa, "b:", sb)
+        transition("job_a", "done")
+        transition("job_b", "failed")
+        let sa2 = get_status("job_a")
+        let sb2 = get_status("job_b")
+        print("a:", sa2, "b:", sb2)
+        return "done"
+    }
+}

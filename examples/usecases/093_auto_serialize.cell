@@ -1,0 +1,30 @@
+// Auto-serialize maps in storage using to_json/from_json
+cell AutoSerialize {
+    memory {
+        data: Map<String, String> [persistent, consistent]
+    }
+
+    on save_user(name: String, age: Int) {
+        let user = map("name", name, "age", age, "active", true)
+        data.set(name, to_json(user))
+        return user
+    }
+
+    on load_user(name: String) {
+        let raw = data.get(name)
+        if raw == () { return map("error", "not found") }
+        return from_json(raw)
+    }
+
+    on run() {
+        save_user("Alice", 30)
+        save_user("Bob", 25)
+        let alice = load_user("Alice")
+        print("Loaded: {alice.name}, age {alice.age}")
+        let bob = load_user("Bob")
+        print("Loaded: {bob.name}, age {bob.age}")
+        let missing = load_user("Charlie")
+        print("Missing: {missing.error}")
+        return "done"
+    }
+}

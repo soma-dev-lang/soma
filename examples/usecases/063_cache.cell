@@ -1,0 +1,29 @@
+// Cache with ephemeral memory — data lost on restart
+cell CacheDemo {
+    memory {
+        cache: Map<String, String> [ephemeral, local]
+    }
+
+    on set_cache(key: String, value: String) {
+        cache.set(key, value)
+        return value
+    }
+
+    on get_cache(key: String) {
+        return cache.get(key) ?? "(miss)"
+    }
+
+    on run() {
+        set_cache("user:1", "Alice")
+        set_cache("user:2", "Bob")
+        set_cache("user:3", "Charlie")
+        let v1 = get_cache("user:1")
+        let v2 = get_cache("user:2")
+        let v3 = get_cache("user:99")
+        print("user:1 = {v1}")
+        print("user:2 = {v2}")
+        print("user:99 = {v3}")
+        print("Cache size: {cache.len()}")
+        return "done"
+    }
+}

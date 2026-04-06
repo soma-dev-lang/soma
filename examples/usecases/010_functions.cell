@@ -1,0 +1,24 @@
+// 010: Functions — multiple handlers calling each other
+cell Functions {
+    on add(a: Int, b: Int) {
+        return a + b
+    }
+    on double(x: Int) {
+        return x * 2
+    }
+    on square(n: Int) {
+        return n * n
+    }
+    on run() {
+        let sum = add(3, 4)
+        print("add(3,4) = {sum}")
+        let d = double(sum)
+        print("double(7) = {d}")
+        let s = square(5)
+        print("square(5) = {s}")
+        // chained
+        let result = double(add(10, square(3)))
+        print("double(add(10, square(3))) = {result}")
+        return "done"
+    }
+}

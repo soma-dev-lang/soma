@@ -1,0 +1,24 @@
+// Nested patterns: map destructure + string prefix
+cell NestedMatch {
+    on route(req: Map) {
+        return match req {
+            {method: "GET", path: "/api/" + rest} -> "GET API: {rest}"
+            {method: "POST", path: "/api/" + rest} -> "POST API: {rest}"
+            {method: "GET", path: "/"} -> "Home"
+            _ -> "404"
+        }
+    }
+
+    on run() {
+        let reqs = list(
+            map("method", "GET", "path", "/api/users"),
+            map("method", "POST", "path", "/api/orders"),
+            map("method", "GET", "path", "/"),
+            map("method", "PUT", "path", "/api/items")
+        )
+        for r in reqs {
+            print("{r.method} {r.path} -> {route(r)}")
+        }
+        return "done"
+    }
+}

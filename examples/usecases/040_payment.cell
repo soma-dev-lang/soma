@@ -1,0 +1,27 @@
+// 040: Payment — pending -> authorized -> captured -> refunded
+cell PaymentState {
+    state payment {
+        initial: pending
+        pending -> authorized
+        authorized -> captured
+        captured -> refunded
+        authorized -> voided
+        * -> failed
+    }
+    on run() {
+        // normal flow
+        let id = "pay1"
+        transition(id, "authorized")
+        print("{id}: {get_status(id)}")
+        transition(id, "captured")
+        print("{id}: {get_status(id)}")
+        transition(id, "refunded")
+        print("{id}: {get_status(id)}")
+        // void flow
+        let id2 = "pay2"
+        transition(id2, "authorized")
+        transition(id2, "voided")
+        print("{id2}: {get_status(id2)}")
+        return "done"
+    }
+}

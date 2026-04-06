@@ -1,0 +1,17 @@
+// 022: Group & Aggregate — group_by + agg
+cell GroupAgg {
+    on run() {
+        let sales = list(
+            map("region", "east", "amount", 100),
+            map("region", "west", "amount", 200),
+            map("region", "east", "amount", 150),
+            map("region", "west", "amount", 250),
+            map("region", "east", "amount", 120)
+        )
+        let result = agg(sales, "region", "amount:sum", "amount:avg")
+        for row in result {
+            print("{row.region}: sum={row.amount_sum} avg={row.amount_avg} count={row.count}")
+        }
+        return "done"
+    }
+}

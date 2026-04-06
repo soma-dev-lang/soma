@@ -1,0 +1,23 @@
+// Score leaderboard with sort
+cell Leaderboard {
+    on run() {
+        let players = list(
+            map("name", "Alice", "score", 4500),
+            map("name", "Bob", "score", 7200),
+            map("name", "Charlie", "score", 3100),
+            map("name", "Diana", "score", 8900),
+            map("name", "Eve", "score", 6700)
+        )
+        let ranked = sort_by(players, "score", "desc")
+        print("=== LEADERBOARD ===")
+        let pos = 1
+        for p in ranked {
+            print("#{pos} {p.name}: {p.score} pts")
+            pos += 1
+        }
+        // Top scorer
+        let top = ranked.first
+        print("Winner: {top.name}")
+        return "done"
+    }
+}

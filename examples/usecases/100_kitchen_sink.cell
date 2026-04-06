@@ -1,0 +1,91 @@
+// Kitchen sink: combines ALL major Soma features in one cell
+cell KitchenSink {
+    face {
+        promise all_persistent
+        signal run() -> String
+    }
+
+    memory {
+        store: Map<String, String> [persistent, consistent]
+    }
+
+    state workflow {
+        initial: idle
+        idle -> active -> complete
+        * -> cancelled
+    }
+
+    on factorial(n: BigInt) {
+        if n <= 1 { return 1 }
+        return n * factorial(n - 1)
+    }
+
+    on classify(val: Int) {
+        return match val {
+            0 -> "zero"
+            1 || 2 || 3 -> "small"
+            x if x < 0 -> "negative"
+            4..100 -> "medium"
+            _ -> "large"
+        }
+    }
+
+    on route(path: String) {
+        return match path {
+            "/" -> "home"
+            "/api/" + rest -> "api:{rest}"
+            _ -> "404"
+        }
+    }
+
+    on run() {
+        // 1. Storage
+        store.set("version", "1.0")
+        let ver = store.get("version")
+        print("version: {ver}")
+
+        // 2. BigInt
+        print("20! = {factorial(20)}")
+
+        // 3. Match patterns
+        for v in list(-1, 0, 2, 50, 999) {
+            print("  {v} -> {classify(v)}")
+        }
+
+        // 4. String prefix match
+        for p in list("/", "/api/users", "/other") {
+            print("  {p} -> {route(p)}")
+        }
+
+        // 5. Compound assignment
+        let sum = 0
+        for i in range(1, 6) { sum += i }
+        print("sum(1..5) = {sum}")
+
+        // 6. try/error handling
+        let r = try { 1 / 0 }
+        print("div/0 error: {r.error}")
+
+        // 7. Pipes and lambdas
+        let nums = list(1, 2, 3, 4, 5)
+        let doubled = nums |> map(x => x * 2)
+        print("doubled: {doubled}")
+
+        // 8. Sort by
+        let items = list(map("n", "c", "v", 3), map("n", "a", "v", 1), map("n", "b", "v", 2))
+        let sorted = sort_by(items, "v", "asc")
+        for s in sorted { print("  {s.n}={s.v}") }
+
+        // 9. State machine
+        let id = to_string(next_id())
+        store.set(id, "task-1")
+        transition(id, "active")
+        print("State after transition: active")
+
+        // 10. Null coalescing
+        let x = () ?? "default"
+        print("coalesce: {x}")
+
+        return "done"
+    }
+}

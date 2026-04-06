@@ -1,0 +1,23 @@
+// 029: Reduce — sum, product, max via reduce
+cell ReduceDemo {
+    on run() {
+        let nums = list(1, 2, 3, 4, 5)
+        let total = reduce(nums, 0, x => x.acc + x.val)
+        print("sum: {total}")
+        // find max with a loop (reduce adds to accumulator)
+        let mx = 0
+        for n in nums {
+            if n > mx {
+                mx = n
+            }
+        }
+        print("max: {mx}")
+        // product with loop
+        let prod = 1
+        for n in nums {
+            prod = prod * n
+        }
+        print("product: {prod}")
+        return "done"
+    }
+}

@@ -1,0 +1,33 @@
+// Binary search in a sorted list
+cell BinarySearch {
+    on binary_search(items: List, target: Int) {
+        let lo = 0
+        let hi = len(items) - 1
+        while lo <= hi {
+            let mid = idiv(lo + hi, 2)
+            let val = nth(items, mid)
+            if val == target {
+                return mid
+            } else if val < target {
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        return -1
+    }
+
+    on run() {
+        let sorted = list(2, 5, 8, 12, 16, 23, 38, 56, 72, 91)
+        print("List: {sorted}")
+        for target in list(23, 72, 1, 56) {
+            let idx = binary_search(sorted, target)
+            if idx >= 0 {
+                print("  Found {target} at index {idx}")
+            } else {
+                print("  {target} not found")
+            }
+        }
+        return "done"
+    }
+}

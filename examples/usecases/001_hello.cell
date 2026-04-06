@@ -1,0 +1,7 @@
+// 001: Hello Soma — the simplest possible program
+cell Hello {
+    on run() {
+        print("hello soma")
+        return "done"
+    }
+}

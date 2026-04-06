@@ -1,0 +1,40 @@
+// Budget tracker with categories
+cell Budget {
+    memory {
+        totals: Map<String, Int> [ephemeral, local]
+        limits: Map<String, Int> [ephemeral, local]
+    }
+
+    on run() {
+        let expenses = list(
+            map("cat", "Food", "amount", 450),
+            map("cat", "Transport", "amount", 120),
+            map("cat", "Food", "amount", 230),
+            map("cat", "Housing", "amount", 1200),
+            map("cat", "Transport", "amount", 80),
+            map("cat", "Entertainment", "amount", 150),
+            map("cat", "Food", "amount", 180)
+        )
+        // Set budget limits
+        limits.set("Food", 900)
+        limits.set("Transport", 250)
+        limits.set("Housing", 1300)
+        limits.set("Entertainment", 200)
+
+        // Sum by category
+        for e in expenses {
+            let cur = totals.get(e.cat) ?? 0
+            totals.set(e.cat, cur + e.amount)
+        }
+        print("=== BUDGET REPORT ===")
+        for cat in totals.keys() {
+            let spent = totals.get(cat)
+            let limit = limits.get(cat) ?? 0
+            let remaining = limit - spent
+            let status = "OK"
+            if remaining < 0 { status = "OVER" }
+            print("  {cat}: spent {spent} / {limit} ({status})")
+        }
+        return "done"
+    }
+}

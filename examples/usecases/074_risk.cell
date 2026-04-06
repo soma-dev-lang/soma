@@ -1,0 +1,25 @@
+// Simple risk metrics: max drawdown from peak
+cell Risk {
+    on max_drawdown(prices: List) {
+        let peak = prices.first
+        let max_dd = 0
+        for p in prices {
+            if p > peak { peak = p }
+            let dd = peak - p
+            if dd > max_dd { max_dd = dd }
+        }
+        return max_dd
+    }
+
+    on run() {
+        let prices = list(100, 105, 110, 95, 102, 88, 92, 98, 85, 90)
+        print("Prices: {prices}")
+        let dd = max_drawdown(prices)
+        print("Max drawdown: {dd}")
+        // Peak was 110, trough was 85 -> dd = 25
+        let peak = 110
+        print("Peak: {peak}, worst trough after peak: 85")
+        print("Drawdown pct: {idiv(dd * 100, peak)}%")
+        return "done"
+    }
+}

@@ -1,0 +1,27 @@
+// Full HTTP router combining all match patterns
+cell Router {
+    on route(method: String, path: String) {
+        return match map("method", method, "path", path) {
+            {method: "GET", path: "/"} -> map("status", 200, "body", "Home")
+            {method: "GET", path: "/api/" + rest} -> map("status", 200, "body", "API: {rest}")
+            {method: "POST", path: "/api/" + rest} -> map("status", 201, "body", "Created: {rest}")
+            {method: "DELETE", path: "/api/" + rest} -> map("status", 200, "body", "Deleted: {rest}")
+            _ -> map("status", 404, "body", "Not found")
+        }
+    }
+
+    on run() {
+        let requests = list(
+            map("m", "GET", "p", "/"),
+            map("m", "GET", "p", "/api/users"),
+            map("m", "POST", "p", "/api/orders"),
+            map("m", "DELETE", "p", "/api/items/42"),
+            map("m", "GET", "p", "/unknown")
+        )
+        for req in requests {
+            let r = route(req.m, req.p)
+            print("{req.m} {req.p} -> {r.status} {r.body}")
+        }
+        return "done"
+    }
+}

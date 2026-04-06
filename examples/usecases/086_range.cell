@@ -1,0 +1,20 @@
+// Range patterns in match: 0..100
+cell RangeMatch {
+    on grade(score: Int) {
+        return match score {
+            90..101 -> "A"
+            80..90  -> "B"
+            70..80  -> "C"
+            60..70  -> "D"
+            0..60   -> "F"
+            _       -> "Invalid"
+        }
+    }
+
+    on run() {
+        for s in list(95, 85, 72, 63, 45, 100, 0) {
+            print("Score {s}: grade {grade(s)}")
+        }
+        return "done"
+    }
+}

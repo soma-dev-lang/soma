@@ -1,0 +1,22 @@
+// 009: Pipes — filter, map, sort_by, top, reduce
+cell PipeDemo {
+    on run() {
+        let nums = list(5, 2, 8, 1, 9, 3, 7)
+        // pipe to uppercase
+        let up = "hello" |> uppercase()
+        print("pipe upper: {up}")
+        // map with lambda
+        let doubled = map(nums, x => x * 2)
+        print("doubled: {doubled}")
+        // filter with lambda
+        let big = filter(nums, x => x > 4)
+        print("big: {big}")
+        // reduce (lambda gets {acc, val}, returns new accumulator)
+        let total = reduce(nums, 0, x => x.acc + x.val)
+        print("total: {total}")
+        // sort
+        let sorted = sort(nums)
+        print("sorted: {sorted}")
+        return "done"
+    }
+}

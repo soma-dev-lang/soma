@@ -1,0 +1,25 @@
+// 038: Ticket — support ticket: open -> assigned -> resolved -> closed
+cell TicketState {
+    state ticket {
+        initial: open
+        open -> assigned
+        assigned -> resolved
+        resolved -> closed
+        assigned -> open
+        * -> cancelled
+    }
+    on run() {
+        let id = "t1"
+        print("{get_status(id)}")
+        transition(id, "assigned")
+        print("{get_status(id)}")
+        // reassign back to open
+        transition(id, "open")
+        print("reopened: {get_status(id)}")
+        transition(id, "assigned")
+        transition(id, "resolved")
+        transition(id, "closed")
+        print("final: {get_status(id)}")
+        return "done"
+    }
+}

@@ -1,0 +1,19 @@
+// 049: Emit — emit events between cells
+// Run: SOMA_LLM_MOCK=echo soma run examples/usecases/049_emit.cell
+cell agent Emitter {
+    face {
+        signal fire(msg: String) -> Map
+    }
+    state work { initial: idle  idle -> done  * -> failed }
+    on fire(msg: String) {
+        transition("t", "done")
+        emit events(map("source", "emitter", "msg", msg))
+        print("emitted: {msg}")
+        map("status", "emitted", "msg", msg)
+    }
+    on run() {
+        let r = fire("system started")
+        print("status: {r.status}")
+        return "done"
+    }
+}

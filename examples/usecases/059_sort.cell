@@ -1,0 +1,24 @@
+// Sort a list of maps by a field
+cell SortDemo {
+    on run() {
+        let people = list(
+            map("name", "Charlie", "age", 30),
+            map("name", "Alice", "age", 25),
+            map("name", "Bob", "age", 35),
+            map("name", "Diana", "age", 28)
+        )
+
+        let by_age_asc = sort_by(people, "age", "asc")
+        print("By age (ascending):")
+        for p in by_age_asc {
+            print("  {p.name}: {p.age}")
+        }
+
+        let by_name = sort_by(people, "name", "asc")
+        print("By name:")
+        for p in by_name {
+            print("  {p.name}: {p.age}")
+        }
+        return "done"
+    }
+}

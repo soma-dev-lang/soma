@@ -1,0 +1,25 @@
+// Scheduled execution: every Ns {} and after Ns {}
+// Note: scheduling only activates during `soma serve`, not `soma run`.
+// This file demonstrates the syntax and passes check/run.
+cell Scheduler {
+    memory {
+        ticks: Map<String, Int> [ephemeral, local]
+    }
+
+    every 5s {
+        let count = ticks.get("heartbeat") ?? 0
+        ticks.set("heartbeat", count + 1)
+    }
+
+    after 2s {
+        ticks.set("initialized", 1)
+    }
+
+    on run() {
+        print("Scheduler cell created")
+        print("  every 5s: heartbeat counter")
+        print("  after 2s: initialization flag")
+        print("(Timers activate during soma serve)")
+        return "done"
+    }
+}

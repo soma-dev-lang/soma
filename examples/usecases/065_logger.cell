@@ -1,0 +1,25 @@
+// Structured logging with timestamps
+cell Logger {
+    memory {
+        logs: Map<String, String> [persistent, consistent]
+    }
+
+    on log_msg(level: String, message: String) {
+        let id = to_string(next_id())
+        let ts = to_string(now())
+        let entry = to_json(map("ts", ts, "level", level, "msg", message))
+        logs.set(id, entry)
+        print("[{level}] {message}")
+        return id
+    }
+
+    on run() {
+        log_msg("INFO", "Application started")
+        log_msg("DEBUG", "Loading configuration")
+        log_msg("INFO", "Server listening on :8080")
+        log_msg("WARN", "High memory usage detected")
+        log_msg("ERROR", "Connection refused: db host")
+        print("Total log entries: {logs.len()}")
+        return "done"
+    }
+}

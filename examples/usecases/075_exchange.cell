@@ -1,0 +1,46 @@
+// Simple order book matching engine
+cell Exchange {
+    on match_orders(buys: List, sells: List) {
+        let trades = list()
+        let bi = 0
+        let si = 0
+        let b_sorted = sort_by(buys, "price", "desc")
+        let s_sorted = sort_by(sells, "price", "asc")
+        let bn = len(b_sorted)
+        let sn = len(s_sorted)
+        while bi < bn {
+            if si >= sn { break }
+            let buy = nth(b_sorted, bi)
+            let sell = nth(s_sorted, si)
+            if buy.price >= sell.price {
+                let trade_price = sell.price
+                trades = push(trades, map("buyer", buy.id, "seller", sell.id, "price", trade_price))
+                bi += 1
+                si += 1
+            } else {
+                break
+            }
+        }
+        return trades
+    }
+
+    on run() {
+        let buys = list(
+            map("id", "B1", "price", 105),
+            map("id", "B2", "price", 102),
+            map("id", "B3", "price", 100)
+        )
+        let sells = list(
+            map("id", "S1", "price", 101),
+            map("id", "S2", "price", 103),
+            map("id", "S3", "price", 106)
+        )
+        let trades = match_orders(buys, sells)
+        print("=== MATCHED TRADES ===")
+        for t in trades {
+            print("  {t.buyer} <-> {t.seller} @ {t.price}")
+        }
+        print("Total matches: {len(trades)}")
+        return "done"
+    }
+}

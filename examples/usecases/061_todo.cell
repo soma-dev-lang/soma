@@ -1,0 +1,39 @@
+// Todo list with persistent storage
+cell Todo {
+    memory {
+        todos: Map<String, String> [persistent, consistent]
+        status: Map<String, String> [persistent, consistent]
+    }
+
+    on add(text: String) {
+        let id = to_string(next_id())
+        todos.set(id, text)
+        status.set(id, "pending")
+        return map("id", id, "text", text)
+    }
+
+    on complete(id: String) {
+        status.set(id, "done")
+        return map("id", id, "status", "done")
+    }
+
+    on list_all() {
+        let result = list()
+        for k in todos.keys() {
+            result = push(result, map("id", k, "text", todos.get(k), "status", status.get(k)))
+        }
+        return result
+    }
+
+    on run() {
+        add("Buy groceries")
+        add("Write tests")
+        add("Deploy app")
+        complete("1")
+        let items = list_all()
+        for item in items {
+            print("[{item.status}] #{item.id}: {item.text}")
+        }
+        return "done"
+    }
+}

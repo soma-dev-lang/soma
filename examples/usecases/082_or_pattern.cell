@@ -1,0 +1,17 @@
+// Or-patterns in match: "a" || "b" matches either
+cell OrPattern {
+    on classify(day: String) {
+        return match day {
+            "Monday" || "Tuesday" || "Wednesday" || "Thursday" || "Friday" -> "weekday"
+            "Saturday" || "Sunday" -> "weekend"
+            _ -> "unknown"
+        }
+    }
+
+    on run() {
+        for d in list("Monday", "Saturday", "Wednesday", "Sunday", "Holiday") {
+            print("{d} is a {classify(d)}")
+        }
+        return "done"
+    }
+}

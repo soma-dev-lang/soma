@@ -1,0 +1,35 @@
+// 008: Match — literal, wildcard, block arms
+cell MatchDemo {
+    on run() {
+        // match on int
+        let x = 2
+        let r = match x {
+            1 -> "one"
+            2 -> "two"
+            3 -> "three"
+            _ -> "other"
+        }
+        print("int match: {r}")
+        // match on string
+        let color = "red"
+        let hex = match color {
+            "red" -> "#ff0000"
+            "green" -> "#00ff00"
+            "blue" -> "#0000ff"
+            _ -> "#000000"
+        }
+        print("color: {hex}")
+        // match with block
+        let n = 42
+        let label = match n {
+            0 -> "zero"
+            42 -> {
+                print("found the answer")
+                "the answer"
+            }
+            _ -> "unknown"
+        }
+        print("label: {label}")
+        return "done"
+    }
+}

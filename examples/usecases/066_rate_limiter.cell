@@ -1,0 +1,27 @@
+// Simple rate limiter using a counter
+cell RateLimiter {
+    memory {
+        counts: Map<String, Int> [ephemeral, local]
+    }
+
+    on check_limit(client: String, max_requests: Int) {
+        let current = counts.get(client) ?? 0
+        if current >= max_requests {
+            return map("allowed", false, "count", current)
+        }
+        counts.set(client, current + 1)
+        return map("allowed", true, "count", current + 1)
+    }
+
+    on run() {
+        let limit = 3
+        for i in range(1, 6) {
+            let r = check_limit("user:alice", limit)
+            print("Request {i}: allowed={r.allowed} count={r.count}")
+        }
+        // Different user has own counter
+        let r2 = check_limit("user:bob", limit)
+        print("Bob request 1: allowed={r2.allowed}")
+        return "done"
+    }
+}

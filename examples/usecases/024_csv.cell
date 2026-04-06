@@ -1,0 +1,23 @@
+// 024: CSV — build data, serialize, demonstrate csv-like processing
+cell CsvDemo {
+    on run() {
+        let data = list(
+            map("name", "Alice", "age", 30, "city", "Paris"),
+            map("name", "Bob", "age", 25, "city", "London"),
+            map("name", "Charlie", "age", 35, "city", "Berlin")
+        )
+        // render as CSV text
+        let header = "name,age,city"
+        print(header)
+        for row in data {
+            print("{row.name},{row.age},{row.city}")
+        }
+        // process: filter by age > 28
+        let senior = filter_by(data, "age", ">", 28)
+        print("Older than 28:")
+        for row in senior {
+            print("  {row.name} ({row.age})")
+        }
+        return "done"
+    }
+}

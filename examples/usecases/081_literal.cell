@@ -1,0 +1,18 @@
+// Match on literal values (Int, String, Bool)
+cell LiteralMatch {
+    on label(x: Int) {
+        return match x {
+            0 -> "zero"
+            1 -> "one"
+            42 -> "the answer"
+            _ -> "some number"
+        }
+    }
+
+    on run() {
+        for n in list(0, 1, 42, 7) {
+            print("{n} is {label(n)}")
+        }
+        return "done"
+    }
+}
