@@ -1,0 +1,30 @@
+[package]
+name = "meta-agent"
+description = "An agent that writes, verifies, and deploys Soma agents"
+
+[models.smart]
+provider = "ollama"
+model = "gemma4:26b"
+
+[models.fast]
+provider = "ollama"
+model = "gemma3:12b"
+
+[verify]
+deadlock_free = true
+eventually = ["deployed", "failed"]
+
+[verify.after.planning]
+eventually = ["generating", "failed"]
+
+[verify.after.generating]
+eventually = ["checking", "failed"]
+
+[verify.after.checking]
+eventually = ["fixing", "verifying", "failed"]
+
+[verify.after.fixing]
+eventually = ["checking", "failed"]
+
+[verify.after.verifying]
+eventually = ["deployed", "failed"]

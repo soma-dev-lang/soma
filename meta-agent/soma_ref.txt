@@ -1,0 +1,230 @@
+# Soma Language — Complete Reference for AI Agents
+
+> Soma is the first language where AI agent behavior is formally verified.
+> cell agent + think() + state machine = proven termination.
+> The compiler fixes errors, catches anti-patterns, and auto-serializes data.
+
+## Agent Workflow
+
+
+1. Generate code      → write .cell file
+2. Auto-fix errors    → soma fix app.cell
+3. Lint               → soma lint app.cell
+4. Check contracts    → soma check app.cell --json
+5. Verify behavior    → soma verify app.cell --json (PROVES termination)
+6. Serve              → soma serve app.cell -p 8080
+
+
+## Quick Syntax Rules
+
+- No semicolons. Newlines separate statements.
+- No `function`/`def`. Use `on handler_name(params) { }`.
+- No `null`. Use `()` for null/unit.
+- No `[1,2,3]`. Use `list(1, 2, 3)`.
+- No `{key: val}`. Use `map("key", val, "key2", val2)`.
+- Strings: `"hello {name}"` (interpolation with `{}`).
+- `if`/`match` are expressions: `let x = if cond { a } else { b }`.
+- Last expression in handler is the return value (implicit return).
+- Storage auto-serializes: no `to_json`/`from_json` needed.
+
+## Verified AI Agent — the specialty
+
+
+cell agent Researcher {
+    face {
+        signal research(topic: String) -> Map
+        tool search(query: String) -> String "Search the web"
+        tool summarize(text: String) -> String "Summarize findings"
+    }
+
+    memory {
+        findings: Map<String, String> [persistent]
+    }
+
+    state workflow {
+        initial: idle
+        idle -> researching
+        researching -> analyzing
+        analyzing -> done
+        * -> failed
+    }
+
+    // Tool implementations — LLM calls these automatically
+    on search(query: String) {
+        http_get("https://api.search.com?q={query}")
+    }
+
+    on summarize(text: String) {
+        think("Summarize concisely: {text}")
+    }
+
+    on research(topic: String) {
+        set_budget(5000)                    // hard token cap
+        transition("t", "researching")
+
+        // think() reads tool declarations, sends to LLM as function-calling tools
+        // LLM can call search() and summarize() — auto-dispatched to handlers above
+        // Loops until final answer. Retries on rate limits.
+        let facts = think("Research '{topic}' thoroughly. Use search tool.")
+
+        transition("t", "analyzing")
+        // Multi-turn: this think() shares conversation context with the previous one
+        let summary = think("Synthesize your findings into 3 key insights.")
+
+        transition("t", "done")
+        findings.set(topic, map("summary", summary, "facts", facts))
+        map("status", "done", "summary", summary, "tokens", tokens_used())
+    }
+}
+
+// soma verify PROVES: every path reaches done or failed. No infinite loops.
+
+
+## Agent Builtins
+
+| Builtin                        | Description                                        |
+|--------------------------------|----------------------------------------------------|
+| `think(prompt)`                | Call LLM with tool-calling loop                    |
+| `think_json(prompt)`           | Call LLM, return structured Map                    |
+| `delegate(cell, signal, args)` | Call another agent's handler                       |
+| `set_budget(max_tokens)`       | Hard cap on LLM token spend                        |
+| `tokens_used()`                | Tokens consumed so far                             |
+| `tokens_remaining()`           | Budget remaining (-1 = unlimited)                  |
+| `remember(key, value)`         | Persistent agent memory                            |
+| `recall(key)`                  | Recall from agent memory                           |
+| `approve(action)`              | Human-in-the-loop gate                             |
+| `trace()`                      | Full execution log (think/tool/transition events)  |
+| `clear_context()`              | Reset multi-turn conversation                      |
+| `clear_trace()`                | Reset trace log                                    |
+
+Config via env vars:
+- `SOMA_LLM_KEY` or `OPENAI_API_KEY` — API key (required)
+- `SOMA_LLM_URL` — endpoint (default: OpenAI, use `http://localhost:11434/v1/chat/completions` for ollama)
+- `SOMA_LLM_MODEL` — model name (default: gpt-4o-mini)
+- `SOMA_LLM_RETRIES` — retry count (default: 3, exponential backoff)
+
+## Cell Structure
+
+
+cell AppName {
+    face {
+        signal create(name: String) -> Map
+        promise "all data is tracked"
+    }
+    memory {
+        data: Map<String, String> [persistent, consistent]
+        invariant _slot_len <= 10000
+    }
+    state workflow {
+        initial: draft
+        draft -> active { guard { _from == "draft" } }
+        active -> completed
+        * -> cancelled
+    }
+    every 30s { cleanup() }
+    after 5s { initialize() }
+
+    on create(data: Map) {
+        let id = to_string(next_id())
+        data.set(id, data)
+        ensure data.len > 0
+        map("id", id, "status", "ok")
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"}                    -> html(home())
+            {method: "GET", path: "/api/" + resource}     -> list(resource)
+            {method: "POST", path: "/api/" + resource}    -> create(resource, body)
+            {method: "DELETE", path: "/api/" + resource}   -> delete(resource)
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}
+
+
+## Match Patterns (all composable)
+
+
+match value {
+    "literal"                    -> expr
+    "a" || "b"                   -> expr          // or-pattern
+    name                         -> use(name)     // variable binding
+    "/api/" + rest               -> api(rest)     // string prefix
+    {method: "GET", path}        -> get(path)     // map destructuring
+    {method: "POST", path: "/api/" + r} -> post(r) // nested
+    0..17                        -> "minor"       // range pattern
+    n if n > 100                 -> "big"         // guard clause
+    ()                           -> "null"        // unit/null
+    _                            -> "default"     // wildcard
+}
+
+
+## Types
+
+| Type    | Example                              |
+|---------|--------------------------------------|
+| Int     | `42`, `-1`                           |
+| Float   | `3.14`, `1.5e3`                      |
+| String  | `"hello {name}"`                     |
+| Bool    | `true`, `false`                      |
+| List    | `list(1, 2, 3)`                      |
+| Map     | `map("key", val, "key2", val2)`      |
+| Unit    | `()` (null equivalent)               |
+
+## Storage (auto-serializes)
+
+
+data.set("key", map("name", "Alice", "score", 95))  // auto-serialized
+let user = data.get("key")                            // auto-deserialized
+print(user.name)                                      // "Alice"
+data.delete("key")
+data.keys              // list of keys
+data.values            // list of values
+data.len()             // count
+
+
+## Pipes
+
+
+data |> filter(x => x.score > 50)
+data |> map(x => x.name)
+data |> sort_by("score", "desc")
+data |> top(10)
+data |> reduce(0, p => p.acc + p.val)
+data |> group_by("dept")
+data |> with("new_field", value)
+
+
+## Error Handling
+
+
+let result = try { risky() }
+if result.error != () { handle_error() }
+
+let value = try { risky() }?    // ? propagates errors
+ensure balance >= 0              // postcondition
+
+
+## CLI Commands
+
+| Command                         | Description                                        |
+|---------------------------------|----------------------------------------------------|
+| `soma run file.cell [args]`     | Execute signal handler                             |
+| `soma serve file.cell [-p port]`| HTTP server                                        |
+| `soma check file.cell [--json]` | Verify contracts + properties                      |
+| `soma fix file.cell`            | Auto-repair errors                                 |
+| `soma lint file.cell [--json]`  | Catch anti-patterns                                |
+| `soma verify file.cell [--json]`| Prove state machine properties (CTL)               |
+| `soma describe file.cell`       | Rich JSON: handlers, memory, state, face, tools    |
+| `soma test file.cell`           | Run test cells                                     |
+| `soma init [name]`              | Create project                                     |
+
+## Links
+
+- GitHub: https://github.com/soma-dev-lang/soma
+- Agent guide: https://github.com/soma-dev-lang/soma/blob/main/AGENT.md
+- Language reference: https://github.com/soma-dev-lang/soma/blob/main/SOMA_REFERENCE.md
+- Spec: https://github.com/soma-dev-lang/soma/blob/main/SOMA_SPEC.md
+- Paper: https://soma-lang.dev/paper

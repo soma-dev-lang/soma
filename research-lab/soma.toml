@@ -1,0 +1,33 @@
+[package]
+name = "research-lab"
+description = "Autonomous AI research lab — question to paper"
+
+[models.fast]
+provider = "ollama"
+model = "gemma3:12b"
+
+[models.deep]
+provider = "ollama"
+model = "gemma4:26b"
+
+[verify]
+deadlock_free = true
+eventually = ["published", "abandoned"]
+
+[verify.after.searching]
+eventually = ["reading", "abandoned"]
+
+[verify.after.reading]
+eventually = ["critiquing", "abandoned"]
+
+[verify.after.critiquing]
+eventually = ["writing", "abandoned"]
+
+[verify.after.writing]
+eventually = ["reviewing", "abandoned"]
+
+[verify.after.reviewing]
+eventually = ["published", "revising", "abandoned"]
+
+[verify.after.revising]
+eventually = ["reviewing", "abandoned"]

@@ -1,0 +1,199 @@
+// ═══════════════════════════════════════════════════════════════
+// Autonomous Research Lab
+//
+// Given a question, 6 agents produce a reviewed research paper.
+// State machine proves every project reaches published or abandoned.
+//
+// Pipeline: search → read → critique → write → review → publish
+//           ↓        ↓       ↓          ↓       ↓→ revise → review
+//         abandon  abandon  abandon   abandon  abandon
+//
+// soma verify proves: no research project gets stuck.
+// ═══════════════════════════════════════════════════════════════
+
+cell agent Searcher [model: fast, skill: "skills/searcher.md"] {
+    on search(question: String) {
+        think("Research question: {question}\n\nIdentify the key subtopics, concepts, and search queries needed to answer this question thoroughly.")
+    }
+}
+
+cell agent Reader [model: deep, skill: "skills/reader.md"] {
+    on read(question: String, search_results: String) {
+        think("Research question: {question}\n\nSearch results and subtopics:\n{search_results}\n\nSynthesize the key findings. Identify what is known and what gaps remain.")
+    }
+}
+
+cell agent Critic [model: deep, skill: "skills/critic.md"] {
+    on critique(question: String, findings: String) {
+        think("Research question: {question}\n\nFindings:\n{findings}\n\nIdentify flaws, gaps, biases, and missing perspectives. Be rigorous.")
+    }
+}
+
+cell agent Writer [model: deep, skill: "skills/writer.md"] {
+    on write(question: String, findings: String, critique: String) {
+        think("Research question: {question}\n\nFindings:\n{findings}\n\nCritique to address:\n{critique}\n\nWrite a structured research summary that addresses the critique.")
+    }
+}
+
+cell agent Reviewer [model: deep, skill: "skills/reviewer.md"] {
+    on review(paper: String) {
+        think("Review this research paper:\n{paper}\n\nScore clarity, rigor, novelty, completeness (1-10). Verdict: accept, revise, or reject.")
+    }
+}
+
+cell agent Editor [model: deep, skill: "skills/editor.md"] {
+    on revise(paper: String, feedback: String) {
+        think("Original paper:\n{paper}\n\nReviewer feedback:\n{feedback}\n\nRewrite the paper incorporating the feedback.")
+    }
+}
+
+cell Lab {
+    memory {
+        projects: Map<String, String> [persistent]
+        papers: Map<String, String> [persistent]
+    }
+
+    state research {
+        initial: proposed
+        proposed -> searching
+        searching -> reading
+        reading -> critiquing
+        critiquing -> writing
+        writing -> reviewing
+        reviewing -> published
+        reviewing -> revising
+        revising -> published
+        * -> abandoned
+    }
+
+    on _log(id: String, msg: String) {
+        print("  [{id}] {msg}")
+    }
+
+    on investigate(question: String) {
+        let id = to_string(next_id())
+        _log(id, "NEW PROJECT: {question}")
+
+        projects.set(id, map(
+            "id", id,
+            "question", question,
+            "status", "proposed",
+            "started", to_string(now())
+        ))
+
+        // Stage 1: Search
+        transition(id, "searching")
+        _log(id, "SEARCHING — identifying subtopics...")
+        let search = delegate("Searcher", "search", question)
+        _log(id, "Found subtopics")
+        projects.set(id, projects.get(id) |> with("search", search))
+
+        // Stage 2: Read
+        transition(id, "reading")
+        _log(id, "READING — synthesizing findings...")
+        let findings = delegate("Reader", "read", question, search)
+        _log(id, "Findings synthesized")
+        projects.set(id, projects.get(id) |> with("findings", findings))
+
+        // Stage 3: Critique
+        transition(id, "critiquing")
+        _log(id, "CRITIQUING — identifying weaknesses...")
+        let critique = delegate("Critic", "critique", question, findings)
+        _log(id, "Critique complete")
+        projects.set(id, projects.get(id) |> with("critique", critique))
+
+        // Stage 4: Write
+        transition(id, "writing")
+        _log(id, "WRITING — drafting paper...")
+        let paper = delegate("Writer", "write", question, findings, critique)
+        _log(id, "Draft complete")
+        projects.set(id, projects.get(id) |> with("draft", paper))
+
+        // Stage 5: Review
+        transition(id, "reviewing")
+        _log(id, "REVIEWING...")
+        let review = delegate("Reviewer", "review", paper)
+        _log(id, "Review complete")
+
+        let accepted = contains(review, "accept")
+
+        // If revision needed, revise once then publish
+        if contains(review, "revise") {
+            transition(id, "revising")
+            _log(id, "REVISING — incorporating feedback...")
+            paper = delegate("Editor", "revise", paper, review)
+            _log(id, "Revision complete")
+            accepted = true
+        }
+
+        if accepted {
+            transition(id, "published")
+            _log(id, "PUBLISHED")
+            papers.set(id, map(
+                "id", id,
+                "question", question,
+                "paper", paper,
+                "status", "published"
+            ))
+            projects.set(id, projects.get(id) |> with("status", "published"))
+        } else {
+            transition(id, "abandoned")
+            _log(id, "ABANDONED — did not pass review")
+            projects.set(id, projects.get(id) |> with("status", "abandoned"))
+        }
+
+        map(
+            "id", id,
+            "question", question,
+            "status", if accepted { "published" } else { "abandoned" },
+            "tokens", tokens_used()
+        )
+    }
+
+    on run() {
+        print("═══════════════════════════════════════")
+        print("  AUTONOMOUS RESEARCH LAB")
+        print("  6 agents, verified pipeline")
+        print("═══════════════════════════════════════")
+        print("")
+
+        let result = investigate("How does formal verification improve AI agent reliability in production systems?")
+
+        print("")
+        print("═══════════════════════════════════════")
+        print("  RESULT: {result.status}")
+        print("  Tokens: {result.tokens}")
+        print("═══════════════════════════════════════")
+
+        // Print the paper if published
+        if result.status == "published" {
+            let paper = papers.get(result.id)
+            if paper != () {
+                print("")
+                print("─── PAPER ───")
+                print(paper.paper)
+            }
+        }
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"} -> map(
+                "name", "Autonomous Research Lab",
+                "projects", projects.len(),
+                "papers", papers.len(),
+                "agents", list("Searcher", "Reader", "Critic", "Writer", "Reviewer", "Editor")
+            )
+            {method: "POST", path: "/investigate"} -> {
+                let data = from_json(body)
+                investigate(data.question ?? "What is AI?")
+            }
+            {method: "GET", path: "/projects"} -> projects.values
+            {method: "GET", path: "/papers"} -> papers.values
+            {method: "GET", path: "/project/" + id} -> projects.get(id) ?? map("error", "not found")
+            {method: "GET", path: "/paper/" + id} -> papers.get(id) ?? map("error", "not found")
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}
