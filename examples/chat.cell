@@ -18,6 +18,14 @@ cell ChatSystem {
                 signal message_sent(channel: String, text: String)
                 await delivery_confirmed(channel: String, message_id: String)
             }
+
+            on message_received(channel: String, sender: String, text: String) {
+                return map("status", "ok")
+            }
+
+            on message_sent(channel: String, text: String) {
+                return map("status", "ok")
+            }
         }
 
         cell Router {
@@ -28,6 +36,10 @@ cell ChatSystem {
 
             on message_received(channel: String, sender: String, text: String) {
                 signal routed(channel, sender, text)
+            }
+
+            on routed(channel: String, sender: String, text: String) {
+                return map("status", "ok")
             }
         }
 
@@ -46,6 +58,10 @@ cell ChatSystem {
                 let message_id = channel
                 messages.append(text)
                 signal delivery_confirmed(channel, message_id)
+            }
+
+            on delivery_confirmed(channel: String, message_id: String) {
+                return map("status", "ok")
             }
         }
     }

@@ -27,6 +27,15 @@ cell agent Researcher {
         * -> failed
     }
 
+    // Tool implementations — LLM calls these via function calling
+    on search(query: String) {
+        "Search results for: {query}"
+    }
+
+    on summarize(text: String) {
+        "Summary of: {text}"
+    }
+
     on research(topic: String) {
         // Transition through verified states
         transition("task", "researching")

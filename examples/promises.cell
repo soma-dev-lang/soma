@@ -20,6 +20,14 @@ cell SecureVault {
         secrets: Map<String, String> [persistent, consistent, encrypted]
         audit: Log<String> [persistent, immutable, encrypted]
     }
+
+    on store(key: String, value: String) {
+        return map("status", "ok")
+    }
+
+    on retrieve(key: String) {
+        return map("status", "ok")
+    }
 }
 
 // This cell VIOLATES its structural promise
@@ -32,5 +40,9 @@ cell BrokenVault {
     memory {
         // NOT encrypted — violates promise all_encrypted
         data: Map<String, String> [persistent, consistent]
+    }
+
+    on store(key: String, value: String) {
+        return map("status", "ok")
     }
 }

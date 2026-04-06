@@ -12,4 +12,16 @@ cell KVStore {
         data: Map<String, String> [persistent, consistent, encrypted]
         cache: Map<String, String> [ephemeral, local, capacity(10000), evict(lru)]
     }
+
+    on get(key: String) {
+        return map("status", "ok")
+    }
+
+    on put(key: String, value: String) {
+        return map("status", "ok")
+    }
+
+    on delete(key: String) {
+        return map("status", "ok")
+    }
 }

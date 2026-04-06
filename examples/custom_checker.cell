@@ -17,6 +17,10 @@ cell PublicAPI {
     face {
         signal handle_request(path: String) -> String
     }
+
+    on handle_request(path: String) {
+        return map("status", "ok")
+    }
 }
 
 // This cell has auth — should pass
@@ -24,5 +28,9 @@ cell SecureAPI {
     face {
         given auth: String
         signal handle_request(path: String) -> String
+    }
+
+    on handle_request(path: String) {
+        return map("status", "ok")
     }
 }

@@ -60,6 +60,14 @@ cell PaymentSystem {
             memory {
                 pending: Map<String, Int> [persistent, consistent]
             }
+
+            on payment_requested(id: String, amount: Int) {
+                return map("status", "ok")
+            }
+
+            on payment_confirmed(id: String) {
+                return map("status", "ok")
+            }
         }
 
         cell Processor {
@@ -70,6 +78,10 @@ cell PaymentSystem {
             memory {
                 processed_ids: Set<String> [persistent, consistent]
             }
+
+            on payment_processed(id: String, result: String) {
+                return map("status", "ok")
+            }
         }
 
         cell Notifier {
@@ -79,6 +91,10 @@ cell PaymentSystem {
             }
             memory {
                 sent: Set<String> [ephemeral, local]
+            }
+
+            on payment_confirmed(id: String) {
+                return map("status", "ok")
             }
         }
     }

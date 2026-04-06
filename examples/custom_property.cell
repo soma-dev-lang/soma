@@ -45,4 +45,12 @@ cell GlobalUserStore {
             local
         ]
     }
+
+    on get_user(id: String) {
+        return map("status", "ok")
+    }
+
+    on put_user(id: String, data: String) {
+        return map("status", "ok")
+    }
 }

@@ -472,8 +472,14 @@ impl<'a> LintPass<'a> {
     }
 
     fn check_private_helpers(&mut self) {
-        // Well-known handlers that are not "private helpers"
-        let well_known = ["request", "tick", "start", "stop", "init"];
+        // Only check if the cell has explicit request routing
+        // Without on request(), all handlers are public via auto-routing
+        let has_request_handler = self.all_handler_names.iter().any(|(n, _)| n == "request");
+        if !has_request_handler {
+            return;
+        }
+
+        let well_known = ["request", "tick", "start", "stop", "init", "run"];
 
         let handler_names: Vec<(String, usize)> = self.all_handler_names.clone();
         let routed: Vec<String> = self.routed_handlers.clone();
