@@ -152,7 +152,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "to_int" | "int" => {
             args.first().map(|arg| match arg {
-                Value::Int(si) => Ok(Value::Int(*si)),
+                Value::Int(si) => Ok(Value::Int(si.clone())),
                 Value::Float(n) => Ok(Value::Int(SomaInt::from_i64(*n as i64))),
                 Value::String(s) => {
                     if let Ok(n) = s.parse::<i64>() {

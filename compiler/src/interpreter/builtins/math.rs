@@ -15,9 +15,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         // Big int: negate if negative
                         let s = format!("{}", si);
                         if s.starts_with('-') {
-                            Ok(Value::Int(SomaInt::from_i64(0).sub(*si).mul(SomaInt::from_i64(-1)).mul(SomaInt::from_i64(-1))))
+                            Ok(Value::Int(SomaInt::from_i64(0).sub(si.clone()).mul(SomaInt::from_i64(-1)).mul(SomaInt::from_i64(-1))))
                         } else {
-                            Ok(Value::Int(*si))
+                            Ok(Value::Int(si.clone()))
                         }
                     }
                 }
@@ -35,7 +35,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         Err(RuntimeError::TypeError(format!("round: {} is out of integer range", n)))
                     }
                 }
-                Value::Int(si) => Ok(Value::Int(*si)),
+                Value::Int(si) => Ok(Value::Int(si.clone())),
                 _ => Ok(Value::Int(SomaInt::from_i64(0))),
             })
         }
@@ -49,7 +49,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         Err(RuntimeError::TypeError(format!("floor: {} is out of integer range", n)))
                     }
                 }
-                Value::Int(si) => Ok(Value::Int(*si)),
+                Value::Int(si) => Ok(Value::Int(si.clone())),
                 _ => Ok(Value::Int(SomaInt::from_i64(0))),
             })
         }
@@ -63,7 +63,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         Err(RuntimeError::TypeError(format!("ceil: {} is out of integer range", n)))
                     }
                 }
-                Value::Int(si) => Ok(Value::Int(*si)),
+                Value::Int(si) => Ok(Value::Int(si.clone())),
                 _ => Ok(Value::Int(SomaInt::from_i64(0))),
             })
         }
@@ -102,7 +102,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         Some(Ok(Value::Float(a.min(b))))
                     }
                     (Value::Int(a), Value::Int(b)) => {
-                        if a.cmp(*b) <= 0 { Some(Ok(Value::Int(*a))) } else { Some(Ok(Value::Int(*b))) }
+                        if a.cmp(b) <= 0 { Some(Ok(Value::Int(a.clone()))) } else { Some(Ok(Value::Int(b.clone()))) }
                     }
                     _ => { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(SomaInt::from_i64(a.min(b))))) }
                 }
@@ -118,7 +118,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         Some(Ok(Value::Float(a.max(b))))
                     }
                     (Value::Int(a), Value::Int(b)) => {
-                        if a.cmp(*b) >= 0 { Some(Ok(Value::Int(*a))) } else { Some(Ok(Value::Int(*b))) }
+                        if a.cmp(b) >= 0 { Some(Ok(Value::Int(a.clone()))) } else { Some(Ok(Value::Int(b.clone()))) }
                     }
                     _ => { let a = val_to_i64(&args[0]); let b = val_to_i64(&args[1]); Some(Ok(Value::Int(SomaInt::from_i64(a.max(b))))) }
                 }

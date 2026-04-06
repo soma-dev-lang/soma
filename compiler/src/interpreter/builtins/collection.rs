@@ -256,7 +256,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let desc = args.get(1).map(|a| format!("{}", a) == "desc").unwrap_or(false);
                 sorted.sort_by(|a, b| {
                     let ordering = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => { let c = x.cmp(*y); c.cmp(&0) }
+                        (Value::Int(x), Value::Int(y)) => { let c = x.cmp(y); c.cmp(&0) }
                         (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
                         (Value::String(x), Value::String(y)) => x.cmp(y),
                         _ => std::cmp::Ordering::Equal,

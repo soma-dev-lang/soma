@@ -235,7 +235,7 @@ impl Value {
     }
 
     pub fn as_soma_int(&self) -> Option<SomaInt> {
-        if let Value::Int(si) = self { Some(*si) } else { None }
+        if let Value::Int(si) = self { Some(si.clone()) } else { None }
     }
 
     fn as_float(&self) -> Result<f64, RuntimeError> {
@@ -727,7 +727,7 @@ impl Interpreter {
                         if lhs_name == name {
                             // x = x OP rhs → in-place update
                             if let Some(Value::Int(current)) = env.get(name) {
-                                let current = *current;
+                                let current = current.clone();
                                 let rhs_val = self.eval_expr(&right.node, env, cell_name, signal_name)?;
                                 if let Value::Int(rhs_si) = rhs_val {
                                     let result = match op {
@@ -1009,7 +1009,7 @@ impl Interpreter {
                             'bigint_loop: loop {
                                 // Check counter < limit
                                 let counter_done = match &vals[0] {
-                                    Value::Int(si) => si.cmp(SomaInt::from_i64(limit)) >= 0,
+                                    Value::Int(si) => si.cmp(&SomaInt::from_i64(limit)) >= 0,
                                     _ => true,
                                 };
                                 if counter_done { break; }
@@ -1066,7 +1066,7 @@ impl Interpreter {
                             }
                             // Check if done
                             let counter_done = match &vals[0] {
-                                Value::Int(si) => si.cmp(SomaInt::from_i64(limit)) >= 0,
+                                Value::Int(si) => si.cmp(&SomaInt::from_i64(limit)) >= 0,
                                 _ => true,
                             };
                             if counter_done {
@@ -1077,7 +1077,7 @@ impl Interpreter {
                         // Standard fast path: direct int comparison, skip eval_expr on condition
                         loop {
                             if let Some(Value::Int(si)) = env.get(&cn) {
-                                if si.cmp(SomaInt::from_i64(limit)) >= 0 { break; }
+                                if si.cmp(&SomaInt::from_i64(limit)) >= 0 { break; }
                             } else { break; }
                             let result = if needs_scope {
                                 self.exec_body_scoped(body, env, cell_name, signal_name)
@@ -2471,20 +2471,20 @@ impl Interpreter {
     fn eval_binop(&self, l: &Value, op: BinOp, r: &Value) -> Result<Value, RuntimeError> {
         match (l, r) {
             (Value::Int(a), Value::Int(b)) => match op {
-                BinOp::Add => Ok(Value::Int(a.add(*b))),
-                BinOp::Sub => Ok(Value::Int(a.sub(*b))),
-                BinOp::Mul => Ok(Value::Int(a.mul(*b))),
+                BinOp::Add => Ok(Value::Int(a.clone().add(b.clone()))),
+                BinOp::Sub => Ok(Value::Int(a.clone().sub(b.clone()))),
+                BinOp::Mul => Ok(Value::Int(a.clone().mul(b.clone()))),
                 BinOp::Div => {
                     if b.to_i64() == Some(0) {
                         Err(RuntimeError::TypeError("division by zero".to_string()))
                     } else if let (Some(ai), Some(bi)) = (a.to_i64(), b.to_i64()) {
                         if ai % bi == 0 {
-                            Ok(Value::Int(a.div(*b)))
+                            Ok(Value::Int(a.clone().div(b.clone())))
                         } else {
                             Ok(Value::Float(ai as f64 / bi as f64))
                         }
                     } else {
-                        Ok(Value::Int(a.div(*b)))
+                        Ok(Value::Int(a.clone().div(b.clone())))
                     }
                 }
                 BinOp::Mod => {
@@ -2494,9 +2494,7 @@ impl Interpreter {
                         Ok(Value::Int(SomaInt::from_i64(ai % bi)))
                     } else {
                         // For big ints, use BigInt modulo
-                        let abi = a.to_bigint();
-                        let bbi = b.to_bigint();
-                        Ok(Value::Int(SomaInt::from_bigint(&(abi % bbi))))
+                        Ok(Value::Int(a.clone().modulo(b.clone())))
                     }
                 }
                 BinOp::And => Ok(Value::Bool(a.to_i64() != Some(0) && b.to_i64() != Some(0))),
@@ -2559,7 +2557,7 @@ impl Interpreter {
 
         match (l, r) {
             (Value::Int(a), Value::Int(b)) => {
-                let c = a.cmp(*b);
+                let c = a.cmp(b);
                 let result = match op {
                     CmpOp::Lt => c < 0,
                     CmpOp::Gt => c > 0,

@@ -468,7 +468,7 @@ impl VM {
         let b = self.stack.pop().unwrap_or(Value::Unit);
         let a = self.stack.pop().unwrap_or(Value::Unit);
         let result = match (&a, &b) {
-            (Value::Int(a), Value::Int(b)) => { let c = a.cmp(*b) as i64; f(c, 0) },
+            (Value::Int(a), Value::Int(b)) => { let c = a.cmp(b) as i64; f(c, 0) },
             (Value::Float(a), Value::Float(b)) => {
                 let ord = a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
                 f(ord as i64, 0)
@@ -808,7 +808,7 @@ impl PartialEq for Value {
 impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self, other) {
-            (Value::Int(a), Value::Int(b)) => { let c = a.cmp(*b); Some(c.cmp(&0)) },
+            (Value::Int(a), Value::Int(b)) => { let c = a.cmp(b); Some(c.cmp(&0)) },
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
             (Value::String(a), Value::String(b)) => a.partial_cmp(b),
             _ => None,
