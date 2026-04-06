@@ -307,11 +307,12 @@ fn agent_think(
         .ok().and_then(|s| s.parse().ok())
         .unwrap_or_else(|| cfg.map(|c| c.retries).unwrap_or(3));
 
+    let is_anthropic = provider == "anthropic";
     let system_msg = system.unwrap_or("You are a helpful AI agent. Be concise. Use tools when available.");
     let tools = build_tool_definitions(interp, cell_name);
 
     // Multi-turn: if conversation exists, append; otherwise start fresh
-    if interp.agent_conversation.is_empty() {
+    if interp.agent_conversation.is_empty() && !is_anthropic {
         interp.agent_conversation.push(serde_json::json!({"role": "system", "content": system_msg}));
     }
     interp.agent_conversation.push(serde_json::json!({"role": "user", "content": prompt}));
@@ -320,30 +321,62 @@ fn agent_think(
 
     // Tool-calling loop (max 10 iterations)
     for iteration in 0..10 {
-        // Budget check per iteration
         if interp.agent_token_budget > 0 && interp.agent_tokens_used >= interp.agent_token_budget {
             return Err(RuntimeError::TypeError(format!(
                 "token budget exhausted during think loop: {}/{}", interp.agent_tokens_used, interp.agent_token_budget
             )));
         }
 
-        let mut body = serde_json::json!({
-            "model": model,
-            "messages": interp.agent_conversation,
-            "max_tokens": 2048,
-        });
-        if !tools.is_empty() { body["tools"] = serde_json::json!(tools); }
-        if json_mode { body["response_format"] = serde_json::json!({"type": "json_object"}); }
+        // Build request body — different format for Anthropic
+        let body = if is_anthropic {
+            // Anthropic Messages API format
+            // Filter out system messages from conversation (system is top-level)
+            let msgs: Vec<serde_json::Value> = interp.agent_conversation.iter()
+                .filter(|m| m["role"].as_str() != Some("system"))
+                .cloned().collect();
+            let mut b = serde_json::json!({
+                "model": model,
+                "messages": msgs,
+                "max_tokens": 2048,
+                "system": system_msg,
+            });
+            if !tools.is_empty() {
+                // Anthropic tool format
+                let anthropic_tools: Vec<serde_json::Value> = tools.iter().map(|t| {
+                    serde_json::json!({
+                        "name": t["function"]["name"],
+                        "description": t["function"]["description"],
+                        "input_schema": t["function"]["parameters"],
+                    })
+                }).collect();
+                b["tools"] = serde_json::json!(anthropic_tools);
+            }
+            b
+        } else {
+            // OpenAI / Ollama format
+            let mut b = serde_json::json!({
+                "model": model,
+                "messages": interp.agent_conversation,
+                "max_tokens": 2048,
+            });
+            if !tools.is_empty() { b["tools"] = serde_json::json!(tools); }
+            if json_mode { b["response_format"] = serde_json::json!({"type": "json_object"}); }
+            b
+        };
 
-        // Retry with exponential backoff
+        // HTTP request with retry
         let mut last_error = String::new();
         let mut resp_text = None;
         for retry in 0..=max_retries {
-            match ureq::post(&api_url)
-                .set("Authorization", &format!("Bearer {}", api_key))
-                .set("Content-Type", "application/json")
-                .send_string(&body.to_string())
-            {
+            let mut req = ureq::post(&api_url)
+                .set("Content-Type", "application/json");
+            if is_anthropic {
+                req = req.set("x-api-key", &api_key)
+                    .set("anthropic-version", "2023-06-01");
+            } else {
+                req = req.set("Authorization", &format!("Bearer {}", api_key));
+            }
+            match req.send_string(&body.to_string()) {
                 Ok(response) => {
                     resp_text = Some(response.into_string()
                         .map_err(|e| RuntimeError::TypeError(format!("think() response error: {}", e)))?);
@@ -353,7 +386,7 @@ fn agent_think(
                     last_error = format!("{}", e);
                     let is_retryable = last_error.contains("429") || last_error.contains("500")
                         || last_error.contains("502") || last_error.contains("503")
-                        || last_error.contains("timeout");
+                        || last_error.contains("timeout") || last_error.contains("529");
                     if is_retryable && retry < max_retries {
                         let delay = std::time::Duration::from_millis(500 * (1 << retry));
                         eprintln!("[agent] retry {}/{} after {:?}: {}", retry + 1, max_retries, delay, last_error);
@@ -368,36 +401,77 @@ fn agent_think(
         let json: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| RuntimeError::TypeError(format!("think() JSON error: {}", e)))?;
 
+        // Check for errors (both formats)
         if let Some(err) = json["error"]["message"].as_str() {
             return Err(RuntimeError::TypeError(format!("LLM error: {}", err)));
         }
 
         // Track token usage
         let usage = &json["usage"];
-        let tokens_this_call = usage["total_tokens"].as_i64().unwrap_or(0);
+        let tokens_this_call = if is_anthropic {
+            usage["input_tokens"].as_i64().unwrap_or(0) + usage["output_tokens"].as_i64().unwrap_or(0)
+        } else {
+            usage["total_tokens"].as_i64().unwrap_or(0)
+        };
         interp.agent_tokens_used += tokens_this_call;
 
-        let choice = &json["choices"][0];
-        let message = &choice["message"];
-        let finish_reason = choice["finish_reason"].as_str().unwrap_or("");
+        // Extract response — different format for Anthropic
+        let (content_text, finish_reason, tool_calls_opt) = if is_anthropic {
+            let stop = json["stop_reason"].as_str().unwrap_or("");
+            let mut text_content = String::new();
+            let mut tool_calls = Vec::new();
+            if let Some(blocks) = json["content"].as_array() {
+                for block in blocks {
+                    match block["type"].as_str() {
+                        Some("text") => {
+                            if let Some(t) = block["text"].as_str() { text_content = t.to_string(); }
+                        }
+                        Some("tool_use") => {
+                            tool_calls.push(serde_json::json!({
+                                "id": block["id"],
+                                "function": {
+                                    "name": block["name"],
+                                    "arguments": block["input"].to_string(),
+                                }
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            (text_content, stop.to_string(), if tool_calls.is_empty() { None } else { Some(tool_calls) })
+        } else {
+            let choice = &json["choices"][0];
+            let msg = &choice["message"];
+            let fr = choice["finish_reason"].as_str().unwrap_or("").to_string();
+            let content = msg["content"].as_str().unwrap_or("").to_string();
+            let tc = msg["tool_calls"].as_array().cloned();
+            (content, fr, tc)
+        };
 
-        // Trace this LLM call
+        // Trace
         interp.agent_trace.push(super::super::map_from_pairs(vec![
             ("event".to_string(), Value::String("think".to_string())),
             ("iteration".to_string(), Value::Int(iteration as i64)),
             ("prompt".to_string(), Value::String(if iteration == 0 { prompt.to_string() } else { "(continuation)".to_string() })),
             ("tokens".to_string(), Value::Int(tokens_this_call)),
             ("total_tokens".to_string(), Value::Int(interp.agent_tokens_used)),
-            ("finish_reason".to_string(), Value::String(finish_reason.to_string())),
+            ("finish_reason".to_string(), Value::String(finish_reason.clone())),
             ("timestamp".to_string(), Value::Int(ts())),
         ]));
 
-        // Handle tool calls
-        if finish_reason == "tool_calls" || message["tool_calls"].is_array() {
-            if let Some(tool_calls) = message["tool_calls"].as_array() {
-                interp.agent_conversation.push(message.clone());
+        // Handle tool calls (both OpenAI and Anthropic format)
+        let has_tool_calls = finish_reason == "tool_calls" || finish_reason == "tool_use" || tool_calls_opt.is_some();
+        if has_tool_calls {
+            if let Some(tool_calls) = tool_calls_opt {
+                if is_anthropic {
+                    // Anthropic: add assistant message with content blocks
+                    interp.agent_conversation.push(serde_json::json!({"role": "assistant", "content": json["content"]}));
+                } else {
+                    interp.agent_conversation.push(json["choices"][0]["message"].clone());
+                }
 
-                for tc in tool_calls {
+                for tc in &tool_calls {
                     let tool_name = tc["function"]["name"].as_str().unwrap_or("");
                     let tool_args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
                     let tool_id = tc["id"].as_str().unwrap_or("");
@@ -413,27 +487,33 @@ fn agent_think(
                         ("timestamp".to_string(), Value::Int(ts())),
                     ]));
 
-                    interp.agent_conversation.push(serde_json::json!({
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "content": format!("{}", result),
-                    }));
+                    if is_anthropic {
+                        interp.agent_conversation.push(serde_json::json!({
+                            "role": "user",
+                            "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": format!("{}", result)}],
+                        }));
+                    } else {
+                        interp.agent_conversation.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "content": format!("{}", result),
+                        }));
+                    }
                 }
-                continue; // LLM will see tool results
+                continue;
             }
         }
 
-        // Final response
-        if let Some(content) = message["content"].as_str() {
-            // Add to conversation for multi-turn
-            interp.agent_conversation.push(serde_json::json!({"role": "assistant", "content": content}));
+        // Final response — use extracted content_text
+        if !content_text.is_empty() {
+            interp.agent_conversation.push(serde_json::json!({"role": "assistant", "content": &content_text}));
 
             if json_mode {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content_text) {
                     return Ok(super::super::json_to_value(&parsed));
                 }
             }
-            return Ok(Value::String(content.to_string()));
+            return Ok(Value::String(content_text));
         }
         return Ok(Value::String(text));
     }
