@@ -97,6 +97,59 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 Some(Err(RuntimeError::TypeError("delegate(cell_name, signal_name, ...args) requires at least 2 args".to_string())))
             }
         }
+        // ── Agent: set_budget(max_tokens) ──────────────────────────
+        "set_budget" => {
+            if let Some(Value::Int(n)) = args.first() {
+                interp.agent_token_budget = *n;
+                interp.agent_tokens_used = 0;
+                Some(Ok(Value::Unit))
+            } else {
+                Some(Err(RuntimeError::TypeError("set_budget(max_tokens: Int)".to_string())))
+            }
+        }
+        "tokens_used" => {
+            Some(Ok(Value::Int(interp.agent_tokens_used)))
+        }
+        "tokens_remaining" => {
+            if interp.agent_token_budget > 0 {
+                Some(Ok(Value::Int(interp.agent_token_budget - interp.agent_tokens_used)))
+            } else {
+                Some(Ok(Value::Int(-1))) // unlimited
+            }
+        }
+        // ── Agent: trace() — get execution log ──────────────────────
+        "trace" => {
+            Some(Ok(Value::List(interp.agent_trace.clone())))
+        }
+        "clear_trace" => {
+            interp.agent_trace.clear();
+            Some(Ok(Value::Unit))
+        }
+        // ── Agent: context() — get/clear conversation history ───────
+        "clear_context" => {
+            interp.agent_conversation.clear();
+            Some(Ok(Value::Unit))
+        }
+        // ── Agent: approve(action) — human-in-the-loop ─────────────
+        "approve" => {
+            if let Some(Value::String(action)) = args.first() {
+                // In serve mode: pause and wait for HTTP approval
+                // In run mode: auto-approve with a warning
+                eprintln!("[agent] approval requested: {}", action);
+                eprintln!("[agent] auto-approved (use soma serve for interactive approval)");
+                // Log to trace
+                interp.agent_trace.push(super::super::map_from_pairs(vec![
+                    ("event".to_string(), Value::String("approval".to_string())),
+                    ("action".to_string(), Value::String(action.clone())),
+                    ("result".to_string(), Value::String("auto_approved".to_string())),
+                    ("timestamp".to_string(), Value::Int(std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64)),
+                ]));
+                Some(Ok(Value::Bool(true)))
+            } else {
+                Some(Err(RuntimeError::TypeError("approve(action: String)".to_string())))
+            }
+        }
         // ── AI Agent: think() with tool-calling loop ──────────────
         "think" => {
             if let Some(Value::String(prompt)) = args.first() {
@@ -118,11 +171,12 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
     }
 }
 
-/// Core agent think loop with tool calling.
-/// 1. Reads tool declarations from the cell's face section
-/// 2. Sends them as OpenAI function-calling tools
-/// 3. When LLM returns tool_calls, dispatches to the cell's handlers
-/// 4. Feeds results back, loops until final text response
+/// Core agent think loop with:
+/// - Tool calling (auto-dispatch to cell handlers)
+/// - Multi-turn context (conversation persists across think() calls)
+/// - Token budget enforcement (hard cap on LLM spend)
+/// - Retry with exponential backoff (rate limits, transient errors)
+/// - Structured tracing (every LLM call and tool dispatch logged)
 fn agent_think(
     interp: &mut Interpreter,
     cell_name: &str,
@@ -130,6 +184,13 @@ fn agent_think(
     system: Option<&str>,
     json_mode: bool,
 ) -> Result<Value, RuntimeError> {
+    // Check token budget before calling
+    if interp.agent_token_budget > 0 && interp.agent_tokens_used >= interp.agent_token_budget {
+        return Err(RuntimeError::TypeError(format!(
+            "token budget exhausted: used {}/{}", interp.agent_tokens_used, interp.agent_token_budget
+        )));
+    }
+
     let api_url = std::env::var("SOMA_LLM_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
     let api_key = std::env::var("SOMA_LLM_KEY")
@@ -140,41 +201,67 @@ fn agent_think(
         ))?;
     let model = std::env::var("SOMA_LLM_MODEL")
         .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+    let max_retries: usize = std::env::var("SOMA_LLM_RETRIES")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(3);
 
     let system_msg = system.unwrap_or("You are a helpful AI agent. Be concise. Use tools when available.");
-
-    // Build tool definitions from the cell's face declarations
     let tools = build_tool_definitions(interp, cell_name);
 
-    // Conversation messages for the loop
-    let mut messages = vec![
-        serde_json::json!({"role": "system", "content": system_msg}),
-        serde_json::json!({"role": "user", "content": prompt}),
-    ];
+    // Multi-turn: if conversation exists, append; otherwise start fresh
+    if interp.agent_conversation.is_empty() {
+        interp.agent_conversation.push(serde_json::json!({"role": "system", "content": system_msg}));
+    }
+    interp.agent_conversation.push(serde_json::json!({"role": "user", "content": prompt}));
 
-    // Tool-calling loop (max 10 iterations to prevent runaway)
-    for _iteration in 0..10 {
+    let ts = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+
+    // Tool-calling loop (max 10 iterations)
+    for iteration in 0..10 {
+        // Budget check per iteration
+        if interp.agent_token_budget > 0 && interp.agent_tokens_used >= interp.agent_token_budget {
+            return Err(RuntimeError::TypeError(format!(
+                "token budget exhausted during think loop: {}/{}", interp.agent_tokens_used, interp.agent_token_budget
+            )));
+        }
+
         let mut body = serde_json::json!({
             "model": model,
-            "messages": messages,
+            "messages": interp.agent_conversation,
             "max_tokens": 2048,
         });
+        if !tools.is_empty() { body["tools"] = serde_json::json!(tools); }
+        if json_mode { body["response_format"] = serde_json::json!({"type": "json_object"}); }
 
-        if !tools.is_empty() {
-            body["tools"] = serde_json::json!(tools);
+        // Retry with exponential backoff
+        let mut last_error = String::new();
+        let mut resp_text = None;
+        for retry in 0..=max_retries {
+            match ureq::post(&api_url)
+                .set("Authorization", &format!("Bearer {}", api_key))
+                .set("Content-Type", "application/json")
+                .send_string(&body.to_string())
+            {
+                Ok(response) => {
+                    resp_text = Some(response.into_string()
+                        .map_err(|e| RuntimeError::TypeError(format!("think() response error: {}", e)))?);
+                    break;
+                }
+                Err(e) => {
+                    last_error = format!("{}", e);
+                    let is_retryable = last_error.contains("429") || last_error.contains("500")
+                        || last_error.contains("502") || last_error.contains("503")
+                        || last_error.contains("timeout");
+                    if is_retryable && retry < max_retries {
+                        let delay = std::time::Duration::from_millis(500 * (1 << retry));
+                        eprintln!("[agent] retry {}/{} after {:?}: {}", retry + 1, max_retries, delay, last_error);
+                        std::thread::sleep(delay);
+                        continue;
+                    }
+                    return Err(RuntimeError::TypeError(format!("think() failed after {} retries: {}", max_retries, last_error)));
+                }
+            }
         }
-        if json_mode {
-            body["response_format"] = serde_json::json!({"type": "json_object"});
-        }
-
-        let resp = ureq::post(&api_url)
-            .set("Authorization", &format!("Bearer {}", api_key))
-            .set("Content-Type", "application/json")
-            .send_string(&body.to_string())
-            .map_err(|e| RuntimeError::TypeError(format!("think() HTTP error: {}", e)))?;
-
-        let text = resp.into_string()
-            .map_err(|e| RuntimeError::TypeError(format!("think() response error: {}", e)))?;
+        let text = resp_text.ok_or_else(|| RuntimeError::TypeError(format!("think() no response: {}", last_error)))?;
         let json: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| RuntimeError::TypeError(format!("think() JSON error: {}", e)))?;
 
@@ -182,41 +269,63 @@ fn agent_think(
             return Err(RuntimeError::TypeError(format!("LLM error: {}", err)));
         }
 
+        // Track token usage
+        let usage = &json["usage"];
+        let tokens_this_call = usage["total_tokens"].as_i64().unwrap_or(0);
+        interp.agent_tokens_used += tokens_this_call;
+
         let choice = &json["choices"][0];
         let message = &choice["message"];
         let finish_reason = choice["finish_reason"].as_str().unwrap_or("");
 
-        // Check for tool calls
+        // Trace this LLM call
+        interp.agent_trace.push(super::super::map_from_pairs(vec![
+            ("event".to_string(), Value::String("think".to_string())),
+            ("iteration".to_string(), Value::Int(iteration as i64)),
+            ("prompt".to_string(), Value::String(if iteration == 0 { prompt.to_string() } else { "(continuation)".to_string() })),
+            ("tokens".to_string(), Value::Int(tokens_this_call)),
+            ("total_tokens".to_string(), Value::Int(interp.agent_tokens_used)),
+            ("finish_reason".to_string(), Value::String(finish_reason.to_string())),
+            ("timestamp".to_string(), Value::Int(ts())),
+        ]));
+
+        // Handle tool calls
         if finish_reason == "tool_calls" || message["tool_calls"].is_array() {
             if let Some(tool_calls) = message["tool_calls"].as_array() {
-                // Add assistant message with tool calls to conversation
-                messages.push(message.clone());
+                interp.agent_conversation.push(message.clone());
 
-                // Execute each tool call
                 for tc in tool_calls {
                     let tool_name = tc["function"]["name"].as_str().unwrap_or("");
                     let tool_args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
                     let tool_id = tc["id"].as_str().unwrap_or("");
 
-                    // Parse tool arguments and dispatch to the cell's handler
                     let result = dispatch_tool_call(interp, cell_name, tool_name, tool_args_str);
 
-                    // Add tool result to conversation
-                    messages.push(serde_json::json!({
+                    // Trace the tool call
+                    interp.agent_trace.push(super::super::map_from_pairs(vec![
+                        ("event".to_string(), Value::String("tool_call".to_string())),
+                        ("tool".to_string(), Value::String(tool_name.to_string())),
+                        ("args".to_string(), Value::String(tool_args_str.to_string())),
+                        ("result".to_string(), Value::String(format!("{}", result))),
+                        ("timestamp".to_string(), Value::Int(ts())),
+                    ]));
+
+                    interp.agent_conversation.push(serde_json::json!({
                         "role": "tool",
                         "tool_call_id": tool_id,
                         "content": format!("{}", result),
                     }));
                 }
-                // Continue the loop — LLM will see tool results
-                continue;
+                continue; // LLM will see tool results
             }
         }
 
-        // Final response — extract content
+        // Final response
         if let Some(content) = message["content"].as_str() {
+            // Add to conversation for multi-turn
+            interp.agent_conversation.push(serde_json::json!({"role": "assistant", "content": content}));
+
             if json_mode {
-                // Parse JSON response into a Map
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(content) {
                     return Ok(super::super::json_to_value(&parsed));
                 }

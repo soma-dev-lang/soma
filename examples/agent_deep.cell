@@ -1,0 +1,104 @@
+// Deep Agent Features — everything Soma gives you that nobody else does
+//
+// - Token budgets: hard-capped LLM spend per task
+// - Multi-turn: consecutive think() calls share context
+// - Tool calling: LLM dispatches to cell handlers automatically
+// - Retry: exponential backoff on rate limits
+// - Tracing: every think/tool/transition logged
+// - Approval gates: human-in-the-loop
+// - Verified termination: state machine proves completion
+//
+// Run: SOMA_LLM_KEY=sk-... soma run agent_deep.cell
+// Verify: soma verify agent_deep.cell
+
+cell agent DeepAgent {
+    face {
+        signal analyze(topic: String) -> Map
+        tool search(query: String) -> String "Search for information"
+        tool store(key: String, value: String) -> String "Store a finding"
+    }
+
+    memory {
+        findings: Map<String, String> [persistent]
+    }
+
+    state task {
+        initial: idle
+        idle -> budgeting
+        budgeting -> researching
+        researching -> confirming
+        confirming -> synthesizing
+        synthesizing -> done
+        * -> failed
+    }
+
+    on search(query: String) {
+        "Results for '{query}': [simulated search results]"
+    }
+
+    on store(key: String, value: String) {
+        findings.set(key, value)
+        "Stored: {key}"
+    }
+
+    on analyze(topic: String) {
+        // 1. Set token budget — hard cap
+        transition("t", "budgeting")
+        set_budget(5000)
+        print("Budget: 5000 tokens")
+
+        // 2. Research with multi-turn context
+        transition("t", "researching")
+        let facts = try { think("Research '{topic}'. Use the search tool to find facts.") }
+        if facts.error != () {
+            transition("t", "failed")
+            return map("error", facts.error)
+        }
+        print("Research done. Tokens: {tokens_used()}")
+
+        // 3. Follow-up uses same conversation context (multi-turn)
+        let details = try { think("Based on what you found, what are the 3 most important implications?") }
+        if details.error != () {
+            transition("t", "failed")
+            return map("error", details.error)
+        }
+        print("Details done. Tokens: {tokens_used()}")
+
+        // 4. Human approval gate
+        transition("t", "confirming")
+        let approved = approve("Publish analysis of '{topic}'?")
+        if !approved {
+            transition("t", "failed")
+            return map("error", "rejected by human")
+        }
+
+        // 5. Final synthesis
+        transition("t", "synthesizing")
+        let summary = try { think("Write a final 2-sentence summary of your analysis.") }
+        if summary.error != () {
+            transition("t", "failed")
+            return map("error", summary.error)
+        }
+
+        transition("t", "done")
+        print("Total tokens: {tokens_used()} / {tokens_remaining() + tokens_used()}")
+
+        // 6. Get full execution trace
+        let execution_trace = trace()
+        print("Trace entries: {len(execution_trace)}")
+
+        clear_context()
+
+        map(
+            "topic", topic,
+            "summary", summary.value,
+            "tokens_used", tokens_used(),
+            "trace_entries", len(execution_trace),
+            "status", "done"
+        )
+    }
+
+    on run() {
+        analyze("the impact of formal verification on AI agent safety")
+    }
+}

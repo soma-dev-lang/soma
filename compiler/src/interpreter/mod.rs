@@ -342,6 +342,17 @@ pub struct Interpreter {
     pub sharded_slots: HashMap<String, bool>,
     /// Memory invariants: slot_name → list of expressions to check on .set()
     pub(crate) invariants: HashMap<String, Vec<Expr>>,
+    // ── Agent-specific state ────────────────────────────────────────
+    /// Token usage tracking: total tokens consumed by think() calls
+    pub(crate) agent_tokens_used: i64,
+    /// Token budget: max tokens allowed (0 = unlimited)
+    pub(crate) agent_token_budget: i64,
+    /// Conversation history for multi-turn think() within a handler
+    pub(crate) agent_conversation: Vec<serde_json::Value>,
+    /// Structured trace log: every think, tool call, transition, delegate
+    pub(crate) agent_trace: Vec<Value>,
+    /// Pending approval gates (for human-in-the-loop)
+    pub(crate) agent_pending_approval: Option<String>,
 }
 
 impl Interpreter {
@@ -404,6 +415,11 @@ impl Interpreter {
             cluster: None,
             sharded_slots: HashMap::new(),
             invariants,
+            agent_tokens_used: 0,
+            agent_token_budget: 0,
+            agent_conversation: Vec::new(),
+            agent_trace: Vec::new(),
+            agent_pending_approval: None,
         }
     }
 
