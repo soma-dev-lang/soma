@@ -20,6 +20,72 @@ pub struct Manifest {
     /// Cluster configuration for distributed execution
     #[serde(default)]
     pub cluster: ClusterConfig,
+    /// Agent LLM configuration
+    #[serde(default)]
+    pub agent: AgentConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// LLM provider: "openai", "ollama", "anthropic", or custom URL
+    #[serde(default)]
+    pub provider: String,
+    /// Model name (e.g., "gpt-4o-mini", "gemma3:12b", "claude-sonnet-4-20250514")
+    #[serde(default)]
+    pub model: String,
+    /// Full API URL (overrides provider). For ollama: http://localhost:11434/v1/chat/completions
+    #[serde(default)]
+    pub url: String,
+    /// API key (optional — prefer SOMA_LLM_KEY env var for secrets)
+    #[serde(default)]
+    pub key: String,
+    /// Max retries on rate limit / transient errors
+    #[serde(default = "default_retries")]
+    pub retries: usize,
+    /// Mock mode: "echo", "fixed:response text" (for testing)
+    #[serde(default)]
+    pub mock: String,
+}
+
+fn default_retries() -> usize { 3 }
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            provider: String::new(),
+            model: String::new(),
+            url: String::new(),
+            key: String::new(),
+            retries: 3,
+            mock: String::new(),
+        }
+    }
+}
+
+impl AgentConfig {
+    /// Resolve the full API URL from provider shorthand or explicit url
+    pub fn resolve_url(&self) -> String {
+        if !self.url.is_empty() {
+            return self.url.clone();
+        }
+        match self.provider.as_str() {
+            "ollama" => "http://localhost:11434/v1/chat/completions".to_string(),
+            "anthropic" => "https://api.anthropic.com/v1/messages".to_string(),
+            _ => "https://api.openai.com/v1/chat/completions".to_string(),
+        }
+    }
+
+    /// Resolve model name with sensible defaults per provider
+    pub fn resolve_model(&self) -> String {
+        if !self.model.is_empty() {
+            return self.model.clone();
+        }
+        match self.provider.as_str() {
+            "ollama" => "gemma3:12b".to_string(),
+            "anthropic" => "claude-sonnet-4-20250514".to_string(),
+            _ => "gpt-4o-mini".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -190,6 +256,7 @@ impl Manifest {
             verify: VerifyConfig::default(),
             compute: ComputeConfig::default(),
             cluster: ClusterConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 }

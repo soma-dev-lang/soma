@@ -245,6 +245,18 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         } else { crate::codegen::native::ParallelConfig::default() }
     };
 
+    // Read agent config from soma.toml [agent] section
+    {
+        let soma_toml = source_path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+        if soma_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&soma_toml) {
+                if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
+                    interp.agent_config = Some(manifest.agent);
+                }
+            }
+        }
+    }
+
     // Compile and load [native] handlers
     match interpreter::native_ffi::compile_and_load_natives_with_config(&program, &parallel_config) {
         Ok(natives) => {

@@ -137,6 +137,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         vec![]
     };
 
+    // Load agent config from soma.toml
+    let agent_config: Option<crate::pkg::manifest::AgentConfig> = soma_toml_path.exists().then(|| {
+        std::fs::read_to_string(&soma_toml_path).ok()
+            .and_then(|c| toml::from_str::<crate::pkg::manifest::Manifest>(&c).ok())
+            .map(|m| m.agent)
+    }).flatten();
+
     // Cluster mode activates when: --join is specified, OR env SOMA_SEEDS, OR cell has scale { }
     let is_cluster_mode = !seeds_to_join.is_empty() || scale_section.is_some();
 
@@ -855,6 +862,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         let shared_ws = shared_ws_out.clone();
         let cluster_for_http = cluster_node.clone();
         let sharded_for_http = sharded_slots.clone();
+        let agent_config = agent_config.clone();
 
         std::thread::spawn(move || {
         let method = request.method().to_string();
@@ -948,6 +956,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         interp.ensure_state_machine_storage();
         interp.event_bus = Some(event_bus.clone());
         interp.peer_bus = Some(peer_bus.clone());
+        interp.agent_config = agent_config.clone();
         if let Some(ref c) = cluster_for_http { interp.set_cluster(c.clone(), &sharded_for_http); }
         if let Ok(ws_guard) = shared_ws.lock() {
             interp.ws_out = ws_guard.clone();

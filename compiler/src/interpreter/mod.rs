@@ -353,6 +353,8 @@ pub struct Interpreter {
     pub(crate) agent_trace: Vec<Value>,
     /// Pending approval gates (for human-in-the-loop)
     pub(crate) agent_pending_approval: Option<String>,
+    /// Agent LLM config (from soma.toml [agent] section)
+    pub agent_config: Option<crate::pkg::manifest::AgentConfig>,
 }
 
 impl Interpreter {
@@ -420,6 +422,7 @@ impl Interpreter {
             agent_conversation: Vec::new(),
             agent_trace: Vec::new(),
             agent_pending_approval: None,
+            agent_config: None,
         }
     }
 

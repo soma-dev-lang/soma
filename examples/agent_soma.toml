@@ -3,6 +3,13 @@ name = "researcher-agent"
 version = "0.1.0"
 description = "Verified AI research agent"
 
+[agent]
+provider = "ollama"
+model = "gemma3:12b"
+# For OpenAI: provider = "openai", key = "sk-..."
+# For Anthropic: provider = "anthropic", key = "sk-ant-..."
+# For custom: url = "https://your-api.com/v1/chat/completions"
+
 [verify]
 deadlock_free = true
 eventually = ["done", "failed"]

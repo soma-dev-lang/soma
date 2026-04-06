@@ -318,11 +318,44 @@ let value = try { risky_operation() }?
 // Equivalent to: if result has error, return error map; else unwrap value
 
 // Agent builtins
-let answer = think("What is 2+2?")           // call LLM (OpenAI-compatible)
+let answer = think("What is 2+2?")           // call LLM (configured in soma.toml)
 let data = think_json("Return as JSON: ...")  // LLM returns Map, not String
 delegate("Writer", "write", facts, topic)     // call another agent's handler
 remember("key", value)                        // persistent agent memory
 let val = recall("key")                       // recall from agent memory
+set_budget(5000)                              // hard token cap
+let t = tokens_used()                         // tokens consumed
+let log = trace()                             // execution log
+approve("publish article")                    // human-in-the-loop gate
+```
+
+## Agent configuration (soma.toml)
+
+```toml
+[agent]
+provider = "ollama"          # ollama (free, local)
+model = "gemma3:12b"
+
+# Or OpenAI:
+# provider = "openai"
+# model = "gpt-4o-mini"
+# key = "sk-..."             # or use SOMA_LLM_KEY env var
+
+# Or Anthropic:
+# provider = "anthropic"
+# model = "claude-opus-4-6"
+# key = "sk-ant-..."         # or use SOMA_LLM_KEY env var
+
+# Or custom endpoint:
+# url = "https://your-api.com/v1/chat/completions"
+# model = "your-model"
+# key = "your-key"
+```
+
+Ollama needs no key. OpenAI/Anthropic keys can go in soma.toml or `SOMA_LLM_KEY` env var.
+Env vars always override soma.toml.
+
+```soma
 
 // Postconditions: ensure (checked at point of execution)
 on withdraw(balance: Int, amount: Int) {

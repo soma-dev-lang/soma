@@ -233,9 +233,14 @@ fn agent_think(
         )));
     }
 
-    // ── Mock mode: SOMA_LLM_MOCK enables offline testing ──────────
-    // echo: returns the prompt back. fixed:TEXT: returns TEXT.
-    if let Ok(mock) = std::env::var("SOMA_LLM_MOCK") {
+    // Resolve config: soma.toml [agent] → env vars → defaults
+    let cfg = interp.agent_config.as_ref();
+    let cfg_mock = cfg.map(|c| c.mock.clone()).unwrap_or_default();
+
+    // ── Mock mode: soma.toml mock or SOMA_LLM_MOCK env ──────────
+    let mock_val = std::env::var("SOMA_LLM_MOCK").ok()
+        .or_else(|| if cfg_mock.is_empty() { None } else { Some(cfg_mock) });
+    if let Some(mock) = mock_val {
         let response = if mock == "echo" {
             prompt.to_string()
         } else if let Some(text) = mock.strip_prefix("fixed:") {
@@ -264,25 +269,43 @@ fn agent_think(
         return Ok(Value::String(response));
     }
 
-    // ── Fail-fast: check API key BEFORE any network calls ─────────
+    // ── Resolve config: soma.toml [agent] → env vars → defaults ──
+    let cfg = interp.agent_config.as_ref();
+
+    // API key: env var > soma.toml > provider default > error
+    let provider = cfg.map(|c| c.provider.clone()).unwrap_or_default();
     let api_key = std::env::var("SOMA_LLM_KEY")
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
         .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+        .or_else(|_| {
+            cfg.map(|c| c.key.clone()).filter(|k| !k.is_empty())
+                .ok_or(std::env::VarError::NotPresent)
+        })
+        .or_else(|_| {
+            // Ollama doesn't need a real key
+            if provider == "ollama" { Ok("ollama".to_string()) } else { Err(std::env::VarError::NotPresent) }
+        })
         .map_err(|_| RuntimeError::TypeError(
-            "think() requires SOMA_LLM_KEY env var (or set SOMA_LLM_MOCK=echo for offline testing)".to_string()
+            "think() requires API key. Set in soma.toml:\n\n    [agent]\n    provider = \"ollama\"\n    model = \"gemma3:12b\"\n\nOr set SOMA_LLM_KEY env var. Or use SOMA_LLM_MOCK=echo for offline testing.".to_string()
         ))?;
     if api_key.is_empty() {
         return Err(RuntimeError::TypeError(
-            "think() API key is empty. Set SOMA_LLM_KEY or use SOMA_LLM_MOCK=echo for offline testing.".to_string()
+            "think() API key is empty. Configure [agent] in soma.toml or set SOMA_LLM_KEY.".to_string()
         ));
     }
 
+    // URL: env var > soma.toml resolve > default
     let api_url = std::env::var("SOMA_LLM_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
+        .unwrap_or_else(|_| cfg.map(|c| c.resolve_url()).unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string()));
+
+    // Model: env var > soma.toml resolve > default
     let model = std::env::var("SOMA_LLM_MODEL")
-        .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        .unwrap_or_else(|_| cfg.map(|c| c.resolve_model()).unwrap_or_else(|| "gpt-4o-mini".to_string()));
+
+    // Retries: env var > soma.toml > 3
     let max_retries: usize = std::env::var("SOMA_LLM_RETRIES")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(3);
+        .ok().and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| cfg.map(|c| c.retries).unwrap_or(3));
 
     let system_msg = system.unwrap_or("You are a helpful AI agent. Be concise. Use tools when available.");
     let tools = build_tool_definitions(interp, cell_name);
