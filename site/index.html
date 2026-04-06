@@ -200,10 +200,10 @@ State machines are proofs. Infrastructure is a constraint. Pipelines are pipes.
 
     <span class="kw">state</span> workflow {
         <span class="kw">initial</span>: idle
-        idle &rarr; researching
-        researching &rarr; analyzing
-        analyzing &rarr; done
-        * &rarr; failed
+        idle -> researching
+        researching -> analyzing
+        analyzing -> done
+        * -> failed
     }
 
     <span class="kw">on</span> research(topic: String) {
@@ -248,8 +248,8 @@ Temporal properties:
 <pre><code><span class="kw">cell</span> <span class="kw">agent</span> Pipeline {
     <span class="kw">state</span> pipeline {
         <span class="kw">initial</span>: idle
-        idle &rarr; researching &rarr; writing &rarr; reviewing &rarr; done
-        * &rarr; failed
+        idle -> researching -> writing -> reviewing -> done
+        * -> failed
     }
 
     <span class="kw">on</span> run(topic: String) {
@@ -267,7 +267,7 @@ Temporal properties:
     }
 }
 
-<span class="cmt">// soma verify PROVES: idle &rarr; researching &rarr; writing &rarr; reviewing &rarr; done</span>
+<span class="cmt">// soma verify PROVES: idle -> researching -> writing -> reviewing -> done</span>
 <span class="cmt">// No stage can be skipped. No infinite loops. The proof is the pipeline.</span></code></pre>
 
 <table>
@@ -531,7 +531,7 @@ State machine 'order': 7 states, initial 'pending'
 <section id="agents">
 <h2>Built for AI agents</h2>
 
-<p>Soma is the first language designed around the <strong>generate &rarr; fix &rarr; verify &rarr; serve</strong> loop. Every tool outputs structured JSON. The compiler writes missing code. Storage auto-serializes. Agents don't fight the language &mdash; the language fights for them.</p>
+<p>Soma is the first language designed around the <strong>generate -> fix -> verify -> serve</strong> loop. Every tool outputs structured JSON. The compiler writes missing code. Storage auto-serializes. Agents don't fight the language &mdash; the language fights for them.</p>
 
 <div class="grid3">
 <div class="card">
@@ -553,12 +553,12 @@ State machine 'order': 7 states, initial 'pending'
 <pre><code><span class="kw">on</span> request(method: String, path: String, body: String) {
     <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
     <span class="kw">match</span> req {
-        {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                     &rarr; home()
-        {method: <span class="str">"GET"</span>, path: <span class="str">"/api/"</span> + resource}      &rarr; list(resource)
-        {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}     &rarr; create(resource, body)
-        {method: <span class="str">"DELETE"</span>, path: <span class="str">"/api/"</span> + resource}   &rarr; delete(resource)
-        {method} <span class="kw">if</span> method == <span class="str">"OPTIONS"</span>              &rarr; cors()
-        _                                            &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+        {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                     -> home()
+        {method: <span class="str">"GET"</span>, path: <span class="str">"/api/"</span> + resource}      -> list(resource)
+        {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}     -> create(resource, body)
+        {method: <span class="str">"DELETE"</span>, path: <span class="str">"/api/"</span> + resource}   -> delete(resource)
+        {method} <span class="kw">if</span> method == <span class="str">"OPTIONS"</span>              -> cors()
+        _                                            -> <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
     }
 }</code></pre>
 
@@ -589,8 +589,8 @@ print(user.name)     <span class="cmt">// "Alice" &mdash; auto-deserialized</spa
 <tr><th>Tool</th><th>Role</th><th>In Soma</th></tr>
 <tr><td>Airflow / Cron</td><td>Scheduling</td><td><code>every 30s { ... }</code></td></tr>
 <tr><td>Spark / Pandas</td><td>Data pipelines</td><td><code>|> filter() |> map() |> sort_by()</code></td></tr>
-<tr><td>SQLite / DB config</td><td>Persistence</td><td><code>[persistent, consistent]</code> &rarr; SQLite auto-resolved</td></tr>
-<tr><td>In-memory cache</td><td>Fast storage</td><td><code>[ephemeral, local]</code> &rarr; HashMap</td></tr>
+<tr><td>SQLite / DB config</td><td>Persistence</td><td><code>[persistent, consistent]</code> -> SQLite auto-resolved</td></tr>
+<tr><td>In-memory cache</td><td>Fast storage</td><td><code>[ephemeral, local]</code> -> HashMap</td></tr>
 <tr><td>Express / Flask</td><td>API server</td><td><code>on request() { match path { ... } }</code></td></tr>
 <tr><td>React</td><td>Dashboard</td><td><code>html(""" ... """)</code></td></tr>
 <tr><td>Celery</td><td>Background jobs</td><td><code>every 1h { rebalance() }</code></td></tr>
@@ -1113,9 +1113,9 @@ State machine 'PricingEngine/scale':
     <span class="kw">on</span> request(method: String, path: String, body: String) {
         <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
         <span class="kw">match</span> req {
-            {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                 &rarr; items.<span class="fn">values</span>
-            {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}  &rarr; items.<span class="fn">set</span>(resource, <span class="fn">from_json</span>(body))
-            _                                         &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+            {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                 -> items.<span class="fn">values</span>
+            {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}  -> items.<span class="fn">set</span>(resource, <span class="fn">from_json</span>(body))
+            _                                         -> <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
         }
     }
 }
@@ -1124,7 +1124,7 @@ State machine 'PricingEngine/scale':
 <h3>Verified agent (10 lines)</h3>
 <pre><code><span class="kw">cell</span> <span class="kw">agent</span> Bot {
     <span class="kw">face</span> { <span class="kw">tool</span> search(q: String) -> String <span class="str">"Search the web"</span> }
-    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle &rarr; thinking &rarr; done  * &rarr; failed }
+    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle -> thinking -> done  * -> failed }
     <span class="kw">on</span> search(q: String) { <span class="str">"Results for: {q}"</span> }
     <span class="kw">on</span> run(topic: String) {
         <span class="fn">set_budget</span>(<span class="num">5000</span>)
@@ -1136,19 +1136,25 @@ State machine 'PricingEngine/scale':
 }
 <span class="cmt">// $ soma verify bot.cell          ← PROVES it terminates</span>
 <span class="cmt">// $ SOMA_LLM_MOCK=echo soma run bot.cell "AI"  ← works offline</span>
-<span class="cmt">// $ SOMA_LLM_KEY=sk-... soma run bot.cell "AI"  ← real LLM</span></code></pre>
+<span class="cmt">// $ SOMA_LLM_KEY=sk-... soma run bot.cell "AI"  ← real LLM</span>
+<span class="cmt">//</span>
+<span class="cmt">// Ollama (local, free):</span>
+<span class="cmt">// $ export SOMA_LLM_KEY=ollama</span>
+<span class="cmt">// $ export SOMA_LLM_URL=http://localhost:11434/v1/chat/completions</span>
+<span class="cmt">// $ export SOMA_LLM_MODEL=gemma3:12b</span>
+<span class="cmt">// $ soma run bot.cell "AI"</span></code></pre>
 
 <h3>Multi-agent coordination</h3>
 <pre><code><span class="kw">cell</span> <span class="kw">agent</span> Researcher {
-    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle &rarr; done  * &rarr; failed }
+    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle -> done  * -> failed }
     <span class="kw">on</span> research(topic: String) {
         <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"done"</span>)
         <span class="kw">let</span> r = <span class="fn">think</span>(<span class="str">"Research: {topic}"</span>)
-        <span class="kw">emit</span> findings(<span class="fn">map</span>(<span class="str">"topic"</span>, topic, <span class="str">"data"</span>, r))  <span class="cmt">// &rarr; Writer receives</span>
+        <span class="kw">emit</span> findings(<span class="fn">map</span>(<span class="str">"topic"</span>, topic, <span class="str">"data"</span>, r))  <span class="cmt">// -> Writer receives</span>
     }
 }
 <span class="kw">cell</span> <span class="kw">agent</span> Writer {
-    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle &rarr; done  * &rarr; failed }
+    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle -> done  * -> failed }
     <span class="kw">on</span> findings(data: Map) {
         <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"done"</span>)
         <span class="fn">print</span>(<span class="fn">think</span>(<span class="str">"Write about: {data.topic}"</span>))
@@ -1170,7 +1176,7 @@ x += <span class="num">10</span>                   <span class="cmt">// compound
 
 <span class="cmt">// Control flow (if/match are expressions)</span>
 <span class="kw">let</span> y = <span class="kw">if</span> x > <span class="num">0</span> { <span class="str">"pos"</span> } <span class="kw">else</span> { <span class="str">"neg"</span> }
-<span class="kw">let</span> z = <span class="kw">match</span> x { <span class="num">0</span>..<span class="num">10</span> &rarr; <span class="str">"small"</span>  _ &rarr; <span class="str">"big"</span> }
+<span class="kw">let</span> z = <span class="kw">match</span> x { <span class="num">0</span>..<span class="num">10</span> -> <span class="str">"small"</span>  _ -> <span class="str">"big"</span> }
 
 <span class="cmt">// Pipes</span>
 data |&gt; <span class="fn">filter</span>(x =&gt; x.score &gt; <span class="num">50</span>) |&gt; <span class="fn">sort_by</span>(<span class="str">"score"</span>) |&gt; <span class="fn">top</span>(<span class="num">10</span>)
@@ -1194,15 +1200,15 @@ data.<span class="fn">set</span>(<span class="str">"k"</span>, <span class="fn">
 
 <h3>Match patterns (all composable)</h3>
 <pre><code><span class="kw">match</span> value {
-    <span class="str">"literal"</span>                    &rarr; expr
-    <span class="str">"a"</span> || <span class="str">"b"</span>                   &rarr; expr          <span class="cmt">// or-pattern</span>
-    name                         &rarr; use(name)     <span class="cmt">// variable binding</span>
-    <span class="str">"/api/"</span> + rest               &rarr; api(rest)     <span class="cmt">// string prefix</span>
-    {method: <span class="str">"GET"</span>, path}        &rarr; get(path)     <span class="cmt">// map destructure</span>
-    <span class="num">0</span>..<span class="num">100</span>                       &rarr; <span class="str">"small"</span>       <span class="cmt">// range</span>
-    n <span class="kw">if</span> n &gt; <span class="num">0</span>                   &rarr; <span class="str">"positive"</span>   <span class="cmt">// guard</span>
-    ()                           &rarr; <span class="str">"null"</span>        <span class="cmt">// unit</span>
-    _                            &rarr; <span class="str">"default"</span>     <span class="cmt">// wildcard</span>
+    <span class="str">"literal"</span>                    -> expr
+    <span class="str">"a"</span> || <span class="str">"b"</span>                   -> expr          <span class="cmt">// or-pattern</span>
+    name                         -> use(name)     <span class="cmt">// variable binding</span>
+    <span class="str">"/api/"</span> + rest               -> api(rest)     <span class="cmt">// string prefix</span>
+    {method: <span class="str">"GET"</span>, path}        -> get(path)     <span class="cmt">// map destructure</span>
+    <span class="num">0</span>..<span class="num">100</span>                       -> <span class="str">"small"</span>       <span class="cmt">// range</span>
+    n <span class="kw">if</span> n &gt; <span class="num">0</span>                   -> <span class="str">"positive"</span>   <span class="cmt">// guard</span>
+    ()                           -> <span class="str">"null"</span>        <span class="cmt">// unit</span>
+    _                            -> <span class="str">"default"</span>     <span class="cmt">// wildcard</span>
 }</code></pre>
 
 <h3>Don't / Do</h3>

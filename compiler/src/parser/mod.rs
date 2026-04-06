@@ -967,7 +967,6 @@ impl Parser {
                         }
                         self.expect(Token::RBrace)?;
                     } else {
-                        // Unknown token in transition block, skip
                         self.advance();
                     }
                 }
@@ -975,9 +974,22 @@ impl Parser {
             }
 
             transitions.push(Spanned::new(
-                Transition { from, to, guard, effect },
+                Transition { from: from.clone(), to: to.clone(), guard, effect },
                 start.merge(self.prev_span()),
             ));
+
+            // Support chained transitions: a -> b -> c -> d
+            // Desugars to: a -> b, b -> c, c -> d
+            let mut prev = to;
+            while self.check(&Token::Arrow) {
+                self.advance();
+                let (next, _) = self.expect_ident()?;
+                transitions.push(Spanned::new(
+                    Transition { from: prev.clone(), to: next.clone(), guard: None, effect: vec![] },
+                    start.merge(self.prev_span()),
+                ));
+                prev = next;
+            }
         }
 
         self.expect(Token::RBrace)?;
