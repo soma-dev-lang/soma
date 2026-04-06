@@ -733,8 +733,51 @@ impl Interpreter {
                         }
                     }
                 }
-                // += optimization: items += val → in-place append for lists, in-place concat for strings
-                // (handled by BinaryOp::Add desugaring, but we can optimize the common case)
+                // Fast path: x = x + LITERAL or x = x - LITERAL (compound assignment on ints)
+                if let Expr::BinaryOp { left, op, right } = &value.node {
+                    if let Expr::Ident(ref lhs_name) = left.node {
+                        if lhs_name == name {
+                            // x = x OP rhs → in-place update
+                            if let Some(Value::Int(current)) = env.get(name) {
+                                let current = *current;
+                                let rhs_val = self.eval_expr(&right.node, env, cell_name, signal_name)?;
+                                if let Value::Int(rhs_int) = rhs_val {
+                                    let result = match op {
+                                        BinOp::Add => current.wrapping_add(rhs_int),
+                                        BinOp::Sub => current.wrapping_sub(rhs_int),
+                                        BinOp::Mul => current.wrapping_mul(rhs_int),
+                                        BinOp::Div if rhs_int != 0 => current / rhs_int,
+                                        _ => {
+                                            let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
+                                            env.insert(name.clone(), val);
+                                            return Ok(Value::Unit);
+                                        }
+                                    };
+                                    env.insert(name.clone(), Value::Int(result));
+                                    return Ok(Value::Unit);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fast path: m = m |> with(k, v) → in-place map insert
+                if let Expr::Pipe { left, right } = &value.node {
+                    if let Expr::Ident(ref pipe_name) = left.node {
+                        if pipe_name == name {
+                            if let Expr::FnCall { name: fn_name, args } = &right.node {
+                                if fn_name == "with" && args.len() >= 2 {
+                                    let key = self.eval_expr(&args[0].node, env, cell_name, signal_name)?;
+                                    let val = self.eval_expr(&args[1].node, env, cell_name, signal_name)?;
+                                    let key_str = format!("{}", key);
+                                    if let Some(Value::Map(ref mut entries)) = env.get_mut(name) {
+                                        entries.insert(key_str, val);
+                                        return Ok(Value::Unit);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
                 env.insert(name.clone(), val);
                 Ok(Value::Unit)
@@ -827,7 +870,26 @@ impl Interpreter {
             }
 
             Statement::While { condition, body } => {
-                let mut iterations = 0;
+                // Fast path: while ident < int_literal — avoid full eval_expr on condition
+                if let Expr::CmpOp { left, op: CmpOp::Lt, right } = &condition.node {
+                    if let (Expr::Ident(ref var_name), Expr::Literal(Literal::Int(limit))) = (&left.node, &right.node) {
+                        let limit = *limit;
+                        let vn = var_name.clone();
+                        loop {
+                            if let Some(Value::Int(current)) = env.get(&vn) {
+                                if *current >= limit { break; }
+                            } else { break; }
+                            match self.exec_body_scoped(body, env, cell_name, signal_name) {
+                                Ok(_) => {}
+                                Err(ExecError::Break) => break,
+                                Err(ExecError::Continue) => {}
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        return Ok(Value::Unit);
+                    }
+                }
+                // General path
                 loop {
                     let cond = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
                     if !is_truthy(&cond) {
@@ -838,10 +900,6 @@ impl Interpreter {
                         Err(ExecError::Break) => break,
                         Err(ExecError::Continue) => {}
                         Err(e) => return Err(e),
-                    }
-                    iterations += 1;
-                    if iterations > 1_000_000 {
-                        return Err(ExecError::Runtime(RuntimeError::StackOverflow));
                     }
                 }
                 Ok(Value::Unit)
