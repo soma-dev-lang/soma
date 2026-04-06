@@ -1095,6 +1095,130 @@ State machine 'PricingEngine/scale':
         &rarr; SSE + WebSocket + TCP signal bus</code></pre>
 </section>
 
+<!-- ═══════════════════════════════════ AGENT CHEAT SHEET ═══════════════════════════════════ -->
+<section id="cheatsheet">
+<h2>Agent cheat sheet</h2>
+<p style="color:var(--dim)">Everything an AI agent needs to write Soma. Copy-paste ready. See <a href="/llms.txt">llms.txt</a> for the full machine-readable reference.</p>
+
+<h3>Hello world</h3>
+<pre><code><span class="cmt">// app.cell</span>
+<span class="kw">cell</span> App {
+    <span class="kw">on</span> run() { <span class="fn">print</span>(<span class="str">"hello soma"</span>) }
+}
+<span class="cmt">// $ soma run app.cell</span></code></pre>
+
+<h3>Web app (5 lines)</h3>
+<pre><code><span class="kw">cell</span> App {
+    <span class="kw">memory</span> { items: Map&lt;String, String&gt; [<span class="fn">persistent</span>] }
+    <span class="kw">on</span> request(method: String, path: String, body: String) {
+        <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
+        <span class="kw">match</span> req {
+            {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                 &rarr; items.<span class="fn">values</span>
+            {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}  &rarr; items.<span class="fn">set</span>(resource, <span class="fn">from_json</span>(body))
+            _                                         &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+        }
+    }
+}
+<span class="cmt">// $ soma serve app.cell</span></code></pre>
+
+<h3>Verified agent (10 lines)</h3>
+<pre><code><span class="kw">cell</span> <span class="kw">agent</span> Bot {
+    <span class="kw">face</span> { <span class="kw">tool</span> search(q: String) -> String <span class="str">"Search the web"</span> }
+    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle &rarr; thinking &rarr; done  * &rarr; failed }
+    <span class="kw">on</span> search(q: String) { <span class="str">"Results for: {q}"</span> }
+    <span class="kw">on</span> run(topic: String) {
+        <span class="fn">set_budget</span>(<span class="num">5000</span>)
+        <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"thinking"</span>)
+        <span class="kw">let</span> answer = <span class="fn">think</span>(<span class="str">"Research: {topic}"</span>)
+        <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"done"</span>)
+        answer
+    }
+}
+<span class="cmt">// $ soma verify bot.cell          ← PROVES it terminates</span>
+<span class="cmt">// $ SOMA_LLM_MOCK=echo soma run bot.cell "AI"  ← works offline</span>
+<span class="cmt">// $ SOMA_LLM_KEY=sk-... soma run bot.cell "AI"  ← real LLM</span></code></pre>
+
+<h3>Multi-agent coordination</h3>
+<pre><code><span class="kw">cell</span> <span class="kw">agent</span> Researcher {
+    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle &rarr; done  * &rarr; failed }
+    <span class="kw">on</span> research(topic: String) {
+        <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"done"</span>)
+        <span class="kw">let</span> r = <span class="fn">think</span>(<span class="str">"Research: {topic}"</span>)
+        <span class="kw">emit</span> findings(<span class="fn">map</span>(<span class="str">"topic"</span>, topic, <span class="str">"data"</span>, r))  <span class="cmt">// &rarr; Writer receives</span>
+    }
+}
+<span class="kw">cell</span> <span class="kw">agent</span> Writer {
+    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle &rarr; done  * &rarr; failed }
+    <span class="kw">on</span> findings(data: Map) {
+        <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"done"</span>)
+        <span class="fn">print</span>(<span class="fn">think</span>(<span class="str">"Write about: {data.topic}"</span>))
+    }
+}
+<span class="cmt">// emit dispatches to all cells with matching handler</span>
+<span class="cmt">// delegate("Writer", "findings", data) for direct calls</span>
+<span class="cmt">// gather(items, "Worker", "process") for fan-out</span>
+<span class="cmt">// broadcast("alert", data) for all agents</span></code></pre>
+
+<h3>Syntax cheat sheet</h3>
+<pre><code><span class="cmt">// Variables</span>
+<span class="kw">let</span> x = <span class="num">42</span>                <span class="cmt">// Int</span>
+x += <span class="num">10</span>                   <span class="cmt">// compound: += -= *= /=</span>
+<span class="kw">let</span> s = <span class="str">"hi {x}"</span>          <span class="cmt">// String interpolation</span>
+<span class="kw">let</span> m = <span class="fn">map</span>(<span class="str">"a"</span>, <span class="num">1</span>)       <span class="cmt">// Map (not {a: 1})</span>
+<span class="kw">let</span> l = <span class="fn">list</span>(<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>)     <span class="cmt">// List (not [1,2,3])</span>
+<span class="kw">let</span> n = ()                <span class="cmt">// null (not null/nil)</span>
+
+<span class="cmt">// Control flow (if/match are expressions)</span>
+<span class="kw">let</span> y = <span class="kw">if</span> x > <span class="num">0</span> { <span class="str">"pos"</span> } <span class="kw">else</span> { <span class="str">"neg"</span> }
+<span class="kw">let</span> z = <span class="kw">match</span> x { <span class="num">0</span>..<span class="num">10</span> &rarr; <span class="str">"small"</span>  _ &rarr; <span class="str">"big"</span> }
+
+<span class="cmt">// Pipes</span>
+data |&gt; <span class="fn">filter</span>(x =&gt; x.score &gt; <span class="num">50</span>) |&gt; <span class="fn">sort_by</span>(<span class="str">"score"</span>) |&gt; <span class="fn">top</span>(<span class="num">10</span>)
+
+<span class="cmt">// Error handling</span>
+<span class="kw">let</span> v = <span class="kw">try</span> { risky() }?       <span class="cmt">// ? propagates error</span>
+<span class="kw">ensure</span> balance &gt;= <span class="num">0</span>            <span class="cmt">// postcondition</span>
+<span class="kw">let</span> val = x ?? <span class="num">0</span>               <span class="cmt">// null coalesce</span>
+
+<span class="cmt">// Storage (auto-serializes)</span>
+data.<span class="fn">set</span>(<span class="str">"k"</span>, <span class="fn">map</span>(<span class="str">"a"</span>, <span class="num">1</span>))  <span class="cmt">// stores map directly</span>
+<span class="kw">let</span> v = data.<span class="fn">get</span>(<span class="str">"k"</span>)         <span class="cmt">// returns map, not string</span>
+
+<span class="cmt">// Agent builtins</span>
+<span class="fn">think</span>(<span class="str">"prompt"</span>)               <span class="cmt">// LLM + tool loop</span>
+<span class="fn">think_json</span>(<span class="str">"prompt"</span>)          <span class="cmt">// returns Map</span>
+<span class="fn">delegate</span>(<span class="str">"Cell"</span>, <span class="str">"sig"</span>, args) <span class="cmt">// cross-agent call</span>
+<span class="fn">set_budget</span>(<span class="num">5000</span>)              <span class="cmt">// token cap</span>
+<span class="fn">trace</span>()                      <span class="cmt">// execution log</span>
+<span class="fn">approve</span>(<span class="str">"action"</span>)            <span class="cmt">// human gate</span></code></pre>
+
+<h3>Match patterns (all composable)</h3>
+<pre><code><span class="kw">match</span> value {
+    <span class="str">"literal"</span>                    &rarr; expr
+    <span class="str">"a"</span> || <span class="str">"b"</span>                   &rarr; expr          <span class="cmt">// or-pattern</span>
+    name                         &rarr; use(name)     <span class="cmt">// variable binding</span>
+    <span class="str">"/api/"</span> + rest               &rarr; api(rest)     <span class="cmt">// string prefix</span>
+    {method: <span class="str">"GET"</span>, path}        &rarr; get(path)     <span class="cmt">// map destructure</span>
+    <span class="num">0</span>..<span class="num">100</span>                       &rarr; <span class="str">"small"</span>       <span class="cmt">// range</span>
+    n <span class="kw">if</span> n &gt; <span class="num">0</span>                   &rarr; <span class="str">"positive"</span>   <span class="cmt">// guard</span>
+    ()                           &rarr; <span class="str">"null"</span>        <span class="cmt">// unit</span>
+    _                            &rarr; <span class="str">"default"</span>     <span class="cmt">// wildcard</span>
+}</code></pre>
+
+<h3>Don't / Do</h3>
+<table>
+<tr><th>Wrong</th><th>Right</th></tr>
+<tr><td><code>function foo() {}</code></td><td><code>on foo() {}</code></td></tr>
+<tr><td><code>null</code></td><td><code>()</code></td></tr>
+<tr><td><code>[1, 2, 3]</code></td><td><code>list(1, 2, 3)</code></td></tr>
+<tr><td><code>{key: val}</code></td><td><code>map("key", val)</code></td></tr>
+<tr><td><code>items.set(k, to_json(m))</code></td><td><code>items.set(k, m)</code></td></tr>
+<tr><td><code>from_json(items.get(k))</code></td><td><code>items.get(k)</code></td></tr>
+<tr><td><code>import x</code></td><td><code>use lib::x</code></td></tr>
+<tr><td><code>console.log(x)</code></td><td><code>print(x)</code></td></tr>
+</table>
+</section>
+
 </div>
 
 <footer>
