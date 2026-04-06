@@ -1,0 +1,253 @@
+// ═══════════════════════════════════════════════════════════════════
+// AI Hiring Pipeline — Verified Multi-Agent System
+//
+// 5 agents, each with different skills and models.
+// State machine PROVES every candidate reaches hired or rejected.
+// soma serve app.cell → full HTTP API on :8080
+//
+// Agents:
+//   Screener    (fast model) — quick resume check
+//   Interviewer (smart model) — deep technical assessment
+//   Evaluator   (smart model) — synthesize all signals
+//   Committee   (smart model) — final hire/reject decision
+//   Coordinator (fast model)  — notifications & status
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Screener Agent ──────────────────────────────────────────────
+
+cell agent Screener [model: fast, skill: "skills/screener.md"] {
+    on screen(candidate: Map) {
+        let name = candidate.name ?? "Unknown"
+        let role = candidate.role ?? "Unknown"
+        let exp = candidate.experience ?? "Not specified"
+        let skills = candidate.skills ?? "Not specified"
+
+        let result = think("Screen this candidate for the {role} role:\nName: {name}\nExperience: {exp}\nSkills: {skills}")
+        map("agent", "screener", "candidate", name, "result", result)
+    }
+}
+
+// ── Interviewer Agent ───────────────────────────────────────────
+
+cell agent Interviewer [model: smart, skill: "skills/interviewer.md"] {
+    on interview(candidate: Map, screening: String) {
+        let name = candidate.name ?? "Unknown"
+        let role = candidate.role ?? "Unknown"
+        let exp = candidate.experience ?? "Not specified"
+
+        let result = think("Interview assessment for {name} ({role}):\nExperience: {exp}\nScreening notes: {screening}")
+        map("agent", "interviewer", "candidate", name, "result", result)
+    }
+}
+
+// ── Evaluator Agent ─────────────────────────────────────────────
+
+cell agent Evaluator [model: smart, skill: "skills/evaluator.md"] {
+    on evaluate(candidate: Map, screening: String, interview: String) {
+        let name = candidate.name ?? "Unknown"
+        let role = candidate.role ?? "Unknown"
+
+        let result = think("Full evaluation for {name} ({role}):\nScreening: {screening}\nInterview: {interview}")
+        map("agent", "evaluator", "candidate", name, "result", result)
+    }
+}
+
+// ── Committee Agent ─────────────────────────────────────────────
+
+cell agent Committee [model: smart, skill: "skills/committee.md"] {
+    on decide(candidate: Map, evaluation: String) {
+        let name = candidate.name ?? "Unknown"
+        let role = candidate.role ?? "Unknown"
+
+        let result = think("Final hiring decision for {name} ({role}):\nEvaluation: {evaluation}")
+        map("agent", "committee", "candidate", name, "result", result)
+    }
+}
+
+// ── Coordinator Agent ───────────────────────────────────────────
+
+cell agent Coordinator [model: fast, skill: "skills/coordinator.md"] {
+    on notify(candidate: Map, decision: String, stage: String) {
+        let name = candidate.name ?? "Unknown"
+        let result = think("Write a brief notification for {name} about their application. Stage: {stage}. Decision: {decision}")
+        map("agent", "coordinator", "candidate", name, "notification", result)
+    }
+}
+
+// ── Pipeline Orchestrator ───────────────────────────────────────
+
+cell Pipeline {
+    memory {
+        candidates: Map<String, String> [persistent, consistent]
+        audit_log: Map<String, String> [persistent]
+    }
+
+    state candidate {
+        initial: applied
+        applied -> screening
+        screening -> interviewing
+        screening -> rejected
+        interviewing -> evaluating
+        interviewing -> rejected
+        evaluating -> committee
+        evaluating -> rejected
+        committee -> hired
+        committee -> rejected
+    }
+
+    on _log(id: String, stage: String, data: String) {
+        let entry = map(
+            "id", id,
+            "stage", stage,
+            "data", data,
+            "timestamp", to_string(now())
+        )
+        let key = id + "_" + stage
+        audit_log.set(key, entry)
+    }
+
+    on submit(candidate: Map) {
+        let id = to_string(next_id())
+        let record = candidate |> with("id", id) |> with("status", "applied")
+        candidates.set(id, record)
+        transition(id, "screening")
+        _log(id, "applied", "Candidate submitted")
+
+        print("  [pipeline] Candidate {candidate.name} submitted as #{id}")
+
+        // Stage 1: Screening
+        print("  [screening] Analyzing resume...")
+        let screen_result = delegate("Screener", "screen", candidate)
+        _log(id, "screening", screen_result.result)
+
+        // Check if screener rejected
+        if contains(screen_result.result, "false") {
+            transition(id, "rejected")
+            let notif = delegate("Coordinator", "notify", candidate, "Rejected at screening", "screening")
+            _log(id, "rejected", notif.notification)
+            candidates.set(id, record |> with("status", "rejected") |> with("stage", "screening"))
+            print("  [rejected] at screening")
+            return map("id", id, "status", "rejected", "stage", "screening", "notification", notif.notification)
+        }
+
+        // Stage 2: Interview
+        transition(id, "interviewing")
+        print("  [interviewing] Technical assessment...")
+        let interview_result = delegate("Interviewer", "interview", candidate, screen_result.result)
+        _log(id, "interviewing", interview_result.result)
+
+        // Stage 3: Evaluation
+        transition(id, "evaluating")
+        print("  [evaluating] Synthesizing signals...")
+        let eval_result = delegate("Evaluator", "evaluate", candidate, screen_result.result, interview_result.result)
+        _log(id, "evaluating", eval_result.result)
+
+        // Check if evaluator recommends rejection
+        if contains(eval_result.result, "reject") {
+            transition(id, "rejected")
+            let notif = delegate("Coordinator", "notify", candidate, "Rejected at evaluation", "evaluation")
+            _log(id, "rejected", notif.notification)
+            candidates.set(id, record |> with("status", "rejected") |> with("stage", "evaluation"))
+            print("  [rejected] at evaluation")
+            return map("id", id, "status", "rejected", "stage", "evaluation", "notification", notif.notification)
+        }
+
+        // Stage 4: Committee
+        transition(id, "committee")
+        print("  [committee] Final decision...")
+        let decision = delegate("Committee", "decide", candidate, eval_result.result)
+        _log(id, "committee", decision.result)
+
+        // Final decision
+        if contains(decision.result, "hire") {
+            transition(id, "hired")
+            let notif = delegate("Coordinator", "notify", candidate, "Hired!", "hired")
+            _log(id, "hired", notif.notification)
+            candidates.set(id, record |> with("status", "hired"))
+            print("  [HIRED]")
+            return map("id", id, "status", "hired", "notification", notif.notification)
+        }
+
+        transition(id, "rejected")
+        let notif = delegate("Coordinator", "notify", candidate, "Rejected by committee", "committee")
+        _log(id, "rejected", notif.notification)
+        candidates.set(id, record |> with("status", "rejected") |> with("stage", "committee"))
+        print("  [rejected] by committee")
+        map("id", id, "status", "rejected", "stage", "committee", "notification", notif.notification)
+    }
+
+    on status(id: String) {
+        let record = candidates.get(id)
+        if record == () {
+            return map("error", "candidate not found")
+        }
+        record
+    }
+
+    on all_candidates() {
+        candidates.values
+    }
+
+    on audit(id: String) {
+        let entries = list()
+        for key in audit_log.keys {
+            if starts_with(key, id + "_") {
+                let entry = audit_log.get(key)
+                entries = push(entries, entry)
+            }
+        }
+        entries
+    }
+
+    on run() {
+        print("========================================")
+        print("  AI HIRING PIPELINE")
+        print("  5 agents, verified state machine")
+        print("========================================")
+        print("")
+
+        // Submit 3 candidates
+        let c1 = map("name", "Alice Chen", "role", "Senior Backend Engineer", "experience", "8 years Python, Go, distributed systems at Google and Stripe", "skills", "Rust, Kubernetes, PostgreSQL, system design")
+        print("[Candidate 1: Alice Chen]")
+        let r1 = submit(c1)
+        print("")
+
+        let c2 = map("name", "Bob Martinez", "role", "Senior Backend Engineer", "experience", "2 years JavaScript bootcamp", "skills", "HTML, CSS, jQuery")
+        print("[Candidate 2: Bob Martinez]")
+        let r2 = submit(c2)
+        print("")
+
+        let c3 = map("name", "Carol Wang", "role", "Senior Backend Engineer", "experience", "5 years full-stack, led migration from monolith to microservices", "skills", "Java, Spring Boot, AWS, DynamoDB, team lead")
+        print("[Candidate 3: Carol Wang]")
+        let r3 = submit(c3)
+        print("")
+
+        print("========================================")
+        print("  RESULTS")
+        print("========================================")
+        print("Alice:  {r1.status}")
+        print("Bob:    {r2.status}")
+        print("Carol:  {r3.status}")
+        print("")
+        print("Tokens used: {tokens_used()}")
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"} -> map(
+                "name", "AI Hiring Pipeline",
+                "candidates", candidates.len(),
+                "endpoints", list("/submit", "/status/{id}", "/candidates", "/audit/{id}")
+            )
+            {method: "POST", path: "/submit"} -> {
+                let data = from_json(body)
+                submit(data)
+            }
+            {method: "GET", path: "/candidates"} -> all_candidates()
+            {method: "GET", path: "/status/" + id} -> status(id)
+            {method: "GET", path: "/audit/" + id} -> audit(id)
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

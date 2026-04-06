@@ -1,0 +1,27 @@
+[package]
+name = "hiring-pipeline"
+description = "AI hiring pipeline with verified candidate lifecycle"
+
+[models.fast]
+provider = "ollama"
+model = "gemma3:12b"
+
+[models.smart]
+provider = "ollama"
+model = "gemma4:26b"
+
+[verify]
+deadlock_free = true
+eventually = ["hired", "rejected"]
+
+[verify.after.screening]
+eventually = ["interviewing", "rejected"]
+
+[verify.after.interviewing]
+eventually = ["evaluating", "rejected"]
+
+[verify.after.evaluating]
+eventually = ["committee", "rejected"]
+
+[verify.after.committee]
+eventually = ["hired", "rejected"]
