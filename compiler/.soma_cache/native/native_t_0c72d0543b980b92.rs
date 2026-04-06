@@ -3,24 +3,22 @@
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
-static mut _RESULT_HANDLER_COMPUTE: Option<String> = None;
+static mut _RESULT_HANDLER_COUNTER: Option<String> = None;
 
 #[no_mangle]
-pub extern "C" fn handler_compute(n: i64) -> i64 {
+pub extern "C" fn handler_counter(n: i64) -> i64 {
     // Suppress panic messages for expected overflow
     std::panic::set_hook(Box::new(|_| {}));
     let _fast = std::panic::catch_unwind(|| -> i64 {
-        let mut sum: i64 = (0i64);
         let mut i: i64 = (0i64);
         while ((i) < (n)) {
-            sum = ((sum) + (i));
             i = ((i) + (1i64));
         }
-        { let _ret_val = (sum);
+        { let _ret_val = (i);
                 match Some(_ret_val) {
             Some(v) => return v,
             None => {
-                unsafe { _RESULT_HANDLER_COMPUTE = Some(_ret_val.to_string()); }
+                unsafe { _RESULT_HANDLER_COUNTER = Some(_ret_val.to_string()); }
                 return i64::MIN;
             }
         }}
@@ -30,30 +28,28 @@ pub extern "C" fn handler_compute(n: i64) -> i64 {
 
     // Overflow — BigInt fallback
     let n = BigInt::from(n);
-    let mut sum: BigInt = BigInt::from(0i64);
     let mut i: BigInt = BigInt::from(0i64);
     while ((&i) < (&n)) {
-        sum = ((&sum) + (&i));
         i = ((&i) + BigInt::from(1i64));
     }
-    { let _ret_val = (&sum);
+    { let _ret_val = (&i);
     use num_traits::ToPrimitive;
     match _ret_val.to_i64() {
         Some(v) => return v,
         None => {
-            unsafe { _RESULT_HANDLER_COMPUTE = Some(_ret_val.to_string()); }
+            unsafe { _RESULT_HANDLER_COUNTER = Some(_ret_val.to_string()); }
             return i64::MIN;
         }
     }}
 }
 
 #[no_mangle]
-pub extern "C" fn handler_compute_bigint_result() -> *const u8 {
-    unsafe { _RESULT_HANDLER_COMPUTE.as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null()) }
+pub extern "C" fn handler_counter_bigint_result() -> *const u8 {
+    unsafe { _RESULT_HANDLER_COUNTER.as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null()) }
 }
 
 #[no_mangle]
-pub extern "C" fn handler_compute_bigint_len() -> i64 {
-    unsafe { _RESULT_HANDLER_COMPUTE.as_ref().map(|s| s.len() as i64).unwrap_or(0) }
+pub extern "C" fn handler_counter_bigint_len() -> i64 {
+    unsafe { _RESULT_HANDLER_COUNTER.as_ref().map(|s| s.len() as i64).unwrap_or(0) }
 }
 

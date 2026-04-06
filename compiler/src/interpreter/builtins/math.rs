@@ -125,6 +125,20 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
             else { args.first().map(|a| Ok(a.clone())) }
         }
+        "idiv" => {
+            // Integer division: idiv(7, 2) = 3 (truncates toward zero)
+            if args.len() >= 2 {
+                let a = val_to_i64(&args[0]);
+                let b = val_to_i64(&args[1]);
+                if b == 0 {
+                    Some(Err(RuntimeError::TypeError("division by zero".to_string())))
+                } else {
+                    Some(Ok(Value::Int(SomaInt::from_i64(a / b))))
+                }
+            } else {
+                Some(Err(RuntimeError::TypeError("idiv(a, b) requires 2 args".to_string())))
+            }
+        }
         "clamp" => {
             if args.len() >= 3 {
                 match (&args[0], &args[1], &args[2]) {
