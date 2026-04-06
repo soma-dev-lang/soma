@@ -36,7 +36,9 @@ pub struct AgentConfig {
     /// Full API URL (overrides provider). For ollama: http://localhost:11434/v1/chat/completions
     #[serde(default)]
     pub url: String,
-    /// API key (optional — prefer SOMA_LLM_KEY env var for secrets)
+    /// API key — prefer env vars over putting this in soma.toml:
+    ///   ANTHROPIC_API_KEY, OPENAI_API_KEY, or SOMA_LLM_KEY
+    /// Only use this field for local testing. Never commit keys to git.
     #[serde(default)]
     pub key: String,
     /// Max retries on rate limit / transient errors

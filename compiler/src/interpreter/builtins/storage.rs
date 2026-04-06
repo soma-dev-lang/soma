@@ -272,22 +272,33 @@ fn agent_think(
     // ── Resolve config: soma.toml [agent] → env vars → defaults ──
     let cfg = interp.agent_config.as_ref();
 
-    // API key: env var > soma.toml > provider default > error
+    // API key resolution:
+    //   1. SOMA_LLM_KEY env var (highest priority override)
+    //   2. soma.toml key field with ${ENV_VAR} expansion
+    //   3. Provider-specific env var (ANTHROPIC_API_KEY, OPENAI_API_KEY)
+    //   4. Ollama: no key needed
     let provider = cfg.map(|c| c.provider.clone()).unwrap_or_default();
     let api_key = std::env::var("SOMA_LLM_KEY")
-        .or_else(|_| std::env::var("OPENAI_API_KEY"))
-        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
         .or_else(|_| {
-            cfg.map(|c| c.key.clone()).filter(|k| !k.is_empty())
+            // soma.toml key with ${VAR} expansion
+            cfg.map(|c| resolve_env_vars(&c.key)).filter(|k| !k.is_empty())
                 .ok_or(std::env::VarError::NotPresent)
         })
         .or_else(|_| {
-            // Ollama doesn't need a real key
+            // Provider-specific env vars
+            match provider.as_str() {
+                "anthropic" => std::env::var("ANTHROPIC_API_KEY"),
+                "openai" => std::env::var("OPENAI_API_KEY"),
+                _ => std::env::var("OPENAI_API_KEY").or_else(|_| std::env::var("ANTHROPIC_API_KEY")),
+            }
+        })
+        .or_else(|_| {
             if provider == "ollama" { Ok("ollama".to_string()) } else { Err(std::env::VarError::NotPresent) }
         })
-        .map_err(|_| RuntimeError::TypeError(
-            "think() requires API key. Set in soma.toml:\n\n    [agent]\n    provider = \"ollama\"\n    model = \"gemma3:12b\"\n\nOr set SOMA_LLM_KEY env var. Or use SOMA_LLM_MOCK=echo for offline testing.".to_string()
-        ))?;
+        .map_err(|_| RuntimeError::TypeError(format!(
+            "think() requires API key. In soma.toml:\n\n    [agent]\n    provider = \"{}\"\n    key = \"${{ANTHROPIC_API_KEY}}\"\n\nOr set SOMA_LLM_KEY env var. Or use SOMA_LLM_MOCK=echo for offline testing.",
+            if provider.is_empty() { "anthropic" } else { &provider }
+        )))?;
     if api_key.is_empty() {
         return Err(RuntimeError::TypeError(
             "think() API key is empty. Configure [agent] in soma.toml or set SOMA_LLM_KEY.".to_string()
@@ -597,4 +608,23 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
         Ok(val) => val,
         Err(e) => Value::String(format!("tool error: {}", e)),
     }
+}
+
+/// Resolve ${ENV_VAR} references in a string.
+/// Examples:
+///   "${ANTHROPIC_API_KEY}" → value of ANTHROPIC_API_KEY
+///   "sk-${SUFFIX}" → "sk-" + value of SUFFIX
+///   "literal" → "literal" (unchanged)
+fn resolve_env_vars(s: &str) -> String {
+    let mut result = s.to_string();
+    while let Some(start) = result.find("${") {
+        if let Some(end) = result[start..].find('}') {
+            let var_name = &result[start + 2..start + end];
+            let value = std::env::var(var_name).unwrap_or_default();
+            result = format!("{}{}{}", &result[..start], value, &result[start + end + 1..]);
+        } else {
+            break;
+        }
+    }
+    result
 }

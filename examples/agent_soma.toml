@@ -6,9 +6,18 @@ description = "Verified AI research agent"
 [agent]
 provider = "ollama"
 model = "gemma3:12b"
-# For OpenAI: provider = "openai", key = "sk-..."
-# For Anthropic: provider = "anthropic", key = "sk-ant-..."
-# For custom: url = "https://your-api.com/v1/chat/completions"
+
+# For OpenAI:
+# provider = "openai"
+# model = "gpt-4o-mini"
+# key = "${OPENAI_API_KEY}"
+
+# For Anthropic (Claude):
+# provider = "anthropic"
+# model = "claude-opus-4-6"
+# key = "${ANTHROPIC_API_KEY}"
+
+# ${VAR} expands env vars at runtime — never put raw keys in this file
 
 [verify]
 deadlock_free = true
