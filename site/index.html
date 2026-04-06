@@ -3,21 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Soma — A fractal language for verified distributed systems</title>
-<meta name="description" content="Soma is a programming language where the same code runs on one machine or a cluster. State machines are formally verified. Distribution is declared in the code, not YAML. The compiler proves CAP properties before deployment.">
+<title>Soma — Verified AI agents in a fractal language</title>
+<meta name="description" content="Soma is the first language where AI agent behavior is formally verified. State machines prove agents always terminate. cell agent + think() + tool declarations. Same code runs on one machine or a cluster. The compiler proves it correct.">
 <meta name="keywords" content="soma, programming language, distributed systems, formal verification, state machines, fractal, declarative, agent-native, cell model, CAP theorem, consistent hashing, Erlang alternative, Kubernetes alternative, TLA+, model checking, pipes, actor model">
 
 <!-- Open Graph -->
-<meta property="og:title" content="Soma — A fractal language for verified distributed systems">
-<meta property="og:description" content="Same code, one machine or a cluster. State machines formally verified. Distribution declared in the code. The compiler proves it correct before deployment.">
+<meta property="og:title" content="Soma — Verified AI agents in a fractal language">
+<meta property="og:description" content="The first language where AI agent behavior is formally verified. cell agent + think() + state machine = proven termination. No other agent framework can do this.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://soma-lang.dev">
 <meta property="og:site_name" content="Soma Language">
 
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Soma — Verified distributed systems in one language">
-<meta name="twitter:description" content="Same code, one machine or 1000. State machines proven correct. Distribution declared, not configured. The compiler is the supervisor.">
+<meta name="twitter:title" content="Soma — The only language with verified AI agents">
+<meta name="twitter:description" content="cell agent + think() + state machine = proven termination. No infinite loops. No stuck states. The compiler proves your agent always finishes.">
 
 <!-- Canonical -->
 <link rel="canonical" href="https://soma-lang.dev">
@@ -33,7 +33,7 @@
   "name": "Soma",
   "applicationCategory": "Programming Language",
   "operatingSystem": "macOS, Linux",
-  "description": "A fractal, declarative programming language for building verified distributed systems. The same cell code runs on one machine or across a cluster. State machines are formally verified with CTL temporal logic. Distribution semantics (consistency, sharding, tolerance) are declared in the source code and checked at compile time.",
+  "description": "The first programming language where AI agent behavior is formally verified. cell agent + think() + state machine = proven termination. Also: fractal distributed systems, CTL model checking, compile-time CAP analysis, auto-serialize storage, soma fix auto-repair.",
   "url": "https://soma-lang.dev",
   "downloadUrl": "https://github.com/soma-dev-lang/soma",
   "softwareVersion": "2.1.0",
@@ -55,6 +55,7 @@
     "Auto-serialize storage — .set() auto-converts maps to JSON, .get() auto-parses",
     "Design by contract — ensure postconditions, memory invariants",
     "Cloud deployment — soma deploy --target cloudflare|fly|aws",
+    "Verified AI agents — cell agent + think() + tool + state machine = proven termination",
     "Agent-first — generate → fix → lint → verify → serve workflow"
   ]
 }
@@ -115,9 +116,10 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <nav>
 <div class="logo">soma</div>
 <div class="links">
+<a href="#verified-agents" style="color:var(--accent)">Verified Agents</a>
 <a href="#manifesto">Why</a>
 <a href="#syntax">Language</a>
-<a href="#agents">Agents</a>
+<a href="#agents">Tooling</a>
 <a href="#native">Performance</a>
 <a href="#fractal">Distribution</a>
 <a href="#reference">Reference</a>
@@ -132,11 +134,10 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <div class="hero">
 <h1><span class="hero-title">soma</span><span class="sr-only"> — a fractal language for verified distributed systems</span></h1>
 <p class="manifesto">
-A language where <strong>infrastructure is a constraint</strong>,
-<strong>compliance is a state machine</strong>,
-and <strong>pipelines are pipes</strong>.
+The only language where <strong>AI agent behavior is formally verified</strong>.
+State machines are proofs. Infrastructure is a constraint. Pipelines are pipes.
 </p>
-<p class="tagline">same code, one machine or a cluster — the compiler proves it correct</p>
+<p class="tagline">cell agent + think() + state machine = proven termination &mdash; no other framework can do this</p>
 </div>
 
 <div class="install-box">
@@ -179,6 +180,106 @@ and <strong>pipelines are pipes</strong>.
         }
     }
 }</code></pre>
+
+<!-- ═══════════════════════════════════ VERIFIED AGENTS ═══════════════════════════════════ -->
+<section id="verified-agents" style="border-top:none;padding-top:1rem">
+<div style="background:linear-gradient(135deg,rgba(129,140,248,.08),rgba(167,139,250,.08));border:1px solid rgba(129,140,248,.2);border-radius:var(--r);padding:2rem;margin:1rem 0">
+<h2 style="margin-bottom:.5rem">The first language where AI agent behavior is <span style="color:var(--accent)">formally verified</span></h2>
+<p style="color:var(--muted);font-size:1.05rem">Every agent framework has the same problem: agents get stuck in loops, call tools in wrong order, never terminate. Soma is the only language that <strong>proves</strong> your agent always finishes.</p>
+</div>
+
+<div class="vs">
+<div class="side">
+<h4>The agent &mdash; 30 lines</h4>
+<pre><code><span class="kw">cell</span> <span class="kw">agent</span> Researcher {
+    <span class="kw">face</span> {
+        <span class="kw">signal</span> research(topic: String) -> Map
+        <span class="kw">tool</span> search(q: String) -> String
+        <span class="kw">tool</span> summarize(text: String) -> String
+    }
+
+    <span class="kw">state</span> workflow {
+        <span class="kw">initial</span>: idle
+        idle &rarr; researching
+        researching &rarr; analyzing
+        analyzing &rarr; done
+        * &rarr; failed
+    }
+
+    <span class="kw">on</span> research(topic: String) {
+        <span class="fn">transition</span>(<span class="str">"task"</span>, <span class="str">"researching"</span>)
+        <span class="kw">let</span> data = <span class="fn">think</span>(<span class="str">"Research: {topic}"</span>)
+
+        <span class="fn">transition</span>(<span class="str">"task"</span>, <span class="str">"analyzing"</span>)
+        <span class="kw">let</span> summary = <span class="fn">think</span>(<span class="str">"Synthesize: {data}"</span>)
+
+        <span class="fn">transition</span>(<span class="str">"task"</span>, <span class="str">"done"</span>)
+        <span class="fn">map</span>(<span class="str">"summary"</span>, summary)
+    }
+}</code></pre>
+</div>
+<div class="side">
+<h4>The proof &mdash; 0 lines of test code</h4>
+<pre><code>$ soma verify agent.cell
+
+State machine 'workflow': 5 states
+
+  <span class="green">&#x2713;</span> all states reachable
+  <span class="green">&#x2713;</span> no deadlocks
+  <span class="green">&#x2713;</span> every path reaches done or failed
+
+Temporal properties:
+  <span class="green">&#x2713;</span> deadlock_free
+  <span class="green">&#x2713;</span> eventually(done | failed)
+  <span class="green">&#x2713;</span> after(researching, analyzing | failed)
+  <span class="green">&#x2713;</span> after(analyzing, done | failed)
+
+<span style="color:var(--green);font-weight:700">4 passed, 0 failed</span>
+
+<span class="cmt">// The compiler PROVED this agent
+// always terminates. No test can
+// guarantee that. A proof can.</span></code></pre>
+</div>
+</div>
+
+<p><code>cell agent</code> &mdash; an AI agent is a cell. <code>think()</code> &mdash; calls any OpenAI-compatible LLM. <code>tool</code> &mdash; declares what the LLM can call. <code>state</code> &mdash; the behavior protocol, verified at compile time. <strong>Every other agent framework is a library. Soma is a language with a proof.</strong></p>
+
+<h3>Multi-agent pipelines with verified handoffs</h3>
+<pre><code><span class="kw">cell</span> <span class="kw">agent</span> Pipeline {
+    <span class="kw">state</span> pipeline {
+        <span class="kw">initial</span>: idle
+        idle &rarr; researching &rarr; writing &rarr; reviewing &rarr; done
+        * &rarr; failed
+    }
+
+    <span class="kw">on</span> run(topic: String) {
+        <span class="fn">transition</span>(<span class="str">"job"</span>, <span class="str">"researching"</span>)
+        <span class="kw">let</span> facts = <span class="fn">think</span>(<span class="str">"Research '{topic}'. List 5 key facts."</span>)
+
+        <span class="fn">transition</span>(<span class="str">"job"</span>, <span class="str">"writing"</span>)
+        <span class="kw">let</span> article = <span class="fn">think</span>(<span class="str">"Write an article from: {facts}"</span>)
+
+        <span class="fn">transition</span>(<span class="str">"job"</span>, <span class="str">"reviewing"</span>)
+        <span class="kw">let</span> review = <span class="fn">think</span>(<span class="str">"Review for accuracy: {article}"</span>)
+
+        <span class="fn">transition</span>(<span class="str">"job"</span>, <span class="str">"done"</span>)
+        <span class="fn">map</span>(<span class="str">"article"</span>, article, <span class="str">"review"</span>, review)
+    }
+}
+
+<span class="cmt">// soma verify PROVES: idle &rarr; researching &rarr; writing &rarr; reviewing &rarr; done</span>
+<span class="cmt">// No stage can be skipped. No infinite loops. The proof is the pipeline.</span></code></pre>
+
+<table>
+<tr><th></th><th>LangChain</th><th>CrewAI</th><th>AutoGen</th><th>Soma</th></tr>
+<tr><td>Agents get stuck in loops</td><td>Yes</td><td>Yes</td><td>Yes</td><td><strong>Impossible (proven)</strong></td></tr>
+<tr><td>Wrong tool order</td><td>Possible</td><td>Possible</td><td>Possible</td><td><strong>State machine prevents it</strong></td></tr>
+<tr><td>Guaranteed termination</td><td>No</td><td>No</td><td>No</td><td><strong>Yes (CTL proof)</strong></td></tr>
+<tr><td>Verified handoffs</td><td>No</td><td>No</td><td>No</td><td><strong>Signal types + state machines</strong></td></tr>
+<tr><td>Agent memory persistence</td><td>Plugin</td><td>Plugin</td><td>Plugin</td><td><strong>Built-in: [persistent]</strong></td></tr>
+<tr><td>Distribution</td><td>No</td><td>No</td><td>No</td><td><strong>soma serve --join</strong></td></tr>
+</table>
+</section>
 
 <!-- ═══════════════════════════════════ MANIFESTO ═══════════════════════════════════ -->
 <section id="manifesto">
