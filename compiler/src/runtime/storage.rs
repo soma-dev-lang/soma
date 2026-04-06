@@ -107,7 +107,10 @@ impl StorageBackend for MemoryBackend {
     }
 
     fn values(&self) -> Vec<StoredValue> {
-        self.map.read().unwrap_or_else(|e| e.into_inner()).values().cloned().collect()
+        self.map.read().unwrap_or_else(|e| e.into_inner()).iter()
+            .filter(|(k, _)| !k.starts_with("__"))
+            .map(|(_, v)| v.clone())
+            .collect()
     }
 
     fn has(&self, key: &str) -> bool {
@@ -115,7 +118,9 @@ impl StorageBackend for MemoryBackend {
     }
 
     fn len(&self) -> usize {
-        self.map.read().unwrap_or_else(|e| e.into_inner()).len() + self.log.read().unwrap_or_else(|e| e.into_inner()).len()
+        self.map.read().unwrap_or_else(|e| e.into_inner()).keys()
+            .filter(|k| !k.starts_with("__")).count()
+            + self.log.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     fn backend_name(&self) -> &str {
@@ -229,7 +234,10 @@ impl StorageBackend for FileBackend {
     }
 
     fn values(&self) -> Vec<StoredValue> {
-        self.map.read().unwrap().values().cloned().collect()
+        self.map.read().unwrap().iter()
+            .filter(|(k, _)| !k.starts_with("__"))
+            .map(|(_, v)| v.clone())
+            .collect()
     }
 
     fn has(&self, key: &str) -> bool {
@@ -237,7 +245,9 @@ impl StorageBackend for FileBackend {
     }
 
     fn len(&self) -> usize {
-        self.map.read().unwrap().len() + self.log.read().unwrap().len()
+        self.map.read().unwrap().keys()
+            .filter(|k| !k.starts_with("__")).count()
+            + self.log.read().unwrap().len()
     }
 
     fn backend_name(&self) -> &str {
@@ -399,7 +409,7 @@ impl StorageBackend for SqliteBackend {
     fn values(&self) -> Vec<StoredValue> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&format!(
-            "SELECT value, type FROM \"{}\" ORDER BY key", self.table
+            "SELECT value, type FROM \"{}\" WHERE key NOT LIKE '\\_\\_%' ESCAPE '\\' ORDER BY key", self.table
         )).unwrap();
         stmt.query_map([], |row| {
             let val: String = row.get(0)?;
@@ -419,7 +429,7 @@ impl StorageBackend for SqliteBackend {
     fn len(&self) -> usize {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM \"{}\"", self.table),
+            &format!("SELECT COUNT(*) FROM \"{}\" WHERE key NOT LIKE '\\_\\_%' ESCAPE '\\'", self.table),
             [],
             |row| row.get(0),
         ).unwrap_or(0);

@@ -37,6 +37,10 @@ cell AppName {
         // runs periodically
     }
 
+    after 5s {
+        // runs once after delay (one-shot timer)
+    }
+
     on handler_name(param1: Type, param2: Type) {
         // handler body
         return value
@@ -72,6 +76,9 @@ cell AppName {
 let x = 42
 x = x + 1                    // reassignment
 x += 10                      // compound assignment
+x -= 5                       // compound subtraction
+x *= 2                       // compound multiplication
+x /= 3                       // compound division
 let name = "world"
 let greeting = "hello {name}" // interpolation
 ```
@@ -105,7 +112,43 @@ match value {
     "b" -> { stmts; expr2 }
     42 -> expr3
     () -> expr4              // match null
+    "x" || "y" -> expr5     // or-pattern
+    name -> use(name)        // variable binding (captures value)
+    "/api/" + rest -> api(rest) // string prefix pattern
+    {method: "GET", path} -> get(path) // map destructuring
     _ -> default_expr        // wildcard
+}
+
+// Map destructuring with nested patterns
+match request {
+    {method: "GET", path: "/"} -> home()
+    {method: "POST", path: "/api/" + resource} -> create(resource)
+    {method: "DELETE", path: "/api/" + resource} -> delete(resource)
+    _ -> response(404, map("error", "not found"))
+}
+
+// Guard clauses
+match score {
+    n if n >= 90 -> "A"
+    n if n >= 80 -> "B"
+    n if n >= 70 -> "C"
+    _ -> "F"
+}
+
+// Range patterns
+match http_status {
+    200..299 -> "success"
+    300..399 -> "redirect"
+    400..499 -> "client error"
+    500..599 -> "server error"
+    _ -> "unknown"
+}
+
+// If/match as expressions
+let x = if cond { a } else { b }
+let y = match status {
+    "on" -> true
+    _ -> false
 }
 ```
 
@@ -270,6 +313,17 @@ if result.error != () {
 }
 let value = result.value
 
+// Short form: ? operator propagates errors (returns early if error)
+let value = try { risky_operation() }?
+// Equivalent to: if result has error, return error map; else unwrap value
+
+// Postconditions: ensure (checked at point of execution)
+on withdraw(balance: Int, amount: Int) {
+    let result = balance - amount
+    ensure result >= 0   // fails with error if false
+    return result
+}
+
 // try catches: division by zero, undefined variables,
 // type errors, stack overflow, invalid transitions
 ```
@@ -280,6 +334,7 @@ let value = result.value
 memory {
     data: Map<String, String> [persistent, consistent]   // → SQLite
     cache: Map<String, String> [ephemeral, local]        // → in-memory
+    invariant data.len >= 0                               // checked on every .set()
 }
 
 // In handlers:

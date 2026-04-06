@@ -1,5 +1,7 @@
 //! `soma describe` — machine-readable cell description.
 //! Outputs structured JSON that agents can read, understand, and act on.
+//! An agent seeing this output should fully understand the cell without reading
+//! the source.
 
 use std::path::PathBuf;
 use crate::ast::*;
@@ -16,27 +18,36 @@ pub fn cmd_describe(path: &PathBuf) {
 
     for cell in &program.cells {
         if cell.node.kind != CellKind::Cell { continue; }
-        cells.push(describe_cell(&cell.node));
+        cells.push(describe_cell(&cell.node, &source));
     }
+
+    let imports: Vec<&str> = program.imports.iter().map(|s| s.as_str()).collect();
 
     let output = serde_json::json!({
         "file": file_str,
+        "imports": imports,
         "cells": cells,
     });
 
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
-fn describe_cell(cell: &CellDef) -> serde_json::Value {
-    let mut signals = Vec::new();
-    let mut memory = Vec::new();
+fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
+    let mut handlers = Vec::new();
+    let mut memory_slots = Vec::new();
     let mut state_machines = Vec::new();
     let mut scale = serde_json::Value::Null;
-    let mut every_intervals = Vec::new();
+    let mut scheduled = Vec::new();
     let mut has_request = false;
     let mut routes = Vec::new();
 
+    // Face section data
+    let mut face_signals = Vec::new();
+    let mut face_promises = Vec::new();
+
     for section in &cell.sections {
+        let section_line = span_to_line(source, section.span.start);
+
         match &section.node {
             Section::OnSignal(on) => {
                 let params: Vec<serde_json::Value> = on.params.iter()
@@ -46,31 +57,40 @@ fn describe_cell(cell: &CellDef) -> serde_json::Value {
                     }))
                     .collect();
 
-                let mut sig = serde_json::json!({
+                let is_public = !on.signal_name.starts_with('_');
+
+                let mut handler = serde_json::json!({
                     "name": on.signal_name,
                     "params": params,
+                    "is_public": is_public,
+                    "line": section_line,
                 });
 
                 if on.signal_name == "request" {
                     has_request = true;
                 }
 
-                // Detect properties like [native]
                 if !on.properties.is_empty() {
-                    sig["properties"] = serde_json::json!(on.properties);
+                    handler["properties"] = serde_json::json!(on.properties);
                 }
 
-                signals.push(sig);
+                handlers.push(handler);
             }
             Section::Memory(mem) => {
                 for slot in &mem.slots {
                     let props: Vec<String> = slot.node.properties.iter()
                         .map(|p| p.node.name().to_string())
                         .collect();
-                    memory.push(serde_json::json!({
+
+                    let invariants: Vec<String> = mem.invariants.iter()
+                        .map(|inv| format_expr(&inv.node))
+                        .collect();
+
+                    memory_slots.push(serde_json::json!({
                         "name": slot.node.name,
                         "type": format_type(&slot.node.ty.node),
                         "properties": props,
+                        "invariants": invariants,
                     }));
                 }
             }
@@ -79,7 +99,7 @@ fn describe_cell(cell: &CellDef) -> serde_json::Value {
                     .map(|t| serde_json::json!({
                         "from": t.node.from,
                         "to": t.node.to,
-                        "guarded": t.node.guard.is_some(),
+                        "has_guard": t.node.guard.is_some(),
                     }))
                     .collect();
 
@@ -123,31 +143,42 @@ fn describe_cell(cell: &CellDef) -> serde_json::Value {
                 scale = s;
             }
             Section::Every(ev) => {
-                every_intervals.push(serde_json::json!({
+                scheduled.push(serde_json::json!({
+                    "kind": "every",
                     "interval_ms": ev.interval_ms,
+                }));
+            }
+            Section::After(af) => {
+                scheduled.push(serde_json::json!({
+                    "kind": "after",
+                    "delay_ms": af.interval_ms,
                 }));
             }
             Section::Face(face) => {
                 for decl in &face.declarations {
                     match &decl.node {
                         FaceDecl::Signal(sig) => {
-                            let params: Vec<serde_json::Value> = sig.params.iter()
-                                .map(|p| serde_json::json!({"name": p.name, "type": format_type(&p.ty.node)}))
+                            let params: Vec<String> = sig.params.iter()
+                                .map(|p| format!("{}: {}", p.name, format_type(&p.ty.node)))
                                 .collect();
                             let mut entry = serde_json::json!({
                                 "name": sig.name,
-                                "kind": "signal",
                                 "params": params,
                             });
                             if let Some(ref ret) = sig.return_type {
-                                entry["return_type"] = serde_json::json!(format_type(&ret.node));
+                                entry["returns"] = serde_json::json!(format_type(&ret.node));
                             }
-                            // Don't duplicate — face signals are the contract
+                            face_signals.push(entry);
                         }
-                        FaceDecl::Given(g) => {
-                            // requirements
+                        FaceDecl::Promise(p) => {
+                            face_promises.push(format_constraint(&p.constraint.node));
                         }
-                        _ => {}
+                        FaceDecl::Given(_g) => {
+                            // given declarations are requirements, not part of signals/promises
+                        }
+                        FaceDecl::Await(_a) => {
+                            // await declarations handled separately if needed
+                        }
                     }
                 }
             }
@@ -156,7 +187,6 @@ fn describe_cell(cell: &CellDef) -> serde_json::Value {
     }
 
     // Detect HTTP routes from request handler body (heuristic: look for path comparisons)
-    // This is a best-effort analysis for describe output
     let source_text = std::fs::read_to_string(
         std::env::current_dir().unwrap_or_default().join("app.cell")
     ).unwrap_or_default();
@@ -173,8 +203,8 @@ fn describe_cell(cell: &CellDef) -> serde_json::Value {
 
     let mut result = serde_json::json!({
         "name": cell.name,
-        "signals": signals,
-        "memory": memory,
+        "handlers": handlers,
+        "memory": memory_slots,
     });
 
     if !state_machines.is_empty() {
@@ -183,8 +213,14 @@ fn describe_cell(cell: &CellDef) -> serde_json::Value {
     if scale != serde_json::Value::Null {
         result["scale"] = scale;
     }
-    if !every_intervals.is_empty() {
-        result["scheduled"] = serde_json::json!(every_intervals);
+    if !scheduled.is_empty() {
+        result["scheduled"] = serde_json::json!(scheduled);
+    }
+    if !face_signals.is_empty() || !face_promises.is_empty() {
+        result["face"] = serde_json::json!({
+            "signals": face_signals,
+            "promises": face_promises,
+        });
     }
     if has_request {
         result["web"] = serde_json::json!(true);
@@ -196,6 +232,12 @@ fn describe_cell(cell: &CellDef) -> serde_json::Value {
     result
 }
 
+/// Convert a byte offset to a 1-based line number.
+fn span_to_line(source: &str, offset: usize) -> usize {
+    let (line, _col) = crate::interpreter::span_to_location(source, offset);
+    line
+}
+
 fn format_type(ty: &TypeExpr) -> String {
     match ty {
         TypeExpr::Simple(name) => name.clone(),
@@ -204,6 +246,75 @@ fn format_type(ty: &TypeExpr) -> String {
             format!("{}<{}>", name, arg_strs.join(", "))
         }
         TypeExpr::CellRef { cell, member } => format!("{}.{}", cell, member),
-        _ => "unknown".to_string(),
+    }
+}
+
+/// Best-effort rendering of a constraint as a human-readable string.
+fn format_constraint(c: &Constraint) -> String {
+    match c {
+        Constraint::Comparison { left, op, right } => {
+            format!("{} {} {}", format_expr(&left.node), op, format_expr(&right.node))
+        }
+        Constraint::Predicate { name, args } => {
+            let arg_strs: Vec<String> = args.iter().map(|a| format_expr(&a.node)).collect();
+            format!("{}({})", name, arg_strs.join(", "))
+        }
+        Constraint::And(a, b) => {
+            format!("{} && {}", format_constraint(&a.node), format_constraint(&b.node))
+        }
+        Constraint::Or(a, b) => {
+            format!("{} || {}", format_constraint(&a.node), format_constraint(&b.node))
+        }
+        Constraint::Not(c) => {
+            format!("!{}", format_constraint(&c.node))
+        }
+        Constraint::Descriptive(s) => s.clone(),
+    }
+}
+
+/// Best-effort rendering of an expression for display in describe output.
+fn format_expr(e: &Expr) -> String {
+    match e {
+        Expr::Literal(lit) => format_literal(lit),
+        Expr::Ident(name) => name.clone(),
+        Expr::FieldAccess { target, field } => {
+            format!("{}.{}", format_expr(&target.node), field)
+        }
+        Expr::BinaryOp { left, op, right } => {
+            format!("{} {} {}", format_expr(&left.node), op, format_expr(&right.node))
+        }
+        Expr::CmpOp { left, op, right } => {
+            format!("{} {} {}", format_expr(&left.node), op, format_expr(&right.node))
+        }
+        Expr::FnCall { name, args } => {
+            let arg_strs: Vec<String> = args.iter().map(|a| format_expr(&a.node)).collect();
+            format!("{}({})", name, arg_strs.join(", "))
+        }
+        Expr::MethodCall { target, method, args } => {
+            let arg_strs: Vec<String> = args.iter().map(|a| format_expr(&a.node)).collect();
+            format!("{}.{}({})", format_expr(&target.node), method, arg_strs.join(", "))
+        }
+        Expr::Not(inner) => format!("!{}", format_expr(&inner.node)),
+        _ => "...".to_string(),
+    }
+}
+
+fn format_literal(lit: &Literal) -> String {
+    match lit {
+        Literal::Int(n) => n.to_string(),
+        Literal::BigInt(s) => s.clone(),
+        Literal::Float(f) => f.to_string(),
+        Literal::String(s) => format!("\"{}\"", s),
+        Literal::Bool(b) => b.to_string(),
+        Literal::Unit => "()".to_string(),
+        Literal::Duration(d) => format!("{}{}", d.value, match d.unit {
+            DurationUnit::Milliseconds => "ms",
+            DurationUnit::Seconds => "s",
+            DurationUnit::Minutes => "min",
+            DurationUnit::Hours => "h",
+            DurationUnit::Days => "d",
+            DurationUnit::Years => "y",
+        }),
+        Literal::Percentage(p) => format!("{}%", p),
     }
 }

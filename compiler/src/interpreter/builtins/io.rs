@@ -1,5 +1,6 @@
-use super::super::{Value, RuntimeError};
+use super::super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;
+use indexmap::IndexMap;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
@@ -88,7 +89,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     body = format!("{}{}", htmx_tag, body);
                 }
             }
-            Some(Ok(Value::Map(vec![
+            Some(Ok(map_from_pairs(vec![
                 ("_status".to_string(), status),
                 ("_body".to_string(), Value::String(body)),
                 ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
@@ -97,22 +98,21 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "response" => {
             let status = args.first().cloned().unwrap_or(Value::Int(200));
             let body = args.get(1).cloned().unwrap_or(Value::Unit);
-            let mut entries = vec![
-                ("_status".to_string(), status),
-                ("_body".to_string(), body),
-            ];
+            let mut entries = IndexMap::new();
+            entries.insert("_status".to_string(), status);
+            entries.insert("_body".to_string(), body);
             let mut i = 2;
             while i + 1 < args.len() {
                 let key = format!("{}", args[i]);
                 let val = args[i + 1].clone();
-                entries.push((key, val));
+                entries.insert(key, val);
                 i += 2;
             }
             Some(Ok(Value::Map(entries)))
         }
         "redirect" => {
             let url = args.first().map(|a| format!("{}", a)).unwrap_or("/".to_string());
-            Some(Ok(Value::Map(vec![
+            Some(Ok(map_from_pairs(vec![
                 ("_status".to_string(), Value::Int(302)),
                 ("_body".to_string(), Value::String(String::new())),
                 ("Location".to_string(), Value::String(url)),
@@ -122,7 +122,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             // sse("stream1", "stream2", ...) — returns a marker value
             // The server detects _sse and opens a persistent SSE connection
             let streams: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-            Some(Ok(Value::Map(vec![
+            Some(Ok(map_from_pairs(vec![
                 ("_sse".to_string(), Value::Bool(true)),
                 ("_streams".to_string(), Value::List(
                     streams.iter().map(|s| Value::String(s.clone())).collect()
@@ -133,7 +133,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if let Some(Value::String(path)) = args.first() {
                 match std::fs::read_to_string(path) {
                     Ok(content) => Some(Ok(Value::String(content))),
-                    Err(e) => Some(Ok(Value::Map(vec![
+                    Err(e) => Some(Ok(map_from_pairs(vec![
                         ("error".to_string(), Value::String(format!("{}", e))),
                     ]))),
                 }
@@ -147,7 +147,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let text = format!("{}", content);
                     match std::fs::write(path, &text) {
                         Ok(_) => Some(Ok(Value::Bool(true))),
-                        Err(e) => Some(Ok(Value::Map(vec![
+                        Err(e) => Some(Ok(map_from_pairs(vec![
                             ("error".to_string(), Value::String(format!("{}", e))),
                         ]))),
                     }
@@ -172,23 +172,23 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         for line in lines {
                             if line.trim().is_empty() { continue; }
                             let values: Vec<&str> = line.split(',').collect();
-                            let mut entries = Vec::new();
+                            let mut entries = IndexMap::new();
                             for (i, header) in headers.iter().enumerate() {
                                 let val = values.get(i).map(|s| s.trim()).unwrap_or("");
                                 // Try to parse as number
                                 if let Ok(n) = val.parse::<i64>() {
-                                    entries.push((header.clone(), Value::Int(n)));
+                                    entries.insert(header.clone(), Value::Int(n));
                                 } else if let Ok(n) = val.parse::<f64>() {
-                                    entries.push((header.clone(), Value::Float(n)));
+                                    entries.insert(header.clone(), Value::Float(n));
                                 } else {
-                                    entries.push((header.clone(), Value::String(val.to_string())));
+                                    entries.insert(header.clone(), Value::String(val.to_string()));
                                 }
                             }
                             rows.push(Value::Map(entries));
                         }
                         Some(Ok(Value::List(rows)))
                     }
-                    Err(e) => Some(Ok(Value::Map(vec![
+                    Err(e) => Some(Ok(map_from_pairs(vec![
                         ("error".to_string(), Value::String(format!("{}", e))),
                     ]))),
                 }
@@ -206,16 +206,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut output = String::new();
                     // Extract headers from first row
                     if let Some(Value::Map(first)) = items.first() {
-                        let headers: Vec<&str> = first.iter().map(|(k, _)| k.as_str()).collect();
+                        let headers: Vec<&str> = first.keys().map(|k| k.as_str()).collect();
                         output.push_str(&headers.join(","));
                         output.push('\n');
                         // Write rows
                         for item in items {
                             if let Value::Map(entries) = item {
                                 let vals: Vec<String> = headers.iter().map(|h| {
-                                    entries.iter()
-                                        .find(|(k, _)| k == h)
-                                        .map(|(_, v)| match v {
+                                    entries.get(*h)
+                                        .map(|v| match v {
                                             Value::String(s) => {
                                                 if s.contains(',') || s.contains('"') {
                                                     format!("\"{}\"", s.replace('"', "\"\""))
@@ -234,7 +233,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     }
                     match std::fs::write(path, &output) {
                         Ok(_) => Some(Ok(Value::Bool(true))),
-                        Err(e) => Some(Ok(Value::Map(vec![
+                        Err(e) => Some(Ok(map_from_pairs(vec![
                             ("error".to_string(), Value::String(format!("{}", e))),
                         ]))),
                     }
@@ -268,7 +267,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                                 let path = entry.path();
                                 if path.is_file() {
                                     if let Ok(content) = std::fs::read_to_string(&path) {
-                                        results.push(Value::Map(vec![
+                                        results.push(map_from_pairs(vec![
                                             ("path".to_string(), Value::String(path.display().to_string())),
                                             ("content".to_string(), Value::String(content)),
                                         ]));
@@ -297,7 +296,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                         let w = word.to_lowercase();
                         *counts.entry(w).or_insert(0) += 1;
                     }
-                    let map: Vec<(String, Value)> = counts.into_iter()
+                    let map: IndexMap<String, Value> = counts.into_iter()
                         .map(|(k, v)| (k, Value::Int(v)))
                         .collect();
                     Some(Ok(Value::Map(map)))
@@ -310,9 +309,8 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                             Value::String(s) => s.clone(),
                             Value::Map(entries) => {
                                 // If it's a {content: "..."} map, extract content
-                                entries.iter()
-                                    .find(|(k, _)| k == "content")
-                                    .and_then(|(_, v)| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                                entries.get("content")
+                                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
                                     .unwrap_or_default()
                             }
                             _ => continue,
@@ -322,7 +320,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                             *counts.entry(w).or_insert(0) += 1;
                         }
                     }
-                    let map: Vec<(String, Value)> = counts.into_iter()
+                    let map: IndexMap<String, Value> = counts.into_iter()
                         .map(|(k, v)| (k, Value::Int(v)))
                         .collect();
                     Some(Ok(Value::Map(map)))
@@ -353,7 +351,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                             s.spawn(move || {
                                 chunk_paths.iter().filter_map(|path| {
                                     std::fs::read_to_string(path).ok().map(|content| {
-                                        Value::Map(vec![
+                                        map_from_pairs(vec![
                                             ("path".to_string(), Value::String(path.display().to_string())),
                                             ("content".to_string(), Value::String(content)),
                                         ])
@@ -387,9 +385,8 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                                 let text = match item {
                                     Value::String(s) => s.as_str(),
                                     Value::Map(entries) => {
-                                        entries.iter()
-                                            .find(|(k, _)| k == "content")
-                                            .and_then(|(_, v)| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+                                        entries.get("content")
+                                            .and_then(|v| if let Value::String(s) = v { Some(s.as_str()) } else { None })
                                             .unwrap_or("")
                                     }
                                     _ => "",
@@ -411,7 +408,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                     merged
                 });
 
-                let map: Vec<(String, Value)> = merged.into_iter()
+                let map: IndexMap<String, Value> = merged.into_iter()
                     .map(|(k, v)| (k, Value::Int(v)))
                     .collect();
                 Some(Ok(Value::Map(map)))

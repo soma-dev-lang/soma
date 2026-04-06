@@ -1,6 +1,7 @@
 pub mod run;
 pub mod serve;
 pub mod check;
+pub mod fix;
 pub mod test_cmd;
 pub mod build;
 pub mod init;
@@ -9,6 +10,7 @@ pub mod repl;
 pub mod provider;
 pub mod describe;
 pub mod deploy;
+pub mod lint;
 
 use std::fs;
 use std::path::{Path, PathBuf};

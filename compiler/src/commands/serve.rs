@@ -810,6 +810,36 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                     }
                 });
             }
+            if let ast::Section::After(ref after) = section.node {
+                let delay = after.interval_ms;
+                let body = after.body.clone();
+                let prog = program.clone();
+                let slots = storage_slots.clone();
+                let cname = cell_spanned.node.name.clone();
+                let bus = event_bus.clone();
+                let pbus = peer_bus.clone();
+                let ws = shared_ws_out.clone();
+                let cluster_for_after = cluster_node.clone();
+                let sharded_for_after = sharded_slots.clone();
+                eprintln!("scheduler: after {}ms [{}]", delay, cname);
+
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                    let mut interp = interpreter::Interpreter::new(&prog);
+                    interp.set_storage_raw(&slots);
+                    interp.ensure_state_machine_storage();
+                    interp.event_bus = Some(bus);
+                    interp.peer_bus = Some(pbus);
+                    if let Some(ref c) = cluster_for_after { interp.set_cluster(c.clone(), &sharded_for_after); }
+                    if let Ok(ws_guard) = ws.lock() {
+                        interp.ws_out = ws_guard.clone();
+                    }
+                    let mut env = rustc_hash::FxHashMap::default();
+                    if let Err(e) = interp.exec_every(&body, &mut env, &cname) {
+                        eprintln!("[after:{}] error: {}", cname, e);
+                    }
+                });
+            }
         }
     }
 
@@ -849,7 +879,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                     form_data.push((key, interpreter::Value::String(val)));
                 }
             }
-            Some(interpreter::Value::Map(form_data))
+            Some(interpreter::map_from_pairs(form_data))
         } else {
             None
         };
@@ -988,14 +1018,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                                 // match any key in the body, pass the whole Map
                                 // (e.g. `on deploy(data: Map)` with body {"name":"x",...})
                                 if remaining_params.len() == 1
-                                    && !entries.iter().any(|(k, _)| k == &remaining_params[0])
+                                    && !entries.contains_key(&remaining_params[0])
                                 {
                                     args.push(bv.clone());
                                 } else {
                                     for pname in remaining_params {
-                                        let val = entries.iter()
-                                            .find(|(k, _)| k == pname)
-                                            .map(|(_, v)| v.clone())
+                                        let val = entries.get(pname)
+                                            .cloned()
                                             .unwrap_or(interpreter::Value::Unit);
                                         args.push(val);
                                     }
@@ -1035,7 +1064,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                     body_arg,
                 ];
                 if !query_map.is_empty() {
-                    req_args.push(interpreter::Value::Map(query_map));
+                    req_args.push(interpreter::map_from_pairs(query_map));
                 }
                 (
                     "request".to_string(),
@@ -1068,7 +1097,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
             Ok(val) => {
                 // Check for SSE response
                 let is_sse = if let interpreter::Value::Map(ref entries) = val {
-                    entries.iter().any(|(k, v)| k == "_sse" && matches!(v, interpreter::Value::Bool(true)))
+                    entries.get("_sse").map(|v| matches!(v, interpreter::Value::Bool(true))).unwrap_or(false)
                 } else {
                     false
                 };
@@ -1113,23 +1142,20 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                 }
 
                 let is_response = if let interpreter::Value::Map(ref entries) = val {
-                    entries.iter().any(|(k, _)| k == "_status")
+                    entries.get("_status").is_some()
                 } else {
                     false
                 };
                 let (status_code, body_str, content_type, extra_headers) = if is_response {
                     let entries = if let interpreter::Value::Map(ref e) = val { e } else { unreachable!() };
-                    let status = entries.iter()
-                        .find(|(k, _)| k == "_status")
-                        .and_then(|(_, v)| if let interpreter::Value::Int(n) = v { Some(*n as u16) } else { None })
+                    let status = entries.get("_status")
+                        .and_then(|v| if let interpreter::Value::Int(n) = v { Some(*n as u16) } else { None })
                         .unwrap_or(200);
-                    let content_type = entries.iter()
-                        .find(|(k, _)| k == "_content_type")
-                        .and_then(|(_, v)| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None })
+                    let content_type = entries.get("_content_type")
+                        .and_then(|v| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None })
                         .unwrap_or("application/json".to_string());
-                    let body_val = entries.iter()
-                        .find(|(k, _)| k == "_body")
-                        .map(|(_, v)| v.clone())
+                    let body_val = entries.get("_body")
+                        .cloned()
                         .unwrap_or(interpreter::Value::Unit);
                     let headers: Vec<(String, String)> = entries.iter()
                         .filter(|(k, _)| !k.starts_with('_'))
@@ -1250,7 +1276,7 @@ fn json_request_to_value(v: &serde_json::Value) -> interpreter::Value {
             interpreter::Value::List(arr.iter().map(json_request_to_value).collect())
         }
         serde_json::Value::Object(obj) => {
-            interpreter::Value::Map(
+            interpreter::map_from_pairs(
                 obj.iter().map(|(k, v)| (k.clone(), json_request_to_value(v))).collect()
             )
         }

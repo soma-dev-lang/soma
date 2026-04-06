@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::process;
 
+use num_bigint::BigInt;
+
 use crate::ast;
 use crate::interpreter;
 use crate::registry::Registry;
@@ -93,16 +95,8 @@ fn eval_test_assertion(
             let left_val = eval_test_expr(interp, &left.node)?;
             let right_val = eval_test_expr(interp, &right.node)?;
 
-            let lf = match &left_val { interpreter::Value::Int(n) => *n as f64, interpreter::Value::Float(n) => *n, _ => 0.0 };
-            let rf = match &right_val { interpreter::Value::Int(n) => *n as f64, interpreter::Value::Float(n) => *n, _ => 0.0 };
-            let result = match op {
-                ast::CmpOp::Eq => format!("{}", left_val) == format!("{}", right_val),
-                ast::CmpOp::Ne => format!("{}", left_val) != format!("{}", right_val),
-                ast::CmpOp::Lt => lf < rf,
-                ast::CmpOp::Gt => lf > rf,
-                ast::CmpOp::Le => lf <= rf,
-                ast::CmpOp::Ge => lf >= rf,
-            };
+            let result = interp.eval_cmpop_values(&left_val, op.clone(), &right_val)
+                .unwrap_or(false);
 
             if !result {
                 eprintln!("         left:  {}", left_val);
@@ -122,36 +116,11 @@ fn eval_test_expr(
     interp: &mut interpreter::Interpreter,
     expr: &ast::Expr,
 ) -> Result<interpreter::Value, String> {
-    match expr {
-        ast::Expr::FnCall { name, args } => {
-            let mut arg_vals = Vec::new();
-            for arg in args {
-                arg_vals.push(eval_test_expr(interp, &arg.node)?);
-            }
-            interp.find_and_call(name, arg_vals)
-                .map_err(|e| format!("{}", e))
-        }
-        ast::Expr::Literal(lit) => Ok(match lit {
-            ast::Literal::Int(n) => interpreter::Value::Int(*n),
-            ast::Literal::Float(n) => interpreter::Value::Float(*n),
-            ast::Literal::String(s) => interpreter::Value::String(s.clone()),
-            ast::Literal::Bool(b) => interpreter::Value::Bool(*b),
-            ast::Literal::Unit => interpreter::Value::Unit,
-            _ => interpreter::Value::Unit,
-        }),
-        ast::Expr::BinaryOp { left, op, right } => {
-            let l = eval_test_expr(interp, &left.node)?;
-            let r = eval_test_expr(interp, &right.node)?;
-            match (l, op, r) {
-                (interpreter::Value::Int(a), ast::BinOp::Add, interpreter::Value::Int(b)) => Ok(interpreter::Value::Int(a + b)),
-                (interpreter::Value::Int(a), ast::BinOp::Sub, interpreter::Value::Int(b)) => Ok(interpreter::Value::Int(a - b)),
-                (interpreter::Value::Int(a), ast::BinOp::Mul, interpreter::Value::Int(b)) => Ok(interpreter::Value::Int(a * b)),
-                _ => Ok(interpreter::Value::Unit),
-            }
-        }
-        ast::Expr::Ident(name) => Ok(interpreter::Value::String(name.clone())),
-        _ => Err(format!("unsupported expression in test")),
-    }
+    // Delegate to the real interpreter for full expression support
+    // (pipes, lambdas, match, field access, method calls, etc.)
+    let env = std::collections::HashMap::new();
+    interp.eval_expr_with_env(expr, &env, "", "")
+        .map_err(|e| format!("{:?}", e))
 }
 
 fn format_expr(expr: &ast::Expr) -> String {

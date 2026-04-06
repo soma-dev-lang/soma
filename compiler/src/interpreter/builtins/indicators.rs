@@ -1,4 +1,4 @@
-use super::super::{Value, RuntimeError};
+use super::super::{Value, RuntimeError, map_from_pairs};
 use super::{val_to_i64, map_field_i64};
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
@@ -57,7 +57,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     let vals: Vec<f64> = items.iter().map(|i| map_field_i64(i, &field) as f64).collect();
-                    if vals.len() < 26 { return Some(Ok(Value::Map(vec![("macd".into(), Value::Float(0.0)), ("signal".into(), Value::Float(0.0)), ("histogram".into(), Value::Float(0.0))]))); }
+                    if vals.len() < 26 { return Some(Ok(map_from_pairs(vec![("macd".into(), Value::Float(0.0)), ("signal".into(), Value::Float(0.0)), ("histogram".into(), Value::Float(0.0))]))); }
                     let k12 = 2.0 / 13.0;
                     let mut ema12 = vals[0];
                     for v in &vals[1..] { ema12 = v * k12 + ema12 * (1.0 - k12); }
@@ -67,7 +67,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let macd_val = ema12 - ema26;
                     let signal = macd_val * 0.8;
                     let histogram = macd_val - signal;
-                    Some(Ok(Value::Map(vec![
+                    Some(Ok(map_from_pairs(vec![
                         ("macd".to_string(), Value::Float(macd_val)),
                         ("signal".to_string(), Value::Float(signal)),
                         ("histogram".to_string(), Value::Float(histogram)),
@@ -86,7 +86,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mean = if window.is_empty() { 0.0 } else { window.iter().sum::<f64>() / window.len() as f64 };
                     let variance = if window.is_empty() { 0.0 } else { window.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / window.len() as f64 };
                     let std_dev = variance.sqrt();
-                    Some(Ok(Value::Map(vec![
+                    Some(Ok(map_from_pairs(vec![
                         ("upper".to_string(), Value::Float(mean + 2.0 * std_dev)),
                         ("middle".to_string(), Value::Float(mean)),
                         ("lower".to_string(), Value::Float(mean - 2.0 * std_dev)),

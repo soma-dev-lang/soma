@@ -86,6 +86,8 @@ pub enum Section {
     State(StateMachineSection),
     /// Scheduled execution: every 30s { ... }
     Every(EverySection),
+    /// One-shot delayed execution: after 5s { ... }
+    After(EverySection),
     /// Orchestration: scale { replicas: 100, shard: data, ... }
     Scale(ScaleSection),
 }
@@ -179,6 +181,7 @@ pub struct Param {
 #[derive(Debug, Clone)]
 pub struct MemorySection {
     pub slots: Vec<Spanned<MemorySlot>>,
+    pub invariants: Vec<Spanned<Expr>>,
 }
 
 #[derive(Debug, Clone)]
@@ -340,6 +343,10 @@ pub enum Statement {
     },
     Break,
     Continue,
+    /// Postcondition: ensure condition — checked after handler returns
+    Ensure {
+        condition: Spanned<Expr>,
+    },
     /// Bare expression statement (for function calls as statements)
     ExprStmt {
         expr: Spanned<Expr>,
@@ -472,11 +479,25 @@ pub enum Expr {
         stmts: Vec<Spanned<Statement>>,
         result: Box<Spanned<Expr>>,
     },
+    /// List literal: [1, 2, 3] or []
+    ListLiteral(Vec<Spanned<Expr>>),
+    /// Try-propagate: expr? — if expr has .error, return early; otherwise unwrap .value
+    TryPropagate(Box<Spanned<Expr>>),
+    /// If expression: if cond { expr } else { expr }
+    IfExpr {
+        condition: Box<Spanned<Expr>>,
+        then_body: Vec<Spanned<Statement>>,
+        then_result: Box<Spanned<Expr>>,
+        else_body: Vec<Spanned<Statement>>,
+        else_result: Box<Spanned<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: MatchPattern,
+    /// Guard clause: pattern if condition -> result
+    pub guard: Option<Spanned<Expr>>,
     pub body: Vec<Spanned<Statement>>,
     /// The result expression (last expression in body, or the single expression after ->)
     pub result: Spanned<Expr>,
@@ -485,12 +506,22 @@ pub struct MatchArm {
 #[derive(Debug, Clone)]
 pub enum MatchPattern {
     Literal(Literal),
-    Wildcard, // _
+    Wildcard,           // _
+    Variable(String),   // x — binds the matched value
+    Or(Vec<MatchPattern>), // pat1 | pat2 | pat3
+    /// Map destructuring: {method: "GET", path, body}
+    /// Each entry is (field_name, pattern). If pattern is Variable with same name, it's a binding.
+    MapDestructure(Vec<(String, MatchPattern)>),
+    /// String prefix: "/api/" + rest — matches prefix and binds remainder
+    StringPrefix { prefix: String, rest: String },
+    /// Range pattern: 1..10 matches integers in [1, 10)
+    Range { from: i64, to: i64 },
 }
 
 #[derive(Debug, Clone)]
 pub enum Literal {
     Int(i64),
+    BigInt(String),
     Float(f64),
     String(String),
     Bool(bool),

@@ -29,9 +29,11 @@ fn test_fact_20() {
 }
 
 #[test]
-fn test_fact_overflow() {
-    let (_, _, code) = soma(&["run", "../examples/fact.cell", "30"]);
-    assert_ne!(code, 0); // should fail with overflow
+fn test_fact_auto_promotes_bigint() {
+    // 30! overflows i64 but auto-promotes to BigInt
+    let (out, _, code) = soma(&["run", "../examples/fact.cell", "30"]);
+    assert_eq!(code, 0);
+    assert_eq!(out.trim(), "265252859812191058636308480000000");
 }
 
 #[test]

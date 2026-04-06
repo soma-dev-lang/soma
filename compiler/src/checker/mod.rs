@@ -596,19 +596,25 @@ impl<'a> Checker<'a> {
         output
     }
 
-    /// Machine-readable JSON report for agent consumption
+    /// Machine-readable JSON report for agent consumption.
+    /// Each error includes a `fix` field with a concrete repair suggestion.
     pub fn report_json(&self) -> String {
         let errors: Vec<serde_json::Value> = self.errors.iter().map(|e| {
+            let (msg, fix, kind) = Self::error_with_fix(e);
             serde_json::json!({
                 "level": "error",
-                "message": format!("{}", e),
+                "kind": kind,
+                "message": msg,
+                "fix": fix,
             })
         }).collect();
 
         let warnings: Vec<serde_json::Value> = self.warnings.iter().map(|w| {
+            let (msg, fix) = Self::warning_with_fix(w);
             serde_json::json!({
                 "level": "warning",
-                "message": format!("{}", w),
+                "message": msg,
+                "fix": fix,
             })
         }).collect();
 
@@ -621,5 +627,88 @@ impl<'a> Checker<'a> {
         });
 
         serde_json::to_string_pretty(&output).unwrap()
+    }
+
+    /// Generate error message + concrete fix suggestion for each error type
+    fn error_with_fix(err: &CheckError) -> (String, String, &'static str) {
+        match err {
+            CheckError::PropertyContradiction { slot, a, b, .. } => (
+                format!("{}", err),
+                format!("Remove either [{a}] or [{b}] from memory slot '{slot}'. These properties are mutually exclusive."),
+                "property_contradiction",
+            ),
+            CheckError::InvalidPropertyCombination { slot, reason, .. } => (
+                format!("{}", err),
+                format!("Fix the property combination on '{slot}': {reason}"),
+                "invalid_properties",
+            ),
+            CheckError::MissingHandler { cell, signal, .. } => (
+                format!("{}", err),
+                format!("Add a handler to cell '{cell}':\n\n    on {signal}() {{\n        // TODO: implement\n        return map(\"status\", \"ok\")\n    }}"),
+                "missing_handler",
+            ),
+            CheckError::ParamCountMismatch { cell, signal, expected, actual, .. } => (
+                format!("{}", err),
+                format!("Change the handler 'on {signal}(...)' in cell '{cell}' to accept {expected} parameter(s) (currently has {actual})."),
+                "param_mismatch",
+            ),
+            CheckError::DuplicateCellName { name, .. } => (
+                format!("{}", err),
+                format!("Rename one of the duplicate cells named '{name}' to a unique name."),
+                "duplicate_cell",
+            ),
+            CheckError::DuplicateSlot { cell, name, .. } => (
+                format!("{}", err),
+                format!("Remove the duplicate memory slot '{name}' in cell '{cell}'."),
+                "duplicate_slot",
+            ),
+            CheckError::DuplicateSignal { cell, name, .. } => (
+                format!("{}", err),
+                format!("Remove the duplicate handler 'on {name}()' in cell '{cell}'."),
+                "duplicate_signal",
+            ),
+            CheckError::ScaleShardNotFound { cell, slot, .. } => (
+                format!("{}", err),
+                format!("Either add a memory slot named '{slot}' to cell '{cell}', or change the shard target in the scale section to match an existing slot."),
+                "shard_not_found",
+            ),
+            CheckError::ScaleConsistencyMismatch { slot, prop, consistency, .. } => (
+                format!("{}", err),
+                format!("Memory slot '{slot}' uses [{prop}] but scale declares consistency: {consistency}. Change either the memory property or the scale consistency level."),
+                "consistency_mismatch",
+            ),
+            CheckError::PromiseViolation { cell, promise, .. } => (
+                format!("{}", err),
+                format!("Cell '{cell}' violates promise '{promise}'. Either satisfy the constraint or remove the promise from the face section."),
+                "promise_violation",
+            ),
+            _ => (
+                format!("{}", err),
+                "Review and fix the reported issue.".to_string(),
+                "other",
+            ),
+        }
+    }
+
+    /// Generate warning message + suggestion
+    fn warning_with_fix(warn: &CheckWarning) -> (String, String) {
+        match warn {
+            CheckWarning::UnhandledSignal { cell, signal, .. } => (
+                format!("{}", warn),
+                format!("Add a handler 'on {signal}(...)' to cell '{cell}', or remove the emit if it's unused."),
+            ),
+            CheckWarning::UnknownProperty { slot, property, .. } => (
+                format!("{}", warn),
+                format!("Check spelling of property '{property}' on slot '{slot}'. Define it with 'cell property {property} {{ }}' or remove it."),
+            ),
+            CheckWarning::UnverifiablePromise { promise, .. } => (
+                format!("{}", warn),
+                format!("Replace the descriptive promise \"{promise}\" with a machine-verifiable constraint, or accept this as documentation."),
+            ),
+            _ => (
+                format!("{}", warn),
+                "Review and address the reported warning.".to_string(),
+            ),
+        }
     }
 }

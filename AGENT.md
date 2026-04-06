@@ -19,14 +19,14 @@ The same code runs on 1 machine or 1000. No Docker, no YAML, no config files.
 
 ```
 1. Generate the .cell file       → soma_generate("app.cell", code)
-2. Check for errors              → soma_check("app.cell")
-3. Verify state machines         → soma_verify("app.cell")
-4. If errors: read them, fix, goto 2
-5. If verify fails: read counter-example, fix state machine, goto 3
+2. Auto-fix errors               → soma fix app.cell (adds missing handlers, fixes properties)
+3. Check for remaining errors    → soma_check("app.cell")
+4. Verify state machines         → soma_verify("app.cell")
+5. If verify fails: read counter-example, fix state machine, goto 4
 6. Serve                         → soma_serve("app.cell", 8080)
 ```
 
-**Do not skip steps 2 and 3.** The compiler catches bugs that tests cannot.
+**`soma fix` is your best friend.** It auto-repairs missing handlers, contradictory properties, and more. Use it before manual fixing.
 
 ## Syntax rules — memorize these
 
@@ -83,17 +83,14 @@ cell AppName {
     }
 
     on request(method: String, path: String, body: String) {
-        if method == "POST" {
-            if path == "/create" { return create(body) }
-            return response(404, map("error", "not found"))
-        } else {
-            if path == "/items" {
-                return items.values() |> map(s => from_json(s)) |> filter(i => i.id != ())
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "POST", path: "/create"} -> create(body)
+            {method: "GET", path: "/items"} -> {
+                items.values() |> map(s => from_json(s)) |> filter(i => i.id != ())
             }
-            if path == "/" {
-                return map("name", "AppName", "items", items.len())
-            }
-            return response(404, map("error", "not found"))
+            {method: "GET", path: "/"} -> map("name", "AppName", "items", items.len())
+            _ -> response(404, map("error", "not found"))
         }
     }
 }
@@ -103,7 +100,8 @@ cell AppName {
 
 ### DO
 
-- **DO** store complex values as JSON: `items.set(id, to_json(map(...)))` then `from_json(items.get(id))`
+- **DO** store complex values directly: `items.set(id, map(...))` — storage auto-serializes maps and lists
+- **DO** read them back directly: `let user = items.get(id)` then `user.name` — auto-deserialized
 - **DO** use `data.field ?? "default"` for null-safe access
 - **DO** use `to_string()` when storing numbers in maps: `"qty", to_string(qty)`
 - **DO** create a `soma.toml` with `[verify]` properties for every state machine
@@ -115,11 +113,11 @@ cell AppName {
 
 ### DON'T
 
-- **DON'T** use `if` as an expression: `let x = if a { b } else { c }` — instead use `let x = c` then `if a { x = b }`
+- **DO** use `if` as an expression: `let x = if a { b } else { c }` (else branch required)
 - **DON'T** use multi-line pipes after `->` in match arms — put the pipe on one line or use if/else
-- **DON'T** forget `to_json()` when storing maps: `items.set(id, data)` stores `"[object]"`, use `items.set(id, to_json(data))`
+- **DON'T** use `to_json()` when storing maps — storage auto-serializes: just `items.set(id, data)`
 - **DON'T** use `unique()` — use `distinct()`
-- **DON'T** use `async/await` — Soma is synchronous, use `every Ns {}` for periodic tasks
+- **DON'T** use `async/await` — Soma is synchronous, use `every Ns {}` for periodic tasks and `after Ns {}` for one-shot delays
 - **DON'T** use classes or inheritance — everything is a cell with handlers
 - **DON'T** return inside a `for` loop expecting it to return from the handler — `return` exits the handler, use a variable instead
 - **DON'T** put `return` after `match` — match is an expression, just use it directly or assign it

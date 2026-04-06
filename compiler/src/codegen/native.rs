@@ -608,6 +608,10 @@ impl FnGenerator {
                 code.push_str(&format!("        {}\n    }}", self.gen_expr(&result.node, NativeType::Float)));
                 code
             }
+            Expr::ListLiteral(elements) => {
+                let items: Vec<String> = elements.iter().map(|e| self.gen_expr(&e.node, target_ty)).collect();
+                format!("vec![{}]", items.join(", "))
+            }
             Expr::FieldAccess { target, field } => {
                 // For lambda params accessing map fields — in native, these are struct fields
                 // For now, treat as tuple access or direct field

@@ -110,6 +110,7 @@ fn check_stmt(handler_name: &str, stmt: &Statement, siblings: &NativeSiblings) -
             handler_name: handler_name.to_string(),
             reason: "uses method call (not allowed in native handlers)".to_string(),
         }),
+        Statement::Ensure { condition } => check_expr(handler_name, &condition.node, siblings),
     }
 }
 
@@ -185,5 +186,18 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
             handler_name: handler_name.to_string(),
             reason: "uses match expression (not allowed in native handlers)".to_string(),
         }),
+        Expr::ListLiteral(elements) => {
+            for elem in elements { check_expr(handler_name, &elem.node, siblings)?; }
+            Ok(())
+        }
+        Expr::TryPropagate(inner) => check_expr(handler_name, &inner.node, siblings),
+        Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
+            check_expr(handler_name, &condition.node, siblings)?;
+            for stmt in then_body { check_stmt(handler_name, &stmt.node, siblings)?; }
+            check_expr(handler_name, &then_result.node, siblings)?;
+            for stmt in else_body { check_stmt(handler_name, &stmt.node, siblings)?; }
+            check_expr(handler_name, &else_result.node, siblings)?;
+            Ok(())
+        }
     }
 }

@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::bytecode::*;
-use crate::interpreter::Value;
+use crate::interpreter::{Value, map_from_pairs};
 use crate::runtime::storage::StorageBackend;
+use indexmap::IndexMap;
 
 /// A call frame on the VM stack
 struct CallFrame {
@@ -179,15 +180,15 @@ impl VM {
                             // Evaluate try { inner } via interpreter
                             let try_result = interp.eval_expr_with_env(&inner.node, &mut env, "", "");
                             match try_result {
-                                Ok(val) => Value::Map(vec![
+                                Ok(val) => map_from_pairs(vec![
                                     ("value".to_string(), val),
                                     ("error".to_string(), Value::Unit),
                                 ]),
-                                Err(crate::interpreter::ExecError::Runtime(e)) => Value::Map(vec![
+                                Err(crate::interpreter::ExecError::Runtime(e)) => map_from_pairs(vec![
                                     ("value".to_string(), Value::Unit),
                                     ("error".to_string(), Value::String(format!("{}", e))),
                                 ]),
-                                Err(_) => Value::Map(vec![
+                                Err(_) => map_from_pairs(vec![
                                     ("value".to_string(), Value::Unit),
                                     ("error".to_string(), Value::String("unknown error".to_string())),
                                 ]),
@@ -337,10 +338,7 @@ impl VM {
                     let obj = self.stack.pop().unwrap_or(Value::Unit);
                     let val = match obj {
                         Value::Map(ref entries) => {
-                            entries.iter()
-                                .find(|(k, _)| *k == field)
-                                .map(|(_, v)| v.clone())
-                                .unwrap_or(Value::Unit)
+                            entries.get(&field).cloned().unwrap_or(Value::Unit)
                         }
                         _ => Value::Unit,
                     };
@@ -416,7 +414,7 @@ impl VM {
                             if let Some(slot) = chunk.locals.iter().position(|n| n == parts[0]) {
                                 if base + slot < self.locals.len() {
                                     if let Value::Map(ref entries) = self.locals[base + slot] {
-                                        if let Some((_, val)) = entries.iter().find(|(k, _)| k == parts[1]) {
+                                        if let Some(val) = entries.get(parts[1]) {
                                             result.push_str(&format!("{}", val));
                                             pos = pos + 1 + end + 1;
                                             continue;
@@ -557,7 +555,7 @@ impl VM {
             }
             "html" => {
                 let body = args.first().map(|a| format!("{}", a)).unwrap_or_default();
-                Value::Map(vec![
+                map_from_pairs(vec![
                     ("_status".to_string(), Value::Int(200)),
                     ("_body".to_string(), Value::String(body)),
                     ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
@@ -566,14 +564,14 @@ impl VM {
             "response" => {
                 let status = args.first().cloned().unwrap_or(Value::Int(200));
                 let body = args.get(1).cloned().unwrap_or(Value::Unit);
-                Value::Map(vec![
+                map_from_pairs(vec![
                     ("_status".to_string(), status),
                     ("_body".to_string(), body),
                 ])
             }
             "redirect" => {
                 let url = args.first().map(|a| format!("{}", a)).unwrap_or("/".to_string());
-                Value::Map(vec![
+                map_from_pairs(vec![
                     ("_status".to_string(), Value::Int(302)),
                     ("_body".to_string(), Value::String(String::new())),
                     ("Location".to_string(), Value::String(url)),
@@ -586,10 +584,10 @@ impl VM {
                         return self.apply_lambda_builtin("map", items, lambda);
                     }
                 }
-                let mut entries = Vec::new();
+                let mut entries = IndexMap::new();
                 let mut i = 0;
                 while i + 1 < args.len() {
-                    entries.push((format!("{}", args[i]), args[i + 1].clone()));
+                    entries.insert(format!("{}", args[i]), args[i + 1].clone());
                     i += 2;
                 }
                 Value::Map(entries)
@@ -653,7 +651,7 @@ impl VM {
             // Delegate all other builtins to the interpreter's dispatch
             _ => {
                 let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![] };
-                let interp = crate::interpreter::Interpreter::new(&dummy_prog);
+                let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
                 if let Some(result) = interp.call_builtin(name, &args, "") {
                     result.unwrap_or(Value::Unit)
                 } else {
@@ -767,11 +765,11 @@ impl VM {
             (Value::List(items), "first") => items.first().cloned().unwrap_or(Value::Unit),
             (Value::List(items), "last") => items.last().cloned().unwrap_or(Value::Unit),
             (Value::Map(entries), "keys") => {
-                Value::List(entries.iter().map(|(k, _)| Value::String(k.clone())).collect())
+                Value::List(entries.keys().map(|k| Value::String(k.clone())).collect())
             }
             (Value::Map(entries), "get") => {
                 let key = args.first().map(|a| format!("{}", a)).unwrap_or_default();
-                entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone()).unwrap_or(Value::Unit)
+                entries.get(&key).cloned().unwrap_or(Value::Unit)
             }
             (Value::String(s), "len" | "length") => Value::Int(s.chars().count() as i64),
             _ => Value::Unit,

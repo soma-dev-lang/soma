@@ -43,6 +43,8 @@ pub enum Token {
     Try,
     Catch,
     Every,
+    After,
+    Ensure,
     Match,
     // Operators
     Percent,  // %
@@ -81,6 +83,7 @@ pub enum Token {
     Ident(String),
     TypeIdent(String),
     IntLit(i64),
+    BigIntLit(String),
     FloatLit(f64),
     StringLit(String),
     DurationLit(f64, DurationUnitTok),
@@ -104,9 +107,14 @@ pub enum Token {
     FatArrow, // =>
     Pipe,     // |>
     NullCoal, // ??
+    Question, // ?
     Eq,       // =
     PlusEq,   // +=
+    MinusEq,  // -=
+    StarEq,   // *=
+    SlashEq,  // /=
     Dot,      // .
+    DotDot,   // ..
 
     // Delimiters
     LBrace,   // {
@@ -244,7 +252,14 @@ impl<'a> Lexer<'a> {
             ']' => Token::RBracket,
             ',' => Token::Comma,
             ':' => Token::Colon,
-            '.' => Token::Dot,
+            '.' => {
+                if self.peek() == Some('.') {
+                    self.advance();
+                    Token::DotDot
+                } else {
+                    Token::Dot
+                }
+            }
             '+' => {
                 if self.peek() == Some('=') {
                     self.advance();
@@ -253,22 +268,39 @@ impl<'a> Lexer<'a> {
                     Token::Plus
                 }
             }
-            '*' => Token::Star,
+            '*' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Token::StarEq
+                } else {
+                    Token::Star
+                }
+            }
             '%' => Token::Percent,
             '?' => {
                 if self.peek() == Some('?') {
                     self.advance();
                     Token::NullCoal
                 } else {
-                    return Err(LexError::UnexpectedChar { ch, pos: start });
+                    Token::Question
                 }
             }
-            '/' => Token::Slash,
+            '/' => {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    Token::SlashEq
+                } else {
+                    Token::Slash
+                }
+            }
 
             '-' => {
                 if self.peek() == Some('>') {
                     self.advance();
                     Token::Arrow
+                } else if self.peek() == Some('=') {
+                    self.advance();
+                    Token::MinusEq
                 } else {
                     Token::Minus
                 }
@@ -456,6 +488,8 @@ impl<'a> Lexer<'a> {
                     "try" => Token::Try,
                     "catch" => Token::Catch,
                     "every" => Token::Every,
+                    "after" => Token::After,
+                    "ensure" => Token::Ensure,
                     "match" => Token::Match,
                     "runtime" => Token::Runtime,
                     "connect" => Token::Connect,
@@ -617,23 +651,28 @@ impl<'a> Lexer<'a> {
                 span: Span::new(start, self.pos),
             })
         } else {
-            let val: i64 = match num_str.parse::<i64>() {
-                Ok(v) => v,
+            match num_str.parse::<i64>() {
+                Ok(val) => Ok(SpannedToken {
+                    token: Token::IntLit(val),
+                    span: Span::new(start, self.pos),
+                }),
                 Err(_) => {
-                    // Handle 9223372036854775808 which is only valid as the
-                    // operand of unary minus (producing i64::MIN).  Store it
-                    // as i64::MIN; the parser's negation uses wrapping_neg
-                    // which maps i64::MIN back to itself.
-                    match num_str.parse::<u64>() {
-                        Ok(u) if u == (i64::MAX as u64) + 1 => i64::MIN,
-                        _ => return Err(LexError::InvalidNumber { pos: start }),
+                    // Handle 9223372036854775808 (i64::MIN as positive, used with unary minus)
+                    if let Ok(u) = num_str.parse::<u64>() {
+                        if u == (i64::MAX as u64) + 1 {
+                            return Ok(SpannedToken {
+                                token: Token::IntLit(i64::MIN),
+                                span: Span::new(start, self.pos),
+                            });
+                        }
                     }
+                    // Number overflows i64 — emit as BigInt literal
+                    Ok(SpannedToken {
+                        token: Token::BigIntLit(num_str),
+                        span: Span::new(start, self.pos),
+                    })
                 }
-            };
-            Ok(SpannedToken {
-                token: Token::IntLit(val),
-                span: Span::new(start, self.pos),
-            })
+            }
         }
     }
 }

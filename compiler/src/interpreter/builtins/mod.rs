@@ -9,12 +9,12 @@ pub mod io;
 pub mod storage;
 pub mod record;
 
-use super::{Value, RuntimeError};
+use super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;
 
 /// Dispatch builtin calls to sub-modules.
 /// Returns None if the name is not a known builtin.
-pub fn call_builtin(interp: &super::Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     // Try each category in order
     None
         .or_else(|| io::call_builtin(name, args))
@@ -44,7 +44,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                 };
                 let mut acc = initial.clone();
                 for item in items {
-                    let pair = Value::Map(vec![
+                    let pair = map_from_pairs(vec![
                         ("acc".to_string(), acc),
                         ("val".to_string(), item.clone()),
                     ]);
@@ -180,16 +180,14 @@ pub fn val_to_f64(v: &Value) -> f64 {
 /// Get a field from a Map as i64
 pub fn map_field_i64(item: &Value, field: &str) -> i64 {
     if let Value::Map(entries) = item {
-        entries.iter().find(|(k, _)| k == field)
-            .map(|(_, v)| val_to_i64(v)).unwrap_or(0)
+        entries.get(field).map(val_to_i64).unwrap_or(0)
     } else { 0 }
 }
 
 /// Get a field from a Map as f64
 pub fn map_field_f64(item: &Value, field: &str) -> f64 {
     if let Value::Map(entries) = item {
-        entries.iter().find(|(k, _)| k == field)
-            .map(|(_, v)| val_to_f64(v)).unwrap_or(0.0)
+        entries.get(field).map(val_to_f64).unwrap_or(0.0)
     } else { 0.0 }
 }
 

@@ -4,6 +4,7 @@ pub mod native_ffi;
 use std::collections::HashMap;
 use std::sync::Arc;
 use rustc_hash::FxHashMap;
+use indexmap::IndexMap;
 
 /// Fast environment map — uses FxHash (no crypto overhead) for variable lookups
 type Env = FxHashMap<String, Value>;
@@ -154,7 +155,7 @@ pub enum Value {
     String(String),
     Bool(bool),
     List(Vec<Value>),
-    Map(Vec<(String, Value)>),
+    Map(IndexMap<String, Value>),
     /// Lambda: captured param name + body expression + closure environment
     Lambda {
         param: std::string::String,
@@ -169,6 +170,12 @@ pub enum Value {
         env: HashMap<std::string::String, Value>,
     },
     Unit,
+}
+
+/// Build a Value::Map from a Vec of (String, Value) pairs.
+/// Preserves insertion order; duplicate keys overwrite.
+pub fn map_from_pairs(pairs: Vec<(String, Value)>) -> Value {
+    Value::Map(pairs.into_iter().collect())
 }
 
 impl std::fmt::Display for Value {
@@ -243,6 +250,7 @@ impl Value {
         match self {
             Value::Float(n) => Ok(*n),
             Value::Int(n) => Ok(*n as f64),
+            Value::Big(n) => Ok(n.to_string().parse::<f64>().unwrap_or(f64::INFINITY)),
             other => Err(RuntimeError::TypeError(format!("expected Float, got {:?}", other))),
         }
     }
@@ -332,6 +340,8 @@ pub struct Interpreter {
     pub cluster: Option<Arc<crate::runtime::cluster::ClusterNode>>,
     /// Which memory slots are sharded (slot_name → true)
     pub sharded_slots: HashMap<String, bool>,
+    /// Memory invariants: slot_name → list of expressions to check on .set()
+    pub(crate) invariants: HashMap<String, Vec<Expr>>,
 }
 
 impl Interpreter {
@@ -358,6 +368,23 @@ impl Interpreter {
                 }
             }
         }
+        // Collect memory invariants from all cells
+        let mut invariants: HashMap<String, Vec<Expr>> = HashMap::new();
+        for cell in &program.cells {
+            for section in &cell.node.sections {
+                if let Section::Memory(ref mem) = section.node {
+                    if !mem.invariants.is_empty() {
+                        let exprs: Vec<Expr> = mem.invariants.iter().map(|i| i.node.clone()).collect();
+                        // Associate invariants with all slots in this memory section
+                        for slot in &mem.slots {
+                            let key = format!("{}.{}", cell.node.name, slot.node.name);
+                            invariants.entry(key).or_default().extend(exprs.clone());
+                            invariants.entry(slot.node.name.clone()).or_default().extend(exprs.clone());
+                        }
+                    }
+                }
+            }
+        }
         Self {
             cells,
             handler_cache,
@@ -376,6 +403,7 @@ impl Interpreter {
             native_handlers: HashMap::new(),
             cluster: None,
             sharded_slots: HashMap::new(),
+            invariants,
         }
     }
 
@@ -610,30 +638,36 @@ impl Interpreter {
         signal_name: &str,
     ) -> Result<Value, ExecError> {
         // Fast path: if the body contains no `let` bindings, no scoping is needed
-        // (no new variables to clean up, no shadowing to restore)
         if !body_has_let(body) {
             return self.exec_body(body, env, cell_name, signal_name);
         }
-        let outer_keys: std::collections::HashSet<String> = env.keys().cloned().collect();
-        let snapshot: Env = env.clone();
-        let result = self.exec_body(body, env, cell_name, signal_name);
-        // Collect keys to remove (new `let` bindings that should not leak)
-        let to_remove: Vec<String> = env.keys()
-            .filter(|k| !outer_keys.contains(*k))
-            .cloned()
-            .collect();
-        for key in to_remove {
-            env.remove(&key);
-        }
-        // Restore any outer variable that was re-declared with `let` (shadowed):
-        // If a `let` in this block shadows an outer variable, restore the outer value
+        // Collect which names will be `let`-bound in this block and save their
+        // original values (if any) for restoration. This is O(k) where k = number
+        // of let bindings in the block, NOT O(n) where n = total env size.
+        let mut shadowed: Vec<(String, Option<Value>)> = Vec::new();
+        let mut new_keys: Vec<String> = Vec::new();
         for stmt in body {
             if let Statement::Let { name, .. } = &stmt.node {
-                if outer_keys.contains(name) {
-                    if let Some(original) = snapshot.get(name) {
-                        env.insert(name.clone(), original.clone());
-                    }
+                if let Some(existing) = env.get(name) {
+                    shadowed.push((name.clone(), Some(existing.clone())));
+                } else {
+                    new_keys.push(name.clone());
                 }
+            }
+        }
+
+        let result = self.exec_body(body, env, cell_name, signal_name);
+
+        // Remove new bindings that should not leak out of this scope
+        for key in &new_keys {
+            env.remove(key);
+        }
+        // Restore shadowed variables to their original values
+        for (name, original) in shadowed {
+            if let Some(val) = original {
+                env.insert(name, val);
+            } else {
+                env.remove(&name);
             }
         }
         result
@@ -697,6 +731,20 @@ impl Interpreter {
                 Err(ExecError::Continue)
             }
 
+            Statement::Ensure { condition } => {
+                // Postcondition: store condition for checking after handler returns.
+                // For now, evaluate eagerly — if false at this point, fail.
+                // This is useful for pre+post style: ensure at end of handler body.
+                let val = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
+                if !val.is_truthy() {
+                    Err(ExecError::Runtime(RuntimeError::RequireFailed(
+                        format!("ensure postcondition failed")
+                    )))
+                } else {
+                    Ok(Value::Unit)
+                }
+            }
+
             Statement::If {
                 condition,
                 then_body,
@@ -722,7 +770,7 @@ impl Interpreter {
                     Value::List(items) => items,
                     Value::Map(entries) => {
                         entries.into_iter().map(|(k, v)| {
-                            Value::Map(vec![
+                            map_from_pairs(vec![
                                 ("key".to_string(), Value::String(k)),
                                 ("value".to_string(), v),
                             ])
@@ -1031,13 +1079,22 @@ impl Interpreter {
                 Ok(Value::Bool(!b))
             }
 
+            Expr::ListLiteral(elements) => {
+                let mut items = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    items.push(self.eval_expr(&elem.node, env, cell_name, signal_name)?);
+                }
+                Ok(Value::List(items))
+            }
+
             Expr::Record { type_name, fields } => {
                 // Record literal: User { name: "Alice", age: 30 }
                 // Evaluates to a Map with a _type field for runtime type checking
-                let mut entries = vec![("_type".to_string(), Value::String(type_name.clone()))];
+                let mut entries = IndexMap::new();
+                entries.insert("_type".to_string(), Value::String(type_name.clone()));
                 for (field_name, field_expr) in fields {
                     let val = self.eval_expr(&field_expr.node, env, cell_name, signal_name)?;
-                    entries.push((field_name.clone(), val));
+                    entries.insert(field_name.clone(), val);
                 }
                 Ok(Value::Map(entries))
             }
@@ -1045,17 +1102,35 @@ impl Interpreter {
             Expr::Try(inner) => {
                 // try { expr } → returns map("value", result) or map("error", message)
                 match self.eval_expr(&inner.node, env, cell_name, signal_name) {
-                    Ok(val) => Ok(Value::Map(vec![
+                    Ok(val) => Ok(map_from_pairs(vec![
                         ("value".to_string(), val),
                         ("error".to_string(), Value::Unit),
                     ])),
-                    Err(ExecError::Runtime(e)) => Ok(Value::Map(vec![
+                    Err(ExecError::Runtime(e)) => Ok(map_from_pairs(vec![
                         ("value".to_string(), Value::Unit),
                         ("error".to_string(), Value::String(format!("{}", e))),
                     ])),
                     Err(ExecError::Return(val)) => Err(ExecError::Return(val)),
                     Err(ExecError::Break) => Err(ExecError::Break),
                     Err(ExecError::Continue) => Err(ExecError::Continue),
+                }
+            }
+
+            Expr::TryPropagate(inner) => {
+                // expr? — evaluate inner, if result is a map with a non-unit error field, propagate it
+                let val = self.eval_expr(&inner.node, env, cell_name, signal_name)?;
+                match &val {
+                    Value::Map(entries) => {
+                        if let Some(err) = entries.get("error") {
+                            if !matches!(err, Value::Unit) {
+                                // Has an error — propagate by returning the error map
+                                return Err(ExecError::Return(val));
+                            }
+                        }
+                        // No error — unwrap value
+                        Ok(entries.get("value").cloned().unwrap_or(val))
+                    }
+                    _ => Ok(val) // Not a result map, return as-is
                 }
             }
 
@@ -1080,21 +1155,53 @@ impl Interpreter {
                 })
             }
 
+            Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
+                let cond_val = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
+                if cond_val.is_truthy() {
+                    for stmt in then_body {
+                        self.last_span = Some(stmt.span);
+                        self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
+                    }
+                    self.eval_expr(&then_result.node, env, cell_name, signal_name)
+                } else {
+                    for stmt in else_body {
+                        self.last_span = Some(stmt.span);
+                        self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
+                    }
+                    self.eval_expr(&else_result.node, env, cell_name, signal_name)
+                }
+            }
+
             Expr::Match { subject, arms } => {
                 let val = self.eval_expr(&subject.node, env, cell_name, signal_name)?;
                 for arm in arms {
-                    let matches = match &arm.pattern {
-                        MatchPattern::Wildcard => true,
-                        MatchPattern::Literal(lit) => {
-                            let lit_val = self.eval_literal(lit);
-                            self.values_equal(&val, &lit_val)
-                        }
-                    };
+                    let (matches, bindings) = self.match_pattern(&arm.pattern, &val);
                     if matches {
-                        // Execute body statements
+                        // Bind all variables captured by the pattern
+                        for (name, bound_val) in &bindings {
+                            env.insert(name.clone(), bound_val.clone());
+                        }
+                        // Evaluate guard clause if present
+                        if let Some(ref guard) = arm.guard {
+                            let guard_val = self.eval_expr(&guard.node, env, cell_name, signal_name)?;
+                            if !guard_val.is_truthy() {
+                                // Guard failed — unbind and try next arm
+                                for (name, _) in &bindings {
+                                    env.remove(name);
+                                }
+                                continue;
+                            }
+                        }
+                        // Execute body statements, capturing last value
+                        let mut last_val = Value::Unit;
                         for stmt in &arm.body {
                             self.last_span = Some(stmt.span);
-                            self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
+                            last_val = self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
+                        }
+                        // If the result expression is Unit (parser couldn't extract it),
+                        // use the last body statement's value instead
+                        if matches!(arm.result.node, Expr::Literal(Literal::Unit)) && !arm.body.is_empty() {
+                            return Ok(last_val);
                         }
                         return self.eval_expr(&arm.result.node, env, cell_name, signal_name);
                     }
@@ -1166,15 +1273,12 @@ impl Interpreter {
                     Value::Map(ref entries) => {
                         // Built-in pseudo-fields for maps
                         match field.as_str() {
-                            "keys" => return Ok(Value::List(entries.iter().map(|(k, _)| Value::String(k.clone())).collect())),
-                            "values" => return Ok(Value::List(entries.iter().map(|(_, v)| v.clone()).collect())),
+                            "keys" => return Ok(Value::List(entries.keys().map(|k| Value::String(k.clone())).collect())),
+                            "values" => return Ok(Value::List(entries.values().cloned().collect())),
                             "length" | "len" | "size" => return Ok(Value::Int(entries.len() as i64)),
                             _ => {}
                         }
-                        let val = entries.iter()
-                            .find(|(k, _)| k == field)
-                            .map(|(_, v)| v.clone())
-                            .unwrap_or(Value::Unit);
+                        let val = entries.get(field).cloned().unwrap_or(Value::Unit);
                         Ok(val)
                     }
                     Value::List(ref items) => {
@@ -1195,7 +1299,7 @@ impl Interpreter {
                     }
                     Value::String(ref s) => {
                         match field.as_str() {
-                            "length" | "len" => Ok(Value::Int(s.len() as i64)),
+                            "length" | "len" => Ok(Value::Int(s.chars().count() as i64)),
                             _ => Ok(Value::Unit),
                         }
                     }
@@ -1234,29 +1338,26 @@ impl Interpreter {
                     (Value::Map(entries), "get") => {
                         if let Some(key) = arg_vals.first() {
                             let key_str = format!("{}", key);
-                            Ok(entries.iter()
-                                .find(|(k, _)| k == &key_str)
-                                .map(|(_, v)| v.clone())
-                                .unwrap_or(Value::Unit))
+                            Ok(entries.get(&key_str).cloned().unwrap_or(Value::Unit))
                         } else {
                             Ok(Value::Unit)
                         }
                     }
                     (Value::Map(entries), "keys") => {
-                        Ok(Value::List(entries.iter().map(|(k, _)| Value::String(k.clone())).collect()))
+                        Ok(Value::List(entries.keys().map(|k| Value::String(k.clone())).collect()))
                     }
                     (Value::Map(entries), "values") => {
-                        Ok(Value::List(entries.iter().map(|(_, v)| v.clone()).collect()))
+                        Ok(Value::List(entries.values().cloned().collect()))
                     }
                     (Value::Map(entries), "has") => {
                         if let Some(key) = arg_vals.first() {
                             let key_str = format!("{}", key);
-                            Ok(Value::Bool(entries.iter().any(|(k, _)| k == &key_str)))
+                            Ok(Value::Bool(entries.contains_key(&key_str)))
                         } else {
                             Ok(Value::Bool(false))
                         }
                     }
-                    (Value::String(s), "len" | "length") => Ok(Value::Int(s.len() as i64)),
+                    (Value::String(s), "len" | "length") => Ok(Value::Int(s.chars().count() as i64)),
                     (Value::String(s), "split") => {
                         if let Some(Value::String(delim)) = arg_vals.first() {
                             Ok(Value::List(s.split(delim.as_str()).map(|p| Value::String(p.to_string())).collect()))
@@ -1282,7 +1383,7 @@ impl Interpreter {
     /// Dispatch a method call to a storage backend.
     /// Handles: get(key), set(key, val), delete(key), append(val), len(), list()
     fn call_storage_method(
-        &self,
+        &mut self,
         cell_name: &str,
         slot_name: &str,
         method: &str,
@@ -1316,13 +1417,12 @@ impl Interpreter {
                 // In cluster mode: check local first, then ask peers if not found
                 if is_sharded {
                     if let Some(stored) = backend.get(&key_str) {
-                        return Ok(stored_to_value(stored));
+                        return Ok(auto_deserialize(stored_to_value(stored)));
                     }
-                    // Not found locally — request from cluster
                     if let Some(ref cluster) = self.cluster {
                         if !cluster.owns_key(&key_str) {
                             if let Some(val) = self.cluster_remote_get(slot_name, &key_str) {
-                                return Ok(val);
+                                return Ok(auto_deserialize(val));
                             }
                         }
                     }
@@ -1330,7 +1430,7 @@ impl Interpreter {
                 }
 
                 match backend.get(&key_str) {
-                    Some(stored) => Ok(stored_to_value(stored)),
+                    Some(stored) => Ok(auto_deserialize(stored_to_value(stored))),
                     None => Ok(Value::Unit),
                 }
             }
@@ -1353,6 +1453,39 @@ impl Interpreter {
                 if is_sharded {
                     self.cluster_broadcast_set(slot_name, &key_str, &val_str);
                 }
+
+                // Check memory invariants after set
+                let prefixed_key = format!("{}.{}", cell_name, slot_name);
+                let invs = self.invariants.get(&prefixed_key)
+                    .or_else(|| self.invariants.get(slot_name))
+                    .cloned()
+                    .unwrap_or_default();
+                if !invs.is_empty() {
+                    // Re-fetch backend to get current state
+                    let inv_backend = self.storage.get(&prefixed_key)
+                        .or_else(|| self.storage.get(slot_name))
+                        .cloned();
+                    if let Some(inv_backend) = inv_backend {
+                        for inv in &invs {
+                            // Provide slot metadata as env variables for invariant evaluation
+                            let mut env = FxHashMap::default();
+                            env.insert("_slot_len".to_string(), Value::Int(inv_backend.len() as i64));
+                            env.insert("_slot_name".to_string(), Value::String(slot_name.to_string()));
+                            env.insert("_key".to_string(), Value::String(key_str.clone()));
+                            let result = self.eval_expr(inv, &mut env, cell_name, "");
+                            match result {
+                                Ok(Value::Bool(true)) => {}
+                                Ok(Value::Bool(false)) => {
+                                    return Err(ExecError::Runtime(RuntimeError::RequireFailed(
+                                        format!("memory invariant violated on '{}' after set(\"{}\")", slot_name, key_str)
+                                    )));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
                 Ok(Value::Unit)
             }
             "delete" | "remove" => {
@@ -1623,7 +1756,7 @@ impl Interpreter {
             if parts.len() == 2 {
                 if let Some(val) = env.get(parts[0]) {
                     if let Value::Map(ref entries) = val {
-                        if let Some((_, field_val)) = entries.iter().find(|(k, _)| k == parts[1]) {
+                        if let Some(field_val) = entries.get(parts[1]) {
                             return Some(field_val.clone());
                         }
                     }
@@ -1677,6 +1810,7 @@ impl Interpreter {
     fn eval_literal(&self, lit: &Literal) -> Value {
         match lit {
             Literal::Int(n) => Value::Int(*n),
+            Literal::BigInt(s) => Value::Big(s.parse::<BigInt>().unwrap_or_default()),
             Literal::Float(n) => Value::Float(*n),
             Literal::String(s) => Value::String(s.clone()),
             Literal::Bool(b) => Value::Bool(*b),
@@ -1693,6 +1827,60 @@ impl Interpreter {
             }
             Literal::Percentage(p) => Value::Float(*p),
             Literal::Unit => Value::Unit,
+        }
+    }
+
+    /// Match a pattern against a value, returning (matches, bindings)
+    fn match_pattern(&self, pattern: &MatchPattern, val: &Value) -> (bool, Vec<(String, Value)>) {
+        match pattern {
+            MatchPattern::Wildcard => (true, vec![]),
+            MatchPattern::Literal(lit) => {
+                let lit_val = self.eval_literal(lit);
+                (self.values_equal(val, &lit_val), vec![])
+            }
+            MatchPattern::Variable(name) => {
+                (true, vec![(name.clone(), val.clone())])
+            }
+            MatchPattern::Or(alternatives) => {
+                for alt in alternatives {
+                    let (m, bindings) = self.match_pattern(alt, val);
+                    if m { return (true, bindings); }
+                }
+                (false, vec![])
+            }
+            MatchPattern::MapDestructure(fields) => {
+                if let Value::Map(entries) = val {
+                    let mut bindings = Vec::new();
+                    for (field_name, sub_pattern) in fields {
+                        let field_val = entries.get(field_name).cloned().unwrap_or(Value::Unit);
+                        let (m, sub_bindings) = self.match_pattern(sub_pattern, &field_val);
+                        if !m { return (false, vec![]); }
+                        bindings.extend(sub_bindings);
+                    }
+                    (true, bindings)
+                } else {
+                    (false, vec![])
+                }
+            }
+            MatchPattern::StringPrefix { prefix, rest } => {
+                if let Value::String(s) = val {
+                    if s.starts_with(prefix.as_str()) {
+                        let remainder = s[prefix.len()..].to_string();
+                        (true, vec![(rest.clone(), Value::String(remainder))])
+                    } else {
+                        (false, vec![])
+                    }
+                } else {
+                    (false, vec![])
+                }
+            }
+            MatchPattern::Range { from, to } => {
+                match val {
+                    Value::Int(i) => (*from <= *i && *i <= *to, vec![]),
+                    Value::Float(f) => ((*from as f64) <= *f && *f <= (*to as f64), vec![]),
+                    _ => (false, vec![]),
+                }
+            }
         }
     }
 
@@ -1736,7 +1924,7 @@ impl Interpreter {
         // This separation avoids the read/write deadlock in tungstenite.
 
         eprintln!("ws: connected to {}", url);
-        Ok(Value::Map(vec![
+        Ok(map_from_pairs(vec![
             ("status".to_string(), Value::String("connected".to_string())),
             ("url".to_string(), Value::String(url.to_string())),
         ]))
@@ -1836,7 +2024,7 @@ impl Interpreter {
         });
 
         eprintln!("connect: linked to {}", addr);
-        Ok(Value::Map(vec![
+        Ok(map_from_pairs(vec![
             ("status".to_string(), Value::String("connected".to_string())),
             ("peer".to_string(), Value::String(addr.to_string())),
         ]))
@@ -1914,7 +2102,7 @@ impl Interpreter {
             }
         });
 
-        Ok(Value::Map(vec![
+        Ok(map_from_pairs(vec![
             ("status".to_string(), Value::String("subscribed".to_string())),
             ("url".to_string(), Value::String(url.to_string())),
         ]))
@@ -1943,8 +2131,12 @@ impl Interpreter {
             Value::LambdaBlock { param, stmts, result, env: closed_env } => {
                 let mut env: Env = closed_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 env.insert(param.clone(), arg);
+                let mut last_val = Value::Unit;
                 for stmt in stmts {
-                    self.exec_stmt(&stmt.node, &mut env, cell_name, "")?;
+                    last_val = self.exec_stmt(&stmt.node, &mut env, cell_name, "")?;
+                }
+                if matches!(result.node, Expr::Literal(Literal::Unit)) && !stmts.is_empty() {
+                    return Ok(last_val);
                 }
                 self.eval_expr(&result.node, &mut env, cell_name, "")
             }
@@ -1957,6 +2149,9 @@ impl Interpreter {
     fn values_equal(&self, a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => x == y,
+            (Value::Big(x), Value::Big(y)) => x == y,
+            (Value::Big(x), Value::Int(y)) => *x == BigInt::from(*y),
+            (Value::Int(x), Value::Big(y)) => BigInt::from(*x) == *y,
             (Value::Float(x), Value::Float(y)) => x == y,
             (Value::Int(x), Value::Float(y)) => (*x as f64) == *y,
             (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
@@ -1968,6 +2163,20 @@ impl Interpreter {
     }
 
     fn eval_binop(&self, l: &Value, op: BinOp, r: &Value) -> Result<Value, RuntimeError> {
+        // BigInt + Float → promote both to Float
+        if (l.is_big() && matches!(r, Value::Float(_))) || (matches!(l, Value::Float(_)) && r.is_big()) {
+            let a = l.as_float()?;
+            let b = r.as_float()?;
+            return match op {
+                BinOp::Add => Ok(Value::Float(a + b)),
+                BinOp::Sub => Ok(Value::Float(a - b)),
+                BinOp::Mul => Ok(Value::Float(a * b)),
+                BinOp::Div => Ok(Value::Float(a / b)),
+                BinOp::Mod => Ok(Value::Float(a % b)),
+                _ => Err(RuntimeError::TypeError("invalid op for floats".to_string())),
+            };
+        }
+
         // If either operand is BigInt, promote both
         if l.is_big() || r.is_big() {
             let a = l.as_bigint()?;
@@ -1997,12 +2206,12 @@ impl Interpreter {
 
         match (l, r) {
             (Value::Int(a), Value::Int(b)) => match op {
-                BinOp::Add => a.checked_add(*b).map(Value::Int)
-                    .ok_or_else(|| RuntimeError::TypeError(format!("integer overflow: {} + {} (use BigInt for large numbers)", a, b))),
-                BinOp::Sub => a.checked_sub(*b).map(Value::Int)
-                    .ok_or_else(|| RuntimeError::TypeError(format!("integer overflow: {} - {} (use BigInt for large numbers)", a, b))),
-                BinOp::Mul => a.checked_mul(*b).map(Value::Int)
-                    .ok_or_else(|| RuntimeError::TypeError(format!("integer overflow: {} * {} (use BigInt for large numbers)", a, b))),
+                BinOp::Add => Ok(a.checked_add(*b).map(Value::Int)
+                    .unwrap_or_else(|| Value::Big(BigInt::from(*a) + BigInt::from(*b)))),
+                BinOp::Sub => Ok(a.checked_sub(*b).map(Value::Int)
+                    .unwrap_or_else(|| Value::Big(BigInt::from(*a) - BigInt::from(*b)))),
+                BinOp::Mul => Ok(a.checked_mul(*b).map(Value::Int)
+                    .unwrap_or_else(|| Value::Big(BigInt::from(*a) * BigInt::from(*b)))),
                 BinOp::Div => {
                     if *b == 0 {
                         Err(RuntimeError::TypeError("division by zero".to_string()))
@@ -2058,8 +2267,31 @@ impl Interpreter {
         }
     }
 
+    /// Public comparison for use by the test runner
+    pub fn eval_cmpop_values(&self, l: &Value, op: CmpOp, r: &Value) -> Result<bool, RuntimeError> {
+        match self.eval_cmpop(l, op, r)? {
+            Value::Bool(b) => Ok(b),
+            _ => Ok(false),
+        }
+    }
+
     fn eval_cmpop(&self, l: &Value, op: CmpOp, r: &Value) -> Result<Value, RuntimeError> {
-        // BigInt comparisons
+        // BigInt + Float comparison → promote to Float
+        if (l.is_big() && matches!(r, Value::Float(_))) || (matches!(l, Value::Float(_)) && r.is_big()) {
+            let a = l.as_float()?;
+            let b = r.as_float()?;
+            let result = match op {
+                CmpOp::Lt => a < b,
+                CmpOp::Gt => a > b,
+                CmpOp::Le => a <= b,
+                CmpOp::Ge => a >= b,
+                CmpOp::Eq => a == b,
+                CmpOp::Ne => a != b,
+            };
+            return Ok(Value::Bool(result));
+        }
+
+        // BigInt comparisons (both BigInt or Int+BigInt)
         if l.is_big() || r.is_big() {
             let a = l.as_bigint()?;
             let b = r.as_bigint()?;
@@ -2148,12 +2380,12 @@ impl Interpreter {
     /// Native function boundary. The names here correspond to `native "name"`
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma. Delegates to sub-modules in builtins/.
-    pub fn call_builtin(&self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+    pub fn call_builtin(&mut self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
         builtins::call_builtin(self, name, args, cell_name)
     }
 
     /// Execute a state transition
-    pub(crate) fn do_transition(&self, id: &str, target: &str) -> Result<Value, RuntimeError> {
+    pub(crate) fn do_transition(&mut self, id: &str, target: &str) -> Result<Value, RuntimeError> {
         // Find the state machine and its storage
         let (sm, status_slot) = self.find_state_machine()
             .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
@@ -2171,7 +2403,7 @@ impl Interpreter {
             (t.node.from == current || t.node.from == "*") && t.node.to == target
         });
 
-        let _transition = match transition {
+        let transition = match transition {
             Some(t) => t,
             None => {
                 let valid: Vec<String> = sm.transitions.iter()
@@ -2185,13 +2417,47 @@ impl Interpreter {
             }
         };
 
-        // TODO: evaluate guard expression (would need env context)
-        // For now, guards are checked if they're simple comparisons
+        // Clone guard if present (to release borrow on self before eval_expr)
+        let guard_clone = transition.node.guard.as_ref().map(|g| g.node.clone());
+
+        // Evaluate guard expression if present
+        if let Some(guard_expr) = guard_clone {
+            let mut env = FxHashMap::default();
+            // Provide the current state and target as variables in guard scope
+            env.insert("_from".to_string(), Value::String(current.clone()));
+            env.insert("_to".to_string(), Value::String(target.to_string()));
+            env.insert("_id".to_string(), Value::String(id.to_string()));
+            let result = self.eval_expr(&guard_expr, &mut env, "", "")
+                .map_err(|e| match e {
+                    ExecError::Runtime(r) => r,
+                    ExecError::Return(v) => RuntimeError::TypeError(format!("guard returned {:?}", v)),
+                    _ => RuntimeError::TypeError("guard evaluation failed".to_string()),
+                })?;
+            match result {
+                Value::Bool(true) => {} // guard passed
+                Value::Bool(false) => {
+                    return Err(RuntimeError::RequireFailed(format!(
+                        "guard failed for transition {} → {}: condition is false",
+                        current, target
+                    )));
+                }
+                _ => {
+                    return Err(RuntimeError::TypeError(format!(
+                        "guard must return Bool, got {}",
+                        value_type_name(&result)
+                    )));
+                }
+            }
+        }
+
+        // Re-find state machine storage after potential mutation from eval_expr
+        let (_sm, status_slot) = self.find_state_machine()
+            .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
 
         // Perform transition
         status_slot.set(id, crate::runtime::storage::StoredValue::String(target.to_string()));
 
-        Ok(Value::Map(vec![
+        Ok(map_from_pairs(vec![
             ("id".to_string(), Value::String(id.to_string())),
             ("from".to_string(), Value::String(current)),
             ("to".to_string(), Value::String(target.to_string())),
@@ -2282,6 +2548,48 @@ fn stored_to_value(stored: StoredValue) -> Value {
     }
 }
 
+/// Auto-deserialize: if a Value::String looks like JSON (starts with { or [),
+/// parse it into a Map or List. This handles the common case where old code
+/// used to_json() before .set(), making .get() return a raw JSON string.
+fn auto_deserialize(val: Value) -> Value {
+    if let Value::String(ref s) = val {
+        let trimmed = s.trim();
+        if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+            || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                return json_to_value(&parsed);
+            }
+        }
+    }
+    val
+}
+
+/// Convert serde_json::Value to interpreter Value
+fn json_to_value(v: &serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null => Value::Unit,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Float(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            Value::List(arr.iter().map(json_to_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let entries: indexmap::IndexMap<String, Value> = obj.iter()
+                .map(|(k, v)| (k.clone(), json_to_value(v)))
+                .collect();
+            Value::Map(entries)
+        }
+    }
+}
+
 /// Internal error type to handle return-as-control-flow
 #[derive(Debug)]
 pub(crate) enum ExecError {
@@ -2298,12 +2606,23 @@ mod tests {
     use crate::parser::Parser;
 
     fn run(source: &str, cell: &str, signal: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().unwrap();
-        let mut parser = Parser::new(tokens);
-        let program = parser.parse_program().unwrap();
-        let mut interp = Interpreter::new(&program);
-        interp.call_signal(cell, signal, args)
+        // Run on a thread with 8 MB stack so recursive tests don't SIGABRT
+        let source = source.to_string();
+        let cell = cell.to_string();
+        let signal = signal.to_string();
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let mut lexer = Lexer::new(&source);
+                let tokens = lexer.tokenize().unwrap();
+                let mut parser = Parser::new(tokens);
+                let program = parser.parse_program().unwrap();
+                let mut interp = Interpreter::new(&program);
+                interp.call_signal(&cell, &signal, args)
+            })
+            .expect("failed to spawn test thread")
+            .join()
+            .expect("test thread panicked")
     }
 
     #[test]
@@ -2323,8 +2642,8 @@ mod tests {
     }
 
     #[test]
-    fn test_factorial_int_overflow() {
-        // Int overflows cleanly with a helpful error
+    fn test_factorial_int_auto_promotes_to_bigint() {
+        // Int overflow auto-promotes to BigInt instead of erroring
         let source = r#"
             cell Fact {
                 on compute(n: Int) {
@@ -2334,7 +2653,10 @@ mod tests {
             }
         "#;
         let result = run(source, "Fact", "compute", vec![Value::Int(30)]);
-        assert!(result.is_err()); // overflow
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        assert!(matches!(val, Value::Big(_)));
+        assert_eq!(val.to_string(), "265252859812191058636308480000000");
     }
 
     #[test]

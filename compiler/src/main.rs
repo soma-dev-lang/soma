@@ -97,6 +97,22 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Lint for anti-patterns and suggest improvements
+    Lint {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Auto-fix common errors found by check
+    Fix {
+        /// Path to the .cell source file
+        file: PathBuf,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
     /// Prove state machines, temporal logic, CAP properties, quorum
     Verify {
         /// Path to the .cell source file(s)
@@ -204,6 +220,17 @@ enum Commands {
 }
 
 fn main() {
+    // Run on a thread with an 8 MB stack to prevent SIGABRT on deep recursion
+    // before the interpreter's own depth guard (max_depth: 512) can fire.
+    let builder = std::thread::Builder::new().stack_size(16 * 1024 * 1024);
+    let handler = builder.spawn(main_inner).expect("failed to spawn main thread");
+    if let Err(e) = handler.join() {
+        eprintln!("fatal: {:?}", e);
+        std::process::exit(1);
+    }
+}
+
+fn main_inner() {
     let cli = Cli::parse();
 
     let mut registry = Registry::new();
@@ -214,6 +241,8 @@ fn main() {
 
     match cli.command {
         Commands::Check { file, json } => commands::check::cmd_check(&file, json, &mut registry),
+        Commands::Lint { file, json } => commands::lint::cmd_lint(&file, json),
+        Commands::Fix { file, json } => commands::fix::cmd_fix(&file, json, &mut registry),
         Commands::Build { file, output } => commands::build::cmd_build(&file, output.as_deref(), &mut registry),
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),

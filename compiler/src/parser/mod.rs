@@ -32,8 +32,13 @@ fn display_token(token: &Token) -> String {
         Token::AndAnd => "'&&'".to_string(),
         Token::OrOr => "'||'".to_string(),
         Token::PlusEq => "'+='".to_string(),
+        Token::MinusEq => "'-='".to_string(),
+        Token::StarEq => "'*='".to_string(),
+        Token::SlashEq => "'/='".to_string(),
         Token::NullCoal => "'??'".to_string(),
+        Token::Question => "'?'".to_string(),
         Token::IntLit(n) => format!("number '{}'", n),
+        Token::BigIntLit(ref s) => format!("number '{}'", s),
         Token::FloatLit(n) => format!("number '{}'", n),
         Token::StringLit(s) => format!("string \"{}\"", s),
         Token::Ident(s) => format!("'{}'", s),
@@ -59,6 +64,8 @@ fn display_token(token: &Token) -> String {
         Token::Try => "'try'".to_string(),
         Token::Catch => "'catch'".to_string(),
         Token::Every => "'every'".to_string(),
+        Token::After => "'after'".to_string(),
+        Token::Ensure => "'ensure'".to_string(),
         Token::Scale => "'scale'".to_string(),
         Token::Eof => "end of file".to_string(),
         _ => format!("{:?}", token),
@@ -422,6 +429,10 @@ impl Parser {
                 let ev = self.parse_every_section()?;
                 Ok(Spanned::new(Section::Every(ev), start.merge(self.prev_span())))
             }
+            Token::After => {
+                let ev = self.parse_after_section()?;
+                Ok(Spanned::new(Section::After(ev), start.merge(self.prev_span())))
+            }
             Token::Scale => {
                 let sc = self.parse_scale_section()?;
                 Ok(Spanned::new(Section::Scale(sc), start.merge(self.prev_span())))
@@ -608,12 +619,23 @@ impl Parser {
         self.expect(Token::LBrace)?;
 
         let mut slots = Vec::new();
+        let mut invariants = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
+            // Check for `invariant expr` declaration
+            if let Token::Ident(ref name) = self.peek().clone() {
+                if name == "invariant" {
+                    let start = self.peek_span();
+                    self.advance();
+                    let expr = self.parse_expr()?;
+                    invariants.push(Spanned::new(expr.node, start.merge(expr.span)));
+                    continue;
+                }
+            }
             slots.push(self.parse_memory_slot()?);
         }
 
         self.expect(Token::RBrace)?;
-        Ok(MemorySection { slots })
+        Ok(MemorySection { slots, invariants })
     }
 
     fn parse_memory_slot(&mut self) -> Result<Spanned<MemorySlot>, ParseError> {
@@ -972,6 +994,47 @@ impl Parser {
         Ok(EverySection { interval_ms, body })
     }
 
+    // ── After (one-shot delayed) ──────────────────────────────────
+
+    fn parse_after_section(&mut self) -> Result<EverySection, ParseError> {
+        self.expect(Token::After)?;
+        let tok = &self.tokens[self.pos].clone();
+        let interval_ms = match &tok.token {
+            Token::DurationLit(val, unit) => {
+                self.advance();
+                let multiplier = match unit {
+                    crate::lexer::DurationUnitTok::Ms => 1.0,
+                    crate::lexer::DurationUnitTok::S => 1000.0,
+                    crate::lexer::DurationUnitTok::Min => 60_000.0,
+                    crate::lexer::DurationUnitTok::H => 3_600_000.0,
+                    crate::lexer::DurationUnitTok::D => 86_400_000.0,
+                    crate::lexer::DurationUnitTok::Years => 365.25 * 86_400_000.0,
+                };
+                (val * multiplier) as u64
+            }
+            Token::IntLit(n) => {
+                self.advance();
+                (*n as u64) * 1000
+            }
+            _ => {
+                return Err(ParseError::Expected {
+                    expected: "delay (e.g., 5s, 1min, 500ms)".to_string(),
+                    found: tok.token.clone(),
+                    span: tok.span,
+                });
+            }
+        };
+
+        self.expect(Token::LBrace)?;
+        let mut body = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            body.push(self.parse_statement()?);
+        }
+        self.expect(Token::RBrace)?;
+
+        Ok(EverySection { interval_ms, body })
+    }
+
     // ── Scale (Orchestration) ───────────────────────────────────────
 
     fn parse_scale_section(&mut self) -> Result<ScaleSection, ParseError> {
@@ -1147,6 +1210,15 @@ impl Parser {
                 let value = self.parse_expr()?;
                 Ok(Spanned::new(Statement::Return { value }, start.merge(self.prev_span())))
             }
+            Token::Ensure => {
+                // ensure condition — postcondition checked on handler exit
+                self.advance();
+                let condition = self.parse_expr()?;
+                Ok(Spanned::new(
+                    Statement::Ensure { condition },
+                    start.merge(self.prev_span()),
+                ))
+            }
             Token::Break => {
                 self.advance();
                 Ok(Spanned::new(Statement::Break, start.merge(self.prev_span())))
@@ -1273,15 +1345,26 @@ impl Parser {
                         Statement::Assign { name, value },
                         start.merge(self.prev_span()),
                     ))
-                } else if self.check(&Token::PlusEq) {
-                    // name += expr → name = name + expr
+                } else if self.check(&Token::PlusEq)
+                    || self.check(&Token::MinusEq)
+                    || self.check(&Token::StarEq)
+                    || self.check(&Token::SlashEq)
+                {
+                    // name +=/-=/*=//= expr → name = name op expr
+                    let op = match self.peek() {
+                        Token::PlusEq => BinOp::Add,
+                        Token::MinusEq => BinOp::Sub,
+                        Token::StarEq => BinOp::Mul,
+                        Token::SlashEq => BinOp::Div,
+                        _ => unreachable!(),
+                    };
                     self.advance();
                     let rhs = self.parse_expr()?;
                     let rhs_span = rhs.span;
                     let value = Spanned::new(
                         Expr::BinaryOp {
                             left: Box::new(Spanned::new(Expr::Ident(name.clone()), name_span)),
-                            op: BinOp::Add,
+                            op,
                             right: Box::new(rhs),
                         },
                         name_span.merge(rhs_span),
@@ -1291,18 +1374,11 @@ impl Parser {
                         start.merge(self.prev_span()),
                     ))
                 } else if self.check(&Token::Dot) {
-                    // target.method(args)
-                    self.advance();
-                    let (method, _) = self.expect_ident()?;
-                    self.expect(Token::LParen)?;
-                    let args = self.parse_arg_list()?;
-                    self.expect(Token::RParen)?;
+                    // target.method(args) — parse as full expression to allow pipes
+                    self.pos = save_pos;
+                    let expr = self.parse_expr()?;
                     Ok(Spanned::new(
-                        Statement::MethodCall {
-                            target: name,
-                            method,
-                            args,
-                        },
+                        Statement::ExprStmt { expr },
                         start.merge(self.prev_span()),
                     ))
                 } else if self.check(&Token::LParen) {
@@ -1331,7 +1407,7 @@ impl Parser {
             }
             // Tokens that can start an expression: match, literals, parenthesized, etc.
             Token::Match | Token::Try |
-            Token::IntLit(_) | Token::FloatLit(_) | Token::StringLit(_) |
+            Token::IntLit(_) | Token::BigIntLit(_) | Token::FloatLit(_) | Token::StringLit(_) |
             Token::True | Token::False | Token::LParen |
             Token::Bang | Token::Minus | Token::LBracket => {
                 let expr = self.parse_expr()?;
@@ -1510,30 +1586,14 @@ impl Parser {
     }
 
     fn parse_pipe(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        let mut left = self.parse_null_coalesce()?;
+        let mut left = self.parse_logical_or()?;
         while self.check(&Token::Pipe) {
             self.advance();
-            let right = self.parse_null_coalesce()?;
+            let right = self.parse_logical_or()?;
             let span = left.span.merge(right.span);
             left = Spanned::new(Expr::Pipe {
                 left: Box::new(left),
                 right: Box::new(right),
-            }, span);
-        }
-        Ok(left)
-    }
-
-    fn parse_null_coalesce(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        let mut left = self.parse_logical_or()?;
-        while self.check(&Token::NullCoal) {
-            self.advance();
-            let right = self.parse_logical_or()?;
-            let span = left.span.merge(right.span);
-            // a ?? b → if a == () then b else a
-            // Desugar to FnCall("_coalesce", [a, b])
-            left = Spanned::new(Expr::FnCall {
-                name: "_coalesce".to_string(),
-                args: vec![left, right],
             }, span);
         }
         Ok(left)
@@ -1558,10 +1618,10 @@ impl Parser {
     }
 
     fn parse_logical_and(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        let mut left = self.parse_comparison()?;
+        let mut left = self.parse_null_coalesce()?;
         while self.check(&Token::AndAnd) {
             self.advance();
-            let right = self.parse_comparison()?;
+            let right = self.parse_null_coalesce()?;
             let span = left.span.merge(right.span);
             left = Spanned::new(
                 Expr::BinaryOp {
@@ -1571,6 +1631,22 @@ impl Parser {
                 },
                 span,
             );
+        }
+        Ok(left)
+    }
+
+    fn parse_null_coalesce(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        let mut left = self.parse_comparison()?;
+        while self.check(&Token::NullCoal) {
+            self.advance();
+            let right = self.parse_comparison()?;
+            let span = left.span.merge(right.span);
+            // a ?? b �� if a == () then b else a
+            // Desugar to FnCall("_coalesce", [a, b])
+            left = Spanned::new(Expr::FnCall {
+                name: "_coalesce".to_string(),
+                args: vec![left, right],
+            }, span);
         }
         Ok(left)
     }
@@ -1676,6 +1752,16 @@ impl Parser {
                         span,
                     ));
                 }
+                Token::BigIntLit(ref s) => {
+                    let neg = format!("-{}", s);
+                    let end = self.peek_span();
+                    self.advance();
+                    let span = start.merge(end);
+                    return Ok(Spanned::new(
+                        Expr::Literal(Literal::BigInt(neg)),
+                        span,
+                    ));
+                }
                 Token::FloatLit(n) => {
                     let end = self.peek_span();
                     self.advance();
@@ -1733,6 +1819,11 @@ impl Parser {
                         span,
                     );
                 }
+            } else if self.check(&Token::Question) {
+                // Postfix ? operator: expr? — propagate error
+                self.advance();
+                let span = expr.span.merge(self.prev_span());
+                expr = Spanned::new(Expr::TryPropagate(Box::new(expr)), span);
             } else {
                 break;
             }
@@ -1747,6 +1838,11 @@ impl Parser {
             Token::IntLit(n) => {
                 self.advance();
                 Ok(Spanned::new(Expr::Literal(Literal::Int(n)), start))
+            }
+            Token::BigIntLit(ref s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Spanned::new(Expr::Literal(Literal::BigInt(s)), start))
             }
             Token::FloatLit(n) => {
                 self.advance();
@@ -1906,45 +2002,109 @@ impl Parser {
                     Ok(Spanned::new(Expr::Ident(name), start))
                 }
             }
+            Token::If => {
+                // If expression: if cond { stmts; expr } else { stmts; expr }
+                self.advance();
+                let condition = self.parse_expr()?;
+                self.expect(Token::LBrace)?;
+                let mut then_stmts = Vec::new();
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    then_stmts.push(self.parse_statement()?);
+                }
+                self.expect(Token::RBrace)?;
+                // Extract last statement as result expression
+                let then_result = if let Some(last) = then_stmts.last() {
+                    if let Statement::ExprStmt { ref expr } = last.node {
+                        expr.clone()
+                    } else if let Statement::Return { ref value } = last.node {
+                        value.clone()
+                    } else {
+                        Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                    }
+                } else {
+                    Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                };
+                if then_stmts.len() > 0 {
+                    if let Some(last) = then_stmts.last() {
+                        if matches!(last.node, Statement::ExprStmt { .. } | Statement::Return { .. }) {
+                            then_stmts.pop();
+                        }
+                    }
+                }
+                self.expect(Token::Else)?;
+                // Handle else if by recursing
+                let (else_stmts, else_result) = if self.check(&Token::If) {
+                    // else if → treat as nested if expression
+                    let nested = self.parse_primary_expr()?;
+                    (Vec::new(), nested)
+                } else {
+                    self.expect(Token::LBrace)?;
+                    let mut else_stmts = Vec::new();
+                    while !self.check(&Token::RBrace) && !self.is_at_end() {
+                        else_stmts.push(self.parse_statement()?);
+                    }
+                    self.expect(Token::RBrace)?;
+                    let else_result = if let Some(last) = else_stmts.last() {
+                        if let Statement::ExprStmt { ref expr } = last.node {
+                            expr.clone()
+                        } else if let Statement::Return { ref value } = last.node {
+                            value.clone()
+                        } else {
+                            Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                        }
+                    } else {
+                        Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                    };
+                    if else_stmts.len() > 0 {
+                        if let Some(last) = else_stmts.last() {
+                            if matches!(last.node, Statement::ExprStmt { .. } | Statement::Return { .. }) {
+                                else_stmts.pop();
+                            }
+                        }
+                    }
+                    (else_stmts, else_result)
+                };
+                Ok(Spanned::new(
+                    Expr::IfExpr {
+                        condition: Box::new(condition),
+                        then_body: then_stmts,
+                        then_result: Box::new(then_result),
+                        else_body: else_stmts,
+                        else_result: Box::new(else_result),
+                    },
+                    start.merge(self.prev_span()),
+                ))
+            }
             Token::Match => {
                 self.advance();
                 let subject = self.parse_expr()?;
                 self.expect(Token::LBrace)?;
                 let mut arms = Vec::new();
                 while !self.check(&Token::RBrace) && !self.is_at_end() {
-                    // Parse pattern: literal, _ (wildcard), () (unit), or negative number
-                    let pattern = if self.check(&Token::LParen) {
-                        // () — unit/null pattern
-                        self.advance();
-                        self.expect(Token::RParen)?;
-                        MatchPattern::Literal(Literal::Unit)
-                    } else if let Token::Ident(ref id) = self.peek().clone() {
-                        if id == "_" {
+                    // Parse pattern: literal, _ (wildcard), variable, () (unit), negative number
+                    // Supports or-patterns: "a" | "b" | "c"
+                    let pattern = self.parse_match_pattern()?;
+
+                    // Check for or-pattern: pat || pat || ...
+                    let pattern = if self.check(&Token::OrOr) {
+                        let mut alternatives = vec![pattern];
+                        while self.check(&Token::OrOr) {
                             self.advance();
-                            MatchPattern::Wildcard
-                        } else {
-                            return Err(ParseError::Expected {
-                                expected: "match pattern (literal or _)".to_string(),
-                                found: self.peek().clone(),
-                                span: self.peek_span(),
-                            });
+                            alternatives.push(self.parse_match_pattern()?);
                         }
-                    } else if self.check(&Token::Minus) {
-                        // Negative number pattern: -5, -3.14
-                        self.advance();
-                        let lit = self.parse_literal()?;
-                        match lit.node {
-                            Literal::Int(n) => MatchPattern::Literal(Literal::Int(-n)),
-                            Literal::Float(n) => MatchPattern::Literal(Literal::Float(-n)),
-                            _ => return Err(ParseError::Expected {
-                                expected: "number after '-' in match pattern".to_string(),
-                                found: self.peek().clone(),
-                                span: self.peek_span(),
-                            }),
-                        }
+                        MatchPattern::Or(alternatives)
                     } else {
-                        MatchPattern::Literal(self.parse_literal()?.node)
+                        pattern
                     };
+
+                    // Optional guard clause: pattern if condition -> result
+                    let guard = if self.check(&Token::If) {
+                        self.advance();
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+
                     self.expect(Token::Arrow)?;
 
                     // Parse body: either a block { stmts; result_expr } or single expression
@@ -1955,12 +2115,10 @@ impl Parser {
                             stmts.push(self.parse_statement()?);
                         }
                         self.expect(Token::RBrace)?;
-                        // The last statement should be an ExprStmt used as the result
                         let result = if let Some(last) = stmts.pop() {
                             match last.node {
                                 Statement::ExprStmt { expr } => expr,
                                 _ => {
-                                    // Put it back, result is Unit
                                     stmts.push(last);
                                     Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
                                 }
@@ -1968,10 +2126,10 @@ impl Parser {
                         } else {
                             Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
                         };
-                        arms.push(MatchArm { pattern, body: stmts, result });
+                        arms.push(MatchArm { pattern, guard, body: stmts, result });
                     } else {
                         let result = self.parse_expr()?;
-                        arms.push(MatchArm { pattern, body: vec![], result });
+                        arms.push(MatchArm { pattern, guard, body: vec![], result });
                     }
                 }
                 self.expect(Token::RBrace)?;
@@ -1987,6 +2145,16 @@ impl Parser {
                 let expr = self.parse_expr()?;
                 self.expect(Token::RBrace)?;
                 Ok(Spanned::new(Expr::Try(Box::new(expr)), start.merge(self.prev_span())))
+            }
+            Token::LBracket => {
+                self.advance();
+                let mut elements = Vec::new();
+                while !self.check(&Token::RBracket) && !self.is_at_end() {
+                    elements.push(self.parse_expr()?);
+                    if self.check(&Token::Comma) { self.advance(); }
+                }
+                self.expect(Token::RBracket)?;
+                Ok(Spanned::new(Expr::ListLiteral(elements), start.merge(self.prev_span())))
             }
             Token::LParen => {
                 self.advance();
@@ -2007,12 +2175,95 @@ impl Parser {
         }
     }
 
+    /// Parse a single match pattern (without or-patterns, which are handled by the caller)
+    fn parse_match_pattern(&mut self) -> Result<MatchPattern, ParseError> {
+        if self.check(&Token::LParen) {
+            // () — unit/null pattern
+            self.advance();
+            self.expect(Token::RParen)?;
+            Ok(MatchPattern::Literal(Literal::Unit))
+        } else if self.check(&Token::LBrace) {
+            // Map destructuring: {method: "GET", path, body}
+            self.advance();
+            let mut fields = Vec::new();
+            while !self.check(&Token::RBrace) && !self.is_at_end() {
+                let (field_name, _) = self.expect_ident()?;
+                if self.check(&Token::Colon) {
+                    // {field: pattern} — match field against a sub-pattern
+                    self.advance();
+                    let sub = self.parse_match_pattern()?;
+                    fields.push((field_name, sub));
+                } else {
+                    // {field} — shorthand for binding: bind field value to variable `field`
+                    fields.push((field_name.clone(), MatchPattern::Variable(field_name)));
+                }
+                if self.check(&Token::Comma) { self.advance(); }
+            }
+            self.expect(Token::RBrace)?;
+            Ok(MatchPattern::MapDestructure(fields))
+        } else if let Token::Ident(ref id) = self.peek().clone() {
+            if id == "_" {
+                self.advance();
+                Ok(MatchPattern::Wildcard)
+            } else {
+                // Variable binding: capture the matched value
+                let name = id.clone();
+                self.advance();
+                Ok(MatchPattern::Variable(name))
+            }
+        } else if self.check(&Token::Minus) {
+            // Negative number pattern: -5, -3.14
+            self.advance();
+            let lit = self.parse_literal()?;
+            match lit.node {
+                Literal::Int(n) => Ok(MatchPattern::Literal(Literal::Int(-n))),
+                Literal::BigInt(s) => Ok(MatchPattern::Literal(Literal::BigInt(format!("-{}", s)))),
+                Literal::Float(n) => Ok(MatchPattern::Literal(Literal::Float(-n))),
+                _ => Err(ParseError::Expected {
+                    expected: "number after '-' in match pattern".to_string(),
+                    found: self.peek().clone(),
+                    span: self.peek_span(),
+                }),
+            }
+        } else {
+            // Literal pattern — check for range (1..10) or string prefix ("prefix" + rest)
+            let lit = self.parse_literal()?;
+            // Range pattern: 1..10
+            if let Literal::Int(from) = lit.node {
+                if self.check(&Token::DotDot) {
+                    self.advance();
+                    if let Token::IntLit(to) = self.peek().clone() {
+                        self.advance();
+                        return Ok(MatchPattern::Range { from, to });
+                    }
+                }
+            }
+            // String prefix pattern: "prefix" + rest
+            if let Literal::String(ref prefix) = lit.node {
+                if self.check(&Token::Plus) {
+                    self.advance();
+                    if let Token::Ident(ref rest_name) = self.peek().clone() {
+                        let rest = rest_name.clone();
+                        self.advance();
+                        return Ok(MatchPattern::StringPrefix { prefix: prefix.clone(), rest });
+                    }
+                }
+            }
+            Ok(MatchPattern::Literal(lit.node))
+        }
+    }
+
     fn parse_literal(&mut self) -> Result<Spanned<Literal>, ParseError> {
         let start = self.peek_span();
         match self.peek().clone() {
             Token::IntLit(n) => {
                 self.advance();
                 Ok(Spanned::new(Literal::Int(n), start))
+            }
+            Token::BigIntLit(ref s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Spanned::new(Literal::BigInt(s), start))
             }
             Token::FloatLit(n) => {
                 self.advance();

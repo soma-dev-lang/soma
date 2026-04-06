@@ -97,7 +97,7 @@ on signal_name(param1: Type, param2: Type) {
 | Let binding | `let x = expr` |
 | Assignment | `x = expr` |
 | Return | `return expr` |
-| If/Else | `if cond { ... } else { ... }` |
+| If/Else | `if cond { ... } else { ... }` (also works as expression) |
 | For loop | `for item in collection { ... }` |
 | While loop | `while cond { ... }` |
 | Emit signal | `emit signal_name(args)` |
@@ -284,6 +284,7 @@ Run tests: `soma test file.cell`
 | `soma serve file.cell --verbose` | Verbose HTTP logging |
 | `soma serve file.cell --watch` | Auto-reload on changes |
 | `soma check file.cell` | Type/property checking |
+| `soma fix file.cell` | Auto-repair common errors (missing handlers, bad properties) |
 | `soma build file.cell [-o out.rs]` | Generate Rust skeleton |
 | `soma test file.cell` | Run test cells |
 | `soma init [name]` | Initialize project (creates subdirectory if name given) |

@@ -1,4 +1,4 @@
-use super::super::{Value, RuntimeError};
+use super::super::{Value, RuntimeError, map_from_pairs};
 use super::serde_json_to_value;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
@@ -18,7 +18,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             Some(Ok(Value::String(body)))
                         }
                     }
-                    Err(e) => Some(Ok(Value::Map(vec![
+                    Err(e) => Some(Ok(map_from_pairs(vec![
                         ("error".to_string(), Value::String(format!("{}", e))),
                     ])))
                 }
@@ -42,7 +42,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                 Some(Ok(Value::String(text)))
                             }
                         }
-                        Err(e) => Some(Ok(Value::Map(vec![
+                        Err(e) => Some(Ok(map_from_pairs(vec![
                             ("error".to_string(), Value::String(format!("{}", e))),
                         ])))
                     }
@@ -64,12 +64,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         // In a full implementation, this would feed into the event bus
                         // For now, return success
                         let _ = ws.close(None);
-                        Some(Ok(Value::Map(vec![
+                        Some(Ok(map_from_pairs(vec![
                             ("status".to_string(), Value::String("connected".to_string())),
                             ("url".to_string(), Value::String(url.clone())),
                         ])))
                     }
-                    Err(e) => Some(Ok(Value::Map(vec![
+                    Err(e) => Some(Ok(map_from_pairs(vec![
                         ("error".to_string(), Value::String(format!("{}", e))),
                     ])))
                 }

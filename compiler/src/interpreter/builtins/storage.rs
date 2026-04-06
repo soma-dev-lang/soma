@@ -1,6 +1,6 @@
 use super::super::{Value, RuntimeError, Interpreter};
 
-pub fn call_builtin(interp: &Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     match name {
         "next_id" => {
             let counter_key = "__next_id";

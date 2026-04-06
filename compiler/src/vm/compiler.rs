@@ -190,6 +190,10 @@ impl BytecodeCompiler {
                 chunk.emit(Op::Pop);
             }
 
+            Statement::Ensure { .. } => {
+                // TODO: implement ensure in bytecode VM
+            }
+
             Statement::Break | Statement::Continue => {
                 // Break/continue not yet supported in bytecode VM — emit
                 // a runtime error string and return so the handler stops
@@ -401,6 +405,60 @@ impl BytecodeCompiler {
                             // Patch the skip target to here
                             chunk.patch_jump(skip, chunk.len() as u16);
                         }
+                        MatchPattern::Variable(_) => {
+                            // Variable always matches (like wildcard) — compile body
+                            // TODO: bind variable in VM scope
+                            for s in &arm.body {
+                                self.compile_stmt(chunk, &s.node);
+                            }
+                            self.compile_expr(chunk, &arm.result.node);
+                            let je = chunk.emit_u16(Op::Jump, 0xFFFF);
+                            jump_to_end.push(je);
+                        }
+                        MatchPattern::MapDestructure(_) | MatchPattern::StringPrefix { .. } | MatchPattern::Range { .. } => {
+                            // TODO: implement in bytecode VM — for now, treat as wildcard
+                            for s in &arm.body {
+                                self.compile_stmt(chunk, &s.node);
+                            }
+                            self.compile_expr(chunk, &arm.result.node);
+                            let je = chunk.emit_u16(Op::Jump, 0xFFFF);
+                            jump_to_end.push(je);
+                        }
+                        MatchPattern::Or(alternatives) => {
+                            // Or-pattern: try each alternative
+                            // For VM, just check literals; variables in or not supported
+                            let mut skip_past: Vec<usize> = Vec::new();
+                            // Check each alternative; if any matches, fall through to body
+                            for (i, alt) in alternatives.iter().enumerate() {
+                                if let MatchPattern::Literal(lit) = alt {
+                                    self.compile_expr(chunk, &subject.node);
+                                    self.compile_literal(chunk, lit);
+                                    chunk.emit(Op::Eq);
+                                    // If false, try next alternative
+                                    let next = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);
+                                    // If true, jump to body (skip remaining checks)
+                                    let to_body = chunk.emit_u16(Op::Jump, 0xFFFF);
+                                    chunk.patch_jump(next, chunk.len() as u16);
+                                    skip_past.push(to_body);
+                                    // If this is the last alternative and it didn't match, skip the arm
+                                    if i == alternatives.len() - 1 {
+                                        let skip = chunk.emit_u16(Op::Jump, 0xFFFF);
+                                        // Patch all "to body" jumps
+                                        for j in &skip_past {
+                                            chunk.patch_jump(*j, chunk.len() as u16);
+                                        }
+                                        // Compile body
+                                        for s in &arm.body {
+                                            self.compile_stmt(chunk, &s.node);
+                                        }
+                                        self.compile_expr(chunk, &arm.result.node);
+                                        let je = chunk.emit_u16(Op::Jump, 0xFFFF);
+                                        jump_to_end.push(je);
+                                        chunk.patch_jump(skip, chunk.len() as u16);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -431,6 +489,20 @@ impl BytecodeCompiler {
                 });
                 chunk.emit_u16(Op::Const, idx);
             }
+            Expr::ListLiteral(elements) => {
+                // Compile as a call to the builtin list() function
+                for elem in elements {
+                    self.compile_expr(chunk, &elem.node);
+                }
+                let name_idx = chunk.add_constant(Constant::Name("list".to_string()));
+                chunk.emit_u16_u8(Op::CallBuiltin, name_idx, elements.len() as u8);
+            }
+            Expr::TryPropagate(_) => {
+                // TODO: implement ? operator in bytecode VM
+            }
+            Expr::IfExpr { .. } => {
+                // TODO: implement if-expression in bytecode VM
+            }
         }
     }
 
@@ -438,6 +510,11 @@ impl BytecodeCompiler {
         match lit {
             Literal::Int(n) => {
                 let idx = chunk.add_constant(Constant::Int(*n));
+                chunk.emit_u16(Op::Const, idx);
+            }
+            Literal::BigInt(s) => {
+                // Store as string constant; the VM interpreter will parse it
+                let idx = chunk.add_constant(Constant::String(s.clone()));
                 chunk.emit_u16(Op::Const, idx);
             }
             Literal::Float(n) => {

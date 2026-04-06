@@ -1,5 +1,6 @@
-use super::super::{Value, RuntimeError};
+use super::super::{Value, RuntimeError, map_from_pairs};
 use super::{val_to_i64, val_to_f64, map_field_i64, map_field_f64};
+use indexmap::IndexMap;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
@@ -21,7 +22,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 }
                 let result: Vec<Value> = items.iter().filter(|item| {
                     if let Value::Map(entries) = item {
-                        let val = entries.iter().find(|(k, _)| k == &field).map(|(_, v)| v);
+                        let val = entries.get(&field);
                         if let Some(val) = val {
                             let use_float = matches!(val, Value::Float(_)) || matches!(threshold, Value::Float(_));
                             if use_float {
@@ -63,7 +64,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(false);
                 let has_float = items.iter().any(|item| {
                     if let Value::Map(entries) = item {
-                        entries.iter().any(|(k, v)| k == &field && matches!(v, Value::Float(_)))
+                        entries.get(&field).map(|v| matches!(v, Value::Float(_))).unwrap_or(false)
                     } else { false }
                 });
                 let mut sorted = items.clone();
@@ -161,8 +162,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let field = format!("{}", args[1]);
                     let result: Vec<Value> = items.iter().map(|item| {
                         if let Value::Map(entries) = item {
-                            entries.iter().find(|(k, _)| k == &field)
-                                .map(|(_, v)| v.clone()).unwrap_or(Value::Unit)
+                            entries.get(&field).cloned().unwrap_or(Value::Unit)
                         } else { Value::Unit }
                     }).collect();
                     Some(Ok(Value::List(result)))
@@ -178,7 +178,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let target = format!("{}", args[2]);
                     let count = items.iter().filter(|item| {
                         if let Value::Map(entries) = item {
-                            entries.iter().any(|(k, v)| k == &field && format!("{}", v) == target)
+                            entries.get(&field).map(|v| format!("{}", v) == target).unwrap_or(false)
                         } else { false }
                     }).count();
                     Some(Ok(Value::Int(count as i64)))
@@ -191,22 +191,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
-                    let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
+                    let mut groups: IndexMap<String, Vec<Value>> = IndexMap::new();
                     for item in items {
                         let key = if let Value::Map(entries) = item {
-                            entries.iter().find(|(k, _)| k == &field)
-                                .map(|(_, v)| format!("{}", v)).unwrap_or("unknown".to_string())
+                            entries.get(&field)
+                                .map(|v| format!("{}", v)).unwrap_or("unknown".to_string())
                         } else { "unknown".to_string() };
-                        if let Some(group) = groups.iter_mut().find(|(k, _)| k == &key) {
-                            group.1.push(item.clone());
-                        } else {
-                            groups.push((key, vec![item.clone()]));
-                        }
+                        groups.entry(key).or_default().push(item.clone());
                     }
-                    let result: Vec<(String, Value)> = groups.into_iter()
+                    let result: IndexMap<String, Value> = groups.into_iter()
                         .map(|(k, v)| (k, Value::List(v))).collect();
                     Some(Ok(Value::Map(result)))
-                } else { Some(Ok(Value::Map(vec![]))) }
+                } else { Some(Ok(Value::Map(IndexMap::new()))) }
             } else {
                 Some(Err(RuntimeError::TypeError("group_by expects (list, field)".to_string())))
             }
@@ -219,7 +215,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut result: Vec<Value> = Vec::new();
                     for item in items {
                         let v = if let Value::Map(e) = item {
-                            e.iter().find(|(k,_)| k == &field).map(|(_,v)| v.clone()).unwrap_or(Value::Unit)
+                            e.get(&field).cloned().unwrap_or(Value::Unit)
                         } else { item.clone() };
                         let key = format!("{}", v);
                         if !seen.contains(&key) {
@@ -244,9 +240,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let fields: Vec<String> = args[1..].iter().map(|a| format!("{}", a)).collect();
                     let result: Vec<Value> = items.iter().map(|item| {
                         if let Value::Map(entries) = item {
-                            let picked: Vec<(String, Value)> = entries.iter()
+                            let picked: IndexMap<String, Value> = entries.iter()
                                 .filter(|(k,_)| fields.contains(k))
-                                .cloned().collect();
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
                             Value::Map(picked)
                         } else { item.clone() }
                     }).collect();
@@ -265,20 +262,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         else { (s.clone(), "count".to_string()) }
                     }).collect();
 
-                    let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
+                    let mut groups: IndexMap<String, Vec<&Value>> = IndexMap::new();
                     for item in items {
                         let gk = if let Value::Map(e) = item {
-                            e.iter().find(|(k,_)| k == &group_field).map(|(_,v)| format!("{}", v)).unwrap_or("null".to_string())
+                            e.get(&group_field).map(|v| format!("{}", v)).unwrap_or("null".to_string())
                         } else { "null".to_string() };
-                        if let Some(g) = groups.iter_mut().find(|(k,_)| k == &gk) {
-                            g.1.push(item);
-                        } else {
-                            groups.push((gk, vec![item]));
-                        }
+                        groups.entry(gk).or_default().push(item);
                     }
 
                     let result: Vec<Value> = groups.iter().map(|(gk, items)| {
-                        let mut row = vec![(group_field.clone(), Value::String(gk.clone())), ("count".to_string(), Value::Int(items.len() as i64))];
+                        let mut row = IndexMap::new();
+                        row.insert(group_field.clone(), Value::String(gk.clone()));
+                        row.insert("count".to_string(), Value::Int(items.len() as i64));
                         for (col, func) in &agg_specs {
                             let vals: Vec<i64> = items.iter().map(|i| map_field_i64(i, col)).collect();
                             let agg_val = match func.as_str() {
@@ -289,7 +284,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                 "count" => Value::Int(vals.len() as i64),
                                 _ => Value::Int(vals.iter().sum()),
                             };
-                            row.push((format!("{}_{}", col, func), agg_val));
+                            row.insert(format!("{}_{}", col, func), agg_val);
                         }
                         Value::Map(row)
                     }).collect();
@@ -306,9 +301,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let operand = if args.len() >= 5 { val_to_i64(&args[4]) } else { 0 };
                     let result: Vec<Value> = items.iter().map(|item| {
                         if let Value::Map(entries) = item {
-                            let src_val = entries.iter().find(|(k,_)| k == &source).map(|(_,v)| val_to_i64(v)).unwrap_or(0);
+                            let src_val = entries.get(&source).map(val_to_i64).unwrap_or(0);
                             let computed = match op.as_str() { "*" => src_val * operand, "+" => src_val + operand, "-" => src_val - operand, "/" => if operand != 0 { src_val / operand } else { 0 }, _ => src_val };
-                            let mut e = entries.clone(); e.push((new_field.clone(), Value::Int(computed))); Value::Map(e)
+                            let mut e = entries.clone(); e.insert(new_field.clone(), Value::Int(computed)); Value::Map(e)
                         } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
@@ -322,7 +317,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let vals: Vec<i64> = items.iter().map(|i| map_field_i64(i, &field)).collect();
                     let n = vals.len() as i64; let sum: i64 = vals.iter().sum();
                     let avg = if n > 0 { sum / n } else { 0 };
-                    Some(Ok(Value::Map(vec![("count".into(), Value::Int(n)), ("sum".into(), Value::Int(sum)), ("avg".into(), Value::Int(avg)),
+                    Some(Ok(map_from_pairs(vec![("count".into(), Value::Int(n)), ("sum".into(), Value::Int(sum)), ("avg".into(), Value::Int(avg)),
                         ("min".into(), Value::Int(vals.iter().copied().min().unwrap_or(0))), ("max".into(), Value::Int(vals.iter().copied().max().unwrap_or(0)))])))
                 } else { Some(Ok(Value::Unit)) }
             } else { Some(Err(RuntimeError::TypeError("describe(list, field)".to_string()))) }
@@ -347,7 +342,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         let start = if i >= size { i - size + 1 } else { 0 };
                         let w = &vals[start..=i];
                         let v = match func.as_str() { "avg" => w.iter().sum::<i64>() / w.len() as i64, "sum" => w.iter().sum(), "min" => w.iter().copied().min().unwrap_or(0), "max" => w.iter().copied().max().unwrap_or(0), _ => 0 };
-                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.push((out.clone(), Value::Int(v))); Value::Map(ne) } else { item.clone() }
+                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert(out.clone(), Value::Int(v)); Value::Map(ne) } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
                 } else { Some(Ok(args[0].clone())) }
@@ -360,7 +355,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut cum = 0i64;
                     let result: Vec<Value> = items.iter().map(|item| {
                         cum += map_field_i64(item, &field);
-                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.push((out.clone(), Value::Int(cum))); Value::Map(ne) } else { item.clone() }
+                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert(out.clone(), Value::Int(cum)); Value::Map(ne) } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
                 } else { Some(Ok(args[0].clone())) }
@@ -375,7 +370,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let mut ranks = vec![0usize; items.len()];
                     for (r, (i, _)) in idx.iter().enumerate() { ranks[*i] = r + 1; }
                     let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
-                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.push(("_rank".into(), Value::Int(ranks[i] as i64))); Value::Map(ne) } else { item.clone() }
+                        if let Value::Map(e) = item { let mut ne = e.clone(); ne.insert("_rank".into(), Value::Int(ranks[i] as i64)); Value::Map(ne) } else { item.clone() }
                     }).collect();
                     Some(Ok(Value::List(result)))
                 } else { Some(Ok(args[0].clone())) }
@@ -434,7 +429,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         let z = if std > 0.0 { (vals[i] - mean) / std } else { 0.0 };
                         if let Value::Map(entries) = item {
                             let mut new_entries = entries.clone();
-                            new_entries.push((format!("{}_z", field), Value::Float(z)));
+                            new_entries.insert(format!("{}_z", field), Value::Float(z));
                             Value::Map(new_entries)
                         } else { item.clone() }
                     }).collect();
@@ -456,7 +451,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let result: Vec<Value> = items.iter().enumerate().map(|(i, item)| {
                         if let Value::Map(entries) = item {
                             let mut new = entries.clone();
-                            new.push((format!("{}_rank", field), Value::Int(ranks[i])));
+                            new.insert(format!("{}_rank", field), Value::Int(ranks[i]));
                             Value::Map(new)
                         } else { item.clone() }
                     }).collect();
@@ -480,7 +475,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         } else { min_val };
                         if let Value::Map(entries) = item {
                             let mut new = entries.clone();
-                            new.push((format!("{}_norm", field), Value::Float(scaled)));
+                            new.insert(format!("{}_norm", field), Value::Float(scaled));
                             Value::Map(new)
                         } else { item.clone() }
                     }).collect();
@@ -503,7 +498,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let hi_val = sorted_vals[hi_idx.min(sorted_vals.len() - 1)];
                     let result: Vec<Value> = items.iter().map(|item| {
                         if let Value::Map(entries) = item {
-                            let new_entries: Vec<(String, Value)> = entries.iter().map(|(k, v)| {
+                            let new_entries: IndexMap<String, Value> = entries.iter().map(|(k, v)| {
                                 if k == &field {
                                     let val = map_field_f64(item, &field);
                                     let clamped = val.max(lo_val).min(hi_val);
@@ -524,7 +519,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let new_name = format!("{}", args[2]);
                     let result: Vec<Value> = items.iter().map(|item| {
                         if let Value::Map(entries) = item {
-                            let renamed: Vec<(String, Value)> = entries.iter().map(|(k, v)| {
+                            let renamed: IndexMap<String, Value> = entries.iter().map(|(k, v)| {
                                 if k == &old { (new_name.clone(), v.clone()) } else { (k.clone(), v.clone()) }
                             }).collect();
                             Value::Map(renamed)

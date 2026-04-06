@@ -5,8 +5,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "is_type" | "is_a" => {
             if args.len() >= 2 {
                 if let (Value::Map(entries), Value::String(expected)) = (&args[0], &args[1]) {
-                    let actual = entries.iter().find(|(k, _)| k == "_type")
-                        .and_then(|(_, v)| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                    let actual = entries.get("_type")
+                        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
                     Some(Ok(Value::Bool(actual.as_deref() == Some(expected.as_str()))))
                 } else {
                     Some(Ok(Value::Bool(false)))

@@ -1,5 +1,6 @@
-use super::super::{Value, RuntimeError};
+use super::super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;
+use indexmap::IndexMap;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
@@ -22,7 +23,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     format!("map() requires an even number of arguments (key-value pairs), got {}", args.len())
                 )));
             }
-            let mut entries = Vec::with_capacity(args.len() / 2);
+            let mut entries = IndexMap::with_capacity(args.len() / 2);
             let mut i = 0;
             while i + 1 < args.len() {
                 let key = match &args[i] {
@@ -30,7 +31,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     other => format!("{}", other),
                 };
                 let val = args[i + 1].clone();
-                entries.push((key, val));
+                entries.insert(key, val);
                 i += 2;
             }
             Some(Ok(Value::Map(entries)))
@@ -55,11 +56,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 while i + 1 < args.len() {
                     let key = format!("{}", args[i]);
                     let val = args[i + 1].clone();
-                    if let Some(entry) = result.iter_mut().find(|(k, _)| k == &key) {
-                        entry.1 = val;
-                    } else {
-                        result.push((key, val));
-                    }
+                    result.insert(key, val);
                     i += 2;
                 }
                 Some(Ok(Value::Map(result)))
@@ -70,9 +67,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "without" => {
             if let Some(Value::Map(entries)) = args.first() {
                 let keys_to_remove: Vec<String> = args[1..].iter().map(|a| format!("{}", a)).collect();
-                let result: Vec<(String, Value)> = entries.iter()
+                let result: IndexMap<String, Value> = entries.iter()
                     .filter(|(k, _)| !keys_to_remove.contains(k))
-                    .cloned().collect();
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
                 Some(Ok(Value::Map(result)))
             } else {
                 Some(Err(RuntimeError::TypeError("without expects (map, keys...)".to_string())))
@@ -83,11 +81,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let (Value::Map(a), Value::Map(b)) = (&args[0], &args[1]) {
                     let mut result = a.clone();
                     for (key, val) in b {
-                        if let Some(entry) = result.iter_mut().find(|(k, _)| k == key) {
-                            entry.1 = val.clone();
-                        } else {
-                            result.push((key.clone(), val.clone()));
-                        }
+                        result.insert(key.clone(), val.clone());
                     }
                     Some(Ok(Value::Map(result)))
                 } else { Some(Ok(args[0].clone())) }
@@ -132,7 +126,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let (Value::List(a), Value::List(b)) = (&args[0], &args[1]) {
                     let result: Vec<Value> = a.iter().zip(b.iter()).map(|(l, r)| {
-                        Value::Map(vec![("left".to_string(), l.clone()), ("right".to_string(), r.clone())])
+                        map_from_pairs(vec![("left".to_string(), l.clone()), ("right".to_string(), r.clone())])
                     }).collect();
                     Some(Ok(Value::List(result)))
                 } else { Some(Ok(Value::List(vec![]))) }
@@ -141,7 +135,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "enumerate" => {
             if let Some(Value::List(items)) = args.first() {
                 let result: Vec<Value> = items.iter().enumerate().map(|(i, v)| {
-                    Value::Map(vec![("index".to_string(), Value::Int(i as i64)), ("value".to_string(), v.clone())])
+                    map_from_pairs(vec![("index".to_string(), Value::Int(i as i64)), ("value".to_string(), v.clone())])
                 }).collect();
                 Some(Ok(Value::List(result)))
             } else { Some(Ok(Value::List(vec![]))) }
@@ -190,16 +184,16 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let (Value::List(left), Value::List(right)) = (&args[0], &args[1]) {
                     let key = format!("{}", args[2]);
                     let result: Vec<Value> = left.iter().filter_map(|l| {
-                        let lk = if let Value::Map(e) = l { e.iter().find(|(k,_)| k == &key).map(|(_,v)| format!("{}", v)) } else { None };
+                        let lk = if let Value::Map(e) = l { e.get(&key).map(|v| format!("{}", v)) } else { None };
                         lk.and_then(|lk_val| {
                             right.iter().find(|r| {
-                                if let Value::Map(e) = r { e.iter().any(|(k,v)| k == &key && format!("{}", v) == lk_val) } else { false }
+                                if let Value::Map(e) = r { e.get(&key).map(|v| format!("{}", v) == lk_val).unwrap_or(false) } else { false }
                             }).map(|r| {
-                                let mut merged = if let Value::Map(e) = l { e.clone() } else { vec![] };
+                                let mut merged = if let Value::Map(e) = l { e.clone() } else { IndexMap::new() };
                                 if let Value::Map(re) = r {
                                     for (rk, rv) in re {
-                                        if rk != &key && !merged.iter().any(|(mk,_)| mk == rk) {
-                                            merged.push((rk.clone(), rv.clone()));
+                                        if rk != &key && !merged.contains_key(rk) {
+                                            merged.insert(rk.clone(), rv.clone());
                                         }
                                     }
                                 }
@@ -216,17 +210,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let (Value::List(left), Value::List(right)) = (&args[0], &args[1]) {
                     let key = format!("{}", args[2]);
                     let result: Vec<Value> = left.iter().map(|l| {
-                        let lk = if let Value::Map(e) = l { e.iter().find(|(k,_)| k == &key).map(|(_,v)| format!("{}", v)) } else { None };
+                        let lk = if let Value::Map(e) = l { e.get(&key).map(|v| format!("{}", v)) } else { None };
                         let r_match = lk.and_then(|lk_val| {
                             right.iter().find(|r| {
-                                if let Value::Map(e) = r { e.iter().any(|(k,v)| k == &key && format!("{}", v) == lk_val) } else { false }
+                                if let Value::Map(e) = r { e.get(&key).map(|v| format!("{}", v) == lk_val).unwrap_or(false) } else { false }
                             })
                         });
-                        let mut merged = if let Value::Map(e) = l { e.clone() } else { vec![] };
+                        let mut merged = if let Value::Map(e) = l { e.clone() } else { IndexMap::new() };
                         if let Some(Value::Map(re)) = r_match {
                             for (rk, rv) in re {
-                                if rk != &key && !merged.iter().any(|(mk,_)| mk == rk) {
-                                    merged.push((rk.clone(), rv.clone()));
+                                if rk != &key && !merged.contains_key(rk) {
+                                    merged.insert(rk.clone(), rv.clone());
                                 }
                             }
                         }

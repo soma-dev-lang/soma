@@ -215,6 +215,7 @@ impl std::fmt::Display for crate::ast::Literal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             crate::ast::Literal::Int(n) => write!(f, "{}", n),
+            crate::ast::Literal::BigInt(s) => write!(f, "{}", s),
             crate::ast::Literal::Float(n) => write!(f, "{}", n),
             crate::ast::Literal::String(s) => write!(f, "{}", s),
             crate::ast::Literal::Bool(b) => write!(f, "{}", b),
