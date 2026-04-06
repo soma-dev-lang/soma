@@ -380,6 +380,37 @@ impl Parser {
             }
         };
 
+        // Parse agent annotations: [model: name, skill: "path"]
+        let mut agent_model = None;
+        let mut agent_skill = None;
+        if kind == CellKind::Agent && self.check(&Token::LBracket) {
+            self.advance();
+            while !self.check(&Token::RBracket) && !self.is_at_end() {
+                if let Token::Ident(ref attr) = self.peek().clone() {
+                    let attr = attr.clone();
+                    self.advance();
+                    self.expect(Token::Colon)?;
+                    match attr.as_str() {
+                        "model" => {
+                            let (model_name, _) = self.expect_ident()?;
+                            agent_model = Some(model_name);
+                        }
+                        "skill" => {
+                            if let Token::StringLit(ref path) = self.peek().clone() {
+                                agent_skill = Some(path.clone());
+                                self.advance();
+                            }
+                        }
+                        _ => { self.advance(); } // skip unknown attrs
+                    }
+                    if self.check(&Token::Comma) { self.advance(); }
+                } else {
+                    self.advance();
+                }
+            }
+            self.expect(Token::RBracket)?;
+        }
+
         self.expect(Token::LBrace)?;
 
         let mut sections = Vec::new();
@@ -396,6 +427,8 @@ impl Parser {
                 name,
                 type_params,
                 sections,
+                agent_model,
+                agent_skill,
             },
             start.merge(end),
         ))

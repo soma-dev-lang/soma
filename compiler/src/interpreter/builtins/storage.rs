@@ -233,8 +233,15 @@ fn agent_think(
         )));
     }
 
-    // Resolve config: soma.toml [agent] → env vars → defaults
-    let cfg = interp.agent_config.as_ref();
+    // Resolve config: cell [model: x] → soma.toml [models.x] → [agent] → env vars
+    // Check if this cell has a model annotation → look up in models map
+    let cell_model = interp.cells.get(cell_name).and_then(|c| c.agent_model.clone());
+    let cell_skill = interp.cells.get(cell_name).and_then(|c| c.agent_skill.clone());
+    let cfg = if let Some(ref model_name) = cell_model {
+        interp.agent_models.get(model_name)
+    } else {
+        interp.agent_config.as_ref()
+    };
     let cfg_mock = cfg.map(|c| c.mock.clone()).unwrap_or_default();
 
     // ── Mock mode: soma.toml mock or SOMA_LLM_MOCK env ──────────
@@ -269,8 +276,14 @@ fn agent_think(
         return Ok(Value::String(response));
     }
 
-    // ── Resolve config: soma.toml [agent] → env vars → defaults ──
-    let cfg = interp.agent_config.as_ref();
+    // ── Resolve config: cell [model: x] → soma.toml [models.x] → [agent] → env vars ──
+    // (re-resolve cfg in case mock path didn't set it)
+    let cell_model = interp.cells.get(cell_name).and_then(|c| c.agent_model.clone());
+    let cfg = if let Some(ref model_name) = cell_model {
+        interp.agent_models.get(model_name)
+    } else {
+        interp.agent_config.as_ref()
+    };
 
     // API key resolution:
     //   1. SOMA_LLM_KEY env var (highest priority override)
@@ -319,7 +332,12 @@ fn agent_think(
         .unwrap_or_else(|| cfg.map(|c| c.retries).unwrap_or(3));
 
     let is_anthropic = provider == "anthropic";
-    let system_msg = system.unwrap_or("You are a helpful AI agent. Be concise. Use tools when available.");
+
+    // System prompt: skill file > explicit system arg > default
+    let skill_content = cell_skill.and_then(|path| std::fs::read_to_string(&path).ok());
+    let system_msg = system
+        .or(skill_content.as_deref())
+        .unwrap_or("You are a helpful AI agent. Be concise. Use tools when available.");
     let tools = build_tool_definitions(interp, cell_name);
 
     // Multi-turn: if conversation exists, append; otherwise start fresh

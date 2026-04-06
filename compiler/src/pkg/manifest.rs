@@ -20,9 +20,12 @@ pub struct Manifest {
     /// Cluster configuration for distributed execution
     #[serde(default)]
     pub cluster: ClusterConfig,
-    /// Agent LLM configuration
+    /// Agent LLM configuration (default for all agents)
     #[serde(default)]
     pub agent: AgentConfig,
+    /// Named model definitions: [models.opus], [models.gemma], etc.
+    #[serde(default)]
+    pub models: HashMap<String, AgentConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,6 +262,7 @@ impl Manifest {
             compute: ComputeConfig::default(),
             cluster: ClusterConfig::default(),
             agent: AgentConfig::default(),
+            models: HashMap::new(),
         }
     }
 }

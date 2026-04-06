@@ -72,6 +72,10 @@ pub struct CellDef {
     /// Generic type parameters for `cell type` definitions
     pub type_params: Vec<String>,
     pub sections: Vec<Spanned<Section>>,
+    /// Agent model reference: [model: opus] → looks up [models.opus] in soma.toml
+    pub agent_model: Option<String>,
+    /// Agent skill file: [skill: "skills/researcher.md"] → system prompt
+    pub agent_skill: Option<String>,
 }
 
 #[derive(Debug, Clone)]

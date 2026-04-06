@@ -252,6 +252,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
             if let Ok(content) = std::fs::read_to_string(&soma_toml) {
                 if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
                     interp.agent_config = Some(manifest.agent);
+                    interp.agent_models = manifest.models;
                 }
             }
         }

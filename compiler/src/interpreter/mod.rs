@@ -355,6 +355,8 @@ pub struct Interpreter {
     pub(crate) agent_pending_approval: Option<String>,
     /// Agent LLM config (from soma.toml [agent] section)
     pub agent_config: Option<crate::pkg::manifest::AgentConfig>,
+    /// Named model configs (from soma.toml [models.*] sections)
+    pub agent_models: std::collections::HashMap<String, crate::pkg::manifest::AgentConfig>,
 }
 
 impl Interpreter {
@@ -423,6 +425,7 @@ impl Interpreter {
             agent_trace: Vec::new(),
             agent_pending_approval: None,
             agent_config: None,
+            agent_models: std::collections::HashMap::new(),
         }
     }
 

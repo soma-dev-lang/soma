@@ -274,6 +274,8 @@ mod tests {
                     Section::Face(FaceSection { declarations: decls }),
                     Span::new(0, 0),
                 )],
+                agent_model: None,
+                agent_skill: None,
             },
             Span::new(0, 0),
         )
