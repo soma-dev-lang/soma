@@ -15,9 +15,18 @@ pub enum NativeType {
 }
 
 impl NativeType {
+    /// Type for FFI boundary (extern "C")
     fn rust_str(&self) -> &'static str {
         match self {
             NativeType::Int => "i64",
+            NativeType::Float => "f64",
+            NativeType::Bool => "bool",
+        }
+    }
+    /// Type for internal computation (wider to prevent overflow)
+    fn wide_str(&self) -> &'static str {
+        match self {
+            NativeType::Int => "i128",
             NativeType::Float => "f64",
             NativeType::Bool => "bool",
         }
@@ -102,28 +111,68 @@ pub fn generate_native_source_with_config(handlers: &[NativeHandler], parallel: 
         // Determine return type from body (look for return statements)
         let ret_type = gen.infer_return_type(&handler.body);
 
-        out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}({}) -> {} {{\n",
-            fn_name, param_str, ret_type.rust_str()));
+        if ret_type == NativeType::Int {
+            // Generate two functions:
+            // 1. _inner_{fn} returns i128 (internal, not exported)
+            // 2. {fn} calls _inner, checks overflow, returns i64 or signals overflow
 
-        for stmt in &handler.body {
-            let code = gen.gen_stmt(&stmt.node, 1);
-            out.push_str(&code);
+            // Inner function with i128 return
+            out.push_str(&format!("#[inline(always)]\nfn _inner_{}({}) -> i128 {{\n", fn_name, param_str));
+            for p in &handler.params {
+                let ty = type_expr_to_native(&p.ty.node);
+                if ty == NativeType::Int {
+                    out.push_str(&format!("    let {} = {} as i128;\n", p.name, p.name));
+                }
+            }
+            for stmt in &handler.body {
+                out.push_str(&gen.gen_stmt(&stmt.node, 1));
+            }
+            let last_is_return = handler.body.last()
+                .map(|s| matches!(s.node, Statement::Return { .. }))
+                .unwrap_or(false);
+            if !last_is_return { out.push_str("    0i128\n"); }
+            out.push_str("}\n\n");
+
+            // Overflow flag (global mutable — safe because single-threaded)
+            out.push_str(&format!("static mut _OVERFLOW_{}: i64 = 0;\n", fn_name.to_uppercase()));
+            out.push_str(&format!("static mut _OVERFLOW_HI_{}: i64 = 0;\n\n", fn_name.to_uppercase()));
+
+            // Wrapper: call inner, check overflow, set flag
+            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}({}) -> i64 {{\n", fn_name, param_str));
+            let call_args: String = handler.params.iter().map(|p| p.name.clone()).collect::<Vec<_>>().join(", ");
+            out.push_str(&format!("    let _r = _inner_{}({});\n", fn_name, call_args));
+            out.push_str(&format!("    unsafe {{ _OVERFLOW_{} = if _r > i64::MAX as i128 || _r < i64::MIN as i128 {{ 1 }} else {{ 0 }}; }}\n", fn_name.to_uppercase()));
+            out.push_str(&format!("    unsafe {{ _OVERFLOW_HI_{} = (_r >> 64) as i64; }}\n", fn_name.to_uppercase()));
+            out.push_str("    _r as i64\n");
+            out.push_str("}\n\n");
+
+            // Export overflow check function
+            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}_overflow() -> i64 {{\n", fn_name));
+            out.push_str(&format!("    unsafe {{ _OVERFLOW_{} }}\n", fn_name.to_uppercase()));
+            out.push_str("}\n\n");
+
+            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}_hi() -> i64 {{\n", fn_name));
+            out.push_str(&format!("    unsafe {{ _OVERFLOW_HI_{} }}\n", fn_name.to_uppercase()));
+            out.push_str("}\n\n");
+        } else {
+            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}({}) -> {} {{\n",
+                fn_name, param_str, ret_type.rust_str()));
+            for stmt in &handler.body {
+                out.push_str(&gen.gen_stmt(&stmt.node, 1));
+            }
+            let last_is_return = handler.body.last()
+                .map(|s| matches!(s.node, Statement::Return { .. }))
+                .unwrap_or(false);
+            if !last_is_return {
+                let default = match ret_type {
+                    NativeType::Float => "    0.0f64\n",
+                    NativeType::Bool => "    false\n",
+                    _ => "    0i64\n",
+                };
+                out.push_str(default);
+            }
+            out.push_str("}\n\n");
         }
-
-        // If the body doesn't end with an explicit return, add a default
-        let last_is_return = handler.body.last()
-            .map(|s| matches!(s.node, Statement::Return { .. }))
-            .unwrap_or(false);
-        if !last_is_return {
-            let default = match ret_type {
-                NativeType::Int => "    0i64\n",
-                NativeType::Float => "    0.0f64\n",
-                NativeType::Bool => "    false\n",
-            };
-            out.push_str(default);
-        }
-
-        out.push_str("}\n\n");
 
         // Generate parallel version if handler is in the parallel list
         let is_parallel = parallel.enabled && parallel.handlers.contains(&handler.signal_name);
@@ -409,7 +458,7 @@ impl FnGenerator {
             Statement::Let { name, value } => {
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
                 let expr = self.gen_expr(&value.node, ty);
-                format!("{}let mut {}: {} = {};\n", ind, name, ty.rust_str(), expr)
+                format!("{}let mut {}: {} = {};\n", ind, name, ty.wide_str(), expr)
             }
             Statement::Assign { name, value } => {
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
@@ -419,6 +468,7 @@ impl FnGenerator {
             Statement::Return { value } => {
                 let ret_ty = self.infer_expr_type(&value.node);
                 let expr = self.gen_expr(&value.node, ret_ty);
+                // Don't cast — the wrapper handles i128 → i64 conversion
                 format!("{}return {};\n", ind, expr)
             }
             Statement::If { condition, then_body, else_body } => {
@@ -485,7 +535,7 @@ impl FnGenerator {
                 if target_ty == NativeType::Float {
                     format!("{}.0f64", n)
                 } else {
-                    format!("{}i64", n)
+                    format!("{}i128", n)
                 }
             }
             Expr::Literal(Literal::Float(f)) => format!("{}f64", f),
@@ -495,7 +545,7 @@ impl FnGenerator {
                 if target_ty == NativeType::Float && var_ty == NativeType::Int {
                     format!("{} as f64", name)
                 } else if target_ty == NativeType::Int && var_ty == NativeType::Float {
-                    format!("{} as i64", name)
+                    format!("{} as i128", name)
                 } else {
                     name.clone()
                 }
@@ -512,7 +562,7 @@ impl FnGenerator {
                         let r = self.gen_expr(&right.node, NativeType::Float);
                         let inner = format!("({} / {})", l, r);
                         if target_ty == NativeType::Int {
-                            format!("({} as i64)", inner)
+                            format!("({} as i128)", inner)
                         } else {
                             inner
                         }
@@ -557,7 +607,7 @@ impl FnGenerator {
                         if target_ty == NativeType::Float && common == NativeType::Int {
                             format!("({} as f64)", inner)
                         } else if target_ty == NativeType::Int && common == NativeType::Float {
-                            format!("({} as i64)", inner)
+                            format!("({} as i128)", inner)
                         } else {
                             inner
                         }
@@ -691,15 +741,15 @@ impl FnGenerator {
             }
             "floor" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Float);
-                format!("({}).floor() as i64", a)
+                format!("({}).floor() as i128", a)
             }
             "ceil" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Float);
-                format!("({}).ceil() as i64", a)
+                format!("({}).ceil() as i128", a)
             }
             "round" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Float);
-                format!("({}).round() as i64", a)
+                format!("({}).round() as i128", a)
             }
             "sin" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Float);
@@ -711,7 +761,7 @@ impl FnGenerator {
             }
             "len" => {
                 let a = self.gen_expr(&args[0].node, NativeType::Int);
-                format!("/* len */ 0i64") // simplified — lists not yet supported in codegen
+                format!("/* len */ 0i128") // simplified — lists not yet supported in codegen
             }
             "nth" => {
                 format!("/* nth */ 0") // simplified

@@ -10,7 +10,7 @@ use crate::codegen::native::{self, NativeHandler, NativeSig, NativeType};
 /// A loaded native function, ready to call.
 pub struct LoadedNative {
     /// Keep the library alive as long as the function pointer is in use
-    _lib: libloading::Library,
+    pub lib: Option<std::sync::Arc<libloading::Library>>,
     pub sig: NativeSig,
     /// Raw function pointer — we'll transmute based on sig at call time
     pub fn_ptr: *const (),
@@ -172,7 +172,7 @@ pub fn compile_and_load_natives_with_config(
             };
 
             result.insert(key, LoadedNative {
-                _lib: lib_copy,
+                lib: Some(std::sync::Arc::new(lib_copy)),
                 sig,
                 fn_ptr,
             });
@@ -198,8 +198,7 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
         ));
     }
 
-    // Convert each arg to the expected type
-    let mut raw_args: Vec<u64> = Vec::new(); // store as u64 (both i64 and f64 are 8 bytes)
+    let mut raw_args: Vec<u64> = Vec::new();
     for (i, (arg, expected_ty)) in args.iter().zip(native.sig.param_types.iter()).enumerate() {
         match expected_ty {
             NativeType::Int => {
@@ -230,15 +229,34 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
         }
     }
 
-    // Call via transmuted function pointer based on parameter count and types.
-    // We use a macro-style dispatch for up to 8 parameters.
     let raw_result: u64 = unsafe {
         call_raw(native.fn_ptr, &raw_args, &native.sig.param_types, native.sig.return_type)?
     };
 
     // Convert result back to Value
     match native.sig.return_type {
-        NativeType::Int => Ok(Value::Int(raw_result as i64)),
+        NativeType::Int => {
+            // Check for overflow: call {fn}_overflow() and {fn}_hi()
+            let overflow_fn_name = format!("{}_overflow", native.sig.fn_name);
+            let hi_fn_name = format!("{}_hi", native.sig.fn_name);
+            let has_overflow = native.lib.as_ref().and_then(|lib| unsafe {
+                let overflow_fn: Result<libloading::Symbol<unsafe extern "C" fn() -> i64>, _> =
+                    lib.get(overflow_fn_name.as_bytes());
+                overflow_fn.ok().map(|f| f() != 0)
+            }).unwrap_or(false);
+
+            if has_overflow {
+                let hi = native.lib.as_ref().and_then(|lib| unsafe {
+                    let hi_fn: Result<libloading::Symbol<unsafe extern "C" fn() -> i64>, _> =
+                        lib.get(hi_fn_name.as_bytes());
+                    hi_fn.ok().map(|f| f())
+                }).unwrap_or(0);
+                let full: i128 = ((hi as i128) << 64) | (raw_result as u64 as i128);
+                Ok(Value::Big(num_bigint::BigInt::from(full)))
+            } else {
+                Ok(Value::Int(raw_result as i64))
+            }
+        }
         NativeType::Float => Ok(Value::Float(f64::from_bits(raw_result))),
         NativeType::Bool => Ok(Value::Bool(raw_result != 0)),
     }
