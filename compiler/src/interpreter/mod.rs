@@ -828,10 +828,40 @@ impl Interpreter {
             }
 
             Statement::For { var, iter, body } => {
-                // Evaluate the iterator expression
+                // Fast path: for i in range(start, end) — no allocation
+                if let Expr::FnCall { name: fn_name, args: fn_args } = &iter.node {
+                    if fn_name == "range" && fn_args.len() >= 2 {
+                        let start_val = self.eval_expr(&fn_args[0].node, env, cell_name, signal_name)?;
+                        let end_val = self.eval_expr(&fn_args[1].node, env, cell_name, signal_name)?;
+                        if let (Value::Int(start), Value::Int(end)) = (&start_val, &end_val) {
+                            let (start, end) = (*start, *end);
+                            let mut last = Value::Unit;
+                            let mut i = start;
+                            let needs_scope = body_has_let(body);
+                            while i < end {
+                                env.insert(var.clone(), Value::Int(i));
+                                let result = if needs_scope {
+                                    self.exec_body_scoped(body, env, cell_name, signal_name)
+                                } else {
+                                    self.exec_body(body, env, cell_name, signal_name)
+                                };
+                                match result {
+                                    Ok(val) => last = val,
+                                    Err(ExecError::Break) => break,
+                                    Err(ExecError::Continue) => { i += 1; continue; }
+                                    Err(e) => { env.remove(var); return Err(e); }
+                                }
+                                i += 1;
+                            }
+                            env.remove(var);
+                            return Ok(last);
+                        }
+                    }
+                }
+
+                // General path: evaluate iterator
                 let iter_val = self.eval_expr(&iter.node, env, cell_name, signal_name)?;
 
-                // Convert to iterable items
                 let items = match iter_val {
                     Value::List(items) => items,
                     Value::Map(entries) => {
@@ -870,16 +900,23 @@ impl Interpreter {
             }
 
             Statement::While { condition, body } => {
-                // Fast path: while ident < int_literal — avoid full eval_expr on condition
+                // Fast path: while ident < int_literal — direct comparison, skip eval_expr
                 if let Expr::CmpOp { left, op: CmpOp::Lt, right } = &condition.node {
                     if let (Expr::Ident(ref var_name), Expr::Literal(Literal::Int(limit))) = (&left.node, &right.node) {
                         let limit = *limit;
                         let vn = var_name.clone();
+                        let needs_scope = body_has_let(body);
                         loop {
                             if let Some(Value::Int(current)) = env.get(&vn) {
                                 if *current >= limit { break; }
                             } else { break; }
-                            match self.exec_body_scoped(body, env, cell_name, signal_name) {
+                            // Skip scoping overhead when body has no let bindings
+                            let result = if needs_scope {
+                                self.exec_body_scoped(body, env, cell_name, signal_name)
+                            } else {
+                                self.exec_body(body, env, cell_name, signal_name)
+                            };
+                            match result {
                                 Ok(_) => {}
                                 Err(ExecError::Break) => break,
                                 Err(ExecError::Continue) => {}
