@@ -46,8 +46,13 @@
     "Zero-config clustering — soma serve --join host:port",
     "Pipe composition — data |> filter() |> map() |> sort_by() |> top()",
     "Machine-readable output — soma check --json, soma verify --json, soma describe",
+    "Auto-repair — soma fix writes missing handlers, removes contradictory properties",
+    "Linting — soma lint catches redundant to_json, unchecked .get(), if-chains",
+    "Pattern matching — map destructuring, string prefix, guard clauses, range patterns",
+    "Auto-serialize storage — .set() auto-converts maps to JSON, .get() auto-parses",
+    "Design by contract — ensure postconditions, memory invariants",
     "Cloud deployment — soma deploy --target cloudflare|fly|aws",
-    "Agent-friendly — AGENT.md guide, JSON output, structured counter-examples"
+    "Agent-first — generate → fix → lint → verify → serve workflow"
   ]
 }
 </script>
@@ -109,6 +114,7 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <div class="links">
 <a href="#manifesto">Why</a>
 <a href="#syntax">Language</a>
+<a href="#agents">Agents</a>
 <a href="#native">Performance</a>
 <a href="#fractal">Distribution</a>
 <a href="#reference">Reference</a>
@@ -400,6 +406,75 @@ State machine 'order': 7 states, initial 'pending'
 
 <span class="op">error:</span> face contract: signal 'delete' declared in cell 'API' has no handler
   <span class="dim">&rarr; The face is a contract. Break it, and the compiler tells you.</span></code></pre>
+
+<h3>Auto-repair with <code>soma fix</code></h3>
+<p>The compiler doesn't just report errors &mdash; it <strong>fixes them</strong>. <code>soma fix</code> reads the errors, computes repairs, and writes them back to the source file.</p>
+<pre><code>$ soma fix app.cell
+  <span class="green">&#x2713;</span> removed contradictory property: ephemeral on slot 'items'
+  <span class="green">&#x2713;</span> added handler: on delete(id: String) { ... }
+  <span class="green">&#x2713;</span> added handler: on update(id: String, data: Map) { ... }
+  <span class="green">&#x2713;</span> 3 fix(es) applied, re-checking...
+  <span class="green">&#x2713;</span> All checks passed.</code></pre>
+
+<h3>Lint for anti-patterns</h3>
+<pre><code>$ soma lint app.cell
+  <span class="yellow">&#x26a0;</span> line 7: redundant to_json() &mdash; storage auto-serializes maps
+  <span class="yellow">&#x26a0;</span> line 11: unchecked .get() &mdash; may return ()
+  <span class="dim">&#x2139;</span> line 15: consider using match instead of if-chain (3 branches)</code></pre>
+</section>
+
+<!-- ═══════════════════════════════════ AGENT TOOLING ═══════════════════════════════════ -->
+<section id="agents">
+<h2>Built for AI agents</h2>
+
+<p>Soma is the first language designed around the <strong>generate &rarr; fix &rarr; verify &rarr; serve</strong> loop. Every tool outputs structured JSON. The compiler writes missing code. Storage auto-serializes. Agents don't fight the language &mdash; the language fights for them.</p>
+
+<div class="grid3">
+<div class="card">
+<h4>soma fix</h4>
+<p>Auto-repairs missing handlers, contradictory properties. One command.</p>
+</div>
+<div class="card">
+<h4>soma lint</h4>
+<p>Catches redundant to_json, unchecked .get(), if-chains that should be match.</p>
+</div>
+<div class="card">
+<h4>soma describe</h4>
+<p>Rich JSON: handler signatures, memory schema, state machines, face contracts.</p>
+</div>
+</div>
+
+<h3>Pattern matching that writes itself</h3>
+<p>Map destructuring, string prefix, guard clauses, range patterns, or-patterns &mdash; all composable. Agents generate correct HTTP routing on the first try.</p>
+<pre><code><span class="kw">on</span> request(method: String, path: String, body: String) {
+    <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
+    <span class="kw">match</span> req {
+        {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                     &rarr; home()
+        {method: <span class="str">"GET"</span>, path: <span class="str">"/api/"</span> + resource}      &rarr; list(resource)
+        {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}     &rarr; create(resource, body)
+        {method: <span class="str">"DELETE"</span>, path: <span class="str">"/api/"</span> + resource}   &rarr; delete(resource)
+        {method} <span class="kw">if</span> method == <span class="str">"OPTIONS"</span>              &rarr; cors()
+        _                                            &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+    }
+}</code></pre>
+
+<h3>Auto-serialize storage</h3>
+<p>No more <code>to_json</code> / <code>from_json</code>. Store maps directly. Read them back as maps.</p>
+<pre><code>users.set(<span class="str">"alice"</span>, <span class="fn">map</span>(<span class="str">"name"</span>, <span class="str">"Alice"</span>, <span class="str">"score"</span>, <span class="num">95</span>))
+<span class="kw">let</span> user = users.get(<span class="str">"alice"</span>)
+print(user.name)     <span class="cmt">// "Alice" &mdash; auto-deserialized</span></code></pre>
+
+<h3>Design by contract</h3>
+<pre><code><span class="kw">on</span> withdraw(balance: Int, amount: Int) {
+    <span class="kw">let</span> result = balance - amount
+    <span class="kw">ensure</span> result &gt;= <span class="num">0</span>     <span class="cmt">// postcondition &mdash; fails if violated</span>
+    result                 <span class="cmt">// implicit return</span>
+}
+
+<span class="kw">memory</span> {
+    accounts: Map&lt;String, String&gt; [<span class="fn">persistent</span>]
+    <span class="kw">invariant</span> _slot_len &lt;= <span class="num">10000</span>   <span class="cmt">// checked on every .set()</span>
+}</code></pre>
 </section>
 
 <!-- ═══════════════════════════════════ WHAT IT REPLACES ═══════════════════════════════════ -->
@@ -416,6 +491,8 @@ State machine 'order': 7 states, initial 'pending'
 <tr><td>React</td><td>Dashboard</td><td><code>html(""" ... """)</code></td></tr>
 <tr><td>Celery</td><td>Background jobs</td><td><code>every 1h { rebalance() }</code></td></tr>
 <tr><td>TLA+ (basic)</td><td>Verification</td><td><code>soma verify</code> + <code>soma.toml [verify]</code></td></tr>
+<tr><td>ESLint / Clippy</td><td>Linting</td><td><code>soma lint</code> &mdash; catches anti-patterns</td></tr>
+<tr><td>Copilot fixes</td><td>Auto-repair</td><td><code>soma fix</code> &mdash; writes missing handlers</td></tr>
 </table>
 
 <div class="vs">
@@ -446,13 +523,23 @@ The spec IS the program</code></pre>
 
 <h3>Match expressions</h3>
 <pre><code><span class="kw">on</span> request(method: String, path: String, body: String) {
-    <span class="kw">match</span> path {
-        <span class="str">"/"</span>              &rarr; <span class="fn">html</span>(dashboard())
-        <span class="str">"/api/portfolio"</span> &rarr; get_portfolio()
-        <span class="str">"/api/risk"</span>      &rarr; risk_report()
-        _                &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+    <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
+    <span class="kw">match</span> req {
+        {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                  &rarr; <span class="fn">html</span>(dashboard())
+        {method: <span class="str">"GET"</span>, path: <span class="str">"/api/"</span> + resource}   &rarr; list(resource)
+        {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}  &rarr; create(resource, body)
+        _                                         &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
     }
-}</code></pre>
+}
+
+<span class="cmt">// Also: guard clauses, range patterns, or-patterns, if-expressions</span>
+<span class="kw">let</span> grade = <span class="kw">match</span> score {
+    <span class="num">90</span>..<span class="num">100</span>           &rarr; <span class="str">"A"</span>
+    <span class="num">80</span>..<span class="num">89</span>            &rarr; <span class="str">"B"</span>
+    n <span class="kw">if</span> n &gt;= <span class="num">70</span>     &rarr; <span class="str">"C"</span>
+    _                  &rarr; <span class="str">"F"</span>
+}
+<span class="kw">let</span> x = <span class="kw">if</span> cond { a } <span class="kw">else</span> { b }   <span class="cmt">// if/match are expressions</span></code></pre>
 
 <h3>Lambdas + higher-order pipes</h3>
 <pre><code><span class="kw">let</span> portfolio = stocks
