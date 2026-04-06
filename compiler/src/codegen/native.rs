@@ -46,6 +46,8 @@ pub struct NativeSig {
     pub fn_name: String,
     pub param_types: Vec<NativeType>,
     pub return_type: NativeType,
+    /// If true, args are passed via shared buffer (_soma_push_*), not C params
+    pub uses_shared_args: bool,
 }
 
 /// Parallel configuration for code generation
@@ -86,6 +88,19 @@ pub fn generate_native_source_with_config(handlers: &[NativeHandler], parallel: 
     // Build set of sibling native handler names for inter-call resolution
     let siblings: HashSet<String> = handlers.iter().map(|h| h.signal_name.clone()).collect();
 
+    // Check if any handler returns Int (needs the V enum for BigInt auto-promotion).
+    // Emit V once at the top rather than per-handler.
+    let any_int_return = handlers.iter().any(|h| {
+        let mut gen = FnGenerator::new(&h.params, &siblings, &format!("handler_{}", h.signal_name));
+        for p in &h.params {
+            let ty = type_expr_to_native(&p.ty.node);
+            gen.var_types.insert(p.name.clone(), ty);
+        }
+        gen.infer_body_types(&h.body);
+        gen.infer_return_type(&h.body) == NativeType::Int
+    });
+    let mut v_enum_emitted = false;
+
     for handler in handlers {
         let mut gen = FnGenerator::new(&handler.params, &siblings, &format!("handler_{}", handler.signal_name));
 
@@ -116,9 +131,9 @@ pub fn generate_native_source_with_config(handlers: &[NativeHandler], parallel: 
             // Inline overflow caching: use i64 until overflow, then promote
             // to BigInt and continue from the exact overflow point. No restart.
 
-            out.push_str(&format!("static mut _RESULT_{}: Option<String> = None;\n\n", fn_name.to_uppercase()));
-
-            // Helper: checked i64 ops that promote to BigInt on overflow
+            // Helper: checked i64 ops that promote to BigInt on overflow — emit once
+            if !v_enum_emitted {
+                v_enum_emitted = true;
             out.push_str("
 /// A value that starts as i64 and promotes to BigInt on overflow
 enum V { S(i64), B(BigInt) }
@@ -174,6 +189,22 @@ impl V {
             (V::B(a), V::B(b)) => V::B(a.clone() - b),
         };
     }
+    fn div_v(&mut self, other: &V) {
+        *self = match (&*self, other) {
+            (V::S(a), V::S(b)) => V::S(*a / *b),
+            (V::S(a), V::B(b)) => V::B(BigInt::from(*a) / b),
+            (V::B(a), V::S(b)) => V::B(a.clone() / *b),
+            (V::B(a), V::B(b)) => V::B(a.clone() / b),
+        };
+    }
+    fn mod_v(&mut self, other: &V) {
+        *self = match (&*self, other) {
+            (V::S(a), V::S(b)) => V::S(*a % *b),
+            (V::S(a), V::B(b)) => V::B(BigInt::from(*a) % b),
+            (V::B(a), V::S(b)) => V::B(a.clone() % *b),
+            (V::B(a), V::B(b)) => V::B(a.clone() % b),
+        };
+    }
     fn to_i64(&self) -> Option<i64> {
         match self { V::S(n) => Some(*n), V::B(n) => n.to_i64() }
     }
@@ -205,16 +236,57 @@ impl std::fmt::Display for V {
         match self { V::S(n) => write!(f, \"{}\"  , n), V::B(n) => write!(f, \"{}\"  , n) }
     }
 }
+
+// Shared arg buffer for BigInt-capable calls
+static mut _SOMA_ARGS: Vec<V> = Vec::new();
+static mut _SOMA_RESULT: Option<String> = None;
+
+#[no_mangle]
+pub extern \"C\" fn _soma_clear_args() {
+    unsafe { _SOMA_ARGS.clear(); }
+}
+
+#[no_mangle]
+pub extern \"C\" fn _soma_push_i64(v: i64) {
+    unsafe { _SOMA_ARGS.push(V::S(v)); }
+}
+
+#[no_mangle]
+pub extern \"C\" fn _soma_push_bigint(ptr: *const u8, len: i64) {
+    unsafe {
+        let bytes = std::slice::from_raw_parts(ptr, len as usize);
+        let s = std::str::from_utf8_unchecked(bytes);
+        let negative = s.starts_with('-');
+        let digits = if negative { &s[1..] } else { s };
+        let big: BigInt = digits.parse().unwrap();
+        _SOMA_ARGS.push(V::B(if negative { -big } else { big }));
+    }
+}
+
+#[no_mangle]
+pub extern \"C\" fn _soma_result_ptr() -> *const u8 {
+    unsafe { _SOMA_RESULT.as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null()) }
+}
+
+#[no_mangle]
+pub extern \"C\" fn _soma_result_len() -> i64 {
+    unsafe { _SOMA_RESULT.as_ref().map(|s| s.len() as i64).unwrap_or(0) }
+}
 ");
+            } // end v_enum_emitted guard
 
-            // Generate function using V type for auto-promoting arithmetic
-            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}({}) -> i64 {{\n", fn_name, param_str));
+            // Generate zero-arg function that reads from shared buffer
+            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}() -> i64 {{\n", fn_name));
 
-            // Convert i64 params to V
-            for p in &handler.params {
+            // Read params from shared buffer
+            for (i, p) in handler.params.iter().enumerate() {
                 let ty = type_expr_to_native(&p.ty.node);
                 if ty == NativeType::Int {
-                    out.push_str(&format!("    let {} = V::S({});\n", p.name, p.name));
+                    out.push_str(&format!("    let {} = unsafe {{ _SOMA_ARGS[{}].clone_v() }};\n", p.name, i));
+                } else {
+                    // Float/Bool params: read as i64 bits then interpret
+                    out.push_str(&format!("    let {} = unsafe {{ match &_SOMA_ARGS[{}] {{ V::S(n) => *n as {}, _ => 0 as {} }} }};\n",
+                        p.name, i, ty.rust_str(), ty.rust_str()));
                 }
             }
 
@@ -240,13 +312,7 @@ impl std::fmt::Display for V {
             }
             out.push_str("}\n\n");
 
-            // BigInt result accessors
-            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}_bigint_result() -> *const u8 {{\n", fn_name));
-            out.push_str(&format!("    unsafe {{ _RESULT_{}.as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null()) }}\n", fn_name.to_uppercase()));
-            out.push_str("}\n\n");
-            out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}_bigint_len() -> i64 {{\n", fn_name));
-            out.push_str(&format!("    unsafe {{ _RESULT_{}.as_ref().map(|s| s.len() as i64).unwrap_or(0) }}\n", fn_name.to_uppercase()));
-            out.push_str("}\n\n");
+            // BigInt result is read via shared _soma_result_ptr/_soma_result_len
         } else {
             out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}({}) -> {} {{\n",
                 fn_name, param_str, ret_type.rust_str()));
@@ -349,12 +415,14 @@ impl std::fmt::Display for V {
                     fn_name: format!("{}_par_arr", fn_name),
                     param_types: param_types.clone(),
                     return_type: ret_type,
+                    uses_shared_args: false,
                 });
             } else {
                 sigs.push(NativeSig {
                     fn_name: format!("{}_par", fn_name),
                     param_types: param_types.clone(),
                     return_type: ret_type,
+                    uses_shared_args: false,
                 });
             }
         } else
@@ -383,12 +451,15 @@ impl std::fmt::Display for V {
                 fn_name: format!("{}_arr", fn_name),
                 param_types,
                 return_type: ret_type,
+                uses_shared_args: false,
             });
         } else {
+            let shared = ret_type == NativeType::Int;
             sigs.push(NativeSig {
                 fn_name,
                 param_types,
                 return_type: ret_type,
+                uses_shared_args: shared,
             });
         }
     }
@@ -479,7 +550,14 @@ impl FnGenerator {
                 let lt = self.infer_expr_type(&left.node);
                 let rt = self.infer_expr_type(&right.node);
                 match op {
-                    BinOp::Div => NativeType::Float, // division always float
+                    BinOp::Div => {
+                        // Int/Int → Int (floor division), otherwise Float
+                        if lt == NativeType::Int && rt == NativeType::Int {
+                            NativeType::Int
+                        } else {
+                            NativeType::Float
+                        }
+                    }
                     BinOp::And | BinOp::Or => NativeType::Bool,
                     _ => {
                         if lt == NativeType::Float || rt == NativeType::Float {
@@ -566,15 +644,15 @@ impl FnGenerator {
                 if ret_ty == NativeType::Int {
                     let upper = self.fn_name_upper.as_deref().unwrap_or("UNKNOWN");
                     let mut s = String::new();
-                    s.push_str(&format!("{}{{ let _ret_val = {};\n", ind, expr));
+                    s.push_str(&format!("{}let _ret_val = {};\n", ind, expr));
                     s.push_str(&format!("{}use num_traits::ToPrimitive;\n", ind));
                     s.push_str(&format!("{}match _ret_val.to_i64() {{\n", ind));
                     s.push_str(&format!("{}    Some(v) => return v,\n", ind));
                     s.push_str(&format!("{}    None => {{\n", ind));
-                    s.push_str(&format!("{}        unsafe {{ _RESULT_{} = Some(_ret_val.to_string()); }}\n", ind, upper));
+                    s.push_str(&format!("{}        unsafe {{ _SOMA_RESULT = Some(_ret_val.to_string()); }}\n", ind));
                     s.push_str(&format!("{}        return i64::MIN;\n", ind));
                     s.push_str(&format!("{}    }}\n", ind));
-                    s.push_str(&format!("{}}}}}\n", ind));
+                    s.push_str(&format!("{}}}\n", ind));
                     s
                 } else {
                     format!("{}return {};\n", ind, expr)
@@ -669,14 +747,21 @@ impl FnGenerator {
 
                 match op {
                     BinOp::Div => {
-                        // Always use float division
-                        let l = self.gen_expr(&left.node, NativeType::Float);
-                        let r = self.gen_expr(&right.node, NativeType::Float);
-                        let inner = format!("({} / {})", l, r);
-                        if target_ty == NativeType::Int {
-                            format!("({} as i128)", inner)
+                        if lt == NativeType::Int && rt == NativeType::Int {
+                            // Integer division via V type (BigInt-safe)
+                            let l = self.gen_expr(&left.node, NativeType::Int);
+                            let r = self.gen_expr(&right.node, NativeType::Int);
+                            format!("({} / {})", l, r)
                         } else {
-                            inner
+                            // Float division
+                            let l = self.gen_expr(&left.node, NativeType::Float);
+                            let r = self.gen_expr(&right.node, NativeType::Float);
+                            let inner = format!("({} / {})", l, r);
+                            if target_ty == NativeType::Int {
+                                format!("({} as i128)", inner)
+                            } else {
+                                inner
+                            }
                         }
                     }
                     BinOp::Mod => {
@@ -1259,13 +1344,20 @@ fn transform_v_arithmetic(code: &str) -> String {
             if rhs.starts_with("((&") && rhs.ends_with("))") {
                 let inner = &rhs[1..rhs.len()-1]; // strip outer parens
                 let mut matched = false;
-                for (op_str, method) in [(" + ", "add_v"), (" - ", "sub_v"), (" * ", "mul_v")] {
+                for (op_str, method) in [(" + ", "add_v"), (" - ", "sub_v"), (" * ", "mul_v"), (" / ", "div_v"), (" % ", "mod_v")] {
                     if let Some(pos) = inner.find(op_str) {
                         let left = inner[..pos].trim().trim_start_matches("(&").trim_end_matches(')');
                         let right = inner[pos+op_str.len()..].trim().trim_start_matches("(&").trim_end_matches(')');
                         let indent = &line[..line.len()-trimmed.len()];
-                        result.push_str(&format!("{}{{ let mut _t = {}.clone_v(); _t.{}(&{}); {} = _t; }}\n",
-                            indent, left, method, right, lhs));
+                        // If lhs is a `let` binding, emit without wrapping block
+                        // so the variable stays in the enclosing scope
+                        if lhs.contains("let ") {
+                            result.push_str(&format!("{}let mut _t = {}.clone_v(); _t.{}(&{}); {} = _t;\n",
+                                indent, left, method, right, lhs));
+                        } else {
+                            result.push_str(&format!("{}{{ let mut _t = {}.clone_v(); _t.{}(&{}); {} = _t; }}\n",
+                                indent, left, method, right, lhs));
+                        }
                         matched = true;
                         break;
                     }

@@ -208,8 +208,6 @@ pub fn compile_and_load_natives_with_config(
 pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super::Value, String> {
     use super::Value;
 
-    // We need to build the right function pointer type based on the signature.
-    // Support up to 8 params of i64 or f64.
     let param_count = native.sig.param_types.len();
 
     if args.len() != param_count {
@@ -219,6 +217,12 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
         ));
     }
 
+    if native.sig.uses_shared_args {
+        // Shared buffer path: push args via _soma_push_*, call zero-arg handler
+        return call_native_shared(native, args);
+    }
+
+    // Direct path: pass args through C ABI (for Float/Bool-returning handlers)
     let mut raw_args: Vec<u64> = Vec::new();
     for (i, (arg, expected_ty)) in args.iter().zip(native.sig.param_types.iter()).enumerate() {
         match expected_ty {
@@ -254,59 +258,86 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
         call_raw(native.fn_ptr, &raw_args, &native.sig.param_types, native.sig.return_type)?
     };
 
-    // Convert result back to Value
     match native.sig.return_type {
         NativeType::Int => {
             let result_i64 = raw_result as i64;
-            if result_i64 == i64::MIN {
-                // Sentinel: result overflowed i64, read BigInt string from buffer
-                let bigint_len_fn = format!("{}_bigint_len", native.sig.fn_name);
-                let bigint_ptr_fn = format!("{}_bigint_result", native.sig.fn_name);
-
-                let bigint_str = native.lib.as_ref().and_then(|lib| unsafe {
-                    let len_fn: libloading::Symbol<unsafe extern "C" fn() -> i64> =
-                        lib.get(bigint_len_fn.as_bytes()).ok()?;
-                    let ptr_fn: libloading::Symbol<unsafe extern "C" fn() -> *const u8> =
-                        lib.get(bigint_ptr_fn.as_bytes()).ok()?;
-                    let len = len_fn() as usize;
-                    let ptr = ptr_fn();
-                    if ptr.is_null() || len == 0 { return None; }
-                    let bytes = std::slice::from_raw_parts(ptr, len);
-                    String::from_utf8(bytes.to_vec()).ok()
-                });
-
-                if let Some(s) = bigint_str {
-                    // Parse the BigInt string into SomaInt
-                    // Convert decimal string to limbs
-                    let negative = s.starts_with('-');
-                    let digits = if negative { &s[1..] } else { &s };
-                    if let Ok(big) = digits.parse::<num_bigint::BigInt>() {
-                        use num_bigint::Sign;
-                        let (_, limbs_u32) = big.to_u32_digits();
-                        // Convert u32 limbs to u64 limbs
-                        let mut limbs_u64 = Vec::new();
-                        let mut i = 0;
-                        while i < limbs_u32.len() {
-                            let lo = limbs_u32[i] as u64;
-                            let hi = if i + 1 < limbs_u32.len() { (limbs_u32[i + 1] as u64) << 32 } else { 0 };
-                            limbs_u64.push(lo | hi);
-                            i += 2;
-                        }
-                        Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_limbs(&limbs_u64, negative)))
-                    } else {
-                        // Fallback: return as string
-                        Ok(Value::String(s))
-                    }
-                } else {
-                    // No BigInt buffer — actual i64::MIN value
-                    Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i64::MIN)))
-                }
-            } else {
-                Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
-            }
+            Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
         }
         NativeType::Float => Ok(Value::Float(f64::from_bits(raw_result))),
         NativeType::Bool => Ok(Value::Bool(raw_result != 0)),
+    }
+}
+
+/// Call a native handler via the shared arg buffer (supports BigInt).
+fn call_native_shared(native: &LoadedNative, args: &[super::Value]) -> Result<super::Value, String> {
+    use super::Value;
+
+    let lib = native.lib.as_ref()
+        .ok_or_else(|| "[native] shared call requires library".to_string())?;
+
+    unsafe {
+        // 1. Clear args
+        let clear_fn: libloading::Symbol<unsafe extern "C" fn()> =
+            lib.get(b"_soma_clear_args")
+                .map_err(|e| format!("[native] missing _soma_clear_args: {}", e))?;
+        clear_fn();
+
+        // 2. Push each arg
+        let push_i64_fn: libloading::Symbol<unsafe extern "C" fn(i64)> =
+            lib.get(b"_soma_push_i64")
+                .map_err(|e| format!("[native] missing _soma_push_i64: {}", e))?;
+        let push_bigint_fn: libloading::Symbol<unsafe extern "C" fn(*const u8, i64)> =
+            lib.get(b"_soma_push_bigint")
+                .map_err(|e| format!("[native] missing _soma_push_bigint: {}", e))?;
+
+        for (i, arg) in args.iter().enumerate() {
+            match arg {
+                Value::Int(si) => {
+                    match si.to_i64() {
+                        Some(v) => push_i64_fn(v),
+                        None => {
+                            // BigInt: serialize to string and push
+                            let s = si.to_string();
+                            push_bigint_fn(s.as_ptr(), s.len() as i64);
+                        }
+                    }
+                }
+                Value::Float(f) => push_i64_fn(*f as i64),
+                Value::Bool(b) => push_i64_fn(if *b { 1 } else { 0 }),
+                _ => return Err(format!("[native] arg {} unsupported type", i)),
+            }
+        }
+
+        // 3. Call the zero-arg handler
+        let handler_fn: extern "C" fn() -> i64 = std::mem::transmute(native.fn_ptr);
+        let result_i64 = handler_fn();
+
+        // 4. Read result
+        if result_i64 == i64::MIN {
+            // BigInt result: read from shared buffer
+            let result_len_fn: libloading::Symbol<unsafe extern "C" fn() -> i64> =
+                lib.get(b"_soma_result_len")
+                    .map_err(|e| format!("[native] missing _soma_result_len: {}", e))?;
+            let result_ptr_fn: libloading::Symbol<unsafe extern "C" fn() -> *const u8> =
+                lib.get(b"_soma_result_ptr")
+                    .map_err(|e| format!("[native] missing _soma_result_ptr: {}", e))?;
+
+            let len = result_len_fn() as usize;
+            let ptr = result_ptr_fn();
+
+            if ptr.is_null() || len == 0 {
+                return Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i64::MIN)));
+            }
+
+            let bytes = std::slice::from_raw_parts(ptr, len);
+            let s = String::from_utf8(bytes.to_vec())
+                .map_err(|_| "[native] invalid BigInt UTF-8".to_string())?;
+
+            // Parse decimal string directly to SomaInt (via rug::Integer)
+            Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_decimal_str(&s)))
+        } else {
+            Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
+        }
     }
 }
 

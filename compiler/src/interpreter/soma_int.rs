@@ -179,6 +179,14 @@ impl PartialEq for SomaInt {
 // ── Conversion from num-bigint (for interop with existing code) ─────
 
 impl SomaInt {
+    /// Parse a decimal string (e.g. "-12345") into a SomaInt.
+    pub fn from_decimal_str(s: &str) -> Self {
+        match s.parse::<Integer>() {
+            Ok(r) => SomaInt::from_rug(r),
+            Err(_) => SomaInt::from_i64(0),
+        }
+    }
+
     pub fn from_bigint(b: &num_bigint::BigInt) -> Self {
         let s = b.to_string();
         match s.parse::<Integer>() {
