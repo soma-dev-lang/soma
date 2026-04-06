@@ -1,35 +1,206 @@
-# Soma Language — for AI agents and LLMs
+# Soma Language — Complete Reference for AI Agents
 
-> Soma is a programming language for verified distributed systems.
-> Same code runs on 1 machine or a cluster. The compiler proves it correct.
+> Soma is a fractal, declarative, agent-native language for verified distributed systems.
+> The compiler is the agent's collaborator: it fixes errors, catches anti-patterns, and auto-serializes data.
 
-## What is Soma
+## Agent Workflow
 
-A language where every system is a **cell** with:
-- **memory** — state with properties: [persistent, consistent] → SQLite, [ephemeral, local] → in-memory
-- **state machines** — lifecycle with formal verification (CTL temporal logic)
-- **handlers** (on) — functions that process signals
-- **scale** — distribution: replicas, shard, consistency (strong/causal/eventual), tolerance
-- **face** — compile-time checked contracts
+```
+1. Generate code      → write .cell file
+2. Auto-fix errors    → soma fix app.cell (adds missing handlers, fixes properties)
+3. Lint               → soma lint app.cell (catches anti-patterns)
+4. Check contracts    → soma check app.cell --json
+5. Verify state       → soma verify app.cell --json
+6. Serve              → soma serve app.cell -p 8080
+```
 
-## Key capabilities
+## Quick Syntax Rules
 
-- `soma check app.cell --json` → verify contracts, returns JSON errors
-- `soma verify app.cell --json` → prove state machine properties, returns counter-examples
-- `soma describe app.cell` → structured JSON: signals, memory, state machines, scale
-- `soma serve app.cell` → HTTP server on :8080
-- `soma serve app.cell --join host:port` → join a cluster (same code, no changes)
-- `soma deploy app.cell --target cloudflare|fly|aws` → deploy to cloud
+- No semicolons. Newlines separate statements.
+- No `function`/`def`. Use `on handler_name(params) { }`.
+- No `null`. Use `()` for null/unit.
+- No `[1,2,3]`. Use `list(1, 2, 3)`.
+- No `{key: val}`. Use `map("key", val, "key2", val2)`.
+- No `import`. Use `use lib::module`.
+- No `console.log`. Use `print(value)`.
+- No `===`. Use `==`.
+- Strings: `"hello {name}"` (interpolation with `{}`).
+- `if`/`match` are expressions: `let x = if cond { a } else { b }`.
+- Last expression in handler is the return value (implicit return).
 
-## For agents building Soma code
+## Cell Structure
 
-Read AGENT.md at https://github.com/soma-dev-lang/soma/blob/main/AGENT.md
-Read SOMA_REFERENCE.md at https://github.com/soma-dev-lang/soma/blob/main/SOMA_REFERENCE.md
+```soma
+cell AppName {
+    face {
+        signal create(name: String) -> Map   // contract: MUST have handler
+        promise "all data is tracked"
+    }
+    memory {
+        data: Map<String, String> [persistent, consistent]  // -> SQLite
+        cache: Map<String, String> [ephemeral]              // -> in-memory
+        invariant _slot_len <= 10000                         // checked on every .set()
+    }
+    state workflow {
+        initial: draft
+        draft -> active { guard { _from == "draft" } }
+        active -> completed
+        * -> cancelled
+    }
+    every 30s { cleanup() }
+    after 5s { initialize() }
+
+    on create(data: Map) {
+        let id = to_string(next_id())
+        data.set(id, data)                // auto-serializes maps
+        ensure data.len > 0               // postcondition
+        map("id", id, "status", "ok")     // implicit return
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"}                    -> html(home())
+            {method: "GET", path: "/api/" + resource}     -> list(resource)
+            {method: "POST", path: "/api/" + resource}    -> create(resource, body)
+            {method: "DELETE", path: "/api/" + resource}   -> delete(resource)
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}
+```
+
+## Match Patterns (all composable)
+
+```soma
+match value {
+    "literal"                    -> expr          // literal
+    "a" || "b"                   -> expr          // or-pattern
+    name                         -> use(name)     // variable binding
+    "/api/" + rest               -> api(rest)     // string prefix
+    {method: "GET", path}        -> get(path)     // map destructuring
+    {method: "POST", path: "/api/" + r} -> post(r) // nested destructure
+    0..17                        -> "minor"       // range pattern
+    n if n > 100                 -> "big"         // guard clause
+    ()                           -> "null"        // unit/null
+    _                            -> "default"     // wildcard
+}
+```
+
+## Types
+
+| Type    | Example                              |
+|---------|--------------------------------------|
+| Int     | `42`, `-1`                           |
+| Float   | `3.14`, `1.5e3`                      |
+| String  | `"hello {name}"`                     |
+| Bool    | `true`, `false`                      |
+| List    | `list(1, 2, 3)`                      |
+| Map     | `map("key", val, "key2", val2)`      |
+| Unit    | `()` (null equivalent)               |
+| Duration| `5s`, `1min`, `500ms`, `1h`          |
+
+## Storage (auto-serializes)
+
+```soma
+// Store maps directly — no to_json needed
+data.set("key", map("name", "Alice", "score", 95))
+
+// Read back as map — no from_json needed
+let user = data.get("key")
+print(user.name)   // "Alice"
+
+// Other methods
+data.delete("key")
+data.keys             // list of keys
+data.values           // list of values
+data.len()            // count
+data.has("key")       // bool
+```
+
+## Pipes
+
+```soma
+data |> filter(x => x.score > 50)
+data |> map(x => x.name)
+data |> sort_by("score", "desc")
+data |> top(10)
+data |> reduce(0, p => p.acc + p.val)
+data |> filter_by("price", ">", 100)
+data |> group_by("dept")
+data |> distinct("category")
+data |> with("new_field", value)
+data |> join(other, "key")
+```
+
+## Error Handling
+
+```soma
+let result = try { risky_operation() }
+if result.error != () { return response(500, map("error", result.error)) }
+
+// Short form: ? propagates errors
+let value = try { operation() }?
+
+// Postconditions
+ensure balance >= 0   // fails if false
+```
+
+## CLI Commands
+
+| Command                         | Description                                        |
+|---------------------------------|----------------------------------------------------|
+| `soma run file.cell [args]`     | Execute signal handler                             |
+| `soma serve file.cell [-p port]`| HTTP server                                        |
+| `soma check file.cell [--json]` | Verify contracts + properties                      |
+| `soma fix file.cell`            | Auto-repair errors (missing handlers, bad props)   |
+| `soma lint file.cell [--json]`  | Catch anti-patterns                                |
+| `soma verify file.cell [--json]`| Prove state machine properties                     |
+| `soma describe file.cell`       | Rich JSON: handlers, memory, state, face           |
+| `soma test file.cell`           | Run test cells                                     |
+| `soma init [name]`              | Create project                                     |
+
+## soma check --json output
+
+```json
+{
+  "passed": false,
+  "errors": [
+    {
+      "kind": "missing_handler",
+      "message": "face contract: signal 'delete' declared in cell 'App' has no handler",
+      "fix": "Add a handler to cell 'App':\n\n    on delete() {\n        return map(\"status\", \"ok\")\n    }"
+    }
+  ]
+}
+```
+
+## soma describe output
+
+```json
+{
+  "cells": [{
+    "name": "App",
+    "handlers": [
+      {"name": "create", "params": [{"name": "data", "type": "Map"}], "is_public": true, "line": 10}
+    ],
+    "memory": [
+      {"name": "items", "type": "Map<String, String>", "properties": ["persistent"]}
+    ],
+    "state_machines": [
+      {"name": "order", "initial": "pending", "transitions": [{"from": "pending", "to": "confirmed", "has_guard": true}]}
+    ],
+    "face": {"signals": [{"name": "create", "params": ["data: Map"], "returns": "Map"}]},
+    "scheduled": [{"kind": "every", "interval_ms": 30000}]
+  }]
+}
+```
 
 ## Links
 
-- Website: https://soma-lang.dev
-- Paper: https://soma-lang.dev/paper
 - GitHub: https://github.com/soma-dev-lang/soma
 - Agent guide: https://github.com/soma-dev-lang/soma/blob/main/AGENT.md
 - Language reference: https://github.com/soma-dev-lang/soma/blob/main/SOMA_REFERENCE.md
+- Spec: https://github.com/soma-dev-lang/soma/blob/main/SOMA_SPEC.md
+- Paper: https://soma-lang.dev/paper
+- Vision: https://github.com/soma-dev-lang/soma/blob/main/VISION.md

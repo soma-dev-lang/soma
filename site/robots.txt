@@ -2,3 +2,6 @@ User-agent: *
 Allow: /
 
 Sitemap: https://soma-lang.dev/sitemap.xml
+
+# AI Agent Reference — full language spec in plain text
+# https://soma-lang.dev/llms.txt

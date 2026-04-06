@@ -22,6 +22,9 @@
 <!-- Canonical -->
 <link rel="canonical" href="https://soma-lang.dev">
 
+<!-- Agent-readable reference -->
+<link rel="alternate" type="text/plain" href="/llms.txt" title="LLM Reference">
+
 <!-- Structured data for search engines and AI agents -->
 <script type="application/ld+json">
 {
@@ -737,32 +740,31 @@ handlers = [<span class="str">"simulate"</span>]
 <section id="web">
 <h2>Web applications</h2>
 
-<p><code>soma serve app.cell</code> &mdash; threaded HTTP server, SQLite, CORS, auto-routing, HTML templates. Zero framework.</p>
+<p><code>soma serve app.cell</code> &mdash; threaded HTTP server, SQLite, CORS, auto-routing, HTML templates. Zero framework. Storage auto-serializes &mdash; no <code>to_json</code>/<code>from_json</code> needed.</p>
 
 <pre><code><span class="kw">cell</span> App {
     <span class="kw">memory</span> { tasks: Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>] }
 
     <span class="kw">on</span> request(method: String, path: String, body: String) {
-        <span class="kw">match</span> path {
-            <span class="str">"/"</span>     &rarr; <span class="fn">html</span>(dashboard())
-            <span class="str">"/api"</span>  &rarr; tasks.<span class="fn">values</span>() |&gt; <span class="fn">map</span>(s =&gt; <span class="fn">from_json</span>(s))
-            _       &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+        <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
+        <span class="kw">match</span> req {
+            {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}    &rarr; <span class="fn">html</span>(dashboard())
+            {method: <span class="str">"GET"</span>, path: <span class="str">"/api"</span>}  &rarr; tasks.<span class="fn">values</span>()     <span class="cmt">// auto-deserialized</span>
+            {method: <span class="str">"POST"</span>, path: <span class="str">"/api"</span>} &rarr; {
+                <span class="kw">let</span> data = <span class="fn">from_json</span>(body)
+                <span class="kw">let</span> id = <span class="fn">to_string</span>(<span class="fn">next_id</span>())
+                tasks.set(id, data)                <span class="cmt">// auto-serialized</span>
+                <span class="fn">map</span>(<span class="str">"id"</span>, id)
+            }
+            _                           &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
         }
     }
 
     <span class="kw">on</span> dashboard() {
         <span class="kw">let</span> rows = tasks.<span class="fn">values</span>()
-            |&gt; <span class="fn">map</span>(s =&gt; <span class="fn">from_json</span>(s))
             |&gt; <span class="fn">map</span>(t =&gt; <span class="str">"""&lt;tr&gt;&lt;td&gt;{t.name}&lt;/td&gt;&lt;td&gt;{t.status}&lt;/td&gt;&lt;/tr&gt;"""</span>)
             |&gt; <span class="fn">join</span>(<span class="str">""</span>)
-        <span class="kw">return</span> <span class="str">"""
-        &lt;html&gt;
-            &lt;body&gt;
-                &lt;h1&gt;Tasks&lt;/h1&gt;
-                &lt;table&gt;{rows}&lt;/table&gt;
-            &lt;/body&gt;
-        &lt;/html&gt;
-        """</span>
+        <span class="str">"""&lt;html&gt;&lt;body&gt;&lt;h1&gt;Tasks&lt;/h1&gt;&lt;table&gt;{rows}&lt;/table&gt;&lt;/body&gt;&lt;/html&gt;"""</span>
     }
 }
 
@@ -958,11 +960,11 @@ State machine 'PricingEngine/scale':
 <tr><td>soma serve file.cell</td><td>HTTP :8080, WS :8081, Bus :8082</td></tr>
 <tr><td>soma serve file.cell --join host:port</td><td>Join a cluster</td></tr>
 <tr><td>soma serve file.cell --watch</td><td>Hot reload on file change</td></tr>
-<tr><td>soma check file.cell</td><td>Verify contracts &amp; properties</td></tr>
-<tr><td>soma check file.cell --json</td><td>Machine-readable errors (for agents)</td></tr>
-<tr><td>soma verify file.cell</td><td>State machine + distribution proofs</td></tr>
-<tr><td>soma verify file.cell --json</td><td>Machine-readable proofs (for agents)</td></tr>
-<tr><td>soma describe file.cell</td><td>JSON: signals, memory, scale, routes</td></tr>
+<tr><td>soma check file.cell [--json]</td><td>Verify contracts &amp; properties</td></tr>
+<tr><td>soma fix file.cell</td><td><strong>Auto-repair</strong>: adds missing handlers, fixes properties</td></tr>
+<tr><td>soma lint file.cell [--json]</td><td><strong>Anti-patterns</strong>: redundant to_json, unchecked .get(), if-chains</td></tr>
+<tr><td>soma verify file.cell [--json]</td><td>State machine + distribution proofs</td></tr>
+<tr><td>soma describe file.cell</td><td><strong>Rich JSON</strong>: handlers, memory, state machines, face, scheduled</td></tr>
 <tr><td>soma test file.cell</td><td>Run test cells</td></tr>
 <tr><td>soma init [name]</td><td>Create project</td></tr>
 <tr><td>soma add pkg --git url</td><td>Add dependency</td></tr>
@@ -975,13 +977,18 @@ State machine 'PricingEngine/scale':
 <pre><code>Source (.cell)
     &rarr; Lexer &rarr; Parser &rarr; AST
         &rarr; Checker (contracts, properties, scale coherence)
+        &rarr; Fixer (auto-repair: missing handlers, bad properties)
+        &rarr; Linter (anti-patterns: redundant to_json, if-chains)
         &rarr; Verifier (state machines, temporal logic, CAP analysis)
-        &rarr; Describe (JSON cell metadata &mdash; for agents)
+        &rarr; Describe (rich JSON: handlers, memory, state, face)
         &rarr; Interpreter (soma run)
+            &rarr; Auto-serialize storage (maps &rarr; JSON &rarr; maps)
+            &rarr; Memory invariants (checked on every .set())
+            &rarr; Ensure postconditions (checked on handler exit)
         &rarr; Native FFI ([native] &rarr; Rust &rarr; .dylib &rarr; 200x)
     &rarr; Registry (stdlib/*.cell &mdash; properties, backends, builtins)
     &rarr; Runtime
-        &rarr; Storage (SQLite | Memory)
+        &rarr; Storage (SQLite | Memory | auto-serialize)
         &rarr; HTTP server (soma serve)
         &rarr; Cluster (--join &rarr; hash ring &rarr; signal replication)
         &rarr; SSE + WebSocket + TCP signal bus</code></pre>
@@ -991,7 +998,7 @@ State machine 'PricingEngine/scale':
 
 <footer>
 Soma is open source. The specification is the program.<br>
-<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; MIT License &middot; v2.1.0<br>
+<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; <a href="/llms.txt">llms.txt</a> &middot; MIT License &middot; v2.2.0<br>
 <span style="margin-top:.5rem;display:inline-block">Built on: Actors (Hewitt 1973) &middot; Relational Model (Codd 1970) &middot; TLA+ (Lamport) &middot; Unix Pipes (McIlroy 1978) &middot; Smalltalk (Kay)</span>
 </footer>
 
