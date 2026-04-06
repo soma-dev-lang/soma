@@ -900,17 +900,99 @@ impl Interpreter {
             }
 
             Statement::While { condition, body } => {
-                // Fast path: while ident < int_literal — direct comparison, skip eval_expr
+                // Ultra-fast path: while i < N { ... i += K ... }
+                // Detect: condition is i < literal, body is all Assign with += on ints
+                // Run entirely with Rust locals, zero HashMap access per iteration
                 if let Expr::CmpOp { left, op: CmpOp::Lt, right } = &condition.node {
-                    if let (Expr::Ident(ref var_name), Expr::Literal(Literal::Int(limit))) = (&left.node, &right.node) {
+                    if let (Expr::Ident(ref counter_name), Expr::Literal(Literal::Int(limit))) = (&left.node, &right.node) {
                         let limit = *limit;
-                        let vn = var_name.clone();
+                        let cn = counter_name.clone();
+
+                        // Check if body is purely int-assignable (all stmts are x += expr on ints)
+                        // If so, we can run the entire loop with a local variable snapshot
                         let needs_scope = body_has_let(body);
+
+                        // Snapshot approach: pull all referenced int vars into a local vec,
+                        // run the loop, push them back. Eliminates HashMap per-iteration.
+                        // Collect all variable names referenced in the body
+                        let mut var_names: Vec<String> = vec![cn.clone()];
+                        for stmt in body.iter() {
+                            if let Statement::Assign { name, .. } = &stmt.node {
+                                if !var_names.contains(name) {
+                                    var_names.push(name.clone());
+                                }
+                            }
+                        }
+
+                        // Check if ALL referenced vars are ints and body is only int assigns
+                        let all_ints = var_names.iter().all(|n| {
+                            matches!(env.get(n), Some(Value::Int(_)) | None)
+                        });
+
+                        if all_ints && !needs_scope && var_names.len() <= 8 {
+                            // Pull vars into local Rust Vec
+                            let mut locals: Vec<i64> = var_names.iter().map(|n| {
+                                match env.get(n) { Some(Value::Int(v)) => *v, _ => 0 }
+                            }).collect();
+
+                            // Run the loop with direct array access
+                            'fast_while: loop {
+                                if locals[0] >= limit { break; }
+
+                                // Execute each statement with local vars
+                                for stmt in body.iter() {
+                                    if let Statement::Assign { name, value } = &stmt.node {
+                                        if let Expr::BinaryOp { left: lhs, op, right: rhs } = &value.node {
+                                            if let Expr::Ident(ref lhs_name) = lhs.node {
+                                                if lhs_name == name {
+                                                    let lhs_idx = var_names.iter().position(|n| n == name);
+                                                    if let Some(idx) = lhs_idx {
+                                                        let rhs_val = match &rhs.node {
+                                                            Expr::Literal(Literal::Int(n)) => *n,
+                                                            Expr::Ident(ref rn) => {
+                                                                var_names.iter().position(|n| n == rn)
+                                                                    .map(|ri| locals[ri]).unwrap_or(0)
+                                                            }
+                                                            _ => { break 'fast_while; } // can't handle, fall through
+                                                        };
+                                                        locals[idx] = match op {
+                                                            BinOp::Add => locals[idx].wrapping_add(rhs_val),
+                                                            BinOp::Sub => locals[idx].wrapping_sub(rhs_val),
+                                                            BinOp::Mul => locals[idx].wrapping_mul(rhs_val),
+                                                            _ => { break 'fast_while; }
+                                                        };
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Non-optimizable statement — fall back to general path
+                                    // Push locals back to env first
+                                    for (i, n) in var_names.iter().enumerate() {
+                                        env.insert(n.clone(), Value::Int(locals[i]));
+                                    }
+                                    // Run remaining body via general path
+                                    break 'fast_while;
+                                }
+                            }
+
+                            // Push final values back to env
+                            for (i, n) in var_names.iter().enumerate() {
+                                env.insert(n.clone(), Value::Int(locals[i]));
+                            }
+                            // Check if loop completed (counter >= limit)
+                            if locals[0] >= limit {
+                                return Ok(Value::Unit);
+                            }
+                            // If we broke out early (non-optimizable stmt), fall through to general path
+                        }
+
+                        // Standard fast path: direct int comparison, skip eval_expr on condition
                         loop {
-                            if let Some(Value::Int(current)) = env.get(&vn) {
+                            if let Some(Value::Int(current)) = env.get(&cn) {
                                 if *current >= limit { break; }
                             } else { break; }
-                            // Skip scoping overhead when body has no let bindings
                             let result = if needs_scope {
                                 self.exec_body_scoped(body, env, cell_name, signal_name)
                             } else {
