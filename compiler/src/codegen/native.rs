@@ -113,34 +113,62 @@ pub fn generate_native_source_with_config(handlers: &[NativeHandler], parallel: 
         let ret_type = gen.infer_return_type(&handler.body);
 
         if ret_type == NativeType::Int {
-            // Soma has ONE int type. [native] uses BigInt for all integer math.
-            // Computes with BigInt (always correct), returns result via shared buffer.
+            // V8-style speculative optimization:
+            // First try i64 (fast). On overflow, restart with BigInt (correct).
 
-            // Shared buffer for BigInt results that exceed i64
             out.push_str(&format!("static mut _RESULT_{}: Option<String> = None;\n\n", fn_name.to_uppercase()));
 
-            // The function: computes with BigInt, returns i64 if it fits, else writes to buffer
+            // V8-style: fast i64 path with catch_unwind, slow BigInt fallback
+            // Cargo.toml has overflow-checks=true so i64 overflow panics
+
+            // Wrapper function
             out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}({}) -> i64 {{\n", fn_name, param_str));
 
-            // Convert i64 params to BigInt
+            // Try i64 fast path (inline)
+            out.push_str("    // Suppress panic messages for expected overflow\n");
+            out.push_str("    std::panic::set_hook(Box::new(|_| {}));\n");
+            out.push_str("    let _fast = std::panic::catch_unwind(|| -> i64 {\n");
+            for stmt in &handler.body {
+                let code = gen.gen_stmt(&stmt.node, 2);
+                // Rewrite BigInt → i64
+                let code = code.replace(": BigInt", ": i64")
+                    .replace("BigInt::from(", "(")
+                    .replace("(&", "(")
+                    .replace("use num_traits::ToPrimitive;\n", "")
+                    .replace("_ret_val.to_i64()", "Some(_ret_val)");
+                out.push_str(&code);
+            }
+            {
+                let last_is_return = handler.body.last()
+                    .map(|s| matches!(s.node, Statement::Return { .. }))
+                    .unwrap_or(false);
+                if !last_is_return { out.push_str("        0i64\n"); }
+            }
+            out.push_str("    });\n");
+            out.push_str("    let _ = std::panic::take_hook(); // restore default hook\n");
+            out.push_str("    if let Ok(v) = _fast { return v; }\n\n");
+
+            // BigInt slow path
+            out.push_str("    // Overflow — BigInt fallback\n");
             for p in &handler.params {
                 let ty = type_expr_to_native(&p.ty.node);
                 if ty == NativeType::Int {
                     out.push_str(&format!("    let {} = BigInt::from({});\n", p.name, p.name));
                 }
             }
-
+            // Generate BigInt body but with return writing to buffer
             for stmt in &handler.body {
                 out.push_str(&gen.gen_stmt(&stmt.node, 1));
             }
-
-            let last_is_return = handler.body.last()
-                .map(|s| matches!(s.node, Statement::Return { .. }))
-                .unwrap_or(false);
-            if !last_is_return { out.push_str("    0i64\n"); }
+            {
+                let last_is_return = handler.body.last()
+                    .map(|s| matches!(s.node, Statement::Return { .. }))
+                    .unwrap_or(false);
+                if !last_is_return { out.push_str("    0i64\n"); }
+            }
             out.push_str("}\n\n");
 
-            // Export: get BigInt result as string (called by interpreter when result is sentinel)
+            // BigInt result accessors
             out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}_bigint_result() -> *const u8 {{\n", fn_name));
             out.push_str(&format!("    unsafe {{ _RESULT_{}.as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null()) }}\n", fn_name.to_uppercase()));
             out.push_str("}\n\n");
@@ -556,8 +584,8 @@ impl FnGenerator {
                 } else if target_ty == NativeType::Int && var_ty == NativeType::Float {
                     format!("BigInt::from({} as i64)", name)
                 } else if var_ty == NativeType::Int {
-                    // BigInt needs .clone() because it doesn't impl Copy
-                    format!("{}.clone()", name)
+                    // Use reference to avoid cloning BigInt
+                    format!("(&{})", name)
                 } else {
                     name.clone()
                 }

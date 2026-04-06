@@ -7,14 +7,36 @@ static mut _RESULT_HANDLER_FACTORIAL: Option<String> = None;
 
 #[no_mangle]
 pub extern "C" fn handler_factorial(n: i64) -> i64 {
+    // Suppress panic messages for expected overflow
+    std::panic::set_hook(Box::new(|_| {}));
+    let _fast = std::panic::catch_unwind(|| -> i64 {
+        let mut result: i64 = (1i64);
+        let mut i: i64 = (1i64);
+        while ((i) <= (n)) {
+            result = ((result) * (i));
+            i = ((i) + (1i64));
+        }
+        { let _ret_val = (result);
+                match Some(_ret_val) {
+            Some(v) => return v,
+            None => {
+                unsafe { _RESULT_HANDLER_FACTORIAL = Some(_ret_val.to_string()); }
+                return i64::MIN;
+            }
+        }}
+    });
+    let _ = std::panic::take_hook(); // restore default hook
+    if let Ok(v) = _fast { return v; }
+
+    // Overflow — BigInt fallback
     let n = BigInt::from(n);
     let mut result: BigInt = BigInt::from(1i64);
     let mut i: BigInt = BigInt::from(1i64);
-    while (i.clone() <= n.clone()) {
-        result = (result.clone() * i.clone());
-        i = (i.clone() + BigInt::from(1i64));
+    while ((&i) <= (&n)) {
+        result = ((&result) * (&i));
+        i = ((&i) + BigInt::from(1i64));
     }
-    { let _ret_val = result.clone();
+    { let _ret_val = (&result);
     use num_traits::ToPrimitive;
     match _ret_val.to_i64() {
         Some(v) => return v,
