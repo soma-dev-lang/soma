@@ -743,9 +743,18 @@ impl Interpreter {
                                 let rhs_val = self.eval_expr(&right.node, env, cell_name, signal_name)?;
                                 if let Value::Int(rhs_int) = rhs_val {
                                     let result = match op {
-                                        BinOp::Add => current.wrapping_add(rhs_int),
-                                        BinOp::Sub => current.wrapping_sub(rhs_int),
-                                        BinOp::Mul => current.wrapping_mul(rhs_int),
+                                        BinOp::Add => match current.checked_add(rhs_int) {
+                                            Some(v) => v,
+                                            None => { let val = self.eval_expr(&value.node, env, cell_name, signal_name)?; env.insert(name.clone(), val); return Ok(Value::Unit); }
+                                        },
+                                        BinOp::Sub => match current.checked_sub(rhs_int) {
+                                            Some(v) => v,
+                                            None => { let val = self.eval_expr(&value.node, env, cell_name, signal_name)?; env.insert(name.clone(), val); return Ok(Value::Unit); }
+                                        },
+                                        BinOp::Mul => match current.checked_mul(rhs_int) {
+                                            Some(v) => v,
+                                            None => { let val = self.eval_expr(&value.node, env, cell_name, signal_name)?; env.insert(name.clone(), val); return Ok(Value::Unit); }
+                                        },
                                         BinOp::Div if rhs_int != 0 => current / rhs_int,
                                         _ => {
                                             let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
@@ -955,12 +964,22 @@ impl Interpreter {
                                                             }
                                                             _ => { break 'fast_while; } // can't handle, fall through
                                                         };
-                                                        locals[idx] = match op {
-                                                            BinOp::Add => locals[idx].wrapping_add(rhs_val),
-                                                            BinOp::Sub => locals[idx].wrapping_sub(rhs_val),
-                                                            BinOp::Mul => locals[idx].wrapping_mul(rhs_val),
-                                                            _ => { break 'fast_while; }
+                                                        let checked = match op {
+                                                            BinOp::Add => locals[idx].checked_add(rhs_val),
+                                                            BinOp::Sub => locals[idx].checked_sub(rhs_val),
+                                                            BinOp::Mul => locals[idx].checked_mul(rhs_val),
+                                                            _ => None,
                                                         };
+                                                        match checked {
+                                                            Some(v) => locals[idx] = v,
+                                                            None => {
+                                                                // Overflow — push locals back, fall to general path (BigInt)
+                                                                for (ii, n) in var_names.iter().enumerate() {
+                                                                    env.insert(n.clone(), Value::Int(locals[ii]));
+                                                                }
+                                                                break 'fast_while;
+                                                            }
+                                                        }
                                                         continue;
                                                     }
                                                 }
