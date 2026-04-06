@@ -8,6 +8,7 @@ pub mod indicators;
 pub mod io;
 pub mod storage;
 pub mod record;
+pub mod llm;
 
 use super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;
