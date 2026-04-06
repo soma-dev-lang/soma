@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::ast;
 use crate::interpreter;
 use crate::parser;
@@ -14,7 +12,8 @@ pub fn cmd_repl(_registry: &mut Registry) {
         cells: vec![],
     };
     let mut interp = interpreter::Interpreter::new(&empty_program);
-    let mut bindings: HashMap<String, String> = HashMap::new();
+    // Use Vec to preserve insertion order (HashMap doesn't)
+    let mut bindings: Vec<(String, String)> = Vec::new();
 
     let stdin = std::io::stdin();
     let mut line = String::new();
@@ -53,6 +52,22 @@ pub fn cmd_repl(_registry: &mut Registry) {
             continue;
         }
 
+        // Support bare assignment: a = 1000 → let a = 1000
+        let input = if !input.starts_with("let ") && !input.starts_with("cell ")
+            && input.contains('=') && !input.contains("==") && !input.contains("!=")
+            && !input.contains(">=") && !input.contains("<=")
+        {
+            let parts: Vec<&str> = input.splitn(2, '=').collect();
+            if parts.len() == 2 && parts[0].trim().chars().all(|c| c.is_alphanumeric() || c == '_') {
+                format!("let {} = {}", parts[0].trim(), parts[1].trim())
+            } else {
+                input.to_string()
+            }
+        } else {
+            input.to_string()
+        };
+        let input = input.as_str();
+
         // Try parsing as a let statement
         if input.starts_with("let ") {
             // Build let bindings preamble + this new let + return the bound value
@@ -63,12 +78,16 @@ pub fn cmd_repl(_registry: &mut Registry) {
                 .trim()
                 .to_string();
 
-            // Store the raw let statement
-            bindings.insert(var_name.clone(), input.to_string());
+            // Store the raw let statement (replace if exists, else append)
+            if let Some(pos) = bindings.iter().position(|(n, _)| n == &var_name) {
+                bindings[pos].1 = input.to_string();
+            } else {
+                bindings.push((var_name.clone(), input.to_string()));
+            }
 
-            // Build a cell with all bindings so far
+            // Build a cell with all bindings in order
             let mut body = String::new();
-            for binding in bindings.values() {
+            for (_, binding) in &bindings {
                 body.push_str(binding);
                 body.push('\n');
             }
@@ -93,7 +112,7 @@ pub fn cmd_repl(_registry: &mut Registry) {
 
         // Build expression with all existing let bindings as preamble
         let mut body = String::new();
-        for binding in bindings.values() {
+        for (_, binding) in &bindings {
             body.push_str(binding);
             body.push('\n');
         }
