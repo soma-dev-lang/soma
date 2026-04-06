@@ -2667,6 +2667,21 @@ mod tests {
                 let mut parser = Parser::new(tokens);
                 let program = parser.parse_program().unwrap();
                 let mut interp = Interpreter::new(&program);
+                // Set up storage for memory sections
+                for prog_cell in &program.cells {
+                    for section in &prog_cell.node.sections {
+                        if let crate::ast::Section::Memory(ref mem) = section.node {
+                            let mut slots = std::collections::HashMap::new();
+                            for slot in &mem.slots {
+                                let backend: std::sync::Arc<dyn crate::runtime::storage::StorageBackend> =
+                                    std::sync::Arc::new(crate::runtime::storage::MemoryBackend::new());
+                                slots.insert(slot.node.name.clone(), backend);
+                            }
+                            interp.set_storage(&prog_cell.node.name, &slots);
+                        }
+                    }
+                }
+                interp.ensure_state_machine_storage();
                 interp.call_signal(&cell, &signal, args)
             })
             .expect("failed to spawn test thread")
@@ -3098,7 +3113,6 @@ mod tests {
 
     #[test]
     fn test_auto_deserialize_json_string() {
-        // auto_deserialize should parse a JSON string back into a Map
         let json_str = r#"{"name": "alice", "age": 30}"#;
         let val = Value::String(json_str.to_string());
         let result = auto_deserialize(val);
@@ -3107,5 +3121,229 @@ mod tests {
             assert_eq!(entries.get("name").unwrap().to_string(), "alice");
             assert_eq!(entries.get("age").unwrap().as_int().unwrap(), 30);
         }
+    }
+
+    // ── Inter-agent communication ──────────────────────────────────
+
+    #[test]
+    fn test_emit_dispatches_to_sibling_cell() {
+        let source = r#"
+            cell A {
+                on run() {
+                    emit ping(map("from", "A"))
+                    return "emitted"
+                }
+            }
+            cell B {
+                memory { log: Map<String, String> [ephemeral] }
+                on ping(data: Map) {
+                    log.set("got", data.from)
+                }
+            }
+        "#;
+        let result = run(source, "A", "run", vec![]).unwrap();
+        assert_eq!(result.to_string(), "emitted");
+    }
+
+    #[test]
+    fn test_gather_fan_out() {
+        let source = r#"
+            cell Worker {
+                on process(item: String) {
+                    return "done:" + item
+                }
+            }
+            cell Main {
+                on run() {
+                    return gather(list("x", "y", "z"), "Worker", "process")
+                }
+            }
+        "#;
+        let result = run(source, "Main", "run", vec![]).unwrap();
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].to_string(), "done:x");
+            assert_eq!(items[2].to_string(), "done:z");
+        } else {
+            panic!("expected list");
+        }
+    }
+
+    #[test]
+    fn test_broadcast_to_multiple_cells() {
+        let source = r#"
+            cell A {
+                on alert(msg: String) { return "A:" + msg }
+            }
+            cell B {
+                on alert(msg: String) { return "B:" + msg }
+            }
+            cell Main {
+                on run() {
+                    return broadcast("alert", "fire")
+                }
+            }
+        "#;
+        let result = run(source, "Main", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_delegate_cross_cell() {
+        let source = r#"
+            cell Helper {
+                on double(n: Int) { return n * 2 }
+            }
+            cell Main {
+                on run() {
+                    return delegate("Helper", "double", 21)
+                }
+            }
+        "#;
+        let result = run(source, "Main", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 42);
+    }
+
+    // ── Agent cell features ────────────────────────────────────────
+
+    #[test]
+    fn test_cell_agent_with_state_machine() {
+        let source = r#"
+            cell agent Bot {
+                state w { initial: idle  idle -> done  * -> failed }
+                on run() {
+                    transition("t", "done")
+                    return get_status("t")
+                }
+            }
+        "#;
+        let result = run(source, "Bot", "run", vec![]).unwrap();
+        assert_eq!(result.to_string(), "done");
+    }
+
+    #[test]
+    fn test_cell_agent_emit_and_delegate() {
+        // Agent A delegates to agent B, B transitions and returns
+        let source = r#"
+            cell agent Worker {
+                state w { initial: idle  idle -> done  * -> failed }
+                on process(x: Int) {
+                    transition("t", "done")
+                    return x * 10
+                }
+            }
+            cell Main {
+                on run() {
+                    return delegate("Worker", "process", 5)
+                }
+            }
+        "#;
+        let result = run(source, "Main", "run", vec![]).unwrap();
+        assert_eq!(result.as_int().unwrap(), 50);
+    }
+
+    // ── Mock mode ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_think_mock_and_budget_and_trace() {
+        // Combined test to avoid env var races in parallel test execution
+        std::env::set_var("SOMA_LLM_MOCK", "echo");
+
+        // Echo mode
+        let source = r#"
+            cell agent Bot {
+                state w { initial: idle  idle -> done  * -> failed }
+                on run() {
+                    transition("t", "done")
+                    return think("hello world")
+                }
+            }
+        "#;
+        let result = run(source, "Bot", "run", vec![]).unwrap();
+        assert_eq!(result.to_string(), "hello world");
+
+        // Fixed mode
+        std::env::set_var("SOMA_LLM_MOCK", "fixed:42");
+        let source2 = r#"
+            cell agent Bot2 {
+                state w { initial: idle  idle -> done  * -> failed }
+                on run() {
+                    transition("t", "done")
+                    return think("anything")
+                }
+            }
+        "#;
+        let result2 = run(source2, "Bot2", "run", vec![]).unwrap();
+        assert_eq!(result2.to_string(), "42");
+
+        // Token tracking in mock mode
+        std::env::set_var("SOMA_LLM_MOCK", "echo");
+        let source3 = r#"
+            cell agent Bot3 {
+                state w { initial: idle  idle -> done  * -> failed }
+                on run() {
+                    set_budget(1000)
+                    transition("t", "done")
+                    think("test")
+                    return tokens_used()
+                }
+            }
+        "#;
+        let result3 = run(source3, "Bot3", "run", vec![]).unwrap();
+        assert_eq!(result3.as_int().unwrap(), 0);
+
+        // Trace records think calls
+        let source4 = r#"
+            cell agent Bot4 {
+                state w { initial: idle  idle -> done  * -> failed }
+                on run() {
+                    transition("t", "done")
+                    think("test prompt")
+                    return trace()
+                }
+            }
+        "#;
+        let result4 = run(source4, "Bot4", "run", vec![]).unwrap();
+        if let Value::List(entries) = result4 {
+            assert!(!entries.is_empty(), "trace should have entries");
+        } else {
+            panic!("expected list from trace()");
+        }
+
+        std::env::remove_var("SOMA_LLM_MOCK");
+    }
+
+    // ── Transition error messages ──────────────────────────────────
+
+    #[test]
+    fn test_transition_typo_shows_valid_states() {
+        let source = r#"
+            cell T {
+                state w { initial: idle  idle -> done }
+                memory { x: Map<String, String> [ephemeral] }
+                on run() {
+                    return transition("t", "doen")
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]);
+        assert!(result.is_err());
+        let err = format!("{}", result.unwrap_err());
+        assert!(err.contains("done"), "error should show valid state 'done': {}", err);
+    }
+
+    #[test]
+    fn test_transition_without_memory_section() {
+        let source = r#"
+            cell T {
+                state w { initial: idle  idle -> done }
+                on run() {
+                    transition("t", "done")
+                    return get_status("t")
+                }
+            }
+        "#;
+        let result = run(source, "T", "run", vec![]).unwrap();
+        assert_eq!(result.to_string(), "done");
     }
 }
