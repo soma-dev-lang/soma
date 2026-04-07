@@ -390,57 +390,47 @@ unsafe fn read_shared_result(lib: &std::sync::Arc<libloading::Library>) -> Resul
         .map_err(|_| "[native] invalid UTF-8 in result".to_string())
 }
 
-/// Low-level function call dispatcher. Transmutes the function pointer based on
-/// the exact signature and calls it.
+/// Low-level function call dispatcher. Transmutes the function pointer based
+/// on the exact signature and calls it.
+///
+/// Uses a System V / AArch64 fact: integer/pointer types and bool/i32/u32/i64
+/// are all passed in integer registers and read with the same calling
+/// convention. Floats go in separate FP registers. So for dispatch purposes
+/// we only need to distinguish "int-like" (Int / Bool) from "float-like" (Float).
+///
+/// String params/returns never reach this path — they go through the shared
+/// buffer FFI.
 unsafe fn call_raw(
     fn_ptr: *const (),
     args: &[u64],
     param_types: &[NativeType],
     ret_type: NativeType,
 ) -> Result<u64, String> {
-    // We handle common signatures explicitly for safety and correctness.
-    // All params are either i64 or f64 (both 8 bytes in C ABI on 64-bit).
-
-    // Generate dispatch for 0..8 params.
-    // Since all params are i64/f64 which have the same ABI size, we can use
-    // a unified i64-based calling convention on most platforms, BUT f64 goes
-    // in float registers on System V AMD64 and ARM64. So we need type-aware dispatch.
+    // Normalize Bool to Int for dispatch — they share the same C ABI register class.
+    let normalized: Vec<NativeType> = param_types.iter()
+        .map(|t| if *t == NativeType::Bool { NativeType::Int } else { *t })
+        .collect();
+    let ret_norm = if ret_type == NativeType::Bool { NativeType::Int } else { ret_type };
 
     match args.len() {
-        0 => {
-            match ret_type {
-                NativeType::Float => {
-                    let f: extern "C" fn() -> f64 = std::mem::transmute(fn_ptr);
-                    Ok(f().to_bits())
-                }
-                NativeType::Int => {
-                    let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
-                    Ok(f() as u64)
-                }
-                NativeType::Bool => {
-                    let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
-                    Ok(f() as u64)
-                }
-                NativeType::String => {
-                    // String return goes through shared buffer; shouldn't reach here
-                    let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
-                    Ok(f() as u64)
-                }
+        0 => match ret_norm {
+            NativeType::Float => {
+                let f: extern "C" fn() -> f64 = std::mem::transmute(fn_ptr);
+                Ok(f().to_bits())
+            }
+            _ => {
+                let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
+                Ok(f() as u64)
             }
         }
-        1 => call_1(fn_ptr, args, param_types, ret_type),
-        2 => call_2(fn_ptr, args, param_types, ret_type),
-        3 => call_3(fn_ptr, args, param_types, ret_type),
-        _ => {
-            // Generic fallback: pack all args as f64 into an array, call via (ptr, count) -> f64
-            // This works because our codegen generates a wrapper that unpacks
-            // Actually, use direct transmute with known sizes up to 12 params
-            call_generic(fn_ptr, args, param_types, ret_type)
-        }
+        1 => call_1(fn_ptr, args, &normalized, ret_norm),
+        2 => call_2(fn_ptr, args, &normalized, ret_norm),
+        3 => call_3(fn_ptr, args, &normalized, ret_norm),
+        _ => call_generic(fn_ptr, args, &normalized, ret_type),
     }
 }
 
-/// 1-param dispatch
+/// 1-param dispatch. Bool is normalized to Int by the caller.
 unsafe fn call_1(fn_ptr: *const (), args: &[u64], ptypes: &[NativeType], ret: NativeType) -> Result<u64, String> {
     match (ptypes[0], ret) {
         (NativeType::Int, NativeType::Int) => {
@@ -451,10 +441,6 @@ unsafe fn call_1(fn_ptr: *const (), args: &[u64], ptypes: &[NativeType], ret: Na
             let f: extern "C" fn(i64) -> f64 = std::mem::transmute(fn_ptr);
             Ok(f(args[0] as i64).to_bits())
         }
-        (NativeType::Int, NativeType::Bool) => {
-            let f: extern "C" fn(i64) -> i64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64) as u64)
-        }
         (NativeType::Float, NativeType::Float) => {
             let f: extern "C" fn(f64) -> f64 = std::mem::transmute(fn_ptr);
             Ok(f(f64::from_bits(args[0])).to_bits())
@@ -463,71 +449,74 @@ unsafe fn call_1(fn_ptr: *const (), args: &[u64], ptypes: &[NativeType], ret: Na
             let f: extern "C" fn(f64) -> i64 = std::mem::transmute(fn_ptr);
             Ok(f(f64::from_bits(args[0])) as u64)
         }
-        (NativeType::Bool, NativeType::Bool) => {
-            let f: extern "C" fn(i64) -> i64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64) as u64)
-        }
-        _ => {
-            // Generic fallback for remaining combos
-            let f: extern "C" fn(i64) -> i64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64) as u64)
-        }
+        _ => Err(format!("[native] unsupported 1-arg signature: ({:?}) -> {:?}", ptypes[0], ret)),
     }
 }
 
-/// 2-param dispatch
+/// 2-param dispatch — full {Int, Float}² × {Int, Float} table.
 unsafe fn call_2(fn_ptr: *const (), args: &[u64], ptypes: &[NativeType], ret: NativeType) -> Result<u64, String> {
-    match (ptypes[0], ptypes[1], ret) {
-        (NativeType::Int, NativeType::Int, NativeType::Int) => {
-            let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64, args[1] as i64) as u64)
-        }
-        (NativeType::Int, NativeType::Int, NativeType::Float) => {
-            let f: extern "C" fn(i64, i64) -> f64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64, args[1] as i64).to_bits())
-        }
-        (NativeType::Float, NativeType::Float, NativeType::Float) => {
-            let f: extern "C" fn(f64, f64) -> f64 = std::mem::transmute(fn_ptr);
-            Ok(f(f64::from_bits(args[0]), f64::from_bits(args[1])).to_bits())
-        }
-        (NativeType::Int, NativeType::Float, NativeType::Float) => {
-            let f: extern "C" fn(i64, f64) -> f64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64, f64::from_bits(args[1])).to_bits())
-        }
-        (NativeType::Float, NativeType::Int, NativeType::Float) => {
-            let f: extern "C" fn(f64, i64) -> f64 = std::mem::transmute(fn_ptr);
-            Ok(f(f64::from_bits(args[0]), args[1] as i64).to_bits())
-        }
-        _ => {
-            // Fallback: treat everything as i64
-            let f: extern "C" fn(i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64, args[1] as i64) as u64)
-        }
+    macro_rules! call {
+        ($($t:ty),+; $r:ty; $($a:expr),+) => {{
+            let f: extern "C" fn($($t),+) -> $r = std::mem::transmute(fn_ptr);
+            f($($a),+)
+        }}
     }
+    let a0 = args[0];
+    let a1 = args[1];
+    let i0 = a0 as i64;
+    let i1 = a1 as i64;
+    let f0 = f64::from_bits(a0);
+    let f1 = f64::from_bits(a1);
+    use NativeType::{Int as I, Float as F};
+    Ok(match (ptypes[0], ptypes[1], ret) {
+        (I, I, I) => call!(i64, i64; i64; i0, i1) as u64,
+        (I, I, F) => call!(i64, i64; f64; i0, i1).to_bits(),
+        (I, F, I) => call!(i64, f64; i64; i0, f1) as u64,
+        (I, F, F) => call!(i64, f64; f64; i0, f1).to_bits(),
+        (F, I, I) => call!(f64, i64; i64; f0, i1) as u64,
+        (F, I, F) => call!(f64, i64; f64; f0, i1).to_bits(),
+        (F, F, I) => call!(f64, f64; i64; f0, f1) as u64,
+        (F, F, F) => call!(f64, f64; f64; f0, f1).to_bits(),
+        _ => return Err(format!("[native] unsupported 2-arg signature: ({:?}, {:?}) -> {:?}",
+                                ptypes[0], ptypes[1], ret)),
+    })
 }
 
-/// 3-param dispatch
+/// 3-param dispatch — full {Int, Float}³ × {Int, Float} table.
 unsafe fn call_3(fn_ptr: *const (), args: &[u64], ptypes: &[NativeType], ret: NativeType) -> Result<u64, String> {
-    // Common cases
-    match (ptypes[0], ptypes[1], ptypes[2], ret) {
-        (NativeType::Int, NativeType::Int, NativeType::Int, NativeType::Int) => {
-            let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64, args[1] as i64, args[2] as i64) as u64)
-        }
-        (NativeType::Int, NativeType::Int, NativeType::Int, NativeType::Float) => {
-            let f: extern "C" fn(i64, i64, i64) -> f64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64, args[1] as i64, args[2] as i64).to_bits())
-        }
-        (NativeType::Float, NativeType::Float, NativeType::Float, NativeType::Float) => {
-            let f: extern "C" fn(f64, f64, f64) -> f64 = std::mem::transmute(fn_ptr);
-            Ok(f(f64::from_bits(args[0]), f64::from_bits(args[1]), f64::from_bits(args[2])).to_bits())
-        }
-        _ => {
-            // Fallback: all i64
-            let f: extern "C" fn(i64, i64, i64) -> i64 = std::mem::transmute(fn_ptr);
-            Ok(f(args[0] as i64, args[1] as i64, args[2] as i64) as u64)
-        }
+    macro_rules! call {
+        ($($t:ty),+; $r:ty; $($a:expr),+) => {{
+            let f: extern "C" fn($($t),+) -> $r = std::mem::transmute(fn_ptr);
+            f($($a),+)
+        }}
     }
+    let i0 = args[0] as i64;
+    let i1 = args[1] as i64;
+    let i2 = args[2] as i64;
+    let f0 = f64::from_bits(args[0]);
+    let f1 = f64::from_bits(args[1]);
+    let f2 = f64::from_bits(args[2]);
+    use NativeType::{Int as I, Float as F};
+    Ok(match (ptypes[0], ptypes[1], ptypes[2], ret) {
+        (I, I, I, I) => call!(i64, i64, i64; i64; i0, i1, i2) as u64,
+        (I, I, I, F) => call!(i64, i64, i64; f64; i0, i1, i2).to_bits(),
+        (I, I, F, I) => call!(i64, i64, f64; i64; i0, i1, f2) as u64,
+        (I, I, F, F) => call!(i64, i64, f64; f64; i0, i1, f2).to_bits(),
+        (I, F, I, I) => call!(i64, f64, i64; i64; i0, f1, i2) as u64,
+        (I, F, I, F) => call!(i64, f64, i64; f64; i0, f1, i2).to_bits(),
+        (I, F, F, I) => call!(i64, f64, f64; i64; i0, f1, f2) as u64,
+        (I, F, F, F) => call!(i64, f64, f64; f64; i0, f1, f2).to_bits(),
+        (F, I, I, I) => call!(f64, i64, i64; i64; f0, i1, i2) as u64,
+        (F, I, I, F) => call!(f64, i64, i64; f64; f0, i1, i2).to_bits(),
+        (F, I, F, I) => call!(f64, i64, f64; i64; f0, i1, f2) as u64,
+        (F, I, F, F) => call!(f64, i64, f64; f64; f0, i1, f2).to_bits(),
+        (F, F, I, I) => call!(f64, f64, i64; i64; f0, f1, i2) as u64,
+        (F, F, I, F) => call!(f64, f64, i64; f64; f0, f1, i2).to_bits(),
+        (F, F, F, I) => call!(f64, f64, f64; i64; f0, f1, f2) as u64,
+        (F, F, F, F) => call!(f64, f64, f64; f64; f0, f1, f2).to_bits(),
+        _ => return Err(format!("[native] unsupported 3-arg signature: ({:?}, {:?}, {:?}) -> {:?}",
+                                ptypes[0], ptypes[1], ptypes[2], ret)),
+    })
 }
 
 /// Generic multi-param dispatch: converts all args to f64, passes as array pointer.
