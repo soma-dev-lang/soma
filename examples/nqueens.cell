@@ -1,0 +1,87 @@
+// ============================================================================
+// N-Queens count via bitmask backtracking
+// ============================================================================
+//
+// Counts the number of ways to place N non-attacking queens on an N×N board.
+// Uses the classic bitmask trick: three masks track which columns and which
+// diagonals are blocked. A queen at column c contributes (1 << c) to all
+// three masks; the diagonal masks shift left/right by one between rows.
+//
+// Tests recursive [native] handlers in Direct mode — neither sibling calls
+// nor recursion are exercised by PI / Mersenne / Mandelbrot / Pollard.
+//
+// Run: soma run nqueens.cell
+
+cell NQueens {
+
+    // Recursive helper: count placements for the remaining rows.
+    // n          — board size
+    // free       — columns × diagonals available (free & blocking_mask)
+    // col_mask   — columns occupied so far
+    // diag1_mask — \-diagonals occupied (shifted left between rows)
+    // diag2_mask — /-diagonals occupied (shifted right between rows)
+    on solve(n: Int, row: Int, col_mask: Int, diag1_mask: Int, diag2_mask: Int) [native] {
+        if row == n { return 1 }
+
+        let count = 0
+        // free positions in this row: bits where none of the three masks are set
+        let blocked = bor(col_mask, bor(diag1_mask, diag2_mask))
+        let full = shl(1, n) - 1
+        let free = band(full, bnot(blocked))
+
+        // Iterate set bits of `free` via Brian Kernighan's trick
+        while free != 0 {
+            let bit = band(free, 0 - free)   // lowest set bit
+            free = free - bit                 // clear that bit
+            count = count + solve(
+                n,
+                row + 1,
+                bor(col_mask, bit),
+                shl(bor(diag1_mask, bit), 1),
+                shr(bor(diag2_mask, bit), 1),
+            )
+        }
+        return count
+    }
+
+    // Public entry point: count solutions for an N×N board.
+    on count_queens(n: Int) [native] {
+        return solve(n, 0, 0, 0, 0)
+    }
+
+    on check(n: Int, expected: Int) {
+        let start = now_ms()
+        let r = count_queens(n)
+        let elapsed = now_ms() - start
+        if r == expected {
+            print("  N={n}: {r} solutions  ({elapsed}ms) ✓")
+        } else {
+            print("  N={n}: got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("N-Queens count")
+        print("==============")
+        print("")
+
+        // Sequence A000170 (OEIS): number of solutions for the N queens problem
+        check(1,  1)
+        check(4,  2)
+        check(5,  10)
+        check(6,  4)
+        check(7,  40)
+        check(8,  92)
+        check(9,  352)
+        check(10, 724)
+        check(11, 2680)
+        check(12, 14200)
+        check(13, 73712)
+        check(14, 365596)
+
+        print("")
+        print("Headline:")
+        check(15, 2279184)
+        check(16, 14772512)
+    }
+}

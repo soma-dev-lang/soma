@@ -91,24 +91,35 @@ pub fn generate_native_source_with_config(
     let any_rug = modes.iter().any(|m| *m == Mode::Rug);
     let uses_random = handlers.iter().any(|h| body_uses_random(&h.body));
 
-    // Pre-compute sibling info: param types, return type, mode
+    // Pre-compute sibling info: param types, return type, mode.
+    // Iterate to fixpoint so handlers that call siblings get correct return types.
     let mut sibling_info: HashMap<String, SiblingInfo> = HashMap::new();
     for (handler, mode) in handlers.iter().zip(modes.iter()) {
         let param_types: Vec<NativeType> = handler.params.iter()
             .map(|p| type_expr_to_native(&p.ty.node))
             .collect();
-        // Compute return type using a temporary FnGenerator
-        let mut tmp = FnGenerator::new(&handler.params, &siblings, *mode);
-        for p in &handler.params {
-            tmp.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
-        }
-        tmp.infer_body_types(&handler.body);
-        let return_type = tmp.infer_return_type(&handler.body);
         sibling_info.insert(handler.signal_name.clone(), SiblingInfo {
             param_types,
-            return_type,
+            return_type: NativeType::Float,  // placeholder, refined below
             mode: *mode,
         });
+    }
+    // Fixpoint pass to refine return types — handles mutual recursion / sibling chains
+    loop {
+        let prev = sibling_info.clone();
+        for (handler, mode) in handlers.iter().zip(modes.iter()) {
+            let mut tmp = FnGenerator::new(&handler.params, &siblings, *mode)
+                .with_sibling_info(sibling_info.clone());
+            for p in &handler.params {
+                tmp.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
+            }
+            tmp.infer_body_types(&handler.body);
+            let return_type = tmp.infer_return_type(&handler.body);
+            if let Some(info) = sibling_info.get_mut(&handler.signal_name) {
+                info.return_type = return_type;
+            }
+        }
+        if prev == sibling_info { break; }
     }
 
     // ── Preamble ──
@@ -139,14 +150,9 @@ pub fn generate_native_source_with_config(
     // ── Per-handler codegen ──
     let mut all_errors: Vec<String> = Vec::new();
     for (handler, mode) in handlers.iter().zip(modes.iter()) {
-        // Pre-compute return type for the handler
-        let handler_ret = sibling_info.get(&handler.signal_name)
-            .map(|i| i.return_type)
-            .unwrap_or(NativeType::Float);
         let mut gen = FnGenerator::new(&handler.params, &siblings, *mode)
             .with_sibling_info(sibling_info.clone())
-            .with_handler_name(handler.signal_name.clone())
-            .with_return_type(handler_ret);
+            .with_handler_name(handler.signal_name.clone());
         for p in &handler.params {
             gen.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
         }
@@ -158,7 +164,10 @@ pub fn generate_native_source_with_config(
         gen.classify_int_vars(&handler.body, &int_params);
 
         let fn_name = format!("handler_{}", handler.signal_name);
+        // Compute the return type using the FULLY populated FnGenerator
+        // (with sibling_info) so Return statements get the right coercion target.
         let ret_type = gen.infer_return_type(&handler.body);
+        gen.fn_return_type = ret_type;
 
         match mode {
             Mode::Direct => {
@@ -272,7 +281,8 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
     }
 
     // Check if all Int locals (and params) can fit in i64.
-    // The mode-select classifier puts params in the optimistic set.
+    // The mode-select classifier puts params in the optimistic set and
+    // assumes sibling calls return bounded values (Direct-mode-compatible).
     let int_vars: HashSet<String> = gen.var_types.iter()
         .filter(|(_, t)| **t == NativeType::Int)
         .map(|(n, _)| n.clone())
@@ -280,7 +290,7 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
     let mut small = int_vars.clone();
     loop {
         let prev = small.clone();
-        FnGenerator::exclude_non_small(&handler.body, &mut small);
+        FnGenerator::exclude_non_small_with_siblings(&handler.body, &mut small, siblings);
         if small == prev { break; }
     }
 
@@ -290,10 +300,7 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
 
     // Also check Return statements: a return value that's a var*var
     // product (or otherwise not-bounded) means the result could overflow i64.
-    // Example: `on multiply(a: Int, b: Int) [native] { return a * b }` —
-    // no Let statements, so the regular classifier sees no exclusions, but
-    // the return expression itself can produce a BigInt.
-    if return_expr_needs_bigint(&handler.body, &small, &gen) {
+    if return_expr_needs_bigint(&handler.body, &small, &gen, siblings) {
         return Mode::Rug;
     }
 
@@ -305,22 +312,22 @@ fn return_expr_needs_bigint(
     body: &[Spanned<Statement>],
     small: &HashSet<String>,
     gen: &FnGenerator,
+    siblings: &HashSet<String>,
 ) -> bool {
     for stmt in body {
         match &stmt.node {
             Statement::Return { value } => {
-                // Only check Int-typed returns
                 let ty = gen.infer_expr_type(&value.node);
-                if ty == NativeType::Int && !FnGenerator::is_bounded_expr(&value.node, small) {
+                if ty == NativeType::Int && !FnGenerator::is_bounded_expr(&value.node, small, siblings) {
                     return true;
                 }
             }
             Statement::If { then_body, else_body, .. } => {
-                if return_expr_needs_bigint(then_body, small, gen) { return true; }
-                if return_expr_needs_bigint(else_body, small, gen) { return true; }
+                if return_expr_needs_bigint(then_body, small, gen, siblings) { return true; }
+                if return_expr_needs_bigint(else_body, small, gen, siblings) { return true; }
             }
             Statement::While { body, .. } | Statement::For { body, .. } => {
-                if return_expr_needs_bigint(body, small, gen) { return true; }
+                if return_expr_needs_bigint(body, small, gen, siblings) { return true; }
             }
             _ => {}
         }
@@ -583,7 +590,7 @@ fn type_expr_to_native(ty: &TypeExpr) -> NativeType {
 // ── FnGenerator ─────────────────────────────────────────────────────
 
 /// Information about a sibling handler — needed for cross-handler calls.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct SiblingInfo {
     param_types: Vec<NativeType>,
     return_type: NativeType,
@@ -670,7 +677,7 @@ impl FnGenerator {
         // Iterate to fixpoint
         loop {
             let prev = small.clone();
-            Self::exclude_non_small(body, &mut small);
+            Self::exclude_non_small_with_siblings(body, &mut small, &self.siblings);
             if small == prev { break; }
         }
 
@@ -678,8 +685,19 @@ impl FnGenerator {
     }
 
     fn exclude_non_small(body: &[Spanned<Statement>], small: &mut HashSet<String>) {
+        // Used by mode-select where siblings aren't available — assume no
+        // sibling functions are bounded (conservative for those branches).
+        let empty = HashSet::new();
+        Self::exclude_non_small_with_siblings(body, small, &empty);
+    }
+
+    fn exclude_non_small_with_siblings(
+        body: &[Spanned<Statement>],
+        small: &mut HashSet<String>,
+        siblings: &HashSet<String>,
+    ) {
         let mut to_remove: Vec<String> = Vec::new();
-        Self::collect_non_small(body, small, &mut to_remove);
+        Self::collect_non_small(body, small, &mut to_remove, siblings);
         for name in to_remove {
             small.remove(&name);
         }
@@ -689,38 +707,39 @@ impl FnGenerator {
         body: &[Spanned<Statement>],
         small: &HashSet<String>,
         to_remove: &mut Vec<String>,
+        siblings: &HashSet<String>,
     ) {
         for stmt in body {
             match &stmt.node {
                 Statement::Let { name, value } | Statement::Assign { name, value } => {
                     if !small.contains(name) { continue; }
-                    if !Self::is_small_expr(name, &value.node, small) {
+                    if !Self::is_small_expr(name, &value.node, small, siblings) {
                         to_remove.push(name.clone());
                     }
                 }
                 Statement::If { then_body, else_body, .. } => {
-                    Self::collect_non_small(then_body, small, to_remove);
-                    Self::collect_non_small(else_body, small, to_remove);
+                    Self::collect_non_small(then_body, small, to_remove, siblings);
+                    Self::collect_non_small(else_body, small, to_remove, siblings);
                 }
                 Statement::While { body, .. } => {
-                    Self::collect_non_small(body, small, to_remove);
+                    Self::collect_non_small(body, small, to_remove, siblings);
                 }
                 Statement::For { body, .. } => {
-                    Self::collect_non_small(body, small, to_remove);
+                    Self::collect_non_small(body, small, to_remove, siblings);
                 }
                 _ => {}
             }
         }
     }
 
-    fn is_small_expr(target: &str, expr: &Expr, small: &HashSet<String>) -> bool {
+    fn is_small_expr(target: &str, expr: &Expr, small: &HashSet<String>, siblings: &HashSet<String>) -> bool {
         // If the expression references `target` (self-assignment), only
         // additive ops are bounded — `m = m * 2` is exponential growth.
         if Self::expr_references(expr, target) {
-            return Self::is_additive_expr(target, expr, small);
+            return Self::is_additive_expr(target, expr, small, siblings);
         }
         // Non-self assignments: any op, no var*var.
-        Self::is_bounded_expr(expr, small)
+        Self::is_bounded_expr(expr, small, siblings)
     }
 
     /// Self-referential expression: bounded growth patterns.
@@ -729,14 +748,18 @@ impl FnGenerator {
     ///   - target ± bounded  (linear growth)
     ///   - target / bounded  (shrinks toward zero)
     ///   - target % bounded  (bounded by modulus)
+    ///   - bounded sub-expressions (e.g. sibling/builtin calls)
     /// Disallowed:
     ///   - target * anything (exponential or unbounded)
     ///   - target + target   (doubles → exponential)
-    ///   - bounded / target  (target in denominator — could be unbounded if target → 0)
-    fn is_additive_expr(target: &str, expr: &Expr, small: &HashSet<String>) -> bool {
+    ///   - bounded / target  (target in denominator)
+    fn is_additive_expr(target: &str, expr: &Expr, small: &HashSet<String>, siblings: &HashSet<String>) -> bool {
+        // If the expression doesn't reference target, the bounded check is enough.
+        if !Self::expr_references(expr, target) {
+            return Self::is_bounded_expr(expr, small, siblings);
+        }
         match expr {
-            Expr::Literal(Literal::Int(_)) => true,
-            Expr::Ident(n) => n == target || small.contains(n),
+            Expr::Ident(n) if n == target => true,
             Expr::BinaryOp { left, op, right } => {
                 let l_has = Self::expr_references(&left.node, target);
                 let r_has = Self::expr_references(&right.node, target);
@@ -744,21 +767,19 @@ impl FnGenerator {
                     BinOp::Add => {
                         // target + target → exponential, reject
                         if l_has && r_has { return false; }
-                        Self::is_additive_expr(target, &left.node, small)
-                            && Self::is_additive_expr(target, &right.node, small)
+                        Self::is_additive_expr(target, &left.node, small, siblings)
+                            && Self::is_additive_expr(target, &right.node, small, siblings)
                     }
                     BinOp::Sub => {
-                        // target - target → 0 (safe but pointless), allow
-                        Self::is_additive_expr(target, &left.node, small)
-                            && Self::is_additive_expr(target, &right.node, small)
+                        Self::is_additive_expr(target, &left.node, small, siblings)
+                            && Self::is_additive_expr(target, &right.node, small, siblings)
                     }
                     BinOp::Div | BinOp::Mod => {
                         // target / bounded → shrink. Right must not contain target.
                         if r_has { return false; }
-                        Self::is_additive_expr(target, &left.node, small)
-                            && Self::is_bounded_expr(&right.node, small)
+                        Self::is_additive_expr(target, &left.node, small, siblings)
+                            && Self::is_bounded_expr(&right.node, small, siblings)
                     }
-                    // Multiplication of self by anything → exponential or unbounded
                     _ => false,
                 }
             }
@@ -767,14 +788,14 @@ impl FnGenerator {
     }
 
     /// Non-self bounded expression: any op on (small_vars, literals), no var*var.
-    /// Also allows FnCall to known-bounded builtins whose Int return is i64-safe.
-    fn is_bounded_expr(expr: &Expr, small: &HashSet<String>) -> bool {
+    /// Allows FnCall to known-bounded builtins or sibling handlers.
+    fn is_bounded_expr(expr: &Expr, small: &HashSet<String>, siblings: &HashSet<String>) -> bool {
         match expr {
             Expr::Literal(Literal::Int(_)) => true,
             Expr::Ident(n) => small.contains(n),
             Expr::BinaryOp { left, op, right } => {
-                let l_ok = Self::is_bounded_expr(&left.node, small);
-                let r_ok = Self::is_bounded_expr(&right.node, small);
+                let l_ok = Self::is_bounded_expr(&left.node, small, siblings);
+                let r_ok = Self::is_bounded_expr(&right.node, small, siblings);
                 if !l_ok || !r_ok { return false; }
                 if matches!(op, BinOp::Mul) {
                     let l_lit = matches!(&left.node, Expr::Literal(Literal::Int(_)));
@@ -784,9 +805,11 @@ impl FnGenerator {
                 matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)
             }
             Expr::FnCall { name, args } => {
-                // Allow known builtins whose result fits i64 (they're safe in Direct mode).
-                if !is_bounded_builtin(name) { return false; }
-                args.iter().all(|a| Self::is_bounded_expr(&a.node, small))
+                // Bounded builtins, or sibling calls (assume sibling returns i64-safe).
+                // If the assumption is wrong (sibling returns BigInt), the codegen
+                // will marshal via .to_i64().expect() which panics with a clear error.
+                if !is_bounded_builtin(name) && !siblings.contains(name) { return false; }
+                args.iter().all(|a| Self::is_bounded_expr(&a.node, small, siblings))
             }
             _ => false,
         }
