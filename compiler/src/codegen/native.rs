@@ -299,7 +299,7 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
     let mut small = int_vars.clone();
     loop {
         let prev = small.clone();
-        FnGenerator::exclude_non_small_with_siblings(&handler.body, &mut small, siblings);
+        FnGenerator::run_classifier(&handler.body, &mut small, siblings, Some(&gen.var_types));
         if small == prev { break; }
     }
 
@@ -328,7 +328,7 @@ fn return_expr_needs_bigint(
             Statement::Return { value } => {
                 let ty = gen.infer_expr_type(&value.node);
                 if ty == NativeType::Int
-                    && !FnGenerator::is_bounded_expr_typed(
+                    && !FnGenerator::is_bounded_expr(
                         &value.node, small, siblings, Some(&gen.var_types))
                 {
                     return true;
@@ -720,27 +720,27 @@ impl FnGenerator {
         // Iterate to fixpoint
         loop {
             let prev = small.clone();
-            Self::exclude_non_small_with_siblings(body, &mut small, &self.siblings);
+            Self::run_classifier(body, &mut small, &self.siblings, Some(&self.var_types));
             if small == prev { break; }
         }
 
         self.small_int_vars = small;
     }
 
-    fn exclude_non_small(body: &[Spanned<Statement>], small: &mut HashSet<String>) {
-        // Used by mode-select where siblings aren't available — assume no
-        // sibling functions are bounded (conservative for those branches).
-        let empty = HashSet::new();
-        Self::exclude_non_small_with_siblings(body, small, &empty);
-    }
-
-    fn exclude_non_small_with_siblings(
+    /// One classifier pass: walk the body and remove variables from `small`
+    /// whose RHS expression is no longer i64-safe given the current state.
+    /// `var_types`: Some when called from per-handler codegen (lets the
+    /// bounded check treat Float idents as automatically bounded);
+    /// None when called from the mode-select preview (we don't have full
+    /// type info there yet).
+    fn run_classifier(
         body: &[Spanned<Statement>],
         small: &mut HashSet<String>,
         siblings: &HashSet<String>,
+        var_types: Option<&HashMap<String, NativeType>>,
     ) {
         let mut to_remove: Vec<String> = Vec::new();
-        Self::collect_non_small(body, small, &mut to_remove, siblings);
+        Self::collect_non_small(body, small, &mut to_remove, siblings, var_types);
         for name in to_remove {
             small.remove(&name);
         }
@@ -751,55 +751,68 @@ impl FnGenerator {
         small: &HashSet<String>,
         to_remove: &mut Vec<String>,
         siblings: &HashSet<String>,
+        var_types: Option<&HashMap<String, NativeType>>,
     ) {
         for stmt in body {
             match &stmt.node {
                 Statement::Let { name, value } | Statement::Assign { name, value } => {
                     if !small.contains(name) { continue; }
-                    if !Self::is_small_expr(name, &value.node, small, siblings) {
+                    if !Self::is_small_expr(name, &value.node, small, siblings, var_types) {
                         to_remove.push(name.clone());
                     }
                 }
                 Statement::If { then_body, else_body, .. } => {
-                    Self::collect_non_small(then_body, small, to_remove, siblings);
-                    Self::collect_non_small(else_body, small, to_remove, siblings);
+                    Self::collect_non_small(then_body, small, to_remove, siblings, var_types);
+                    Self::collect_non_small(else_body, small, to_remove, siblings, var_types);
                 }
                 Statement::While { body, .. } => {
-                    Self::collect_non_small(body, small, to_remove, siblings);
+                    Self::collect_non_small(body, small, to_remove, siblings, var_types);
                 }
                 Statement::For { body, .. } => {
-                    Self::collect_non_small(body, small, to_remove, siblings);
+                    Self::collect_non_small(body, small, to_remove, siblings, var_types);
                 }
                 _ => {}
             }
         }
     }
 
-    fn is_small_expr(target: &str, expr: &Expr, small: &HashSet<String>, siblings: &HashSet<String>) -> bool {
-        // If the expression references `target` (self-assignment), only
-        // additive ops are bounded — `m = m * 2` is exponential growth.
+    /// True iff `expr` is a "bounded" RHS for assigning to `target`.
+    /// Splits on whether expr self-references target.
+    fn is_small_expr(
+        target: &str,
+        expr: &Expr,
+        small: &HashSet<String>,
+        siblings: &HashSet<String>,
+        var_types: Option<&HashMap<String, NativeType>>,
+    ) -> bool {
         if Self::expr_references(expr, target) {
-            return Self::is_additive_expr(target, expr, small, siblings);
+            Self::is_additive_expr(target, expr, small, siblings, var_types)
+        } else {
+            Self::is_bounded_expr(expr, small, siblings, var_types)
         }
-        // Non-self assignments: any op, no var*var.
-        Self::is_bounded_expr(expr, small, siblings)
     }
 
-    /// Self-referential expression: bounded growth patterns.
+    /// Self-referential expression: bounded growth patterns when iterated.
     /// Allowed:
     ///   - literal, target itself, small var
-    ///   - target ± bounded  (linear growth)
+    ///   - target ± bounded  (linear growth per iteration)
     ///   - target / bounded  (shrinks toward zero)
     ///   - target % bounded  (bounded by modulus)
-    ///   - bounded sub-expressions (e.g. sibling/builtin calls)
+    ///   - bounded sub-expressions that don't reference target
     /// Disallowed:
-    ///   - target * anything (exponential or unbounded)
-    ///   - target + target   (doubles → exponential)
-    ///   - bounded / target  (target in denominator)
-    fn is_additive_expr(target: &str, expr: &Expr, small: &HashSet<String>, siblings: &HashSet<String>) -> bool {
-        // If the expression doesn't reference target, the bounded check is enough.
+    ///   - target * anything (exponential)
+    ///   - target + target    (doubles → exponential)
+    ///   - bounded / target   (target in denominator → could blow up)
+    fn is_additive_expr(
+        target: &str,
+        expr: &Expr,
+        small: &HashSet<String>,
+        siblings: &HashSet<String>,
+        var_types: Option<&HashMap<String, NativeType>>,
+    ) -> bool {
+        // If expr doesn't reference target, the bounded check is enough.
         if !Self::expr_references(expr, target) {
-            return Self::is_bounded_expr(expr, small, siblings);
+            return Self::is_bounded_expr(expr, small, siblings, var_types);
         }
         match expr {
             Expr::Ident(n) if n == target => true,
@@ -808,82 +821,78 @@ impl FnGenerator {
                 let r_has = Self::expr_references(&right.node, target);
                 match op {
                     BinOp::Add => {
-                        // target + target → exponential, reject
-                        if l_has && r_has { return false; }
-                        Self::is_additive_expr(target, &left.node, small, siblings)
-                            && Self::is_additive_expr(target, &right.node, small, siblings)
+                        if l_has && r_has { return false; }  // target + target = doubling
+                        Self::is_additive_expr(target, &left.node, small, siblings, var_types)
+                            && Self::is_additive_expr(target, &right.node, small, siblings, var_types)
                     }
                     BinOp::Sub => {
-                        Self::is_additive_expr(target, &left.node, small, siblings)
-                            && Self::is_additive_expr(target, &right.node, small, siblings)
+                        Self::is_additive_expr(target, &left.node, small, siblings, var_types)
+                            && Self::is_additive_expr(target, &right.node, small, siblings, var_types)
                     }
                     BinOp::Div | BinOp::Mod => {
-                        // target / bounded → shrink. Right must not contain target.
-                        if r_has { return false; }
-                        Self::is_additive_expr(target, &left.node, small, siblings)
-                            && Self::is_bounded_expr(&right.node, small, siblings)
+                        if r_has { return false; }  // target in denominator
+                        Self::is_additive_expr(target, &left.node, small, siblings, var_types)
+                            && Self::is_bounded_expr(&right.node, small, siblings, var_types)
                     }
-                    _ => false,
+                    _ => false,  // Mul is exponential when self-referential
                 }
             }
             _ => false,
         }
     }
 
-    /// Non-self bounded expression: any op on (small_vars, literals), no var*var.
-    /// Allows FnCall to known-bounded builtins or sibling handlers.
-    /// (Static helper — doesn't know variable types; treats all Idents as Int.)
-    fn is_bounded_expr(expr: &Expr, small: &HashSet<String>, siblings: &HashSet<String>) -> bool {
-        Self::is_bounded_expr_typed(expr, small, siblings, None)
-    }
-
-    /// Type-aware version: when var_types is provided, Float/Bool/String idents
-    /// are considered bounded (they don't carry Int magnitude).
-    fn is_bounded_expr_typed(
+    /// Non-self bounded expression: i64-safe assuming all referenced vars are bounded.
+    ///
+    /// Rules:
+    ///   - literals (Int, Float, Bool) are bounded
+    ///   - Idents: Int idents must be in `small`; Float/Bool idents are
+    ///     automatically bounded (when `var_types` is supplied)
+    ///   - +, -, /, % on bounded operands → bounded
+    ///   - * on bounded operands → bounded ONLY IF at least one is a literal
+    ///     OR at least one operand is a Float (Int*Int could overflow)
+    ///   - FnCall to a known-bounded builtin or a sibling handler → bounded
+    ///     if all args are bounded
+    fn is_bounded_expr(
         expr: &Expr,
         small: &HashSet<String>,
         siblings: &HashSet<String>,
         var_types: Option<&HashMap<String, NativeType>>,
     ) -> bool {
         match expr {
-            Expr::Literal(Literal::Int(_)) => true,
-            Expr::Literal(Literal::Float(_)) => true,
-            Expr::Literal(Literal::Bool(_)) => true,
+            Expr::Literal(Literal::Int(_))
+            | Expr::Literal(Literal::Float(_))
+            | Expr::Literal(Literal::Bool(_)) => true,
             Expr::Ident(n) => {
+                // When we have type info, non-Int idents are automatically bounded.
                 if let Some(types) = var_types {
-                    let ty = types.get(n).copied().unwrap_or(NativeType::Float);
-                    if ty != NativeType::Int { return true; }
+                    if types.get(n).copied().unwrap_or(NativeType::Float) != NativeType::Int {
+                        return true;
+                    }
                 }
                 small.contains(n)
             }
             Expr::BinaryOp { left, op, right } => {
-                let l_ok = Self::is_bounded_expr_typed(&left.node, small, siblings, var_types);
-                let r_ok = Self::is_bounded_expr_typed(&right.node, small, siblings, var_types);
-                if !l_ok || !r_ok { return false; }
+                if !Self::is_bounded_expr(&left.node, small, siblings, var_types) { return false; }
+                if !Self::is_bounded_expr(&right.node, small, siblings, var_types) { return false; }
                 if matches!(op, BinOp::Mul) {
-                    // The var*var rule is only an Int-overflow concern. If either
-                    // operand is a Float (literal or var), skip the rule entirely.
-                    let l_is_float = matches!(&left.node, Expr::Literal(Literal::Float(_)))
-                        || var_types.and_then(|t| match &left.node {
-                            Expr::Ident(n) => t.get(n).copied(),
-                            _ => None,
-                        }) == Some(NativeType::Float);
-                    let r_is_float = matches!(&right.node, Expr::Literal(Literal::Float(_)))
-                        || var_types.and_then(|t| match &right.node {
-                            Expr::Ident(n) => t.get(n).copied(),
-                            _ => None,
-                        }) == Some(NativeType::Float);
-                    if !l_is_float && !r_is_float {
-                        let l_lit = matches!(&left.node, Expr::Literal(Literal::Int(_)));
-                        let r_lit = matches!(&right.node, Expr::Literal(Literal::Int(_)));
-                        if !l_lit && !r_lit { return false; }
-                    }
+                    // var*var is an Int-overflow concern only.
+                    let is_float_operand = |e: &Expr| -> bool {
+                        if matches!(e, Expr::Literal(Literal::Float(_))) { return true; }
+                        if let (Some(types), Expr::Ident(n)) = (var_types, e) {
+                            return types.get(n).copied() == Some(NativeType::Float);
+                        }
+                        false
+                    };
+                    let is_int_lit = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(_)));
+                    let any_float = is_float_operand(&left.node) || is_float_operand(&right.node);
+                    let any_int_lit = is_int_lit(&left.node) || is_int_lit(&right.node);
+                    if !any_float && !any_int_lit { return false; }
                 }
                 matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)
             }
             Expr::FnCall { name, args } => {
                 if !is_bounded_builtin(name) && !siblings.contains(name) { return false; }
-                args.iter().all(|a| Self::is_bounded_expr_typed(&a.node, small, siblings, var_types))
+                args.iter().all(|a| Self::is_bounded_expr(&a.node, small, siblings, var_types))
             }
             _ => false,
         }
@@ -1667,37 +1676,14 @@ impl FnGenerator {
         format!("Integer::from({} {} {})", l, op_str, r)
     }
 
-    /// Generate an operand for a binop, choosing representation based on
-    /// what the OTHER operand looks like. Used to avoid u32 * i64 mismatches.
+    /// Operand for a Rug-mode binop. Same as `gen_expr_rug_ref` but with
+    /// i64 literals (which compose with both Integer and i64 other-side).
+    /// `_other` is reserved for future operand-type-aware choices.
     fn gen_expr_rug_operand(&self, expr: &Expr, _other: &Expr) -> String {
-        match expr {
-            Expr::Literal(Literal::Int(n)) => {
-                // Default to i64 (rug supports Integer op i64) so it works
-                // with both Integer and i64 other-side
-                format!("{}i64", n)
-            }
-            Expr::Ident(name) => {
-                let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                if var_ty == NativeType::Int {
-                    if self.small_int_vars.contains(name) {
-                        name.clone()  // i64
-                    } else {
-                        format!("&{}", name)  // &Integer
-                    }
-                } else {
-                    format!("{} as i64", name)
-                }
-            }
-            Expr::BinaryOp { left, op, right } => {
-                let inner = self.gen_binop_rug(&left.node, *op, &right.node);
-                format!("&{}", inner)
-            }
-            Expr::FnCall { name, args } => {
-                let inner = self.gen_fn_call_rug(name, args);
-                format!("&{}", inner)
-            }
-            _ => format!("&{}", self.gen_expr_rug(expr)),
+        if let Expr::Literal(Literal::Int(n)) = expr {
+            return format!("{}i64", n);
         }
+        self.gen_expr_rug_ref(expr)
     }
 
     /// Generate an "incomplete" rug expression suitable for x.assign(...).
@@ -1783,28 +1769,6 @@ impl FnGenerator {
         }
     }
 
-    /// Always produce an owned Integer expression (no Incomplete).
-    /// Used for rug API methods that take `&Integer`.
-    fn gen_int_owned_rug(&self, expr: &Expr) -> String {
-        match expr {
-            Expr::Literal(Literal::Int(n)) => format!("Integer::from({}i64)", n),
-            Expr::Ident(name) => {
-                let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                if var_ty == NativeType::Int {
-                    if self.small_int_vars.contains(name) {
-                        format!("Integer::from({})", name)
-                    } else {
-                        // big Integer; we wrap in a fresh Integer for borrow purposes
-                        format!("Integer::from(&{})", name)
-                    }
-                } else {
-                    format!("Integer::from({} as i64)", name)
-                }
-            }
-            _ => self.gen_expr_rug(expr),
-        }
-    }
-
     /// Reference-form Integer expression for use as operand.
     /// For "big" Integer vars: emit &name. For "small" i64 vars: emit name (rug ops support i64).
     fn gen_expr_rug_ref(&self, expr: &Expr) -> String {
@@ -1866,74 +1830,84 @@ impl FnGenerator {
         format!("{}{}.assign({});\n", ind, name, expr)
     }
 
-    /// Efficient in-place Integer assignment.
+    /// Efficient in-place Integer assignment for `name = value` (Rug mode).
+    ///
+    /// Dispatch ladder, in priority order:
+    ///   1. Peephole: `name = name * name`            → `name.square_mut()`
+    ///   2. Peephole: `name = name OP rhs`            → `name OP= rhs`
+    ///   3. Peephole: `name = lhs OP name` (+, *)     → `name OP= lhs`
+    ///   4. Literal:  `name = N`                       → `name.assign(N)`
+    ///   5. Ident:    `name = src` (different)         → `mem::swap(name, src)`
+    ///   6. Self-ref: RHS reads `name` somewhere       → temp + swap (avoid borrow)
+    ///   7. General:                                   → `name.assign(incomplete)`
     fn gen_assign_rug(&self, name: &str, value: &Expr, ind: &str) -> String {
-        // Pattern: name = name * name → name.square_mut() (in-place square)
-        if let Expr::BinaryOp { left, op: BinOp::Mul, right } = value {
-            if let (Expr::Ident(ln), Expr::Ident(rn)) = (&left.node, &right.node) {
-                if ln == name && rn == name {
-                    return format!("{}{}.square_mut();\n", ind, name);
-                }
-            }
-        }
+        if let Some(s) = self.try_square_mut(name, value, ind) { return s; }
+        if let Some(s) = self.try_inplace_op(name, value, ind) { return s; }
 
-        // Pattern: name = name OP expr  →  name OP= expr
-        if let Expr::BinaryOp { left, op, right } = value {
-            if let Expr::Ident(ref lname) = left.node {
-                if lname == name {
-                    // Skip if RHS also references name (borrow conflict)
-                    if Self::expr_references(&right.node, name) {
-                        // Fall through to general case
-                    } else {
-                        let op_assign = match op {
-                            BinOp::Add => "+=", BinOp::Sub => "-=", BinOp::Mul => "*=",
-                            BinOp::Div => "/=", BinOp::Mod => "%=", _ => "",
-                        };
-                        if !op_assign.is_empty() {
-                            let r = self.gen_expr_rug_ref(&right.node);
-                            return format!("{}{} {} {};\n", ind, name, op_assign, r);
-                        }
-                    }
-                }
-            }
-            if let Expr::Ident(ref rname) = right.node {
-                if rname == name && matches!(op, BinOp::Add | BinOp::Mul) {
-                    let op_assign = match op {
-                        BinOp::Add => "+=", BinOp::Mul => "*=", _ => "",
-                    };
-                    if !op_assign.is_empty() {
-                        let l = self.gen_expr_rug_ref(&left.node);
-                        return format!("{}{} {} {};\n", ind, name, op_assign, l);
-                    }
-                }
-            }
-        }
-
-        // Literal assign: x.assign(N)
         if let Expr::Literal(Literal::Int(n)) = value {
             return format!("{}{}.assign({}i64);\n", ind, name, n);
         }
 
-        // Simple ident → swap (O(1))
-        if let Expr::Ident(ref src) = value {
+        if let Expr::Ident(src) = value {
             let var_ty = self.var_types.get(src).copied().unwrap_or(NativeType::Float);
             if var_ty == NativeType::Int && src != name {
                 return format!("{}std::mem::swap(&mut {}, &mut {});\n", ind, name, src);
             }
         }
 
-        // RHS references the target → can't `name.assign(... &name ...)`
-        // because of the borrow conflict. Compute into a fresh Integer
-        // first, then swap into place.
         if Self::expr_references(value, name) {
             let expr = self.gen_expr_rug(value);
-            return format!("{}{{ let mut _t: Integer = {}; std::mem::swap(&mut {}, &mut _t); }}\n",
-                ind, expr, name);
+            return format!(
+                "{}{{ let mut _t: Integer = {}; std::mem::swap(&mut {}, &mut _t); }}\n",
+                ind, expr, name
+            );
         }
 
-        // General: x.assign(incomplete_expr)
         let expr = self.gen_expr_rug_incomplete(value);
         format!("{}{}.assign({});\n", ind, name, expr)
+    }
+
+    /// Match `name = name * name` and produce `name.square_mut()`.
+    fn try_square_mut(&self, name: &str, value: &Expr, ind: &str) -> Option<String> {
+        if let Expr::BinaryOp { left, op: BinOp::Mul, right } = value {
+            if let (Expr::Ident(ln), Expr::Ident(rn)) = (&left.node, &right.node) {
+                if ln == name && rn == name {
+                    return Some(format!("{}{}.square_mut();\n", ind, name));
+                }
+            }
+        }
+        None
+    }
+
+    /// Match `name = name OP rhs` (or `name = lhs OP name` for commutative ops)
+    /// and produce `name OP= rhs`. Bails out if the *other* side references
+    /// `name` too — that would cause a borrow conflict on `name`.
+    fn try_inplace_op(&self, name: &str, value: &Expr, ind: &str) -> Option<String> {
+        let Expr::BinaryOp { left, op, right } = value else { return None; };
+        let op_assign = match op {
+            BinOp::Add => "+=", BinOp::Sub => "-=", BinOp::Mul => "*=",
+            BinOp::Div => "/=", BinOp::Mod => "%=", _ => return None,
+        };
+
+        // Form 1: name = name OP rhs
+        if let Expr::Ident(lname) = &left.node {
+            if lname == name && !Self::expr_references(&right.node, name) {
+                let r = self.gen_expr_rug_ref(&right.node);
+                return Some(format!("{}{} {} {};\n", ind, name, op_assign, r));
+            }
+        }
+
+        // Form 2: name = lhs OP name (only valid for commutative + and *)
+        if matches!(op, BinOp::Add | BinOp::Mul) {
+            if let Expr::Ident(rname) = &right.node {
+                if rname == name && !Self::expr_references(&left.node, name) {
+                    let l = self.gen_expr_rug_ref(&left.node);
+                    return Some(format!("{}{} {} {};\n", ind, name, op_assign, l));
+                }
+            }
+        }
+
+        None
     }
 
     /// Boolean condition for if/while in Rug mode.
@@ -2129,29 +2103,29 @@ impl FnGenerator {
             // Bit operations on Integer — need owned operands so the result
             // can be a BigInt regardless of operand sizes.
             "band" | "bor" | "bxor" if args.len() == 2 => {
-                let a = self.gen_int_owned_rug(&args[0].node);
-                let b = self.gen_int_owned_rug(&args[1].node);
+                let a = self.gen_expr_rug(&args[0].node);
+                let b = self.gen_expr_rug(&args[1].node);
                 let op = match name { "band" => "&", "bor" => "|", _ => "^" };
                 format!("Integer::from(({}) {} ({}))", a, op, b)
             }
             "bnot" if args.len() == 1 => {
-                let a = self.gen_int_owned_rug(&args[0].node);
+                let a = self.gen_expr_rug(&args[0].node);
                 format!("Integer::from(!({}))", a)
             }
             "shl" if args.len() == 2 => {
                 // Wrap the base in Integer so the shift can produce a BigInt
                 // (u32 << u32 in plain Rust would panic for shift > 31).
-                let a = self.gen_int_owned_rug(&args[0].node);
+                let a = self.gen_expr_rug(&args[0].node);
                 let b = self.gen_int_to_i64_rug(&args[1].node);
                 format!("Integer::from(({}) << (({}) as u32))", a, b)
             }
             "shr" if args.len() == 2 => {
-                let a = self.gen_int_owned_rug(&args[0].node);
+                let a = self.gen_expr_rug(&args[0].node);
                 let b = self.gen_int_to_i64_rug(&args[1].node);
                 format!("Integer::from(({}) >> (({}) as u32))", a, b)
             }
             "bit_len" if args.len() == 1 => {
-                let a = self.gen_int_owned_rug(&args[0].node);
+                let a = self.gen_expr_rug(&args[0].node);
                 format!("Integer::from(({}).significant_bits() as i64)", a)
             }
             // Number theory: rug has these as methods. All args must be &Integer.
@@ -2163,7 +2137,7 @@ impl FnGenerator {
             }
             "pow_mod" if args.len() == 3 => {
                 // pow_mod(self, &exp, &modulus) -> Result<Integer, _>
-                let base = self.gen_int_owned_rug(&args[0].node);
+                let base = self.gen_expr_rug(&args[0].node);
                 let exp = self.gen_int_borrow_rug(&args[1].node);
                 let m = self.gen_int_borrow_rug(&args[2].node);
                 format!("({}).pow_mod({}, {}).expect(\"pow_mod failed (modulus 0?)\")", base, exp, m)
