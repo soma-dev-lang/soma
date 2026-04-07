@@ -1225,6 +1225,8 @@ impl FnGenerator {
                     NativeType::Float
                 } else if lt == NativeType::String || rt == NativeType::String {
                     NativeType::String
+                } else if lt == NativeType::Bool && rt == NativeType::Bool {
+                    NativeType::Bool
                 } else {
                     NativeType::Int
                 };
@@ -2019,6 +2021,11 @@ impl FnGenerator {
                     let l = self.gen_cmp_operand_rug(&left.node);
                     let r = self.gen_cmp_operand_rug(&right.node);
                     format!("{} {} {}", l, op_str, r)
+                } else if lt == NativeType::Bool && rt == NativeType::Bool {
+                    // Bool == Bool — keep both sides as bool, no i64 coercion.
+                    let l = self.gen_expr_direct(&left.node, NativeType::Bool);
+                    let r = self.gen_expr_direct(&right.node, NativeType::Bool);
+                    format!("({} {} {})", l, op_str, r)
                 } else {
                     // Float / mixed: lower via the direct-mode helpers.
                     let common = if lt == NativeType::Float || rt == NativeType::Float {
