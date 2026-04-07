@@ -1,0 +1,157 @@
+// ============================================================================
+// Miller-Rabin primality test
+// ============================================================================
+//
+// Tests whether n is prime by trying a series of witnesses a:
+//   1. Decompose n - 1 = 2^r · d  (d odd)
+//   2. Compute x = a^d mod n
+//   3. If x ∈ {1, n-1}: a is non-witness, try next a
+//   4. Square r-1 times. If any squaring gives n-1: non-witness, try next a
+//   5. Else: a is a witness, n is composite
+//
+// For 64-bit integers, witnesses {2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37}
+// give a deterministic result (Pomerance / Sorenson / Webster).
+//
+// This exercises pow_mod, gcd, band, shr in Rug mode — the new builtins.
+//
+// Run: soma run miller_rabin.cell
+
+cell MillerRabin {
+
+    // Single Miller-Rabin witness test.
+    // Returns 1 if `a` is a non-witness for `n` (n is probably prime),
+    // 0 if `a` is a witness (n is definitely composite).
+    on witness_test(n: Int, a: Int) [native] {
+        // Decompose n - 1 = 2^r * d, d odd
+        let d = n - 1
+        let r = 0
+        while band(d, 1) == 0 {
+            d = shr(d, 1)
+            r = r + 1
+        }
+
+        // x = a^d mod n
+        let x = pow_mod(a, d, n)
+
+        if x == 1 { return 1 }
+        if x == n - 1 { return 1 }
+
+        // Square r-1 times
+        let i = 0
+        let result = 0
+        let done = 0
+        while i < r - 1 {
+            if done == 0 {
+                x = (x * x) % n
+                if x == n - 1 {
+                    result = 1
+                    done = 1
+                }
+            }
+            i = i + 1
+        }
+        return result
+    }
+
+    // Driver: tests a list of witnesses against n. Returns true if all pass.
+    // Uses interpreted code to iterate witnesses (no lists in [native]).
+    on is_probably_prime(n: Int) {
+        // Trivial cases
+        if n < 2 { return false }
+        if n == 2 { return true }
+        if n == 3 { return true }
+        if n % 2 == 0 { return false }
+
+        // Witnesses sufficient for n < 3.3·10^24
+        for a in list(2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37) {
+            if a < n {
+                if witness_test(n, a) == 0 {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    on check(label: String, n: Int, expected: Bool) {
+        let start = now_ms()
+        let r = is_probably_prime(n)
+        let elapsed = now_ms() - start
+        let mark = "✓"
+        if r != expected { mark = "✗" }
+        let claim = "composite"
+        if expected { claim = "prime" }
+        print("  {label} → {claim}  ({elapsed}ms) {mark}")
+    }
+
+    on run() {
+        print("Miller-Rabin primality test")
+        print("===========================")
+        print("")
+
+        print("Small primes:")
+        check("7", 7, true)
+        check("11", 11, true)
+        check("9973", 9973, true)
+        check("104729", 104729, true)         // 10000th prime
+        check("982451653", 982451653, true)    // 50 millionth prime
+
+        print("")
+        print("Small composites (Carmichael numbers — fool Fermat, not Miller):")
+        check("561", 561, false)
+        check("1105", 1105, false)
+        check("1729", 1729, false)             // Ramanujan's number
+        check("8911", 8911, false)
+        check("41041", 41041, false)
+        check("825265", 825265, false)
+
+        print("")
+        print("Larger primes:")
+        // 2^61 - 1 = 2305843009213693951 (Mersenne prime M_61)
+        check("M_61 = 2^61-1", 2305843009213693951, true)
+        // 2^31 - 1 = 2147483647 (Mersenne prime M_31)
+        check("M_31 = 2^31-1", 2147483647, true)
+
+        print("")
+        print("Larger composites:")
+        // 2^32 + 1 = 4294967297 = 641 × 6700417 (Euler's factorization of F_5)
+        check("F_5 = 2^32+1", 4294967297, false)
+        // 2^59 - 1 = 576460752303423487 = 179951 × 3203431780337 (composite Mersenne)
+        check("M_59 = 2^59-1", 576460752303423487, false)
+
+        print("")
+        print("BigInt tests (Mersenne numbers tested via Miller-Rabin):")
+        check_mersenne(521, true)    // M_521 prime (157 digits)
+        check_mersenne(607, true)    // M_607 prime (183 digits)
+        check_mersenne(67, false)    // M_67 composite
+        check_mersenne(1279, true)   // M_1279 prime (386 digits)
+        check_mersenne(2203, true)   // M_2203 prime (664 digits)
+        check_mersenne(2281, true)   // M_2281 prime (687 digits)
+        check_mersenne(3217, true)   // M_3217 prime (969 digits)
+        check_mersenne(4253, true)   // M_4253 prime (1281 digits)
+    }
+
+    on check_mersenne(p: Int, expected: Bool) {
+        let m = mersenne(p)
+        let start = now_ms()
+        let r = is_probably_prime(m)
+        let elapsed = now_ms() - start
+        let mark = "✓"
+        if r != expected { mark = "✗" }
+        let claim = "composite"
+        if expected { claim = "prime" }
+        print("  M_{p} → {claim}  ({elapsed}ms) {mark}")
+    }
+
+    // Build M_p = 2^p - 1 via a [native] helper.
+    on mersenne(p: Int) [native] {
+        let m = 1
+        let i = 0
+        while i < p {
+            m = m * 2
+            i = i + 1
+        }
+        m = m - 1
+        return m
+    }
+}
