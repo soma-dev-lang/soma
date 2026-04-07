@@ -1726,15 +1726,14 @@ impl FnGenerator {
         // Mixed: pick representation that rug supports
         // Rug supports: Integer op &Integer, Integer op u32/i32/u64/i64
         // For "small * Integer" we want: small as i64 * &big = Integer
-        let l = self.gen_expr_rug_operand(left, right);
-        let r = self.gen_expr_rug_operand(right, left);
+        let l = self.gen_expr_rug_operand(left);
+        let r = self.gen_expr_rug_operand(right);
         format!("Integer::from({} {} {})", l, op_str, r)
     }
 
-    /// Operand for a Rug-mode binop. Same as `gen_expr_rug_ref` but with
-    /// i64 literals (which compose with both Integer and i64 other-side).
-    /// `_other` is reserved for future operand-type-aware choices.
-    fn gen_expr_rug_operand(&self, expr: &Expr, _other: &Expr) -> String {
+    /// Operand for a Rug-mode binop. Same as `gen_expr_rug_ref` but emits
+    /// i64 literals (which compose cleanly with both Integer and i64 sides).
+    fn gen_expr_rug_operand(&self, expr: &Expr) -> String {
         if let Expr::Literal(Literal::Int(n)) = expr {
             return format!("{}i64", n);
         }
@@ -1755,8 +1754,8 @@ impl FnGenerator {
                         let r = self.gen_expr_direct(&right.node, NativeType::Int);
                         return format!("{} {} {}", l, op_str, r);
                     }
-                    let l = self.gen_expr_rug_operand(&left.node, &right.node);
-                    let r = self.gen_expr_rug_operand(&right.node, &left.node);
+                    let l = self.gen_expr_rug_operand(&left.node);
+                    let r = self.gen_expr_rug_operand(&right.node);
                     format!("{} {} {}", l, op_str, r)
                 } else {
                     self.gen_expr_rug(expr)
