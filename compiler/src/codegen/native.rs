@@ -575,23 +575,25 @@ fn emit_array_wrapper(
 ) {
     let suffix = if is_parallel { "_par_arr" } else { "_arr" };
     let inner = if is_parallel { format!("{}_par", fn_name) } else { fn_name.to_string() };
-    out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}{}(args: *const f64, _count: i64) -> f64 {{\n", fn_name, suffix));
+    // Args are passed as raw u64 bits to preserve full i64 / f64 precision
+    // (a previous f64-array design lost precision for i64 values > 2^53).
+    out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}{}(args: *const u64, _count: i64) -> u64 {{\n", fn_name, suffix));
     out.push_str("    unsafe {\n");
     let call_args: Vec<String> = handler.params.iter().enumerate().map(|(i, p)| {
         let ty = type_expr_to_native(&p.ty.node);
         match ty {
             NativeType::Int => format!("*args.add({}) as i64", i),
-            NativeType::Float => format!("*args.add({})", i),
-            NativeType::Bool => format!("*args.add({}) != 0.0", i),
-            NativeType::String => format!("*args.add({})", i),
+            NativeType::Float => format!("f64::from_bits(*args.add({}))", i),
+            NativeType::Bool => format!("*args.add({}) != 0", i),
+            NativeType::String => format!("*args.add({}) as i64", i),
         }
     }).collect();
     out.push_str(&format!("        let r = {}({});\n", inner, call_args.join(", ")));
     match ret_type {
-        NativeType::Float => out.push_str("        r\n"),
-        NativeType::Int => out.push_str("        r as f64\n"),
-        NativeType::Bool => out.push_str("        if r { 1.0 } else { 0.0 }\n"),
-        NativeType::String => out.push_str("        0.0\n"),
+        NativeType::Float => out.push_str("        r.to_bits()\n"),
+        NativeType::Int => out.push_str("        r as u64\n"),
+        NativeType::Bool => out.push_str("        if r { 1 } else { 0 }\n"),
+        NativeType::String => out.push_str("        0\n"),
     }
     out.push_str("    }\n}\n\n");
 }

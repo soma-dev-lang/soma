@@ -519,33 +519,20 @@ unsafe fn call_3(fn_ptr: *const (), args: &[u64], ptypes: &[NativeType], ret: Na
     })
 }
 
-/// Generic multi-param dispatch: converts all args to f64, passes as array pointer.
-/// The generated Rust wrapper unpacks from *const f64.
+/// Generic multi-param dispatch: passes args as a raw u64-bit array.
+/// Args are already in raw u64-bit form (Int as i64-bits, Float as f64-bits).
+/// The generated Rust wrapper unpacks each u64 according to its declared type,
+/// preserving full precision (no f64 down-conversion).
 unsafe fn call_generic(
     fn_ptr: *const (),
     args: &[u64],
-    param_types: &[NativeType],
+    _param_types: &[NativeType],
     ret_type: NativeType,
 ) -> Result<u64, String> {
-    // Convert all args to f64 representation
-    let mut float_args: Vec<f64> = Vec::with_capacity(args.len());
-    for (i, (arg, ty)) in args.iter().zip(param_types.iter()).enumerate() {
-        match ty {
-            NativeType::Int => float_args.push(*arg as i64 as f64),
-            NativeType::Float => float_args.push(f64::from_bits(*arg)),
-            NativeType::Bool => float_args.push(if *arg != 0 { 1.0 } else { 0.0 }),
-            NativeType::String => float_args.push(0.0),
-        }
-    }
-
-    // Call as fn(*const f64, i64) -> f64
-    let f: extern "C" fn(*const f64, i64) -> f64 = std::mem::transmute(fn_ptr);
-    let result = f(float_args.as_ptr(), float_args.len() as i64);
-
+    let f: extern "C" fn(*const u64, i64) -> u64 = std::mem::transmute(fn_ptr);
+    let result = f(args.as_ptr(), args.len() as i64);
     match ret_type {
-        NativeType::Float => Ok(result.to_bits()),
-        NativeType::Int => Ok(result as i64 as u64),
-        NativeType::Bool => Ok(if result != 0.0 { 1 } else { 0 }),
+        NativeType::Float | NativeType::Int | NativeType::Bool => Ok(result),
         NativeType::String => Ok(0),
     }
 }
