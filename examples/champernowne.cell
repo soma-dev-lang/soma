@@ -1,0 +1,79 @@
+// ============================================================================
+// Champernowne digit (Project Euler #40)
+// ============================================================================
+//
+// Champernowne's constant: 0.12345678910111213141516...
+// Find the digit at the n-th position after the decimal point.
+//
+// PE #40 product:  d(1) · d(10) · d(100) · d(1e3) · d(1e4) · d(1e5) · d(1e6) = 210
+//
+// Tests integer arithmetic, to_string, str_at, str_len in Direct mode.
+//
+// Run: soma run champernowne.cell
+
+cell Champernowne {
+
+    // Returns the n-th digit (1-indexed) of Champernowne's constant.
+    on champ_digit(n: Int) [native] {
+        // Skip past full blocks: 9 1-digit, 90 2-digit, 900 3-digit, ...
+        let digits = 1
+        let block_start = 1
+        let block_size = 9
+        let m = n
+        while m > block_size {
+            m = m - block_size
+            digits = digits + 1
+            block_start = block_start * 10
+            block_size = 9 * block_start * digits
+        }
+        // m is the (1-indexed) position within `digits`-digit numbers
+        let num_idx = (m - 1) / digits      // 0-based number offset within block
+        let digit_idx = (m - 1) % digits    // 0-based digit within that number
+        let number = block_start + num_idx
+        // Extract the digit_idx-th character of `number`'s decimal repr
+        let s = to_string(number)
+        return str_at(s, digit_idx) - 48    // ASCII '0' = 48
+    }
+
+    on check(n: Int, expected: Int) {
+        let d = champ_digit(n)
+        if d == expected {
+            print("  d({n}) = {d} ✓")
+        } else {
+            print("  d({n}) = {d}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Champernowne digit (PE #40)")
+        print("===========================")
+        print("")
+        // Verify against the literal expansion 0.123456789101112131415...
+        check(1,  1)    // 1
+        check(2,  2)    // 2
+        check(9,  9)    // 9
+        check(10, 1)    // 10 → "1"
+        check(11, 0)    // 10 → "0"
+        check(12, 1)    // 11 → "1"
+        check(13, 1)    // 11 → "1"
+        check(14, 1)    // 12 → "1"
+        check(15, 2)    // 12 → "2"
+        check(100, 5)
+        check(1000, 3)
+        check(10000, 7)
+        check(100000, 2)
+        check(1000000, 1)
+
+        print("")
+        print("Headline: PE #40 product")
+        let p = champ_digit(1)
+            * champ_digit(10)
+            * champ_digit(100)
+            * champ_digit(1000)
+            * champ_digit(10000)
+            * champ_digit(100000)
+            * champ_digit(1000000)
+        print("  product = {p}")
+        if p == 210 { print("  PE #40 ✓") }
+    }
+}
