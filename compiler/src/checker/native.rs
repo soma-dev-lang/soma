@@ -60,7 +60,7 @@ const ALLOWED_BUILTINS: &[&str] = &[
     // Type conversions
     "to_float", "to_int", "to_string",
     // Bit operations (Int)
-    "band", "bor", "bxor", "bnot", "shl", "shr",
+    "band", "bor", "bxor", "bnot", "shl", "shr", "bit_len",
     // Number theory
     "pow_mod", "gcd", "sqrt_int",
     // String introspection

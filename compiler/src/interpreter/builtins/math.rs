@@ -230,6 +230,24 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let b = val_to_i64(&args[1]);
             Some(Ok(Value::Int(SomaInt::from_i64(a.wrapping_shr(b as u32)))))
         }
+        "bit_len" if args.len() >= 1 => {
+            match &args[0] {
+                Value::Int(si) => {
+                    let s = si.to_string();
+                    // approximate; for SomaInt-as-i64 use leading_zeros, otherwise estimate
+                    if let Some(v) = si.to_i64() {
+                        let bits = if v == 0 { 0 } else { 64 - v.unsigned_abs().leading_zeros() as i64 };
+                        Some(Ok(Value::Int(SomaInt::from_i64(bits))))
+                    } else {
+                        // BigInt: estimate from decimal length
+                        let len = if s.starts_with('-') { s.len() - 1 } else { s.len() };
+                        let bits = ((len as f64) * 3.3219280948873626) as i64 + 1;
+                        Some(Ok(Value::Int(SomaInt::from_i64(bits))))
+                    }
+                }
+                _ => Some(Ok(Value::Int(SomaInt::from_i64(0)))),
+            }
+        }
         // Number theory
         "gcd" if args.len() >= 2 => {
             let mut a = val_to_i64(&args[0]).unsigned_abs();

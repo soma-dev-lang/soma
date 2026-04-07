@@ -588,7 +588,7 @@ fn emit_array_wrapper(
 /// Used by the small-int classifier to allow these as bounded sub-expressions.
 fn is_bounded_builtin(name: &str) -> bool {
     matches!(name,
-        "band" | "bor" | "bxor" | "bnot" | "shl" | "shr"
+        "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_len"
         | "gcd" | "sqrt_int" | "pow_mod"
         | "abs" | "min" | "max"
         | "floor" | "ceil" | "round"
@@ -912,7 +912,7 @@ impl FnGenerator {
                     "to_string" => NativeType::String,
                     "to_float" => NativeType::Float,
                     "to_int" | "len" | "floor" | "ceil" | "round" => NativeType::Int,
-                    "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" => NativeType::Int,
+                    "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_len" => NativeType::Int,
                     "gcd" | "pow_mod" | "sqrt_int" => NativeType::Int,
                     "str_len" | "str_at" => NativeType::Int,
                     "str_eq" => NativeType::Bool,
@@ -1262,6 +1262,10 @@ impl FnGenerator {
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
                 let op = if name == "shl" { "<<" } else { ">>" };
                 format!("(({}) {} ({}))", a, op, b)
+            }
+            "bit_len" if args.len() == 1 => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                format!("(64 - ({} as i64).leading_zeros() as i64)", a)
             }
             // Number theory
             "gcd" if args.len() == 2 => {
@@ -2238,6 +2242,10 @@ impl FnGenerator {
                 let a = self.gen_int_owned_rug(&args[0].node);
                 let b = self.gen_int_to_i64_rug(&args[1].node);
                 format!("Integer::from(({}) >> (({}) as u32))", a, b)
+            }
+            "bit_len" if args.len() == 1 => {
+                let a = self.gen_int_owned_rug(&args[0].node);
+                format!("Integer::from(({}).significant_bits() as i64)", a)
             }
             // Number theory: rug has these as methods. All args must be &Integer.
             "gcd" if args.len() == 2 => {

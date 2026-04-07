@@ -1,0 +1,99 @@
+// ============================================================================
+// Karatsuba multiplication
+// ============================================================================
+//
+// Multiplies two BigInts using Karatsuba's divide-and-conquer (3 sub-mults
+// instead of 4). The base case at ≤64 bits hands off to native multiply.
+//
+// Compares the Karatsuba result against the trivial product to verify.
+//
+// Tests recursive Rug-mode handlers, bit ops on BigInts, and bit_len.
+//
+// Run: soma run karatsuba.cell
+
+cell Karatsuba {
+
+    // Multiply x and y. `bits` is an upper bound on max(bitlen(x), bitlen(y)).
+    on karatsuba(x: Int, y: Int, bits: Int) [native] {
+        if bits <= 64 {
+            return x * y
+        }
+        let half = bits / 2
+
+        // Split: x = x_h * 2^half + x_l ; same for y
+        let x_l = band(x, shl(1, half) - 1)
+        let x_h = shr(x, half)
+        let y_l = band(y, shl(1, half) - 1)
+        let y_h = shr(y, half)
+
+        // 3 sub-multiplications (Karatsuba's saving)
+        let z0 = karatsuba(x_l, y_l, half + 1)
+        let z2 = karatsuba(x_h, y_h, half + 1)
+        let z1 = karatsuba(x_h + x_l, y_h + y_l, half + 2) - z0 - z2
+
+        // Recombine: result = z2 * 2^(2·half) + z1 * 2^half + z0
+        let high = shl(z2, 2 * half)
+        let mid  = shl(z1, half)
+        return high + mid + z0
+    }
+
+    // Compute 2^p (helper for the test driver).
+    on pow2(p: Int) [native] {
+        let m = 1
+        let i = 0
+        while i < p {
+            m = m * 2
+            i = i + 1
+        }
+        return m
+    }
+
+    // Test driver: build x and y of approximate size, then compare
+    // karatsuba(x, y) against the trivial native product x * y.
+    on check(label: String, x: Int, y: Int) {
+        let bx = bit_len(x)
+        let by = bit_len(y)
+        let bits = bx
+        if by > bits { bits = by }
+
+        let start1 = now_ms()
+        let k = karatsuba(x, y, bits + 2)
+        let t1 = now_ms() - start1
+
+        let start2 = now_ms()
+        let r = trivial_mul(x, y)
+        let t2 = now_ms() - start2
+
+        if k == r {
+            print("  {label}: karatsuba ({t1}ms) matches trivial ({t2}ms) ✓")
+        } else {
+            print("  {label}: karatsuba ≠ trivial ✗")
+        }
+    }
+
+    on trivial_mul(x: Int, y: Int) [native] {
+        return x * y
+    }
+
+    on run() {
+        print("Karatsuba multiplication")
+        print("========================")
+        print("")
+        // Small numbers: hits the base case directly
+        check("13 × 17", 13, 17)
+        check("123456789 × 987654321", 123456789, 987654321)
+
+        // Larger: triggers recursion
+        let a = pow2(100) + 12345
+        let b = pow2(100) - 67890
+        check("(2^100+x) × (2^100+y) (~100 bits)", a, b)
+
+        let c = pow2(500) + 1
+        let d = pow2(500) - 1
+        check("(2^500+1) × (2^500-1) (~500 bits)", c, d)
+
+        let e = pow2(1000) + pow2(500)
+        let f = pow2(1000) - pow2(500)
+        check("(2^1000+x) × (2^1000-y) (~1000 bits)", e, f)
+    }
+}
