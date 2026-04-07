@@ -182,41 +182,17 @@ pub fn generate_native_source_with_config(
     //
     // The philosophy: a type is a promise about behavior, not a choice of
     // representation. The user writes `Int` and the compiler picks i64 or
-    // BigInt. So we generate BOTH for every handler whose signature is
-    // representable in i64/f64/bool: a fast Direct version and a Rug
-    // fallback. The dispatch wrapper tries fast first; on i64 overflow
-    // (which already panics with overflow-checks=true), it falls back to
-    // the Rug version transparently.
+    // BigInt. So we generate BOTH versions for every handler: a fast
+    // Direct one (i64/f64/bool throughout) and a Rug fallback (Integer
+    // for unbounded ints). The dispatch wrapper tries fast first; on
+    // overflow (which panics with overflow-checks=true), it catches the
+    // panic and re-runs in the Rug version transparently.
     //
-    // Eligible iff:
-    //   - return type is non-String
-    //   - all params are non-String
-    //
-    // This is decided purely from signatures. We do NOT require the
-    // classifier to think the function is Direct-safe — that's exactly
-    // the question dual-mode answers at runtime instead of statically.
-    //
-    // String-param/return handlers are still Rug-only because Direct
-    // can't pass strings via the C ABI; but they can still call dualmode
-    // siblings via the Rug path.
+    // Universal: every handler is dual-mode. There are no exceptions.
+    // Strings flow through the shared buffer either way; Direct codegen
+    // handles String params/returns natively. The classifier no longer
+    // needs to be perfect — when it's wrong, the runtime catches it.
     let dualmode: HashSet<String> = handlers.iter()
-        .filter(|h| {
-            // No String params
-            if h.params.iter().any(|p|
-                type_expr_to_native(&p.ty.node) == NativeType::String) {
-                return false;
-            }
-            // Inferred return type non-String. We do this with a quick
-            // type-only pass that uses the pre_sibling_info we already
-            // computed for mode selection.
-            let mut tmp = FnGenerator::new(&h.params, &siblings, Mode::Direct)
-                .with_sibling_info(pre_sibling_info.clone());
-            for p in &h.params {
-                tmp.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
-            }
-            tmp.infer_body_types(&h.body);
-            tmp.infer_return_type(&h.body) != NativeType::String
-        })
         .map(|h| h.signal_name.clone())
         .collect();
 
@@ -1403,24 +1379,20 @@ impl FnGenerator {
     ///   - small ± small, small / small, small % small
     ///   - small * literal, literal * small
     ///   - NOT small * small (potential unbounded growth)
-    fn classify_int_vars(&mut self, body: &[Spanned<Statement>], int_params: &HashSet<String>) {
-        if self.mode != Mode::Rug { return; }
-
-        let mut small: HashSet<String> = self.var_types.iter()
-            .filter(|(_, t)| **t == NativeType::Int)
-            .map(|(n, _)| n.clone())
-            .collect();
-        // Int parameters arrive via shared buffer and may be BigInt at call site
-        for p in int_params { small.remove(p); }
-
-        // Iterate to fixpoint
-        loop {
-            let prev = small.clone();
-            Self::run_classifier(body, &mut small, &self.siblings, Some(&self.var_types));
-            if small == prev { break; }
-        }
-
-        self.small_int_vars = small;
+    fn classify_int_vars(&mut self, _body: &[Spanned<Statement>], _int_params: &HashSet<String>) {
+        // Universal dual-mode: every handler has a fast Direct path that
+        // uses i64 throughout, AND a Rug fallback that uses Integer
+        // throughout. The Rug fallback exists precisely to handle the
+        // cases where i64 doesn't suffice — using i64 inside it (via the
+        // small_int_var optimization) defeats its purpose: the same
+        // overflow that would have crashed Direct now crashes Rug too,
+        // escaping the dispatch wrapper's catch_unwind.
+        //
+        // So small_int_vars is always empty. The Rug fallback is slower
+        // (Integer arithmetic for everything) but correct, and it only
+        // runs when the fast path failed — by definition the case where
+        // we needed BigInt anyway.
+        self.small_int_vars = HashSet::new();
     }
 
     /// One classifier pass: walk the body and remove variables from `small`
