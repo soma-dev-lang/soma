@@ -79,6 +79,7 @@ pub fn compile_and_load_natives_with_config(
                         signal_name: on.signal_name.clone(),
                         params: on.params.clone(),
                         body: on.body.clone(),
+                        properties: on.properties.clone(),
                     });
                 }
             }

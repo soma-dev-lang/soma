@@ -209,6 +209,59 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Ok(Value::Int(SomaInt::from_i64(min + (x % range) as i64))))
             }
         }
+        // Bit operations on Int
+        "band" | "bor" | "bxor" if args.len() >= 2 => {
+            let a = val_to_i64(&args[0]);
+            let b = val_to_i64(&args[1]);
+            let r = match name { "band" => a & b, "bor" => a | b, _ => a ^ b };
+            Some(Ok(Value::Int(SomaInt::from_i64(r))))
+        }
+        "bnot" if args.len() >= 1 => {
+            let a = val_to_i64(&args[0]);
+            Some(Ok(Value::Int(SomaInt::from_i64(!a))))
+        }
+        "shl" if args.len() >= 2 => {
+            let a = val_to_i64(&args[0]);
+            let b = val_to_i64(&args[1]);
+            Some(Ok(Value::Int(SomaInt::from_i64(a.wrapping_shl(b as u32)))))
+        }
+        "shr" if args.len() >= 2 => {
+            let a = val_to_i64(&args[0]);
+            let b = val_to_i64(&args[1]);
+            Some(Ok(Value::Int(SomaInt::from_i64(a.wrapping_shr(b as u32)))))
+        }
+        // Number theory
+        "gcd" if args.len() >= 2 => {
+            let mut a = val_to_i64(&args[0]).unsigned_abs();
+            let mut b = val_to_i64(&args[1]).unsigned_abs();
+            while b != 0 { let t = b; b = a % b; a = t; }
+            Some(Ok(Value::Int(SomaInt::from_i64(a as i64))))
+        }
+        "sqrt_int" if args.len() >= 1 => {
+            let a = val_to_i64(&args[0]);
+            if a < 0 {
+                Some(Err(RuntimeError::TypeError("sqrt_int: negative argument".to_string())))
+            } else {
+                Some(Ok(Value::Int(SomaInt::from_i64((a as f64).sqrt() as i64))))
+            }
+        }
+        "pow_mod" if args.len() >= 3 => {
+            let base = val_to_i64(&args[0]) as i128;
+            let exp = val_to_i64(&args[1]);
+            let m = val_to_i64(&args[2]) as i128;
+            if m == 0 {
+                return Some(Err(RuntimeError::TypeError("pow_mod: modulus is zero".to_string())));
+            }
+            let mut r: i128 = 1;
+            let mut b = base.rem_euclid(m);
+            let mut e = exp;
+            while e > 0 {
+                if e & 1 == 1 { r = (r * b).rem_euclid(m); }
+                e >>= 1;
+                b = (b * b).rem_euclid(m);
+            }
+            Some(Ok(Value::Int(SomaInt::from_i64(r as i64))))
+        }
         _ => None,
     }
 }

@@ -59,6 +59,10 @@ const ALLOWED_BUILTINS: &[&str] = &[
     "map", "filter", "reduce", "fold",
     // Type conversions
     "to_float", "to_int", "to_string",
+    // Bit operations (Int)
+    "band", "bor", "bxor", "bnot", "shl", "shr",
+    // Number theory
+    "pow_mod", "gcd", "sqrt_int",
 ];
 
 /// Validate all statements in a [native] handler body.

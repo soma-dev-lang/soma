@@ -1,0 +1,116 @@
+// ============================================================================
+// Lucas-Lehmer Mersenne primality test
+// ============================================================================
+//
+// Tests whether M_p = 2^p − 1 is prime via the Lucas-Lehmer sequence:
+//   S_0 = 4
+//   S_{i+1} = S_i² − 2  (mod M_p)
+//   M_p is prime  iff  S_{p−2} ≡ 0 (mod M_p)
+//
+// The whole computation runs in one [native] handler. Each iteration squares
+// a multi-thousand-digit BigInt and reduces mod M_p — pure rug/GMP work.
+//
+// Run: soma run mersenne.cell
+
+cell Mersenne {
+
+    // Returns 1 if M_p = 2^p - 1 is prime, 0 otherwise.
+    // The codegen auto-detects this needs BigInt (m grows as 2^p, s squares).
+    on lucas_lehmer(p: Int) [native] {
+        // Build m = 2^p - 1
+        let m = 1
+        let j = 0
+        while j < p {
+            m = m * 2
+            j = j + 1
+        }
+        m = m - 1
+
+        // Special case: p = 2 → M_2 = 3, prime
+        if p == 2 { return 1 }
+
+        // Lucas-Lehmer iteration: s_{i+1} = (s_i² − 2) mod m
+        let s = 4
+        let i = 0
+        let limit = p - 2
+        while i < limit {
+            s = s * s
+            s = s - 2
+            s = s % m
+            i = i + 1
+        }
+
+        if s == 0 { return 1 }
+        return 0
+    }
+
+    on run() {
+        // Mix of known Mersenne primes (Mp prime) and known composites
+        // Source: OEIS A000043 (prime exponents) and the well-known composites.
+        //
+        //   p=521  → M_521  prime  (16th Mersenne prime, 157 digits)
+        //   p=607  → M_607  prime  (17th, 183 digits)
+        //   p=1279 → M_1279 prime  (18th, 386 digits)
+        //   p=2203 → M_2203 prime  (19th, 664 digits)
+        //   p=2281 → M_2281 prime  (20th, 687 digits)
+        //   p=3217 → M_3217 prime  (21st, 969 digits)
+        //   p=67   → composite (Frank Cole, 1903: 193707721 × 761838257287)
+        //   p=257  → composite
+        //   p=1009 → composite
+        //   p=1013 → composite
+
+        print("Lucas-Lehmer Mersenne primality test")
+        print("====================================")
+        print("")
+
+        check_one(521,  1)
+        check_one(607,  1)
+        check_one(1279, 1)
+        check_one(2203, 1)
+        check_one(2281, 1)
+        check_one(3217, 1)
+        check_one(4253, 1)
+        check_one(4423, 1)
+        check_one(67,   0)
+        check_one(257,  0)
+        check_one(1009, 0)
+        check_one(1013, 0)
+        check_one(2999, 0)
+        check_one(4001, 0)
+
+        print("")
+        print("Headline run: M_9689 (2917 digits, 24th Mersenne prime)")
+        let start = now_ms()
+        let r = lucas_lehmer(9689)
+        let elapsed = now_ms() - start
+        if r == 1 {
+            print("  M_9689 is prime  ({elapsed}ms)")
+        } else {
+            print("  M_9689 is COMPOSITE  ({elapsed}ms)")
+        }
+
+        print("")
+        print("Bigger run: M_11213 (3375 digits, 23rd Mersenne prime)")
+        let start2 = now_ms()
+        let r2 = lucas_lehmer(11213)
+        let elapsed2 = now_ms() - start2
+        if r2 == 1 {
+            print("  M_11213 is prime  ({elapsed2}ms)")
+        } else {
+            print("  M_11213 is COMPOSITE  ({elapsed2}ms)")
+        }
+    }
+
+    on check_one(p: Int, expected: Int) {
+        let start = now_ms()
+        let result = lucas_lehmer(p)
+        let elapsed = now_ms() - start
+        let label = "composite"
+        if expected == 1 { label = "prime" }
+        if result == expected {
+            print("  M_{p}: {label}  ({elapsed}ms) ✓")
+        } else {
+            print("  M_{p}: WRONG (got {result}, expected {expected})")
+        }
+    }
+}
