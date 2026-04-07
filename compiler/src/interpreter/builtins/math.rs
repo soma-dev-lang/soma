@@ -245,6 +245,31 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Ok(Value::Int(SomaInt::from_i64((a as f64).sqrt() as i64))))
             }
         }
+        "str_len" if args.len() >= 1 => {
+            match &args[0] {
+                Value::String(s) => Some(Ok(Value::Int(SomaInt::from_i64(s.len() as i64)))),
+                _ => Some(Err(RuntimeError::TypeError("str_len expects a String".to_string()))),
+            }
+        }
+        "str_at" if args.len() >= 2 => {
+            match &args[0] {
+                Value::String(s) => {
+                    let i = val_to_i64(&args[1]) as usize;
+                    if i >= s.len() {
+                        Some(Err(RuntimeError::TypeError(format!("str_at: index {} out of range for string of len {}", i, s.len()))))
+                    } else {
+                        Some(Ok(Value::Int(SomaInt::from_i64(s.as_bytes()[i] as i64))))
+                    }
+                }
+                _ => Some(Err(RuntimeError::TypeError("str_at expects (String, Int)".to_string()))),
+            }
+        }
+        "str_eq" if args.len() >= 2 => {
+            match (&args[0], &args[1]) {
+                (Value::String(a), Value::String(b)) => Some(Ok(Value::Bool(a == b))),
+                _ => Some(Err(RuntimeError::TypeError("str_eq expects two Strings".to_string()))),
+            }
+        }
         "pow_mod" if args.len() >= 3 => {
             let base = val_to_i64(&args[0]) as i128;
             let exp = val_to_i64(&args[1]);

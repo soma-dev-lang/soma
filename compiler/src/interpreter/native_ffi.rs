@@ -295,13 +295,15 @@ fn call_native_shared(native: &LoadedNative, args: &[super::Value]) -> Result<su
                 .map_err(|e| format!("[native] missing _soma_clear_args: {}", e))?;
         clear_fn();
 
-        // 2. Push each arg
+        // 2. Push each arg into the appropriate buffer
         let push_i64_fn: libloading::Symbol<unsafe extern "C" fn(i64)> =
             lib.get(b"_soma_push_i64")
                 .map_err(|e| format!("[native] missing _soma_push_i64: {}", e))?;
         let push_bigint_fn: libloading::Symbol<unsafe extern "C" fn(*const u8, i64)> =
             lib.get(b"_soma_push_bigint")
                 .map_err(|e| format!("[native] missing _soma_push_bigint: {}", e))?;
+        let push_string_fn: Option<libloading::Symbol<unsafe extern "C" fn(*const u8, i64)>> =
+            lib.get(b"_soma_push_string").ok();
 
         for (i, arg) in args.iter().enumerate() {
             match arg {
@@ -317,6 +319,13 @@ fn call_native_shared(native: &LoadedNative, args: &[super::Value]) -> Result<su
                 }
                 Value::Float(f) => push_i64_fn(*f as i64),
                 Value::Bool(b) => push_i64_fn(if *b { 1 } else { 0 }),
+                Value::String(s) => {
+                    if let Some(ref push) = push_string_fn {
+                        push(s.as_ptr(), s.len() as i64);
+                    } else {
+                        return Err(format!("[native] arg {} is a String but the cell has no _soma_push_string (rebuild needed)", i));
+                    }
+                }
                 _ => return Err(format!("[native] arg {} unsupported type", i)),
             }
         }

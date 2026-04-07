@@ -274,6 +274,11 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
     if handler.properties.iter().any(|p| p == "bigint") {
         return Mode::Rug;
     }
+    // String parameters can't go through the Direct C ABI — they need the
+    // shared-buffer FFI, which only Rug-mode handlers use.
+    if handler.params.iter().any(|p| type_expr_to_native(&p.ty.node) == NativeType::String) {
+        return Mode::Rug;
+    }
     let mut gen = FnGenerator::new(&handler.params, siblings, Mode::Direct);
     for p in &handler.params {
         gen.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
@@ -441,16 +446,29 @@ fn gen_rug_handler(
     }
     out.push_str("}\n\n");
 
-    // FFI entry — reads from shared buffer, calls inner, packs result
+    // FFI entry — reads from shared buffers, calls inner, packs result.
+    // Int / Float / Bool params come from _SOMA_ARGS; String params from
+    // _SOMA_STRING_ARGS. Each is indexed by its position WITHIN ITS TYPE.
     out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}() -> i64 {{\n", fn_name));
     let mut arg_exprs: Vec<String> = Vec::new();
-    for (i, p) in handler.params.iter().enumerate() {
+    let mut int_idx = 0;
+    let mut str_idx = 0;
+    for p in &handler.params {
         let ty = type_expr_to_native(&p.ty.node);
-        if ty == NativeType::Int {
-            arg_exprs.push(format!("unsafe {{ _SOMA_ARGS[{}].clone() }}", i));
-        } else {
-            arg_exprs.push(format!("unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) as {} }}",
-                i, ty.rust_str()));
+        match ty {
+            NativeType::Int => {
+                arg_exprs.push(format!("unsafe {{ _SOMA_ARGS[{}].clone() }}", int_idx));
+                int_idx += 1;
+            }
+            NativeType::String => {
+                arg_exprs.push(format!("unsafe {{ _SOMA_STRING_ARGS[{}].clone() }}", str_idx));
+                str_idx += 1;
+            }
+            NativeType::Float | NativeType::Bool => {
+                arg_exprs.push(format!("unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) as {} }}",
+                    int_idx, ty.rust_str()));
+                int_idx += 1;
+            }
         }
     }
     let call_args = arg_exprs.join(", ");
@@ -896,6 +914,8 @@ impl FnGenerator {
                     "to_int" | "len" | "floor" | "ceil" | "round" => NativeType::Int,
                     "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" => NativeType::Int,
                     "gcd" | "pow_mod" | "sqrt_int" => NativeType::Int,
+                    "str_len" | "str_at" => NativeType::Int,
+                    "str_eq" => NativeType::Bool,
                     "abs" | "min" | "max" => {
                         if args.is_empty() { NativeType::Float }
                         else { self.infer_expr_type(&args[0].node) }
@@ -1199,7 +1219,7 @@ impl FnGenerator {
                 let a = self.gen_expr_direct(&args[0].node, a_ty);
                 format!("format!(\"{{}}\", {})", a)
             }
-            "len" => {
+            "len" | "str_len" => {
                 let arg_ty = self.infer_expr_type(&args[0].node);
                 if arg_ty == NativeType::String {
                     let a = self.gen_expr_direct(&args[0].node, NativeType::String);
@@ -1210,6 +1230,16 @@ impl FnGenerator {
                         "0i64".to_string()
                     }
                 }
+            }
+            "str_at" if args.len() == 2 => {
+                let s = self.gen_expr_direct(&args[0].node, NativeType::String);
+                let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                format!("({}.as_bytes()[({}) as usize] as i64)", s, i)
+            }
+            "str_eq" if args.len() == 2 => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::String);
+                let b = self.gen_expr_direct(&args[1].node, NativeType::String);
+                format!("(({}) == ({}))", a, b)
             }
             "range" if args.len() == 2 => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
@@ -1279,6 +1309,13 @@ impl FnGenerator {
                     // Sibling expects Integer, we have i64 → Integer::from(...)
                     let e = self.gen_expr_direct(&arg.node, NativeType::Int);
                     format!("Integer::from({})", e)
+                } else if expected == NativeType::String {
+                    // Always clone String args to avoid move-then-borrow conflicts
+                    if let Expr::Ident(name) = &arg.node {
+                        format!("{}.clone()", name)
+                    } else {
+                        self.gen_expr_direct(&arg.node, NativeType::String)
+                    }
                 } else {
                     self.gen_expr_direct(&arg.node, expected)
                 }
@@ -1779,6 +1816,35 @@ impl FnGenerator {
         }
     }
 
+    /// Convert a Rug-mode Int expression to an i64 (for use as a usize index, etc.)
+    fn gen_int_to_i64_rug(&self, expr: &Expr) -> String {
+        match expr {
+            Expr::Literal(Literal::Int(n)) => format!("{}i64", n),
+            Expr::Ident(name) => {
+                let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
+                if var_ty == NativeType::Int {
+                    if self.small_int_vars.contains(name) {
+                        name.clone()
+                    } else {
+                        format!("{}.to_i64().unwrap()", name)
+                    }
+                } else {
+                    format!("{} as i64", name)
+                }
+            }
+            Expr::BinaryOp { left, op, right } => {
+                let l = self.gen_int_to_i64_rug(&left.node);
+                let r = self.gen_int_to_i64_rug(&right.node);
+                let op_str = match op {
+                    BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                    BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
+                };
+                format!("({} {} {})", l, op_str, r)
+            }
+            _ => format!("{}.to_i64().unwrap()", self.gen_expr_rug(expr)),
+        }
+    }
+
     /// Borrow-form `&Integer` expression for rug API methods that take `&Integer`.
     /// For Ident vars: emit `&name` (no copy). For literals or compound exprs:
     /// fall back to `&Integer::from(...)` (one alloc, but unavoidable).
@@ -2070,6 +2136,37 @@ impl FnGenerator {
                 let a = self.gen_expr_rug(&args[0].node);
                 format!("({}).abs()", a)
             }
+            // String introspection — return Int
+            "str_len" | "len" if args.len() == 1 => {
+                let arg_ty = self.infer_expr_type(&args[0].node);
+                if arg_ty == NativeType::String {
+                    if let Expr::Ident(name) = &args[0].node {
+                        return format!("Integer::from({}.len() as i64)", name);
+                    }
+                    let a = self.gen_expr_direct(&args[0].node, NativeType::String);
+                    format!("Integer::from(({}).len() as i64)", a)
+                } else {
+                    self.err("len() / str_len() only supported on String");
+                    "Integer::from(0i64)".to_string()
+                }
+            }
+            "str_at" if args.len() == 2 => {
+                let s_name = if let Expr::Ident(name) = &args[0].node {
+                    name.clone()
+                } else {
+                    self.gen_expr_direct(&args[0].node, NativeType::String)
+                };
+                // The index is an Int expression in Rug mode (could be Integer)
+                // — produce code that yields a usize.
+                let i_int = self.gen_int_to_i64_rug(&args[1].node);
+                format!("Integer::from({}.as_bytes()[({}) as usize] as i64)", s_name, i_int)
+            }
+            "min" | "max" if args.len() == 2 => {
+                let a = self.gen_expr_rug(&args[0].node);
+                let b = self.gen_expr_rug(&args[1].node);
+                let cmp = if name == "min" { "<" } else { ">" };
+                format!("{{ let _a = {}; let _b = {}; if _a {} _b {{ _a }} else {{ _b }} }}", a, b, cmp)
+            }
             "to_int" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
                 if a_ty == NativeType::Int {
@@ -2170,13 +2267,11 @@ impl FnGenerator {
             self.gen_expr_rug(expr)
         } else if expected == NativeType::Int && callee_mode == Mode::Direct {
             // Callee expects i64
-            // If we have an Integer expression, convert to i64
             let arg_ty = self.infer_expr_type(expr);
             if arg_ty == NativeType::Int && self.mode == Mode::Rug {
-                // Source is Integer (or small i64) — convert
                 if let Expr::Ident(name) = expr {
                     if self.small_int_vars.contains(name) {
-                        return name.clone();  // already i64
+                        return name.clone();
                     }
                     return format!("({}.to_i64().expect(\"BigInt overflow in sibling call\"))", name);
                 }
@@ -2185,8 +2280,15 @@ impl FnGenerator {
             } else {
                 self.gen_expr_direct(expr, NativeType::Int)
             }
+        } else if expected == NativeType::String {
+            // String arg: always clone at the call site to avoid move-then-borrow
+            // conflicts when the same variable appears in multiple positions.
+            if let Expr::Ident(name) = expr {
+                format!("{}.clone()", name)
+            } else {
+                self.gen_expr_direct(expr, NativeType::String)
+            }
         } else {
-            // Float / Bool / String — same in both modes
             self.gen_expr_direct(expr, expected)
         }
     }
@@ -2195,13 +2297,20 @@ impl FnGenerator {
 // ── Shared buffer source for Rug mode ───────────────────────────────
 
 const SHARED_BUFFER_RUG: &str = r#"
-// Shared arg/result buffer for Rug-mode handlers
+// Shared arg/result buffers for Rug-mode handlers.
+// Int args go in _SOMA_ARGS; String args go in _SOMA_STRING_ARGS.
+// Each buffer is a flat positional array; the handler param-reader knows
+// which positional index in each buffer corresponds to which parameter.
 static mut _SOMA_ARGS: Vec<Integer> = Vec::new();
+static mut _SOMA_STRING_ARGS: Vec<String> = Vec::new();
 static mut _SOMA_RESULT: Option<String> = None;
 
 #[no_mangle]
 pub extern "C" fn _soma_clear_args() {
-    unsafe { _SOMA_ARGS.clear(); }
+    unsafe {
+        _SOMA_ARGS.clear();
+        _SOMA_STRING_ARGS.clear();
+    }
 }
 
 #[no_mangle]
@@ -2216,6 +2325,14 @@ pub extern "C" fn _soma_push_bigint(ptr: *const u8, len: i64) {
         let s = std::str::from_utf8_unchecked(bytes);
         let val = Integer::parse(s).unwrap();
         _SOMA_ARGS.push(Integer::from(val));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn _soma_push_string(ptr: *const u8, len: i64) {
+    unsafe {
+        let bytes = std::slice::from_raw_parts(ptr, len as usize);
+        _SOMA_STRING_ARGS.push(std::str::from_utf8_unchecked(bytes).to_string());
     }
 }
 

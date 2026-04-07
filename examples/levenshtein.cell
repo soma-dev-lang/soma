@@ -1,0 +1,57 @@
+// ============================================================================
+// Levenshtein edit distance (recursive)
+// ============================================================================
+//
+// Computes edit distance between two ASCII strings via direct recursion
+// (no memoization). O(3^max(m,n)), so only practical for short strings.
+//
+// Tests String parameters in [native], `str_len`/`str_at` builtins, and
+// recursive sibling calls passing String args.
+//
+// Run: soma run levenshtein.cell
+
+cell Levenshtein {
+
+    // Recursive Levenshtein on the prefixes a[..i] and b[..j].
+    on lev(a: String, b: String, i: Int, j: Int) [native] {
+        if i == 0 { return j }
+        if j == 0 { return i }
+        if str_at(a, i - 1) == str_at(b, j - 1) {
+            return lev(a, b, i - 1, j - 1)
+        }
+        let d1 = lev(a, b, i - 1, j)
+        let d2 = lev(a, b, i, j - 1)
+        let d3 = lev(a, b, i - 1, j - 1)
+        return 1 + min(min(d1, d2), d3)
+    }
+
+    on edit_distance(a: String, b: String) [native] {
+        return lev(a, b, str_len(a), str_len(b))
+    }
+
+    on check(a: String, b: String, expected: Int) {
+        let start = now_ms()
+        let d = edit_distance(a, b)
+        let elapsed = now_ms() - start
+        if d == expected {
+            print("  edit({a}, {b}) = {d}  ({elapsed}ms) ✓")
+        } else {
+            print("  edit({a}, {b}) = {d}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Levenshtein edit distance (recursive)")
+        print("=====================================")
+        print("")
+        check("", "", 0)
+        check("a", "", 1)
+        check("", "abc", 3)
+        check("kitten", "sitting", 3)
+        check("flaw", "lawn", 2)
+        check("intention", "execution", 5)
+        check("Saturday", "Sunday", 3)
+        // Recursive without memo is exponential, so keep strings short
+        check("abcdefghi", "ihgfedcba", 8)
+    }
+}

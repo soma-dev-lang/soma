@@ -1,0 +1,16 @@
+cargo:rerun-if-env-changed=GMP_MPFR_SYS_CACHE
+$ mkdir -p "/Users/antoine/soma/.soma_cache/native/proj/target/release/build/gmp-mpfr-sys-2cdff9757b33ba66/out/lib"
+$ mkdir -p "/Users/antoine/soma/.soma_cache/native/proj/target/release/build/gmp-mpfr-sys-2cdff9757b33ba66/out/include"
+$ cp "/Users/antoine/Library/Caches/gmp-mpfr-sys/1.7/aarch64-apple-darwin/1.7.0/libgmp.a" "/Users/antoine/soma/.soma_cache/native/proj/target/release/build/gmp-mpfr-sys-2cdff9757b33ba66/out/lib/libgmp.a"
+cargo:limb_bits=64
+cargo:rustc-check-cfg=cfg(nails)
+cargo:rustc-check-cfg=cfg(long_long_limb)
+$ cp "/Users/antoine/Library/Caches/gmp-mpfr-sys/1.7/aarch64-apple-darwin/1.7.0/gmp.h" "/Users/antoine/soma/.soma_cache/native/proj/target/release/build/gmp-mpfr-sys-2cdff9757b33ba66/out/include/gmp.h"
+cargo:limb_bits=64
+cargo:rustc-check-cfg=cfg(nails)
+cargo:rustc-check-cfg=cfg(long_long_limb)
+cargo:out_dir=/Users/antoine/soma/.soma_cache/native/proj/target/release/build/gmp-mpfr-sys-2cdff9757b33ba66/out
+cargo:lib_dir=/Users/antoine/soma/.soma_cache/native/proj/target/release/build/gmp-mpfr-sys-2cdff9757b33ba66/out/lib
+cargo:include_dir=/Users/antoine/soma/.soma_cache/native/proj/target/release/build/gmp-mpfr-sys-2cdff9757b33ba66/out/include
+cargo:rustc-link-search=native=/Users/antoine/soma/.soma_cache/native/proj/target/release/build/gmp-mpfr-sys-2cdff9757b33ba66/out/lib
+cargo:rustc-link-lib=static=gmp

@@ -63,6 +63,8 @@ const ALLOWED_BUILTINS: &[&str] = &[
     "band", "bor", "bxor", "bnot", "shl", "shr",
     // Number theory
     "pow_mod", "gcd", "sqrt_int",
+    // String introspection
+    "str_len", "str_at", "str_eq",
 ];
 
 /// Validate all statements in a [native] handler body.
