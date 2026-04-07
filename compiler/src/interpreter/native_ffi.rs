@@ -236,7 +236,12 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
         match expected_ty {
             NativeType::Int => {
                 let val = match arg {
-                    Value::Int(si) => si.to_i64().unwrap_or(0),
+                    Value::Int(si) => si.to_i64().ok_or_else(|| format!(
+                        "[native] '{}' arg {} is a BigInt that doesn't fit i64; \
+                         the handler runs in Direct mode (i64). Mark it [native, bigint] \
+                         or use a String return type to opt into Rug mode.",
+                        native.sig.fn_name, i
+                    ))?,
                     Value::Float(f) => *f as i64,
                     Value::Bool(b) => if *b { 1 } else { 0 },
                     _ => return Err(format!("[native] arg {} must be Int", i)),
@@ -334,24 +339,30 @@ fn call_native_shared(native: &LoadedNative, args: &[super::Value]) -> Result<su
         let handler_fn: extern "C" fn() -> i64 = std::mem::transmute(native.fn_ptr);
         let result_i64 = handler_fn();
 
-        // 4. Read result based on return type
+        // 4. Read result based on return type. Rug-mode handlers return
+        // an i64 with these encodings (matching gen_rug_handler's emitter):
+        //   String → result is i64::MIN+1, value in _SOMA_RESULT
+        //   Int    → result is i64 if it fits, else i64::MIN with value in _SOMA_RESULT
+        //   Float  → result is f64::to_bits(value) as i64
+        //   Bool   → result is 0 or 1
         match native.sig.return_type {
             NativeType::String => {
-                // String result: always in shared buffer
                 let s = read_shared_result(lib)?;
                 Ok(Value::String(s))
             }
             NativeType::Int => {
                 if result_i64 == i64::MIN {
-                    // BigInt result: read from shared buffer
                     let s = read_shared_result(lib)?;
                     Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_decimal_str(&s)))
                 } else {
                     Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
                 }
             }
-            _ => {
-                Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
+            NativeType::Float => {
+                Ok(Value::Float(f64::from_bits(result_i64 as u64)))
+            }
+            NativeType::Bool => {
+                Ok(Value::Bool(result_i64 != 0))
             }
         }
     }
