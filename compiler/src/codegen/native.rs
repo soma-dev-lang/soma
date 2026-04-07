@@ -113,9 +113,6 @@ pub fn generate_native_source_with_config(
         }
         // (2) For each Direct handler that takes Int params: if any Rug
         //     handler calls it, promote it to Rug.
-        let mode_of: HashMap<&str, Mode> = handlers.iter().enumerate()
-            .map(|(j, h)| (h.signal_name.as_str(), modes[j]))
-            .collect();
         for i in 0..handlers.len() {
             if modes[i] == Mode::Rug { continue; }
             let name = &handlers[i].signal_name;
@@ -127,8 +124,21 @@ pub fn generate_native_source_with_config(
                 modes[i] = Mode::Rug;
                 changed = true;
             }
-            // Suppress unused warning for mode_of in this branch
-            let _ = &mode_of;
+        }
+        // (3) Recursive Fibonacci-style: any handler that passes a 'a + b'
+        //     style expression to a sibling as an Int argument → that sibling
+        //     receives a potentially-unbounded value → promote it to Rug.
+        for i in 0..handlers.len() {
+            if modes[i] == Mode::Rug { continue; }
+            let name = &handlers[i].signal_name;
+            if !int_param_handlers.contains(name) { continue; }
+            let called_with_unbounded_arg = handlers.iter().any(|h| {
+                body_calls_with_unbounded_arg(&h.body, name)
+            });
+            if called_with_unbounded_arg {
+                modes[i] = Mode::Rug;
+                changed = true;
+            }
         }
         if !changed { break; }
     }
@@ -358,6 +368,65 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
     }
 
     Mode::Direct
+}
+
+/// True if `body` contains a call to `target` where any argument is an
+/// additive expression of two distinct Int identifiers (the Fibonacci
+/// recurrence pattern that grows without bound across recursion).
+fn body_calls_with_unbounded_arg(body: &[Spanned<Statement>], target: &str) -> bool {
+    fn arg_is_unbounded(e: &Expr) -> bool {
+        match e {
+            Expr::BinaryOp { left, op, right } if matches!(op, BinOp::Add | BinOp::Sub) => {
+                let l_ident = matches!(&left.node, Expr::Ident(_));
+                let r_ident = matches!(&right.node, Expr::Ident(_));
+                if l_ident && r_ident {
+                    if let (Expr::Ident(a), Expr::Ident(b)) = (&left.node, &right.node) {
+                        if a != b { return true; }
+                    }
+                }
+                arg_is_unbounded(&left.node) || arg_is_unbounded(&right.node)
+            }
+            _ => false,
+        }
+    }
+    fn expr_walk(e: &Expr, target: &str) -> bool {
+        match e {
+            Expr::FnCall { name, args } => {
+                if name == target && args.iter().any(|a| arg_is_unbounded(&a.node)) {
+                    return true;
+                }
+                args.iter().any(|a| expr_walk(&a.node, target))
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+                expr_walk(&left.node, target) || expr_walk(&right.node, target)
+            }
+            Expr::Not(inner) => expr_walk(&inner.node, target),
+            _ => false,
+        }
+    }
+    fn stmt_walk(s: &Statement, target: &str) -> bool {
+        match s {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
+                expr_walk(&value.node, target)
+            }
+            Statement::ExprStmt { expr } => expr_walk(&expr.node, target),
+            Statement::If { condition, then_body, else_body } => {
+                expr_walk(&condition.node, target)
+                    || body_calls_with_unbounded_arg(then_body, target)
+                    || body_calls_with_unbounded_arg(else_body, target)
+            }
+            Statement::While { condition, body } => {
+                expr_walk(&condition.node, target)
+                    || body_calls_with_unbounded_arg(body, target)
+            }
+            Statement::For { iter, body, .. } => {
+                expr_walk(&iter.node, target)
+                    || body_calls_with_unbounded_arg(body, target)
+            }
+            _ => false,
+        }
+    }
+    body.iter().any(|s| stmt_walk(&s.node, target))
 }
 
 /// True if `body` contains any call to a function named `target`.
