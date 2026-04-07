@@ -1650,12 +1650,16 @@ impl FnGenerator {
                 self.var_types.insert(name.clone(), ty);
             }
             Statement::Assign { name, value } => {
-                let ty = self.infer_expr_type(&value.node);
-                if let Some(existing) = self.var_types.get(name) {
-                    if *existing == NativeType::Int && ty == NativeType::Float {
-                        self.var_types.insert(name.clone(), NativeType::Float);
-                    }
-                } else {
+                // Honor the declared type — assigning to a variable does NOT
+                // change its type. Auto-promoting Int → Float here used to
+                // poison inference: a recursive sibling call's return type
+                // (initially Float placeholder during the fixpoint) would
+                // promote a parameter `arr: Int` into Float, which then
+                // propagated through codegen and produced invalid Rust like
+                // `Integer::from(arr as i64)` for an Integer-typed local.
+                let _ = value;
+                if !self.var_types.contains_key(name) {
+                    let ty = self.infer_expr_type(&value.node);
                     self.var_types.insert(name.clone(), ty);
                 }
             }
@@ -2248,11 +2252,16 @@ impl FnGenerator {
 
                 // Hoist Integer locals declared anywhere in the loop body
                 // (recursively) to this scope so GMP buffers persist across
-                // iterations.
+                // iterations. Sort the names so the generated source is
+                // deterministic — otherwise HashSet iteration order varies
+                // run-to-run, every dylib hash differs, and every Soma run
+                // recompiles from scratch (a 400ms overhead per call).
                 let mut new_hoisted: HashSet<String> = HashSet::new();
                 self.collect_loop_int_vars(body, &mut new_hoisted);
                 for v in &ctx.hoisted { new_hoisted.remove(v); }
-                for var in &new_hoisted {
+                let mut sorted: Vec<&String> = new_hoisted.iter().collect();
+                sorted.sort();
+                for var in &sorted {
                     s.push_str(&format!("{}let mut {}: Integer = Integer::new();\n", ind, var));
                 }
 
