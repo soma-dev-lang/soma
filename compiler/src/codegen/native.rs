@@ -1259,6 +1259,15 @@ impl FnGenerator {
             }
             Expr::FnCall { name, args } => {
                 if !is_bounded_builtin(name) && !siblings.contains(name) { return false; }
+                // shl is i64-safe only when the shift amount is a small literal.
+                // shl(1, n) for n>=63 overflows i64; treat any shl with a
+                // non-literal (or large literal) shift count as unbounded.
+                if name == "shl" && args.len() >= 2 {
+                    match &args[1].node {
+                        Expr::Literal(Literal::Int(k)) if *k < 60 && *k >= 0 => {}
+                        _ => return false,
+                    }
+                }
                 args.iter().all(|a| Self::is_bounded_expr(&a.node, small, siblings, var_types))
             }
             _ => false,
