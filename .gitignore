@@ -1,6 +1,8 @@
 # Build artifacts
 compiler/target/
 .soma_data/
+.soma_cache/
+**/.soma_cache/
 
 # OS
 .DS_Store
