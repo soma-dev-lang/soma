@@ -1,0 +1,51 @@
+// ============================================================================
+// BBP formula for π
+// ============================================================================
+//
+//   π = Σ_{k=0}^∞ (1/16^k) · (4/(8k+1) − 2/(8k+4) − 1/(8k+5) − 1/(8k+6))
+//
+// Each term shrinks by ~16×, so 15 terms give ~18 decimal digits.
+// f64 only has ~15 significant decimal digits, so the precision saturates.
+//
+// Tests Direct-mode Float arithmetic (no Int variables in the hot loop
+// except a counter).
+//
+// Run: soma run bbp_pi.cell
+
+cell BBPPi {
+
+    on bbp(terms: Int) [native] {
+        let pi = 0.0
+        let p16 = 1.0
+        let k = 0
+        while k < terms {
+            let kf = to_float(k)
+            let term = (4.0 / (8.0 * kf + 1.0)
+                      - 2.0 / (8.0 * kf + 4.0)
+                      - 1.0 / (8.0 * kf + 5.0)
+                      - 1.0 / (8.0 * kf + 6.0)) / p16
+            pi = pi + term
+            p16 = p16 * 16.0
+            k = k + 1
+        }
+        return pi
+    }
+
+    on run() {
+        print("BBP formula for π")
+        print("=================")
+        print("")
+        // f64 π ≈ 3.141592653589793
+        let true_pi = 3.141592653589793
+        for n in list(5, 10, 15, 20, 30) {
+            let pi = bbp(n)
+            let err = pi - true_pi
+            if err < 0.0 { err = 0.0 - err }
+            print("  bbp({n}) = {pi}  (|error| = {err})")
+        }
+
+        print("")
+        let pi30 = bbp(30)
+        if pi30 == true_pi { print("  bbp(30) matches f64 π exactly ✓") }
+    }
+}
