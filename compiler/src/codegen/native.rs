@@ -2819,6 +2819,19 @@ impl FnGenerator {
                     format!("format!(\"{{}}\", {})", a)
                 }
             }
+            // Sibling call returning String — call directly without forcing
+            // Integer context (which would error). Marshals args based on the
+            // sibling's parameter types.
+            Expr::FnCall { name, args }
+                if self.siblings.contains(name)
+                    && self.sibling_info.get(name).map(|i| i.return_type) == Some(NativeType::String) =>
+            {
+                let info = self.sibling_info.get(name).cloned().unwrap();
+                let arg_strs: Vec<String> = args.iter().zip(info.param_types.iter())
+                    .map(|(arg, &expected)| self.marshal_arg_to_sibling(&arg.node, expected, info.mode))
+                    .collect();
+                format!("inner_handler_{}({})", name, arg_strs.join(", "))
+            }
             Expr::Ident(name) => {
                 let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
                 if var_ty == NativeType::String {
