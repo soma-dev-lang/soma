@@ -1163,15 +1163,25 @@ impl FnGenerator {
     fn gen_for_iter_direct(&self, expr: &Expr) -> String {
         if let Expr::FnCall { name, args } = expr {
             if name == "range" && args.len() == 2 {
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                // Range bounds must be i64. In Rug mode, an Int parameter or
+                // local could be `Integer` — convert via to_i64().
+                let a = self.gen_for_bound(&args[0].node);
+                let b = self.gen_for_bound(&args[1].node);
                 return format!("{}..{}", a, b);
             }
         }
-        {
-            self.err("unsupported for-loop iterator (only range(a, b) is supported)");
-            "0..0".to_string()
+        self.err("unsupported for-loop iterator (only range(a, b) is supported)");
+        "0..0".to_string()
+    }
+
+    /// Lower a range bound expression to i64. Works in both Direct and Rug
+    /// modes — in Direct mode every Int local is already i64; in Rug mode,
+    /// non-small Int locals/params are `Integer` and need .to_i64().unwrap().
+    fn gen_for_bound(&self, expr: &Expr) -> String {
+        if self.mode == Mode::Rug {
+            return self.gen_int_to_i64_rug(expr);
         }
+        self.gen_expr_direct(expr, NativeType::Int)
     }
 
     fn gen_expr_direct(&self, expr: &Expr, target_ty: NativeType) -> String {
