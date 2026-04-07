@@ -1,0 +1,97 @@
+// ============================================================================
+// Pell equation solver:  x² − nn·y² = 1
+// ============================================================================
+//
+// Finds the fundamental solution (smallest positive (x, y)) using the
+// continued-fraction expansion of √nn and accumulating convergents until
+// x² − nn·y² = 1.
+//
+// Returns the result as a "x y" string (since handlers return one value).
+//
+// Run: soma run pell.cell
+
+cell Pell {
+
+    // Returns the fundamental solution as "x y", or "0 0" if nn is a square.
+    on pell(nn: Int) [native] {
+        // Reject perfect squares
+        let a0 = isqrt(nn)
+        if a0 * a0 == nn {
+            return "0 0"
+        }
+
+        // CF expansion state
+        let m = 0
+        let d = 1
+        let a = a0
+
+        // Convergent recurrence
+        let h_prev = 1
+        let h_cur = a0
+        let k_prev = 0
+        let k_cur = 1
+
+        while true {
+            // Next CF coefficient
+            m = d * a - m
+            d = (nn - m * m) / d
+            a = (a0 + m) / d
+
+            // Next convergent
+            let h_next = a * h_cur + h_prev
+            let k_next = a * k_cur + k_prev
+            h_prev = h_cur
+            h_cur = h_next
+            k_prev = k_cur
+            k_cur = k_next
+
+            // Pell test
+            let lhs = h_cur * h_cur - nn * k_cur * k_cur
+            if lhs == 1 { break }
+        }
+        // Build "x y"
+        let result = to_string(h_cur)
+        result = result + " "
+        result = result + to_string(k_cur)
+        return result
+    }
+
+    // Inlined integer sqrt (Newton)
+    on isqrt(n: Int) [native] {
+        if n < 2 { return n }
+        let x = n
+        let y = (x + 1) / 2
+        while y < x {
+            x = y
+            y = (x + n / x) / 2
+        }
+        return x
+    }
+
+    on check(d: Int, expected: String) {
+        let start = now_ms()
+        let r = pell(d)
+        let elapsed = now_ms() - start
+        if r == expected {
+            print("  Pell({d}): {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  Pell({d}): got '{r}', expected '{expected}'")
+        }
+    }
+
+    on run() {
+        print("Pell equation x² − nn·y² = 1")
+        print("===========================")
+        print("")
+        check(2, "3 2")
+        check(3, "2 1")
+        check(5, "9 4")
+        check(6, "5 2")
+        check(7, "8 3")
+        check(13, "649 180")
+        check(29, "9801 1820")
+        check(41, "2049 320")
+        check(61, "1766319049 226153980")          // famous "smallest" big solution
+        check(109, "158070671986249 15140424455100")
+    }
+}

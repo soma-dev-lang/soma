@@ -2011,6 +2011,15 @@ impl FnGenerator {
             }
         }
 
+        // RHS references the target → can't `name.assign(... &name ...)`
+        // because of the borrow conflict. Compute into a fresh Integer
+        // first, then swap into place.
+        if Self::expr_references(value, name) {
+            let expr = self.gen_expr_rug(value);
+            return format!("{}{{ let mut _t: Integer = {}; std::mem::swap(&mut {}, &mut _t); }}\n",
+                ind, expr, name);
+        }
+
         // General: x.assign(incomplete_expr)
         let expr = self.gen_expr_rug_incomplete(value);
         format!("{}{}.assign({});\n", ind, name, expr)
