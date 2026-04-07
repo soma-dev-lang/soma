@@ -1,0 +1,87 @@
+// ============================================================================
+// Mandelbrot escape-count
+// ============================================================================
+//
+// For each point (cx, cy) in an N×N grid covering [-2, 1] × [-1.5, 1.5],
+// iterate z := z² + c starting from z = 0 and count points that don't
+// escape (|z| ≥ 2) within max_iter steps. The total count is the number
+// of grid points "inside" the Mandelbrot set at this resolution.
+//
+// Tests Direct-mode Float performance in nested loops — a part of the
+// codegen the BigInt benchmarks (PI, Mersenne) never exercise.
+//
+// Run: soma run mandelbrot.cell
+
+cell Mandelbrot {
+
+    // Returns the count of grid points that didn't escape within max_iter.
+    on count_inside(grid_n: Int, max_iter: Int) [native] {
+        let x_min = -2.0
+        let x_max = 1.0
+        let y_min = -1.5
+        let y_max = 1.5
+        let dx = (x_max - x_min) / to_float(grid_n)
+        let dy = (y_max - y_min) / to_float(grid_n)
+
+        let inside = 0
+        let py = 0
+        while py < grid_n {
+            let cy = y_min + to_float(py) * dy
+            let px = 0
+            while px < grid_n {
+                let cx = x_min + to_float(px) * dx
+
+                let zx = 0.0
+                let zy = 0.0
+                let zx2 = 0.0
+                let zy2 = 0.0
+                let iter = 0
+                while iter < max_iter {
+                    if zx2 + zy2 >= 4.0 {
+                        iter = max_iter + 1   // sentinel: escaped
+                    } else {
+                        zy = 2.0 * zx * zy + cy
+                        zx = zx2 - zy2 + cx
+                        zx2 = zx * zx
+                        zy2 = zy * zy
+                        iter = iter + 1
+                    }
+                }
+                if iter == max_iter {
+                    inside = inside + 1
+                }
+                px = px + 1
+            }
+            py = py + 1
+        }
+
+        return inside
+    }
+
+    on run() {
+        print("Mandelbrot escape-count")
+        print("=======================")
+        print("")
+
+        // Sanity checks against the hand-written rust reference.
+        check_one(50,    100,   431)
+        check_one(100,   255,   1719)
+        check_one(500,   500,   42223)
+
+        print("")
+        print("Headline runs:")
+        check_one(1000,  1000,  167987)
+        check_one(2000,  1000,  671563)
+    }
+
+    on check_one(grid: Int, iters: Int, expected: Int) {
+        let start = now_ms()
+        let r = count_inside(grid, iters)
+        let elapsed = now_ms() - start
+        if r == expected {
+            print("  {grid}×{grid} iters={iters}: inside = {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  {grid}×{grid} iters={iters}: got {r}, expected {expected}")
+        }
+    }
+}
