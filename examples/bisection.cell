@@ -1,0 +1,64 @@
+// ============================================================================
+// Bisection method — find a root of a continuous function
+// ============================================================================
+//
+// Given f and a bracket [a, b] with f(a) · f(b) < 0, repeatedly halve the
+// interval. Soma's [native] doesn't have function pointers, so we hard-
+// code one specific f and reuse the bisection scaffold.
+//
+// Test: f(x) = x³ − x − 2 has a root near x ≈ 1.521.
+//
+// Run: soma run bisection.cell
+
+cell Bisection {
+
+    on f(x: Float) [native] {
+        return x * x * x - x - 2.0
+    }
+
+    on bisect(a: Float, b: Float, tol: Float) [native] {
+        let lo = a
+        let hi = b
+        let i = 0
+        while i < 200 {
+            let mid = (lo + hi) / 2.0
+            let fm = f(mid)
+            let abs_fm = fm
+            if abs_fm < 0.0 { abs_fm = 0.0 - abs_fm }
+            let width = hi - lo
+            if width < 0.0 { width = 0.0 - width }
+            if abs_fm < tol { return mid }
+            if width < tol { return mid }
+            let fa = f(lo)
+            let same_sign = 0
+            if fa < 0.0 {
+                if fm < 0.0 { same_sign = 1 }
+            }
+            if fa >= 0.0 {
+                if fm >= 0.0 { same_sign = 1 }
+            }
+            if same_sign == 1 {
+                lo = mid
+            } else {
+                hi = mid
+            }
+            i = i + 1
+        }
+        return (lo + hi) / 2.0
+    }
+
+    on run() {
+        print("Bisection method — root of x³ − x − 2 = 0")
+        print("==========================================")
+        print("")
+        let r = bisect(1.0, 2.0, 0.000000001)
+        // True root ≈ 1.521379706804568
+        let d = r - 1.521379706804568
+        if d < 0.0 { d = 0.0 - d }
+        if d < 0.00001 {
+            print("  root ≈ {r} ✓")
+        } else {
+            print("  got {r}, expected ≈ 1.521")
+        }
+    }
+}

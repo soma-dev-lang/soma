@@ -1,0 +1,83 @@
+// ============================================================================
+// Caesar cipher — letter shift on a String
+// ============================================================================
+//
+// Soma's [native] dialect can read string bytes via str_at and concatenate
+// strings with `+`, but there's no character-level mutation. We build the
+// output by concatenating one-byte strings via to_string of the integer
+// code... wait, to_string(int) gives the decimal representation. Instead
+// we use a small lookup helper that returns the desired character as a
+// 1-byte string literal selected by repeated comparison.
+//
+// Run: soma run caesar.cell
+
+cell Caesar {
+
+    // Map an int 0..25 to its lowercase letter as a 1-byte String.
+    on letter(i: Int) [native] {
+        if i == 0  { return "a" }
+        if i == 1  { return "b" }
+        if i == 2  { return "c" }
+        if i == 3  { return "d" }
+        if i == 4  { return "e" }
+        if i == 5  { return "f" }
+        if i == 6  { return "g" }
+        if i == 7  { return "h" }
+        if i == 8  { return "i" }
+        if i == 9  { return "j" }
+        if i == 10 { return "k" }
+        if i == 11 { return "l" }
+        if i == 12 { return "m" }
+        if i == 13 { return "n" }
+        if i == 14 { return "o" }
+        if i == 15 { return "p" }
+        if i == 16 { return "q" }
+        if i == 17 { return "r" }
+        if i == 18 { return "s" }
+        if i == 19 { return "t" }
+        if i == 20 { return "u" }
+        if i == 21 { return "v" }
+        if i == 22 { return "w" }
+        if i == 23 { return "x" }
+        if i == 24 { return "y" }
+        return "z"
+    }
+
+    on encrypt(s: String, shift: Int) [native] {
+        let out = ""
+        let i = 0
+        let n = str_len(s)
+        let k = shift % 26
+        if k < 0 { k = k + 26 }
+        while i < n {
+            let c = str_at(s, i)
+            // 'a'=97, 'z'=122
+            if c >= 97 {
+                if c <= 122 {
+                    let off = (c - 97 + k) % 26
+                    out = out + letter(off)
+                    i = i + 1
+                    continue
+                }
+            }
+            out = out + " "
+            i = i + 1
+        }
+        return out
+    }
+
+    on run() {
+        print("Caesar cipher")
+        print("=============")
+        print("")
+        let e1 = encrypt("hello", 3)
+        if str_eq(e1, "khoor") { print("  hello +3 → {e1} ✓") } else { print("  got {e1}") }
+
+        let e2 = encrypt("xyz", 5)
+        if str_eq(e2, "cde") { print("  xyz +5 → {e2} ✓") } else { print("  got {e2}") }
+
+        // Decrypt = encrypt with -shift
+        let e3 = encrypt("khoor", 0 - 3)
+        if str_eq(e3, "hello") { print("  decrypt khoor -3 → {e3} ✓") } else { print("  got {e3}") }
+    }
+}

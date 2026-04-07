@@ -1,0 +1,74 @@
+// ============================================================================
+// Recamán's sequence — a(0) = 0; a(n) = a(n−1) − n if positive and not seen,
+// else a(n) = a(n−1) + n
+// ============================================================================
+//
+// Soma's [native] dialect has no arrays. We track "seen" via a String of
+// '0'/'1' bytes... but Soma also has no str_set, so we use a different
+// representation: encode the seen set as the i-th bit of a BigInt. This
+// fits naturally in [native]'s arbitrary-precision Int.
+//
+// Run: soma run recaman.cell
+
+cell Recaman {
+
+    // Test bit i of x via (x >> i) & 1
+    on bit(x: Int, i: Int) [native] {
+        return band(shr(x, i), 1)
+    }
+
+    // Set bit i of x via x | (1 << i)
+    on set_bit(x: Int, i: Int) [native] {
+        return bor(x, shl(1, i))
+    }
+
+    // Compute a(n) and return it. Uses an Int as a bitset of seen values.
+    on recaman(n: Int) [native] {
+        let seen = 1                 // bit 0 set: a(0) = 0
+        let cur = 0
+        let i = 1
+        while i <= n {
+            let candidate = cur - i
+            let take_back = 0
+            if candidate > 0 {
+                if bit(seen, candidate) == 0 {
+                    take_back = 1
+                }
+            }
+            if take_back == 1 {
+                cur = candidate
+            } else {
+                cur = cur + i
+            }
+            seen = set_bit(seen, cur)
+            i = i + 1
+        }
+        return cur
+    }
+
+    on check(n: Int, expected: Int) {
+        let r = recaman(n)
+        if r == expected {
+            print("  a({n}) = {r} ✓")
+        } else {
+            print("  a({n}) = {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Recamán's sequence")
+        print("==================")
+        print("")
+        // OEIS A005132: 0, 1, 3, 6, 2, 7, 13, 20, 12, 21, 11, 22, 10, 23, 9, 24, ...
+        check(0, 0)
+        check(1, 1)
+        check(2, 3)
+        check(4, 2)
+        check(6, 13)
+        check(10, 11)
+        check(20, 42)
+        check(50, 92)
+        check(100, 164)
+        check(500, 1306)
+    }
+}

@@ -1,0 +1,109 @@
+// ============================================================================
+// Heapsort — in-place using a packed-BigInt array
+// ============================================================================
+//
+// Build a max-heap, repeatedly swap root with last and sift down.
+// 8-bit slots, n ≤ 32.
+//
+// Run: soma run heapsort.cell
+
+cell Heapsort {
+
+    on slot_bits() [native] { return 8 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    on swap(arr: Int, i: Int, j: Int) [native] {
+        let a = get(arr, i)
+        let b = get(arr, j)
+        let r = put(arr, i, b)
+        return put(r, j, a)
+    }
+
+    // Sift down at index i, in heap of size n
+    on sift_down(arr: Int, n: Int, i: Int) [native] {
+        let parent = i
+        while 1 == 1 {
+            let left = 2 * parent + 1
+            if left >= n { break }
+            let right = left + 1
+            let largest = parent
+            if get(arr, left) > get(arr, largest) { largest = left }
+            if right < n {
+                if get(arr, right) > get(arr, largest) { largest = right }
+            }
+            if largest == parent { break }
+            arr = swap(arr, parent, largest)
+            parent = largest
+        }
+        return arr
+    }
+
+    on heapsort(arr: Int, n: Int) [native] {
+        // Build heap
+        let i = n / 2 - 1
+        while i >= 0 {
+            arr = sift_down(arr, n, i)
+            i = i - 1
+        }
+        // Sort
+        let end = n - 1
+        while end > 0 {
+            arr = swap(arr, 0, end)
+            arr = sift_down(arr, end, 0)
+            end = end - 1
+        }
+        return arr
+    }
+
+    on build_random(n: Int, seed: Int) [native] {
+        let arr = 0
+        let s = seed
+        let i = 0
+        while i < n {
+            s = (s * 1103515245 + 12345) % 2147483648
+            arr = put(arr, i, s % 100)
+            i = i + 1
+        }
+        return arr
+    }
+
+    on is_sorted(arr: Int, n: Int) [native] {
+        let i = 0
+        while i < n - 1 {
+            if get(arr, i) > get(arr, i + 1) { return 0 }
+            i = i + 1
+        }
+        return 1
+    }
+
+    on run() {
+        print("Heapsort")
+        print("========")
+        print("")
+        let arr = build_random(25, 42)
+        let sorted = heapsort(arr, 25)
+        if is_sorted(sorted, 25) == 1 {
+            print("  25 random values sorted ✓")
+        } else {
+            print("  not sorted")
+        }
+
+        let arr2 = build_random(32, 12345)
+        let sorted2 = heapsort(arr2, 32)
+        if is_sorted(sorted2, 32) == 1 {
+            print("  32 random values sorted ✓")
+        }
+    }
+}

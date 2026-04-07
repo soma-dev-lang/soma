@@ -1,0 +1,52 @@
+// ============================================================================
+// Zeller's congruence — day of week for any date in the Gregorian calendar
+// ============================================================================
+//
+// h = (q + ⌊13(m+1)/5⌋ + K + ⌊K/4⌋ + ⌊J/4⌋ + 5J) mod 7
+//
+// where q = day, m = month (March=3..Feb=14, Jan/Feb counted as month 13/14
+// of the previous year), K = year mod 100, J = year / 100.
+//
+// h: 0=Saturday, 1=Sunday, 2=Monday, ..., 6=Friday.
+//
+// Run: soma run zeller.cell
+
+cell Zeller {
+
+    on day_of_week(year: Int, month: Int, day: Int) [native] {
+        let y = year
+        let m = month
+        if m < 3 {
+            m = m + 12
+            y = y - 1
+        }
+        let K = y % 100
+        let J = y / 100
+        let h = (day + (13 * (m + 1)) / 5 + K + K / 4 + J / 4 + 5 * J) % 7
+        // Convert from Zeller's (0=Sat..6=Fri) to ISO (1=Mon..7=Sun)
+        // ISO = ((h + 5) mod 7) + 1
+        return ((h + 5) % 7) + 1
+    }
+
+    on check(year: Int, month: Int, day: Int, expected: Int) {
+        let r = day_of_week(year, month, day)
+        if r == expected {
+            print("  {year}-{month}-{day} → ISO weekday {r} ✓")
+        } else {
+            print("  {year}-{month}-{day} → got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Zeller's congruence — day of week")
+        print("=================================")
+        print("")
+        // Known checks:
+        check(2000, 1,  1, 6)   // Saturday
+        check(2024, 1,  1, 1)   // Monday
+        check(2024, 12, 25, 3)  // Wednesday
+        check(1969, 7,  20, 7)  // Sunday — Apollo 11 moon landing
+        check(1989, 11, 9,  4)  // Thursday — fall of Berlin Wall
+        check(2026, 4,  8,  3)  // Wednesday
+    }
+}

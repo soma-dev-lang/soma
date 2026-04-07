@@ -1,0 +1,81 @@
+// ============================================================================
+// Longest Common Subsequence — length only (no array required)
+// ============================================================================
+//
+// Standard O(m·n) DP. Soma's [native] dialect has no arrays, so we encode
+// the previous row of the DP table as a packed BigInt with 16 bits per
+// slot. That gives us LCS lengths up to 65535 — plenty for the test inputs.
+//
+// Run: soma run lcs.cell
+
+cell LCS {
+
+    on slot_bits() [native] { return 16 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    on max(a: Int, b: Int) [native] {
+        if a > b { return a }
+        return b
+    }
+
+    on lcs_len(a: String, b: String) [native] {
+        let m = str_len(a)
+        let n = str_len(b)
+        let prev = 0
+        let i = 0
+        while i <= m {
+            let cur = 0
+            let j = 0
+            while j <= n {
+                let v = 0
+                if i > 0 {
+                    if j > 0 {
+                        if str_at(a, i - 1) == str_at(b, j - 1) {
+                            v = get(prev, j - 1) + 1
+                        } else {
+                            v = max(get(prev, j), get(cur, j - 1))
+                        }
+                    }
+                }
+                cur = put(cur, j, v)
+                j = j + 1
+            }
+            prev = cur
+            i = i + 1
+        }
+        return get(prev, n)
+    }
+
+    on check(a: String, b: String, expected: Int) {
+        let r = lcs_len(a, b)
+        if r == expected {
+            print("  LCS('{a}', '{b}') = {r} ✓")
+        } else {
+            print("  got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Longest Common Subsequence")
+        print("==========================")
+        print("")
+        check("ABCBDAB", "BDCABA", 4)        // BCBA / BDAB
+        check("AGGTAB", "GXTXAYB", 4)        // GTAB
+        check("abcdef", "acf", 3)
+        check("hello", "world", 1)           // l or o
+        check("", "abc", 0)
+        check("xyzzy", "xyzzy", 5)
+    }
+}

@@ -1,0 +1,69 @@
+// ============================================================================
+// Perrin sequence — P(0)=3, P(1)=0, P(2)=2, P(n) = P(n−2) + P(n−3)
+// ============================================================================
+//
+// A relative of Padovan with different initial conditions. Famously, n is
+// (almost) prime iff n divides P(n). The exception primes (Perrin pseudo-
+// primes) are very rare; the smallest is 271441 = 521².
+//
+// Run: soma run perrin.cell
+
+cell Perrin {
+
+    on perrin(n: Int) [native] {
+        if n == 0 { return 3 }
+        if n == 1 { return 0 }
+        if n == 2 { return 2 }
+        let a = 3
+        let b = 0
+        let c = 2
+        let i = 3
+        while i <= n {
+            let t = a + b
+            a = b
+            b = c
+            c = t
+            i = i + 1
+        }
+        return c
+    }
+
+    // Perrin primality test: n divides P(n) iff n is prime (with rare false positives)
+    on perrin_test(n: Int) [native] {
+        let p = perrin(n) % n
+        if p == 0 { return 1 }
+        return 0
+    }
+
+    on count_primes_via_perrin(limit: Int) [native] {
+        let count = 0
+        let n = 2
+        while n <= limit {
+            if perrin_test(n) == 1 { count = count + 1 }
+            n = n + 1
+        }
+        return count
+    }
+
+    on run() {
+        print("Perrin sequence and primality test")
+        print("==================================")
+        print("")
+        // P(0)..P(10) = 3, 0, 2, 3, 2, 5, 5, 7, 10, 12, 17
+        let vals = perrin(0)
+        if vals == 3 { print("  P(0) = 3 ✓") }
+        if perrin(5) == 5 { print("  P(5) = 5 ✓") }
+        if perrin(10) == 17 { print("  P(10) = 17 ✓") }
+        if perrin(20) == 277 { print("  P(20) = 277 ✓") }
+
+        // Perrin test: π(1000) via Perrin should be 168 (no pseudoprime < 271441)
+        let start = now_ms()
+        let c = count_primes_via_perrin(1000)
+        let elapsed = now_ms() - start
+        if c == 168 {
+            print("  π(1000) via Perrin: 168  ({elapsed}ms) ✓")
+        } else {
+            print("  got {c}, expected 168")
+        }
+    }
+}

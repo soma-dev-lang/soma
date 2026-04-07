@@ -1,0 +1,80 @@
+// ============================================================================
+// Möbius function μ(n)
+// ============================================================================
+//
+//   μ(n) =  1 if n is a product of an even number of distinct primes
+//          -1 if n is a product of an odd number of distinct primes
+//           0 if n has a squared prime factor
+//
+// Cross-check via the Mertens function M(n) = Σ μ(k), k=1..n.
+//
+// Run: soma run mobius.cell
+
+cell Mobius {
+
+    on mu(n: Int) [native] {
+        if n == 1 { return 1 }
+        let count = 0
+        let m = n
+        let p = 2
+        while p * p <= m {
+            if m % p == 0 {
+                m = m / p
+                count = count + 1
+                if m % p == 0 { return 0 }   // squared factor → 0
+            }
+            p = p + 1
+        }
+        if m > 1 { count = count + 1 }       // remaining prime factor
+        if count % 2 == 0 { return 1 }
+        return 0 - 1
+    }
+
+    // Mertens function M(n) = Σ μ(k) for k = 1..n
+    on mertens(n: Int) [native] {
+        let s = 0
+        let i = 1
+        while i <= n {
+            s = s + mu(i)
+            i = i + 1
+        }
+        return s
+    }
+
+    on check(n: Int, expected: Int) {
+        let r = mu(n)
+        if r == expected {
+            print("  μ({n}) = {r} ✓")
+        } else {
+            print("  μ({n}) = {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Möbius function and Mertens summatory")
+        print("=====================================")
+        print("")
+        check(1, 1)
+        check(2, 0 - 1)
+        check(3, 0 - 1)
+        check(4, 0)             // 2²
+        check(6, 1)             // 2 · 3
+        check(30, 0 - 1)        // 2 · 3 · 5
+        check(105, 0 - 1)       // 3 · 5 · 7
+        check(210, 1)           // 2 · 3 · 5 · 7
+        print("")
+        // M(100) = 1, M(1000) = 2, M(10000) = -23
+        let m100 = mertens(100)
+        if m100 == 1 { print("  M(100) = {m100} ✓") } else { print("  M(100) = {m100}, expected 1") }
+        let m1000 = mertens(1000)
+        if m1000 == 2 { print("  M(1000) = {m1000} ✓") } else { print("  M(1000) = {m1000}, expected 2") }
+        let start = now_ms()
+        let m10000 = mertens(10000)
+        let elapsed = now_ms() - start
+        if m10000 == 0 - 23 {
+            print("  M(10000) = {m10000}  ({elapsed}ms) ✓")
+        } else {
+            print("  M(10000) = {m10000}, expected -23")
+        }
+    }
+}

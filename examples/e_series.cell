@@ -1,0 +1,39 @@
+// ============================================================================
+// e via Σ 1/k!
+// ============================================================================
+//
+// Each successive term is the previous term divided by k. Stops when the
+// term drops below 1e-18 (under double-precision noise floor).
+//
+// Run: soma run e_series.cell
+
+cell ESeries {
+
+    on compute_e() [native] {
+        let term = 1.0
+        let s = 1.0
+        let k = 1
+        while k < 100 {
+            term = term / to_float(k)
+            s = s + term
+            if term < 0.0000000000000001 { return s }
+            k = k + 1
+        }
+        return s
+    }
+
+    on run() {
+        print("e via series")
+        print("============")
+        print("")
+        let e = compute_e()
+        let exact = 2.718281828459045
+        let d = e - exact
+        if d < 0.0 { d = 0.0 - d }
+        if d < 0.000000000000001 {
+            print("  e ≈ {e} ✓")
+        } else {
+            print("  got {e}, expected {exact}")
+        }
+    }
+}

@@ -1,0 +1,73 @@
+// ============================================================================
+// Palindrome check
+// ============================================================================
+//
+// A string is a palindrome iff it reads the same forwards and backwards.
+// We compare characters from the two ends, walking inward.
+//
+// Run: soma run palindrome.cell
+
+cell Palindrome {
+
+    on is_palindrome(s: String) [native] {
+        let n = str_len(s)
+        let i = 0
+        let j = n - 1
+        while i < j {
+            if str_at(s, i) != str_at(s, j) {
+                return 0
+            }
+            i = i + 1
+            j = j - 1
+        }
+        return 1
+    }
+
+    // Numeric palindrome — convert int to string then check
+    on is_num_palindrome(n: Int) [native] {
+        return is_palindrome(to_string(n))
+    }
+
+    // Largest palindrome product of two 3-digit numbers (Project Euler #4)
+    on largest_palindrome_3digit() [native] {
+        let best = 0
+        let a = 999
+        while a >= 100 {
+            let b = 999
+            while b >= a {
+                let p = a * b
+                if p > best {
+                    if is_num_palindrome(p) == 1 {
+                        best = p
+                    }
+                }
+                b = b - 1
+            }
+            a = a - 1
+        }
+        return best
+    }
+
+    on run() {
+        print("Palindromes")
+        print("===========")
+        print("")
+        if is_palindrome("racecar") == 1 { print("  racecar ✓") }
+        if is_palindrome("noon") == 1 { print("  noon ✓") }
+        if is_palindrome("a") == 1 { print("  a ✓") }
+        if is_palindrome("hello") == 0 { print("  hello: not palindrome ✓") }
+
+        if is_num_palindrome(12321) == 1 { print("  12321 numeric ✓") }
+        if is_num_palindrome(12345) == 0 { print("  12345 not numeric palindrome ✓") }
+
+        let start = now_ms()
+        let p = largest_palindrome_3digit()
+        let elapsed = now_ms() - start
+        // Project Euler #4: 906609 = 913 × 993
+        if p == 906609 {
+            print("  largest 3-digit palindrome product: {p}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {p}, expected 906609")
+        }
+    }
+}

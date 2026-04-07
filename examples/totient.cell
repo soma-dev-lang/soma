@@ -1,0 +1,77 @@
+// ============================================================================
+// Euler's totient function φ(n)
+// ============================================================================
+//
+// φ(n) = the count of integers in [1, n] coprime to n.
+// Computed via the formula φ(n) = n · ∏ (1 - 1/p) over distinct primes p | n.
+//
+// Tests trial-factorization with running quotient updates.
+//
+// Run: soma run totient.cell
+
+cell Totient {
+
+    on phi(n: Int) [native] {
+        if n <= 1 { return n }
+        let result = n
+        let m = n
+        let p = 2
+        while p * p <= m {
+            if m % p == 0 {
+                while m % p == 0 {
+                    m = m / p
+                }
+                result = result - result / p
+            }
+            p = p + 1
+        }
+        if m > 1 {
+            result = result - result / m
+        }
+        return result
+    }
+
+    // Sum of φ(k) for k=1..n. Equals (3·n²/π² + O(n log n)).
+    on phi_sum(n: Int) [native] {
+        let s = 0
+        let i = 1
+        while i <= n {
+            s = s + phi(i)
+            i = i + 1
+        }
+        return s
+    }
+
+    on check(n: Int, expected: Int) {
+        let r = phi(n)
+        if r == expected {
+            print("  φ({n}) = {r} ✓")
+        } else {
+            print("  φ({n}) = {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Euler's totient function")
+        print("========================")
+        print("")
+        check(1, 1)
+        check(2, 1)
+        check(9, 6)
+        check(10, 4)
+        check(36, 12)
+        check(100, 40)
+        check(997, 996)         // prime → φ(p) = p-1
+        check(1000000, 400000)
+        print("")
+        let start = now_ms()
+        let s = phi_sum(10000)
+        let elapsed = now_ms() - start
+        // Σ_{k≤10000} φ(k) = 30397486
+        if s == 30397486 {
+            print("  Σ φ(k), k≤10000 = {s}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {s}, expected 30397486")
+        }
+    }
+}

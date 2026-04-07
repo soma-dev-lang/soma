@@ -1,0 +1,62 @@
+// ============================================================================
+// Multinomial coefficients — (n; k1, k2, ..., km) = n! / (k1! · k2! · ... · km!)
+// ============================================================================
+//
+// We expose only fixed-arity wrappers (Soma's [native] doesn't support
+// variadic functions) and verify that for two parts the multinomial
+// coincides with the binomial.
+//
+// Run: soma run multinomial.cell
+
+cell Multinomial {
+
+    on factorial(n: Int) [native] {
+        let f = 1
+        let i = 2
+        while i <= n {
+            f = f * i
+            i = i + 1
+        }
+        return f
+    }
+
+    on multi3(k1: Int, k2: Int, k3: Int) [native] {
+        let n = k1 + k2 + k3
+        return factorial(n) / (factorial(k1) * factorial(k2) * factorial(k3))
+    }
+
+    on multi4(k1: Int, k2: Int, k3: Int, k4: Int) [native] {
+        let n = k1 + k2 + k3 + k4
+        return factorial(n) / (factorial(k1) * factorial(k2) * factorial(k3) * factorial(k4))
+    }
+
+    on check3(k1: Int, k2: Int, k3: Int, expected: String) {
+        let r = multi3(k1, k2, k3)
+        if to_string(r) == expected {
+            print("  ({k1}+{k2}+{k3}; {k1},{k2},{k3}) = {r} ✓")
+        } else {
+            print("  got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Multinomial coefficients")
+        print("========================")
+        print("")
+        // (4; 2, 2) = 6 — 2-way binomial
+        let m22 = multi3(2, 2, 0)
+        if m22 == 6 { print("  (4; 2,2,0) = 6 ✓") } else { print("  got {m22}") }
+
+        check3(2, 3, 5, "2520")
+        check3(5, 5, 5, "756756")
+        check3(10, 10, 10, "5550996791340")
+
+        let big = multi4(10, 10, 10, 10)
+        // 40! / (10!)^4 = 4705360871073570227520
+        if to_string(big) == "4705360871073570227520" {
+            print("  (40; 10,10,10,10) = {big} ✓")
+        } else {
+            print("  got {big}")
+        }
+    }
+}

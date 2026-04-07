@@ -1,0 +1,59 @@
+// ============================================================================
+// Padovan sequence — P(n) = P(n−2) + P(n−3), P(0)=P(1)=P(2)=1
+// ============================================================================
+//
+// A "skipping Fibonacci": each term is the sum of the previous two but
+// shifted. Grows like ρ^n where ρ ≈ 1.3247... is the plastic ratio.
+//
+// Run: soma run padovan.cell
+
+cell Padovan {
+
+    on padovan(n: Int) [native] {
+        if n < 3 { return 1 }
+        let a = 1
+        let b = 1
+        let c = 1
+        let i = 3
+        while i <= n {
+            let t = a + b
+            a = b
+            b = c
+            c = t
+            i = i + 1
+        }
+        return c
+    }
+
+    on check(n: Int, expected: String) {
+        let r = padovan(n)
+        if to_string(r) == expected {
+            print("  P({n}) = {r} ✓")
+        } else {
+            print("  P({n}) = {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Padovan sequence (plastic-ratio recurrence)")
+        print("===========================================")
+        print("")
+        check(0, "1")
+        check(5, "2")
+        check(10, "9")
+        check(20, "86")
+        check(50, "11405773")
+        check(100, "187056393929")
+
+        // Headline: P(500) is a 53-digit number
+        let start = now_ms()
+        let p500 = padovan(500)
+        let elapsed = now_ms() - start
+        let len = str_len(to_string(p500))
+        if len == 53 {
+            print("  P(500) has 53 digits  ({elapsed}ms) ✓")
+        } else {
+            print("  P(500) has {len} digits, expected 53")
+        }
+    }
+}

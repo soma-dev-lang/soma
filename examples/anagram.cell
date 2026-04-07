@@ -1,0 +1,61 @@
+// ============================================================================
+// Anagram detection — count letter occurrences and compare
+// ============================================================================
+//
+// Two strings are anagrams iff they share the same multiset of characters.
+// We pack a 26-bin frequency histogram into a single Int (8 bits per bin),
+// which fits comfortably in i64 for strings up to length 255.
+//
+// Run: soma run anagram.cell
+
+cell Anagram {
+
+    on histogram(s: String) [native] {
+        let h = 0
+        let i = 0
+        let n = str_len(s)
+        while i < n {
+            let c = str_at(s, i)
+            if c >= 97 {
+                if c <= 122 {
+                    let bin = c - 97
+                    let shift = bin * 8
+                    let cur = band(shr(h, shift), 255)
+                    h = bor(band(h, bnot(shl(255, shift))), shl(cur + 1, shift))
+                }
+            }
+            i = i + 1
+        }
+        return h
+    }
+
+    on is_anagram(a: String, b: String) [native] {
+        if histogram(a) == histogram(b) { return 1 }
+        return 0
+    }
+
+    on check(a: String, b: String, expected: Int) {
+        let r = is_anagram(a, b)
+        if r == expected {
+            if r == 1 {
+                print("  '{a}' and '{b}' are anagrams ✓")
+            } else {
+                print("  '{a}' and '{b}' are not anagrams ✓")
+            }
+        } else {
+            print("  got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Anagram detection")
+        print("=================")
+        print("")
+        check("listen", "silent", 1)
+        check("triangle", "integral", 1)
+        check("conversation", "voicesranton", 1)
+        check("apple", "papel", 1)
+        check("hello", "world", 0)
+        check("abc", "abcd", 0)
+    }
+}

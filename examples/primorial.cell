@@ -1,0 +1,59 @@
+// ============================================================================
+// Primorial p# — product of all primes ≤ p
+// ============================================================================
+//
+// Quickly grows past i64 (29# > 10^10, 41# > 10^15, 47# > 10^17). The
+// classifier picks Rug mode automatically; the Direct fast path overflows
+// at p ≈ 47 and the dispatch wrapper falls back transparently.
+//
+// Run: soma run primorial.cell
+
+cell Primorial {
+
+    on is_prime(n: Int) [native] {
+        if n < 2 { return 0 }
+        if n < 4 { return 1 }
+        if n % 2 == 0 { return 0 }
+        let i = 3
+        while i * i <= n {
+            if n % i == 0 { return 0 }
+            i = i + 2
+        }
+        return 1
+    }
+
+    on primorial(p: Int) [native] {
+        let r = 1
+        let i = 2
+        while i <= p {
+            if is_prime(i) == 1 {
+                r = r * i
+            }
+            i = i + 1
+        }
+        return r
+    }
+
+    on check(p: Int, expected: String) {
+        let n = primorial(p)
+        if to_string(n) == expected {
+            print("  {p}# = {n} ✓")
+        } else {
+            print("  {p}# = {n}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Primorial p# = ∏ primes ≤ p")
+        print("===========================")
+        print("")
+        check(2,  "2")
+        check(5,  "30")
+        check(11, "2310")
+        check(17, "510510")
+        check(29, "6469693230")
+        check(41, "304250263527210")
+        check(53, "1922760350154212639070")
+        check(97, "2305567963945518424753102147331756070")
+    }
+}

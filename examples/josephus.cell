@@ -1,0 +1,43 @@
+// ============================================================================
+// Josephus problem — J(n, k) = position of the survivor
+// ============================================================================
+//
+// Linear recurrence: J(1) = 0, J(n) = (J(n−1) + k) mod n.
+// Then the 1-indexed survivor is J(n, k) + 1.
+//
+// Run: soma run josephus.cell
+
+cell Josephus {
+
+    on josephus(n: Int, k: Int) [native] {
+        let j = 0
+        let i = 2
+        while i <= n {
+            j = (j + k) % i
+            i = i + 1
+        }
+        return j + 1
+    }
+
+    on check(n: Int, k: Int, expected: Int) {
+        let r = josephus(n, k)
+        if r == expected {
+            print("  J({n}, {k}) = {r} ✓")
+        } else {
+            print("  J({n}, {k}) = {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Josephus problem")
+        print("================")
+        print("")
+        check(7, 3, 4)              // classic
+        check(10, 2, 5)
+        check(14, 2, 13)
+        check(40, 3, 28)
+        check(100, 7, 47)
+        check(1000, 1, 1000)
+        check(1000000, 5, 348004)   // headline
+    }
+}

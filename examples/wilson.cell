@@ -1,0 +1,58 @@
+// ============================================================================
+// Wilson's theorem — n is prime iff (n−1)! ≡ −1 (mod n)
+// ============================================================================
+//
+// Direct numerical verification: compute (n−1)! mod n incrementally and
+// check whether it equals n−1 (which is ≡ −1 mod n). Wilson is correct
+// for all primes; we sweep it as a primality test up to a small bound.
+//
+// Run: soma run wilson.cell
+
+cell Wilson {
+
+    // (n−1)! mod n, computed without overflow risk
+    on factorial_mod(n: Int) [native] {
+        let f = 1
+        let i = 2
+        while i < n {
+            f = (f * i) % n
+            i = i + 1
+        }
+        return f
+    }
+
+    // Wilson primality test
+    on is_prime(n: Int) [native] {
+        if n < 2 { return 0 }
+        if n == 2 { return 1 }
+        if factorial_mod(n) == n - 1 { return 1 }
+        return 0
+    }
+
+    on count_primes(limit: Int) [native] {
+        let count = 0
+        let n = 2
+        while n <= limit {
+            if is_prime(n) == 1 { count = count + 1 }
+            n = n + 1
+        }
+        return count
+    }
+
+    on run() {
+        print("Wilson's primality test")
+        print("=======================")
+        print("")
+        // Cross-check against the known π(n) for small n
+        let c100 = count_primes(100)
+        if c100 == 25 { print("  π(100) via Wilson: 25 ✓") } else { print("  got {c100}") }
+
+        let c500 = count_primes(500)
+        if c500 == 95 { print("  π(500) via Wilson: 95 ✓") } else { print("  got {c500}") }
+
+        let start = now_ms()
+        let c1000 = count_primes(1000)
+        let elapsed = now_ms() - start
+        if c1000 == 168 { print("  π(1000): 168  ({elapsed}ms) ✓") } else { print("  got {c1000}") }
+    }
+}

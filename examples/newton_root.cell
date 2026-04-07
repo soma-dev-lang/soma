@@ -1,0 +1,59 @@
+// ============================================================================
+// Newton's method — nth root of a Float
+// ============================================================================
+//
+// Iterates x_{k+1} = ((m−1)·x_k + a / x_k^(m−1)) / m  to find a^(1/m).
+// Stops when |x_{k+1} − x_k| < 1e−12.
+//
+// Run: soma run newton_root.cell
+
+cell NewtonRoot {
+
+    on pow_f(x: Float, n: Int) [native] {
+        let r = 1.0
+        let i = 0
+        while i < n {
+            r = r * x
+            i = i + 1
+        }
+        return r
+    }
+
+    on nth_root(a: Float, m: Int) [native] {
+        let x = a
+        let i = 0
+        while i < 100 {
+            let prev = x
+            x = ((to_float(m) - 1.0) * x + a / pow_f(x, m - 1)) / to_float(m)
+            let d = x - prev
+            if d < 0.0 { d = 0.0 - d }
+            if d < 0.000000000001 { return x }
+            i = i + 1
+        }
+        return x
+    }
+
+    on near(a: Float, b: Float) [native] {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        if d < 0.0000001 { return 1 }
+        return 0
+    }
+
+    on run() {
+        print("Newton's method — nth roots")
+        print("===========================")
+        print("")
+        let s = nth_root(2.0, 2)
+        if near(s, 1.4142135623730951) == 1 { print("  √2 = {s} ✓") } else { print("  got {s}") }
+
+        let c = nth_root(2.0, 3)
+        if near(c, 1.2599210498948732) == 1 { print("  ∛2 = {c} ✓") } else { print("  got {c}") }
+
+        let s2 = nth_root(729.0, 6)
+        if near(s2, 3.0) == 1 { print("  6√729 = {s2} ✓") } else { print("  got {s2}") }
+
+        let p = nth_root(2.0, 10)
+        if near(p, 1.0717734625362931) == 1 { print("  10√2 = {p} ✓") } else { print("  got {p}") }
+    }
+}

@@ -1,0 +1,105 @@
+// ============================================================================
+// Mergesort — recursive
+// ============================================================================
+//
+// Splits the packed-BigInt array in halves, recursively sorts, then merges.
+// 8-bit slots, n ≤ 32.
+//
+// Run: soma run mergesort.cell
+
+cell Mergesort {
+
+    on slot_bits() [native] { return 8 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    // Merge arr[lo..mid) with arr[mid..hi). Returns the new arr.
+    on merge(arr: Int, lo: Int, mid: Int, hi: Int) [native] {
+        let buf = 0
+        let i = lo
+        let j = mid
+        let k = lo
+        while i < mid {
+            if j >= hi {
+                buf = put(buf, k, get(arr, i))
+                i = i + 1
+            } else {
+                let a = get(arr, i)
+                let b = get(arr, j)
+                if a <= b {
+                    buf = put(buf, k, a)
+                    i = i + 1
+                } else {
+                    buf = put(buf, k, b)
+                    j = j + 1
+                }
+            }
+            k = k + 1
+        }
+        while j < hi {
+            buf = put(buf, k, get(arr, j))
+            j = j + 1
+            k = k + 1
+        }
+        // Copy buf[lo..hi) back into arr
+        let p = lo
+        while p < hi {
+            arr = put(arr, p, get(buf, p))
+            p = p + 1
+        }
+        return arr
+    }
+
+    on mergesort(arr: Int, lo: Int, hi: Int) [native] {
+        if hi - lo > 1 {
+            let mid = (lo + hi) / 2
+            arr = mergesort(arr, lo, mid)
+            arr = mergesort(arr, mid, hi)
+            arr = merge(arr, lo, mid, hi)
+        }
+        return arr
+    }
+
+    on build_reverse(n: Int) [native] {
+        let arr = 0
+        let i = 0
+        while i < n {
+            arr = put(arr, i, n - i)
+            i = i + 1
+        }
+        return arr
+    }
+
+    on is_sorted(arr: Int, n: Int) [native] {
+        let i = 0
+        while i < n - 1 {
+            if get(arr, i) > get(arr, i + 1) { return 0 }
+            i = i + 1
+        }
+        return 1
+    }
+
+    on run() {
+        print("Mergesort")
+        print("=========")
+        print("")
+        let arr = build_reverse(20)
+        let sorted = mergesort(arr, 0, 20)
+        if is_sorted(sorted, 20) == 1 { print("  reverse [20..1] sorted ✓") }
+
+        let arr2 = build_reverse(32)
+        let sorted2 = mergesort(arr2, 0, 32)
+        if is_sorted(sorted2, 32) == 1 { print("  reverse [32..1] sorted ✓") }
+    }
+}

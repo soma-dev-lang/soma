@@ -1,0 +1,69 @@
+// ============================================================================
+// Sophie Germain primes — primes p such that 2p+1 is also prime
+// ============================================================================
+//
+// Named for Sophie Germain who used them in her work on Fermat's Last Theorem.
+// First few: 2, 3, 5, 11, 23, 29, 41, 53, 83, 89, ...
+//
+// Run: soma run sophie_germain.cell
+
+cell SophieGermain {
+
+    on is_prime(n: Int) [native] {
+        if n < 2 { return 0 }
+        if n < 4 { return 1 }
+        if n % 2 == 0 { return 0 }
+        let i = 3
+        while i * i <= n {
+            if n % i == 0 { return 0 }
+            i = i + 2
+        }
+        return 1
+    }
+
+    on count_under(limit: Int) [native] {
+        let count = 0
+        let p = 2
+        while p <= limit {
+            if is_prime(p) == 1 {
+                if is_prime(2 * p + 1) == 1 {
+                    count = count + 1
+                }
+            }
+            if p == 2 {
+                p = 3
+            } else {
+                p = p + 2
+            }
+        }
+        return count
+    }
+
+    on check(n: Int, expected: Int) {
+        let r = count_under(n)
+        if r == expected {
+            print("  Sophie-Germain ≤ {n}: {r} ✓")
+        } else {
+            print("  got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Sophie Germain primes")
+        print("=====================")
+        print("")
+        check(100, 10)
+        check(1000, 37)
+        check(10000, 190)
+        print("")
+        print("Headline:")
+        let start = now_ms()
+        let c = count_under(100000)
+        let elapsed = now_ms() - start
+        if c == 1171 {
+            print("  Sophie-Germain ≤ 100000: {c}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {c}, expected 1171")
+        }
+    }
+}

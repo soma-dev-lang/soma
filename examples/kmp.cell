@@ -1,0 +1,92 @@
+// ============================================================================
+// Knuth–Morris–Pratt — substring search in O(n + m)
+// ============================================================================
+//
+// Build the failure function as a packed-BigInt of 16-bit slots, then
+// scan the haystack using it. Returns the first match index or −1.
+//
+// Run: soma run kmp.cell
+
+cell KMP {
+
+    on slot_bits() [native] { return 16 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    // Build the failure (longest-proper-prefix-suffix) table for `pat`.
+    on build_failure(pat: String) [native] {
+        let m = str_len(pat)
+        let fail = put(0, 0, 0)
+        let k = 0
+        let i = 1
+        while i < m {
+            while k > 0 {
+                if str_at(pat, k) != str_at(pat, i) {
+                    k = get(fail, k - 1)
+                } else {
+                    break
+                }
+            }
+            if str_at(pat, k) == str_at(pat, i) {
+                k = k + 1
+            }
+            fail = put(fail, i, k)
+            i = i + 1
+        }
+        return fail
+    }
+
+    on kmp_find(text: String, pat: String) [native] {
+        let m = str_len(pat)
+        if m == 0 { return 0 }
+        let n = str_len(text)
+        let fail = build_failure(pat)
+        let q = 0
+        let i = 0
+        while i < n {
+            while q > 0 {
+                if str_at(pat, q) != str_at(text, i) {
+                    q = get(fail, q - 1)
+                } else {
+                    break
+                }
+            }
+            if str_at(pat, q) == str_at(text, i) { q = q + 1 }
+            if q == m { return i - m + 1 }
+            i = i + 1
+        }
+        return 0 - 1
+    }
+
+    on check(text: String, pat: String, expected: Int) {
+        let r = kmp_find(text, pat)
+        if r == expected {
+            print("  find('{pat}' in '{text}') = {r} ✓")
+        } else {
+            print("  got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Knuth–Morris–Pratt substring search")
+        print("===================================")
+        print("")
+        check("hello world", "world", 6)
+        check("abcdefgh", "def", 3)
+        check("aaaaaab", "aab", 4)
+        check("ababcabcabababd", "ababd", 10)
+        check("missing", "xyz", 0 - 1)
+        check("abc", "", 0)
+    }
+}

@@ -1,0 +1,86 @@
+// ============================================================================
+// 0/1 Knapsack — DP with packed-BigInt array
+// ============================================================================
+//
+// Items as parallel arrays: weights[i], values[i]. DP table dp[w] = max
+// value achievable using items 0..i with capacity ≤ w. We use 16-bit slots
+// (capacity ≤ 65535).
+//
+// Run: soma run knapsack.cell
+
+cell Knapsack {
+
+    on slot_bits() [native] { return 16 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    on max(a: Int, b: Int) [native] {
+        if a > b { return a }
+        return b
+    }
+
+    // Process one item — updates dp in place (max over choosing/not).
+    on add_item(dp: Int, capacity: Int, weight: Int, value: Int) [native] {
+        let w = capacity
+        while w >= weight {
+            let alt = get(dp, w - weight) + value
+            if alt > get(dp, w) {
+                dp = put(dp, w, alt)
+            }
+            w = w - 1
+        }
+        return dp
+    }
+
+    // 5 items hard-coded for the test
+    on knapsack5(capacity: Int, w1: Int, v1: Int, w2: Int, v2: Int, w3: Int, v3: Int, w4: Int, v4: Int, w5: Int, v5: Int) [native] {
+        let dp = 0
+        dp = add_item(dp, capacity, w1, v1)
+        dp = add_item(dp, capacity, w2, v2)
+        dp = add_item(dp, capacity, w3, v3)
+        dp = add_item(dp, capacity, w4, v4)
+        dp = add_item(dp, capacity, w5, v5)
+        return get(dp, capacity)
+    }
+
+    on run() {
+        print("0/1 Knapsack")
+        print("============")
+        print("")
+        // Classic small instance:
+        //  weights = [2, 3, 4, 5, 9]
+        //  values  = [3, 4, 5, 8, 10]
+        //  capacity = 20 → optimal value = 26 (items 1+2+3+4+5: 2+3+4+5+9=23 wt, 3+4+5+8+10=30 — actually fits!)
+        // Recompute: with capacity 20 you can take all 5: total weight 23 > 20.
+        // Take items {2,4,5}: 3+5+9 = 17 ≤ 20, val = 4+8+10 = 22
+        // Take items {1,2,3,4}: 2+3+4+5 = 14 ≤ 20, val = 3+4+5+8 = 20
+        // Take items {1,3,4,5}: 2+4+5+9 = 20 ≤ 20, val = 3+5+8+10 = 26 ← best
+        let r = knapsack5(20, 2, 3, 3, 4, 4, 5, 5, 8, 9, 10)
+        if r == 26 {
+            print("  capacity 20: optimal = {r} ✓")
+        } else {
+            print("  got {r}, expected 26")
+        }
+
+        // Capacity 10
+        let r2 = knapsack5(10, 2, 3, 3, 4, 4, 5, 5, 8, 9, 10)
+        // Items {1,2,3} → wt 9, val 12. Or {3,5} → wt 13 > 10. {1,2,4} → wt 10, val 15. Or {4,5}? 5+9=14 > 10.
+        // Best: {1, 2, 4}: wt 2+3+5=10, val 3+4+8 = 15
+        if r2 == 15 {
+            print("  capacity 10: optimal = {r2} ✓")
+        } else {
+            print("  got {r2}, expected 15")
+        }
+    }
+}

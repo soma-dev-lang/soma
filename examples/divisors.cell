@@ -1,0 +1,89 @@
+// ============================================================================
+// Sum and count of divisors — σ(n) and τ(n)
+// ============================================================================
+//
+// τ(n) = number of positive divisors
+// σ(n) = sum of positive divisors
+//
+// Computed by trial-factoring n and using the multiplicative formula:
+//   if n = ∏ p_i^a_i then τ(n) = ∏ (a_i + 1)
+//                              σ(n) = ∏ (p_i^(a_i+1) - 1)/(p_i - 1)
+//
+// Run: soma run divisors.cell
+
+cell Divisors {
+
+    // τ(n) — count of divisors
+    on tau(n: Int) [native] {
+        if n < 1 { return 0 }
+        let count = 1
+        let m = n
+        let p = 2
+        while p * p <= m {
+            if m % p == 0 {
+                let e = 0
+                while m % p == 0 {
+                    m = m / p
+                    e = e + 1
+                }
+                count = count * (e + 1)
+            }
+            p = p + 1
+        }
+        if m > 1 { count = count * 2 }
+        return count
+    }
+
+    // σ(n) — sum of divisors
+    on sigma(n: Int) [native] {
+        if n < 1 { return 0 }
+        let total = 1
+        let m = n
+        let p = 2
+        while p * p <= m {
+            if m % p == 0 {
+                let pe = 1
+                while m % p == 0 {
+                    m = m / p
+                    pe = pe * p
+                }
+                // factor: 1 + p + p² + ... + p^e = (p·pe - 1)/(p - 1)
+                total = total * ((p * pe - 1) / (p - 1))
+            }
+            p = p + 1
+        }
+        if m > 1 {
+            // single remaining prime factor m, exponent 1: factor = (m + 1)
+            total = total * (m + 1)
+        }
+        return total
+    }
+
+    on check_tau(n: Int, expected: Int) {
+        let r = tau(n)
+        if r == expected { print("  τ({n}) = {r} ✓") } else { print("  τ({n}) = {r}, expected {expected}") }
+    }
+
+    on check_sigma(n: Int, expected: Int) {
+        let r = sigma(n)
+        if r == expected { print("  σ({n}) = {r} ✓") } else { print("  σ({n}) = {r}, expected {expected}") }
+    }
+
+    on run() {
+        print("Divisor functions τ and σ")
+        print("=========================")
+        print("")
+        check_tau(1, 1)
+        check_tau(12, 6)              // 1, 2, 3, 4, 6, 12
+        check_tau(60, 12)
+        check_tau(720, 30)            // highly composite
+        check_tau(7560, 64)
+        print("")
+        check_sigma(1, 1)
+        check_sigma(6, 12)            // perfect: σ(6) = 1+2+3+6 = 12 = 2·6
+        check_sigma(28, 56)           // perfect
+        check_sigma(496, 992)         // perfect
+        check_sigma(8128, 16256)      // perfect
+        check_sigma(720, 2418)
+    }
+}

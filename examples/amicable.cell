@@ -1,0 +1,75 @@
+// ============================================================================
+// Amicable numbers — pairs (a,b) where σ(a)−a = b and σ(b)−b = a
+// ============================================================================
+//
+// The aliquot sum s(n) = σ(n) − n. (a,b) is amicable iff s(a) = b ≠ a
+// and s(b) = a. The first amicable pair is (220, 284).
+//
+// Run: soma run amicable.cell
+
+cell Amicable {
+
+    // Aliquot sum: σ(n) − n
+    on aliquot(n: Int) [native] {
+        if n < 2 { return 0 }
+        let total = 1
+        let m = n
+        let p = 2
+        while p * p <= m {
+            if m % p == 0 {
+                let pe = 1
+                while m % p == 0 {
+                    m = m / p
+                    pe = pe * p
+                }
+                total = total * ((p * pe - 1) / (p - 1))
+            }
+            p = p + 1
+        }
+        if m > 1 { total = total * (m + 1) }
+        return total - n
+    }
+
+    // Sum of all amicable numbers in [1, limit]
+    on amicable_sum(limit: Int) [native] {
+        let s = 0
+        let i = 2
+        while i <= limit {
+            let j = aliquot(i)
+            if j > i {
+                if j <= limit {
+                    if aliquot(j) == i {
+                        s = s + i + j
+                    }
+                }
+            }
+            i = i + 1
+        }
+        return s
+    }
+
+    on run() {
+        print("Amicable numbers")
+        print("================")
+        print("")
+        // First pair: (220, 284) — sum 504
+        let a220 = aliquot(220)
+        let a284 = aliquot(284)
+        if a220 == 284 { if a284 == 220 { print("  (220, 284) is amicable ✓") } }
+
+        // Other small pairs:
+        //   (1184, 1210), (2620, 2924), (5020, 5564), (6232, 6368)
+        let pairs = aliquot(1184)
+        if pairs == 1210 { print("  (1184, 1210) is amicable ✓") }
+
+        let start = now_ms()
+        let s = amicable_sum(10000)
+        let elapsed = now_ms() - start
+        // Sum of amicable numbers ≤ 10000 = 31626
+        if s == 31626 {
+            print("  sum of amicable ≤ 10000 = {s}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {s}, expected 31626")
+        }
+    }
+}

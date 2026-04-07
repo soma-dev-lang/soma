@@ -1,0 +1,75 @@
+// ============================================================================
+// Perfect numbers and Mersenne primes
+// ============================================================================
+//
+// A number n is perfect iff σ(n) = 2n. Equivalently (Euclid–Euler), n is an
+// even perfect number iff n = 2^(p-1) · (2^p − 1) where 2^p − 1 is a
+// Mersenne prime.
+//
+// We enumerate perfects up to a limit by trying small Mersenne exponents
+// and checking primality of (2^p − 1) via Lucas–Lehmer.
+//
+// Run: soma run perfect.cell
+
+cell Perfect {
+
+    // Lucas–Lehmer test for M_p = 2^p − 1, p odd prime
+    on lucas_lehmer(p: Int) [native] {
+        if p == 2 { return 1 }
+        let m = shl(1, p) - 1
+        let s = 4
+        let i = 0
+        while i < p - 2 {
+            s = (s * s - 2) % m
+            i = i + 1
+        }
+        if s == 0 { return 1 }
+        return 0
+    }
+
+    // The k-th even perfect number from Mersenne exponent p:
+    //   n = 2^(p-1) · (2^p - 1)
+    on perfect_from_p(p: Int) [native] {
+        let mp = shl(1, p) - 1
+        return shl(1, p - 1) * mp
+    }
+
+    on check(p: Int, expected: Int) {
+        let n = perfect_from_p(p)
+        if n == expected {
+            print("  p={p}: M_p prime → perfect = {n} ✓")
+        } else {
+            print("  p={p}: got {n}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Perfect numbers via Mersenne exponents")
+        print("======================================")
+        print("")
+        // First few perfect numbers correspond to Mersenne exponents 2,3,5,7,13,17,19,31
+        check(2, 6)
+        check(3, 28)
+        check(5, 496)
+        check(7, 8128)
+        check(13, 33550336)
+        check(17, 8589869056)
+        check(19, 137438691328)
+        print("")
+        // Verify each candidate exponent ≤ 31 with Lucas-Lehmer
+        let p = 2
+        let found = 0
+        while p <= 31 {
+            if lucas_lehmer(p) == 1 {
+                found = found + 1
+            }
+            p = p + 1
+        }
+        // Mersenne primes for p ≤ 31: 2, 3, 5, 7, 13, 17, 19, 31 → 8
+        if found == 8 {
+            print("  Lucas-Lehmer found 8 Mersenne primes p≤31 ✓")
+        } else {
+            print("  found {found}, expected 8")
+        }
+    }
+}

@@ -1,0 +1,85 @@
+// ============================================================================
+// Edit distance (Damerau–Levenshtein, basic version)
+// ============================================================================
+//
+// Plain Levenshtein with insert/delete/substitute. Two rows of the DP
+// table encoded into BigInt slots (8 bits each — strings up to 255).
+//
+// Run: soma run edit_distance.cell
+
+cell EditDistance {
+
+    on slot_bits() [native] { return 16 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    on min3(a: Int, b: Int, c: Int) [native] {
+        let m = a
+        if b < m { m = b }
+        if c < m { m = c }
+        return m
+    }
+
+    on edit(a: String, b: String) [native] {
+        let m = str_len(a)
+        let n = str_len(b)
+        // prev[j] = edit distance from a[0..0] to b[0..j] = j
+        let prev = 0
+        let j = 0
+        while j <= n {
+            prev = put(prev, j, j)
+            j = j + 1
+        }
+        let i = 1
+        while i <= m {
+            let cur = put(0, 0, i)
+            let k = 1
+            while k <= n {
+                let cost = 0
+                if str_at(a, i - 1) != str_at(b, k - 1) { cost = 1 }
+                let v = min3(
+                    get(prev, k) + 1,
+                    get(cur, k - 1) + 1,
+                    get(prev, k - 1) + cost
+                )
+                cur = put(cur, k, v)
+                k = k + 1
+            }
+            prev = cur
+            i = i + 1
+        }
+        return get(prev, n)
+    }
+
+    on check(a: String, b: String, expected: Int) {
+        let r = edit(a, b)
+        if r == expected {
+            print("  d('{a}', '{b}') = {r} ✓")
+        } else {
+            print("  got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Edit distance")
+        print("=============")
+        print("")
+        check("kitten", "sitting", 3)
+        check("flaw", "lawn", 2)
+        check("intention", "execution", 5)
+        check("abc", "yabd", 2)
+        check("", "abc", 3)
+        check("hello", "hello", 0)
+    }
+}

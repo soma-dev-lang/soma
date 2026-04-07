@@ -1,0 +1,76 @@
+// ============================================================================
+// Extended Euclidean & modular inverse
+// ============================================================================
+//
+// Finds (g, x, y) with a·x + b·y = g where g = gcd(a, b).
+// Soma's [native] dialect doesn't have tuple returns, so we expose
+// each component as its own handler driven by the same recurrence.
+//
+// Verify a·x + b·y = gcd by computing all three and checking.
+//
+// Run: soma run ext_gcd.cell
+
+cell ExtGcd {
+
+    on egcd_x(a: Int, b: Int) [native] {
+        if b == 0 { return 1 }
+        let q = a / b
+        let r = a - q * b
+        return egcd_y(b, r)
+    }
+
+    on egcd_y(a: Int, b: Int) [native] {
+        if b == 0 { return 0 }
+        let q = a / b
+        let r = a - q * b
+        return egcd_x(b, r) - q * egcd_y(b, r)
+    }
+
+    on egcd_g(a: Int, b: Int) [native] {
+        if b == 0 { return a }
+        return egcd_g(b, a - (a / b) * b)
+    }
+
+    // Modular inverse via extended Euclidean: a · x ≡ 1 (mod m)
+    on mod_inverse(a: Int, m: Int) [native] {
+        let x = egcd_x(a, m)
+        let r = x % m
+        if r < 0 { return r + m }
+        return r
+    }
+
+    on check_egcd(a: Int, b: Int) {
+        let g = egcd_g(a, b)
+        let x = egcd_x(a, b)
+        let y = egcd_y(a, b)
+        if a * x + b * y == g {
+            print("  egcd({a}, {b}) → g={g}, x={x}, y={y}  (a·x+b·y={g}) ✓")
+        } else {
+            print("  egcd({a}, {b}) failed: a·x+b·y={a*x+b*y}, expected {g}")
+        }
+    }
+
+    on check_inv(a: Int, m: Int) {
+        let inv = mod_inverse(a, m)
+        if (a * inv) % m == 1 {
+            print("  {a}^-1 mod {m} = {inv} ✓")
+        } else {
+            print("  {a}^-1 mod {m} = {inv} (a·inv mod m = {(a*inv) % m})")
+        }
+    }
+
+    on run() {
+        print("Extended Euclidean and modular inverse")
+        print("======================================")
+        print("")
+        check_egcd(240, 46)
+        check_egcd(101, 13)
+        check_egcd(1071, 462)
+
+        print("")
+        check_inv(3, 11)
+        check_inv(7, 26)
+        check_inv(17, 3120)
+        check_inv(65537, 1000003)
+    }
+}

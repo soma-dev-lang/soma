@@ -1,0 +1,66 @@
+// ============================================================================
+// Binary search
+// ============================================================================
+//
+// Searches a sorted "array" of integers — encoded as a packed BigInt with
+// fixed-width slots — for a target value. Returns the index, or −1.
+//
+// Run: soma run binary_search.cell
+
+cell BinarySearch {
+
+    on slot_bits() [native] { return 32 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    // Build a sorted array from a function: a[i] = i*step + offset
+    on build(n: Int, step: Int, offset: Int) [native] {
+        let arr = 0
+        let i = 0
+        while i < n {
+            arr = put(arr, i, i * step + offset)
+            i = i + 1
+        }
+        return arr
+    }
+
+    on search(arr: Int, n: Int, target: Int) [native] {
+        let lo = 0
+        let hi = n - 1
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            let v = get(arr, mid)
+            if v == target { return mid }
+            if v < target {
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        return 0 - 1
+    }
+
+    on run() {
+        print("Binary search")
+        print("=============")
+        print("")
+        // arr = [0, 3, 6, 9, 12, ..., 297]
+        let arr = build(100, 3, 0)
+        if search(arr, 100, 0) == 0 { print("  search(0) = 0 ✓") }
+        if search(arr, 100, 297) == 99 { print("  search(297) = 99 ✓") }
+        if search(arr, 100, 150) == 50 { print("  search(150) = 50 ✓") }
+        if search(arr, 100, 7) == 0 - 1 { print("  search(7) = -1 (not found) ✓") }
+        if search(arr, 100, 1000) == 0 - 1 { print("  search(1000) = -1 ✓") }
+    }
+}

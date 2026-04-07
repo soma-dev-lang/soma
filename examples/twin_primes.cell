@@ -1,0 +1,62 @@
+// ============================================================================
+// Twin primes — count of (p, p+2) prime pairs up to N
+// ============================================================================
+//
+// A twin prime pair is (p, p+2) where both are prime. By Brun's theorem
+// the sum of reciprocals converges (Brun's constant ≈ 1.902…), so twins
+// thin out faster than primes.
+//
+// Run: soma run twin_primes.cell
+
+cell TwinPrimes {
+
+    on is_prime(n: Int) [native] {
+        if n < 2 { return 0 }
+        if n < 4 { return 1 }
+        if n % 2 == 0 { return 0 }
+        let i = 3
+        while i * i <= n {
+            if n % i == 0 { return 0 }
+            i = i + 2
+        }
+        return 1
+    }
+
+    on twin_count(limit: Int) [native] {
+        let count = 0
+        let p = 3
+        while p + 2 <= limit {
+            if is_prime(p) == 1 {
+                if is_prime(p + 2) == 1 {
+                    count = count + 1
+                }
+            }
+            p = p + 2
+        }
+        return count
+    }
+
+    on check(n: Int, expected: Int) {
+        let start = now_ms()
+        let r = twin_count(n)
+        let elapsed = now_ms() - start
+        if r == expected {
+            print("  twins ≤ {n}: {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Twin primes counting function")
+        print("=============================")
+        print("")
+        check(100, 8)            // (3,5)(5,7)(11,13)(17,19)(29,31)(41,43)(59,61)(71,73)
+        check(1000, 35)
+        check(10000, 205)
+        check(100000, 1224)
+        print("")
+        print("Headline:")
+        check(1000000, 8169)
+    }
+}

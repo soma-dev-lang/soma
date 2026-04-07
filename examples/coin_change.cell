@@ -1,0 +1,65 @@
+// ============================================================================
+// Coin change — number of ways to make a target sum
+// ============================================================================
+//
+// Classic DP: ways(amount) where coin denominations are fixed (1, 2, 5,
+// 10, 20, 50, 100, 200 — UK/Euro). The DP table is encoded as a packed
+// BigInt with 32-bit slots.
+//
+// Run: soma run coin_change.cell
+
+cell CoinChange {
+
+    on slot_bits() [native] { return 32 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    // Use one coin denomination at a time, updating dp[a] += dp[a - coin]
+    on use_coin(dp: Int, target: Int, coin: Int) [native] {
+        let i = coin
+        while i <= target {
+            let v = get(dp, i) + get(dp, i - coin)
+            dp = put(dp, i, v)
+            i = i + 1
+        }
+        return dp
+    }
+
+    on ways(target: Int) [native] {
+        let dp = put(0, 0, 1)
+        dp = use_coin(dp, target, 1)
+        dp = use_coin(dp, target, 2)
+        dp = use_coin(dp, target, 5)
+        dp = use_coin(dp, target, 10)
+        dp = use_coin(dp, target, 20)
+        dp = use_coin(dp, target, 50)
+        dp = use_coin(dp, target, 100)
+        dp = use_coin(dp, target, 200)
+        return get(dp, target)
+    }
+
+    on run() {
+        print("Coin change — Project Euler #31")
+        print("===============================")
+        print("")
+        let w10 = ways(10)
+        if w10 == 11 { print("  ways(10p) = 11 ✓") } else { print("  got {w10}") }
+
+        let w50 = ways(50)
+        if w50 == 451 { print("  ways(50p) = 451 ✓") } else { print("  got {w50}") }
+
+        let w200 = ways(200)
+        if w200 == 73682 { print("  ways(£2) = 73682 ✓ (PE #31)") } else { print("  got {w200}") }
+    }
+}

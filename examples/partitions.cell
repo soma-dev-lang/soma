@@ -1,0 +1,80 @@
+// ============================================================================
+// Integer partitions p(n) — Euler's pentagonal-number recurrence
+// ============================================================================
+//
+// p(n) = Σ_{k=1..} (−1)^(k−1) · [p(n − k(3k−1)/2) + p(n − k(3k+1)/2)]
+//
+// where the sum stops once the arguments go negative. We encode the
+// running p(0..n) values as slot-packed BigInt entries (same trick as
+// bell.cell).
+//
+// Run: soma run partitions.cell
+
+cell Partitions {
+
+    on slot_bits() [native] { return 256 }
+
+    on get(arr: Int, i: Int, w: Int) [native] {
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, w: Int, v: Int) [native] {
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    // Pentagonal-number recurrence with both signed-k contributions
+    // unrolled into a single index variable.
+    on partition(n: Int) [native] {
+        if n < 0 { return 0 }
+        let w = slot_bits()
+        let p = put(0, 0, w, 1)            // p(0) = 1
+        let i = 1
+        while i <= n {
+            let total = 0
+            let k = 1
+            while k > 0 {
+                let g1 = k * (3 * k - 1) / 2
+                if g1 > i { break }
+                let term = get(p, i - g1, w)
+                let g2 = k * (3 * k + 1) / 2
+                if g2 <= i {
+                    term = term + get(p, i - g2, w)
+                }
+                if k % 2 == 1 {
+                    total = total + term
+                } else {
+                    total = total - term
+                }
+                k = k + 1
+            }
+            p = put(p, i, w, total)
+            i = i + 1
+        }
+        return get(p, n, w)
+    }
+
+    on check(n: Int, expected: String) {
+        let r = partition(n)
+        if to_string(r) == expected {
+            print("  p({n}) = {r} ✓")
+        } else {
+            print("  p({n}) = {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Integer partitions p(n)")
+        print("=======================")
+        print("")
+        check(0, "1")
+        check(1, "1")
+        check(5, "7")
+        check(10, "42")
+        check(20, "627")
+        check(50, "204226")
+        check(100, "190569292")
+    }
+}

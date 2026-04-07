@@ -1,0 +1,51 @@
+// ============================================================================
+// Binomial coefficients C(n, k) — large-n with BigInt
+// ============================================================================
+//
+// Computed via the iterative product:
+//   C(n, k) = ∏_{i=1..k} (n − i + 1) / i
+//
+// Each integer division is exact (the partial product is always divisible
+// by i). For large n the value overflows i64, so the dispatch wrapper
+// falls back to the Rug version transparently.
+//
+// Run: soma run binomial.cell
+
+cell Binomial {
+
+    on binom(n: Int, k: Int) [native] {
+        if k < 0 { return 0 }
+        if k > n { return 0 }
+        if k > n - k { k = n - k }
+        let r = 1
+        let i = 1
+        while i <= k {
+            r = r * (n - i + 1) / i
+            i = i + 1
+        }
+        return r
+    }
+
+    on check(n: Int, k: Int, expected: String) {
+        let r = binom(n, k)
+        if to_string(r) == expected {
+            print("  C({n}, {k}) = {r} ✓")
+        } else {
+            print("  C({n}, {k}) = {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Binomial coefficients")
+        print("=====================")
+        print("")
+        check(0, 0, "1")
+        check(5, 2, "10")
+        check(10, 5, "252")
+        check(20, 10, "184756")
+        check(50, 25, "126410606437752")
+        check(100, 50, "100891344545564193334812497256")
+        check(200, 100, "90548514656103281165404177077484163874504589675413336841320")
+        check(500, 250, "116744315788277682920934734762176619659230081180311446124100284957811112673608473715666417775521605376810865902709989580160037468226393900042796872256")
+    }
+}
