@@ -88,7 +88,7 @@ pub fn generate_native_source_with_config(
 
     // Decide mode for each handler
     let modes: Vec<Mode> = handlers.iter().map(|h| select_mode(h, &siblings)).collect();
-    let any_rug = modes.iter().any(|m| *m == Mode::Rug);
+    let any_rug = modes.contains(&Mode::Rug);
     let uses_random = handlers.iter().any(|h| body_uses_random(&h.body));
 
     // Pre-compute sibling info: param types, return type, mode.
@@ -2083,10 +2083,6 @@ impl FnGenerator {
             _ => self.gen_expr_rug(expr),
         }
     }
-
-    /// Boolean condition: handle small/big mixing in comparisons.
-    /// rug::Integer supports comparison with i64 directly.
-    /// i64 vs i64 needs primitive comparison.
 
     /// String expression in Rug mode.
     fn gen_expr_rug_string(&self, expr: &Expr) -> String {
