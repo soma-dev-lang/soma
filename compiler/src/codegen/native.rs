@@ -762,7 +762,9 @@ fn gen_direct_inner_fn(
     let param_str: String = handler.params.iter()
         .map(|p| {
             let ty = type_expr_to_native(&p.ty.node);
-            format!("{}: {}", p.name, ty.rust_str())
+            // Params are always declared `mut` — Soma allows assigning to a
+            // parameter, and the body codegen emits it as a normal variable.
+            format!("mut {}: {}", p.name, ty.rust_str())
         })
         .collect::<Vec<_>>()
         .join(", ");
