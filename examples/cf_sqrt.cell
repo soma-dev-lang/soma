@@ -1,0 +1,100 @@
+// ============================================================================
+// Continued fraction expansion of √n — period length
+// ============================================================================
+//
+// For non-square n, the simple continued fraction expansion of √n is
+// periodic. This computes the period length using the standard recurrence:
+//
+//   m_{k+1} = d_k · a_k − m_k
+//   d_{k+1} = (n − m_{k+1}²) / d_k
+//   a_{k+1} = floor((a_0 + m_{k+1}) / d_{k+1})
+//
+// where a_0 = floor(√n). The period ends when a_k = 2·a_0.
+//
+// Tests Direct-mode i64 with multiplication and Newton's-method isqrt
+// inlined as a sibling call.
+//
+// Run: soma run cf_sqrt.cell
+
+cell CFSqrt {
+
+    on isqrt(n: Int) [native] {
+        if n < 2 { return n }
+        let x = n
+        let y = (x + 1) / 2
+        while y < x {
+            x = y
+            y = (x + n / x) / 2
+        }
+        return x
+    }
+
+    on period(n: Int) [native] {
+        let a0 = isqrt(n)
+        if a0 * a0 == n { return 0 }   // perfect square
+
+        let m = 0
+        let d = 1
+        let a = a0
+        let len = 0
+        // Loop until a = 2·a_0  (Lagrange's theorem guarantees termination)
+        let stop = 2 * a0
+        let go = 1
+        while go == 1 {
+            m = d * a - m
+            d = (n - m * m) / d
+            a = (a0 + m) / d
+            len = len + 1
+            if a == stop { go = 0 }
+        }
+        return len
+    }
+
+    on check(n: Int, expected: Int) {
+        let start = now_ms()
+        let p = period(n)
+        let elapsed = now_ms() - start
+        if p == expected {
+            print("  period(√{n}) = {p}  ({elapsed}ms) ✓")
+        } else {
+            print("  period(√{n}): got {p}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Continued fraction period of √n")
+        print("================================")
+        print("")
+        // OEIS A003285
+        check(2,  1)
+        check(3,  2)
+        check(5,  1)
+        check(6,  2)
+        check(7,  4)
+        check(13, 5)
+        check(23, 4)
+        check(94, 16)
+        check(151, 20)
+        check(421, 37)
+        check(1000, 18)
+        check(9949, 217)
+        check(99991, 436)
+
+        print("")
+        print("Headline: longest period for n < 100,000")
+        let start = now_ms()
+        let best_n = 1
+        let best_p = 0
+        let i = 2
+        while i < 100000 {
+            let p = period(i)
+            if p > best_p {
+                best_p = p
+                best_n = i
+            }
+            i = i + 1
+        }
+        let elapsed = now_ms() - start
+        print("  longest period: n={best_n}, length={best_p}  ({elapsed}ms)")
+    }
+}
