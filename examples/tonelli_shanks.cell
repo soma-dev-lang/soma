@@ -1,0 +1,98 @@
+// ============================================================================
+// Tonelli-Shanks square root modulo a prime
+// ============================================================================
+//
+// Finds x such that x² ≡ n (mod p), for an odd prime p where n is a
+// quadratic residue. Heavy use of pow_mod and modular arithmetic.
+//
+// Run: soma run tonelli_shanks.cell
+
+cell TonelliShanks {
+
+    // Returns x such that x² ≡ n (mod p), or 0 if n is not a QR mod p.
+    on sqrt_mod(n: Int, p: Int) [native] {
+        // Legendre symbol: n^((p-1)/2) mod p
+        // Returns 1 if QR, p-1 if QNR, 0 if n ≡ 0
+        let leg = pow_mod(n, (p - 1) / 2, p)
+        if leg != 1 { return 0 }
+
+        // Easy case: p ≡ 3 (mod 4) → x = n^((p+1)/4) mod p
+        if p % 4 == 3 {
+            return pow_mod(n, (p + 1) / 4, p)
+        }
+
+        // Decompose p − 1 = q · 2^s, q odd
+        let q = p - 1
+        let s = 0
+        while q % 2 == 0 {
+            q = q / 2
+            s = s + 1
+        }
+
+        // Find a quadratic non-residue z
+        let z = 2
+        while pow_mod(z, (p - 1) / 2, p) != p - 1 {
+            z = z + 1
+        }
+
+        let m = s
+        let c = pow_mod(z, q, p)
+        let t = pow_mod(n, q, p)
+        let r = pow_mod(n, (q + 1) / 2, p)
+
+        while true {
+            if t == 1 { return r }
+            // Find smallest i in 1..m such that t^(2^i) ≡ 1
+            let i = 0
+            let temp = t
+            while temp != 1 {
+                temp = (temp * temp) % p
+                i = i + 1
+            }
+            // b = c^(2^(m − i − 1)) mod p
+            let exp = shl(1, m - i - 1)
+            let b = pow_mod(c, exp, p)
+            m = i
+            c = (b * b) % p
+            t = (t * c) % p
+            r = (r * b) % p
+        }
+        return 0
+    }
+
+    on check(n: Int, p: Int) {
+        let start = now_ms()
+        let x = sqrt_mod(n, p)
+        let elapsed = now_ms() - start
+        if x == 0 {
+            print("  √{n} mod {p}: not a QR  ({elapsed}ms)")
+        } else {
+            let v = (x * x) % p
+            let nm = n % p
+            if v == nm {
+                print("  √{n} mod {p} = {x}  (verified: {x}² ≡ {n} mod {p})  ({elapsed}ms) ✓")
+            } else {
+                print("  √{n} mod {p} = {x}  (BAD: {x}² mod {p} = {v} ≠ {nm})")
+            }
+        }
+    }
+
+    on run() {
+        print("Tonelli-Shanks: square root mod p")
+        print("==================================")
+        print("")
+
+        // Easy cases (p ≡ 3 mod 4)
+        check(2, 7)        // p%4==3 fast path
+        check(10, 13)
+        check(2, 23)
+        check(5, 41)       // p ≡ 1 mod 4 — main algorithm
+        check(13, 17)      // p ≡ 1 mod 4
+
+        // Larger primes
+        check(58, 101)
+        check(1234, 5915587277)         // a 10-digit prime
+        check(987654321, 1000000007)    // popular CRT prime
+        check(2, 1000000007)
+    }
+}

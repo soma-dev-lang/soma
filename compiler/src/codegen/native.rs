@@ -1414,7 +1414,7 @@ impl FnGenerator {
                     && hoisted.contains(name)
                 {
                     let ind = Self::indent(indent);
-                    return self.gen_assign_rug(name, &value.node, &ind);
+                    return self.gen_init_rug(name, &value.node, &ind);
                 }
                 self.gen_stmt_rug_inner(stmt, indent, fn_ret_type)
             }
@@ -1647,7 +1647,10 @@ impl FnGenerator {
                     && hoisted.contains(name)
                 {
                     let ind = Self::indent(indent);
-                    return self.gen_assign_rug(name, &value.node, &ind);
+                    // For Let, the source variable must be PRESERVED (not consumed),
+                    // so use clone_from / assign instead of the swap optimization
+                    // that gen_assign_rug uses for Assign statements.
+                    return self.gen_init_rug(name, &value.node, &ind);
                 }
                 self.gen_stmt_rug(stmt, indent)
             }
@@ -1927,6 +1930,29 @@ impl FnGenerator {
             }
             _ => format!("&{}", self.gen_expr_rug(expr)),
         }
+    }
+
+    /// Initialize a hoisted Integer with `name = value`.
+    /// Unlike gen_assign_rug, this does NOT swap (Let statements must
+    /// preserve the source value for later reads).
+    fn gen_init_rug(&self, name: &str, value: &Expr, ind: &str) -> String {
+        // Literal: assign(N)
+        if let Expr::Literal(Literal::Int(n)) = value {
+            return format!("{}{}.assign({}i64);\n", ind, name, n);
+        }
+        // Ident: clone_from (no swap — source must remain valid)
+        if let Expr::Ident(src) = value {
+            let var_ty = self.var_types.get(src).copied().unwrap_or(NativeType::Float);
+            if var_ty == NativeType::Int {
+                if self.small_int_vars.contains(src) {
+                    return format!("{}{}.assign({});\n", ind, name, src);
+                }
+                return format!("{}{}.clone_from(&{});\n", ind, name, src);
+            }
+        }
+        // General: assign from incomplete expression
+        let expr = self.gen_expr_rug_incomplete(value);
+        format!("{}{}.assign({});\n", ind, name, expr)
     }
 
     /// Efficient in-place Integer assignment.
