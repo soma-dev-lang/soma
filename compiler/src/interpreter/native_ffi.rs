@@ -122,13 +122,12 @@ pub fn compile_and_load_natives_with_config(
             let proj_src = proj_dir.join("src");
             std::fs::create_dir_all(&proj_src).ok();
 
-            // Write Cargo.toml — choose deps based on generated code
+            // Write Cargo.toml — only include rug if a Rug-mode handler is present
             let uses_rug = rust_source.contains("use rug::Integer");
-            let uses_num_bigint = rust_source.contains("use num_bigint::BigInt");
-            let deps = match (uses_rug, uses_num_bigint) {
-                (true, true) => "rug = { version = \"1\", default-features = false, features = [\"integer\"] }\nnum-bigint = \"0.4\"\nnum-traits = \"0.2\"\n",
-                (true, false) => "rug = { version = \"1\", default-features = false, features = [\"integer\"] }\n",
-                _ => "num-bigint = \"0.4\"\nnum-traits = \"0.2\"\n",
+            let deps = if uses_rug {
+                "rug = { version = \"1\", default-features = false, features = [\"integer\"] }\n"
+            } else {
+                ""
             };
             let cargo_toml = format!(
                 "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = true\npanic = \"unwind\"\n",
