@@ -1,0 +1,110 @@
+// ============================================================================
+// Matrix-exponentiation Fibonacci
+// ============================================================================
+//
+// F(n) computed in O(log n) matrix multiplications using
+//   [[1, 1], [1, 0]]^n = [[F(n+1), F(n)], [F(n), F(n-1)]]
+//
+// Soma's [native] doesn't have arrays, so the 2×2 matrix is 4 named
+// variables (a, b, c, d) and the multiplication is fully inlined.
+//
+// Tests Rug-mode multiplicative growth with many BigInt local vars.
+//
+// Run: soma run matrix_fib.cell
+
+cell MatrixFib {
+
+    // F(n) returned as a decimal string.
+    on fib(n: Int) [native] {
+        if n == 0 { return "0" }
+        if n == 1 { return "1" }
+
+        // Accumulator R = identity
+        let ra = 1
+        let rb = 0
+        let rc = 0
+        let rd = 1
+        // Base B = [[1, 1], [1, 0]]
+        let ba = 1
+        let bb = 1
+        let bc = 1
+        let bd = 0
+
+        let m = n
+        while m > 0 {
+            if m % 2 == 1 {
+                // R = R · B
+                let na = ra * ba + rb * bc
+                let nb = ra * bb + rb * bd
+                let nc = rc * ba + rd * bc
+                let nd = rc * bb + rd * bd
+                ra = na
+                rb = nb
+                rc = nc
+                rd = nd
+            }
+            // B = B · B
+            let sa = ba * ba + bb * bc
+            let sb = ba * bb + bb * bd
+            let sc = bc * ba + bd * bc
+            let sd = bc * bb + bd * bd
+            ba = sa
+            bb = sb
+            bc = sc
+            bd = sd
+            m = m / 2
+        }
+        // F(n) = upper-right entry of R
+        return to_string(rb)
+    }
+
+    on check(n: Int, expected: String) {
+        let start = now_ms()
+        let r = fib(n)
+        let elapsed = now_ms() - start
+        if r == expected {
+            print("  F({n}) = {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  F({n}) = {r}, expected {expected}")
+        }
+    }
+
+    on check_digits(n: Int, expected_digits: Int) {
+        let start = now_ms()
+        let r = fib(n)
+        let elapsed = now_ms() - start
+        let len = str_len(r)
+        if len == expected_digits {
+            print("  F({n}) has {len} digits  ({elapsed}ms) ✓")
+        } else {
+            print("  F({n}) has {len} digits, expected {expected_digits}")
+        }
+    }
+
+    on run() {
+        print("Matrix-exponentiation Fibonacci")
+        print("===============================")
+        print("")
+        check(0,  "0")
+        check(1,  "1")
+        check(2,  "1")
+        check(10, "55")
+        check(20, "6765")
+        check(50, "12586269025")
+        check(100, "354224848179261915075")
+
+        print("")
+        print("Larger:")
+        check_digits(1000,   209)     // F(1000)
+        check_digits(10000,  2090)
+        check_digits(100000, 20899)   // ~21K digits
+
+        print("")
+        print("Headline: F(1,000,000)")
+        let start = now_ms()
+        let r = fib(1000000)
+        let elapsed = now_ms() - start
+        let len = str_len(r)
+        print("  F(10^6) has {len} digits  ({elapsed}ms)")
+    }
+}
