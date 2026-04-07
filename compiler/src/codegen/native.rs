@@ -2206,27 +2206,29 @@ impl FnGenerator {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
                 format!("Integer::from(({}).{}() as i64)", a, name)
             }
-            // Bit operations on Integer
+            // Bit operations on Integer — need owned operands so the result
+            // can be a BigInt regardless of operand sizes.
             "band" | "bor" | "bxor" if args.len() == 2 => {
-                let a = self.gen_expr_rug_ref(&args[0].node);
-                let b = self.gen_expr_rug_ref(&args[1].node);
+                let a = self.gen_int_owned_rug(&args[0].node);
+                let b = self.gen_int_owned_rug(&args[1].node);
                 let op = match name { "band" => "&", "bor" => "|", _ => "^" };
-                format!("Integer::from({} {} {})", a, op, b)
+                format!("Integer::from(({}) {} ({}))", a, op, b)
             }
             "bnot" if args.len() == 1 => {
-                let a = self.gen_expr_rug_ref(&args[0].node);
-                format!("Integer::from(!{})", a)
+                let a = self.gen_int_owned_rug(&args[0].node);
+                format!("Integer::from(!({}))", a)
             }
             "shl" if args.len() == 2 => {
-                let a = self.gen_expr_rug_ref(&args[0].node);
-                // shift count needs u32
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                format!("Integer::from({} << ({} as u32))", a, b)
+                // Wrap the base in Integer so the shift can produce a BigInt
+                // (u32 << u32 in plain Rust would panic for shift > 31).
+                let a = self.gen_int_owned_rug(&args[0].node);
+                let b = self.gen_int_to_i64_rug(&args[1].node);
+                format!("Integer::from(({}) << (({}) as u32))", a, b)
             }
             "shr" if args.len() == 2 => {
-                let a = self.gen_expr_rug_ref(&args[0].node);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                format!("Integer::from({} >> ({} as u32))", a, b)
+                let a = self.gen_int_owned_rug(&args[0].node);
+                let b = self.gen_int_to_i64_rug(&args[1].node);
+                format!("Integer::from(({}) >> (({}) as u32))", a, b)
             }
             // Number theory: rug has these as methods. All args must be &Integer.
             "gcd" if args.len() == 2 => {
