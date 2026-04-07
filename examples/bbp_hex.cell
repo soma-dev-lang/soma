@@ -1,0 +1,100 @@
+// ============================================================================
+// BBP digit-extraction:  n-th hexadecimal digit of π
+// ============================================================================
+//
+// Bailey-Borwein-Plouffe lets you compute the n-th hex digit of π
+// without computing any of the preceding ones, using
+//
+//   π = Σ_{k=0}^∞ 16^(−k) · (4/(8k+1) − 2/(8k+4) − 1/(8k+5) − 1/(8k+6))
+//
+// Take the fractional part of 16^n · π and read off the leading hex digit.
+// f64 precision limits us to roughly the first ~10^7 digits.
+//
+// Tests Direct-mode pow_mod (i64) and Float arithmetic in tight loops.
+//
+// Run: soma run bbp_hex.cell
+
+cell BBPHex {
+
+    // Modular series  S(j, n) = { 16^n · Σ 1/(16^k · (8k+j)) } (fractional part)
+    on series(j: Int, n: Int) [native] {
+        let s = 0.0
+        // Sum for k = 0..n with modular exponentiation
+        let k = 0
+        while k <= n {
+            let denom = 8 * k + j
+            let r = pow_mod(16, n - k, denom)
+            s = s + to_float(r) / to_float(denom)
+            // Keep only the fractional part to stop catastrophic cancellation
+            s = s - to_float(floor(s))
+            k = k + 1
+        }
+        // Tail: 16^(n-k) for k > n is 16^(negative) — converges fast
+        let p16 = 1.0 / 16.0
+        let kk = n + 1
+        let limit = n + 30
+        while kk <= limit {
+            s = s + p16 / to_float(8 * kk + j)
+            p16 = p16 / 16.0
+            kk = kk + 1
+        }
+        return s
+    }
+
+    // Returns the (1-indexed) n-th hex digit of π after the radix point.
+    on bbp_hex(n: Int) [native] {
+        // Internal index is 0-based; n=1 ↔ first digit ↔ m=0
+        let m = n - 1
+        let s = 4.0 * series(1, m)
+              - 2.0 * series(4, m)
+              -       series(5, m)
+              -       series(6, m)
+        s = s - to_float(floor(s))
+        if s < 0.0 { s = s + 1.0 }
+        return floor(s * 16.0)
+    }
+
+    on check(n: Int, expected: Int) {
+        let d = bbp_hex(n)
+        if d == expected {
+            print("  hex digit {n} of π = {d} ✓")
+        } else {
+            print("  hex digit {n} of π = {d}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("BBP n-th hex digit of π")
+        print("=======================")
+        print("")
+        // π = 3.243F6A8885A308D313198A2E03707344A40938...
+        // digit 1 = 2, 2 = 4, 3 = 3, 4 = F (15), 5 = 6, 6 = A (10), 7 = 8, ...
+        check(1,  2)
+        check(2,  4)
+        check(3,  3)
+        check(4,  15)   // F
+        check(5,  6)
+        check(6,  10)   // A
+        check(7,  8)
+        check(8,  8)
+        check(9,  8)
+        check(10, 5)
+        check(11, 10)   // A
+        check(12, 3)
+
+        // Spot-checks at specific positions in the hex expansion
+        // 3.243F6A8885 A308D31319 8A2E037073 44A4093822 299F31D008 ...
+        //                                                 ^ position 41 = 2
+        check(20, 9)
+        check(30, 3)
+        check(40, 2)
+        check(50, 8)
+
+        print("")
+        print("Headline:")
+        let start = now_ms()
+        let big = bbp_hex(100000)
+        let elapsed = now_ms() - start
+        print("  hex digit 100000 of π = {big}  ({elapsed}ms)")
+    }
+}

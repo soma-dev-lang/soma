@@ -327,7 +327,10 @@ fn return_expr_needs_bigint(
         match &stmt.node {
             Statement::Return { value } => {
                 let ty = gen.infer_expr_type(&value.node);
-                if ty == NativeType::Int && !FnGenerator::is_bounded_expr(&value.node, small, siblings) {
+                if ty == NativeType::Int
+                    && !FnGenerator::is_bounded_expr_typed(
+                        &value.node, small, siblings, Some(&gen.var_types))
+                {
                     return true;
                 }
             }
@@ -811,27 +814,58 @@ impl FnGenerator {
 
     /// Non-self bounded expression: any op on (small_vars, literals), no var*var.
     /// Allows FnCall to known-bounded builtins or sibling handlers.
+    /// (Static helper — doesn't know variable types; treats all Idents as Int.)
     fn is_bounded_expr(expr: &Expr, small: &HashSet<String>, siblings: &HashSet<String>) -> bool {
+        Self::is_bounded_expr_typed(expr, small, siblings, None)
+    }
+
+    /// Type-aware version: when var_types is provided, Float/Bool/String idents
+    /// are considered bounded (they don't carry Int magnitude).
+    fn is_bounded_expr_typed(
+        expr: &Expr,
+        small: &HashSet<String>,
+        siblings: &HashSet<String>,
+        var_types: Option<&HashMap<String, NativeType>>,
+    ) -> bool {
         match expr {
             Expr::Literal(Literal::Int(_)) => true,
-            Expr::Ident(n) => small.contains(n),
+            Expr::Literal(Literal::Float(_)) => true,
+            Expr::Literal(Literal::Bool(_)) => true,
+            Expr::Ident(n) => {
+                if let Some(types) = var_types {
+                    let ty = types.get(n).copied().unwrap_or(NativeType::Float);
+                    if ty != NativeType::Int { return true; }
+                }
+                small.contains(n)
+            }
             Expr::BinaryOp { left, op, right } => {
-                let l_ok = Self::is_bounded_expr(&left.node, small, siblings);
-                let r_ok = Self::is_bounded_expr(&right.node, small, siblings);
+                let l_ok = Self::is_bounded_expr_typed(&left.node, small, siblings, var_types);
+                let r_ok = Self::is_bounded_expr_typed(&right.node, small, siblings, var_types);
                 if !l_ok || !r_ok { return false; }
                 if matches!(op, BinOp::Mul) {
-                    let l_lit = matches!(&left.node, Expr::Literal(Literal::Int(_)));
-                    let r_lit = matches!(&right.node, Expr::Literal(Literal::Int(_)));
-                    if !l_lit && !r_lit { return false; }
+                    // The var*var rule is only an Int-overflow concern. If either
+                    // operand is a Float (literal or var), skip the rule entirely.
+                    let l_is_float = matches!(&left.node, Expr::Literal(Literal::Float(_)))
+                        || var_types.and_then(|t| match &left.node {
+                            Expr::Ident(n) => t.get(n).copied(),
+                            _ => None,
+                        }) == Some(NativeType::Float);
+                    let r_is_float = matches!(&right.node, Expr::Literal(Literal::Float(_)))
+                        || var_types.and_then(|t| match &right.node {
+                            Expr::Ident(n) => t.get(n).copied(),
+                            _ => None,
+                        }) == Some(NativeType::Float);
+                    if !l_is_float && !r_is_float {
+                        let l_lit = matches!(&left.node, Expr::Literal(Literal::Int(_)));
+                        let r_lit = matches!(&right.node, Expr::Literal(Literal::Int(_)));
+                        if !l_lit && !r_lit { return false; }
+                    }
                 }
                 matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)
             }
             Expr::FnCall { name, args } => {
-                // Bounded builtins, or sibling calls (assume sibling returns i64-safe).
-                // If the assumption is wrong (sibling returns BigInt), the codegen
-                // will marshal via .to_i64().expect() which panics with a clear error.
                 if !is_bounded_builtin(name) && !siblings.contains(name) { return false; }
-                args.iter().all(|a| Self::is_bounded_expr(&a.node, small, siblings))
+                args.iter().all(|a| Self::is_bounded_expr_typed(&a.node, small, siblings, var_types))
             }
             _ => false,
         }
