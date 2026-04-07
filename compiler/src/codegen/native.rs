@@ -261,15 +261,19 @@ pub fn generate_native_source_with_config(
 
 /// Decide whether a handler should use Direct or Rug mode.
 ///
-/// Auto-detection:
-///   1. If the return type is String → Rug mode (canonical BigInt-as-string output).
-///   2. Else, run the small-int classifier with parameters treated as bounded.
-///      If all int variables fit i64 → Direct mode. Otherwise → Rug mode.
-///
-/// The classifier marks a variable as "small" (i64-safe) if all its
-/// assignments fit safe patterns (literal, self±literal, bounded ops).
-/// If any int var doesn't fit, the body needs BigInt → Rug mode.
+/// Selection rules (in order):
+///   1. `[native, i64]` property → Direct mode forced (user asserts no
+///      overflow; runtime panics on overflow with overflow-checks = true).
+///   2. `[native, bigint]` property → Rug mode forced.
+///   3. If the return type is String → Rug mode (canonical BigInt-as-string).
+///   4. Else, run the classifier: if all int locals fit i64 → Direct, else Rug.
 fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
+    if handler.properties.iter().any(|p| p == "i64") {
+        return Mode::Direct;
+    }
+    if handler.properties.iter().any(|p| p == "bigint") {
+        return Mode::Rug;
+    }
     let mut gen = FnGenerator::new(&handler.params, siblings, Mode::Direct);
     for p in &handler.params {
         gen.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));

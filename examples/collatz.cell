@@ -1,0 +1,74 @@
+// ============================================================================
+// Collatz longest sequence (Project Euler #14)
+// ============================================================================
+//
+// Find the starting value < N that produces the longest Collatz sequence.
+// Sequence: n → n/2 if even, 3n+1 if odd. Stop at 1.
+//
+// Tests Direct-mode i64 in a tight loop with branching. The intermediate
+// values can grow large (up to ~10^11 for N < 10^7) but stay in i64 range.
+//
+// Run: soma run collatz.cell
+
+cell Collatz {
+
+    // Length of the Collatz sequence starting at n.
+    // [i64] forces Direct mode: the classifier would otherwise reject
+    // `v = 3*v + 1` as exponential (which it is in principle), but for
+    // n < 10^7 the values stay well within i64.
+    on collatz_length(n: Int) [native, i64] {
+        let len = 1
+        let v = n
+        while v != 1 {
+            if v % 2 == 0 {
+                v = v / 2
+            } else {
+                v = 3 * v + 1
+            }
+            len = len + 1
+        }
+        return len
+    }
+
+    // Find the start value < limit with the longest Collatz sequence.
+    // Returns the start value.
+    on longest_under(limit: Int) [native, i64] {
+        let best_start = 1
+        let best_len = 1
+        let i = 2
+        while i < limit {
+            let l = collatz_length(i)
+            if l > best_len {
+                best_len = l
+                best_start = i
+            }
+            i = i + 1
+        }
+        return best_start
+    }
+
+    on check(limit: Int, expected_start: Int, expected_len: Int) {
+        let start = now_ms()
+        let s = longest_under(limit)
+        let elapsed = now_ms() - start
+        let l = collatz_length(s)
+        if s == expected_start && l == expected_len {
+            print("  N<{limit}: start={s} len={l}  ({elapsed}ms) ✓")
+        } else {
+            print("  N<{limit}: got start={s} len={l}, expected start={expected_start} len={expected_len}")
+        }
+    }
+
+    on run() {
+        print("Collatz longest sequence (Project Euler #14)")
+        print("=============================================")
+        print("")
+        check(100,    97,   119)
+        check(1000,   871,  179)
+        check(10000,  6171, 262)
+        check(100000, 77031, 351)
+        print("")
+        print("Headline:")
+        check(1000000, 837799, 525)   // Project Euler #14 answer
+    }
+}
