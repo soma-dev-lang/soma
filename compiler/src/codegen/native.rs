@@ -88,21 +88,47 @@ pub fn generate_native_source_with_config(
 
     // Decide mode for each handler
     let mut modes: Vec<Mode> = handlers.iter().map(|h| select_mode(h, &siblings)).collect();
-    // Propagate Rug-mode through sibling-call chains: a Direct handler that
-    // calls a Rug sibling returning Int could receive an Integer that doesn't
-    // fit i64 — promote it to Rug too. Iterate to fixpoint.
+    // Propagate Rug-mode through sibling-call chains. Two directions:
+    //   (1) Direct handler calling a Rug sibling returning Int → could receive
+    //       a BigInt result that doesn't fit i64 → promote caller to Rug.
+    //   (2) Rug handler calling a Direct sibling with an Int argument → could
+    //       pass a BigInt that doesn't fit i64 → promote callee to Rug.
+    // Iterate both to fixpoint.
+    let int_param_handlers: HashSet<String> = handlers.iter()
+        .filter(|h| h.params.iter().any(|p| type_expr_to_native(&p.ty.node) == NativeType::Int))
+        .map(|h| h.signal_name.clone())
+        .collect();
     loop {
         let mut changed = false;
+        let mode_of: HashMap<&str, Mode> = handlers.iter().enumerate()
+            .map(|(j, h)| (h.signal_name.as_str(), modes[j]))
+            .collect();
+        // (1) Direct → calls-Rug-Int-sibling → promote
         for i in 0..handlers.len() {
             if modes[i] == Mode::Rug { continue; }
-            // Build a quick name→mode map for the *current* iteration
-            let mode_of: HashMap<&str, Mode> = handlers.iter().enumerate()
-                .map(|(j, h)| (h.signal_name.as_str(), modes[j]))
-                .collect();
             if calls_rug_int_sibling(&handlers[i].body, &mode_of, &siblings) {
                 modes[i] = Mode::Rug;
                 changed = true;
             }
+        }
+        // (2) For each Direct handler that takes Int params: if any Rug
+        //     handler calls it, promote it to Rug.
+        let mode_of: HashMap<&str, Mode> = handlers.iter().enumerate()
+            .map(|(j, h)| (h.signal_name.as_str(), modes[j]))
+            .collect();
+        for i in 0..handlers.len() {
+            if modes[i] == Mode::Rug { continue; }
+            let name = &handlers[i].signal_name;
+            if !int_param_handlers.contains(name) { continue; }
+            let called_by_rug = handlers.iter().enumerate().any(|(j, h)| {
+                modes[j] == Mode::Rug && body_calls(&h.body, name)
+            });
+            if called_by_rug {
+                modes[i] = Mode::Rug;
+                changed = true;
+            }
+            // Suppress unused warning for mode_of in this branch
+            let _ = &mode_of;
         }
         if !changed { break; }
     }
@@ -332,6 +358,43 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
     }
 
     Mode::Direct
+}
+
+/// True if `body` contains any call to a function named `target`.
+fn body_calls(body: &[Spanned<Statement>], target: &str) -> bool {
+    fn expr_has_call(e: &Expr, target: &str) -> bool {
+        match e {
+            Expr::FnCall { name, args } => {
+                name == target || args.iter().any(|a| expr_has_call(&a.node, target))
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+                expr_has_call(&left.node, target) || expr_has_call(&right.node, target)
+            }
+            Expr::Not(inner) => expr_has_call(&inner.node, target),
+            _ => false,
+        }
+    }
+    fn stmt_has_call(s: &Statement, target: &str) -> bool {
+        match s {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
+                expr_has_call(&value.node, target)
+            }
+            Statement::ExprStmt { expr } => expr_has_call(&expr.node, target),
+            Statement::If { condition, then_body, else_body } => {
+                expr_has_call(&condition.node, target)
+                    || body_calls(then_body, target)
+                    || body_calls(else_body, target)
+            }
+            Statement::While { condition, body } => {
+                expr_has_call(&condition.node, target) || body_calls(body, target)
+            }
+            Statement::For { iter, body, .. } => {
+                expr_has_call(&iter.node, target) || body_calls(body, target)
+            }
+            _ => false,
+        }
+    }
+    body.iter().any(|s| stmt_has_call(&s.node, target))
 }
 
 /// True if `body` contains a call (anywhere) to a sibling handler that is
@@ -888,26 +951,86 @@ impl FnGenerator {
         siblings: &HashSet<String>,
         var_types: Option<&HashMap<String, NativeType>>,
     ) {
+        Self::collect_non_small_inner(body, small, to_remove, siblings, var_types, false);
+    }
+
+    fn collect_non_small_inner(
+        body: &[Spanned<Statement>],
+        small: &HashSet<String>,
+        to_remove: &mut Vec<String>,
+        siblings: &HashSet<String>,
+        var_types: Option<&HashMap<String, NativeType>>,
+        in_loop: bool,
+    ) {
         for stmt in body {
             match &stmt.node {
                 Statement::Let { name, value } | Statement::Assign { name, value } => {
                     if !small.contains(name) { continue; }
                     if !Self::is_small_expr(name, &value.node, small, siblings, var_types) {
                         to_remove.push(name.clone());
+                        continue;
+                    }
+                    // Loop-context check: Fibonacci-style `t = a + b` where both
+                    // a and b are distinct loop-mutated Int vars accumulates
+                    // unbounded growth across iterations even though each step
+                    // looks individually bounded. The classifier doesn't model
+                    // iterations, so reject this pattern conservatively when
+                    // inside any loop.
+                    if in_loop && Self::has_two_var_arith(&value.node, name, var_types) {
+                        to_remove.push(name.clone());
                     }
                 }
                 Statement::If { then_body, else_body, .. } => {
-                    Self::collect_non_small(then_body, small, to_remove, siblings, var_types);
-                    Self::collect_non_small(else_body, small, to_remove, siblings, var_types);
+                    Self::collect_non_small_inner(then_body, small, to_remove, siblings, var_types, in_loop);
+                    Self::collect_non_small_inner(else_body, small, to_remove, siblings, var_types, in_loop);
                 }
                 Statement::While { body, .. } => {
-                    Self::collect_non_small(body, small, to_remove, siblings, var_types);
+                    Self::collect_non_small_inner(body, small, to_remove, siblings, var_types, true);
                 }
                 Statement::For { body, .. } => {
-                    Self::collect_non_small(body, small, to_remove, siblings, var_types);
+                    Self::collect_non_small_inner(body, small, to_remove, siblings, var_types, true);
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// True if `expr` contains a +/- of two distinct Int identifiers, neither
+    /// of which is `target` (i.e. it's not a self-additive recurrence).
+    /// This is the Fibonacci-style accumulation pattern that overflows i64
+    /// without bound across loop iterations.
+    fn has_two_var_arith(
+        expr: &Expr,
+        target: &str,
+        var_types: Option<&HashMap<String, NativeType>>,
+    ) -> bool {
+        let is_int_ident = |e: &Expr| -> Option<String> {
+            if let Expr::Ident(n) = e {
+                if n == target { return None; }
+                if let Some(types) = var_types {
+                    if types.get(n).copied() == Some(NativeType::Int) {
+                        return Some(n.clone());
+                    }
+                } else {
+                    // No type info — assume Int (conservative).
+                    return Some(n.clone());
+                }
+            }
+            None
+        };
+        match expr {
+            Expr::BinaryOp { left, op, right } if matches!(op, BinOp::Add | BinOp::Sub) => {
+                if let (Some(a), Some(b)) = (is_int_ident(&left.node), is_int_ident(&right.node)) {
+                    if a != b { return true; }
+                }
+                Self::has_two_var_arith(&left.node, target, var_types)
+                    || Self::has_two_var_arith(&right.node, target, var_types)
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                Self::has_two_var_arith(&left.node, target, var_types)
+                    || Self::has_two_var_arith(&right.node, target, var_types)
+            }
+            _ => false,
         }
     }
 
