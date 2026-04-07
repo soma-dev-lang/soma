@@ -44,7 +44,7 @@ fn check_params(handler_name: &str, params: &[Param]) -> Result<(), NativeCheckE
 
 fn is_native_type(ty: &TypeExpr) -> bool {
     match ty {
-        TypeExpr::Simple(name) => matches!(name.as_str(), "Int" | "Float" | "Bool"),
+        TypeExpr::Simple(name) => matches!(name.as_str(), "Int" | "Float" | "Bool" | "String"),
         TypeExpr::Generic { name, args } => {
             name == "List" && args.len() == 1 && matches!(&args[0].node, TypeExpr::Simple(s) if s == "Int" || s == "Float")
         }
@@ -58,7 +58,7 @@ const ALLOWED_BUILTINS: &[&str] = &[
     // Pipe operations (generate parallel native code)
     "map", "filter", "reduce", "fold",
     // Type conversions
-    "to_float", "to_int",
+    "to_float", "to_int", "to_string",
 ];
 
 /// Validate all statements in a [native] handler body.
@@ -119,10 +119,7 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
         Expr::Literal(lit) => {
             match lit {
                 Literal::Int(_) | Literal::Float(_) | Literal::Bool(_) => Ok(()),
-                Literal::String(_) => Err(NativeCheckError {
-                    handler_name: handler_name.to_string(),
-                    reason: "uses String literal".to_string(),
-                }),
+                Literal::String(_) => Ok(()),
                 _ => Err(NativeCheckError {
                     handler_name: handler_name.to_string(),
                     reason: format!("uses unsupported literal type {:?}", lit),

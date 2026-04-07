@@ -122,9 +122,17 @@ pub fn compile_and_load_natives_with_config(
             let proj_src = proj_dir.join("src");
             std::fs::create_dir_all(&proj_src).ok();
 
-            // Write Cargo.toml with num-bigint dependency
+            // Write Cargo.toml — choose deps based on generated code
+            let uses_rug = rust_source.contains("use rug::Integer");
+            let uses_num_bigint = rust_source.contains("use num_bigint::BigInt");
+            let deps = match (uses_rug, uses_num_bigint) {
+                (true, true) => "rug = { version = \"1\", default-features = false, features = [\"integer\"] }\nnum-bigint = \"0.4\"\nnum-traits = \"0.2\"\n",
+                (true, false) => "rug = { version = \"1\", default-features = false, features = [\"integer\"] }\n",
+                _ => "num-bigint = \"0.4\"\nnum-traits = \"0.2\"\n",
+            };
             let cargo_toml = format!(
-                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\nnum-bigint = \"0.4\"\nnum-traits = \"0.2\"\n\n[profile.release]\nopt-level = 3\noverflow-checks = true\npanic = \"unwind\"\n"
+                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = true\npanic = \"unwind\"\n",
+                deps
             );
             std::fs::write(proj_dir.join("Cargo.toml"), &cargo_toml)
                 .map_err(|e| format!("cannot write Cargo.toml: {}", e))?;
@@ -251,6 +259,10 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
                 };
                 raw_args.push(if val { 1 } else { 0 });
             }
+            NativeType::String => {
+                // String args go through shared buffer path, not direct call_raw
+                return Err(format!("[native] arg {} is String — should use shared buffer path", i));
+            }
         }
     }
 
@@ -265,6 +277,7 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
         }
         NativeType::Float => Ok(Value::Float(f64::from_bits(raw_result))),
         NativeType::Bool => Ok(Value::Bool(raw_result != 0)),
+        NativeType::String => Ok(Value::String(String::new())), // shouldn't reach here
     }
 }
 
@@ -312,33 +325,48 @@ fn call_native_shared(native: &LoadedNative, args: &[super::Value]) -> Result<su
         let handler_fn: extern "C" fn() -> i64 = std::mem::transmute(native.fn_ptr);
         let result_i64 = handler_fn();
 
-        // 4. Read result
-        if result_i64 == i64::MIN {
-            // BigInt result: read from shared buffer
-            let result_len_fn: libloading::Symbol<unsafe extern "C" fn() -> i64> =
-                lib.get(b"_soma_result_len")
-                    .map_err(|e| format!("[native] missing _soma_result_len: {}", e))?;
-            let result_ptr_fn: libloading::Symbol<unsafe extern "C" fn() -> *const u8> =
-                lib.get(b"_soma_result_ptr")
-                    .map_err(|e| format!("[native] missing _soma_result_ptr: {}", e))?;
-
-            let len = result_len_fn() as usize;
-            let ptr = result_ptr_fn();
-
-            if ptr.is_null() || len == 0 {
-                return Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i64::MIN)));
+        // 4. Read result based on return type
+        match native.sig.return_type {
+            NativeType::String => {
+                // String result: always in shared buffer
+                let s = read_shared_result(lib)?;
+                Ok(Value::String(s))
             }
-
-            let bytes = std::slice::from_raw_parts(ptr, len);
-            let s = String::from_utf8(bytes.to_vec())
-                .map_err(|_| "[native] invalid BigInt UTF-8".to_string())?;
-
-            // Parse decimal string directly to SomaInt (via rug::Integer)
-            Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_decimal_str(&s)))
-        } else {
-            Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
+            NativeType::Int => {
+                if result_i64 == i64::MIN {
+                    // BigInt result: read from shared buffer
+                    let s = read_shared_result(lib)?;
+                    Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_decimal_str(&s)))
+                } else {
+                    Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
+                }
+            }
+            _ => {
+                Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
+            }
         }
     }
+}
+
+/// Read string result from shared buffer (_soma_result_ptr/_soma_result_len)
+unsafe fn read_shared_result(lib: &std::sync::Arc<libloading::Library>) -> Result<String, String> {
+    let result_len_fn: libloading::Symbol<unsafe extern "C" fn() -> i64> =
+        lib.get(b"_soma_result_len")
+            .map_err(|e| format!("[native] missing _soma_result_len: {}", e))?;
+    let result_ptr_fn: libloading::Symbol<unsafe extern "C" fn() -> *const u8> =
+        lib.get(b"_soma_result_ptr")
+            .map_err(|e| format!("[native] missing _soma_result_ptr: {}", e))?;
+
+    let len = result_len_fn() as usize;
+    let ptr = result_ptr_fn();
+
+    if ptr.is_null() || len == 0 {
+        return Ok(String::new());
+    }
+
+    let bytes = std::slice::from_raw_parts(ptr, len);
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| "[native] invalid UTF-8 in result".to_string())
 }
 
 /// Low-level function call dispatcher. Transmutes the function pointer based on
@@ -369,6 +397,11 @@ unsafe fn call_raw(
                     Ok(f() as u64)
                 }
                 NativeType::Bool => {
+                    let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
+                    Ok(f() as u64)
+                }
+                NativeType::String => {
+                    // String return goes through shared buffer; shouldn't reach here
                     let f: extern "C" fn() -> i64 = std::mem::transmute(fn_ptr);
                     Ok(f() as u64)
                 }
@@ -491,6 +524,7 @@ unsafe fn call_generic(
             NativeType::Int => float_args.push(*arg as i64 as f64),
             NativeType::Float => float_args.push(f64::from_bits(*arg)),
             NativeType::Bool => float_args.push(if *arg != 0 { 1.0 } else { 0.0 }),
+            NativeType::String => float_args.push(0.0),
         }
     }
 
@@ -502,5 +536,6 @@ unsafe fn call_generic(
         NativeType::Float => Ok(result.to_bits()),
         NativeType::Int => Ok(result as i64 as u64),
         NativeType::Bool => Ok(if result != 0.0 { 1 } else { 0 }),
+        NativeType::String => Ok(0),
     }
 }
