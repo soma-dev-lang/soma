@@ -1,0 +1,87 @@
+// ============================================================================
+// Look-and-say sequence
+// ============================================================================
+//
+// Each term describes the previous one:
+//   "1" → "11" (one 1) → "21" (two 1s) → "1211" → "111221" → "312211" → ...
+//
+// Tests String parameters, str_len/str_at, and the string-append
+// optimization (result = result + to_string(int) → write!).
+//
+// Run: soma run look_and_say.cell
+
+cell LookAndSay {
+
+    on next_term(s: String) [native] {
+        let result = ""
+        let i = 0
+        let n = str_len(s)
+        while i < n {
+            let c = str_at(s, i)
+            // Count run of equal characters starting at i
+            let count = 1
+            while true {
+                if i + count >= n { break }
+                if str_at(s, i + count) != c { break }
+                count = count + 1
+            }
+            result = result + to_string(count)
+            result = result + to_string(c - 48)
+            i = i + count
+        }
+        return result
+    }
+
+    // Compute the n-th term of the sequence (1-indexed; first term is "1").
+    on lns(n: Int) {
+        let s = "1"
+        let i = 1
+        while i < n {
+            s = next_term(s)
+            i = i + 1
+        }
+        return s
+    }
+
+    on check(n: Int, expected: String) {
+        let s = lns(n)
+        if s == expected {
+            print("  L({n}) = {s} ✓")
+        } else {
+            print("  L({n}) = {s}, expected {expected}")
+        }
+    }
+
+    on check_len(n: Int, expected_len: Int) {
+        let start = now_ms()
+        let s = lns(n)
+        let elapsed = now_ms() - start
+        if len(s) == expected_len {
+            print("  L({n}) has {expected_len} chars  ({elapsed}ms) ✓")
+        } else {
+            print("  L({n}): got {len(s)} chars, expected {expected_len}")
+        }
+    }
+
+    on run() {
+        print("Look-and-say sequence")
+        print("=====================")
+        print("")
+        check(1, "1")
+        check(2, "11")
+        check(3, "21")
+        check(4, "1211")
+        check(5, "111221")
+        check(6, "312211")
+        check(7, "13112221")
+        check(8, "1113213211")
+
+        print("")
+        print("Length growth (OEIS A005341, ratio → Conway's constant ≈ 1.3036):")
+        check_len(10, 20)
+        check_len(20, 302)
+        check_len(30, 4462)
+        check_len(40, 63138)
+        check_len(50, 894810)
+    }
+}
