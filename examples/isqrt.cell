@@ -1,0 +1,93 @@
+// ============================================================================
+// Integer square root via Newton's method
+// ============================================================================
+//
+// Computes floor(sqrt(n)) for arbitrary-precision integers using Newton's
+// iteration:  x_{k+1} = (x_k + n/x_k) / 2
+//
+// Tests Rug-mode convergence loop with BigInt division. Compared against
+// rug's built-in `Integer::sqrt()` (which uses GMP's mpz_sqrt internally).
+//
+// Run: soma run isqrt.cell
+
+cell Isqrt {
+
+    // Newton iteration for floor(sqrt(n)).
+    // [bigint] forces Rug mode: n can be a hundreds-of-digits BigInt at the
+    // call site, and the iterates carry that magnitude through the loop.
+    on isqrt(n: Int) [native, bigint] {
+        if n < 2 { return n }
+        let x = n
+        let y = (x + 1) / 2
+        while y < x {
+            x = y
+            y = (x + n / x) / 2
+        }
+        return x
+    }
+
+    // Verify by squaring: r² ≤ n < (r+1)²
+    on verify(n: Int) [native, bigint] {
+        let r = isqrt(n)
+        let r2 = r * r
+        let r1 = r + 1
+        let r1_2 = r1 * r1
+        if r2 > n { return 0 }
+        if r1_2 <= n { return 0 }
+        return 1
+    }
+
+    // Build 2^p for the headline tests.
+    on pow2(p: Int) [native, bigint] {
+        let m = 1
+        let i = 0
+        while i < p {
+            m = m * 2
+            i = i + 1
+        }
+        return m
+    }
+
+    on check(label: String, n: Int) {
+        let start = now_ms()
+        let r = isqrt(n)
+        let elapsed = now_ms() - start
+        let ok = verify(n)
+        if ok == 1 {
+            print("  isqrt({label}) = {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  isqrt({label}) = {r}  ({elapsed}ms) ✗")
+        }
+    }
+
+    on run() {
+        print("Integer square root (Newton's method)")
+        print("=====================================")
+        print("")
+
+        // Small cases
+        check("0", 0)
+        check("1", 1)
+        check("4", 4)
+        check("100", 100)
+        check("99999999", 99999999)
+
+        print("")
+        print("BigInt cases:")
+        // 2^100 → isqrt is roughly 2^50
+        let n100 = pow2(100)
+        check("2^100", n100)
+        // 2^200
+        let n200 = pow2(200)
+        check("2^200", n200)
+        // 2^500
+        let n500 = pow2(500)
+        check("2^500", n500)
+        // 2^1000
+        let n1000 = pow2(1000)
+        check("2^1000", n1000)
+        // 2^2000 — headline (~600 digits)
+        let n2000 = pow2(2000)
+        check("2^2000", n2000)
+    }
+}
