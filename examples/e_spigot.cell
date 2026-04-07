@@ -1,0 +1,89 @@
+// ============================================================================
+// e via series:  e = Σ 1/k!
+// ============================================================================
+//
+// Computes the digits of e by accumulating
+//   sum = scale * (1/0! + 1/1! + 1/2! + ...)
+// where scale = 10^digits. The sum converges quickly because the terms
+// shrink as 1/k!.
+//
+// Tests Rug-mode division-shrinking accumulator with String output.
+//
+// Run: soma run e_spigot.cell
+
+cell ESpigot {
+
+    // Compute the first (digits+1) decimal digits of e as a string.
+    // For digits=99, returns "2718281828..." (100 digits, no decimal point).
+    on e_str(digits: Int) [native] {
+        // scale = 10^(digits+1)
+        let scale = 1
+        let p = 0
+        while p < digits + 1 {
+            scale = scale * 10
+            p = p + 1
+        }
+
+        // sum_k=0..K (scale / k!), stopping when the term is zero
+        let sum = scale  // term_0 = scale / 0! = scale
+        let term = scale
+        let k = 1
+        while term > 0 {
+            term = term / k
+            sum = sum + term
+            k = k + 1
+        }
+        return to_string(sum)
+    }
+
+    on check(digits: Int, expected_prefix: String) {
+        let start = now_ms()
+        let s = e_str(digits)
+        let elapsed = now_ms() - start
+        // Compare the first len(expected_prefix) chars
+        let n = str_len(expected_prefix)
+        let mismatch = 0
+        let i = 0
+        while i < n {
+            if str_at(s, i) != str_at(expected_prefix, i) {
+                mismatch = mismatch + 1
+            }
+            i = i + 1
+        }
+        if mismatch == 0 {
+            print("  e ({digits} digits): matches first {n}  ({elapsed}ms) ✓")
+        } else {
+            print("  e ({digits} digits): {mismatch} mismatches in first {n}")
+        }
+    }
+
+    on run() {
+        print("e via series Σ 1/k!")
+        print("====================")
+        print("")
+        // First 50 digits of e
+        let e50 = "27182818284590452353602874713526624977572470936999"
+        // Check first 50 with 99+ digits of precision (last digit of a
+        // truncated computation can be off-by-one due to floor division)
+        check(99, e50)
+        check(499, e50)
+
+        print("")
+        print("Headline: 10000 digits of e")
+        let start = now_ms()
+        let s = e_str(9999)
+        let elapsed = now_ms() - start
+        let len = str_len(s)
+        print("  computed {len}-char string in {elapsed}ms")
+        // Verify first 50
+        let mismatch = 0
+        let i = 0
+        while i < 50 {
+            if str_at(s, i) != str_at(e50, i) { mismatch = mismatch + 1 }
+            i = i + 1
+        }
+        if mismatch == 0 {
+            print("  first 50 digits match ✓")
+        }
+    }
+}
