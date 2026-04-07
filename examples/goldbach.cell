@@ -1,0 +1,109 @@
+// ============================================================================
+// Goldbach's conjecture verification
+// ============================================================================
+//
+// For each even integer n > 2, find primes p and q with p + q = n.
+// (Goldbach: every even integer > 2 is the sum of two primes.)
+//
+// Tests Direct-mode primality + sibling calls in a tight loop.
+//
+// Run: soma run goldbach.cell
+
+cell Goldbach {
+
+    // Trial-division primality test, suitable for n up to ~10^14.
+    on is_prime(n: Int) [native] {
+        if n < 2 { return 0 }
+        if n == 2 { return 1 }
+        if n % 2 == 0 { return 0 }
+        if n == 3 { return 1 }
+        if n % 3 == 0 { return 0 }
+        // Test 6k±1 form
+        let i = 5
+        while i * i <= n {
+            if n % i == 0 { return 0 }
+            if n % (i + 2) == 0 { return 0 }
+            i = i + 6
+        }
+        return 1
+    }
+
+    // Smallest prime p such that n − p is also prime.
+    on goldbach_smallest(n: Int) [native] {
+        if is_prime(n - 2) == 1 { return 2 }
+        let p = 3
+        while p < n {
+            if is_prime(p) == 1 {
+                if is_prime(n - p) == 1 { return p }
+            }
+            p = p + 2
+        }
+        return 0
+    }
+
+    // Verify Goldbach for all even n in [4, limit]. Returns count of
+    // successes (should equal (limit-2)/2 if Goldbach holds in this range).
+    on verify_up_to(limit: Int) [native] {
+        let n = 4
+        let success = 0
+        while n <= limit {
+            let p = goldbach_smallest(n)
+            if p > 0 { success = success + 1 }
+            n = n + 2
+        }
+        return success
+    }
+
+    on check_pair(n: Int, expected_p: Int) {
+        let p = goldbach_smallest(n)
+        if p == expected_p {
+            print("  {n} = {p} + {n - p}  ✓")
+        } else {
+            print("  {n}: got p={p}, expected {expected_p}")
+        }
+    }
+
+    on run() {
+        print("Goldbach's conjecture verification")
+        print("==================================")
+        print("")
+
+        // Smallest p such that n − p is prime
+        check_pair(4, 2)       // 2+2
+        check_pair(6, 3)       // 3+3
+        check_pair(10, 3)      // 3+7
+        check_pair(20, 3)      // 3+17
+        check_pair(100, 3)     // 3+97
+        check_pair(1000, 3)    // 3+997
+        check_pair(9999998, 7)   // 7 + 9999991
+
+        print("")
+        print("Bulk verification:")
+        check_count(100,    49)        // (100-2)/2 = 49
+        check_count(10000,  4999)
+        check_count(100000, 49999)
+
+        print("")
+        print("Headline: verify Goldbach for all even n ≤ 1,000,000")
+        let start = now_ms()
+        let r = verify_up_to(1000000)
+        let elapsed = now_ms() - start
+        let expected = 499999
+        if r == expected {
+            print("  all {expected} even numbers in [4, 10^6] are sums of two primes  ({elapsed}ms) ✓")
+        } else {
+            print("  got {r} successes, expected {expected}")
+        }
+    }
+
+    on check_count(limit: Int, expected: Int) {
+        let start = now_ms()
+        let r = verify_up_to(limit)
+        let elapsed = now_ms() - start
+        if r == expected {
+            print("  n ≤ {limit}: {r}/{expected} ✓  ({elapsed}ms)")
+        } else {
+            print("  n ≤ {limit}: got {r}, expected {expected}")
+        }
+    }
+}
