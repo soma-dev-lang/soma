@@ -87,7 +87,25 @@ pub fn generate_native_source_with_config(
     let siblings: HashSet<String> = handlers.iter().map(|h| h.signal_name.clone()).collect();
 
     // Decide mode for each handler
-    let modes: Vec<Mode> = handlers.iter().map(|h| select_mode(h, &siblings)).collect();
+    let mut modes: Vec<Mode> = handlers.iter().map(|h| select_mode(h, &siblings)).collect();
+    // Propagate Rug-mode through sibling-call chains: a Direct handler that
+    // calls a Rug sibling returning Int could receive an Integer that doesn't
+    // fit i64 — promote it to Rug too. Iterate to fixpoint.
+    loop {
+        let mut changed = false;
+        for i in 0..handlers.len() {
+            if modes[i] == Mode::Rug { continue; }
+            // Build a quick name→mode map for the *current* iteration
+            let mode_of: HashMap<&str, Mode> = handlers.iter().enumerate()
+                .map(|(j, h)| (h.signal_name.as_str(), modes[j]))
+                .collect();
+            if calls_rug_int_sibling(&handlers[i].body, &mode_of, &siblings) {
+                modes[i] = Mode::Rug;
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
     let any_rug = modes.contains(&Mode::Rug);
     let uses_random = handlers.iter().any(|h| body_uses_random(&h.body));
 
@@ -314,6 +332,63 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
     }
 
     Mode::Direct
+}
+
+/// True if `body` contains a call (anywhere) to a sibling handler that is
+/// currently classified as Rug-mode and whose static return type is Int.
+/// Such a result may be a BigInt that doesn't fit i64, so the caller can't
+/// safely stay in Direct mode.
+fn calls_rug_int_sibling(
+    body: &[Spanned<Statement>],
+    mode_of: &HashMap<&str, Mode>,
+    siblings: &HashSet<String>,
+) -> bool {
+    fn expr_calls(
+        expr: &Expr,
+        mode_of: &HashMap<&str, Mode>,
+        siblings: &HashSet<String>,
+    ) -> bool {
+        match expr {
+            Expr::FnCall { name, args } => {
+                if siblings.contains(name) && mode_of.get(name.as_str()).copied() == Some(Mode::Rug) {
+                    return true;
+                }
+                args.iter().any(|a| expr_calls(&a.node, mode_of, siblings))
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+                expr_calls(&left.node, mode_of, siblings) || expr_calls(&right.node, mode_of, siblings)
+            }
+            Expr::Not(inner) => expr_calls(&inner.node, mode_of, siblings),
+            _ => false,
+        }
+    }
+    fn stmt_calls(
+        stmt: &Statement,
+        mode_of: &HashMap<&str, Mode>,
+        siblings: &HashSet<String>,
+    ) -> bool {
+        match stmt {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
+                expr_calls(&value.node, mode_of, siblings)
+            }
+            Statement::ExprStmt { expr } => expr_calls(&expr.node, mode_of, siblings),
+            Statement::If { condition, then_body, else_body } => {
+                expr_calls(&condition.node, mode_of, siblings)
+                    || calls_rug_int_sibling(then_body, mode_of, siblings)
+                    || calls_rug_int_sibling(else_body, mode_of, siblings)
+            }
+            Statement::While { condition, body } => {
+                expr_calls(&condition.node, mode_of, siblings)
+                    || calls_rug_int_sibling(body, mode_of, siblings)
+            }
+            Statement::For { iter, body, .. } => {
+                expr_calls(&iter.node, mode_of, siblings)
+                    || calls_rug_int_sibling(body, mode_of, siblings)
+            }
+            _ => false,
+        }
+    }
+    body.iter().any(|s| stmt_calls(&s.node, mode_of, siblings))
 }
 
 /// Walk the body looking for Return statements whose value isn't bounded.
