@@ -432,8 +432,9 @@ fn gen_rug_handler(
         .join(", ");
 
     out.push_str(&format!("fn inner_{}({}) -> {} {{\n", fn_name, mut_param_str, inner_ret));
+    let ctx = RugCtx::new(ret_type);
     for stmt in &handler.body {
-        out.push_str(&gen.gen_stmt_rug_inner(&stmt.node, 1, ret_type));
+        out.push_str(&gen.gen_stmt_rug(&stmt.node, 1, &ctx));
     }
     // Default return if no explicit return
     let last_is_return = handler.body.last()
@@ -620,6 +621,23 @@ struct SiblingInfo {
     param_types: Vec<NativeType>,
     return_type: NativeType,
     mode: Mode,
+}
+
+/// Context for the Rug-mode statement walker. Captures everything that
+/// used to differ between the four `gen_stmt_rug*` variants.
+#[derive(Clone, Debug)]
+struct RugCtx {
+    /// Function's declared return type — controls how `return value` is lowered.
+    fn_ret_type: NativeType,
+    /// Integer locals already declared in an enclosing scope. A `let` for one
+    /// of these turns into an `assign` instead of a fresh allocation.
+    hoisted: HashSet<String>,
+}
+
+impl RugCtx {
+    fn new(fn_ret_type: NativeType) -> Self {
+        Self { fn_ret_type, hoisted: HashSet::new() }
+    }
 }
 
 struct FnGenerator {
@@ -1374,238 +1392,49 @@ impl FnGenerator {
     // Rug mode codegen (Int=rug::Integer, Float=f64)
     // ═══════════════════════════════════════════════════════════════
 
-    /// Like gen_stmt_rug, but for use inside `inner_handler_X` where Return
-    /// statements return typed values directly (not via shared buffer).
-    /// `fn_ret_type` is the function's declared return type.
-    fn gen_stmt_rug_inner(&self, stmt: &Statement, indent: usize, fn_ret_type: NativeType) -> String {
+    /// Statement walker for Rug mode.
+    ///
+    /// One unified function replaces what used to be four near-identical
+    /// variants (`gen_stmt_rug`, `gen_stmt_rug_inner`, `gen_stmt_rug_hoisted`,
+    /// `gen_stmt_rug_hoisted_inner`). The behavioural differences are now
+    /// captured in `RugCtx`:
+    ///   - `fn_ret_type`: how Return statements should produce their value
+    ///   - `hoisted`: which Integer locals have been hoisted to function scope
+    ///     (so their `let` statements become `assign` instead of fresh allocs)
+    fn gen_stmt_rug(&self, stmt: &Statement, indent: usize, ctx: &RugCtx) -> String {
         let ind = Self::indent(indent);
-        match stmt {
-            Statement::Return { value } => {
-                match fn_ret_type {
-                    NativeType::Int => {
-                        let expr = self.gen_expr_rug(&value.node);
-                        format!("{}return {};\n", ind, expr)
-                    }
-                    NativeType::String => {
-                        let expr = self.gen_expr_rug_string(&value.node);
-                        format!("{}return {};\n", ind, expr)
-                    }
-                    _ => {
-                        let expr = self.gen_expr_direct(&value.node, fn_ret_type);
-                        format!("{}return {};\n", ind, expr)
-                    }
-                }
-            }
-            Statement::If { condition, then_body, else_body } => {
-                let cond = self.gen_cond_rug(&condition.node);
-                let mut s = format!("{}if {} {{\n", ind, cond);
-                for st in then_body { s.push_str(&self.gen_stmt_rug_inner(&st.node, indent + 1, fn_ret_type)); }
-                if else_body.is_empty() {
-                    s.push_str(&format!("{}}}\n", ind));
-                } else {
-                    s.push_str(&format!("{}}} else {{\n", ind));
-                    for st in else_body { s.push_str(&self.gen_stmt_rug_inner(&st.node, indent + 1, fn_ret_type)); }
-                    s.push_str(&format!("{}}}\n", ind));
-                }
-                s
-            }
-            Statement::While { condition, body } => {
-                let cond = self.gen_cond_rug(&condition.node);
-                let mut s = String::new();
-                let mut hoisted: HashSet<String> = HashSet::new();
-                self.collect_loop_int_vars(body, &mut hoisted);
-                for var in &hoisted {
-                    s.push_str(&format!("{}let mut {}: Integer = Integer::new();\n", ind, var));
-                }
-                s.push_str(&format!("{}while {} {{\n", ind, cond));
-                for st in body {
-                    s.push_str(&self.gen_stmt_rug_hoisted_inner(&st.node, indent + 1, &hoisted, fn_ret_type));
-                }
-                s.push_str(&format!("{}}}\n", ind));
-                s
-            }
-            Statement::For { var, iter, body } => {
-                let iter_code = self.gen_for_iter_direct(&iter.node);
-                let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
-                for st in body { s.push_str(&self.gen_stmt_rug_inner(&st.node, indent + 1, fn_ret_type)); }
-                s.push_str(&format!("{}}}\n", ind));
-                s
-            }
-            // Other statements: same as gen_stmt_rug
-            _ => self.gen_stmt_rug(stmt, indent),
-        }
-    }
-
-    /// Like gen_stmt_rug_hoisted, with typed return support.
-    fn gen_stmt_rug_hoisted_inner(
-        &self,
-        stmt: &Statement,
-        indent: usize,
-        hoisted: &HashSet<String>,
-        fn_ret_type: NativeType,
-    ) -> String {
         match stmt {
             Statement::Let { name, value } => {
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
+                // Hoisted Integer locals become an assign on the pre-declared variable.
                 if ty == NativeType::Int
                     && !self.small_int_vars.contains(name)
-                    && hoisted.contains(name)
+                    && ctx.hoisted.contains(name)
                 {
-                    let ind = Self::indent(indent);
                     return self.gen_init_rug(name, &value.node, &ind);
                 }
-                self.gen_stmt_rug_inner(stmt, indent, fn_ret_type)
+                self.gen_let_rug(name, ty, &value.node, &ind)
+            }
+            Statement::Assign { name, value } => {
+                let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
+                self.gen_assign_rug_typed(name, ty, &value.node, &ind)
+            }
+            Statement::Return { value } => {
+                self.gen_return_rug(&value.node, ctx.fn_ret_type, &ind)
             }
             Statement::If { condition, then_body, else_body } => {
-                let ind = Self::indent(indent);
                 let cond = self.gen_cond_rug(&condition.node);
                 let mut s = format!("{}if {} {{\n", ind, cond);
                 for st in then_body {
-                    s.push_str(&self.gen_stmt_rug_hoisted_inner(&st.node, indent + 1, hoisted, fn_ret_type));
+                    s.push_str(&self.gen_stmt_rug(&st.node, indent + 1, ctx));
                 }
                 if else_body.is_empty() {
                     s.push_str(&format!("{}}}\n", ind));
                 } else {
                     s.push_str(&format!("{}}} else {{\n", ind));
                     for st in else_body {
-                        s.push_str(&self.gen_stmt_rug_hoisted_inner(&st.node, indent + 1, hoisted, fn_ret_type));
+                        s.push_str(&self.gen_stmt_rug(&st.node, indent + 1, ctx));
                     }
-                    s.push_str(&format!("{}}}\n", ind));
-                }
-                s
-            }
-            // Nested while/for: thread the hoisted set through to suppress re-declaration.
-            Statement::While { condition, body } => {
-                let ind = Self::indent(indent);
-                let cond = self.gen_cond_rug(&condition.node);
-                let mut s = format!("{}while {} {{\n", ind, cond);
-                for st in body {
-                    s.push_str(&self.gen_stmt_rug_hoisted_inner(&st.node, indent + 1, hoisted, fn_ret_type));
-                }
-                s.push_str(&format!("{}}}\n", ind));
-                s
-            }
-            Statement::For { var, iter, body } => {
-                let ind = Self::indent(indent);
-                let iter_code = self.gen_for_iter_direct(&iter.node);
-                let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
-                for st in body {
-                    s.push_str(&self.gen_stmt_rug_hoisted_inner(&st.node, indent + 1, hoisted, fn_ret_type));
-                }
-                s.push_str(&format!("{}}}\n", ind));
-                s
-            }
-            _ => self.gen_stmt_rug_inner(stmt, indent, fn_ret_type),
-        }
-    }
-
-    fn gen_stmt_rug(&self, stmt: &Statement, indent: usize) -> String {
-        let ind = Self::indent(indent);
-        match stmt {
-            Statement::Let { name, value } => {
-                let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                match ty {
-                    NativeType::Int if self.small_int_vars.contains(name) => {
-                        // Small counter — represent as i64
-                        let expr = self.gen_expr_direct(&value.node, NativeType::Int);
-                        format!("{}let mut {}: i64 = {};\n", ind, name, expr)
-                    }
-                    NativeType::Int => {
-                        let expr = self.gen_expr_rug(&value.node);
-                        format!("{}let mut {}: Integer = {};\n", ind, name, expr)
-                    }
-                    NativeType::String => {
-                        let expr = self.gen_expr_rug_string(&value.node);
-                        format!("{}let mut {}: String = {};\n", ind, name, expr)
-                    }
-                    NativeType::Float => {
-                        let expr = self.gen_expr_direct(&value.node, NativeType::Float);
-                        format!("{}let mut {}: f64 = {};\n", ind, name, expr)
-                    }
-                    NativeType::Bool => {
-                        let expr = self.gen_expr_direct(&value.node, NativeType::Bool);
-                        format!("{}let mut {}: bool = {};\n", ind, name, expr)
-                    }
-                }
-            }
-            Statement::Assign { name, value } => {
-                let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                match ty {
-                    NativeType::Int if self.small_int_vars.contains(name) => {
-                        // Small counter — i64 assignment
-                        let expr = self.gen_expr_direct(&value.node, NativeType::Int);
-                        format!("{}{} = {};\n", ind, name, expr)
-                    }
-                    NativeType::Int => self.gen_assign_rug(name, &value.node, &ind),
-                    NativeType::String => {
-                        // Optimize: name = name + to_string(int_var) → write!(name, "{}", int_var)
-                        // This avoids the intermediate String allocation per iteration.
-                        if let Expr::BinaryOp { left, op: BinOp::Add, right } = &value.node {
-                            if let Expr::Ident(ref lname) = left.node {
-                                if lname == name {
-                                    // Check for to_string(ident_int)
-                                    if let Expr::FnCall { name: fname, args } = &right.node {
-                                        if fname == "to_string" && args.len() == 1 {
-                                            let arg_ty = self.infer_expr_type(&args[0].node);
-                                            if arg_ty == NativeType::Int {
-                                                if let Expr::Ident(ref vname) = args[0].node {
-                                                    return format!(
-                                                        "{}{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); }}\n",
-                                                        ind, name, vname
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    let rhs = self.gen_expr_rug_string(&right.node);
-                                    return format!("{}{}.push_str(&{});\n", ind, name, rhs);
-                                }
-                            }
-                        }
-                        let expr = self.gen_expr_rug_string(&value.node);
-                        format!("{}{} = {};\n", ind, name, expr)
-                    }
-                    _ => {
-                        let expr = self.gen_expr_direct(&value.node, ty);
-                        format!("{}{} = {};\n", ind, name, expr)
-                    }
-                }
-            }
-            Statement::Return { value } => {
-                let ret_ty = self.infer_expr_type(&value.node);
-                if ret_ty == NativeType::Int {
-                    let expr = self.gen_expr_rug(&value.node);
-                    let mut s = String::new();
-                    s.push_str(&format!("{}{{\n", ind));
-                    s.push_str(&format!("{}    let _ret_val: Integer = {};\n", ind, expr));
-                    s.push_str(&format!("{}    if let Some(v) = _ret_val.to_i64() {{\n", ind));
-                    s.push_str(&format!("{}        return v;\n", ind));
-                    s.push_str(&format!("{}    }} else {{\n", ind));
-                    s.push_str(&format!("{}        unsafe {{ _SOMA_RESULT = Some(_ret_val.to_string()); }}\n", ind));
-                    s.push_str(&format!("{}        return i64::MIN;\n", ind));
-                    s.push_str(&format!("{}    }}\n", ind));
-                    s.push_str(&format!("{}}}\n", ind));
-                    s
-                } else if ret_ty == NativeType::String {
-                    let expr = self.gen_expr_rug_string(&value.node);
-                    let mut s = String::new();
-                    s.push_str(&format!("{}unsafe {{ _SOMA_RESULT = Some({}); }}\n", ind, expr));
-                    s.push_str(&format!("{}return i64::MIN + 1;\n", ind));
-                    s
-                } else {
-                    let expr = self.gen_expr_direct(&value.node, ret_ty);
-                    format!("{}return {};\n", ind, expr)
-                }
-            }
-            Statement::If { condition, then_body, else_body } => {
-                let cond = self.gen_cond_rug(&condition.node);
-                let mut s = format!("{}if {} {{\n", ind, cond);
-                for st in then_body { s.push_str(&self.gen_stmt_rug(&st.node, indent + 1)); }
-                if else_body.is_empty() {
-                    s.push_str(&format!("{}}}\n", ind));
-                } else {
-                    s.push_str(&format!("{}}} else {{\n", ind));
-                    for st in else_body { s.push_str(&self.gen_stmt_rug(&st.node, indent + 1)); }
                     s.push_str(&format!("{}}}\n", ind));
                 }
                 s
@@ -1614,16 +1443,24 @@ impl FnGenerator {
                 let cond = self.gen_cond_rug(&condition.node);
                 let mut s = String::new();
 
-                // Hoist loop-internal Integer variables before the loop
-                let mut hoisted: HashSet<String> = HashSet::new();
-                self.collect_loop_int_vars(body, &mut hoisted);
-                for var in &hoisted {
+                // Collect Integer locals declared anywhere in the loop body
+                // (recursively, including nested loops). Hoist them to this
+                // scope so GMP buffers persist across iterations.
+                let mut new_hoisted: HashSet<String> = HashSet::new();
+                self.collect_loop_int_vars(body, &mut new_hoisted);
+                // Don't re-declare ones already hoisted by an outer scope.
+                for v in &ctx.hoisted { new_hoisted.remove(v); }
+                for var in &new_hoisted {
                     s.push_str(&format!("{}let mut {}: Integer = Integer::new();\n", ind, var));
                 }
 
+                // Build a child context that knows about the now-hoisted vars.
+                let mut child = ctx.clone();
+                child.hoisted.extend(new_hoisted.iter().cloned());
+
                 s.push_str(&format!("{}while {} {{\n", ind, cond));
                 for st in body {
-                    s.push_str(&self.gen_stmt_rug_hoisted(&st.node, indent + 1, &hoisted));
+                    s.push_str(&self.gen_stmt_rug(&st.node, indent + 1, &child));
                 }
                 s.push_str(&format!("{}}}\n", ind));
                 s
@@ -1631,7 +1468,9 @@ impl FnGenerator {
             Statement::For { var, iter, body } => {
                 let iter_code = self.gen_for_iter_direct(&iter.node);
                 let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
-                for st in body { s.push_str(&self.gen_stmt_rug(&st.node, indent + 1)); }
+                for st in body {
+                    s.push_str(&self.gen_stmt_rug(&st.node, indent + 1, ctx));
+                }
                 s.push_str(&format!("{}}}\n", ind));
                 s
             }
@@ -1644,6 +1483,100 @@ impl FnGenerator {
             other => {
                 self.err(format!("unsupported statement in Rug mode: {:?}", other));
                 format!("{}// codegen error\n", ind)
+            }
+        }
+    }
+
+    /// Generate the body of a `let mut name: T = ...` for a non-hoisted Let.
+    fn gen_let_rug(&self, name: &str, ty: NativeType, value: &Expr, ind: &str) -> String {
+        match ty {
+            NativeType::Int if self.small_int_vars.contains(name) => {
+                let expr = self.gen_expr_direct(value, NativeType::Int);
+                format!("{}let mut {}: i64 = {};\n", ind, name, expr)
+            }
+            NativeType::Int => {
+                let expr = self.gen_expr_rug(value);
+                format!("{}let mut {}: Integer = {};\n", ind, name, expr)
+            }
+            NativeType::String => {
+                let expr = self.gen_expr_rug_string(value);
+                format!("{}let mut {}: String = {};\n", ind, name, expr)
+            }
+            NativeType::Float => {
+                let expr = self.gen_expr_direct(value, NativeType::Float);
+                format!("{}let mut {}: f64 = {};\n", ind, name, expr)
+            }
+            NativeType::Bool => {
+                let expr = self.gen_expr_direct(value, NativeType::Bool);
+                format!("{}let mut {}: bool = {};\n", ind, name, expr)
+            }
+        }
+    }
+
+    /// Type-dispatched `name = value` assignment in Rug mode.
+    fn gen_assign_rug_typed(&self, name: &str, ty: NativeType, value: &Expr, ind: &str) -> String {
+        match ty {
+            NativeType::Int if self.small_int_vars.contains(name) => {
+                let expr = self.gen_expr_direct(value, NativeType::Int);
+                format!("{}{} = {};\n", ind, name, expr)
+            }
+            NativeType::Int => self.gen_assign_rug(name, value, ind),
+            NativeType::String => self.gen_assign_string_rug(name, value, ind),
+            NativeType::Float | NativeType::Bool => {
+                let expr = self.gen_expr_direct(value, ty);
+                format!("{}{} = {};\n", ind, name, expr)
+            }
+        }
+    }
+
+    /// String assignment with the `result = result + to_string(int)` →
+    /// `write!(result, "{}", int)` and `result = result + str` → `push_str`
+    /// peephole optimizations.
+    fn gen_assign_string_rug(&self, name: &str, value: &Expr, ind: &str) -> String {
+        if let Expr::BinaryOp { left, op: BinOp::Add, right } = value {
+            if let Expr::Ident(ref lname) = left.node {
+                if lname == name {
+                    // result = result + to_string(int_var) → write!(result, "{}", int_var)
+                    if let Expr::FnCall { name: fname, args } = &right.node {
+                        if fname == "to_string" && args.len() == 1 {
+                            let arg_ty = self.infer_expr_type(&args[0].node);
+                            if arg_ty == NativeType::Int {
+                                if let Expr::Ident(ref vname) = args[0].node {
+                                    return format!(
+                                        "{}{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); }}\n",
+                                        ind, name, vname
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // General: result.push_str(rhs)
+                    let rhs = self.gen_expr_rug_string(&right.node);
+                    return format!("{}{}.push_str(&{});\n", ind, name, rhs);
+                }
+            }
+        }
+        let expr = self.gen_expr_rug_string(value);
+        format!("{}{} = {};\n", ind, name, expr)
+    }
+
+    /// Generate a Return statement in Rug mode.
+    /// `fn_ret_type` is the function's declared return type — Return statements
+    /// must produce a value of THIS type, regardless of what the value expression
+    /// happens to be.
+    fn gen_return_rug(&self, value: &Expr, fn_ret_type: NativeType, ind: &str) -> String {
+        match fn_ret_type {
+            NativeType::Int => {
+                let expr = self.gen_expr_rug(value);
+                format!("{}return {};\n", ind, expr)
+            }
+            NativeType::String => {
+                let expr = self.gen_expr_rug_string(value);
+                format!("{}return {};\n", ind, expr)
+            }
+            NativeType::Float | NativeType::Bool => {
+                let expr = self.gen_expr_direct(value, fn_ret_type);
+                format!("{}return {};\n", ind, expr)
             }
         }
     }
@@ -1673,66 +1606,6 @@ impl FnGenerator {
                 }
                 _ => {}
             }
-        }
-    }
-
-    fn gen_stmt_rug_hoisted(&self, stmt: &Statement, indent: usize, hoisted: &HashSet<String>) -> String {
-        match stmt {
-            Statement::Let { name, value } => {
-                let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                if ty == NativeType::Int
-                    && !self.small_int_vars.contains(name)
-                    && hoisted.contains(name)
-                {
-                    let ind = Self::indent(indent);
-                    // For Let, the source variable must be PRESERVED (not consumed),
-                    // so use clone_from / assign instead of the swap optimization
-                    // that gen_assign_rug uses for Assign statements.
-                    return self.gen_init_rug(name, &value.node, &ind);
-                }
-                self.gen_stmt_rug(stmt, indent)
-            }
-            Statement::If { condition, then_body, else_body } => {
-                let ind = Self::indent(indent);
-                let cond = self.gen_cond_rug(&condition.node);
-                let mut s = format!("{}if {} {{\n", ind, cond);
-                for st in then_body {
-                    s.push_str(&self.gen_stmt_rug_hoisted(&st.node, indent + 1, hoisted));
-                }
-                if else_body.is_empty() {
-                    s.push_str(&format!("{}}}\n", ind));
-                } else {
-                    s.push_str(&format!("{}}} else {{\n", ind));
-                    for st in else_body {
-                        s.push_str(&self.gen_stmt_rug_hoisted(&st.node, indent + 1, hoisted));
-                    }
-                    s.push_str(&format!("{}}}\n", ind));
-                }
-                s
-            }
-            // Nested while/for: don't re-declare hoisted vars; thread the
-            // hoisted set through. The outermost loop has already declared them.
-            Statement::While { condition, body } => {
-                let ind = Self::indent(indent);
-                let cond = self.gen_cond_rug(&condition.node);
-                let mut s = format!("{}while {} {{\n", ind, cond);
-                for st in body {
-                    s.push_str(&self.gen_stmt_rug_hoisted(&st.node, indent + 1, hoisted));
-                }
-                s.push_str(&format!("{}}}\n", ind));
-                s
-            }
-            Statement::For { var, iter, body } => {
-                let ind = Self::indent(indent);
-                let iter_code = self.gen_for_iter_direct(&iter.node);
-                let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
-                for st in body {
-                    s.push_str(&self.gen_stmt_rug_hoisted(&st.node, indent + 1, hoisted));
-                }
-                s.push_str(&format!("{}}}\n", ind));
-                s
-            }
-            _ => self.gen_stmt_rug(stmt, indent),
         }
     }
 
