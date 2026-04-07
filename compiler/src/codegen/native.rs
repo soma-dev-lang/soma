@@ -433,9 +433,7 @@ fn gen_rug_handler(
 
     out.push_str(&format!("fn inner_{}({}) -> {} {{\n", fn_name, mut_param_str, inner_ret));
     let ctx = RugCtx::new(ret_type);
-    for stmt in &handler.body {
-        out.push_str(&gen.gen_stmt_rug(&stmt.node, 1, &ctx));
-    }
+    out.push_str(&gen.gen_body_rug(&handler.body, 1, &ctx));
     // Default return if no explicit return
     let last_is_return = handler.body.last()
         .map(|s| matches!(s.node, Statement::Return { .. }))
@@ -587,6 +585,38 @@ fn emit_array_wrapper(
 }
 
 // ── Type inference helpers ──────────────────────────────────────────
+
+/// True if any statement in `body` (recursively) references the variable `name`.
+/// Used by gen_assign_rug to decide whether the swap optimization is safe:
+/// `name = src` can swap iff src is not read after this point.
+///
+/// Conservative: returns true on the first sighting of `name` anywhere
+/// (doesn't model overwrite-before-read inside If/While bodies).
+fn body_references(body: &[Spanned<Statement>], name: &str) -> bool {
+    body.iter().any(|s| stmt_references(&s.node, name))
+}
+
+fn stmt_references(stmt: &Statement, name: &str) -> bool {
+    match stmt {
+        Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
+            FnGenerator::expr_references(&value.node, name)
+        }
+        Statement::If { condition, then_body, else_body } => {
+            FnGenerator::expr_references(&condition.node, name)
+                || body_references(then_body, name)
+                || body_references(else_body, name)
+        }
+        Statement::While { condition, body } => {
+            FnGenerator::expr_references(&condition.node, name)
+                || body_references(body, name)
+        }
+        Statement::For { iter, body, .. } => {
+            FnGenerator::expr_references(&iter.node, name) || body_references(body, name)
+        }
+        Statement::ExprStmt { expr } => FnGenerator::expr_references(&expr.node, name),
+        _ => false,
+    }
+}
 
 /// Rust source for a Soma comparison operator.
 fn cmp_op_str(op: CmpOp) -> &'static str {
@@ -1417,12 +1447,30 @@ impl FnGenerator {
     ///   - `fn_ret_type`: how Return statements should produce their value
     ///   - `hoisted`: which Integer locals have been hoisted to function scope
     ///     (so their `let` statements become `assign` instead of fresh allocs)
-    fn gen_stmt_rug(&self, stmt: &Statement, indent: usize, ctx: &RugCtx) -> String {
+    /// Walk a body, generating code for each statement. Each statement is
+    /// passed the *remaining* statements in the same body so that
+    /// liveness-sensitive optimizations (e.g. swap-on-assign) can check
+    /// whether a variable is still in use.
+    fn gen_body_rug(&self, body: &[Spanned<Statement>], indent: usize, ctx: &RugCtx) -> String {
+        let mut out = String::new();
+        for (i, stmt) in body.iter().enumerate() {
+            let rest = &body[i + 1..];
+            out.push_str(&self.gen_stmt_rug(&stmt.node, indent, ctx, rest));
+        }
+        out
+    }
+
+    fn gen_stmt_rug(
+        &self,
+        stmt: &Statement,
+        indent: usize,
+        ctx: &RugCtx,
+        rest: &[Spanned<Statement>],
+    ) -> String {
         let ind = Self::indent(indent);
         match stmt {
             Statement::Let { name, value } => {
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                // Hoisted Integer locals become an assign on the pre-declared variable.
                 if ty == NativeType::Int
                     && !self.small_int_vars.contains(name)
                     && ctx.hoisted.contains(name)
@@ -1433,7 +1481,7 @@ impl FnGenerator {
             }
             Statement::Assign { name, value } => {
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                self.gen_assign_rug_typed(name, ty, &value.node, &ind)
+                self.gen_assign_rug_typed(name, ty, &value.node, &ind, rest)
             }
             Statement::Return { value } => {
                 self.gen_return_rug(&value.node, ctx.fn_ret_type, &ind)
@@ -1441,16 +1489,12 @@ impl FnGenerator {
             Statement::If { condition, then_body, else_body } => {
                 let cond = self.gen_cond_rug(&condition.node);
                 let mut s = format!("{}if {} {{\n", ind, cond);
-                for st in then_body {
-                    s.push_str(&self.gen_stmt_rug(&st.node, indent + 1, ctx));
-                }
+                s.push_str(&self.gen_body_rug(then_body, indent + 1, ctx));
                 if else_body.is_empty() {
                     s.push_str(&format!("{}}}\n", ind));
                 } else {
                     s.push_str(&format!("{}}} else {{\n", ind));
-                    for st in else_body {
-                        s.push_str(&self.gen_stmt_rug(&st.node, indent + 1, ctx));
-                    }
+                    s.push_str(&self.gen_body_rug(else_body, indent + 1, ctx));
                     s.push_str(&format!("{}}}\n", ind));
                 }
                 s
@@ -1459,34 +1503,28 @@ impl FnGenerator {
                 let cond = self.gen_cond_rug(&condition.node);
                 let mut s = String::new();
 
-                // Collect Integer locals declared anywhere in the loop body
-                // (recursively, including nested loops). Hoist them to this
-                // scope so GMP buffers persist across iterations.
+                // Hoist Integer locals declared anywhere in the loop body
+                // (recursively) to this scope so GMP buffers persist across
+                // iterations.
                 let mut new_hoisted: HashSet<String> = HashSet::new();
                 self.collect_loop_int_vars(body, &mut new_hoisted);
-                // Don't re-declare ones already hoisted by an outer scope.
                 for v in &ctx.hoisted { new_hoisted.remove(v); }
                 for var in &new_hoisted {
                     s.push_str(&format!("{}let mut {}: Integer = Integer::new();\n", ind, var));
                 }
 
-                // Build a child context that knows about the now-hoisted vars.
                 let mut child = ctx.clone();
                 child.hoisted.extend(new_hoisted.iter().cloned());
 
                 s.push_str(&format!("{}while {} {{\n", ind, cond));
-                for st in body {
-                    s.push_str(&self.gen_stmt_rug(&st.node, indent + 1, &child));
-                }
+                s.push_str(&self.gen_body_rug(body, indent + 1, &child));
                 s.push_str(&format!("{}}}\n", ind));
                 s
             }
             Statement::For { var, iter, body } => {
                 let iter_code = self.gen_for_iter_direct(&iter.node);
                 let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
-                for st in body {
-                    s.push_str(&self.gen_stmt_rug(&st.node, indent + 1, ctx));
-                }
+                s.push_str(&self.gen_body_rug(body, indent + 1, ctx));
                 s.push_str(&format!("{}}}\n", ind));
                 s
             }
@@ -1530,13 +1568,23 @@ impl FnGenerator {
     }
 
     /// Type-dispatched `name = value` assignment in Rug mode.
-    fn gen_assign_rug_typed(&self, name: &str, ty: NativeType, value: &Expr, ind: &str) -> String {
+    /// `rest` is the slice of statements that follow this Assign in the
+    /// same body — used by the swap optimization to check whether the
+    /// source variable is still live after this point.
+    fn gen_assign_rug_typed(
+        &self,
+        name: &str,
+        ty: NativeType,
+        value: &Expr,
+        ind: &str,
+        rest: &[Spanned<Statement>],
+    ) -> String {
         match ty {
             NativeType::Int if self.small_int_vars.contains(name) => {
                 let expr = self.gen_expr_direct(value, NativeType::Int);
                 format!("{}{} = {};\n", ind, name, expr)
             }
-            NativeType::Int => self.gen_assign_rug(name, value, ind),
+            NativeType::Int => self.gen_assign_rug(name, value, ind, rest),
             NativeType::String => self.gen_assign_string_rug(name, value, ind),
             NativeType::Float | NativeType::Bool => {
                 let expr = self.gen_expr_direct(value, ty);
@@ -1835,10 +1883,18 @@ impl FnGenerator {
     ///   2. Peephole: `name = name OP rhs`            → `name OP= rhs`
     ///   3. Peephole: `name = lhs OP name` (+, *)     → `name OP= lhs`
     ///   4. Literal:  `name = N`                       → `name.assign(N)`
-    ///   5. Ident:    `name = src` (different)         → `mem::swap(name, src)`
+    ///   5. Ident:    `name = src` (different)
+    ///        → `mem::swap(name, src)` if src is dead in the rest of the body
+    ///        → `name.clone_from(&src)` otherwise
     ///   6. Self-ref: RHS reads `name` somewhere       → temp + swap (avoid borrow)
     ///   7. General:                                   → `name.assign(incomplete)`
-    fn gen_assign_rug(&self, name: &str, value: &Expr, ind: &str) -> String {
+    fn gen_assign_rug(
+        &self,
+        name: &str,
+        value: &Expr,
+        ind: &str,
+        rest: &[Spanned<Statement>],
+    ) -> String {
         if let Some(s) = self.try_square_mut(name, value, ind) { return s; }
         if let Some(s) = self.try_inplace_op(name, value, ind) { return s; }
 
@@ -1849,7 +1905,13 @@ impl FnGenerator {
         if let Expr::Ident(src) = value {
             let var_ty = self.var_types.get(src).copied().unwrap_or(NativeType::Float);
             if var_ty == NativeType::Int && src != name {
-                return format!("{}std::mem::swap(&mut {}, &mut {});\n", ind, name, src);
+                // Swap is correct only if `src` is not read in the rest of
+                // the current body. Otherwise the read would see `name`'s
+                // OLD value (which the swap put into `src`).
+                if !body_references(rest, src) {
+                    return format!("{}std::mem::swap(&mut {}, &mut {});\n", ind, name, src);
+                }
+                return format!("{}{}.clone_from(&{});\n", ind, name, src);
             }
         }
 
