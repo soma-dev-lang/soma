@@ -73,6 +73,22 @@ pub fn compile_and_load_natives_with_config(
         for section in &cell.node.sections {
             if let Section::OnSignal(ref on) = section.node {
                 if on.properties.contains(&"native".to_string()) {
+                    // Reject obsolete representation-choice flags. `Int` is a
+                    // promise about behavior, not a choice between i64 and
+                    // BigInt. The compiler picks the representation; the user
+                    // never has to.
+                    for prop in &on.properties {
+                        if prop == "i64" || prop == "bigint" {
+                            return Err(format!(
+                                "[native] handler '{}' uses obsolete property '[{}]'. \
+                                 Soma's Int is arbitrary-precision; the compiler chooses \
+                                 the representation. Remove the property — if the resulting \
+                                 program is incorrect or slow, that is a compiler bug, \
+                                 not a missing annotation.",
+                                on.signal_name, prop
+                            ));
+                        }
+                    }
                     native_names.insert(on.signal_name.clone());
                     native_handlers.push(NativeHandler {
                         cell_name: cell.node.name.clone(),

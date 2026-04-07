@@ -13,9 +13,7 @@
 cell Isqrt {
 
     // Newton iteration for floor(sqrt(n)).
-    // [bigint] forces Rug mode: n can be a hundreds-of-digits BigInt at the
-    // call site, and the iterates carry that magnitude through the loop.
-    on isqrt(n: Int) [native, bigint] {
+    on isqrt(n: Int) [native] {
         if n < 2 { return n }
         let x = n
         let y = (x + 1) / 2
@@ -27,7 +25,7 @@ cell Isqrt {
     }
 
     // Verify by squaring: r² ≤ n < (r+1)²
-    on verify(n: Int) [native, bigint] {
+    on verify(n: Int) [native] {
         let r = isqrt(n)
         let r2 = r * r
         let r1 = r + 1
@@ -38,7 +36,7 @@ cell Isqrt {
     }
 
     // Build 2^p for the headline tests.
-    on pow2(p: Int) [native, bigint] {
+    on pow2(p: Int) [native] {
         let m = 1
         let i = 0
         while i < p {

@@ -41,7 +41,7 @@ pub struct NativeHandler {
     pub signal_name: String,
     pub params: Vec<Param>,
     pub body: Vec<Spanned<Statement>>,
-    /// Handler properties (e.g. ["native"], ["native", "bigint"])
+    /// Handler properties (e.g. ["native"])
     pub properties: Vec<String>,
 }
 
@@ -177,6 +177,59 @@ pub fn generate_native_source_with_config(
         }
         if !changed { break; }
     }
+
+    // ── Dual-mode eligibility ────────────────────────────────────────
+    //
+    // The philosophy: a type is a promise about behavior, not a choice of
+    // representation. The user writes `Int` and the compiler picks i64 or
+    // BigInt. So we generate BOTH for every handler whose signature is
+    // representable in i64/f64/bool: a fast Direct version and a Rug
+    // fallback. The dispatch wrapper tries fast first; on i64 overflow
+    // (which already panics with overflow-checks=true), it falls back to
+    // the Rug version transparently.
+    //
+    // Eligible iff:
+    //   - return type is non-String
+    //   - all params are non-String
+    //
+    // This is decided purely from signatures. We do NOT require the
+    // classifier to think the function is Direct-safe — that's exactly
+    // the question dual-mode answers at runtime instead of statically.
+    //
+    // String-param/return handlers are still Rug-only because Direct
+    // can't pass strings via the C ABI; but they can still call dualmode
+    // siblings via the Rug path.
+    let dualmode: HashSet<String> = handlers.iter()
+        .filter(|h| {
+            // No String params
+            if h.params.iter().any(|p|
+                type_expr_to_native(&p.ty.node) == NativeType::String) {
+                return false;
+            }
+            // Inferred return type non-String. We do this with a quick
+            // type-only pass that uses the pre_sibling_info we already
+            // computed for mode selection.
+            let mut tmp = FnGenerator::new(&h.params, &siblings, Mode::Direct)
+                .with_sibling_info(pre_sibling_info.clone());
+            for p in &h.params {
+                tmp.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
+            }
+            tmp.infer_body_types(&h.body);
+            tmp.infer_return_type(&h.body) != NativeType::String
+        })
+        .map(|h| h.signal_name.clone())
+        .collect();
+
+    // For dual-mode handlers, force the primary (fallback) mode to Rug.
+    // The fast path is generated separately and tried first at runtime.
+    // (A handler classified Direct that's now dualmode just has the
+    // classifier's old result as its fast path.)
+    for (i, h) in handlers.iter().enumerate() {
+        if dualmode.contains(&h.signal_name) {
+            modes[i] = Mode::Rug;
+        }
+    }
+
     let any_rug = modes.contains(&Mode::Rug);
     let uses_random = handlers.iter().any(|h| body_uses_random(&h.body));
 
@@ -236,12 +289,32 @@ pub fn generate_native_source_with_config(
         out.push_str(SHARED_BUFFER_RUG);
     }
 
+    // ── Quiet panic hook for dual-mode fast-path overflows ──
+    //
+    // The fast path uses i64 arithmetic with overflow-checks=true. When
+    // overflow happens it panics, gets caught by catch_unwind in the
+    // dispatch wrapper, and we transparently fall back to Rug. The user
+    // shouldn't see anything — but the default panic hook prints a
+    // backtrace to stderr. Install a no-op hook on first call so the
+    // fallback is silent.
+    if !dualmode.is_empty() {
+        out.push_str("static _SOMA_PANIC_HOOK_INSTALLED: std::sync::Once = std::sync::Once::new();\n");
+        out.push_str("fn _soma_install_quiet_hook() {\n");
+        out.push_str("    _SOMA_PANIC_HOOK_INSTALLED.call_once(|| {\n");
+        out.push_str("        std::panic::set_hook(Box::new(|_info| {}));\n");
+        out.push_str("    });\n");
+        out.push_str("}\n\n");
+    }
+
     // ── Per-handler codegen ──
     let mut all_errors: Vec<String> = Vec::new();
     for (handler, mode) in handlers.iter().zip(modes.iter()) {
+        let is_dual = dualmode.contains(&handler.signal_name);
+
         let mut gen = FnGenerator::new(&handler.params, &siblings, *mode)
             .with_sibling_info(sibling_info.clone())
-            .with_handler_name(handler.signal_name.clone());
+            .with_handler_name(handler.signal_name.clone())
+            .with_dualmode_siblings(dualmode.clone());
         for p in &handler.params {
             gen.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
         }
@@ -261,6 +334,36 @@ pub fn generate_native_source_with_config(
         match mode {
             Mode::Direct => {
                 gen_direct_handler(&mut out, &gen, handler, &fn_name, ret_type);
+            }
+            Mode::Rug if is_dual => {
+                // Dual-mode handler: emit BOTH a fast Direct inner function
+                // and the standard Rug inner+wrapper, then a custom dispatch
+                // wrapper that tries fast first and falls back on overflow.
+                //
+                // Fast inner: an independent FnGenerator in Direct mode that
+                // sees the dualmode_siblings set so its sibling calls go to
+                // the _fast variants. Its body is the same AST.
+                let mut fast_gen = FnGenerator::new(&handler.params, &siblings, Mode::Direct)
+                    .with_sibling_info(sibling_info.clone())
+                    .with_handler_name(handler.signal_name.clone())
+                    .with_dualmode_siblings(dualmode.clone())
+                    .with_fast_variant(true);
+                for p in &handler.params {
+                    fast_gen.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
+                }
+                fast_gen.infer_body_types(&handler.body);
+                fast_gen.fn_return_type = ret_type;
+                let fast_inner_name = format!("{}_fast", fn_name);
+                gen_direct_inner_fn(&mut out, &fast_gen, handler, &fast_inner_name, ret_type);
+
+                // Rug inner — the safe fallback
+                gen_rug_inner_fn(&mut out, &gen, handler, &fn_name, ret_type);
+
+                // Custom dispatch wrapper: try fast, fall back to rug
+                emit_dualmode_wrapper(&mut out, handler, &fn_name, ret_type);
+
+                // Collect fast-gen errors too
+                all_errors.extend(fast_gen.errors.into_inner());
             }
             Mode::Rug => {
                 gen_rug_handler(&mut out, &gen, handler, &fn_name, ret_type);
@@ -350,23 +453,21 @@ pub fn generate_native_source_with_config(
 
 /// Decide whether a handler should use Direct or Rug mode.
 ///
-/// Selection rules (in order):
-///   1. `[native, i64]` property → Direct mode forced (user asserts no
-///      overflow; runtime panics on overflow with overflow-checks = true).
-///   2. `[native, bigint]` property → Rug mode forced.
-///   3. If the return type is String → Rug mode (canonical BigInt-as-string).
-///   4. Else, run the classifier: if all int locals fit i64 → Direct, else Rug.
+/// `Int` is the only integer type the user sees. The choice of i64 vs
+/// arbitrary-precision is the compiler's job, never the user's. Rules:
+///   1. If the return type is String → Rug mode (canonical BigInt-as-string).
+///   2. Else, run the classifier: if every Int local provably fits i64
+///      across the whole function → Direct, else Rug.
+///
+/// There are deliberately no user-facing escape hatches. A type is a
+/// promise about behavior, not a choice of representation. When the
+/// classifier picks the wrong mode, that is a compiler bug, not a
+/// missing annotation.
 fn select_mode(
     handler: &NativeHandler,
     siblings: &HashSet<String>,
     pre_sibling_info: &HashMap<String, SiblingInfo>,
 ) -> Mode {
-    if handler.properties.iter().any(|p| p == "i64") {
-        return Mode::Direct;
-    }
-    if handler.properties.iter().any(|p| p == "bigint") {
-        return Mode::Rug;
-    }
     // String parameters can't go through the Direct C ABI — they need the
     // shared-buffer FFI, which only Rug-mode handlers use.
     if handler.params.iter().any(|p| type_expr_to_native(&p.ty.node) == NativeType::String) {
@@ -467,6 +568,51 @@ fn body_calls_with_unbounded_arg(body: &[Spanned<Statement>], target: &str) -> b
         }
     }
     body.iter().any(|s| stmt_walk(&s.node, target))
+}
+
+/// Collect the names of all sibling handlers called anywhere in `body`.
+fn body_siblings_called(body: &[Spanned<Statement>], siblings: &HashSet<String>) -> HashSet<String> {
+    let mut acc = HashSet::new();
+    fn expr_walk(e: &Expr, siblings: &HashSet<String>, acc: &mut HashSet<String>) {
+        match e {
+            Expr::FnCall { name, args } => {
+                if siblings.contains(name) {
+                    acc.insert(name.clone());
+                }
+                for a in args { expr_walk(&a.node, siblings, acc); }
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+                expr_walk(&left.node, siblings, acc);
+                expr_walk(&right.node, siblings, acc);
+            }
+            Expr::Not(inner) => expr_walk(&inner.node, siblings, acc),
+            _ => {}
+        }
+    }
+    fn stmt_walk(s: &Statement, siblings: &HashSet<String>, acc: &mut HashSet<String>) {
+        match s {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
+                expr_walk(&value.node, siblings, acc);
+            }
+            Statement::ExprStmt { expr } => expr_walk(&expr.node, siblings, acc),
+            Statement::If { condition, then_body, else_body } => {
+                expr_walk(&condition.node, siblings, acc);
+                for s in then_body { stmt_walk(&s.node, siblings, acc); }
+                for s in else_body { stmt_walk(&s.node, siblings, acc); }
+            }
+            Statement::While { condition, body } => {
+                expr_walk(&condition.node, siblings, acc);
+                for s in body { stmt_walk(&s.node, siblings, acc); }
+            }
+            Statement::For { iter, body, .. } => {
+                expr_walk(&iter.node, siblings, acc);
+                for s in body { stmt_walk(&s.node, siblings, acc); }
+            }
+            _ => {}
+        }
+    }
+    for s in body { stmt_walk(&s.node, siblings, &mut acc); }
+    acc
 }
 
 /// True if `body` contains any call to a function named `target`.
@@ -607,6 +753,9 @@ fn gen_direct_handler(
     fn_name: &str,
     ret_type: NativeType,
 ) {
+    gen_direct_inner_fn(out, gen, handler, fn_name, ret_type);
+
+    // FFI entry — thin shim
     let param_str: String = handler.params.iter()
         .map(|p| {
             let ty = type_expr_to_native(&p.ty.node);
@@ -618,8 +767,30 @@ fn gen_direct_handler(
         .map(|p| p.name.clone())
         .collect::<Vec<_>>()
         .join(", ");
+    out.push_str(&format!(
+        "#[no_mangle]\npub extern \"C\" fn {}({}) -> {} {{\n    inner_{}({})\n}}\n\n",
+        fn_name, param_str, ret_type.rust_str(), fn_name, arg_names
+    ));
+}
 
-    // Inner function — typed Rust, sibling-call target
+/// Emit only the typed inner function for a Direct-mode handler — no FFI
+/// wrapper. Used both by gen_direct_handler and by the dual-mode emitter
+/// that needs a fast Direct version alongside a separate Rug fallback.
+fn gen_direct_inner_fn(
+    out: &mut String,
+    gen: &FnGenerator,
+    handler: &NativeHandler,
+    fn_name: &str,
+    ret_type: NativeType,
+) {
+    let param_str: String = handler.params.iter()
+        .map(|p| {
+            let ty = type_expr_to_native(&p.ty.node);
+            format!("{}: {}", p.name, ty.rust_str())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
     out.push_str(&format!(
         "fn inner_{}({}) -> {} {{\n",
         fn_name, param_str, ret_type.rust_str()
@@ -640,12 +811,6 @@ fn gen_direct_handler(
         out.push_str(default);
     }
     out.push_str("}\n\n");
-
-    // FFI entry — thin shim
-    out.push_str(&format!(
-        "#[no_mangle]\npub extern \"C\" fn {}({}) -> {} {{\n    inner_{}({})\n}}\n\n",
-        fn_name, param_str, ret_type.rust_str(), fn_name, arg_names
-    ));
 }
 
 // ── Rug mode handler ────────────────────────────────────────────────
@@ -656,6 +821,20 @@ fn gen_direct_handler(
 //   handler_X() -> i64                    — FFI entry point with shared buffer
 
 fn gen_rug_handler(
+    out: &mut String,
+    gen: &FnGenerator,
+    handler: &NativeHandler,
+    fn_name: &str,
+    ret_type: NativeType,
+) {
+    gen_rug_inner_fn(out, gen, handler, fn_name, ret_type);
+    gen_rug_ffi_wrapper(out, handler, fn_name, ret_type);
+}
+
+/// Emit just the typed Rug inner function (no FFI wrapper). Used by both
+/// gen_rug_handler and the dual-mode emitter that generates a Rug fallback
+/// alongside a fast Direct path.
+fn gen_rug_inner_fn(
     out: &mut String,
     gen: &FnGenerator,
     handler: &NativeHandler,
@@ -681,7 +860,6 @@ fn gen_rug_handler(
     out.push_str(&format!("fn inner_{}({}) -> {} {{\n", fn_name, mut_param_str, inner_ret));
     let ctx = RugCtx::new(ret_type);
     out.push_str(&gen.gen_body_rug(&handler.body, 1, &ctx));
-    // Default return if no explicit return
     let last_is_return = handler.body.last()
         .map(|s| matches!(s.node, Statement::Return { .. }))
         .unwrap_or(false);
@@ -694,7 +872,173 @@ fn gen_rug_handler(
         }
     }
     out.push_str("}\n\n");
+}
 
+/// Emit the dual-mode dispatch wrapper for a handler that has both a fast
+/// Direct inner (`inner_handler_X_fast`) and a Rug fallback inner
+/// (`inner_handler_X`). The wrapper:
+///   1. Reads args from the shared buffer.
+///   2. Tries to convert each Int arg to i64. If any doesn't fit, skip the
+///      fast path entirely and call Rug.
+///   3. Calls the fast inner inside `catch_unwind` so an i64 overflow
+///      panic doesn't crash the dylib.
+///   4. On panic OR if any arg didn't fit, calls the Rug inner.
+///   5. Packs the result the same way the Rug FFI wrapper would.
+fn emit_dualmode_wrapper(
+    out: &mut String,
+    handler: &NativeHandler,
+    fn_name: &str,
+    ret_type: NativeType,
+) {
+    // Build expressions for fast-path arg decoding (each as Option<T>) and
+    // rug-path arg expressions (each unconditionally typed).
+    let mut fast_decode_lines: Vec<String> = Vec::new();
+    let mut fast_call_args: Vec<String> = Vec::new();
+    let mut rug_call_args: Vec<String> = Vec::new();
+    let mut int_idx = 0;
+    let mut str_idx = 0;
+    for p in &handler.params {
+        let ty = type_expr_to_native(&p.ty.node);
+        let local = format!("_fast_arg_{}", p.name);
+        match ty {
+            NativeType::Int => {
+                fast_decode_lines.push(format!(
+                    "        let {} = match unsafe {{ _SOMA_ARGS[{}].to_i64() }} {{ Some(v) => v, None => return None }};",
+                    local, int_idx
+                ));
+                fast_call_args.push(local);
+                rug_call_args.push(format!("unsafe {{ _SOMA_ARGS[{}].clone() }}", int_idx));
+                int_idx += 1;
+            }
+            NativeType::Float => {
+                fast_decode_lines.push(format!(
+                    "        let {} = unsafe {{ f64::from_bits(_SOMA_ARGS[{}].to_i64().unwrap_or(0) as u64) }};",
+                    local, int_idx
+                ));
+                fast_call_args.push(local);
+                rug_call_args.push(format!(
+                    "unsafe {{ f64::from_bits(_SOMA_ARGS[{}].to_i64().unwrap_or(0) as u64) }}",
+                    int_idx
+                ));
+                int_idx += 1;
+            }
+            NativeType::Bool => {
+                fast_decode_lines.push(format!(
+                    "        let {} = unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) != 0 }};",
+                    local, int_idx
+                ));
+                fast_call_args.push(local);
+                rug_call_args.push(format!(
+                    "unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) != 0 }}",
+                    int_idx
+                ));
+                int_idx += 1;
+            }
+            NativeType::String => {
+                // Dual-mode handlers shouldn't have String params (eligibility
+                // forbids it). Defensive: emit something compilable.
+                fast_decode_lines.push(format!(
+                    "        let {} = unsafe {{ _SOMA_STRING_ARGS[{}].clone() }};",
+                    local, str_idx
+                ));
+                fast_call_args.push(local);
+                rug_call_args.push(format!("unsafe {{ _SOMA_STRING_ARGS[{}].clone() }}", str_idx));
+                str_idx += 1;
+            }
+        }
+    }
+
+    // Fast-path return type encoding for the inner Option closure.
+    let fast_inner_ty = ret_type.rust_str();
+
+    out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}() -> i64 {{\n", fn_name));
+    out.push_str("    _soma_install_quiet_hook();\n");
+    out.push_str("    // Fast path: try Direct (i64/f64). Bail out via None if\n");
+    out.push_str("    // any arg doesn't fit i64; catch overflow panics from\n");
+    out.push_str("    // checked arithmetic and fall back to the Rug version.\n");
+    out.push_str(&format!(
+        "    let _fast: Result<Option<{}>, _> = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<{}> {{\n",
+        fast_inner_ty, fast_inner_ty
+    ));
+    for line in &fast_decode_lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!(
+        "        Some(inner_{}_fast({}))\n",
+        fn_name, fast_call_args.join(", ")
+    ));
+    out.push_str("    }));\n");
+
+    // If fast path returned a value, encode it directly. Otherwise fall back.
+    out.push_str("    if let Ok(Some(_fast_v)) = _fast {\n");
+    match ret_type {
+        NativeType::Int => {
+            out.push_str("        return _fast_v;\n");
+        }
+        NativeType::Float => {
+            out.push_str("        return f64::to_bits(_fast_v) as i64;\n");
+        }
+        NativeType::Bool => {
+            out.push_str("        return if _fast_v { 1 } else { 0 };\n");
+        }
+        NativeType::String => {
+            // Shouldn't happen — eligibility excludes String. Handle anyway.
+            out.push_str("        unsafe { _SOMA_RESULT = Some(_fast_v); }\n");
+            out.push_str("        return i64::MIN + 1;\n");
+        }
+    }
+    out.push_str("    }\n");
+
+    // Rug fallback
+    let rug_call = rug_call_args.join(", ");
+    match ret_type {
+        NativeType::Int => {
+            out.push_str(&format!(
+                "    let _ret_val: Integer = inner_{}({});\n",
+                fn_name, rug_call
+            ));
+            out.push_str("    if let Some(v) = _ret_val.to_i64() {\n");
+            out.push_str("        v\n");
+            out.push_str("    } else {\n");
+            out.push_str("        unsafe { _SOMA_RESULT = Some(_ret_val.to_string()); }\n");
+            out.push_str("        i64::MIN\n");
+            out.push_str("    }\n");
+        }
+        NativeType::Float => {
+            out.push_str(&format!(
+                "    let _ret_val: f64 = inner_{}({});\n",
+                fn_name, rug_call
+            ));
+            out.push_str("    f64::to_bits(_ret_val) as i64\n");
+        }
+        NativeType::Bool => {
+            out.push_str(&format!(
+                "    let _ret_val: bool = inner_{}({});\n",
+                fn_name, rug_call
+            ));
+            out.push_str("    if _ret_val { 1 } else { 0 }\n");
+        }
+        NativeType::String => {
+            out.push_str(&format!(
+                "    let _ret_val: String = inner_{}({});\n",
+                fn_name, rug_call
+            ));
+            out.push_str("    unsafe { _SOMA_RESULT = Some(_ret_val); }\n");
+            out.push_str("    i64::MIN + 1\n");
+        }
+    }
+    out.push_str("}\n\n");
+}
+
+/// Emit the shared-buffer FFI wrapper that calls the Rug inner function
+/// and packs its result for the FFI return.
+fn gen_rug_ffi_wrapper(
+    out: &mut String,
+    handler: &NativeHandler,
+    fn_name: &str,
+    ret_type: NativeType,
+) {
     // FFI entry — reads from shared buffers, calls inner, packs result.
     // Int args come from _SOMA_ARGS as Integer.
     // String args come from _SOMA_STRING_ARGS.
@@ -961,6 +1305,15 @@ struct FnGenerator {
     handler_name: String,
     /// Declared/inferred return type of the handler being compiled.
     fn_return_type: NativeType,
+    /// Names of siblings that have a fast (Direct) path. When in Direct
+    /// codegen, sibling calls to one of these use the `_fast` suffix.
+    /// In Rug codegen, this is unused (Rug calls always go to the Rug
+    /// inner function regardless of whether a fast path exists).
+    dualmode_siblings: HashSet<String>,
+    /// True if THIS handler is itself the fast path of a dual-mode handler.
+    /// (Doesn't change codegen of the body — only matters for the inner
+    /// function name when emitting.)
+    is_fast_variant: bool,
 }
 
 impl FnGenerator {
@@ -978,6 +1331,8 @@ impl FnGenerator {
             errors: RefCell::new(Vec::new()),
             handler_name: String::new(),
             fn_return_type: NativeType::Float,
+            dualmode_siblings: HashSet::new(),
+            is_fast_variant: false,
         }
     }
 
@@ -993,6 +1348,16 @@ impl FnGenerator {
 
     fn with_handler_name(mut self, name: String) -> Self {
         self.handler_name = name;
+        self
+    }
+
+    fn with_dualmode_siblings(mut self, set: HashSet<String>) -> Self {
+        self.dualmode_siblings = set;
+        self
+    }
+
+    fn with_fast_variant(mut self, fast: bool) -> Self {
+        self.is_fast_variant = fast;
         self
     }
 
@@ -1756,9 +2121,24 @@ impl FnGenerator {
         sibling: &SiblingInfo,
         target_ty: NativeType,
     ) -> String {
+        // If the sibling is a dual-mode handler AND this caller is itself
+        // in the fast path (Mode::Direct or the fast variant of a dual
+        // handler), call its fast Direct variant. This keeps the fast path
+        // entirely within i64/f64 land. If overflow happens in the inner
+        // sibling, the panic propagates up to the outermost dispatch
+        // wrapper which catches it and re-runs in Rug mode.
+        //
+        // We deliberately do NOT use _fast siblings from Rug-mode callers
+        // (even when they're emitting Direct code for a small_int_var
+        // assignment), because the Rug fallback path is not wrapped in
+        // catch_unwind — a panic from a fast sibling would escape out the
+        // FFI boundary.
+        let calling_fast_variant =
+            self.mode == Mode::Direct && self.dualmode_siblings.contains(name);
+        let effective_mode = if calling_fast_variant { Mode::Direct } else { sibling.mode };
         let arg_strs: Vec<String> = args.iter().zip(sibling.param_types.iter())
             .map(|(arg, &expected)| {
-                if sibling.mode == Mode::Rug && expected == NativeType::Int {
+                if effective_mode == Mode::Rug && expected == NativeType::Int {
                     // Sibling expects Integer, we have i64 → Integer::from(...)
                     let e = self.gen_expr_direct(&arg.node, NativeType::Int);
                     format!("Integer::from({})", e)
@@ -1774,9 +2154,14 @@ impl FnGenerator {
                 }
             })
             .collect();
-        let call = format!("inner_handler_{}({})", name, arg_strs.join(", "));
+        let inner_name = if calling_fast_variant {
+            format!("inner_handler_{}_fast", name)
+        } else {
+            format!("inner_handler_{}", name)
+        };
+        let call = format!("{}({})", inner_name, arg_strs.join(", "));
         // Convert sibling return value to caller's representation
-        let from_ty = if sibling.mode == Mode::Rug && sibling.return_type == NativeType::Int {
+        let from_ty = if effective_mode == Mode::Rug && sibling.return_type == NativeType::Int {
             // Sibling returns Integer; we need an i64 (or coerced)
             return self.coerce_direct(format!("({}).to_i64().expect(\"BigInt overflow in sibling call\")", call), NativeType::Int, target_ty);
         } else {
