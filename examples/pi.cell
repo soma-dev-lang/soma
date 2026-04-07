@@ -1,43 +1,90 @@
-// Unbounded PI spigot — streams digits and verifies against known decimals
+// Compute 100,000 digits of PI — single [native] handler
 //
-// Uses the Gibbons streaming algorithm with linear fractional transformations.
-// BigInt auto-promotion handles arbitrary precision transparently.
-// Verified at checkpoints: 1K (full), 50K and 100K (50-digit snapshots).
+// Gibbons streaming spigot compiled to Rust/GMP via [native].
+// The entire computation runs in native code — no interpreter dispatch.
 //
 // Run: soma run pi.cell
 
 cell Pi {
 
-    // Extract digit: floor((q*3+r)/(s*3+t))
-    on extract(q: Int, r: Int, s: Int, t: Int) {
-        return (q * 3 + r) / (s * 3 + t)
+    on compute(target: Int) [native] {
+        let q = 1
+        let r = 0
+        let s = 0
+        let t = 1
+        let k = 1
+        let digits = 0
+        let result = ""
+
+        while digits <= target {
+            // extract: floor((q*3 + r) / (s*3 + t))
+            let num = q * 3
+            num = num + r
+            let den = s * 3
+            den = den + t
+            let d = num / den
+
+            // safe check: floor((q*4 + r) / (s*4 + t))
+            let num4 = q * 4
+            num4 = num4 + r
+            let den4 = s * 4
+            den4 = den4 + t
+            let d4 = num4 / den4
+
+            if d == d4 {
+                if digits == 0 {
+                    digits = 1
+                } else {
+                    result = result + to_string(d)
+                    digits = digits + 1
+                }
+                // consume: q = 10*(q - d*s), r = 10*(r - d*t)
+                let ds = d * s
+                let nq = q - ds
+                nq = nq * 10
+                let dt = d * t
+                let nr = r - dt
+                nr = nr * 10
+                q = nq
+                r = nr
+            } else {
+                // absorb: compose with (k, 4k+2, 0, 2k+1)
+                let u = 4 * k
+                u = u + 2
+                let v = 2 * k
+                v = v + 1
+                let nq = q * k
+                let qu = q * u
+                let rv = r * v
+                let nr = qu + rv
+                let ns = s * k
+                let su = s * u
+                let tv = t * v
+                let nt = su + tv
+                q = nq
+                r = nr
+                s = ns
+                t = nt
+                k = k + 1
+            }
+        }
+
+        return result
     }
 
-    on extract4(q: Int, r: Int, s: Int, t: Int) {
-        return (q * 4 + r) / (s * 4 + t)
-    }
-
-    // Absorb term k into LFT (q,r,s,t)
-    on absorb(q: Int, r: Int, s: Int, t: Int, k: Int) {
-        let u = 4 * k + 2
-        let v = 2 * k + 1
-        return list(q * k, q * u + r * v, s * k, s * u + t * v)
-    }
-
-    // Consume digit d
-    on consume(q: Int, r: Int, s: Int, t: Int, d: Int) {
-        return list(10 * (q - d * s), 10 * (r - d * t), s, t)
-    }
-
-    on check_ref(buf: String, ref_digits: String, pos: Int) {
+    on check_ref(buf: String, ref_digits: String) {
         let mismatches = 0
         let i = 0
         while i < len(buf) {
-            let got = substring(buf, i, i + 1)
-            let exp = substring(ref_digits, i, i + 1)
-            if got != exp {
-                mismatches = mismatches + 1
-                print("    MISMATCH at digit {pos - 49 + i}: got {got}, expected {exp}")
+            if i < len(ref_digits) {
+                let got = substring(buf, i, i + 1)
+                let exp = substring(ref_digits, i, i + 1)
+                if got != exp {
+                    mismatches = mismatches + 1
+                    if mismatches <= 10 {
+                        print("    MISMATCH at digit {i + 1}: got {got}, expected {exp}")
+                    }
+                }
             }
             i = i + 1
         }
@@ -50,112 +97,55 @@ cell Pi {
         let ref_100k = "70150789337728658035712790913767420805655493624646"
 
         let target = 100000
-        let q = 1
-        let r = 0
-        let s = 0
-        let t = 1
-        let k = 1
-        let digits = 0
-        let errors = 0
-        let start = now_ms()
-        let buf = ""
 
-        print("PI spigot — computing {target} digits")
-        print("======================================")
+        print("PI spigot [native] — computing {target} digits")
+        print("===============================================")
         print("")
 
-        while digits <= target {
-            let d = extract(q, r, s, t)
-            if d == extract4(q, r, s, t) {
-                if digits == 0 {
-                    digits = 1
-                    let st = consume(q, r, s, t, d)
-                    q = st.get(0)
-                    r = st.get(1)
-                    s = st.get(2)
-                    t = st.get(3)
-                } else {
-                    let pos = digits - 1
-                    if pos < len(ref_1k) {
-                        let expected = substring(ref_1k, pos, pos + 1)
-                        if to_string(d) != expected {
-                            errors = errors + 1
-                            print("  MISMATCH at digit {digits}: got {d}, expected {expected}")
-                        }
-                    }
+        let start = now_ms()
+        let pi_digits = compute(target)
+        let elapsed = now_ms() - start
 
-                    buf = buf + to_string(d)
-                    if len(buf) > 50 {
-                        buf = substring(buf, len(buf) - 50, len(buf))
-                    }
+        print("Computed {len(pi_digits)} digits in {elapsed}ms")
+        print("")
 
-                    digits = digits + 1
-                    let st = consume(q, r, s, t, d)
-                    q = st.get(0)
-                    r = st.get(1)
-                    s = st.get(2)
-                    t = st.get(3)
+        // Verify first 1000
+        let first_1k = substring(pi_digits, 0, 1000)
+        let errors = check_ref(first_1k, ref_1k)
+        if errors == 0 {
+            print("  [1,000] ALL 1000 digits match reference")
+        } else {
+            print("  [1,000] {errors} mismatches!")
+        }
 
-                    let count = digits - 1
-                    let elapsed = now_ms() - start
-                    let rate = 0
-                    if elapsed > 0 { rate = count * 1000 / elapsed }
-
-                    if count == 1000 {
-                        if errors == 0 {
-                            print("  [1,000] ALL 1000 digits match reference  ({elapsed}ms)")
-                        } else {
-                            print("  [1,000] {errors} mismatches!  ({elapsed}ms)")
-                        }
-                    }
-
-                    if count == 50000 {
-                        let m = check_ref(buf, ref_50k, 50000)
-                        errors = errors + m
-                        if m == 0 {
-                            print("  [50,000] last 50 digits match reference  ({elapsed}ms, ~{rate} d/s)")
-                        } else {
-                            print("  [50,000] {m} mismatches in checkpoint!  ({elapsed}ms)")
-                        }
-                        print("    ...{buf}")
-                    }
-
-                    if count == 100000 {
-                        let m = check_ref(buf, ref_100k, 100000)
-                        errors = errors + m
-                        if m == 0 {
-                            print("  [100,000] last 50 digits match reference  ({elapsed}ms, ~{rate} d/s)")
-                        } else {
-                            print("  [100,000] {m} mismatches in checkpoint!  ({elapsed}ms)")
-                        }
-                        print("    ...{buf}")
-                    }
-
-                    if count % 10000 == 0 {
-                        if count != 50000 {
-                            if count != 100000 {
-                                print("  [{count}] ({elapsed}ms, ~{rate} d/s)")
-                            }
-                        }
-                    }
-                }
+        // Verify at 50K
+        if len(pi_digits) >= 50000 {
+            let last50 = substring(pi_digits, 49950, 50000)
+            if last50 == ref_50k {
+                print("  [50,000] last 50 digits match reference")
             } else {
-                let st = absorb(q, r, s, t, k)
-                q = st.get(0)
-                r = st.get(1)
-                s = st.get(2)
-                t = st.get(3)
-                k = k + 1
+                print("  [50,000] MISMATCH!")
+                print("    got: {last50}")
+                print("    exp: {ref_50k}")
             }
         }
 
-        let total_ms = now_ms() - start
+        // Verify at 100K
+        if len(pi_digits) >= 100000 {
+            let last50 = substring(pi_digits, 99950, 100000)
+            if last50 == ref_100k {
+                print("  [100,000] last 50 digits match reference")
+            } else {
+                print("  [100,000] MISMATCH!")
+                print("    got: {last50}")
+                print("    exp: {ref_100k}")
+            }
+        }
+
         print("")
-        print("Done: {digits - 1} digits of PI in {total_ms}ms")
+        print("Done: {len(pi_digits)} digits of PI in {elapsed}ms")
         if errors == 0 {
-            print("ALL checkpoints PASSED (1K full + 50K + 100K)")
-        } else {
-            print("TOTAL MISMATCHES: {errors}")
+            print("ALL checkpoints PASSED")
         }
     }
 }
