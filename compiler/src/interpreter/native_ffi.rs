@@ -322,7 +322,8 @@ fn call_native_shared(native: &LoadedNative, args: &[super::Value]) -> Result<su
                         }
                     }
                 }
-                Value::Float(f) => push_i64_fn(*f as i64),
+                // Float pushed as bit-encoded i64 (handler decodes via from_bits)
+                Value::Float(f) => push_i64_fn(f.to_bits() as i64),
                 Value::Bool(b) => push_i64_fn(if *b { 1 } else { 0 }),
                 Value::String(s) => {
                     if let Some(ref push) = push_string_fn {

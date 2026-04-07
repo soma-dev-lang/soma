@@ -449,8 +449,10 @@ fn gen_rug_handler(
     out.push_str("}\n\n");
 
     // FFI entry — reads from shared buffers, calls inner, packs result.
-    // Int / Float / Bool params come from _SOMA_ARGS; String params from
-    // _SOMA_STRING_ARGS. Each is indexed by its position WITHIN ITS TYPE.
+    // Int args come from _SOMA_ARGS as Integer.
+    // String args come from _SOMA_STRING_ARGS.
+    // Float args are bit-encoded as i64 in _SOMA_ARGS (matches push side).
+    // Bool args are 0/1 in _SOMA_ARGS.
     out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}() -> i64 {{\n", fn_name));
     let mut arg_exprs: Vec<String> = Vec::new();
     let mut int_idx = 0;
@@ -466,9 +468,19 @@ fn gen_rug_handler(
                 arg_exprs.push(format!("unsafe {{ _SOMA_STRING_ARGS[{}].clone() }}", str_idx));
                 str_idx += 1;
             }
-            NativeType::Float | NativeType::Bool => {
-                arg_exprs.push(format!("unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) as {} }}",
-                    int_idx, ty.rust_str()));
+            NativeType::Float => {
+                // The interpreter pushes f64::to_bits as i64 via _soma_push_f64
+                arg_exprs.push(format!(
+                    "unsafe {{ f64::from_bits(_SOMA_ARGS[{}].to_i64().unwrap_or(0) as u64) }}",
+                    int_idx
+                ));
+                int_idx += 1;
+            }
+            NativeType::Bool => {
+                arg_exprs.push(format!(
+                    "unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) != 0 }}",
+                    int_idx
+                ));
                 int_idx += 1;
             }
         }
@@ -1319,6 +1331,15 @@ impl FnGenerator {
             }
             "to_float" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
+                // In Rug mode an Int Ident may be a `rug::Integer` (no `as f64`
+                // cast). Detect the case and emit `.to_f64()` instead.
+                if a_ty == NativeType::Int && self.mode == Mode::Rug {
+                    if let Expr::Ident(name) = &args[0].node {
+                        if !self.small_int_vars.contains(name) {
+                            return format!("({}.to_f64())", name);
+                        }
+                    }
+                }
                 let a = self.gen_expr_direct(&args[0].node, a_ty);
                 format!("({} as f64)", a)
             }
