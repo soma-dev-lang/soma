@@ -588,6 +588,22 @@ fn emit_array_wrapper(
 
 // ── Type inference helpers ──────────────────────────────────────────
 
+/// Rust source for a Soma comparison operator.
+fn cmp_op_str(op: CmpOp) -> &'static str {
+    match op {
+        CmpOp::Lt => "<", CmpOp::Gt => ">", CmpOp::Le => "<=",
+        CmpOp::Ge => ">=", CmpOp::Eq => "==", CmpOp::Ne => "!=",
+    }
+}
+
+/// Rust source for a Soma binary arithmetic operator.
+fn arith_op_str(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+        BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
+    }
+}
+
 /// Builtins whose Int result is bounded by their inputs (i64-safe).
 /// Used by the small-int classifier to allow these as bounded sub-expressions.
 fn is_bounded_builtin(name: &str) -> bool {
@@ -1160,11 +1176,7 @@ impl FnGenerator {
                 };
                 let l = self.gen_expr_direct(&left.node, common);
                 let r = self.gen_expr_direct(&right.node, common);
-                let op_str = match op {
-                    CmpOp::Lt => "<", CmpOp::Gt => ">", CmpOp::Le => "<=",
-                    CmpOp::Ge => ">=", CmpOp::Eq => "==", CmpOp::Ne => "!=",
-                };
-                format!("({} {} {})", l, op_str, r)
+                format!("({} {} {})", l, cmp_op_str(*op), r)
             }
             Expr::Not(inner) => {
                 let e = self.gen_expr_direct(&inner.node, NativeType::Bool);
@@ -1218,12 +1230,7 @@ impl FnGenerator {
         };
         let l = self.gen_expr_direct(left, common);
         let r = self.gen_expr_direct(right, common);
-        let op_str = match op {
-            BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-            BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
-        };
-        let inner = format!("({} {} {})", l, op_str, r);
-        // Coerce to target if needed
+        let inner = format!("({} {} {})", l, arith_op_str(op), r);
         self.coerce_direct(inner, common, target_ty)
     }
 
@@ -1624,16 +1631,19 @@ impl FnGenerator {
             Expr::Literal(Literal::Int(n)) => format!("Integer::from({}i64)", n),
             Expr::Ident(name) => {
                 let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                if var_ty == NativeType::Int {
-                    if self.small_int_vars.contains(name) {
+                match var_ty {
+                    NativeType::Int if self.small_int_vars.contains(name) => {
                         format!("Integer::from({})", name)
-                    } else {
-                        format!("{}.clone()", name)
                     }
-                } else if var_ty == NativeType::Float {
-                    format!("Integer::from({} as i64)", name)
-                } else {
-                    name.clone()
+                    NativeType::Int => format!("{}.clone()", name),
+                    NativeType::Float => format!("Integer::from({} as i64)", name),
+                    NativeType::Bool => {
+                        format!("Integer::from(if {} {{ 1i64 }} else {{ 0i64 }})", name)
+                    }
+                    NativeType::String => {
+                        self.err(format!("cannot use String variable '{}' in an Integer context", name));
+                        "Integer::from(0i64)".to_string()
+                    }
                 }
             }
             Expr::BinaryOp { left, op, right } => {
@@ -1658,10 +1668,7 @@ impl FnGenerator {
 
     /// Rug-mode binop returning rug::Integer.
     fn gen_binop_rug(&self, left: &Expr, op: BinOp, right: &Expr) -> String {
-        let op_str = match op {
-            BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-            BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
-        };
+        let op_str = arith_op_str(op);
         // If both operands are small (i64), do pure i64 arithmetic
         if self.is_small_int_expr(left) && self.is_small_int_expr(right) {
             let l = self.gen_expr_direct(left, NativeType::Int);
@@ -1694,13 +1701,8 @@ impl FnGenerator {
                 let lt = self.infer_expr_type(&left.node);
                 let rt = self.infer_expr_type(&right.node);
                 if lt == NativeType::Int && rt == NativeType::Int {
-                    // Use the same operand-aware generation as gen_binop_rug
-                    let op_str = match op {
-                        BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                        BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
-                    };
+                    let op_str = arith_op_str(*op);
                     if self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node) {
-                        // Both small → assign from i64
                         let l = self.gen_expr_direct(&left.node, NativeType::Int);
                         let r = self.gen_expr_direct(&right.node, NativeType::Int);
                         return format!("{} {} {}", l, op_str, r);
@@ -1735,11 +1737,7 @@ impl FnGenerator {
             Expr::BinaryOp { left, op, right } => {
                 let l = self.gen_int_to_i64_rug(&left.node);
                 let r = self.gen_int_to_i64_rug(&right.node);
-                let op_str = match op {
-                    BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
-                    BinOp::Div => "/", BinOp::Mod => "%", _ => "+",
-                };
-                format!("({} {} {})", l, op_str, r)
+                format!("({} {} {})", l, arith_op_str(*op), r)
             }
             _ => format!("{}.to_i64().unwrap()", self.gen_expr_rug(expr)),
         }
@@ -1784,15 +1782,15 @@ impl FnGenerator {
             }
             Expr::Ident(name) => {
                 let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                if var_ty == NativeType::Int {
-                    if self.small_int_vars.contains(name) {
-                        // i64 variable — rug supports Integer op i64 directly
-                        name.clone()
-                    } else {
-                        format!("&{}", name)
+                match var_ty {
+                    NativeType::Int if self.small_int_vars.contains(name) => name.clone(),
+                    NativeType::Int => format!("&{}", name),
+                    NativeType::Float => format!("({} as i64)", name),
+                    NativeType::Bool => format!("(if {} {{ 1i64 }} else {{ 0i64 }})", name),
+                    NativeType::String => {
+                        self.err(format!("cannot use String variable '{}' as an Integer operand", name));
+                        "0i64".to_string()
                     }
-                } else {
-                    format!("{} as i32", name)
                 }
             }
             Expr::BinaryOp { left, op, right } => {
@@ -1914,27 +1912,21 @@ impl FnGenerator {
     fn gen_cond_rug(&self, expr: &Expr) -> String {
         match expr {
             Expr::CmpOp { left, op, right } => {
+                let op_str = cmp_op_str(*op);
                 let lt = self.infer_expr_type(&left.node);
                 let rt = self.infer_expr_type(&right.node);
                 if lt == NativeType::Int && rt == NativeType::Int {
-                    // Check if both operands are small (i64) → primitive comparison
-                    let l_small = self.is_small_int_expr(&left.node);
-                    let r_small = self.is_small_int_expr(&right.node);
-                    let op_str = match op {
-                        CmpOp::Lt => "<", CmpOp::Gt => ">", CmpOp::Le => "<=",
-                        CmpOp::Ge => ">=", CmpOp::Eq => "==", CmpOp::Ne => "!=",
-                    };
-                    if l_small && r_small {
-                        // Pure i64 comparison
+                    // Both Int — emit either pure-i64 or Integer-aware comparison.
+                    if self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node) {
                         let l = self.gen_expr_direct(&left.node, NativeType::Int);
                         let r = self.gen_expr_direct(&right.node, NativeType::Int);
                         return format!("({} {} {})", l, op_str, r);
                     }
-                    // Mixed Integer/i64 or pure Integer
                     let l = self.gen_cmp_operand_rug(&left.node);
                     let r = self.gen_cmp_operand_rug(&right.node);
                     format!("{} {} {}", l, op_str, r)
                 } else {
+                    // Float / mixed: lower via the direct-mode helpers.
                     let common = if lt == NativeType::Float || rt == NativeType::Float {
                         NativeType::Float
                     } else {
@@ -1942,10 +1934,6 @@ impl FnGenerator {
                     };
                     let l = self.gen_expr_direct(&left.node, common);
                     let r = self.gen_expr_direct(&right.node, common);
-                    let op_str = match op {
-                        CmpOp::Lt => "<", CmpOp::Gt => ">", CmpOp::Le => "<=",
-                        CmpOp::Ge => ">=", CmpOp::Eq => "==", CmpOp::Ne => "!=",
-                    };
                     format!("({} {} {})", l, op_str, r)
                 }
             }
