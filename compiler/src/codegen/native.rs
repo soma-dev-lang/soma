@@ -284,11 +284,48 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
         if small == prev { break; }
     }
 
-    if small.len() == int_vars.len() {
-        Mode::Direct
-    } else {
-        Mode::Rug
+    if small.len() != int_vars.len() {
+        return Mode::Rug;
     }
+
+    // Also check Return statements: a return value that's a var*var
+    // product (or otherwise not-bounded) means the result could overflow i64.
+    // Example: `on multiply(a: Int, b: Int) [native] { return a * b }` —
+    // no Let statements, so the regular classifier sees no exclusions, but
+    // the return expression itself can produce a BigInt.
+    if return_expr_needs_bigint(&handler.body, &small, &gen) {
+        return Mode::Rug;
+    }
+
+    Mode::Direct
+}
+
+/// Walk the body looking for Return statements whose value isn't bounded.
+fn return_expr_needs_bigint(
+    body: &[Spanned<Statement>],
+    small: &HashSet<String>,
+    gen: &FnGenerator,
+) -> bool {
+    for stmt in body {
+        match &stmt.node {
+            Statement::Return { value } => {
+                // Only check Int-typed returns
+                let ty = gen.infer_expr_type(&value.node);
+                if ty == NativeType::Int && !FnGenerator::is_bounded_expr(&value.node, small) {
+                    return true;
+                }
+            }
+            Statement::If { then_body, else_body, .. } => {
+                if return_expr_needs_bigint(then_body, small, gen) { return true; }
+                if return_expr_needs_bigint(else_body, small, gen) { return true; }
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => {
+                if return_expr_needs_bigint(body, small, gen) { return true; }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 // ── Direct mode handler ─────────────────────────────────────────────
@@ -1715,6 +1752,30 @@ impl FnGenerator {
         }
     }
 
+    /// Borrow-form `&Integer` expression for rug API methods that take `&Integer`.
+    /// For Ident vars: emit `&name` (no copy). For literals or compound exprs:
+    /// fall back to `&Integer::from(...)` (one alloc, but unavoidable).
+    fn gen_int_borrow_rug(&self, expr: &Expr) -> String {
+        match expr {
+            Expr::Ident(name) => {
+                let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
+                if var_ty == NativeType::Int {
+                    if self.small_int_vars.contains(name) {
+                        // i64 variable — wrap in Integer (allocates)
+                        format!("&Integer::from({})", name)
+                    } else {
+                        // Already an Integer — just borrow
+                        format!("&{}", name)
+                    }
+                } else {
+                    format!("&Integer::from({} as i64)", name)
+                }
+            }
+            Expr::Literal(Literal::Int(n)) => format!("&Integer::from({}i64)", n),
+            _ => format!("&{}", self.gen_expr_rug(expr)),
+        }
+    }
+
     /// Always produce an owned Integer expression (no Incomplete).
     /// Used for rug API methods that take `&Integer`.
     fn gen_int_owned_rug(&self, expr: &Expr) -> String {
@@ -2020,17 +2081,16 @@ impl FnGenerator {
             // Number theory: rug has these as methods. All args must be &Integer.
             "gcd" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);
-                // gcd takes &Integer
-                let b_int = self.gen_int_owned_rug(&args[1].node);
-                format!("({}).gcd(&{})", a, b_int)
+                // Second arg as a borrowed Integer reference where possible.
+                let b_ref = self.gen_int_borrow_rug(&args[1].node);
+                format!("({}).gcd({})", a, b_ref)
             }
             "pow_mod" if args.len() == 3 => {
                 // pow_mod(self, &exp, &modulus) -> Result<Integer, _>
-                // Takes self by value (consumes), exp/modulus by reference.
                 let base = self.gen_int_owned_rug(&args[0].node);
-                let exp = self.gen_int_owned_rug(&args[1].node);
-                let m = self.gen_int_owned_rug(&args[2].node);
-                format!("({}).pow_mod(&{}, &{}).expect(\"pow_mod failed (modulus 0?)\")", base, exp, m)
+                let exp = self.gen_int_borrow_rug(&args[1].node);
+                let m = self.gen_int_borrow_rug(&args[2].node);
+                format!("({}).pow_mod({}, {}).expect(\"pow_mod failed (modulus 0?)\")", base, exp, m)
             }
             "sqrt_int" if args.len() == 1 => {
                 let a = self.gen_expr_rug(&args[0].node);

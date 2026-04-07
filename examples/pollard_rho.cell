@@ -1,0 +1,96 @@
+// ============================================================================
+// Pollard's rho factorization
+// ============================================================================
+//
+// Finds a non-trivial factor of a composite n by iterating
+//   x_{i+1} = (x_i² + c) mod n
+// with Floyd's cycle detection (tortoise + hare). When |x − y| has a
+// non-trivial gcd with n, we've found a factor. If gcd is n itself,
+// restart with a different c.
+//
+// Tests gcd in a hot loop with rug Integer operands — the new gcd
+// builtin in Rug mode.
+//
+// Run: soma run pollard_rho.cell
+
+cell PollardRho {
+
+    // One pollard-rho attempt with constant c. Returns:
+    //   0       — cycle found gcd == n (failure for this c)
+    //   d != 0  — non-trivial factor
+    on rho(n: Int, c: Int) [native] {
+        let x = 2
+        let y = 2
+        let d = 1
+        while d == 1 {
+            // tortoise: one step  (decomposed for codegen efficiency)
+            let xx = x * x
+            let xc = xx + c
+            x = xc % n
+            // hare: two steps
+            let yy = y * y
+            let yc = yy + c
+            y = yc % n
+            let yy2 = y * y
+            let yc2 = yy2 + c
+            y = yc2 % n
+            // d = gcd(|x − y|, n)
+            let diff = abs(x - y)
+            d = gcd(diff, n)
+        }
+        if d == n { return 0 }
+        return d
+    }
+
+    // Driver: try c = 1, 2, 3, ... until rho returns a factor.
+    on factor(n: Int) {
+        if n % 2 == 0 { return 2 }
+        let c = 1
+        while c < 200 {
+            let d = rho(n, c)
+            if d != 0 { return d }
+            c = c + 1
+        }
+        return 0
+    }
+
+    // Multiply two Ints in [native] (allows BigInt result without literal parsing).
+    on multiply(a: Int, b: Int) [native] {
+        return a * b
+    }
+
+    on check_pair(p: Int, q: Int) {
+        let n = multiply(p, q)
+        let start = now_ms()
+        let f = factor(n)
+        let elapsed = now_ms() - start
+        // Either factor of the pair is acceptable
+        if f == p || f == q {
+            print("  {p} × {q} = {n}  →  factor {f}  ({elapsed}ms) ✓")
+        } else {
+            print("  {p} × {q} = {n}  →  rho returned {f}  ({elapsed}ms) ✗")
+        }
+    }
+
+    on run() {
+        print("Pollard's rho factorization")
+        print("===========================")
+        print("")
+
+        // Small composites
+        check_pair(83, 97)                     // 8051
+        check_pair(127, 9721)                  // 1234567
+        check_pair(7919, 104729)               // 829,327,651
+        check_pair(99991, 99989)               // 9,998,000,099 (10-digit)
+        check_pair(1299709, 15485863)          // ~2 × 10^13 (14-digit)
+        check_pair(15485863, 982451653)        // ~1.5 × 10^16 (16-digit)
+
+        print("")
+        print("Headline: products of large Mersenne primes")
+        // M_13 = 8191, M_17 = 131071, M_19 = 524287, M_31 = 2147483647, M_61 = 2305843009213693951
+        check_pair(8191, 131071)               // M_13 × M_17 (10-digit)
+        check_pair(131071, 524287)             // M_17 × M_19 (12-digit)
+        check_pair(524287, 2147483647)         // M_19 × M_31 (19-digit)
+        check_pair(2147483647, 2305843009213693951)  // M_31 × M_61 (28-digit)
+    }
+}
