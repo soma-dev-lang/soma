@@ -1223,6 +1223,30 @@ fn stmt_references(stmt: &Statement, name: &str) -> bool {
     }
 }
 
+/// Const-fold an Int literal-literal arithmetic expression. Returns the
+/// Rust source for the result, or None if either operand isn't a literal.
+/// On i64 overflow, emits a runtime panic (the dispatch wrapper catches
+/// it and falls back to Rug). Used in Direct-mode codegen to avoid Rust's
+/// const-evaluator refusing to compile e.g. `100000000000i64 * 1000000000i64`.
+fn try_fold_int_literal_arith(left: &Expr, op: BinOp, right: &Expr) -> Option<String> {
+    let (a, b) = match (left, right) {
+        (Expr::Literal(Literal::Int(a)), Expr::Literal(Literal::Int(b))) => (*a, *b),
+        _ => return None,
+    };
+    let folded: Option<i64> = match op {
+        BinOp::Add => a.checked_add(b),
+        BinOp::Sub => a.checked_sub(b),
+        BinOp::Mul => a.checked_mul(b),
+        BinOp::Div => if b == 0 { None } else { a.checked_div(b) },
+        BinOp::Mod => if b == 0 { None } else { a.checked_rem(b) },
+        _ => return None,
+    };
+    Some(match folded {
+        Some(v) => format!("({}i64)", v),
+        None => "{ panic!(\"i64 overflow in literal arithmetic\") }".to_string(),
+    })
+}
+
 /// Rust source for a Soma comparison operator.
 fn cmp_op_str(op: CmpOp) -> &'static str {
     match op {
@@ -1965,6 +1989,15 @@ impl FnGenerator {
         } else {
             NativeType::Int
         };
+
+        // Literal-literal arithmetic: const-fold ourselves to avoid Rust's
+        // const-evaluator catching overflow at compile time.
+        if common == NativeType::Int {
+            if let Some(inner) = try_fold_int_literal_arith(left, op, right) {
+                return self.coerce_direct(inner, common, target_ty);
+            }
+        }
+
         let l = self.gen_expr_direct(left, common);
         let r = self.gen_expr_direct(right, common);
         let inner = format!("({} {} {})", l, arith_op_str(op), r);
@@ -2453,6 +2486,42 @@ impl FnGenerator {
     /// Rug-mode binop returning rug::Integer.
     fn gen_binop_rug(&self, left: &Expr, op: BinOp, right: &Expr) -> String {
         let op_str = arith_op_str(op);
+        // Literal-literal: const-fold to avoid Rust's const-evaluator
+        // catching overflow at compile time. We're in Rug-mode, so a folded
+        // overflow can't be wrapped in catch_unwind — but the Rug fallback
+        // doesn't need to handle the overflow path here, since the user
+        // wrote literal arithmetic that overflows i64 in source. We emit
+        // an Integer literal directly using Integer::from_str (i128 first,
+        // BigInt-string second) so the result is correct.
+        if let (Expr::Literal(Literal::Int(a)), Expr::Literal(Literal::Int(b))) = (left, right) {
+            // Try i64 fold
+            let folded: Option<i64> = match op {
+                BinOp::Add => a.checked_add(*b),
+                BinOp::Sub => a.checked_sub(*b),
+                BinOp::Mul => a.checked_mul(*b),
+                BinOp::Div => if *b == 0 { None } else { a.checked_div(*b) },
+                BinOp::Mod => if *b == 0 { None } else { a.checked_rem(*b) },
+                _ => None,
+            };
+            if let Some(v) = folded {
+                return format!("Integer::from({}i64)", v);
+            }
+            // Folded to BigInt: compute via i128, format as a decimal string,
+            // and emit `<rug::Integer as std::str::FromStr>::from_str(...)`.
+            // Wrapped in unwrap() — the literal is always well-formed.
+            let big: Option<i128> = match op {
+                BinOp::Add => Some((*a as i128) + (*b as i128)),
+                BinOp::Sub => Some((*a as i128) - (*b as i128)),
+                BinOp::Mul => Some((*a as i128) * (*b as i128)),
+                _ => None,
+            };
+            if let Some(v) = big {
+                return format!(
+                    "<Integer as std::str::FromStr>::from_str(\"{}\").unwrap()",
+                    v
+                );
+            }
+        }
         // If both operands are small (i64), do pure i64 arithmetic
         if self.is_small_int_expr(left) && self.is_small_int_expr(right) {
             let l = self.gen_expr_direct(left, NativeType::Int);
