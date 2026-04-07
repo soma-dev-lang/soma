@@ -86,8 +86,43 @@ pub fn generate_native_source_with_config(
 
     let siblings: HashSet<String> = handlers.iter().map(|h| h.signal_name.clone()).collect();
 
+    // Pre-compute rough sibling return types BEFORE mode selection so that
+    // select_mode's classifier sees the correct type for sibling FnCalls
+    // (otherwise unknown sibling calls default to Float, masking Int-overflow
+    // patterns like `n * fact_rec(n - 1)`). Mode is unknown at this stage so
+    // we use Direct as a placeholder.
+    let mut pre_sibling_info: HashMap<String, SiblingInfo> = HashMap::new();
+    for handler in handlers {
+        let param_types: Vec<NativeType> = handler.params.iter()
+            .map(|p| type_expr_to_native(&p.ty.node))
+            .collect();
+        pre_sibling_info.insert(handler.signal_name.clone(), SiblingInfo {
+            param_types,
+            return_type: NativeType::Float,
+            mode: Mode::Direct,
+        });
+    }
+    loop {
+        let prev = pre_sibling_info.clone();
+        for handler in handlers {
+            let mut tmp = FnGenerator::new(&handler.params, &siblings, Mode::Direct)
+                .with_sibling_info(pre_sibling_info.clone());
+            for p in &handler.params {
+                tmp.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
+            }
+            tmp.infer_body_types(&handler.body);
+            let return_type = tmp.infer_return_type(&handler.body);
+            if let Some(info) = pre_sibling_info.get_mut(&handler.signal_name) {
+                info.return_type = return_type;
+            }
+        }
+        if prev == pre_sibling_info { break; }
+    }
+
     // Decide mode for each handler
-    let mut modes: Vec<Mode> = handlers.iter().map(|h| select_mode(h, &siblings)).collect();
+    let mut modes: Vec<Mode> = handlers.iter()
+        .map(|h| select_mode(h, &siblings, &pre_sibling_info))
+        .collect();
     // Propagate Rug-mode through sibling-call chains. Two directions:
     //   (1) Direct handler calling a Rug sibling returning Int → could receive
     //       a BigInt result that doesn't fit i64 → promote caller to Rug.
@@ -321,7 +356,11 @@ pub fn generate_native_source_with_config(
 ///   2. `[native, bigint]` property → Rug mode forced.
 ///   3. If the return type is String → Rug mode (canonical BigInt-as-string).
 ///   4. Else, run the classifier: if all int locals fit i64 → Direct, else Rug.
-fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
+fn select_mode(
+    handler: &NativeHandler,
+    siblings: &HashSet<String>,
+    pre_sibling_info: &HashMap<String, SiblingInfo>,
+) -> Mode {
     if handler.properties.iter().any(|p| p == "i64") {
         return Mode::Direct;
     }
@@ -333,7 +372,8 @@ fn select_mode(handler: &NativeHandler, siblings: &HashSet<String>) -> Mode {
     if handler.params.iter().any(|p| type_expr_to_native(&p.ty.node) == NativeType::String) {
         return Mode::Rug;
     }
-    let mut gen = FnGenerator::new(&handler.params, siblings, Mode::Direct);
+    let mut gen = FnGenerator::new(&handler.params, siblings, Mode::Direct)
+        .with_sibling_info(pre_sibling_info.clone());
     for p in &handler.params {
         gen.var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
     }
