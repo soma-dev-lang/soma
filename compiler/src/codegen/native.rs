@@ -752,6 +752,10 @@ fn gen_direct_handler(
 /// Emit only the typed inner function for a Direct-mode handler — no FFI
 /// wrapper. Used both by gen_direct_handler and by the dual-mode emitter
 /// that needs a fast Direct version alongside a separate Rug fallback.
+///
+/// String params are passed as `&str` (no clone per call). This matters
+/// massively for recursive String handlers — the recursive Levenshtein
+/// dropped from cloning ~60k strings to passing pointers.
 fn gen_direct_inner_fn(
     out: &mut String,
     gen: &FnGenerator,
@@ -762,9 +766,10 @@ fn gen_direct_inner_fn(
     let param_str: String = handler.params.iter()
         .map(|p| {
             let ty = type_expr_to_native(&p.ty.node);
-            // Params are always declared `mut` — Soma allows assigning to a
-            // parameter, and the body codegen emits it as a normal variable.
-            format!("mut {}: {}", p.name, ty.rust_str())
+            match ty {
+                NativeType::String => format!("{}: &str", p.name),
+                _ => format!("mut {}: {}", p.name, ty.rust_str()),
+            }
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -913,10 +918,11 @@ fn emit_dualmode_wrapper(
                 int_idx += 1;
             }
             NativeType::String => {
-                // Dual-mode handlers shouldn't have String params (eligibility
-                // forbids it). Defensive: emit something compilable.
+                // Pass &str to the fast inner — no clone, no allocation.
+                // The String is already owned by _SOMA_STRING_ARGS so we
+                // can borrow safely for the duration of the call.
                 fast_decode_lines.push(format!(
-                    "        let {} = unsafe {{ _SOMA_STRING_ARGS[{}].clone() }};",
+                    "        let {}: &str = unsafe {{ &_SOMA_STRING_ARGS[{}] }};",
                     local, str_idx
                 ));
                 fast_call_args.push(local);
@@ -1416,10 +1422,10 @@ impl FnGenerator {
         self.small_int_vars = small;
     }
 
-    /// Collect locals whose initialization is a "safe init" — currently
-    /// either a literal in [-2^60, 2^60] or assigned from another already-
-    /// safe-initialized var. Excludes int_params (they arrive from FFI
-    /// and may already be BigInt).
+    /// Collect locals whose initialization is a "safe init" — small
+    /// literal, ident copy of an already-safe var, or a bounded-builtin
+    /// call (whose result is known to fit i64). Excludes int_params
+    /// (they arrive from FFI and may already be BigInt).
     fn collect_safe_init(
         body: &[Spanned<Statement>],
         small: &mut HashSet<String>,
@@ -1430,13 +1436,19 @@ impl FnGenerator {
             match &stmt.node {
                 Statement::Let { name, value } => {
                     if int_params.contains(name) { continue; }
-                    if let Expr::Literal(Literal::Int(n)) = &value.node {
-                        if *n >= -LIMIT && *n <= LIMIT {
-                            small.insert(name.clone());
+                    let safe = match &value.node {
+                        Expr::Literal(Literal::Int(n)) => *n >= -LIMIT && *n <= LIMIT,
+                        Expr::Ident(src) => small.contains(src),
+                        Expr::FnCall { name: fname, .. } => {
+                            // Builtins whose Int result is bounded by their
+                            // inputs (band, bor, bit_test, bit_next, etc).
+                            // These return i64-sized values regardless of
+                            // operand sizes.
+                            is_bounded_builtin(fname)
                         }
-                    } else if let Expr::Ident(src) = &value.node {
-                        if small.contains(src) { small.insert(name.clone()); }
-                    }
+                        _ => false,
+                    };
+                    if safe { small.insert(name.clone()); }
                 }
                 Statement::If { then_body, else_body, .. } => {
                     Self::collect_safe_init(then_body, small, int_params);
@@ -1597,6 +1609,15 @@ impl FnGenerator {
         if !Self::expr_references(expr, target) {
             return Self::is_bounded_expr(expr, small, siblings, var_types);
         }
+        // FnCall to a builtin whose result is BOUNDED BY A FIXED RANGE
+        // (i.e. independent of input magnitudes) is safe even if args
+        // reference target. Examples: bit_test (always 0/1), bit_next
+        // (always a small bit position), bit_len (≤ 64).
+        if let Expr::FnCall { name, .. } = expr {
+            if matches!(name.as_str(), "bit_test" | "bit_next" | "bit_len") {
+                return true;
+            }
+        }
         match expr {
             Expr::Ident(n) if n == target => true,
             Expr::BinaryOp { left, op, right } => {
@@ -1683,6 +1704,13 @@ impl FnGenerator {
                         Expr::Literal(Literal::Int(k)) if *k < 60 && *k >= 0 => {}
                         _ => return false,
                     }
+                }
+                // bit_test (always 0/1), bit_next (≤ ~2^31), bit_len (≤ 64)
+                // are bounded regardless of operand magnitudes — skip the
+                // arg check. This is what lets a loop counter stay i64
+                // when fed by `a = bit_next(big_bitmap, a + 1)`.
+                if matches!(name.as_str(), "bit_test" | "bit_next" | "bit_len") {
+                    return true;
                 }
                 args.iter().all(|a| Self::is_bounded_expr(&a.node, small, siblings, var_types))
             }
@@ -2122,12 +2150,21 @@ impl FnGenerator {
             }
             "to_float" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
-                // In Rug mode every Int local/expression is rug::Integer.
-                // Use the Rug-aware codegen and call .to_f64() — `as f64`
-                // is not a valid cast for non-primitive types.
+                // In Rug mode an Int local is rug::Integer EXCEPT when it's
+                // in small_int_vars (then it's i64). Use .to_f64() only on
+                // actual Integers; for i64s and other expressions, use `as f64`.
                 if a_ty == NativeType::Int && self.mode == Mode::Rug {
                     if let Expr::Ident(name) = &args[0].node {
+                        if self.small_int_vars.contains(name) {
+                            return format!("({} as f64)", name);
+                        }
                         return format!("({}.to_f64())", name);
+                    }
+                    // Compound Int expr in Rug mode that involves only
+                    // small_int_vars stays in i64 land — lower as direct.
+                    if self.is_small_int_expr(&args[0].node) {
+                        let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                        return format!("(({}) as f64)", a);
                     }
                     let e = self.gen_expr_rug(&args[0].node);
                     return format!("(({}).to_f64())", e);
@@ -2189,28 +2226,66 @@ impl FnGenerator {
                 format!("(64 - ({} as i64).leading_zeros() as i64)", a)
             }
             // Bit-position primitives. In Direct mode (i64), test/set/clr
-            // are 1-2 cycle ops. In Rug mode they map to GMP's O(1)
-            // bit accessors (see gen_fn_call_rug).
+            // are 1-2 cycle ops. When called from a Rug-mode handler with
+            // a big-Integer first arg (not in small_int_vars), we use GMP's
+            // O(1) bit accessors and return a plain i64 — letting the
+            // surrounding small_int_var consumer skip the Integer wrap.
             "bit_test" if args.len() == 2 => {
+                let b_expr = &args[1].node;
+                let b = self.gen_expr_direct(b_expr, NativeType::Int);
+                // Big literal shift → fast path can't handle it; bail out
+                // via panic so the dispatch wrapper falls back to Rug.
+                if let Expr::Literal(Literal::Int(k)) = b_expr {
+                    if *k < 0 || *k >= 60 {
+                        return "{ panic!(\"bit_test shift out of i64 range\") }".to_string();
+                    }
+                }
+                if self.mode == Mode::Rug {
+                    if let Expr::Ident(name) = &args[0].node {
+                        if !self.small_int_vars.contains(name) {
+                            return format!("(if {}.get_bit(({}) as u32) {{ 1i64 }} else {{ 0i64 }})", name, b);
+                        }
+                    }
+                }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
                 format!("((({} >> {}) & 1i64))", a, b)
             }
             "bit_set" if args.len() == 2 => {
+                let b_expr = &args[1].node;
+                if let Expr::Literal(Literal::Int(k)) = b_expr {
+                    if *k < 0 || *k >= 60 {
+                        return "{ panic!(\"bit_set shift out of i64 range\") }".to_string();
+                    }
+                }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                let b = self.gen_expr_direct(b_expr, NativeType::Int);
                 format!("(({}) | (1i64 << {}))", a, b)
             }
             "bit_clr" if args.len() == 2 => {
+                let b_expr = &args[1].node;
+                if let Expr::Literal(Literal::Int(k)) = b_expr {
+                    if *k < 0 || *k >= 60 {
+                        return "{ panic!(\"bit_clr shift out of i64 range\") }".to_string();
+                    }
+                }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                let b = self.gen_expr_direct(b_expr, NativeType::Int);
                 format!("(({}) & !(1i64 << {}))", a, b)
             }
             "bit_next" if args.len() == 2 => {
-                // Find lowest set bit at position ≥ b. We mask off bits
-                // below b, then trailing_zeros gives the answer (or -1 if 0).
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                // Mixed mode: big-Integer source in Rug mode → use GMP scan.
+                if self.mode == Mode::Rug {
+                    if let Expr::Ident(name) = &args[0].node {
+                        if !self.small_int_vars.contains(name) {
+                            return format!(
+                                "({}.find_one(({}) as u32).map(|v| v as i64).unwrap_or(-1i64))",
+                                name, b
+                            );
+                        }
+                    }
+                }
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 format!(
                     "{{ let _x: i64 = ({}) & !((1i64 << ({})) - 1); if _x == 0 {{ -1i64 }} else {{ _x.trailing_zeros() as i64 }} }}",
                     a, b
@@ -2278,11 +2353,26 @@ impl FnGenerator {
                     let e = self.gen_expr_direct(&arg.node, NativeType::Int);
                     format!("Integer::from({})", e)
                 } else if expected == NativeType::String {
-                    // Always clone String args to avoid move-then-borrow conflicts
-                    if let Expr::Ident(name) = &arg.node {
-                        format!("{}.clone()", name)
+                    // String params are passed by &str — pass a borrow
+                    // when we can, otherwise build an owned String and
+                    // borrow it.
+                    if calling_fast_variant {
+                        if let Expr::Ident(name) = &arg.node {
+                            // Caller may itself have name as &str (param) or
+                            // String (local). Either way, &name works.
+                            return format!("&{}", name);
+                        }
+                        // Compound expression — emit as owned String, then
+                        // wrap so the callee gets a &str. Use temp via &.
+                        let s = self.gen_expr_direct(&arg.node, NativeType::String);
+                        format!("(&{}[..])", s)
                     } else {
-                        self.gen_expr_direct(&arg.node, NativeType::String)
+                        // Rug fallback expects owned String — keep clone path.
+                        if let Expr::Ident(name) = &arg.node {
+                            format!("{}.to_string()", name)
+                        } else {
+                            self.gen_expr_direct(&arg.node, NativeType::String)
+                        }
                     }
                 } else {
                     self.gen_expr_direct(&arg.node, expected)
@@ -2919,6 +3009,38 @@ impl FnGenerator {
 
     /// Boolean condition for if/while in Rug mode.
     fn gen_cond_rug(&self, expr: &Expr) -> String {
+        // Peephole: `bit_test(x, i) OP literal` — bit_test always returns
+        // 0 or 1, so we can compare directly to a bool result without
+        // wrapping in Integer.
+        if let Expr::CmpOp { left, op, right } = expr {
+            if let Expr::FnCall { name: fname, args } = &left.node {
+                if fname == "bit_test" && args.len() == 2 {
+                    if let Expr::Literal(Literal::Int(k)) = &right.node {
+                        let want_one = match (op, *k) {
+                            (CmpOp::Eq, 1) | (CmpOp::Ne, 0) => true,
+                            (CmpOp::Eq, 0) | (CmpOp::Ne, 1) => false,
+                            _ => return self.gen_cond_rug_general(expr),
+                        };
+                        let i = self.gen_int_to_i64_rug(&args[1].node);
+                        let getbit = if let Expr::Ident(name) = &args[0].node {
+                            if self.small_int_vars.contains(name) {
+                                format!("((({}) >> ({})) & 1i64) != 0", name, i)
+                            } else {
+                                format!("{}.get_bit(({}) as u32)", name, i)
+                            }
+                        } else {
+                            let a = self.gen_expr_rug(&args[0].node);
+                            format!("({}).get_bit(({}) as u32)", a, i)
+                        };
+                        return if want_one { getbit } else { format!("!({})", getbit) };
+                    }
+                }
+            }
+        }
+        self.gen_cond_rug_general(expr)
+    }
+
+    fn gen_cond_rug_general(&self, expr: &Expr) -> String {
         match expr {
             Expr::CmpOp { left, op, right } => {
                 let op_str = cmp_op_str(*op);

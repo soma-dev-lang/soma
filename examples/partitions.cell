@@ -12,7 +12,7 @@
 
 cell Partitions {
 
-    on slot_bits() [native] { return 256 }
+    on slot_bits() [native] { return 32 }
 
     on get(arr: Int, i: Int, w: Int) [native] {
         let mask = shl(1, w) - 1

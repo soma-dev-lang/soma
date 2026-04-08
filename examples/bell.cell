@@ -20,7 +20,7 @@ cell Bell {
     // Simpler: full O(n²) recurrence using a packed BigInt array.
     //
     // Pack with 1024 bits per slot (enough for n ≤ 200).
-    on slot_bits() [native] { return 1024 }
+    on slot_bits() [native] { return 128 }
 
     on get(arr: Int, i: Int, w: Int) [native] {
         let mask = shl(1, w) - 1
@@ -80,5 +80,6 @@ cell Bell {
         check(20, "51724158235372")
         check(25, "4638590332229999353")
         check(30, "846749014511809332450147")
+
     }
 }

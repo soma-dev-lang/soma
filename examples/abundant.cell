@@ -50,23 +50,22 @@ cell Abundant {
             i = i + 1
         }
 
-        // For each n, walk only the abundants ≤ n/2 via bit_next.
-        // This skips the ~75% of [12..n/2] that aren't abundant.
+        // For each n, walk the abundants ≤ n/2 via bit_next. This skips
+        // the ~75% of [12..n/2] that aren't abundant. Most n find a hit
+        // early so the inner loop is short on average.
         let total = 0
         let n = 1
         while n <= limit {
             let found = 0
             let a = bit_next(bs, 12)
+            let half = n / 2
             while a >= 0 {
-                if a > n / 2 { a = 0 - 1 }
-                if a >= 0 {
-                    if bit_test(bs, n - a) == 1 {
-                        found = 1
-                        a = 0 - 1
-                    } else {
-                        a = bit_next(bs, a + 1)
-                    }
+                if a > half { break }
+                if bit_test(bs, n - a) == 1 {
+                    found = 1
+                    break
                 }
+                a = bit_next(bs, a + 1)
             }
             if found == 0 { total = total + n }
             n = n + 1
