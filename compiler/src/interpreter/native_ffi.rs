@@ -159,10 +159,29 @@ pub fn compile_and_load_natives_with_config(
             // OC=true so the fast→Rug fallback can still trigger.
             let all_direct = rust_source.contains("// SOMA_MODE: ALL_DIRECT");
             let overflow_checks = if all_direct { "false" } else { "true" };
+            // For ALL_DIRECT cells we also enable thin LTO and codegen-units=1
+            // so LLVM can fully inline across function boundaries and apply
+            // cross-function loop optimizations. The compile time goes up
+            // ~30% but the runtime speedup on tight loops is meaningful.
+            let extra_profile = if all_direct {
+                "lto = \"thin\"\ncodegen-units = 1\n"
+            } else {
+                ""
+            };
             let cargo_toml = format!(
-                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = {}\npanic = \"unwind\"\n",
-                deps, overflow_checks
+                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = {}\npanic = \"unwind\"\n{}",
+                deps, overflow_checks, extra_profile
             );
+            // Also write a .cargo/config.toml so the native build uses
+            // -C target-cpu=native, which lets LLVM emit SIMD/AVX2/NEON
+            // instructions for the host machine. Critical for
+            // float-heavy mandelbrot/sobol-style cells where LLVM can
+            // auto-vectorize the inner loop.
+            let cargo_config_dir = proj_dir.join(".cargo");
+            std::fs::create_dir_all(&cargo_config_dir).ok();
+            let cargo_config = "[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n";
+            std::fs::write(cargo_config_dir.join("config.toml"), cargo_config)
+                .map_err(|e| format!("cannot write .cargo/config.toml: {}", e))?;
             std::fs::write(proj_dir.join("Cargo.toml"), &cargo_toml)
                 .map_err(|e| format!("cannot write Cargo.toml: {}", e))?;
 
