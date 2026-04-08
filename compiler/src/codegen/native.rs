@@ -3240,6 +3240,33 @@ impl FnGenerator {
             // Bit operations on Integer — need owned operands so the result
             // can be a BigInt regardless of operand sizes.
             "band" | "bor" | "bxor" if args.len() == 2 => {
+                // Peephole: band(x, bnot(y)) — bit-clear pattern. The
+                // straightforward `Integer::from(x & !y)` is wrong for
+                // unbounded Integer (`!y = -y - 1`), so rewrite as
+                // `x - (x & y)` which clears those bits without bnot.
+                if name == "band" {
+                    if let Expr::FnCall { name: bn, args: bn_args } = &args[1].node {
+                        if bn == "bnot" && bn_args.len() == 1 {
+                            let x = self.gen_expr_rug(&args[0].node);
+                            let y = self.gen_expr_rug(&bn_args[0].node);
+                            return format!(
+                                "{{ let _x = {}; let _y = {}; Integer::from(&_x - &Integer::from(&_x & &_y)) }}",
+                                x, y
+                            );
+                        }
+                    }
+                    // Symmetric: band(bnot(y), x)
+                    if let Expr::FnCall { name: bn, args: bn_args } = &args[0].node {
+                        if bn == "bnot" && bn_args.len() == 1 {
+                            let x = self.gen_expr_rug(&args[1].node);
+                            let y = self.gen_expr_rug(&bn_args[0].node);
+                            return format!(
+                                "{{ let _x = {}; let _y = {}; Integer::from(&_x - &Integer::from(&_x & &_y)) }}",
+                                x, y
+                            );
+                        }
+                    }
+                }
                 let a = self.gen_expr_rug(&args[0].node);
                 let b = self.gen_expr_rug(&args[1].node);
                 let op = match name { "band" => "&", "bor" => "|", _ => "^" };
