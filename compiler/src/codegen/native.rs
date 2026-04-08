@@ -1423,32 +1423,21 @@ impl FnGenerator {
     }
 
     /// Collect locals whose initialization is a "safe init" — small
-    /// literal, ident copy of an already-safe var, or a bounded-builtin
-    /// call (whose result is known to fit i64). Excludes int_params
+    /// literal, ident copy of an already-safe var, bounded-builtin call,
+    /// or a binary op of already-safe operands. Excludes int_params
     /// (they arrive from FFI and may already be BigInt).
     fn collect_safe_init(
         body: &[Spanned<Statement>],
         small: &mut HashSet<String>,
         int_params: &HashSet<String>,
     ) {
-        const LIMIT: i64 = 1 << 60;
         for stmt in body {
             match &stmt.node {
                 Statement::Let { name, value } => {
                     if int_params.contains(name) { continue; }
-                    let safe = match &value.node {
-                        Expr::Literal(Literal::Int(n)) => *n >= -LIMIT && *n <= LIMIT,
-                        Expr::Ident(src) => small.contains(src),
-                        Expr::FnCall { name: fname, .. } => {
-                            // Builtins whose Int result is bounded by their
-                            // inputs (band, bor, bit_test, bit_next, etc).
-                            // These return i64-sized values regardless of
-                            // operand sizes.
-                            is_bounded_builtin(fname)
-                        }
-                        _ => false,
-                    };
-                    if safe { small.insert(name.clone()); }
+                    if Self::is_safe_init_expr(&value.node, small) {
+                        small.insert(name.clone());
+                    }
                 }
                 Statement::If { then_body, else_body, .. } => {
                     Self::collect_safe_init(then_body, small, int_params);
@@ -1459,6 +1448,21 @@ impl FnGenerator {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// True if `expr` is a safe initialization for a small_int_var.
+    fn is_safe_init_expr(expr: &Expr, small: &HashSet<String>) -> bool {
+        const LIMIT: i64 = 1 << 60;
+        match expr {
+            Expr::Literal(Literal::Int(n)) => *n >= -LIMIT && *n <= LIMIT,
+            Expr::Ident(src) => small.contains(src),
+            Expr::FnCall { name, .. } => is_bounded_builtin(name),
+            Expr::BinaryOp { left, right, .. } => {
+                Self::is_safe_init_expr(&left.node, small)
+                    && Self::is_safe_init_expr(&right.node, small)
+            }
+            _ => false,
         }
     }
 
