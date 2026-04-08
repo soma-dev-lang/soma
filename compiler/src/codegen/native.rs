@@ -2993,6 +2993,14 @@ impl FnGenerator {
         // Form 1: name = name OP rhs
         if let Expr::Ident(lname) = &left.node {
             if lname == name && !Self::expr_references(&right.node, name) {
+                // Fast path: rhs is a small_int_var or compound expression
+                // of small_int_vars + literals → use rug's primitive op
+                // (mpz_mul_si etc) without allocating an intermediate
+                // Integer.
+                if self.is_small_int_expr(&right.node) {
+                    let r = self.gen_expr_direct(&right.node, NativeType::Int);
+                    return Some(format!("{}{} {} ({});\n", ind, name, op_assign, r));
+                }
                 let r = self.gen_expr_rug_ref(&right.node);
                 return Some(format!("{}{} {} {};\n", ind, name, op_assign, r));
             }
@@ -3002,6 +3010,10 @@ impl FnGenerator {
         if matches!(op, BinOp::Add | BinOp::Mul) {
             if let Expr::Ident(rname) = &right.node {
                 if rname == name && !Self::expr_references(&left.node, name) {
+                    if self.is_small_int_expr(&left.node) {
+                        let l = self.gen_expr_direct(&left.node, NativeType::Int);
+                        return Some(format!("{}{} {} ({});\n", ind, name, op_assign, l));
+                    }
                     let l = self.gen_expr_rug_ref(&left.node);
                     return Some(format!("{}{} {} {};\n", ind, name, op_assign, l));
                 }
