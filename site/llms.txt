@@ -1,8 +1,12 @@
 # Soma Language — Complete Reference for AI Agents
 
-> Soma is the first language where AI agent behavior is formally verified.
-> cell agent + think() + state machine = proven termination.
-> The compiler fixes errors, catches anti-patterns, and auto-serializes data.
+> Soma is a fractal cell language for verified distributed systems and AI agents.
+> An agent's lifecycle is a state machine the compiler proves terminates;
+> set_budget(N) caps the LLM loop inside it. Verification covers the protocol;
+> set_budget covers the LLM. The compiler fixes errors, catches anti-patterns,
+> and auto-serializes storage values. Three execution backends: tree-walking
+> interpreter (default, the reference semantics), bytecode VM (--jit), and
+> native Rust codegen ([native] handler annotation).
 
 ## Agent Workflow
 
@@ -18,14 +22,61 @@
 ## Quick Syntax Rules
 
 - No semicolons. Newlines separate statements.
-- No `function`/`def`. Use `on handler_name(params) { }`.
-- No `null`. Use `()` for null/unit.
+- No `function`/`def`. Use `on handler_name(params) { }`. Handlers don't take return-type annotations (`-> Int` is invalid on `on`); they DO take them on `signal` declarations inside `face { }`.
+- No `null`. Use `()` for null/unit. `to_int("abc")` returns `()`, NOT `0`.
 - No `[1,2,3]`. Use `list(1, 2, 3)`.
-- No `{key: val}`. Use `map("key", val, "key2", val2)`.
-- Strings: `"hello {name}"` (interpolation with `{}`).
-- `if`/`match` are expressions: `let x = if cond { a } else { b }`.
+- No `{key: val}`. Use `map("key", val, "key2", val2)` — must have an even arg count.
+- Strings: `"hello {name}"` (interpolation with `{}`); `"""raw"""` for triple-quoted raw strings.
+- `if`/`match` are expressions: `let x = if cond { a } else { b }`. The `else` is required when used as an expression.
+- `return` inside a `for` exits the entire handler, not just the loop. Use a flag + `break`.
+- `match` is an expression — don't write `return match ...`, just write the match.
 - Last expression in handler is the return value (implicit return).
-- Storage auto-serializes: no `to_json`/`from_json` needed.
+- Storage auto-serializes: no `to_json`/`from_json` needed when storing maps/lists. Use them only when the caller explicitly wants a string.
+- Slot **properties** (`.keys`, `.values`, `.len`, `.entries`, `.all`) take NO parens. Slot **methods** (`.get(k)`, `.set(k, v)`, `.delete(k)`, `.has(k)`) take parens.
+- `7 / 2 == 3.5` (Float promotion). Use `floor(7 / 2)` for truncating division.
+- Private handlers start with `_`: `on _helper()` is not exposed as an HTTP route.
+- Use `len`, not `length`. Use `distinct`, not `unique`. Use `push`, not `append_to`. Use `nth`, not `at`.
+
+## Cell Kinds
+
+The `cell` keyword takes a kind modifier — same five-section structure (face, memory, state, scale, handlers), the kind tells the compiler what role the cell plays.
+
+| Kind                       | Purpose                                                     |
+|----------------------------|-------------------------------------------------------------|
+| `cell Foo { }`             | Regular cell — functions, services, web apps                |
+| `cell agent Foo { }`       | Agent cell — unlocks `think`, `set_budget`, `tool` decls    |
+| `cell property Foo { }`    | Define a memory property (see `stdlib/durability.cell`)     |
+| `cell backend Foo { }`     | Define a storage backend implementation                     |
+| `cell type Foo<T> { }`     | Define a custom type                                        |
+| `cell checker Foo { }`     | Custom validation rule run by the checker                   |
+| `cell builtin Foo { }`     | FFI bridge to a Rust builtin (stdlib only)                  |
+| `cell test Foo { }`        | Test cell — `rules { assert ... }`, run with `soma test`    |
+
+## Composition: interior + runtime
+
+```soma
+cell System {
+    interior {
+        cell Worker { /* ... */ }
+        cell Cache  { /* ... */ }
+    }
+    runtime {
+        start Worker                       // bring up the child
+        connect Worker.done -> Cache       // wire signals
+        emit initialize()                  // fire startup signal
+    }
+}
+```
+
+`soma describe` dumps the full interior graph as JSON.
+
+## Execution Backends
+
+| Backend                  | How to invoke                                          | When to use                                                  |
+|--------------------------|--------------------------------------------------------|--------------------------------------------------------------|
+| Tree-walking interpreter | `soma run file.cell` (default)                         | Development. Reference semantics — other backends agree with it. |
+| Bytecode VM              | `soma run file.cell --jit`                             | Better startup-amortized cost for hot loops without going native. |
+| Native (Rust `cdylib`)   | `[native]` handler annotation, or `soma build`         | Tight numeric loops. Whole-loop BigInt dispatches to GMP via `rug`. Single BigInt ops cross FFI and are slower. |
 
 ## Verified AI Agent — the specialty
 
@@ -97,37 +148,47 @@ cell agent Researcher {
 | `clear_context()`              | Reset multi-turn conversation                      |
 | `clear_trace()`                | Reset trace log                                    |
 
-Config via env vars:
-- `SOMA_LLM_KEY` or `OPENAI_API_KEY` — API key (required)
-- `SOMA_LLM_URL` — endpoint (default: OpenAI, use `http://localhost:11434/v1/chat/completions` for ollama)
-- `SOMA_LLM_MODEL` — model name (default: gpt-4o-mini)
-- `SOMA_LLM_RETRIES` — retry count (default: 3, exponential backoff)
+Config via env vars (always override `[agent]` in soma.toml):
+- `SOMA_LLM_KEY` or `OPENAI_API_KEY` — API key (required for hosted providers)
+- `SOMA_LLM_URL` — endpoint (default: OpenAI; for ollama use `http://localhost:11434/v1/chat/completions`)
+- `SOMA_LLM_MODEL` — model name
+- `SOMA_LLM_RETRIES` — retry count (exponential backoff)
+- `SOMA_LLM_MOCK=echo` — offline testing; `think()` returns the prompt verbatim. Use this in tests and CI.
+
+For Anthropic (Claude) configuration in `soma.toml`:
+
+```toml
+[agent]
+provider = "anthropic"
+model    = "claude-opus-4-6"     # use the latest Claude 4.6 model IDs
+key      = "${ANTHROPIC_API_KEY}" # ${VAR} expands env vars — never inline raw keys
+```
 
 ## Cell Structure
 
 ```soma
 cell AppName {
     face {
-        signal create(name: String) -> Map
-        promise "all data is tracked"
+        signal create(payload: Map) -> Map
+        promise "all items are tracked"
     }
     memory {
-        data: Map<String, String> [persistent, consistent]
+        items: Map<String, String> [persistent, consistent]
         invariant _slot_len <= 10000
     }
     state workflow {
         initial: draft
-        draft -> active { guard { _from == "draft" } }
+        draft -> active
         active -> completed
         * -> cancelled
     }
     every 30s { cleanup() }
     after 5s { initialize() }
 
-    on create(data: Map) {
+    on create(payload: Map) {
         let id = to_string(next_id())
-        data.set(id, data)
-        ensure data.len > 0
+        items.set(id, payload)            // auto-serialized
+        ensure items.len > 0
         map("id", id, "status", "ok")
     }
 
@@ -163,15 +224,20 @@ match value {
 
 ## Types
 
-| Type    | Example                              |
-|---------|--------------------------------------|
-| Int     | `42`, `-1`                           |
-| Float   | `3.14`, `1.5e3`                      |
-| String  | `"hello {name}"`                     |
-| Bool    | `true`, `false`                      |
-| List    | `list(1, 2, 3)`                      |
-| Map     | `map("key", val, "key2", val2)`      |
-| Unit    | `()` (null equivalent)               |
+| Type      | Example                              | Notes                                                   |
+|-----------|--------------------------------------|---------------------------------------------------------|
+| Int       | `42`, `-1`                           | 64-bit                                                  |
+| BigInt    | `signal compute(n: BigInt)`          | Arbitrary precision; declared in face / handler params  |
+| Float     | `3.14`, `1.5e3`                      | 64-bit. `7 / 2 == 3.5` (use `floor` for truncation)     |
+| String    | `"hello {name}"`, `"""raw"""`        | `{}` interpolation; triple-quote is raw                 |
+| Bool      | `true`, `false`                      |                                                         |
+| List      | `list(1, 2, 3)`                      | Ordered, length via `.len`                              |
+| Map       | `map("key", val, "key2", val2)`      | MUST have even arg count                                |
+| Unit      | `()`                                 | Null equivalent                                         |
+| Duration  | `5s`, `1min`, `500ms`, `1h`, `2years`| Converts to ms internally                               |
+| Record    | `User { name: "Alice", age: 30 }`    | Typed map with `_type` field                            |
+
+`to_int("abc")` returns `()`, NOT `0`. Always null-check the result of `to_int`/`to_float` on user input.
 
 ## Storage (auto-serializes)
 
@@ -180,10 +246,16 @@ data.set("key", map("name", "Alice", "score", 95))  // auto-serialized
 let user = data.get("key")                            // auto-deserialized
 print(user.name)                                      // "Alice"
 data.delete("key")
-data.keys              // list of keys
+data.keys              // list of keys (no parens — these are properties)
 data.values            // list of values
-data.len()             // count
+data.len               // count
+data.has("key")        // bool — methods do take parens
 ```
+
+Storage rules:
+- `slot.get(k)` returns `()` for missing keys, NOT an error. Always check `if raw == ()` before calling `from_json` on raw strings.
+- Storage auto-serializes Maps and Lists. `slot.set(k, some_map)` stores it directly; `slot.get(k)` returns the structured value. Don't wrap in `to_json` first — the lint flags it.
+- Properties (`.keys`, `.values`, `.len`, `.entries`, `.all`) take NO parentheses. Methods (`.get(k)`, `.set(k, v)`, `.delete(k)`, `.has(k)`) take parentheses.
 
 ## Pipes
 
@@ -209,17 +281,29 @@ ensure balance >= 0              // postcondition
 
 ## CLI Commands
 
-| Command                         | Description                                        |
-|---------------------------------|----------------------------------------------------|
-| `soma run file.cell [args]`     | Execute signal handler                             |
-| `soma serve file.cell [-p port]`| HTTP server                                        |
-| `soma check file.cell [--json]` | Verify contracts + properties                      |
-| `soma fix file.cell`            | Auto-repair errors                                 |
-| `soma lint file.cell [--json]`  | Catch anti-patterns                                |
-| `soma verify file.cell [--json]`| Prove state machine properties (CTL)               |
-| `soma describe file.cell`       | Rich JSON: handlers, memory, state, face, tools    |
-| `soma test file.cell`           | Run test cells                                     |
-| `soma init [name]`              | Create project                                     |
+| Command                                 | Description                                                          |
+|-----------------------------------------|----------------------------------------------------------------------|
+| `soma run file.cell [args]`             | Execute the entry handler in the tree-walking interpreter            |
+| `soma run file.cell --signal name [args]`| Execute a specific named handler                                    |
+| `soma run file.cell --jit [args]`       | Execute via the bytecode VM                                          |
+| `soma serve file.cell [-p port]`        | HTTP server (HTTP `:port`, WS `:port+1`, TCP bus `:port+2`)          |
+| `soma serve file.cell --watch`          | Hot reload on `.cell` change                                         |
+| `soma serve file.cell --join host:port` | Join an existing cluster via that seed's bus port                    |
+| `soma check file.cell [--json]`         | Contract + property + signal checking                                |
+| `soma fix file.cell`                    | Auto-repair (missing handlers, contradictory properties, typos)      |
+| `soma lint file.cell [--json]`          | Anti-pattern checks                                                  |
+| `soma verify file.cell [--json]`        | Prove state machine + distribution properties (CTL)                  |
+| `soma describe file.cell`               | Rich JSON: handlers, memory, state, face, scheduled tasks, scale     |
+| `soma test file.cell`                   | Run test cells (`cell test Foo { rules { assert ... } }`)            |
+| `soma build file.cell [-o out.rs]`      | Generate Rust skeleton (native codegen frontend)                     |
+| `soma init [name]`                      | Create project (`soma.toml`, `main.cell`, `.soma_env/`)              |
+| `soma add pkg [--git URL] [--path DIR]` | Add dependency to `[dependencies]`                                   |
+| `soma install`                          | Install dependencies                                                 |
+| `soma props`                            | List registered properties + backends                                |
+| `soma repl`                             | Interactive evaluator                                                |
+| `soma ast file.cell`                    | Dump AST as JSON                                                     |
+| `soma tokens file.cell`                 | Dump lexer token stream                                              |
+| `soma env`                              | Show stdlib path, cache dir, resolved config                         |
 
 ## Links
 

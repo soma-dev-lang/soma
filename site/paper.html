@@ -114,7 +114,7 @@ We introduce three ideas: (1) distribution semantics as compile-time-checked pro
 
 <table>
 <tr><th>Declaration</th><th>Semantics</th></tr>
-<tr><td><code>[persistent, consistent]</code></td><td>Durable, linearizable. Backed by SQLite locally, replicated via consensus in cluster mode.</td></tr>
+<tr><td><code>[persistent, consistent]</code></td><td>Declared as durable and linearizable. Backed by SQLite locally; in cluster mode the prototype replicates via signal-bus broadcast (see &sect;11) &mdash; a Raft/Paxos backend is on the roadmap.</td></tr>
 <tr><td><code>[ephemeral, local]</code></td><td>Node-local, in-memory. Never touches the network. Microsecond access.</td></tr>
 <tr><td><code>[persistent]</code> + <code>eventual</code></td><td>Durable, eventually consistent. Write locally, propagate asynchronously.</td></tr>
 </table>

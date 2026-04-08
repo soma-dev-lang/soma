@@ -3,21 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Soma — Verified AI agents in a fractal language</title>
-<meta name="description" content="Soma is the first language where AI agent behavior is formally verified. State machines prove agents always terminate. cell agent + think() + tool declarations. Same code runs on one machine or a cluster. The compiler proves it correct.">
+<title>Soma — Verified agent lifecycles in a fractal cell language</title>
+<meta name="description" content="Soma is a fractal cell language for verified distributed systems and AI agents. Agent lifecycles are state machines the compiler proves terminate; set_budget caps the LLM loop inside. Memory carries distribution properties the compiler checks for CAP contradictions. Same code runs on one machine or a cluster.">
 <meta name="keywords" content="soma, programming language, distributed systems, formal verification, state machines, fractal, declarative, agent-native, cell model, CAP theorem, consistent hashing, Erlang alternative, Kubernetes alternative, TLA+, model checking, pipes, actor model">
 
 <!-- Open Graph -->
-<meta property="og:title" content="Soma — Verified AI agents in a fractal language">
-<meta property="og:description" content="The first language where AI agent behavior is formally verified. cell agent + think() + state machine = proven termination. No other agent framework can do this.">
+<meta property="og:title" content="Soma — Verified agent lifecycles in a fractal cell language">
+<meta property="og:description" content="A fractal cell language where the agent's lifecycle is a state machine the compiler proves terminates, and set_budget bounds the LLM loop inside it. Verification covers the protocol; set_budget covers the LLM.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://soma-lang.dev">
 <meta property="og:site_name" content="Soma Language">
 
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Soma — The only language with verified AI agents">
-<meta name="twitter:description" content="cell agent + think() + state machine = proven termination. No infinite loops. No stuck states. The compiler proves your agent always finishes.">
+<meta name="twitter:title" content="Soma — Verified agent lifecycles, fractal cells">
+<meta name="twitter:description" content="cell agent + state machine + set_budget = a lifecycle the compiler proves terminates and an LLM loop with a hard token cap. Verification covers the protocol; set_budget covers the LLM.">
 
 <!-- Canonical -->
 <link rel="canonical" href="https://soma-lang.dev">
@@ -33,10 +33,10 @@
   "name": "Soma",
   "applicationCategory": "Programming Language",
   "operatingSystem": "macOS, Linux",
-  "description": "The first programming language where AI agent behavior is formally verified. cell agent + think() + state machine = proven termination. Also: fractal distributed systems, CTL model checking, compile-time CAP analysis, auto-serialize storage, soma fix auto-repair.",
+  "description": "A fractal cell language for verified distributed systems and AI agents. Agent lifecycles are state machines a CTL model checker proves terminate; set_budget caps the LLM loop inside. The cell model unifies functions, services, and clusters; memory carries distribution properties (persistent, consistent, ephemeral, ttl) the compiler checks for CAP contradictions. Includes soma fix auto-repair, soma lint anti-patterns, [native] Rust codegen for hot loops, and a tree-walking interpreter, bytecode VM, and native backend.",
   "url": "https://soma-lang.dev",
   "downloadUrl": "https://github.com/soma-dev-lang/soma",
-  "softwareVersion": "2.1.0",
+  "softwareVersion": "2.2.0",
   "license": "https://opensource.org/licenses/MIT",
   "programmingLanguage": "Rust",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
@@ -45,7 +45,7 @@
     "Formal verification — CTL model checker proves state machine properties",
     "Distributed by declaration — scale { replicas: 50, consistency: strong }",
     "Compile-time CAP analysis — consistency vs availability checked before deploy",
-    "Native compilation — [native] compiles handlers to Rust for 200x speedup",
+    "Native compilation — [native] compiles numeric handlers to Rust for ~100–300x speedup on tight loops",
     "Zero-config clustering — soma serve --join host:port",
     "Pipe composition — data |> filter() |> map() |> sort_by() |> top()",
     "Machine-readable output — soma check --json, soma verify --json, soma describe",
@@ -134,10 +134,10 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <div class="hero">
 <h1><span class="hero-title">soma</span><span class="sr-only"> — a fractal language for verified distributed systems</span></h1>
 <p class="manifesto">
-The only language where <strong>AI agent behavior is formally verified</strong>.
+A fractal cell language where the <strong>agent's lifecycle is a state machine the compiler proves terminates</strong>.
 State machines are proofs. Infrastructure is a constraint. Pipelines are pipes.
 </p>
-<p class="tagline">cell agent + think() + state machine = proven termination &mdash; no other framework can do this</p>
+<p class="tagline">cell agent + state machine + set_budget &mdash; protocol verified at compile time, LLM loop bounded at runtime</p>
 </div>
 
 <div class="install-box">
@@ -184,8 +184,8 @@ State machines are proofs. Infrastructure is a constraint. Pipelines are pipes.
 <!-- ═══════════════════════════════════ VERIFIED AGENTS ═══════════════════════════════════ -->
 <section id="verified-agents" style="border-top:none;padding-top:1rem">
 <div style="background:linear-gradient(135deg,rgba(129,140,248,.08),rgba(167,139,250,.08));border:1px solid rgba(129,140,248,.2);border-radius:var(--r);padding:2rem;margin:1rem 0">
-<h2 style="margin-bottom:.5rem">The first language where AI agent behavior is <span style="color:var(--accent)">formally verified</span></h2>
-<p style="color:var(--muted);font-size:1.05rem">Every agent framework has the same problem: agents get stuck in loops, call tools in wrong order, never terminate. Soma is the only language that <strong>proves</strong> your agent always finishes.</p>
+<h2 style="margin-bottom:.5rem">An agent whose <span style="color:var(--accent)">lifecycle is formally verified</span></h2>
+<p style="color:var(--muted);font-size:1.05rem">Every agent framework has the same problem: agents get stuck in loops, call tools in wrong order, never terminate. Soma is the only language where the agent's lifecycle is a state machine the compiler can <strong>prove terminates</strong> &mdash; combined with a hard <code>set_budget</code> token cap, every <code>think()</code> call is bounded by construction. Verification covers the protocol; <code>set_budget</code> covers the LLM loop.</p>
 </div>
 
 <div class="vs">
@@ -207,6 +207,7 @@ State machines are proofs. Infrastructure is a constraint. Pipelines are pipes.
     }
 
     <span class="kw">on</span> research(topic: String) {
+        <span class="fn">set_budget</span>(<span class="num">5000</span>)                          <span class="cmt">// hard token cap</span>
         <span class="fn">transition</span>(<span class="str">"task"</span>, <span class="str">"researching"</span>)
         <span class="kw">let</span> data = <span class="fn">think</span>(<span class="str">"Research: {topic}"</span>)
 
@@ -214,7 +215,7 @@ State machines are proofs. Infrastructure is a constraint. Pipelines are pipes.
         <span class="kw">let</span> summary = <span class="fn">think</span>(<span class="str">"Synthesize: {data}"</span>)
 
         <span class="fn">transition</span>(<span class="str">"task"</span>, <span class="str">"done"</span>)
-        <span class="fn">map</span>(<span class="str">"summary"</span>, summary)
+        <span class="fn">map</span>(<span class="str">"summary"</span>, summary, <span class="str">"tokens"</span>, <span class="fn">tokens_used</span>())
     }
 }</code></pre>
 </div>
@@ -222,27 +223,32 @@ State machines are proofs. Infrastructure is a constraint. Pipelines are pipes.
 <h4>The proof &mdash; 0 lines of test code</h4>
 <pre><code>$ soma verify agent.cell
 
-State machine 'workflow': 5 states
+State machine 'workflow': 5 states, initial 'idle'
+  States: [analyzing, done, failed, idle, researching]
 
-  <span class="green">&#x2713;</span> all states reachable
+  <span class="green">&#x2713;</span> 5 states, 7 transitions
+  <span class="green">&#x2713;</span> all states reachable from 'idle'
+  <span class="green">&#x2713;</span> terminal states: [failed]
   <span class="green">&#x2713;</span> no deadlocks
-  <span class="green">&#x2713;</span> every path reaches done or failed
+  <span class="green">&#x2713;</span> liveness: every state can eventually reach a terminal state
+  <span class="green">&#x2713;</span> wildcard transitions: * -> [failed]
 
-Temporal properties:
+  Temporal properties for 'workflow':
   <span class="green">&#x2713;</span> deadlock_free
-  <span class="green">&#x2713;</span> eventually(done | failed)
-  <span class="green">&#x2713;</span> after(researching, analyzing | failed)
-  <span class="green">&#x2713;</span> after(analyzing, done | failed)
+  <span class="green">&#x2713;</span> eventually(state in [done, failed])
+  <span class="green">&#x2713;</span> after('researching', state in [analyzing, failed])
+  <span class="green">&#x2713;</span> after('analyzing', state in [done, failed])
 
-<span style="color:var(--green);font-weight:700">4 passed, 0 failed</span>
+<span style="color:var(--green);font-weight:700">Temporal: 4 passed, 0 failed</span>
 
-<span class="cmt">// The compiler PROVED this agent
-// always terminates. No test can
-// guarantee that. A proof can.</span></code></pre>
+<span class="cmt">// The compiler PROVED this lifecycle
+// always terminates. set_budget(N) caps
+// the LLM loop inside it. Together: a
+// bounded, terminating agent.</span></code></pre>
 </div>
 </div>
 
-<p><code>cell agent</code> &mdash; an AI agent is a cell. <code>think()</code> &mdash; calls any OpenAI-compatible LLM. <code>tool</code> &mdash; declares what the LLM can call. <code>state</code> &mdash; the behavior protocol, verified at compile time. <strong>Every other agent framework is a library. Soma is a language with a proof.</strong></p>
+<p><code>cell agent</code> &mdash; an AI agent is a cell. <code>think()</code> &mdash; calls any OpenAI-compatible LLM and runs the tool-calling loop with retries. <code>tool</code> &mdash; declares what the LLM is allowed to call (handler-backed). <code>state</code> &mdash; the lifecycle protocol, model-checked at compile time. The proof is over the lifecycle, not over the LLM's tokens; <code>set_budget</code> bounds the latter.</p>
 
 <h3>Multi-agent pipelines with verified handoffs</h3>
 <pre><code><span class="kw">cell</span> <span class="kw">agent</span> Pipeline {
@@ -267,14 +273,18 @@ Temporal properties:
     }
 }
 
-<span class="cmt">// soma verify PROVES: idle -> researching -> writing -> reviewing -> done</span>
-<span class="cmt">// No stage can be skipped. No infinite loops. The proof is the pipeline.</span></code></pre>
+<span class="cmt">// soma verify PROVES, on the state machine:</span>
+<span class="cmt">//   - every reachable state has a path to done or failed (eventually)</span>
+<span class="cmt">//   - no deadlocks</span>
+<span class="cmt">// What it does NOT prove: that the handler body calls transition() in</span>
+<span class="cmt">// the right order. That's still on you (and on `soma check`, which</span>
+<span class="cmt">// catches missing handlers, contradictory properties, signal mismatches).</span></code></pre>
 
 <table>
 <tr><th></th><th>LangChain</th><th>CrewAI</th><th>AutoGen</th><th>Soma</th></tr>
-<tr><td>Agents get stuck in loops</td><td>Yes</td><td>Yes</td><td>Yes</td><td><strong>Impossible (proven)</strong></td></tr>
-<tr><td>Wrong tool order</td><td>Possible</td><td>Possible</td><td>Possible</td><td><strong>State machine prevents it</strong></td></tr>
-<tr><td>Guaranteed termination</td><td>No</td><td>No</td><td>No</td><td><strong>Yes (CTL proof)</strong></td></tr>
+<tr><td>Lifecycle proven to terminate</td><td>No</td><td>No</td><td>No</td><td><strong>Yes (CTL on the state machine)</strong></td></tr>
+<tr><td>Illegal tool order rejected at compile time</td><td>No</td><td>No</td><td>No</td><td><strong>State machine + face contract</strong></td></tr>
+<tr><td>Token budget enforced as a hard cap</td><td>No</td><td>No</td><td>No</td><td><strong>Yes (<code>set_budget</code>)</strong></td></tr>
 <tr><td>Verified handoffs</td><td>No</td><td>No</td><td>No</td><td><strong>Signal types + state machines</strong></td></tr>
 <tr><td>Agent memory persistence</td><td>Plugin</td><td>Plugin</td><td>Plugin</td><td><strong>Built-in: [persistent]</strong></td></tr>
 <tr><td>Distribution</td><td>No</td><td>No</td><td>No</td><td><strong>soma serve --join</strong></td></tr>
@@ -402,24 +412,28 @@ eventually = ["validated", "cancelled"]</code></pre>
 <pre><code>$ soma verify app.cell
 
 State machine 'order': 7 states, initial 'pending'
+  States: [cancelled, filled, pending, rejected, sent, settled, validated]
 
   <span class="green">&#x2713;</span> 7 states, 11 transitions
   <span class="green">&#x2713;</span> all states reachable from 'pending'
+  <span class="green">&#x2713;</span> terminal states: [cancelled]
   <span class="green">&#x2713;</span> no deadlocks
   <span class="green">&#x2713;</span> liveness: every state can eventually reach a terminal state
+  <span class="yellow">&#x26a0;</span> validated -> sent has no guard (consider adding a guard condition)
+  <span class="green">&#x2713;</span> wildcard transitions: * -> [cancelled]
 
-  Temporal properties:
-  <span class="green">&#x2713;</span> deadlock_free
-  <span class="green">&#x2713;</span> eventually(settled or cancelled)
-  <span class="green">&#x2713;</span> never(invalid)
-  <span class="green">&#x2713;</span> after('pending', validated or cancelled)
-  <span class="op">&#x2717;</span> after('sent', filled or rejected)
+  Temporal properties for 'order':
+  <span class="green">&#x2713;</span> deadlock_free &mdash; no deadlocks in any reachable state
+  <span class="green">&#x2713;</span> eventually(state in [settled, cancelled])
+  <span class="green">&#x2713;</span> never(state == 'invalid')
+  <span class="green">&#x2713;</span> after('pending', state in [validated, cancelled])
+  <span class="op">&#x2717;</span> after('sent', state in [filled, rejected]) &mdash; after reaching 'sent', predicate can be avoided
     <span class="dim">counter-example: pending &rarr; validated &rarr; sent &rarr; cancelled</span>
     <span class="dim">&rarr; The wildcard * &rarr; cancelled bypasses the expected filled/rejected</span></code></pre>
 
 <p>The model checker found a real bug: after <code>sent</code>, the spec requires the order to reach <code>filled</code> or <code>rejected</code>. But the wildcard <code>* &rarr; cancelled</code> allows skipping directly to <code>cancelled</code> &mdash; violating the spec. The counter-example shows the exact execution path.</p>
 
-<p>This is <strong>bounded model checking</strong> inspired by CTL temporal logic. It exhaustively explores finite state machine graphs &mdash; not data values or guard expressions. For small state machines (5&ndash;15 states), the verification is instant and complete. The spec lives in <code>soma.toml</code>, the implementation lives in <code>.cell</code>, and the proof is one command: <code>soma verify</code>.</p>
+<p>This is an <strong>explicit-state CTL model checker</strong> over the state-machine graph. It exhaustively enumerates reachable states &mdash; not data values, not guard expressions. For state machines with a few dozen states, verification runs in milliseconds and is complete over that abstraction. The spec lives in <code>soma.toml</code>, the implementation lives in <code>.cell</code>, and the proof is one command: <code>soma verify</code>. What it cannot prove: anything that depends on guard predicates over runtime data, or anything inside a handler body that doesn't show up as a transition.</p>
 
 <table>
 <tr><th>Property</th><th>Meaning</th><th>CTL equivalent</th></tr>
@@ -459,7 +473,7 @@ State machine 'order': 7 states, initial 'pending'
 <div class="thesis">
 <div class="number">Declarative Infrastructure</div>
 <h3>What, not how</h3>
-<p>Codd's relational model (1970) proved that declaring <em>what</em> you want beats specifying <em>how</em> to get it. SQL replaced procedural data access. Soma applies the same principle to infrastructure: <code>[persistent, consistent]</code> declares the intent. The runtime resolves SQLite, DynamoDB, or Firestore. Change the provider &mdash; zero code changes.</p>
+<p>Codd's relational model (1970) proved that declaring <em>what</em> you want beats specifying <em>how</em> to get it. SQL replaced procedural data access. Soma applies the same principle to infrastructure: <code>[persistent, consistent]</code> declares the intent. The runtime resolves the backend &mdash; today, that means SQLite for <code>[persistent]</code> and an in-memory HashMap for <code>[ephemeral]</code>. The provider protocol is extensible: new backends are <code>cell backend</code> declarations under <code>stdlib/</code>, so a Redis or Postgres backend is added the same way SQLite was.</p>
 <blockquote>
 <p>Future users of large data banks must be protected from having to know how the data is organized in the machine.</p>
 <cite>&mdash; E.F. Codd, A Relational Model of Data for Large Shared Data Banks. 1970</cite>
@@ -505,7 +519,7 @@ State machine 'order': 7 states, initial 'pending'
 7 |         let r = "hello" + 5
   |                 <span class="op">^</span>
 
-<span class="op">error:</span> undefined function: langth (did you mean 'length'?)
+<span class="op">error:</span> undefined function: lenght (did you mean 'len'?)
   <span class="dim">--&gt; app.cell:4:9</span>
 
 <span class="op">error:</span> face contract: signal 'delete' declared in cell 'API' has no handler
@@ -531,7 +545,7 @@ State machine 'order': 7 states, initial 'pending'
 <section id="agents">
 <h2>Built for AI agents</h2>
 
-<p>Soma is the first language designed around the <strong>generate -> fix -> verify -> serve</strong> loop. Every tool outputs structured JSON. The compiler writes missing code. Storage auto-serializes. Agents don't fight the language &mdash; the language fights for them.</p>
+<p>Soma is designed around the <strong>generate &rarr; fix &rarr; check &rarr; verify &rarr; serve</strong> loop. Every tool outputs structured JSON (<code>--json</code>). <code>soma fix</code> repairs trivial errors agents commonly produce: missing handlers referenced from <code>face</code>, contradictory property combinations, common builtin typos. Storage auto-serializes maps and lists. The language is intentionally regular so the compiler can give specific repairs.</p>
 
 <div class="grid3">
 <div class="card">
@@ -588,13 +602,13 @@ print(user.name)     <span class="cmt">// "Alice" &mdash; auto-deserialized</spa
 <table>
 <tr><th>Tool</th><th>Role</th><th>In Soma</th></tr>
 <tr><td>Airflow / Cron</td><td>Scheduling</td><td><code>every 30s { ... }</code></td></tr>
-<tr><td>Spark / Pandas</td><td>Data pipelines</td><td><code>|> filter() |> map() |> sort_by()</code></td></tr>
+<tr><td>Pandas (in-memory)</td><td>Data pipelines</td><td><code>|> filter() |> map() |> sort_by() |> agg()</code> &mdash; in-memory only; no out-of-core / cluster query engine</td></tr>
 <tr><td>SQLite / DB config</td><td>Persistence</td><td><code>[persistent, consistent]</code> -> SQLite auto-resolved</td></tr>
 <tr><td>In-memory cache</td><td>Fast storage</td><td><code>[ephemeral, local]</code> -> HashMap</td></tr>
 <tr><td>Express / Flask</td><td>API server</td><td><code>on request() { match path { ... } }</code></td></tr>
 <tr><td>React</td><td>Dashboard</td><td><code>html(""" ... """)</code></td></tr>
 <tr><td>Celery</td><td>Background jobs</td><td><code>every 1h { rebalance() }</code></td></tr>
-<tr><td>TLA+ (basic)</td><td>Verification</td><td><code>soma verify</code> + <code>soma.toml [verify]</code></td></tr>
+<tr><td>TLA+ (a CTL fragment)</td><td>Verification</td><td><code>soma verify</code> + <code>soma.toml [verify]</code> &mdash; covers <code>deadlock_free</code>, <code>eventually</code>, <code>never</code>, and conditional <code>after.S.eventually</code>; not the full TLA</td></tr>
 <tr><td>ESLint / Clippy</td><td>Linting</td><td><code>soma lint</code> &mdash; catches anti-patterns</td></tr>
 <tr><td>Copilot fixes</td><td>Auto-repair</td><td><code>soma fix</code> &mdash; writes missing handlers</td></tr>
 </table>
@@ -602,8 +616,8 @@ print(user.name)     <span class="cmt">// "Alice" &mdash; auto-deserialized</spa
 <div class="vs">
 <div class="side">
 <h4>Traditional stack</h4>
-<pre><code>8 tools
-4 languages
+<pre><code>10 tools
+5 languages
 50,000 lines of glue
 Specification: Confluence
 Implementation: somewhere else</code></pre>
@@ -692,15 +706,36 @@ The spec IS the program</code></pre>
 <span class="cmt">// Properties are defined in .cell files. The language grows itself.</span></code></pre>
 
 <h3>Types &amp; variables</h3>
-<pre><code><span class="kw">let</span> x = <span class="num">42</span>                             <span class="cmt">// Int</span>
-<span class="kw">let</span> price = <span class="num">3.14</span>                       <span class="cmt">// Float</span>
+<pre><code><span class="kw">let</span> x = <span class="num">42</span>                             <span class="cmt">// Int (64-bit)</span>
+<span class="cmt">// BigInt — declare in face/handler signatures, e.g. signal compute(n: BigInt)</span>
+<span class="cmt">// Promotion is automatic when an Int operation overflows.</span>
+<span class="kw">let</span> price = <span class="num">3.14</span>                       <span class="cmt">// Float (64-bit)</span>
 <span class="kw">let</span> sci = <span class="num">1.5e3</span>                        <span class="cmt">// Scientific: 1500.0</span>
 <span class="kw">let</span> name = <span class="str">"world"</span>                     <span class="cmt">// String with {interpolation}</span>
 <span class="kw">let</span> user = <span class="fn">User</span> { name: <span class="str">"Alice"</span>, age: <span class="num">30</span> }  <span class="cmt">// Typed record</span>
 <span class="kw">let</span> dur = <span class="num">5</span>s                            <span class="cmt">// Duration &rarr; 5000ms</span>
+<span class="kw">let</span> nothing = ()                       <span class="cmt">// Unit — null equivalent</span>
 
 <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="num">0</span>, <span class="num">10</span>) { <span class="cmt">/* ... */</span> }   <span class="cmt">// range, break, continue</span>
-<span class="kw">while</span> running { <span class="kw">if</span> done { <span class="kw">break</span> } }   <span class="cmt">// loops</span></code></pre>
+<span class="kw">while</span> running { <span class="kw">if</span> done { <span class="kw">break</span> } }   <span class="cmt">// loops</span>
+
+<span class="cmt">// Conversion: to_int("abc") returns () (NOT 0). Always null-check user input.</span>
+<span class="cmt">// Integer division promotes to Float when non-exact: 7 / 2 == 3.5</span>
+<span class="cmt">// Use floor(7 / 2) for truncating division.</span></code></pre>
+
+<h3>Cell kinds</h3>
+<p>The <code>cell</code> keyword takes a kind modifier. Each kind is the same five-section structure (face, memory, state, scale, handlers); the kind tells the compiler what role the cell plays.</p>
+<table>
+<tr><th>Kind</th><th>Purpose</th></tr>
+<tr><td><code>cell Foo { }</code></td><td>Regular cell &mdash; functions, services, web apps</td></tr>
+<tr><td><code>cell agent Foo { }</code></td><td>Agent cell &mdash; unlocks <code>think</code>, <code>set_budget</code>, <code>tool</code> declarations, and the agent verification story</td></tr>
+<tr><td><code>cell property Foo { }</code></td><td>Define a new memory property (see <code>stdlib/durability.cell</code>)</td></tr>
+<tr><td><code>cell backend Foo { }</code></td><td>Define a storage backend implementation</td></tr>
+<tr><td><code>cell type Foo&lt;T&gt; { }</code></td><td>Define a custom type</td></tr>
+<tr><td><code>cell checker Foo { }</code></td><td>A custom validation rule the checker will run</td></tr>
+<tr><td><code>cell builtin Foo { }</code></td><td>FFI bridge to a Rust builtin (stdlib only)</td></tr>
+<tr><td><code>cell test Foo { }</code></td><td>Test cell &mdash; <code>rules { assert &hellip; }</code>, run with <code>soma test</code></td></tr>
+</table>
 
 <h3>Self-growing language</h3>
 <pre><code><span class="cmt">// Properties, checkers, and backends are .cell files, not compiler code.</span>
@@ -720,8 +755,31 @@ The spec IS the program</code></pre>
 }
 
 <span class="cmt">// Add geo_replicated to your memory &mdash; the compiler now checks it.</span>
-<span class="cmt">// Add a redis backend &mdash; the runtime now resolves to it.</span>
+<span class="cmt">// Define a redis backend &mdash; the runtime can resolve [ephemeral, ttl] to it.</span>
 <span class="cmt">// No compiler changes needed. The language grew.</span></code></pre>
+
+<h3>Composition: <code>interior</code> and <code>runtime</code></h3>
+<p>Cells compose by nesting. A parent cell can declare interior children and wire their signals together explicitly.</p>
+<pre><code><span class="kw">cell</span> System {
+    <span class="kw">interior</span> {
+        <span class="kw">cell</span> Worker { <span class="cmt">/* &hellip; */</span> }
+        <span class="kw">cell</span> Cache  { <span class="cmt">/* &hellip; */</span> }
+    }
+    <span class="kw">runtime</span> {
+        <span class="kw">start</span> Worker                              <span class="cmt">// bring up the child</span>
+        <span class="kw">connect</span> Worker.done -&gt; Cache              <span class="cmt">// wire signals</span>
+        <span class="kw">emit</span> initialize()                         <span class="cmt">// fire startup signal</span>
+    }
+}</code></pre>
+<p>This is how a system grows from one cell. <code>soma describe</code> dumps the full interior graph as JSON.</p>
+
+<h3>Three execution backends</h3>
+<table>
+<tr><th>Backend</th><th>How to invoke</th><th>When to use</th></tr>
+<tr><td>Tree-walking interpreter</td><td><code>soma run file.cell</code> (default)</td><td>Development, the reference semantics. All other backends must agree with it.</td></tr>
+<tr><td>Bytecode VM</td><td><code>soma run file.cell --jit</code></td><td>Compiled-once-per-process speedup; better for hot loops without committing to native.</td></tr>
+<tr><td>Native (Rust <code>cdylib</code>)</td><td><code>[native]</code> handler annotation, or <code>soma build</code> for a Rust skeleton</td><td>Tight numeric loops; whole-loop BigInt dispatches to GMP via <code>rug</code>. Single BigInt ops cross FFI and are slower &mdash; the speedup is shaped, not uniform.</td></tr>
+</table>
 </section>
 
 <!-- ═══════════════════════════════════ PIPELINES ═══════════════════════════════════ -->
@@ -764,40 +822,54 @@ The spec IS the program</code></pre>
 <section id="native">
 <h2>When one handler is the bottleneck</h2>
 
-<p>You write Soma for the architecture: cells, state machines, persistence, web server. Then one handler does a million iterations and takes 8 seconds. In every other language, you rewrite it in C++ or Rust. In Soma, you add one word: <code>[native]</code>. It compiles to machine code. Same file. Same syntax. 275x faster.</p>
+<p>You write Soma for the architecture: cells, state machines, persistence, web server. Then one handler does a million iterations and takes seconds. In every other language, you rewrite it in C++ or Rust. In Soma, you add one word: <code>[native]</code>. The compiler emits a Rust <code>cdylib</code>, caches it under <code>.soma_cache/native/</code>, and the handler runs as native code. Same file, same syntax. On a tight integer loop, the speedup over the tree-walking interpreter is in the <strong>100&ndash;300&times;</strong> range; numerically heavy workloads with whole BigInt loops dispatch to GMP via <code>rug</code> and run within a small constant factor of hand-written Rust.</p>
 
 <div class="vs">
 <div class="side">
-<h4>The code &mdash; app.cell</h4>
-<pre><code><span class="kw">on</span> simulate(n: Int) [<span class="fn">native</span>] {
-    <span class="kw">return</span> <span class="fn">range</span>(<span class="num">0</span>, n)
-        |&gt; <span class="fn">map</span>(i =&gt; compute_hit(i))
-        |&gt; <span class="fn">reduce</span>(<span class="num">0.0</span>, p =&gt; p.acc + p.val)
-        / n * <span class="num">4.0</span>
+<h4>The code &mdash; hot.cell</h4>
+<pre><code><span class="kw">cell</span> P {
+    <span class="kw">on</span> hot(n: Int) [<span class="fn">native</span>] {
+        <span class="kw">let</span> s = <span class="num">0</span>
+        <span class="kw">let</span> i = <span class="num">0</span>
+        <span class="kw">while</span> i &lt; n {
+            s = s + i
+            i += <span class="num">1</span>
+        }
+        <span class="kw">return</span> s
+    }
+    <span class="kw">on</span> slow(n: Int) {
+        <span class="kw">let</span> s = <span class="num">0</span>
+        <span class="kw">let</span> i = <span class="num">0</span>
+        <span class="kw">while</span> i &lt; n {
+            s = s + i
+            i += <span class="num">1</span>
+        }
+        <span class="kw">return</span> s
+    }
 }</code></pre>
 </div>
 <div class="side">
-<h4>The config &mdash; soma.toml</h4>
-<pre><code><span class="cmt"># Sequential: 177ms for 50M paths</span>
-<span class="cmt"># Just add:</span>
+<h4>Same handler, two backends</h4>
+<pre><code>$ soma run hot.cell --signal slow 10000000
+<span class="cmt"># interpreted: ~1,250 ms</span>
 
-[compute]
-backend = <span class="str">"threads"</span>
-threads = <span class="num">8</span>
+$ soma run hot.cell --signal hot 10000000
+[native] compiling 1 handler(s) for cell 'P'...
+[native] compiled &rarr; .soma_cache/native/...
+<span class="cmt"># native:      ~3&ndash;5 ms</span>
 
-[compute.parallel]
-handlers = [<span class="str">"simulate"</span>]
-
-<span class="cmt"># Now: 29ms for 50M paths</span></code></pre>
+<span class="cmt"># Speedup on this loop: ~300&times;.</span>
+<span class="cmt"># Reproduce: bench/compare.sh — Soma vs Python</span>
+<span class="cmt"># side-by-side on 90+ math/CS challenges.</span></code></pre>
 </div>
 </div>
 
 <table>
-<tr><th>Mode</th><th>50M Monte Carlo paths</th><th>vs interpreted</th></tr>
-<tr><td>Interpreted</td><td>~8,000ms</td><td>1x</td></tr>
-<tr><td>[native]</td><td>177ms</td><td>45x faster</td></tr>
-<tr><td>[native] + parallel (8 cores)</td><td><strong>29ms</strong></td><td><strong>275x faster</strong></td></tr>
+<tr><th>Mode</th><th>Sum 0..10<sup>7</sup> (single run)</th><th>vs interpreted</th></tr>
+<tr><td>Tree-walking interpreter</td><td>~1,250 ms</td><td>1&times;</td></tr>
+<tr><td><code>[native]</code> (Rust <code>cdylib</code>, sequential)</td><td>~3&ndash;5 ms</td><td><strong>~300&times;</strong></td></tr>
 </table>
+<p style="font-size:.8125rem;color:var(--dim);margin-top:-.5rem">Measured on an Apple M-series with the bundled <code>[native]</code> codegen. Numbers vary with workload &mdash; this is a tight integer loop, the best case for the JIT path. The reproducible benchmark suite under <code>bench/compare.sh</code> runs 90+ math/CS challenges Soma-vs-Python with both wall-time and inner timings; <code>[compute.parallel]</code> for cross-handler thread fan-out is wired up but the headline parallel numbers are workload-specific &mdash; check the suite for your shape.</p>
 
 <p>The code is the same in all three rows. <code>[native]</code> compiles to machine code. Adding <code>[compute.parallel]</code> in <code>soma.toml</code> splits the work across cores automatically. No threads, no mutexes, no <code>async</code>/<code>await</code>, no rewrite. One word in the code, two lines in the config.</p>
 
@@ -812,19 +884,12 @@ handlers = [<span class="str">"simulate"</span>]
 
 <p>Four axes. Same pattern. The code declares <strong>what</strong>. The configuration declares <strong>how</strong>. The compiler resolves.</p>
 
-<h3>Text processing at scale</h3>
+<h3>Text processing via Rust builtins</h3>
 
 <pre><code><span class="kw">let</span> files = <span class="fn">read_files</span>(<span class="str">"data"</span>, <span class="num">10000</span>)
 <span class="kw">let</span> counts = files |&gt; <span class="fn">word_count</span>()</code></pre>
 
-<table>
-<tr><th>Method</th><th>10,000 files</th></tr>
-<tr><td>Unix <code>cat | sort | uniq -c</code></td><td>201ms</td></tr>
-<tr><td>Soma sequential</td><td>124ms</td></tr>
-<tr><td>Soma parallel</td><td><strong>81ms</strong></td></tr>
-</table>
-
-<p>Same code. Add <code>[compute] backend = "threads"</code> to soma.toml &rarr; parallel. Numeric hot paths use <code>[native]</code>. Text processing uses Rust builtins. Both parallelize via config.</p>
+<p><code>read_files</code> and <code>word_count</code> are Rust builtins exposed through the interpreter, so the work happens at native speed even without <code>[native]</code>. The same shape applies to other heavy collection operations: the interpreter dispatches to a Rust implementation under the hood, and the pipe just composes them. Numeric hot paths still use <code>[native]</code>; everything else stays in the interpreter where readability and the rest of the cell model live.</p>
 
 <h3>What if I use [native] wrong?</h3>
 <pre><code><span class="kw">on</span> bad(name: String) [<span class="fn">native</span>] {
@@ -850,7 +915,7 @@ handlers = [<span class="str">"simulate"</span>]
         <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
         <span class="kw">match</span> req {
             {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}    &rarr; <span class="fn">html</span>(dashboard())
-            {method: <span class="str">"GET"</span>, path: <span class="str">"/api"</span>}  &rarr; tasks.<span class="fn">values</span>()     <span class="cmt">// auto-deserialized</span>
+            {method: <span class="str">"GET"</span>, path: <span class="str">"/api"</span>}  &rarr; tasks.<span class="fn">values</span>     <span class="cmt">// auto-deserialized</span>
             {method: <span class="str">"POST"</span>, path: <span class="str">"/api"</span>} &rarr; {
                 <span class="kw">let</span> data = <span class="fn">from_json</span>(body)
                 <span class="kw">let</span> id = <span class="fn">to_string</span>(<span class="fn">next_id</span>())
@@ -862,7 +927,7 @@ handlers = [<span class="str">"simulate"</span>]
     }
 
     <span class="kw">on</span> dashboard() {
-        <span class="kw">let</span> rows = tasks.<span class="fn">values</span>()
+        <span class="kw">let</span> rows = tasks.<span class="fn">values</span>
             |&gt; <span class="fn">map</span>(t =&gt; <span class="str">"""&lt;tr&gt;&lt;td&gt;{t.name}&lt;/td&gt;&lt;td&gt;{t.status}&lt;/td&gt;&lt;/tr&gt;"""</span>)
             |&gt; <span class="fn">join</span>(<span class="str">""</span>)
         <span class="str">"""&lt;html&gt;&lt;body&gt;&lt;h1&gt;Tasks&lt;/h1&gt;&lt;table&gt;{rows}&lt;/table&gt;&lt;/body&gt;&lt;/html&gt;"""</span>
@@ -956,7 +1021,7 @@ risk = <span class="str">"localhost:7082"</span>        <span class="cmt">// add
     }
 
     <span class="kw">on</span> book_trade(data: Map) {
-        trades.set(data.id, to_json(data))   <span class="cmt">// replicated to all nodes</span>
+        trades.set(data.id, data)            <span class="cmt">// auto-serialized, replicated to all nodes</span>
     }
 
     <span class="kw">on</span> price(data: Map) {
@@ -977,31 +1042,34 @@ $ soma serve app.cell -p 8083 --join localhost:8082     <span class="cmt"># node
 <p><strong>The code doesn't change.</strong> Not one line. The <code>scale { }</code> section declares the distribution contract. The runtime honors it:</p>
 
 <table>
-<tr><td><code>shard: trades</code></td><td>Memory slot distributed across nodes via consistent hash ring</td></tr>
+<tr><td><code>shard: trades</code></td><td>Slot is the routing key for the consistent hash ring (FNV, 128 vnodes/node). The compiler checks the slot is non-<code>[ephemeral]</code>; the current runtime distributes via signal-bus broadcast rather than true partitioning.</td></tr>
 <tr><td><code>[ephemeral, local]</code></td><td>Memory stays node-local. Fast path. Never touches the network.</td></tr>
-<tr><td><code>consistency: strong</code></td><td>Writes replicated before acknowledging. Linearizable reads.</td></tr>
-<tr><td><code>consistency: eventual</code></td><td>Write locally, propagate in background. Reads may be stale.</td></tr>
-<tr><td><code>tolerance: 2</code></td><td>Cluster survives 2 simultaneous node failures</td></tr>
-<tr><td><code>cpu: 4, memory: "8Gi"</code></td><td>Resource requirements per instance</td></tr>
+<tr><td><code>consistency: strong</code></td><td>Compile-time contract: linearizable reads/writes, CP under partition. Quorum is computed and CAP contradictions are rejected. Runtime status: <em>best-effort</em> &mdash; the current cluster broadcasts writes over the signal bus and does not yet run a consensus protocol (Raft is on the roadmap).</td></tr>
+<tr><td><code>consistency: eventual</code></td><td>Write locally, propagate in background over the signal bus. Reads may be stale. This is what the runtime actually delivers today, regardless of the declared mode.</td></tr>
+<tr><td><code>tolerance: 2</code></td><td>Declared failure budget. The compiler rejects values larger than <code>N − quorum</code>; the runtime detects peer loss via 15s heartbeat timeout.</td></tr>
+<tr><td><code>cpu: 4, memory: "8Gi"</code></td><td>Resource hints per instance, surfaced to deployment targets (Dockerfile, fly.toml).</td></tr>
 </table>
 
-<h3>Signals are replication</h3>
-<p>There is no special replication protocol. When <code>trades.set(key, val)</code> executes on node 1, it broadcasts an <code>EVENT</code> on the signal bus. Every connected node receives it and applies it locally. The same bus that carries inter-cell signals carries data replication. The infrastructure <strong>is</strong> the language.</p>
+<blockquote><p><strong>Honesty note.</strong> The <code>scale</code> block is a <em>verified contract</em>, not yet a hardened consensus runtime. <code>soma verify</code> proves your declared distribution is internally consistent (no <code>strong</code> on an <code>[ephemeral]</code> slot, no impossible <code>tolerance</code>, quorum math checks out). What the runtime currently enforces is replication-via-broadcast on the signal bus. Treat <code>strong</code> as a <em>specification</em> the compiler checks you meant, not as a Raft-level guarantee.</p></blockquote>
+
+<h3>Signals are (the current) replication</h3>
+<p>There is no special replication protocol. When <code>trades.set(key, val)</code> executes on node 1, it broadcasts an <code>EVENT</code> on the signal bus. Every connected node receives it and applies it locally. The same bus that carries inter-cell signals carries data replication. The infrastructure <strong>is</strong> the language &mdash; with the trade-off that today this gives you <em>eventual</em> replication regardless of the declared <code>consistency:</code> mode. A real Raft/Paxos backend will plug into the same protocol.</p>
 
 <h3>The verifier knows about distribution</h3>
 <p><code>soma verify</code> proves distributed properties <strong>at compile time</strong>, before deployment:</p>
 
 <pre><code>$ soma verify app.cell
 
-State machine 'PricingEngine/scale':
+scale 'PricingEngine':
   <span style="color:#22c55e">&check;</span> replicas: 50 instances declared
-  <span style="color:#22c55e">&check;</span> tolerance: survives 2 node failures (of 50 replicas)
-  <span style="color:#22c55e">&check;</span> shard 'trades' is [persistent] &mdash; data survives node restart
-  <span style="color:#22c55e">&check;</span> consistency: strong &mdash; linearizable reads/writes
-  <span style="color:#22c55e">&check;</span> CAP: CP mode &mdash; consistent + partition-tolerant
-  <span style="color:#22c55e">&check;</span> quorum: 26/50 nodes needed &mdash; tolerates 24 failures
-  <span style="color:#22c55e">&check;</span> memory 'cache' is node-local &mdash; not distributed (fast path)
-  <span style="color:#22c55e">&check;</span> scheduler runs on leader node only</code></pre>
+  <span style="color:#22c55e">&check;</span> shard 'trades' is [persistent] &mdash; eligible for distribution
+  <span style="color:#22c55e">&check;</span> consistency: strong &mdash; declared linearizable
+  <span style="color:#22c55e">&check;</span> CAP: CP mode &mdash; consistent + partition-tolerant (declared)
+  <span style="color:#22c55e">&check;</span> quorum: 26/50 nodes needed
+  <span style="color:#22c55e">&check;</span> tolerance: 2 &le; (50 &minus; 26) = 24, accepted
+  <span style="color:#22c55e">&check;</span> memory 'cache' is [ephemeral, local] &mdash; not distributed (fast path)
+  <span class="yellow">&#x26a0;</span> runtime: <code>strong</code> is currently delivered via signal-bus broadcast
+       (no consensus protocol yet) &mdash; treat as a contract, not a guarantee</code></pre>
 
 <p>Contradictions are caught at compile time:</p>
 <pre><code><span class="kw">memory</span> { data: Map [ephemeral, local] }
@@ -1057,7 +1125,10 @@ State machine 'PricingEngine/scale':
 <section id="reference">
 <h2>CLI reference</h2>
 <table>
-<tr><td>soma run file.cell [args]</td><td>Execute a signal</td></tr>
+<tr><td>soma run file.cell [args]</td><td>Execute the entry handler in the tree-walking interpreter</td></tr>
+<tr><td>soma run file.cell --signal name [args]</td><td>Execute a specific named handler</td></tr>
+<tr><td>soma run file.cell --jit [args]</td><td>Execute via the bytecode VM (faster startup for hot loops)</td></tr>
+<tr><td>soma build file.cell [-o out.rs]</td><td>Generate Rust skeleton from a cell (native codegen frontend)</td></tr>
 <tr><td>soma serve file.cell</td><td>HTTP :8080, WS :8081, Bus :8082</td></tr>
 <tr><td>soma serve file.cell --join host:port</td><td>Join a cluster</td></tr>
 <tr><td>soma serve file.cell --watch</td><td>Hot reload on file change</td></tr>
@@ -1070,8 +1141,12 @@ State machine 'PricingEngine/scale':
 <tr><td>soma init [name]</td><td>Create project</td></tr>
 <tr><td>soma add pkg --git url</td><td>Add dependency</td></tr>
 <tr><td>soma install</td><td>Install deps</td></tr>
-<tr><td>soma props</td><td>List properties + backends</td></tr>
+<tr><td>soma props</td><td>List registered properties + backends</td></tr>
 <tr><td>soma repl</td><td>Interactive evaluator</td></tr>
+<tr><td>soma ast file.cell</td><td>Dump the parsed AST as JSON</td></tr>
+<tr><td>soma tokens file.cell</td><td>Dump the lexer token stream</td></tr>
+<tr><td>soma env</td><td>Show stdlib path, cache dir, and resolved config</td></tr>
+<tr><td>soma deploy file.cell --target fly|cloudflare|aws</td><td>Generate deployment scaffolding (Dockerfile / fly.toml / etc.) and shell out to the cloud CLI &mdash; you still need <code>flyctl</code>/<code>wrangler</code> auth set up</td></tr>
 </table>
 
 <h2>Architecture</h2>
@@ -1086,7 +1161,7 @@ State machine 'PricingEngine/scale':
             &rarr; Auto-serialize storage (maps &rarr; JSON &rarr; maps)
             &rarr; Memory invariants (checked on every .set())
             &rarr; Ensure postconditions (checked on handler exit)
-        &rarr; Native FFI ([native] &rarr; Rust &rarr; .dylib &rarr; 200x)
+        &rarr; Native codegen ([native] &rarr; Rust &rarr; .dylib via cached cdylib build)
     &rarr; Registry (stdlib/*.cell &mdash; properties, backends, builtins)
     &rarr; Runtime
         &rarr; Storage (SQLite | Memory | auto-serialize)
