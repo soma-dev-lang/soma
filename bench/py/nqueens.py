@@ -16,10 +16,11 @@ def count_queens(n):
     return solve(n, 0, 0, 0, 0)
 
 def workload():
-    # Skip n=16 — Python takes 5+ minutes; the cell ran the same workload
-    # but Python can't keep up. We reduce to n≤14 for the comparison; the
-    # cell still runs n=16 in its own benchmark.
-    for n in (1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+    # Match the cell: N=1..15. nqueens is recursion-bound; both languages
+    # spend nearly all their time inside solve() and the per-call overhead
+    # difference between Soma's compiled Rust and CPython's bytecode
+    # interpreter is what the comparison measures.
+    for n in (1, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15):
         count_queens(n)
 
 inner(workload)

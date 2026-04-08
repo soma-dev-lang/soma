@@ -1851,12 +1851,28 @@ impl FnGenerator {
             }
             Statement::Assign { name, value } => {
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                // Peephole: `result = result + rhs` for String → push_str
-                // (avoids the O(N) reallocation per concat).
+                // Peephole: `result = result + rhs` for String — avoid the
+                // O(N) realloc-per-concat cost. Two refinements:
+                //   - rhs = to_string(<int_expr>)  →  write!(result, "{}", expr)
+                //     (avoids allocating an intermediate String).
+                //   - other rhs (already a String)  →  result.push_str(&rhs)
                 if ty == NativeType::String {
                     if let Expr::BinaryOp { left, op: BinOp::Add, right } = &value.node {
                         if let Expr::Ident(ref lname) = left.node {
                             if lname == name {
+                                // to_string(int_expr) — emit write!() directly
+                                if let Expr::FnCall { name: fname, args } = &right.node {
+                                    if fname == "to_string" && args.len() == 1 {
+                                        let arg_ty = self.infer_expr_type(&args[0].node);
+                                        if matches!(arg_ty, NativeType::Int | NativeType::Float | NativeType::Bool) {
+                                            let arg = self.gen_expr_direct(&args[0].node, arg_ty);
+                                            return format!(
+                                                "{}{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); }}\n",
+                                                ind, name, arg
+                                            );
+                                        }
+                                    }
+                                }
                                 let r = self.gen_expr_direct(&right.node, NativeType::String);
                                 return format!("{}{}.push_str(&{});\n", ind, name, r);
                             }
@@ -2460,17 +2476,26 @@ impl FnGenerator {
         if let Expr::BinaryOp { left, op: BinOp::Add, right } = value {
             if let Expr::Ident(ref lname) = left.node {
                 if lname == name {
-                    // result = result + to_string(int_var) → write!(result, "{}", int_var)
+                    // result = result + to_string(int_expr) → write!(result, "{}", int_expr)
                     if let Expr::FnCall { name: fname, args } = &right.node {
                         if fname == "to_string" && args.len() == 1 {
                             let arg_ty = self.infer_expr_type(&args[0].node);
                             if arg_ty == NativeType::Int {
+                                // Ident path: emit the bare name (i64 or Integer
+                                // both have Display).
                                 if let Expr::Ident(ref vname) = args[0].node {
                                     return format!(
                                         "{}{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); }}\n",
                                         ind, name, vname
                                     );
                                 }
+                                // Compound int expression (e.g. `c - 48`):
+                                // lower as i64 expression and write directly.
+                                let arg = self.gen_int_to_i64_rug(&args[0].node);
+                                return format!(
+                                    "{}{{ use std::fmt::Write; write!({}, \"{{}}\", ({})).unwrap(); }}\n",
+                                    ind, name, arg
+                                );
                             }
                         }
                     }

@@ -35,11 +35,26 @@ cell Perrin {
         return 0
     }
 
+    // Sweep from 2 to limit in one iterative pass over the recurrence,
+    // testing divisibility at each step. Avoids the O(N²) cost of
+    // recomputing P(n) from scratch for each n.
     on count_primes_via_perrin(limit: Int) [native] {
+        if limit < 2 { return 0 }
         let count = 0
-        let n = 2
+        // P(0)=3, P(1)=0, P(2)=2 — start state
+        let p0 = 3
+        let p1 = 0
+        let p2 = 2
+        // n = 2: P(2) = 2, 2 % 2 = 0
+        count = count + 1
+        let n = 3
         while n <= limit {
-            if perrin_test(n) == 1 { count = count + 1 }
+            // P(n) = P(n-2) + P(n-3) = p1 + p0
+            let p_next = p1 + p0
+            if p_next % n == 0 { count = count + 1 }
+            p0 = p1
+            p1 = p2
+            p2 = p_next
             n = n + 1
         }
         return count
@@ -56,14 +71,15 @@ cell Perrin {
         if perrin(10) == 17 { print("  P(10) = 17 ✓") }
         if perrin(20) == 277 { print("  P(20) = 277 ✓") }
 
-        // Perrin test: π(1000) via Perrin should be 168 (no pseudoprime < 271441)
+        // Perrin test: π(N) via Perrin matches the prime counting function
+        // (no Perrin pseudoprime exists below 271441).
         let start = now_ms()
-        let c = count_primes_via_perrin(1000)
+        let c = count_primes_via_perrin(2000)
         let elapsed = now_ms() - start
-        if c == 168 {
-            print("  π(1000) via Perrin: 168  ({elapsed}ms) ✓")
+        if c == 303 {
+            print("  π(2000) via Perrin: 303  ({elapsed}ms) ✓")
         } else {
-            print("  got {c}, expected 168")
+            print("  got {c}, expected 303")
         }
     }
 }

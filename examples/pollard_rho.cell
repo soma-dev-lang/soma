@@ -43,7 +43,8 @@ cell PollardRho {
     }
 
     // Driver: try c = 1, 2, 3, ... until rho returns a factor.
-    on factor(n: Int) {
+    // [native] so the c-search loop avoids interpreter FFI overhead.
+    on factor(n: Int) [native] {
         if n % 2 == 0 { return 2 }
         let c = 1
         while c < 200 {

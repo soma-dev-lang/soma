@@ -1,20 +1,31 @@
 from _inner import inner
 from math import isqrt
 
-def cf_sqrt(n, terms):
+def period(n):
     a0 = isqrt(n)
-    if a0 * a0 == n: return [a0]
-    out = [a0]
+    if a0 * a0 == n: return 0
     m, d, a = 0, 1, a0
-    for _ in range(terms):
+    length = 0
+    stop = 2 * a0
+    while True:
         m = d * a - m
         d = (n - m * m) // d
         a = (a0 + m) // d
-        out.append(a)
-    return out
+        length += 1
+        if a == stop: return length
+
+def longest_period(limit):
+    best_n = 1
+    best_p = 0
+    for i in range(2, limit):
+        p = period(i)
+        if p > best_p:
+            best_p = p
+            best_n = i
+    return (best_n, best_p)
 
 def workload():
-    for (n, t) in [(2, 30), (3, 30), (5, 30), (7, 30), (23, 30), (97, 30)]:
-        cf_sqrt(n, t)
+    # Match cell's headline: longest period for n < 100,000
+    longest_period(100000)
 
 inner(workload)

@@ -1,11 +1,19 @@
 from _inner import inner
-from math import comb
 
 def catalan(n):
-    return comb(2 * n, n) // (n + 1)
+    c = 1
+    for i in range(n):
+        c = c * (4 * i + 2) // (i + 2)
+    return c
+
+def catalan_digits(n):
+    return len(str(catalan(n)))
 
 def workload():
-    for n in (0, 1, 5, 10, 15, 20, 30, 50, 100):
+    # Match cell's full run() workload, including digit counts up to C_10000
+    for n in (0, 1, 2, 5, 10, 20, 50):
         catalan(n)
+    for n in (100, 500, 1000, 5000, 10000):
+        catalan_digits(n)
 
 inner(workload)

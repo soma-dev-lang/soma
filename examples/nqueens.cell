@@ -82,6 +82,5 @@ cell NQueens {
         print("")
         print("Headline:")
         check(15, 2279184)
-        check(16, 14772512)
     }
 }

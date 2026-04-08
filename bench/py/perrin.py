@@ -18,6 +18,6 @@ def workload():
     # Same as perrin.cell run()
     for n in (0, 5, 10, 20):
         perrin(n)
-    count_primes_via_perrin(1000)
+    count_primes_via_perrin(2000)
 
 inner(workload)

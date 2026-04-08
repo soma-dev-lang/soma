@@ -61,6 +61,25 @@ cell CFSqrt {
         }
     }
 
+    // Native top-level loop — running the sweep here avoids paying
+    // FFI dispatch per iteration (which adds 100µs × 100000 = 10s
+    // when the loop runs in the interpreter). Returns best_n*1000 +
+    // best_p (period < 1000 for n < 10^5).
+    on longest_period(limit: Int) [native] {
+        let best_n = 1
+        let best_p = 0
+        let i = 2
+        while i < limit {
+            let p = period(i)
+            if p > best_p {
+                best_p = p
+                best_n = i
+            }
+            i = i + 1
+        }
+        return best_n * 1000 + best_p
+    }
+
     on run() {
         print("Continued fraction period of √n")
         print("================================")
@@ -83,18 +102,10 @@ cell CFSqrt {
         print("")
         print("Headline: longest period for n < 100,000")
         let start = now_ms()
-        let best_n = 1
-        let best_p = 0
-        let i = 2
-        while i < 100000 {
-            let p = period(i)
-            if p > best_p {
-                best_p = p
-                best_n = i
-            }
-            i = i + 1
-        }
+        let packed = longest_period(100000)
         let elapsed = now_ms() - start
+        let best_n = packed / 1000
+        let best_p = packed - best_n * 1000
         print("  longest period: n={best_n}, length={best_p}  ({elapsed}ms)")
     }
 }
