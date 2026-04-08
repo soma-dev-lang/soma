@@ -4907,6 +4907,13 @@ impl FnGenerator {
             // conflicts when the same variable appears in multiple positions.
             if let Expr::Ident(name) = expr {
                 format!("{}.clone()", name)
+            } else if self.mode == Mode::Rug {
+                // In Rug mode, route String-producing expressions
+                // through gen_expr_rug_string. The Direct path
+                // would coerce a big-Integer var to i64 first,
+                // panicking for any value > i64::MAX (e.g.
+                // factorial_digit_sum's `to_string(100!)`).
+                self.gen_expr_rug_string(expr)
             } else {
                 self.gen_expr_direct(expr, NativeType::String)
             }
