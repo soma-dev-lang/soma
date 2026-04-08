@@ -1,0 +1,118 @@
+  abundant                Soma: wall    69ms inner    52ms   Numba: wall   445ms inner  116.17ms   speedup:        2.23x
+bench/compare_B.sh: line 30: 14773 Segmentation fault: 11  $PY "bench/numba/$1.py" > /dev/null 2>&1
+  ackermann               Soma: wall     5ms inner   —ms   Numba: wall   287ms inner     —ms   speedup: 57.40x(wall)
+  amicable                Soma: wall     4ms inner   —ms   Numba: wall   341ms inner    0.49ms   speedup: 85.25x(wall)
+bench/compare_B.sh: line 27: 14863 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  anagram                 Soma: wall     5ms inner   —ms   Numba: wall    18ms inner    0.01ms   speedup:  3.60x(wall)
+  bbp_hex                 Soma: wall    70ms inner    42ms   Numba: wall   230ms inner  170.13ms   speedup:        4.05x
+  bbp_pi                  Soma: wall     5ms inner   —ms   Numba: wall    20ms inner    0.03ms   speedup:  4.00x(wall)
+bench/compare_B.sh: line 27: 14980 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  bell                    Soma: wall     4ms inner   —ms   Numba: wall    19ms inner    0.04ms   speedup:  4.75x(wall)
+bench/compare_B.sh: line 27: 15015 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  binary_search           Soma: wall     5ms inner   —ms   Numba: wall   340ms inner    1.42ms   speedup: 68.00x(wall)
+  binomial                Soma: wall     4ms inner   —ms   Numba: wall    20ms inner    0.03ms   speedup:  5.00x(wall)
+  birthday                Soma: wall     4ms inner   —ms   Numba: wall   336ms inner    0.70ms   speedup: 84.00x(wall)
+  bisection               Soma: wall     5ms inner   —ms   Numba: wall   335ms inner    0.42ms   speedup: 67.00x(wall)
+  buffon                  Soma: wall    35ms inner   —ms   Numba: wall   335ms inner   10.54ms   speedup:  9.57x(wall)
+  caesar                  Soma: wall     4ms inner   —ms   Numba: wall   657ms inner    2.99ms   speedup: 164.25x(wall)
+  carmichael              Soma: wall     5ms inner     1ms   Numba: wall   334ms inner    0.15ms   speedup:        0.15x
+  catalan                 Soma: wall   124ms inner    77ms   Numba: wall   225ms inner  166.54ms   speedup:        2.16x
+  cf_sqrt                 Soma: wall    69ms inner    48ms   Numba: wall   500ms inner  508.07ms   speedup:       10.58x
+  champernowne            Soma: wall     5ms inner   —ms   Numba: wall   124ms inner  100.90ms   speedup: 24.80x(wall)
+  champernowne_const      Soma: wall     7ms inner   —ms   Numba: wall    37ms inner    0.01ms   speedup:  5.29x(wall)
+  champernowne_words      Soma: wall     9ms inner   —ms   Numba: wall    18ms inner    0.14ms   speedup:  2.00x(wall)
+  circular_primes         Soma: wall    39ms inner    32ms   Numba: wall   559ms inner  226.27ms   speedup:        7.07x
+bench/compare_B.sh: line 27: 15653 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  coin_change             Soma: wall     5ms inner   —ms   Numba: wall   338ms inner    1.08ms   speedup: 67.60x(wall)
+  collatz                 Soma: wall   172ms inner   167ms   Numba: wall   440ms inner  114.42ms   speedup:        0.69x
+  conway_sequence         Soma: wall     4ms inner   —ms   Numba: wall    18ms inner    0.12ms   speedup:  4.50x(wall)
+  coupon                  Soma: wall     4ms inner   —ms   Numba: wall   335ms inner    0.34ms   speedup: 83.75x(wall)
+  crt                     Soma: wall     4ms inner   —ms   Numba: wall   333ms inner    0.00ms   speedup: 83.25x(wall)
+  cyclotomic              Soma: wall     4ms inner   —ms   Numba: wall   334ms inner    0.00ms   speedup: 83.50x(wall)
+  derangements            Soma: wall     5ms inner   —ms   Numba: wall    18ms inner    0.01ms   speedup:  3.60x(wall)
+bench/compare_B.sh: line 27: 15992 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  dice                    Soma: wall     5ms inner   —ms   Numba: wall   332ms inner    0.01ms   speedup: 66.40x(wall)
+  digit_factorial         Soma: wall    73ms inner    65ms   Numba: wall   655ms inner  647.18ms   speedup:        9.96x
+bench/compare_B.sh: line 27: 16103 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  digit_sum               Soma: wall     4ms inner   —ms   Numba: wall    18ms inner    0.24ms   speedup:  4.50x(wall)
+  divisor_chain           Soma: wall     4ms inner   —ms   Numba: wall   333ms inner    0.01ms   speedup: 83.25x(wall)
+  divisors                Soma: wall     4ms inner   —ms   Numba: wall   335ms inner    0.00ms   speedup: 83.75x(wall)
+  e_series                Soma: wall     5ms inner   —ms   Numba: wall   335ms inner    0.00ms   speedup: 67.00x(wall)
+  e_spigot                Soma: wall    10ms inner   —ms   Numba: wall   122ms inner   67.24ms   speedup: 12.20x(wall)
+bench/compare_B.sh: line 27: 16324 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  edit_distance           Soma: wall     5ms inner   —ms   Numba: wall    20ms inner    0.03ms   speedup:  4.00x(wall)
+  euclidean_alg           Soma: wall     4ms inner   —ms   Numba: wall   331ms inner    0.03ms   speedup: 82.75x(wall)
+  ext_gcd                 Soma: wall     4ms inner   —ms   Numba: wall   334ms inner    0.00ms   speedup: 83.50x(wall)
+  fact                    Soma: wall     5ms inner   —ms   Numba: wall    20ms inner    0.00ms   speedup:  4.00x(wall)
+  fact_big                Soma: wall     4ms inner   —ms   Numba: wall    18ms inner    0.01ms   speedup:  4.50x(wall)
+  farey                   Soma: wall     4ms inner     1ms   Numba: wall   333ms inner    1.34ms   speedup:        1.34x
+  fermat                  Soma: wall     5ms inner   —ms   Numba: wall    20ms inner    2.72ms   speedup:  4.00x(wall)
+  goldbach                Soma: wall   119ms inner   112ms   Numba: wall   492ms inner  157.20ms   speedup:        1.40x
+bench/compare_B.sh: line 27: 16670 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  heapsort                Soma: wall     4ms inner   —ms   Numba: wall   338ms inner    0.01ms   speedup: 84.50x(wall)
+bench/compare_B.sh: line 27: 16717 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  hofstadter_q            Soma: wall     4ms inner   —ms   Numba: wall   335ms inner    0.08ms   speedup: 83.75x(wall)
+  isqrt                   Soma: wall     5ms inner     1ms   Numba: wall    19ms inner    0.01ms   speedup:        0.01x
+  josephus                Soma: wall     9ms inner   —ms   Numba: wall   331ms inner    3.55ms   speedup: 36.78x(wall)
+bench/compare_B.sh: line 27: 16851 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  karatsuba               Soma: wall     5ms inner   —ms   Numba: wall    19ms inner    0.08ms   speedup:  3.80x(wall)
+bench/compare_B.sh: line 27: 16886 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  kmp                     Soma: wall     5ms inner   —ms   Numba: wall   337ms inner    2.10ms   speedup: 67.40x(wall)
+bench/compare_B.sh: line 27: 16933 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  knapsack                Soma: wall     4ms inner   —ms   Numba: wall   336ms inner    1.22ms   speedup: 84.00x(wall)
+  lattice_paths           Soma: wall     5ms inner   —ms   Numba: wall    19ms inner    0.01ms   speedup:  3.80x(wall)
+bench/compare_B.sh: line 27: 17025 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  lcs                     Soma: wall     5ms inner   —ms   Numba: wall   337ms inner    1.49ms   speedup: 67.40x(wall)
+  legendre                Soma: wall     5ms inner   —ms   Numba: wall    19ms inner    0.00ms   speedup:  3.80x(wall)
+  leibniz                 Soma: wall    10ms inner     6ms   Numba: wall   332ms inner    5.99ms   speedup:        1.00x
+  levenshtein             Soma: wall     4ms inner     1ms   Numba: wall   391ms inner    9.69ms   speedup:        9.69x
+  look_and_say            Soma: wall    70ms inner    38ms   Numba: wall   287ms inner  275.89ms   speedup:        7.26x
+  lucas_lehmer            Soma: wall     4ms inner   —ms   Numba: wall    19ms inner    0.11ms   speedup:  4.75x(wall)
+  machin_pi               Soma: wall     5ms inner   —ms   Numba: wall   337ms inner    0.00ms   speedup: 67.40x(wall)
+  mandelbrot              Soma: wall  1750ms inner  2030ms   Numba: wall  2077ms inner 1748.51ms   speedup:        0.86x
+  matrix_fib              Soma: wall    34ms inner    19ms   Numba: wall   286ms inner  262.34ms   speedup:       13.81x
+bench/compare_B.sh: line 27: 17592 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  mergesort               Soma: wall     4ms inner   —ms   Numba: wall    19ms inner    0.02ms   speedup:  4.75x(wall)
+  mersenne                Soma: wall   328ms inner   295ms   Numba: wall  3904ms inner 3910.50ms   speedup:       13.26x
+  miller_rabin            Soma: wall   238ms inner   234ms   Numba: wall  2561ms inner 2581.44ms   speedup:       11.03x
+  mobius                  Soma: wall     5ms inner     1ms   Numba: wall   340ms inner    0.92ms   speedup:        0.92x
+  multinomial             Soma: wall     4ms inner   —ms   Numba: wall    19ms inner    0.01ms   speedup:  4.75x(wall)
+  newton_root             Soma: wall     4ms inner   —ms   Numba: wall   338ms inner    0.71ms   speedup: 84.50x(wall)
+bench/compare_B.sh: line 30: 18095 Segmentation fault: 11  $PY "bench/numba/$1.py" > /dev/null 2>&1
+  nqueens                 Soma: wall   935ms inner   945ms   Numba: wall   285ms inner     —ms   speedup:  0.30x(wall)
+  odd_period              Soma: wall     9ms inner     1ms   Numba: wall    35ms inner   14.53ms   speedup:       14.53x
+  padovan                 Soma: wall     5ms inner   —ms   Numba: wall   334ms inner    0.00ms   speedup: 66.80x(wall)
+  palindrome              Soma: wall     4ms inner     1ms   Numba: wall    36ms inner    9.74ms   speedup:        9.74x
+  pandigital              Soma: wall    18ms inner    11ms   Numba: wall    37ms inner   13.15ms   speedup:        1.20x
+bench/compare_B.sh: line 27: 18324 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  partitions              Soma: wall     5ms inner   —ms   Numba: wall   337ms inner    0.00ms   speedup: 67.40x(wall)
+  pell                    Soma: wall     4ms inner   —ms   Numba: wall    19ms inner    0.02ms   speedup:  4.75x(wall)
+  perfect                 Soma: wall     4ms inner   —ms   Numba: wall   345ms inner    0.01ms   speedup: 86.25x(wall)
+  perrin                  Soma: wall     4ms inner   —ms   Numba: wall   336ms inner    0.61ms   speedup: 84.00x(wall)
+  pollard_rho             Soma: wall    18ms inner     7ms   Numba: wall    68ms inner   21.03ms   speedup:        3.00x
+  primorial               Soma: wall     4ms inner   —ms   Numba: wall    18ms inner    0.02ms   speedup:  4.50x(wall)
+  pythagoras              Soma: wall     4ms inner   —ms   Numba: wall   335ms inner    0.03ms   speedup: 83.75x(wall)
+  quadratic_primes        Soma: wall    18ms inner     8ms   Numba: wall   335ms inner   13.88ms   speedup:        1.74x
+bench/compare_B.sh: line 27: 18681 Abort trap: 6           $SOMA run "examples/$1.cell" > /dev/null 2>&1
+  quicksort               Soma: wall     4ms inner   —ms   Numba: wall   344ms inner    1.40ms   speedup: 86.00x(wall)
+  random_walk             Soma: wall     9ms inner   —ms   Numba: wall   337ms inner    1.44ms   speedup: 37.44x(wall)
+  recaman                 Soma: wall     4ms inner   —ms   Numba: wall   333ms inner    0.01ms   speedup: 83.25x(wall)
+  sieve                   Soma: wall    36ms inner    26ms   Numba: wall   442ms inner   97.42ms   speedup:        3.75x
+  simpson                 Soma: wall     4ms inner   —ms   Numba: wall   337ms inner    0.94ms   speedup: 84.25x(wall)
+  sobol_monte_carlo       Soma: wall    37ms inner    35ms   Numba: wall   387ms inner   34.36ms   speedup:        0.98x
+  sophie_germain          Soma: wall     8ms inner     2ms   Numba: wall   337ms inner    1.46ms   speedup:        0.73x
+  spiral_diag             Soma: wall     5ms inner   —ms   Numba: wall   338ms inner    0.00ms   speedup: 67.60x(wall)
+  stirling2               Soma: wall     4ms inner   —ms   Numba: wall    18ms inner    0.01ms   speedup:  4.50x(wall)
+  sum_squares             Soma: wall     4ms inner   —ms   Numba: wall    37ms inner    0.01ms   speedup:  9.25x(wall)
+  tonelli_shanks          Soma: wall     5ms inner   —ms   Numba: wall    19ms inner    0.01ms   speedup:  3.80x(wall)
+  totient                 Soma: wall     4ms inner     1ms   Numba: wall   334ms inner    1.17ms   speedup:        1.17x
+  triangle_words          Soma: wall     5ms inner   —ms   Numba: wall    20ms inner    0.01ms   speedup:  4.00x(wall)
+  triangular              Soma: wall     8ms inner   —ms   Numba: wall   341ms inner    2.61ms   speedup: 42.62x(wall)
+  tribonacci              Soma: wall     4ms inner   —ms   Numba: wall    20ms inner    0.01ms   speedup:  5.00x(wall)
+  truncatable_primes      Soma: wall    35ms inner    21ms   Numba: wall   850ms inner  814.70ms   speedup:       38.80x
+  twin_primes             Soma: wall    35ms inner    29ms   Numba: wall   341ms inner   26.28ms   speedup:        0.91x
+  wallis                  Soma: wall     9ms inner   —ms   Numba: wall   336ms inner    0.77ms   speedup: 37.33x(wall)
+  wilson                  Soma: wall     9ms inner     2ms   Numba: wall    35ms inner   13.03ms   speedup:        6.51x
+  word_count              Soma: wall     4ms inner   —ms   Numba: wall   336ms inner    1.90ms   speedup: 84.00x(wall)
+  zeller                  Soma: wall     5ms inner   —ms   Numba: wall   335ms inner    0.00ms   speedup: 67.00x(wall)
+  zeta3                   Soma: wall     5ms inner   —ms   Numba: wall    74ms inner   58.95ms   speedup: 14.80x(wall)
