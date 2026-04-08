@@ -2027,14 +2027,15 @@ impl FnGenerator {
             }
             "to_float" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
-                // In Rug mode an Int Ident may be a `rug::Integer` (no `as f64`
-                // cast). Detect the case and emit `.to_f64()` instead.
+                // In Rug mode every Int local/expression is rug::Integer.
+                // Use the Rug-aware codegen and call .to_f64() — `as f64`
+                // is not a valid cast for non-primitive types.
                 if a_ty == NativeType::Int && self.mode == Mode::Rug {
                     if let Expr::Ident(name) = &args[0].node {
-                        if !self.small_int_vars.contains(name) {
-                            return format!("({}.to_f64())", name);
-                        }
+                        return format!("({}.to_f64())", name);
                     }
+                    let e = self.gen_expr_rug(&args[0].node);
+                    return format!("(({}).to_f64())", e);
                 }
                 let a = self.gen_expr_direct(&args[0].node, a_ty);
                 format!("({} as f64)", a)
