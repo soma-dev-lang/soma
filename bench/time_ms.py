@@ -10,7 +10,7 @@ hanging the comparison harness."""
 import subprocess, sys, time
 
 cmd = sys.argv[1:]
-N = 3
+N = 5
 
 best = None
 for _ in range(N):
