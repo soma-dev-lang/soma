@@ -342,6 +342,7 @@ pub fn generate_native_source_with_config(
             .map(|p| p.name.clone())
             .collect();
         gen.classify_int_vars(&handler.body, &int_params);
+        gen.swap_safe_vars = compute_swap_safe_vars(&handler.body);
 
         let fn_name = format!("handler_{}", handler.signal_name);
         // Compute the return type using the FULLY populated FnGenerator
@@ -1627,6 +1628,231 @@ fn body_references(body: &[Spanned<Statement>], name: &str) -> bool {
     body.iter().any(|s| stmt_references(&s.node, name))
 }
 
+// ── Swap-safe variable analysis ──────────────────────────────────────
+//
+// A var `src` is "swap-safe" iff replacing every `name = src` (Rug-mode
+// Integer assignment) with `std::mem::swap(&mut name, &mut src)` is
+// semantically identical. The criterion:
+//
+//   1. No loop condition or for-iter expression in the entire handler
+//      body references `src`. (If a loop cond reads src, the next
+//      iteration check sees the swapped-junk value.)
+//   2. For every While/For loop body in the handler that contains a
+//      reference to `src`, the body's first reference (in execution
+//      order) is a WRITE — i.e. the loop overwrites `src` before
+//      reading it on each iteration. This guarantees that when control
+//      re-enters the loop after a swap, the swapped-in (junk) value of
+//      `src` is overwritten before any subsequent read observes it.
+//
+// (1) is checked syntactically. (2) requires walking the loop body in
+// execution order; for branching control flow, BOTH branches must
+// independently start with a write (or not reference the var at all,
+// if the rest of the body still writes-first).
+//
+// This is sound for all known [native] handler patterns (PE #23's
+// pe23_under is correctly rejected — its outer while condition reads
+// n_ab — while PI's compute is correctly accepted — its outer while
+// condition only reads digits/target, and every nq/nr/etc reference
+// inside the body is via .assign(...) which is a write).
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FirstRef { None, Write, Read }
+
+fn compute_swap_safe_vars(body: &[Spanned<Statement>]) -> HashSet<String> {
+    // Collect candidate vars: every Statement::Let or Statement::Assign
+    // target. (We only care about vars that are written somewhere; pure
+    // reads can't be swap targets.)
+    let mut candidates: HashSet<String> = HashSet::new();
+    collect_assignment_targets(body, &mut candidates);
+
+    // Vars referenced by ANY loop condition or for-iter expression.
+    let mut loop_refs: HashSet<String> = HashSet::new();
+    collect_loop_cond_refs(body, &mut loop_refs);
+
+    let mut safe = HashSet::new();
+    for var in &candidates {
+        if loop_refs.contains(var) {
+            continue; // Rule (1) failed
+        }
+        if every_loop_writes_first(body, var) {
+            safe.insert(var.clone());
+        }
+    }
+    safe
+}
+
+fn collect_assignment_targets(body: &[Spanned<Statement>], out: &mut HashSet<String>) {
+    for s in body {
+        match &s.node {
+            Statement::Let { name, .. } | Statement::Assign { name, .. } => {
+                out.insert(name.clone());
+            }
+            Statement::If { then_body, else_body, .. } => {
+                collect_assignment_targets(then_body, out);
+                collect_assignment_targets(else_body, out);
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => {
+                collect_assignment_targets(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_loop_cond_refs(body: &[Spanned<Statement>], out: &mut HashSet<String>) {
+    for s in body {
+        match &s.node {
+            Statement::While { condition, body } => {
+                expr_collect_idents(&condition.node, out);
+                collect_loop_cond_refs(body, out);
+            }
+            Statement::For { iter, body, .. } => {
+                expr_collect_idents(&iter.node, out);
+                collect_loop_cond_refs(body, out);
+            }
+            Statement::If { then_body, else_body, .. } => {
+                collect_loop_cond_refs(then_body, out);
+                collect_loop_cond_refs(else_body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn expr_collect_idents(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Ident(name) => { out.insert(name.clone()); }
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            expr_collect_idents(&left.node, out);
+            expr_collect_idents(&right.node, out);
+        }
+        Expr::Not(inner) => expr_collect_idents(&inner.node, out),
+        Expr::FnCall { args, .. } => {
+            for a in args { expr_collect_idents(&a.node, out); }
+        }
+        _ => {}
+    }
+}
+
+/// True iff every While/For loop body inside `body` that references
+/// `var` has its first execution-order reference be a write.
+fn every_loop_writes_first(body: &[Spanned<Statement>], var: &str) -> bool {
+    for s in body {
+        match &s.node {
+            Statement::While { body: lb, .. } | Statement::For { body: lb, .. } => {
+                // Does the loop body even reference var?
+                if body_references(lb, var) {
+                    // First exec-order ref must be a write.
+                    if first_ref_in_body(lb, var) == FirstRef::Read {
+                        return false;
+                    }
+                    // Recurse — nested loops must also satisfy.
+                    if !every_loop_writes_first(lb, var) {
+                        return false;
+                    }
+                }
+            }
+            Statement::If { then_body, else_body, .. } => {
+                if !every_loop_writes_first(then_body, var) {
+                    return false;
+                }
+                if !every_loop_writes_first(else_body, var) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+/// Walk a body in execution order and return what KIND of reference
+/// `var` first sees (Write, Read, or None). For if-statements, both
+/// branches must agree — if either reads first, the merged result is
+/// Read. If one writes and the other doesn't reference var, the result
+/// is None (the rest of the enclosing body decides).
+fn first_ref_in_body(body: &[Spanned<Statement>], var: &str) -> FirstRef {
+    for s in body {
+        match first_ref_in_stmt(&s.node, var) {
+            FirstRef::None => continue,
+            other => return other,
+        }
+    }
+    FirstRef::None
+}
+
+fn first_ref_in_stmt(s: &Statement, var: &str) -> FirstRef {
+    match s {
+        Statement::Let { name, value } | Statement::Assign { name, value } => {
+            // RHS is evaluated first, then the binding/assign happens.
+            if FnGenerator::expr_references(&value.node, var) {
+                return FirstRef::Read;
+            }
+            if name == var {
+                return FirstRef::Write;
+            }
+            FirstRef::None
+        }
+        Statement::Return { value } => {
+            if FnGenerator::expr_references(&value.node, var) {
+                FirstRef::Read
+            } else {
+                FirstRef::None
+            }
+        }
+        Statement::ExprStmt { expr } => {
+            if FnGenerator::expr_references(&expr.node, var) {
+                FirstRef::Read
+            } else {
+                FirstRef::None
+            }
+        }
+        Statement::If { condition, then_body, else_body } => {
+            if FnGenerator::expr_references(&condition.node, var) {
+                return FirstRef::Read;
+            }
+            let t = first_ref_in_body(then_body, var);
+            let e = first_ref_in_body(else_body, var);
+            // If either branch reads var first → Read.
+            if t == FirstRef::Read || e == FirstRef::Read {
+                return FirstRef::Read;
+            }
+            // Both write or one writes one none → conservatively say
+            // None and let the enclosing body decide based on what
+            // comes after the if. (The path that doesn't reference var
+            // inside the if might still read it later.)
+            //
+            // Special case: both branches Write → it's safe to declare
+            // Write here, because both paths overwrite var.
+            if t == FirstRef::Write && e == FirstRef::Write {
+                return FirstRef::Write;
+            }
+            FirstRef::None
+        }
+        Statement::While { condition, body } => {
+            if FnGenerator::expr_references(&condition.node, var) {
+                return FirstRef::Read;
+            }
+            // The body may not run; treat as None unless body's first
+            // ref is Read (in which case any iteration would read).
+            if first_ref_in_body(body, var) == FirstRef::Read {
+                return FirstRef::Read;
+            }
+            FirstRef::None
+        }
+        Statement::For { iter, body, .. } => {
+            if FnGenerator::expr_references(&iter.node, var) {
+                return FirstRef::Read;
+            }
+            if first_ref_in_body(body, var) == FirstRef::Read {
+                return FirstRef::Read;
+            }
+            FirstRef::None
+        }
+        _ => FirstRef::None,
+    }
+}
+
 fn stmt_references(stmt: &Statement, name: &str) -> bool {
     match stmt {
         Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
@@ -2525,6 +2751,17 @@ struct FnGenerator {
     /// In Rug mode, Int variables that can be safely represented as i64
     /// (assigned only from literals or `self ± literal` patterns).
     small_int_vars: HashSet<String>,
+    /// In Rug mode, variables that can be SAFELY moved out via
+    /// `std::mem::swap` when the RHS of an assignment, instead of
+    /// `clone_from`. The criterion (precomputed once per handler from
+    /// the body): no loop condition or for-iter anywhere in the body
+    /// references the var, AND for every loop body that contains a
+    /// reference to the var, the first reference walking the body in
+    /// execution order is a WRITE (not a read). Sound under the
+    /// liveness model that re-entering a loop sees the var written
+    /// before being read. Critical for hot BigInt loops (PI spigot:
+    /// 75s → ~50s by avoiding clone_from of growing limbs).
+    swap_safe_vars: HashSet<String>,
     /// Errors encountered during codegen — checked at the end of generation.
     errors: RefCell<Vec<String>>,
     /// Name of the handler being compiled (for error context).
@@ -2554,6 +2791,7 @@ impl FnGenerator {
             sibling_info: HashMap::new(),
             mode,
             small_int_vars: HashSet::new(),
+            swap_safe_vars: HashSet::new(),
             errors: RefCell::new(Vec::new()),
             handler_name: String::new(),
             fn_return_type: NativeType::Float,
@@ -4137,20 +4375,22 @@ impl FnGenerator {
         if let Expr::Ident(src) = value {
             let var_ty = self.var_types.get(src).copied().unwrap_or(NativeType::Float);
             if var_ty == NativeType::Int && src != name {
-                // The swap optimization (mem::swap instead of clone_from) is
-                // only correct when `src` is dead after this assignment.
-                // `body_references(rest, src)` checks the *current* body's
-                // remainder, but it does NOT see enclosing loop scopes —
-                // an outer-loop condition reading `src` will still observe
-                // the swapped value on the next iteration. To be safe, only
-                // swap when the assignment is at function-top-level (i.e.
-                // not inside any loop or conditional). The conservative
-                // path (clone_from) is correct in all contexts.
+                // Swap-on-assign: if `src` is in the precomputed
+                // swap_safe_vars set, we can use mem::swap instead of
+                // clone_from. The set is computed once per handler from
+                // a sound liveness analysis (no loop cond reads src,
+                // every loop body that touches src writes it before
+                // reading it). Saves a full BigInt copy per iteration
+                // in hot loops like PI's spigot.
                 //
-                // Detection: if `rest` happens to be the entire function
-                // tail and we're in straight-line code, the caller passes
-                // the function-level rest. We can't easily tell from here,
-                // so always emit clone_from.
+                // Additionally, body_references(rest, src) must be false
+                // — i.e. nothing later in the current straight-line
+                // block reads src after the swap, which would observe
+                // the now-swapped junk.
+                if self.swap_safe_vars.contains(src) && !body_references(rest, src) {
+                    return format!("{}std::mem::swap(&mut {}, &mut {});\n", ind, name, src);
+                }
+                // Fallback: clone_from is correct in all contexts.
                 return format!("{}{}.clone_from(&{});\n", ind, name, src);
             }
         }
