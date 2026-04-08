@@ -1797,6 +1797,18 @@ impl FnGenerator {
             }
             Statement::Assign { name, value } => {
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
+                // Peephole: `result = result + rhs` for String → push_str
+                // (avoids the O(N) reallocation per concat).
+                if ty == NativeType::String {
+                    if let Expr::BinaryOp { left, op: BinOp::Add, right } = &value.node {
+                        if let Expr::Ident(ref lname) = left.node {
+                            if lname == name {
+                                let r = self.gen_expr_direct(&right.node, NativeType::String);
+                                return format!("{}{}.push_str(&{});\n", ind, name, r);
+                            }
+                        }
+                    }
+                }
                 let expr = self.gen_expr_direct(&value.node, ty);
                 format!("{}{} = {};\n", ind, name, expr)
             }
