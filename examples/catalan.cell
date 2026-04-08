@@ -85,5 +85,6 @@ cell Catalan {
         check_digits(1000, 598)
         check_digits(5000, 3005)
         check_digits(10000, 6015)
+        check_digits(30000, 18055)
     }
 }
