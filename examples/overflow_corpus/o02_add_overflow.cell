@@ -1,0 +1,42 @@
+// Addition overflow: power-of-two doublings.
+// 2^63 = 9223372036854775808 = i64::MAX + 1 → overflow.
+// Must promote to BigInt and return the correct value.
+
+cell O02AddOverflow {
+    on power(p: Int) [native] {
+        let v = 1
+        let i = 0
+        while i < p {
+            v = v + v
+            i = i + 1
+        }
+        return v
+    }
+
+    on run() {
+        // 2^62 = 4611686018427387904 — fits i64
+        let r62 = power(62)
+        if r62 == 4611686018427387904 {
+            print("OK 2^62 = {r62}")
+        } else {
+            print("FAIL 2^62 = {r62}")
+        }
+
+        // 2^63 = 9223372036854775808 — i64 OVERFLOW (i64::MAX is 9223372036854775807)
+        // Must fall back to BigInt and return the correct value.
+        let r63 = to_string(power(63))
+        if r63 == "9223372036854775808" {
+            print("OK 2^63 = {r63}")
+        } else {
+            print("FAIL 2^63 = {r63}, expected 9223372036854775808")
+        }
+
+        // 2^100 — way past i64
+        let r100 = to_string(power(100))
+        if r100 == "1267650600228229401496703205376" {
+            print("OK 2^100 = {r100}")
+        } else {
+            print("FAIL 2^100 = {r100}")
+        }
+    }
+}

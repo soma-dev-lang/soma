@@ -146,37 +146,33 @@ pub fn compile_and_load_natives_with_config(
             } else {
                 ""
             };
-            // Cells where every handler classifier-picked Direct
-            // (marked with `// SOMA_MODE: ALL_DIRECT` in the source)
-            // are i64-only by user intent. The Rug fallback functions
-            // are still emitted for safety, but no operation in the
-            // Direct fast path can panic on overflow if the user's
-            // inputs are within their declared bounds. We can disable
-            // overflow_checks for these cells, matching Numba/Cython's
-            // tradeoff: typed code, no runtime overflow checking.
-            // Unlocks ~30% speedup on tight i64 loops (collatz, sieve,
-            // primes). Cells with any Rug-classified handler keep
-            // OC=true so the fast→Rug fallback can still trigger.
-            let all_direct = rust_source.contains("// SOMA_MODE: ALL_DIRECT");
-            let overflow_checks = if all_direct { "false" } else { "true" };
-            // For ALL_DIRECT cells we also enable thin LTO and codegen-units=1
-            // so LLVM can fully inline across function boundaries and apply
-            // cross-function loop optimizations. The compile time goes up
-            // ~30% but the runtime speedup on tight loops is meaningful.
-            let extra_profile = if all_direct {
-                "lto = \"thin\"\ncodegen-units = 1\n"
-            } else {
-                ""
-            };
+            // CORRECTNESS RULE: every cell uses overflow_checks=true.
+            //
+            // Soma's contract is: when the user writes `Int`, the
+            // compiler picks i64 OR BigInt, and the answer is ALWAYS
+            // correct. Without runtime overflow checks, the Direct
+            // fast path silently produces wrong values on i64
+            // overflow, which violates the contract.
+            //
+            // overflow_checks=true panics on every overflowing op;
+            // the dispatch wrapper's catch_unwind catches the panic
+            // and falls back to Rug. This is the foundation that
+            // makes dual-mode dispatch sound.
+            //
+            // Performance is recovered through (a) target-cpu=native
+            // (still applied here, doesn't affect correctness),
+            // (b) thin LTO, (c) per-op wrapping arithmetic in the
+            // codegen for ops where the classifier proved safety
+            // (handled in native.rs, not here), and (d) the various
+            // codegen peepholes / Buf primitive / auto-memo etc.
             let cargo_toml = format!(
-                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = {}\npanic = \"unwind\"\n{}",
-                deps, overflow_checks, extra_profile
+                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = true\npanic = \"unwind\"\nlto = \"thin\"\ncodegen-units = 1\n",
+                deps
             );
-            // Also write a .cargo/config.toml so the native build uses
-            // -C target-cpu=native, which lets LLVM emit SIMD/AVX2/NEON
-            // instructions for the host machine. Critical for
-            // float-heavy mandelbrot/sobol-style cells where LLVM can
-            // auto-vectorize the inner loop.
+            // Per-cell .cargo/config.toml: use target-cpu=native so
+            // LLVM can emit SIMD/AVX2/NEON for the host machine.
+            // Doesn't affect correctness — only enables hardware
+            // features the codegen would otherwise miss.
             let cargo_config_dir = proj_dir.join(".cargo");
             std::fs::create_dir_all(&cargo_config_dir).ok();
             let cargo_config = "[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n";

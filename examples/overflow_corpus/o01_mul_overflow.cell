@@ -1,0 +1,47 @@
+// Multiplication overflow: factorial that exceeds i64.
+// 21! = 51090942171709440000 > i64::MAX (9223372036854775807).
+// The fast path overflows; the dispatch wrapper must catch the panic
+// and fall back to Rug, returning the CORRECT BigInt result.
+//
+// Soma's contract: writing `Int` and the compiler picks i64 OR BigInt
+// — but the answer is ALWAYS correct.
+
+cell O01MulOverflow {
+    on fact(n: Int) [native] {
+        let f = 1
+        let i = 2
+        while i <= n {
+            f = f * i
+            i = i + 1
+        }
+        return f
+    }
+
+    on run() {
+        // 20! fits i64 (2432902008176640000)
+        let r20 = fact(20)
+        if r20 == 2432902008176640000 {
+            print("OK fact(20) = {r20}")
+        } else {
+            print("FAIL fact(20) = {r20}")
+        }
+
+        // 21! overflows i64 → must promote to BigInt internally
+        // 21! = 51090942171709440000
+        let r21 = to_string(fact(21))
+        if r21 == "51090942171709440000" {
+            print("OK fact(21) = {r21}")
+        } else {
+            print("FAIL fact(21) = {r21}, expected 51090942171709440000")
+        }
+
+        // 25! is well into BigInt territory
+        // 25! = 15511210043330985984000000
+        let r25 = to_string(fact(25))
+        if r25 == "15511210043330985984000000" {
+            print("OK fact(25) = {r25}")
+        } else {
+            print("FAIL fact(25) = {r25}")
+        }
+    }
+}

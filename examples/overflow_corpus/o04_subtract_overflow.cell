@@ -1,0 +1,28 @@
+// Subtraction overflow: i64::MIN - 1 → overflow. Must promote.
+
+cell O04SubOverflow {
+    on shift_min(p: Int) [native] {
+        // Build i64::MIN = -2^63 then subtract 1
+        let v = 1
+        let i = 0
+        while i < p {
+            v = v + v
+            i = i + 1
+        }
+        // v = 2^p; negate; subtract 1
+        v = 0 - v
+        v = v - 1
+        return v
+    }
+
+    on run() {
+        // p=63: 2^63 = 9223372036854775808, negate → -9223372036854775808
+        // (i64::MIN), then -1 → -9223372036854775809 (overflows)
+        let r = to_string(shift_min(63))
+        if r == "-9223372036854775809" {
+            print("OK -2^63 - 1 = {r}")
+        } else {
+            print("FAIL: {r}")
+        }
+    }
+}
