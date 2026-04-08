@@ -28,13 +28,13 @@ def count_inside(grid_n, max_iter):
     return inside
 
 def workload():
-    # Match the cell's first three checks (50, 100, 500). The cell ALSO
-    # runs 1000 and 2000 grids, but Python takes >5min for those — they
-    # are the cell's "headline" stress tests, omitted here.
+    # Match the cell's full run() workload — including the 2000/1000
+    # headline stress test that the original CPython bench omitted.
     count_inside(50, 100)
     count_inside(100, 255)
     count_inside(500, 500)
     count_inside(1000, 1000)
+    count_inside(2000, 1000)
 
 def warmup():
     try: count_inside(2, 2)

@@ -1,7 +1,7 @@
+# Numba's int is fixed-width int64. This cell needs arbitrary precision
+# (values exceed 2^63), so we use plain Python int — Numba would
+# silently overflow and return garbage in microseconds.
 from _inner import inner
-from numba import njit
-
-@njit(cache=True)
 def derange(n):
     if n == 0: return 1
     if n == 1: return 0
@@ -15,8 +15,4 @@ def workload():
     for n in (0, 1, 2, 3, 4, 5, 10, 20, 30, 50):
         derange(n)
 
-def warmup():
-    try: derange(2)
-    except Exception: pass
-
-inner(workload, warmup=warmup)
+inner(workload)

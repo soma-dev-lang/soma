@@ -1,8 +1,8 @@
+# Numba's int is fixed-width int64. This cell needs arbitrary precision
+# (values exceed 2^63), so we use plain Python int — Numba would
+# silently overflow and return garbage in microseconds.
 from _inner import inner
-from numba import njit
 
-
-@njit(cache=True)
 def is_prime(n):
     if n < 2: return 0
     if n < 4: return 1
@@ -13,7 +13,6 @@ def is_prime(n):
         i += 2
     return 1
 
-@njit(cache=True)
 def lucas_lehmer(p):
     if p == 2: return 1
     m = (1 << p) - 1
@@ -29,10 +28,4 @@ def workload():
     count_mp(31)
     count_mp(100)
 
-def warmup():
-    try: is_prime(2)
-    except Exception: pass
-    try: lucas_lehmer(2)
-    except Exception: pass
-
-inner(workload, warmup=warmup)
+inner(workload)

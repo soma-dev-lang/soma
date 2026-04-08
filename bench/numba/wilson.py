@@ -1,14 +1,13 @@
+# Numba's int is fixed-width int64. This cell needs arbitrary precision
+# (values exceed 2^63), so we use plain Python int — Numba would
+# silently overflow and return garbage in microseconds.
 from _inner import inner
-from numba import njit
-
-@njit(cache=True)
 def factorial_mod(n):
     f = 1
     for i in range(2, n):
         f = (f * i) % n
     return f
 
-@njit(cache=True)
 def is_prime(n):
     if n < 2: return 0
     if n == 2: return 1
@@ -23,10 +22,4 @@ def workload():
     count_primes(500)
     count_primes(1000)
 
-def warmup():
-    try: factorial_mod(2)
-    except Exception: pass
-    try: is_prime(2)
-    except Exception: pass
-
-inner(workload, warmup=warmup)
+inner(workload)

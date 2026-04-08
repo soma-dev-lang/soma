@@ -1,8 +1,12 @@
+# Matrix-exponentiation Fibonacci grows as ~F_n which exceeds int64 at
+# n > 93. Numba's i64 silently overflows. Plain Python int (which has
+# arbitrary precision) is the only correct path.
+import sys
+sys.set_int_max_str_digits(10000000)
+
 from _inner import inner
-from numba import njit
 
 
-@njit(cache=True)
 def fib_matrix(n):
     if n == 0: return 0
     if n == 1: return 1
@@ -24,12 +28,16 @@ def fib_matrix(n):
         m //= 2
     return rb
 
+
 def workload():
-    for n in (0, 1, 2, 10, 20, 50, 100, 1000, 10000, 100000, 1000000):
+    # Match cell's full run() workload
+    for n in (0, 1, 2, 10, 20, 50, 100):
         fib_matrix(n)
+    # Larger digit-count checks
+    for n in (1000, 10000, 100000):
+        len(str(fib_matrix(n)))
+    # Headline
+    fib_matrix(1_000_000)
 
-def warmup():
-    try: fib_matrix(2)
-    except Exception: pass
 
-inner(workload, warmup=warmup)
+inner(workload)

@@ -16,7 +16,7 @@ cell SobolMonteCarlo {
     // True Sobol needs direction numbers; Van der Corput is the 1D component.
     // For a demo, this gives the low-discrepancy property.
 
-    on van_der_corput(n: Int) {
+    on van_der_corput(n: Int) [native] {
         // Reverse bits of n to get quasi-random number in [0, 1)
         let result = 0.0
         let base = 0.5
@@ -26,17 +26,14 @@ cell SobolMonteCarlo {
                 result = result + base
             }
             num = num / 2
-            if type_of(num) == "Float" {
-                num = to_int(num)
-            }
-            base = base / 2
+            base = base / 2.0
         }
         return result
     }
 
     // ---- Box-Muller transform: uniform [0,1) → standard normal ----
 
-    on inv_norm(u: Float) {
+    on inv_norm(u: Float) [native] {
         // Rational approximation of inverse normal CDF (Beasley-Springer-Moro)
         if u <= 0.0 { return -8.0 }
         if u >= 1.0 { return 8.0 }
@@ -55,11 +52,11 @@ cell SobolMonteCarlo {
 
     // ---- Black-Scholes reference price ----
 
-    on bs_d1(S: Float, K: Float, r: Float, sigma: Float, T: Float) {
+    on bs_d1(S: Float, K: Float, r: Float, sigma: Float, T: Float) [native] {
         return (log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * sqrt(T))
     }
 
-    on norm_cdf(x: Float) {
+    on norm_cdf(x: Float) [native] {
         // Abramowitz & Stegun approximation (single precision, accurate to 1e-7)
         if x < -8.0 { return 0.0 }
         if x > 8.0 { return 1.0 }
@@ -77,7 +74,7 @@ cell SobolMonteCarlo {
         return cdf
     }
 
-    on bs_price(S: Float, K: Float, r: Float, sigma: Float, T: Float) {
+    on bs_price(S: Float, K: Float, r: Float, sigma: Float, T: Float) [native] {
         let d1 = bs_d1(S, K, r, sigma, T)
         let d2 = d1 - sigma * sqrt(T)
         return S * norm_cdf(d1) - K * exp(-r * T) * norm_cdf(d2)
@@ -85,7 +82,7 @@ cell SobolMonteCarlo {
 
     // ---- Monte Carlo pricer ----
 
-    on mc_price(S: Float, K: Float, r: Float, sigma: Float, T: Float, n_paths: Int, use_sobol: Int) {
+    on mc_price(S: Float, K: Float, r: Float, sigma: Float, T: Float, n_paths: Int, use_sobol: Int) [native] {
         let payoff_sum = 0.0
         let drift = (r - sigma * sigma / 2) * T
         let vol = sigma * sqrt(T)
@@ -140,7 +137,7 @@ cell SobolMonteCarlo {
         print("")
 
         // Monte Carlo with different path counts
-        for n in list(100, 500, 1000, 5000) {
+        for n in list(100, 500, 1000, 5000, 100000, 1000000) {
             let start = now_ms()
             let mc_pseudo = mc_price(S, K, r, sigma, T, n, 0)
             let t1 = now_ms() - start

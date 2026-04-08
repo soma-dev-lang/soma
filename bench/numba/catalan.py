@@ -1,19 +1,23 @@
-from _inner import inner
-from numba import njit
-
+# Catalan numbers grow as ~4^n / sqrt(n) — C_30000 is a 6000-digit
+# integer. Numba's int is fixed-width int64 (max ~19 digits) so @njit
+# would compute garbage for any n > 30. Plain Python int is the only
+# correct path.
 import sys
-sys.set_int_max_str_digits(100000)  # Python 3.11+ limit; allow large stringification
+sys.set_int_max_str_digits(100000)
+
+from _inner import inner
 
 
-@njit(cache=True)
 def catalan(n):
     c = 1
     for i in range(n):
         c = c * (4 * i + 2) // (i + 2)
     return c
 
+
 def catalan_digits(n):
     return len(str(catalan(n)))
+
 
 def workload():
     # Match cell's full run() workload, including digit counts up to C_30000
@@ -22,8 +26,5 @@ def workload():
     for n in (100, 500, 1000, 5000, 10000, 30000):
         catalan_digits(n)
 
-def warmup():
-    try: catalan(2)
-    except Exception: pass
 
-inner(workload, warmup=warmup)
+inner(workload)

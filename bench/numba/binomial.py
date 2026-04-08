@@ -1,7 +1,7 @@
+# Numba's int is fixed-width int64. This cell needs arbitrary precision
+# (values exceed 2^63), so we use plain Python int — Numba would
+# silently overflow and return garbage in microseconds.
 from _inner import inner
-from numba import njit
-
-@njit(cache=True)
 def binom(n, k):
     if k < 0 or k > n: return 0
     if k > n - k: k = n - k
@@ -15,8 +15,4 @@ def workload():
     for (n, k) in [(0,0), (5,2), (10,5), (20,10), (50,25), (100,50), (200,100), (500,250)]:
         binom(n, k)
 
-def warmup():
-    try: binom(2, 2)
-    except Exception: pass
-
-inner(workload, warmup=warmup)
+inner(workload)

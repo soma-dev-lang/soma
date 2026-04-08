@@ -1,7 +1,7 @@
+# Numba's int is fixed-width int64. This cell needs arbitrary precision
+# (values exceed 2^63), so we use plain Python int — Numba would
+# silently overflow and return garbage in microseconds.
 from _inner import inner
-from numba import njit
-
-@njit(cache=True)
 def is_prime(n):
     if n < 2: return 0
     if n < 4: return 1
@@ -12,7 +12,6 @@ def is_prime(n):
         i += 2
     return 1
 
-@njit(cache=True)
 def primorial(p):
     r = 1
     for i in range(2, p + 1):
@@ -25,10 +24,4 @@ def workload():
     for p in (2, 5, 11, 17, 29, 41, 53, 97):
         primorial(p)
 
-def warmup():
-    try: is_prime(2)
-    except Exception: pass
-    try: primorial(2)
-    except Exception: pass
-
-inner(workload, warmup=warmup)
+inner(workload)
