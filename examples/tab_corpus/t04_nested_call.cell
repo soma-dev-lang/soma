@@ -1,0 +1,16 @@
+// expected_fire: no
+// Nested self-call (Ackermann shape). The inner f() depends on a value
+// computed by another f() — breaks the "fill in order" property.
+// Auto-memo handles this; auto-tabulation must reject.
+
+cell T04Nested {
+    on ack(m: Int, n: Int) [native] {
+        if m == 0 { return n + 1 }
+        if n == 0 { return ack(m - 1, 1) }
+        return ack(m - 1, ack(m, n - 1))
+    }
+    on run() {
+        let r = ack(3, 4)
+        if r == 125 { print("OK t04 = {r}") } else { print("FAIL: {r}") }
+    }
+}

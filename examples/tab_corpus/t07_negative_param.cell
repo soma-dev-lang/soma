@@ -1,0 +1,17 @@
+// expected_fire: yes
+// fib called with n could be negative — the base case handles n < 2.
+// Tabulation must guard: if input n < 0, fall through to recursive
+// (memo) compute. Eligibility itself is unchanged.
+
+cell T07Neg {
+    on f(n: Int) [native] {
+        if n < 2 { return 1 }
+        return f(n - 1) + f(n - 2)
+    }
+    on run() {
+        // n=20 with f(0)=f(1)=1 base: this is fib shifted (1,1,2,3,5,...)
+        // f(20) = 10946
+        let r = f(20)
+        if r == 10946 { print("OK t07 = {r}") } else { print("FAIL: {r}") }
+    }
+}

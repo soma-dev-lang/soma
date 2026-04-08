@@ -1,0 +1,19 @@
+// expected_fire: no
+// Argument positions swapped: handler is f(n, k) but recursive call is
+// f(k - 1, n - 1). This breaks the position-preserving rule of the
+// simple tabulation fill (which builds tab[i][j] from tab[i'<i][j'<j]).
+// Memo handles it (HashMap doesn't care about positions); tab must
+// reject.
+
+cell T09Swap {
+    on f(n: Int, k: Int) [native] {
+        if n == 0 { return k }
+        if k == 0 { return n }
+        return f(k - 1, n - 1) + f(n - 1, k - 1)
+    }
+    on run() {
+        let r = f(3, 5)
+        // Just verify it terminates
+        print("OK t09 = {r}")
+    }
+}

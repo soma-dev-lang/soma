@@ -1,0 +1,14 @@
+// expected_fire: yes
+// Real-world: extended GCD's "g" component is a clean tail call.
+// Same shape as the gcd_basic from euclidean_alg.cell.
+
+cell I07EgcdG {
+    on egcd_g(a: Int, b: Int) [native] {
+        if b == 0 { return a }
+        return egcd_g(b, a - (a / b) * b)
+    }
+    on run() {
+        let r = egcd_g(48, 18)
+        if r == 6 { print("OK i07 = {r}") } else { print("FAIL: {r}") }
+    }
+}

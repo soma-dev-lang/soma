@@ -1,0 +1,20 @@
+// expected_fire: no
+// Hypothetical recursion where every self-call passes args unchanged
+// (zero shrink). Memo would accept (≥2 calls, all "param unchanged"
+// is in the simple-arg set) but tabulation must reject — without any
+// strict shrink there is no monotone fill order. The cell never
+// actually recurses (base case fires immediately), so it terminates.
+
+cell T08ZeroShrink {
+    on f(n: Int, k: Int) [native] {
+        if n == 0 { return k }
+        if k == 0 { return n }
+        // Two self-calls, neither shrinks. (Unreachable at runtime
+        // because the base cases fire.)
+        return f(n, k) + f(n, k)
+    }
+    on run() {
+        let r = f(3, 0)  // hits base case → returns 3
+        if r == 3 { print("OK t08 = {r}") } else { print("FAIL: {r}") }
+    }
+}

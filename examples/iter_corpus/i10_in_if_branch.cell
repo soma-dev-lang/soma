@@ -1,0 +1,17 @@
+// expected_fire: yes
+// Self-call as the entire return expression of an if-branch, with
+// nothing after the if. This is the "every branch terminates with
+// return self(...)" form.
+
+cell I10IfBranch {
+    on f(n: Int, m: Int) [native] {
+        if n == 0 { return m }
+        if m == 0 { return n }
+        return f(n - 1, m - 1)
+    }
+    on run() {
+        let r = f(7, 3)
+        // Subtracts in lockstep until one hits 0; min(7,3)=3, returns max=7-3=4
+        if r == 4 { print("OK i10 = {r}") } else { print("FAIL: {r}") }
+    }
+}

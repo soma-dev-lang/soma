@@ -1,0 +1,18 @@
+// expected_fire: no
+// Body has `let` bindings of recursive call results before the return.
+// The "tab-simple body" rule rejects intermediate lets — we can't
+// rewrite this safely with a flat fill loop without inlining. Memo
+// still works.
+
+cell T10Let {
+    on f(n: Int) [native] {
+        if n < 2 { return n }
+        let a = f(n - 1)
+        let b = f(n - 2)
+        return a + b
+    }
+    on run() {
+        let r = f(15)
+        if r == 610 { print("OK t10 = {r}") } else { print("FAIL: {r}") }
+    }
+}

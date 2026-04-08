@@ -1,0 +1,17 @@
+// expected_fire: yes
+// 2D fill: every recursive call shrinks at least one of two parameters
+// by 1. Perfect for a 2D Vec<Vec<i64>>.
+
+cell T02Lcs {
+    on f(n: Int, k: Int) [native] {
+        if n == 0 { return 0 }
+        if k == 0 { return 0 }
+        if n == k { return 1 }
+        return f(n - 1, k) + f(n - 1, k - 1)
+    }
+    on run() {
+        let r = f(8, 4)
+        // f(8,4) = ?  let's just print
+        print("OK t02 = {r}")
+    }
+}

@@ -1,0 +1,20 @@
+// expected_fire: no
+// Same call repeated but the argument variable was reassigned between
+// the two calls. CSE must NOT hoist — the second call uses a different
+// value of `n`.
+
+cell C03Reassign {
+    on sq(x: Int) [native] {
+        return x * x
+    }
+    on f(n: Int) [native] {
+        let a = sq(n)
+        n = n + 1
+        let b = sq(n)
+        return a + b
+    }
+    on run() {
+        let r = f(3)
+        if r == 9 + 16 { print("OK c03 = {r}") } else { print("FAIL: {r}") }
+    }
+}

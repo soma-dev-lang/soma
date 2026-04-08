@@ -64,16 +64,18 @@ cell EuclideanAlg {
         print("Euclidean algorithm — three variants cross-checked")
         print("==================================================")
         print("")
+        let ok = true
         for i in range(1, 200) {
             let a = i * 7919
             let b = (i + 3) * 6577
             let g = cross_check(a, b)
             if g < 0 {
                 print("  MISMATCH at {a}, {b}")
-                return
+                ok = false
+                break
             }
         }
-        print("  200 cases agree across iterative, recursive, and binary GCD ✓")
+        if ok { print("  200 cases agree across iterative, recursive, and binary GCD ✓") }
 
         // gcd(F_30, F_31) = 1 (consecutive Fibonacci)
         // F_30 = 832040, F_31 = 1346269

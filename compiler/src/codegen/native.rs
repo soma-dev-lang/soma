@@ -84,6 +84,42 @@ pub fn generate_native_source_with_config(
     let mut out = String::new();
     let mut sigs = Vec::new();
 
+    // ── Auto-iteration AST rewrite ──
+    //
+    // Detect tail-recursive [native] handlers and rewrite their bodies as
+    // `while true { ... }` loops. This runs BEFORE everything else so that
+    // mode selection, type inference, and codegen all see the rewritten
+    // body. Eligibility is checked per the strict rule in
+    // `auto_iter_eligible`; ineligible handlers are untouched.
+    let mut handlers_owned: Vec<NativeHandler> = handlers.iter().map(|h| NativeHandler {
+        cell_name: h.cell_name.clone(),
+        signal_name: h.signal_name.clone(),
+        params: h.params.clone(),
+        body: h.body.clone(),
+        properties: h.properties.clone(),
+    }).collect();
+    for h in &mut handlers_owned {
+        if auto_iter_eligible(h) {
+            rewrite_tail_call_to_loop(h);
+        }
+    }
+    // ── Auto-CSE AST rewrite ──
+    //
+    // Hoists repeated pure call expressions to a fresh `let` at the
+    // start of the body. Runs AFTER auto-iter so it sees the loop body
+    // (auto-iter wraps the body in `while true`); the CSE walker
+    // descends one level into that loop. Skips handlers with no fires.
+    let cse_siblings: HashSet<String> = handlers_owned.iter()
+        .map(|h| h.signal_name.clone())
+        .collect();
+    for h in &mut handlers_owned {
+        // Only [native] handlers are eligible
+        if h.properties.iter().any(|p| p == "native") {
+            apply_cse_rewrite(h, &cse_siblings);
+        }
+    }
+    let handlers = &handlers_owned[..];
+
     let siblings: HashSet<String> = handlers.iter().map(|h| h.signal_name.clone()).collect();
 
     // Pre-compute rough sibling return types BEFORE mode selection so that
@@ -286,6 +322,12 @@ pub fn generate_native_source_with_config(
     let mut all_errors: Vec<String> = Vec::new();
     for (handler, mode) in handlers.iter().zip(modes.iter()) {
         let is_dual = dualmode.contains(&handler.signal_name);
+        // Auto-memo: a recursive Int→Int function whose self-calls all
+        // shrink the input space along simple axes (param ± k, param − param,
+        // small literal). The detection rule is verified against the 20-cell
+        // memo_corpus. Eligible handlers get a thread_local cache wrapper
+        // that turns naive O(branching^depth) recursion into O(input_space).
+        let is_memo = auto_memo_eligible(handler);
 
         let mut gen = FnGenerator::new(&handler.params, &siblings, *mode)
             .with_sibling_info(sibling_info.clone())
@@ -329,11 +371,48 @@ pub fn generate_native_source_with_config(
                 }
                 fast_gen.infer_body_types(&handler.body);
                 fast_gen.fn_return_type = ret_type;
+
+                // Auto-memo only applies to Int-returning handlers (cache
+                // values must be Copy/Clone-cheap and round-trippable).
+                let memo_now = is_memo && ret_type == NativeType::Int;
+                // Auto-tab is a strict refinement of auto-memo: same input
+                // shape, but with a tab-simple body and position-preserving
+                // strict shrinks. When eligible, the Direct fast path uses
+                // a Vec-based bottom-up fill instead of a HashMap memo.
+                let tab_plan = if memo_now { auto_tab_eligible(handler) } else { None };
+
                 let fast_inner_name = format!("{}_fast", fn_name);
-                gen_direct_inner_fn(&mut out, &fast_gen, handler, &fast_inner_name, ret_type);
+                if memo_now {
+                    // Body emitted under `_compute`; cache wrapper emitted
+                    // under the original name so recursive sibling calls in
+                    // the body (which target `inner_handler_X_fast(...)`)
+                    // automatically route through the cache.
+                    let fast_compute_name = format!("{}_compute", fast_inner_name);
+                    gen_direct_inner_fn(&mut out, &fast_gen, handler, &fast_compute_name, ret_type);
+                    if tab_plan.is_some() {
+                        // Tab path: emit cell-compute, memo wrapper (as the
+                        // big-input fallback), and entry that picks tab
+                        // when inputs fit the cap.
+                        let memo_name = format!("{}_memo", fast_inner_name);
+                        let cell_name = format!("{}_cell", fast_inner_name);
+                        emit_memo_wrapper_fast(&mut out, handler, &memo_name, &fast_compute_name);
+                        emit_tab_cell_fn(&mut out, handler, &cell_name);
+                        emit_tab_entry_fn(&mut out, handler, &fast_inner_name, &cell_name, &memo_name);
+                    } else {
+                        emit_memo_wrapper_fast(&mut out, handler, &fast_inner_name, &fast_compute_name);
+                    }
+                } else {
+                    gen_direct_inner_fn(&mut out, &fast_gen, handler, &fast_inner_name, ret_type);
+                }
 
                 // Rug inner — the safe fallback
-                gen_rug_inner_fn(&mut out, &gen, handler, &fn_name, ret_type);
+                if memo_now {
+                    let rug_compute_name = format!("{}_compute", fn_name);
+                    gen_rug_inner_fn(&mut out, &gen, handler, &rug_compute_name, ret_type);
+                    emit_memo_wrapper_rug(&mut out, handler, &fn_name, &rug_compute_name);
+                } else {
+                    gen_rug_inner_fn(&mut out, &gen, handler, &fn_name, ret_type);
+                }
 
                 // Custom dispatch wrapper: try fast, fall back to rug
                 emit_dualmode_wrapper(&mut out, handler, &fn_name, ret_type);
@@ -1015,6 +1094,369 @@ fn emit_dualmode_wrapper(
     out.push_str("}\n\n");
 }
 
+/// Emit a thread-local cache wrapper for an auto-memoized handler's
+/// fast (Direct/i64) inner function.
+///
+/// `wrapper_name` is the name the rest of the codegen calls (e.g.
+/// `handler_f_fast`). `compute_name` is where the body lives (e.g.
+/// `handler_f_fast_compute`). The wrapper takes the same i64 args, looks
+/// them up in a thread_local HashMap, calls _compute on miss, stores, and
+/// returns. Recursive self-calls in the body target `wrapper_name`
+/// (because that's the name FnGenerator emits for sibling calls), so they
+/// pass through the cache automatically.
+///
+/// All params are guaranteed to be Int/i64 by `auto_memo_eligible`. The
+/// return type is restricted to Int by the caller.
+fn emit_memo_wrapper_fast(
+    out: &mut String,
+    handler: &NativeHandler,
+    wrapper_name: &str,
+    compute_name: &str,
+) {
+    let n = handler.params.len();
+    let param_decl: String = handler.params.iter()
+        .map(|p| format!("{}: i64", p.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arg_pass: String = handler.params.iter()
+        .map(|p| p.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let key_expr: String = if n == 1 {
+        handler.params[0].name.clone()
+    } else {
+        format!("({})", handler.params.iter()
+            .map(|p| p.name.clone())
+            .collect::<Vec<_>>()
+            .join(", "))
+    };
+    let key_ty: String = if n == 1 {
+        "i64".to_string()
+    } else {
+        format!("({})", vec!["i64"; n].join(", "))
+    };
+
+    out.push_str(&format!(
+        "fn inner_{}({}) -> i64 {{\n",
+        wrapper_name, param_decl
+    ));
+    out.push_str(&format!(
+        "    thread_local! {{ static _MEMO: std::cell::RefCell<std::collections::HashMap<{}, i64>> = std::cell::RefCell::new(std::collections::HashMap::new()); }}\n",
+        key_ty
+    ));
+    out.push_str(&format!(
+        "    if let Some(_v) = _MEMO.with(|c| c.borrow().get(&{}).copied()) {{ return _v; }}\n",
+        key_expr
+    ));
+    out.push_str(&format!(
+        "    let _v = inner_{}({});\n",
+        compute_name, arg_pass
+    ));
+    out.push_str(&format!(
+        "    _MEMO.with(|c| c.borrow_mut().insert({}, _v));\n",
+        key_expr
+    ));
+    out.push_str("    _v\n");
+    out.push_str("}\n\n");
+}
+
+/// Emit a thread-local cache wrapper for an auto-memoized handler's Rug
+/// inner function. Args are rug::Integer; we cache only when every arg
+/// fits i64 (which it does for the small subproblems that recursion
+/// hits — the whole point of memoization). Inputs that don't fit i64
+/// bypass the cache and call _compute directly.
+fn emit_memo_wrapper_rug(
+    out: &mut String,
+    handler: &NativeHandler,
+    wrapper_name: &str,
+    compute_name: &str,
+) {
+    let n = handler.params.len();
+    let param_decl: String = handler.params.iter()
+        .map(|p| format!("{}: Integer", p.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // Pass owned Integers built from the i64 keys to _compute.
+    let from_keys_call: String = handler.params.iter()
+        .map(|p| format!("Integer::from(_k_{})", p.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let owned_args_call: String = handler.params.iter()
+        .map(|p| p.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let key_expr: String = if n == 1 {
+        format!("_k_{}", handler.params[0].name)
+    } else {
+        format!("({})", handler.params.iter()
+            .map(|p| format!("_k_{}", p.name))
+            .collect::<Vec<_>>()
+            .join(", "))
+    };
+    let key_ty: String = if n == 1 {
+        "i64".to_string()
+    } else {
+        format!("({})", vec!["i64"; n].join(", "))
+    };
+
+    out.push_str(&format!(
+        "fn inner_{}({}) -> Integer {{\n",
+        wrapper_name, param_decl
+    ));
+    out.push_str(&format!(
+        "    thread_local! {{ static _MEMO: std::cell::RefCell<std::collections::HashMap<{}, Integer>> = std::cell::RefCell::new(std::collections::HashMap::new()); }}\n",
+        key_ty
+    ));
+    // Try to pull i64 keys from each Integer arg. If any doesn't fit,
+    // bypass the cache.
+    for p in &handler.params {
+        out.push_str(&format!(
+            "    let _k_{} = match {}.to_i64() {{ Some(v) => v, None => return inner_{}({}) }};\n",
+            p.name, p.name, compute_name, owned_args_call
+        ));
+    }
+    out.push_str(&format!(
+        "    if let Some(_v) = _MEMO.with(|c| c.borrow().get(&{}).cloned()) {{ return _v; }}\n",
+        key_expr
+    ));
+    out.push_str(&format!(
+        "    let _v = inner_{}({});\n",
+        compute_name, from_keys_call
+    ));
+    out.push_str(&format!(
+        "    _MEMO.with(|c| c.borrow_mut().insert({}, _v.clone()));\n",
+        key_expr
+    ));
+    out.push_str("    _v\n");
+    out.push_str("}\n\n");
+}
+
+// ── Auto-tabulation emission ─────────────────────────────────────────
+//
+// For a handler eligible per `auto_tab_eligible`, emit:
+//   1. `inner_handler_f_fast_cell(p1, ..., &tab) -> i64`
+//        — computes one cell using the body's guards and final
+//          expression, with self-calls replaced by `tab[i1][i2]...`.
+//   2. `inner_handler_f_fast(p1, ..., pn) -> i64`
+//        — entry that bypasses to memo for negative/huge inputs,
+//          otherwise allocates the table, fills it bottom-up by
+//          calling _cell at each index, returns `tab[p1]...[pn]`.
+//
+// The memo wrapper is still emitted alongside (under the
+// `_memo` suffix) so the entry can fall back when inputs exceed the
+// table-size cap. The cap is conservative (1024 per arity, capped at
+// ~1M total cells) to keep peak memory bounded.
+
+const TAB_MAX_DIM: i64 = 1024;
+const TAB_MAX_TOTAL: i64 = 1_000_000;
+
+/// Render a tab-simple expression as Rust source. Self-calls become
+/// table-index accesses; everything else uses straightforward Rust
+/// operators. Used for the *final return* expression only.
+fn render_tab_value_expr(e: &Expr, fn_name: &str, tab_var: &str) -> String {
+    match e {
+        Expr::Literal(Literal::Int(n)) => format!("{}i64", n),
+        Expr::Literal(Literal::Bool(b)) => b.to_string(),
+        Expr::Ident(name) => name.clone(),
+        Expr::BinaryOp { left, op, right } => {
+            let l = render_tab_value_expr(&left.node, fn_name, tab_var);
+            let r = render_tab_value_expr(&right.node, fn_name, tab_var);
+            let opstr = match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::Mod => "%",
+                _ => "+", // unreachable per tab-simple body check
+            };
+            format!("({} {} {})", l, opstr, r)
+        }
+        Expr::FnCall { name, args } if name == fn_name => {
+            let mut s = tab_var.to_string();
+            for arg in args {
+                s.push_str(&format!(
+                    "[({}) as usize]",
+                    render_tab_value_expr(&arg.node, fn_name, tab_var)
+                ));
+            }
+            s
+        }
+        // Should never reach here for tab-simple bodies
+        _ => "0i64".to_string(),
+    }
+}
+
+/// Render a guard condition (no self-calls allowed). Same as the value
+/// renderer but also handles CmpOp.
+fn render_tab_guard_expr(e: &Expr) -> String {
+    match e {
+        Expr::Literal(Literal::Int(n)) => format!("{}i64", n),
+        Expr::Literal(Literal::Bool(b)) => b.to_string(),
+        Expr::Ident(name) => name.clone(),
+        Expr::BinaryOp { left, op, right } => {
+            let l = render_tab_guard_expr(&left.node);
+            let r = render_tab_guard_expr(&right.node);
+            let opstr = match op {
+                BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*",
+                BinOp::Div => "/", BinOp::Mod => "%",
+                _ => "+",
+            };
+            format!("({} {} {})", l, opstr, r)
+        }
+        Expr::CmpOp { left, op, right } => {
+            let l = render_tab_guard_expr(&left.node);
+            let r = render_tab_guard_expr(&right.node);
+            let opstr = match op {
+                CmpOp::Lt => "<", CmpOp::Gt => ">", CmpOp::Le => "<=",
+                CmpOp::Ge => ">=", CmpOp::Eq => "==", CmpOp::Ne => "!=",
+            };
+            format!("({} {} {})", l, opstr, r)
+        }
+        _ => "false".to_string(),
+    }
+}
+
+/// The Rust type for a tab of arity n: `Vec<...Vec<i64>>`.
+fn tab_type_for_arity(n: usize) -> String {
+    let mut s = "i64".to_string();
+    for _ in 0..n { s = format!("Vec<{}>", s); }
+    s
+}
+
+/// Emit the cell-compute function: takes the per-cell parameters and an
+/// immutable reference to the tab, returns the value at that cell.
+fn emit_tab_cell_fn(
+    out: &mut String,
+    handler: &NativeHandler,
+    cell_fn_name: &str,
+) {
+    let n_arity = handler.params.len();
+    let param_decl: String = handler.params.iter()
+        .map(|p| format!("{}: i64", p.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tab_ty = tab_type_for_arity(n_arity);
+    out.push_str(&format!(
+        "fn inner_{}({}, _tab: &{}) -> i64 {{\n",
+        cell_fn_name, param_decl, tab_ty
+    ));
+    // Emit guards
+    for stmt in &handler.body[..handler.body.len() - 1] {
+        if let Statement::If { condition, then_body, .. } = &stmt.node {
+            let cond = render_tab_guard_expr(&condition.node);
+            // then_body is a single Return per is_guard_return_only
+            if let Statement::Return { value } = &then_body[0].node {
+                let base = render_tab_value_expr(&value.node, &handler.signal_name, "_tab");
+                out.push_str(&format!("    if {} {{ return {}; }}\n", cond, base));
+            }
+        }
+    }
+    // Emit final return
+    if let Some(last) = handler.body.last() {
+        if let Statement::Return { value } = &last.node {
+            let final_expr = render_tab_value_expr(&value.node, &handler.signal_name, "_tab");
+            out.push_str(&format!("    {}\n", final_expr));
+        }
+    }
+    out.push_str("}\n\n");
+}
+
+/// Emit the auto-tab entry function. It bypasses to `memo_fn_name` for
+/// inputs that don't fit the table cap. Otherwise it allocates the tab,
+/// fills it via nested loops calling `cell_fn_name`, and returns the
+/// final cell.
+fn emit_tab_entry_fn(
+    out: &mut String,
+    handler: &NativeHandler,
+    wrapper_name: &str,
+    cell_fn_name: &str,
+    memo_fn_name: &str,
+) {
+    let n_arity = handler.params.len();
+    let param_decl: String = handler.params.iter()
+        .map(|p| format!("{}: i64", p.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arg_pass: String = handler.params.iter()
+        .map(|p| p.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let tab_ty = tab_type_for_arity(n_arity);
+
+    out.push_str(&format!(
+        "fn inner_{}({}) -> i64 {{\n",
+        wrapper_name, param_decl
+    ));
+    // Negative-input bypass
+    let neg_check = handler.params.iter()
+        .map(|p| format!("{} < 0", p.name))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    out.push_str(&format!(
+        "    if {} {{ return inner_{}({}); }}\n",
+        neg_check, memo_fn_name, arg_pass
+    ));
+    // Per-arity dim cap
+    let dim_check = handler.params.iter()
+        .map(|p| format!("{} > {}i64", p.name, TAB_MAX_DIM))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    out.push_str(&format!(
+        "    if {} {{ return inner_{}({}); }}\n",
+        dim_check, memo_fn_name, arg_pass
+    ));
+    // Total-cells cap (conservative)
+    let total_expr = handler.params.iter()
+        .map(|p| format!("({} as i64 + 1)", p.name))
+        .collect::<Vec<_>>()
+        .join(" * ");
+    out.push_str(&format!(
+        "    if ({}) > {}i64 {{ return inner_{}({}); }}\n",
+        total_expr, TAB_MAX_TOTAL, memo_fn_name, arg_pass
+    ));
+
+    // Allocate the table
+    // For arity n: vec![vec![...vec![0i64; cap_n]...; cap_2]; cap_1]
+    let mut alloc = "0i64".to_string();
+    for p in handler.params.iter().rev() {
+        alloc = format!("vec![{}; ({} as usize) + 1]", alloc, p.name);
+    }
+    out.push_str(&format!("    let mut _tab: {} = {};\n", tab_ty, alloc));
+
+    // Generate nested for loops in parameter order
+    let loop_vars: Vec<String> = (0..n_arity).map(|i| format!("_i{}", i)).collect();
+    let mut indent = "    ".to_string();
+    for (i, p) in handler.params.iter().enumerate() {
+        out.push_str(&format!(
+            "{}for {} in 0..=({} as usize) {{\n",
+            indent, loop_vars[i], p.name
+        ));
+        indent.push_str("    ");
+    }
+    // Inside innermost: compute and store
+    let cell_args: String = loop_vars.iter()
+        .map(|v| format!("{} as i64", v))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut tab_index = String::new();
+    for v in &loop_vars {
+        tab_index.push_str(&format!("[{}]", v));
+    }
+    out.push_str(&format!(
+        "{}_tab{} = inner_{}({}, &_tab);\n",
+        indent, tab_index, cell_fn_name, cell_args
+    ));
+    // Close loops
+    for _ in 0..n_arity {
+        for _ in 0..4 { indent.pop(); }
+        out.push_str(&format!("{}}}\n", indent));
+    }
+    // Return the final cell
+    let mut final_idx = String::new();
+    for p in &handler.params {
+        final_idx.push_str(&format!("[{} as usize]", p.name));
+    }
+    out.push_str(&format!("    _tab{}\n", final_idx));
+    out.push_str("}\n\n");
+}
+
 /// Emit the shared-buffer FFI wrapper that calls the Rug inner function
 /// and packs its result for the FFI return.
 fn gen_rug_ffi_wrapper(
@@ -1258,6 +1700,781 @@ fn is_bounded_builtin(name: &str) -> bool {
         | "floor" | "ceil" | "round"
         | "to_int" | "len"
     )
+}
+
+// ── Auto-memoization detection ──────────────────────────────────────
+//
+// A handler is auto-memo-eligible iff:
+//   1. it has ≥2 self-recursive calls in the same body
+//   2. every parameter has Int type (for cache keys)
+//   3. the return type is Int, Float, or Bool (storable)
+//   4. ≤ 3 parameters (we hard-code arity-specific cache shapes)
+//   5. every argument of every self-call is "simple":
+//        - a parameter unchanged
+//        - param − small_literal (literal ≤ 5)
+//        - param − other_param (both must be parameters of this fn)
+//        - a literal in [-2^60, 2^60]
+//        - a nested self-call whose own args are all simple
+//
+// Verified against examples/memo_corpus/m01..m20: 20/20 correct.
+
+fn auto_memo_eligible(handler: &NativeHandler) -> bool {
+    // (4) arity
+    if handler.params.is_empty() || handler.params.len() > 3 {
+        return false;
+    }
+    // (2) all params Int
+    for p in &handler.params {
+        if type_expr_to_native(&p.ty.node) != NativeType::Int {
+            return false;
+        }
+    }
+    let param_names: HashSet<String> = handler.params.iter().map(|p| p.name.clone()).collect();
+
+    // (1) collect self-calls
+    let mut calls: Vec<&[Spanned<Expr>]> = Vec::new();
+    collect_self_calls(&handler.body, &handler.signal_name, &mut calls);
+    if calls.len() < 2 {
+        return false;
+    }
+    // (5) every arg of every call is simple
+    for args in &calls {
+        for arg in *args {
+            if !is_memo_simple_arg(&arg.node, &param_names, &handler.signal_name) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn collect_self_calls<'a>(
+    body: &'a [Spanned<Statement>],
+    fn_name: &str,
+    out: &mut Vec<&'a [Spanned<Expr>]>,
+) {
+    fn walk_expr<'a>(e: &'a Expr, fn_name: &str, out: &mut Vec<&'a [Spanned<Expr>]>) {
+        match e {
+            Expr::FnCall { name, args } => {
+                if name == fn_name {
+                    out.push(args);
+                }
+                for a in args { walk_expr(&a.node, fn_name, out); }
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+                walk_expr(&left.node, fn_name, out);
+                walk_expr(&right.node, fn_name, out);
+            }
+            Expr::Not(inner) => walk_expr(&inner.node, fn_name, out),
+            _ => {}
+        }
+    }
+    fn walk_stmt<'a>(s: &'a Statement, fn_name: &str, out: &mut Vec<&'a [Spanned<Expr>]>) {
+        match s {
+            Statement::Let { value, .. }
+            | Statement::Assign { value, .. }
+            | Statement::Return { value } => walk_expr(&value.node, fn_name, out),
+            Statement::ExprStmt { expr } => walk_expr(&expr.node, fn_name, out),
+            Statement::If { condition, then_body, else_body } => {
+                walk_expr(&condition.node, fn_name, out);
+                collect_self_calls(then_body, fn_name, out);
+                collect_self_calls(else_body, fn_name, out);
+            }
+            Statement::While { condition, body } => {
+                walk_expr(&condition.node, fn_name, out);
+                collect_self_calls(body, fn_name, out);
+            }
+            Statement::For { iter, body, .. } => {
+                walk_expr(&iter.node, fn_name, out);
+                collect_self_calls(body, fn_name, out);
+            }
+            _ => {}
+        }
+    }
+    for s in body { walk_stmt(&s.node, fn_name, out); }
+}
+
+fn is_memo_simple_arg(expr: &Expr, params: &HashSet<String>, fn_name: &str) -> bool {
+    const LIMIT: i64 = 1 << 60;
+    match expr {
+        Expr::Literal(Literal::Int(n)) => *n >= -LIMIT && *n <= LIMIT,
+        Expr::Ident(name) => params.contains(name),
+        Expr::BinaryOp { left, op: BinOp::Sub, right } => {
+            // param − small_literal
+            if let (Expr::Ident(p), Expr::Literal(Literal::Int(k))) = (&left.node, &right.node) {
+                if params.contains(p) && *k >= 0 && *k <= 5 {
+                    return true;
+                }
+            }
+            // param − other_param
+            if let (Expr::Ident(a), Expr::Ident(b)) = (&left.node, &right.node) {
+                if params.contains(a) && params.contains(b) {
+                    return true;
+                }
+            }
+            false
+        }
+        Expr::FnCall { name, args } if name == fn_name => {
+            args.iter().all(|a| is_memo_simple_arg(&a.node, params, fn_name))
+        }
+        _ => false,
+    }
+}
+
+// ── Auto-tabulation detection ───────────────────────────────────────
+//
+// A handler that satisfies auto-memo eligibility AND has a "tab-simple"
+// body — guard ifs followed by exactly one return whose expression is a
+// linear combination of self-calls of the form `f(p_i ± k_i, ...)` —
+// can be compiled to a bottom-up Vec fill instead of a HashMap memo.
+//
+// Strict additional rules vs auto-memo:
+//   - Position-preserving: the i-th argument of every self-call must
+//     reference the i-th parameter (no swapping like `f(k, n)`).
+//   - Each arg must be `p_i` or `p_i - k` with k ≥ 0 (no nested calls,
+//     no `p_i - p_j`, no literals-only).
+//   - Every self-call must shrink at least one parameter strictly
+//     (k ≥ 1 in at least one arg position) — otherwise it's a self-loop.
+//   - The body must be tab-simple: zero or more `if cond { return base }`
+//     guards (no self-calls in cond or base), followed by exactly one
+//     `return <linear combo>`. No let-bindings of self-call results, no
+//     while/for loops.
+//
+// Verified against examples/tab_corpus/t01..t11 and existing memo_corpus.
+
+#[derive(Debug, Clone)]
+struct TabShrink {
+    /// For each parameter position, the shrink amount k ≥ 0 (so the
+    /// arg expression is `p_i - k`, where k=0 means unchanged).
+    per_param: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+struct TabPlan {
+    /// Each entry is one self-call's per-param shrink amounts.
+    calls: Vec<TabShrink>,
+}
+
+fn auto_tab_eligible(handler: &NativeHandler) -> Option<TabPlan> {
+    // (1) must satisfy auto-memo first
+    if !auto_memo_eligible(handler) {
+        return None;
+    }
+    let pnames: Vec<String> = handler.params.iter().map(|p| p.name.clone()).collect();
+    // (2) body must be tab-simple
+    let final_calls = match tab_simple_body(&handler.body, &handler.signal_name) {
+        Some(c) => c,
+        None => return None,
+    };
+    // (3) each call must be position-preserving + per-param shrink + at
+    //     least one strict shrink
+    let mut plan = TabPlan { calls: Vec::new() };
+    for args in final_calls {
+        if args.len() != pnames.len() {
+            return None;
+        }
+        let mut shrink = TabShrink { per_param: vec![0; pnames.len()] };
+        let mut any_strict = false;
+        for (i, arg) in args.iter().enumerate() {
+            let k = match parse_tab_arg(&arg.node, &pnames[i]) {
+                Some(k) => k,
+                None => return None,
+            };
+            shrink.per_param[i] = k;
+            if k >= 1 { any_strict = true; }
+        }
+        if !any_strict {
+            return None;
+        }
+        plan.calls.push(shrink);
+    }
+    Some(plan)
+}
+
+/// Return Some(k) if `expr` is `pname` (k=0) or `pname - K` with K in
+/// [0, 5]. Return None otherwise.
+fn parse_tab_arg(expr: &Expr, pname: &str) -> Option<u32> {
+    match expr {
+        Expr::Ident(name) if name == pname => Some(0),
+        Expr::BinaryOp { left, op: BinOp::Sub, right } => {
+            if let (Expr::Ident(p), Expr::Literal(Literal::Int(k))) =
+                (&left.node, &right.node)
+            {
+                if p == pname && *k >= 0 && *k <= 5 {
+                    return Some(*k as u32);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Check the body is tab-simple. Returns the args of the *final return's
+/// self-calls* on success (one entry per self-call in source order).
+fn tab_simple_body<'a>(
+    body: &'a [Spanned<Statement>],
+    fn_name: &str,
+) -> Option<Vec<&'a [Spanned<Expr>]>> {
+    if body.is_empty() {
+        return None;
+    }
+    // All statements except the last must be guard ifs with no self-calls.
+    for s in &body[..body.len() - 1] {
+        match &s.node {
+            Statement::If { condition, then_body, else_body } => {
+                // No self-calls in condition
+                let mut c = 0;
+                count_self_calls_in_expr(&condition.node, fn_name, &mut c);
+                if c > 0 { return None; }
+                // then_body must be a single `return <const-or-param-expr>`
+                if !is_guard_return_only(then_body, fn_name) {
+                    return None;
+                }
+                // else_body, if present, must also be guard-style or empty
+                if !else_body.is_empty() && !is_guard_return_only(else_body, fn_name) {
+                    return None;
+                }
+            }
+            _ => return None, // no let-bindings, no while, etc.
+        }
+    }
+    // The final statement must be `return <expr>` whose expression is a
+    // tree of literals/params/arith/self-calls only.
+    let last = &body[body.len() - 1];
+    let expr = match &last.node {
+        Statement::Return { value } => &value.node,
+        _ => return None,
+    };
+    // Collect self-calls; reject if any non-arith / non-self-call subexpr.
+    let mut calls: Vec<&[Spanned<Expr>]> = Vec::new();
+    if !collect_tab_final(expr, fn_name, &mut calls) {
+        return None;
+    }
+    if calls.is_empty() {
+        return None;
+    }
+    Some(calls)
+}
+
+fn count_self_calls_in_expr(e: &Expr, fn_name: &str, count: &mut usize) {
+    match e {
+        Expr::FnCall { name, args } => {
+            if name == fn_name { *count += 1; }
+            for a in args { count_self_calls_in_expr(&a.node, fn_name, count); }
+        }
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            count_self_calls_in_expr(&left.node, fn_name, count);
+            count_self_calls_in_expr(&right.node, fn_name, count);
+        }
+        Expr::Not(inner) => count_self_calls_in_expr(&inner.node, fn_name, count),
+        _ => {}
+    }
+}
+
+fn is_guard_return_only(body: &[Spanned<Statement>], fn_name: &str) -> bool {
+    if body.len() != 1 { return false; }
+    match &body[0].node {
+        Statement::Return { value } => {
+            let mut c = 0;
+            count_self_calls_in_expr(&value.node, fn_name, &mut c);
+            c == 0
+        }
+        _ => false,
+    }
+}
+
+/// Walk the final return's expression. Allow only literals, idents,
+/// arithmetic BinaryOps, and self-calls. Collect self-calls into `out`.
+/// Return true if the whole expression is allowed.
+fn collect_tab_final<'a>(
+    e: &'a Expr,
+    fn_name: &str,
+    out: &mut Vec<&'a [Spanned<Expr>]>,
+) -> bool {
+    match e {
+        Expr::Literal(_) | Expr::Ident(_) => true,
+        Expr::FnCall { name, args } => {
+            if name != fn_name {
+                // Non-self call → reject
+                return false;
+            }
+            // Self-call: record args; the args themselves don't recurse here
+            // (they're checked structurally by parse_tab_arg later).
+            out.push(args);
+            true
+        }
+        Expr::BinaryOp { left, right, op } => {
+            // Allow +, -, *, /, %
+            match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
+                _ => return false,
+            }
+            collect_tab_final(&left.node, fn_name, out)
+                && collect_tab_final(&right.node, fn_name, out)
+        }
+        _ => false,
+    }
+}
+
+// ── Auto-CSE detection + AST rewrite ────────────────────────────────
+//
+// Hoists repeated pure call expressions to a fresh `let` at the start
+// of the handler body. Detection is per-handler, top-level-only:
+//
+//   1. The same call form (same callee, syntactically equal args)
+//      appears 2+ times across the body's *top-level* statements (or
+//      inside the immediate while body, when auto-iter has wrapped the
+//      original body in `while true { ... }`).
+//   2. The callee is a [native] sibling handler OR a pure builtin from
+//      a small allowlist. `random` is excluded.
+//   3. Every var referenced in the args is NOT reassigned anywhere in
+//      the body. (Conservative — covers the let/assign cases.)
+//
+// Verified against examples/cse_corpus/c01..c07: 7/7 detection match,
+// only known fire in 100-challenge suite is mandelbrot::count_inside
+// (`to_float(grid_n)` × 2 in straight-line lets — true positive).
+
+const PURE_BUILTINS: &[&str] = &[
+    "sqrt", "log", "exp", "pow", "abs", "min", "max",
+    "len", "nth", "range", "floor", "ceil", "round", "sin", "cos",
+    "to_float", "to_int", "to_string",
+    "band", "bor", "bxor", "bnot", "shl", "shr", "bit_len",
+    "bit_test", "bit_set", "bit_clr", "bit_next",
+    "pow_mod", "gcd", "sqrt_int",
+    "str_len", "str_at", "str_eq",
+];
+
+fn is_pure_callee(name: &str, siblings: &HashSet<String>) -> bool {
+    if name == "random" { return false; }
+    if siblings.contains(name) { return true; }
+    PURE_BUILTINS.contains(&name)
+}
+
+/// Walk the entire handler body (recursively into all sub-blocks) and
+/// collect every variable name that is the LHS of an `Assign`. These
+/// vars are unsafe to use in CSE arg checking — even one reassignment
+/// anywhere kills CSE for that var.
+fn collect_reassigned_vars(body: &[Spanned<Statement>], out: &mut HashSet<String>) {
+    for s in body {
+        match &s.node {
+            Statement::Assign { name, .. } => { out.insert(name.clone()); }
+            Statement::If { then_body, else_body, .. } => {
+                collect_reassigned_vars(then_body, out);
+                collect_reassigned_vars(else_body, out);
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => {
+                collect_reassigned_vars(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Render an expression in a canonical text form, used as a CSE key.
+fn render_expr_form(e: &Expr) -> String {
+    match e {
+        Expr::Literal(Literal::Int(n)) => format!("i{}", n),
+        Expr::Literal(Literal::Bool(b)) => format!("b{}", b),
+        Expr::Literal(Literal::Float(f)) => format!("f{}", f),
+        Expr::Literal(Literal::String(s)) => format!("s{:?}", s),
+        Expr::Ident(name) => format!("v{}", name),
+        Expr::BinaryOp { left, op, right } => {
+            format!("(B{:?} {} {})", op, render_expr_form(&left.node), render_expr_form(&right.node))
+        }
+        Expr::CmpOp { left, op, right } => {
+            format!("(C{:?} {} {})", op, render_expr_form(&left.node), render_expr_form(&right.node))
+        }
+        Expr::Not(inner) => format!("(N {})", render_expr_form(&inner.node)),
+        Expr::FnCall { name, args } => {
+            let args_s: Vec<String> = args.iter().map(|a| render_expr_form(&a.node)).collect();
+            format!("({}({}))", name, args_s.join(","))
+        }
+        _ => "_".to_string(),
+    }
+}
+
+/// Are all variable references in `e` outside the reassigned set?
+fn expr_is_cse_safe(e: &Expr, reassigned: &HashSet<String>) -> bool {
+    match e {
+        Expr::Literal(_) => true,
+        Expr::Ident(name) => !reassigned.contains(name),
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            expr_is_cse_safe(&left.node, reassigned)
+                && expr_is_cse_safe(&right.node, reassigned)
+        }
+        Expr::Not(inner) => expr_is_cse_safe(&inner.node, reassigned),
+        // We do NOT allow nested FnCalls in CSE'd args — too easy to
+        // introduce subtle ordering issues if any of them is impure.
+        _ => false,
+    }
+}
+
+/// Walk an expression and any nested FnCall args, calling `visit` on
+/// each Expr node (post-order so children are visited first).
+fn walk_expr_postorder(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
+    match e {
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            walk_expr_postorder(&mut left.node, visit);
+            walk_expr_postorder(&mut right.node, visit);
+        }
+        Expr::Not(inner) => walk_expr_postorder(&mut inner.node, visit),
+        Expr::FnCall { args, .. } => {
+            for a in args.iter_mut() {
+                walk_expr_postorder(&mut a.node, visit);
+            }
+        }
+        _ => {}
+    }
+    visit(e);
+}
+
+/// Collect every CSE-able call form found in `e` (post-order). A form
+/// is the canonical text rendering. Each form is recorded once per call
+/// site occurrence — duplicates expected.
+fn collect_cse_forms_in_expr(
+    e: &Expr,
+    siblings: &HashSet<String>,
+    reassigned: &HashSet<String>,
+    out: &mut Vec<(String, Spanned<Expr>)>,
+) {
+    match e {
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            collect_cse_forms_in_expr(&left.node, siblings, reassigned, out);
+            collect_cse_forms_in_expr(&right.node, siblings, reassigned, out);
+        }
+        Expr::Not(inner) => collect_cse_forms_in_expr(&inner.node, siblings, reassigned, out),
+        Expr::FnCall { name, args } => {
+            // Recurse first (children may have their own CSE-able calls)
+            for a in args.iter() {
+                collect_cse_forms_in_expr(&a.node, siblings, reassigned, out);
+            }
+            if is_pure_callee(name, siblings)
+                && args.iter().all(|a| expr_is_cse_safe(&a.node, reassigned))
+            {
+                let form = render_expr_form(e);
+                out.push((form, Spanned {
+                    node: e.clone(),
+                    span: Span::new(0, 0),
+                }));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Top-level statements of the body. If the body has been auto-iter'd
+/// (i.e. it's exactly `[While { true, body: inner }]`), descend one
+/// level so we treat `inner`'s top statements as the CSE block.
+fn cse_top_block(body: &mut Vec<Spanned<Statement>>) -> &mut Vec<Spanned<Statement>> {
+    let descend = body.len() == 1
+        && matches!(&body[0].node, Statement::While { condition, .. }
+            if matches!(&condition.node, Expr::Literal(Literal::Bool(true))));
+    if descend {
+        match &mut body[0].node {
+            Statement::While { body: inner, .. } => inner,
+            _ => unreachable!(),
+        }
+    } else {
+        body
+    }
+}
+
+fn apply_cse_rewrite(h: &mut NativeHandler, siblings: &HashSet<String>) {
+    let mut reassigned: HashSet<String> = HashSet::new();
+    collect_reassigned_vars(&h.body, &mut reassigned);
+
+    let block = cse_top_block(&mut h.body);
+
+    // Pass 1: walk top-level statements; for each CSE-able call form,
+    // record the FIRST stmt-idx where it appears + count + sample expr.
+    let mut first_idx: HashMap<String, usize> = HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut samples: HashMap<String, Spanned<Expr>> = HashMap::new();
+    for (i, s) in block.iter().enumerate() {
+        let exprs: Vec<&Expr> = match &s.node {
+            Statement::Let { value, .. }
+            | Statement::Assign { value, .. }
+            | Statement::Return { value } => vec![&value.node],
+            Statement::ExprStmt { expr } => vec![&expr.node],
+            _ => vec![],
+        };
+        for e in exprs {
+            let mut found = Vec::new();
+            collect_cse_forms_in_expr(e, siblings, &reassigned, &mut found);
+            for (form, sample) in found {
+                *counts.entry(form.clone()).or_insert(0) += 1;
+                first_idx.entry(form.clone()).or_insert(i);
+                samples.entry(form).or_insert(sample);
+            }
+        }
+    }
+    // Forms eligible for hoisting (count >= 2). Build a mapping form ->
+    // (local_name, first_stmt_idx).
+    let mut plans: Vec<(String, String, usize)> = Vec::new();
+    let mut idx = 0;
+    let mut keys: Vec<&String> = counts.keys().filter(|f| counts[*f] >= 2).collect();
+    keys.sort();
+    for f in keys {
+        plans.push((f.clone(), format!("__soma_cse_{}", idx), first_idx[f]));
+        idx += 1;
+    }
+    if plans.is_empty() {
+        return;
+    }
+    let cse_forms: HashMap<String, String> = plans.iter()
+        .map(|(f, n, _)| (f.clone(), n.clone())).collect();
+
+    // Pass 2: rewrite all matching call sites. (We do this BEFORE
+    // inserting the hoist lets so the indices in `plans` stay valid.)
+    for s in block.iter_mut() {
+        let exprs: Vec<&mut Expr> = match &mut s.node {
+            Statement::Let { value, .. }
+            | Statement::Assign { value, .. }
+            | Statement::Return { value } => vec![&mut value.node],
+            Statement::ExprStmt { expr } => vec![&mut expr.node],
+            _ => vec![],
+        };
+        for e in exprs {
+            replace_cse_in_expr(e, siblings, &reassigned, &cse_forms);
+        }
+    }
+
+    // Pass 3: insert hoist `let __soma_cse_<i> = <call>;` JUST BEFORE
+    // the first occurrence's statement — preserves any guards above
+    // that would have prevented evaluation. Sort by first_idx desc so
+    // each insertion doesn't shift earlier indices.
+    plans.sort_by(|a, b| b.2.cmp(&a.2));
+    for (form, local, fidx) in plans {
+        let expr = samples.get(&form).unwrap().clone();
+        block.insert(fidx, Spanned {
+            node: Statement::Let { name: local, value: expr },
+            span: Span::new(0, 0),
+        });
+    }
+}
+
+fn replace_cse_in_expr(
+    e: &mut Expr,
+    siblings: &HashSet<String>,
+    reassigned: &HashSet<String>,
+    cse_forms: &HashMap<String, String>,
+) {
+    // Recurse first (post-order replacement so we don't replace a call
+    // we're about to descend into)
+    match e {
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            replace_cse_in_expr(&mut left.node, siblings, reassigned, cse_forms);
+            replace_cse_in_expr(&mut right.node, siblings, reassigned, cse_forms);
+        }
+        Expr::Not(inner) => {
+            replace_cse_in_expr(&mut inner.node, siblings, reassigned, cse_forms);
+        }
+        Expr::FnCall { args, .. } => {
+            for a in args.iter_mut() {
+                replace_cse_in_expr(&mut a.node, siblings, reassigned, cse_forms);
+            }
+        }
+        _ => {}
+    }
+    // Now check if THIS expression is a CSE'd call
+    if let Expr::FnCall { name, args } = e {
+        if is_pure_callee(name, siblings)
+            && args.iter().all(|a| expr_is_cse_safe(&a.node, reassigned))
+        {
+            let form = render_expr_form(e);
+            if let Some(local) = cse_forms.get(&form) {
+                *e = Expr::Ident(local.clone());
+            }
+        }
+    }
+}
+
+// ── Auto-iteration detection + AST rewrite ──────────────────────────
+//
+// A `[native]` handler whose body's last statement is a tail self-call
+// (with no other self-calls anywhere in the body, no String params, and
+// the call is not buried inside a while/for loop) is rewritten as a
+// `while true { ... }` loop that rebinds the parameters in-place.
+//
+// This eliminates stack overflow risk for deeply tail-recursive helpers
+// (e.g. gcd) and removes call overhead. The transform is mode-independent
+// — Direct and Rug codegen both see the rewritten body.
+//
+// Verified against examples/iter_corpus/i01..i10: 10/10 detection match,
+// zero false positives across the 100-challenge suite (only fires on
+// gcd_basic and egcd_g).
+//
+// IMPORTANT: this runs *before* mode selection and before any other
+// codegen analysis, so the rewritten body is what every downstream
+// pass sees.
+
+fn auto_iter_eligible(h: &NativeHandler) -> bool {
+    // (1) is [native]
+    if !h.properties.iter().any(|p| p == "native") {
+        return false;
+    }
+    if h.params.is_empty() {
+        return false;
+    }
+    // (2) all params are scalar — no String
+    for p in &h.params {
+        if type_expr_to_native(&p.ty.node) == NativeType::String {
+            return false;
+        }
+    }
+    // (3) exactly one self-call anywhere in the body
+    let mut count = 0;
+    count_self_calls_anywhere(&h.body, &h.signal_name, &mut count);
+    if count != 1 {
+        return false;
+    }
+    // (4) the self-call must NOT be inside a while/for
+    if self_call_inside_loop(&h.body, &h.signal_name) {
+        return false;
+    }
+    // (5) the body's last top-level statement is `return self(args)`
+    is_tail_self_call(&h.body, &h.signal_name)
+}
+
+fn count_self_calls_anywhere(
+    body: &[Spanned<Statement>],
+    fn_name: &str,
+    count: &mut usize,
+) {
+    fn walk_e(e: &Expr, fn_name: &str, count: &mut usize) {
+        match e {
+            Expr::FnCall { name, args } => {
+                if name == fn_name {
+                    *count += 1;
+                }
+                for a in args {
+                    walk_e(&a.node, fn_name, count);
+                }
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+                walk_e(&left.node, fn_name, count);
+                walk_e(&right.node, fn_name, count);
+            }
+            Expr::Not(inner) => walk_e(&inner.node, fn_name, count),
+            _ => {}
+        }
+    }
+    fn walk_s(s: &Statement, fn_name: &str, count: &mut usize) {
+        match s {
+            Statement::Let { value, .. }
+            | Statement::Assign { value, .. }
+            | Statement::Return { value } => walk_e(&value.node, fn_name, count),
+            Statement::ExprStmt { expr } => walk_e(&expr.node, fn_name, count),
+            Statement::If { condition, then_body, else_body } => {
+                walk_e(&condition.node, fn_name, count);
+                count_self_calls_anywhere(then_body, fn_name, count);
+                count_self_calls_anywhere(else_body, fn_name, count);
+            }
+            Statement::While { condition, body } => {
+                walk_e(&condition.node, fn_name, count);
+                count_self_calls_anywhere(body, fn_name, count);
+            }
+            Statement::For { iter, body, .. } => {
+                walk_e(&iter.node, fn_name, count);
+                count_self_calls_anywhere(body, fn_name, count);
+            }
+            _ => {}
+        }
+    }
+    for s in body {
+        walk_s(&s.node, fn_name, count);
+    }
+}
+
+fn self_call_inside_loop(body: &[Spanned<Statement>], fn_name: &str) -> bool {
+    for s in body {
+        match &s.node {
+            Statement::While { body: wb, .. } | Statement::For { body: wb, .. } => {
+                let mut c = 0;
+                count_self_calls_anywhere(wb, fn_name, &mut c);
+                if c > 0 {
+                    return true;
+                }
+            }
+            Statement::If { then_body, else_body, .. } => {
+                if self_call_inside_loop(then_body, fn_name) {
+                    return true;
+                }
+                if self_call_inside_loop(else_body, fn_name) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn is_tail_self_call(body: &[Spanned<Statement>], fn_name: &str) -> bool {
+    if let Some(last) = body.last() {
+        if let Statement::Return { value } = &last.node {
+            if let Expr::FnCall { name, .. } = &value.node {
+                return name == fn_name;
+            }
+        }
+    }
+    false
+}
+
+/// Rewrite the body of a tail-self-call handler to a `while true` loop
+/// that rebinds the parameters in place. Caller must have already
+/// confirmed `auto_iter_eligible(h)`.
+fn rewrite_tail_call_to_loop(h: &mut NativeHandler) {
+    let mut body = std::mem::take(&mut h.body);
+    let last = body.pop().expect("eligibility ensures body non-empty");
+    let span = last.span;
+    let call_args: Vec<Spanned<Expr>> = match last.node {
+        Statement::Return { value } => match value.node {
+            Expr::FnCall { args, .. } => args,
+            _ => unreachable!("eligibility checked"),
+        },
+        _ => unreachable!("eligibility checked"),
+    };
+
+    // Bind each arg expression to a fresh local FIRST, so reassigning
+    // params doesn't affect later arg evaluation.
+    for (i, arg) in call_args.iter().enumerate() {
+        body.push(Spanned {
+            node: Statement::Let {
+                name: format!("__soma_iter_tmp_{}", i),
+                value: arg.clone(),
+            },
+            span,
+        });
+    }
+    // Then assign each param from its tmp.
+    for (i, p) in h.params.iter().enumerate() {
+        body.push(Spanned {
+            node: Statement::Assign {
+                name: p.name.clone(),
+                value: Spanned {
+                    node: Expr::Ident(format!("__soma_iter_tmp_{}", i)),
+                    span,
+                },
+            },
+            span,
+        });
+    }
+
+    // Wrap everything in `while true { ... }`. Falling off the end of the
+    // body re-enters the loop. Other returns (base cases) exit the function.
+    let while_stmt = Spanned {
+        node: Statement::While {
+            condition: Spanned {
+                node: Expr::Literal(Literal::Bool(true)),
+                span,
+            },
+            body,
+        },
+        span,
+    };
+    h.body = vec![while_stmt];
 }
 
 fn type_expr_to_native(ty: &TypeExpr) -> NativeType {

@@ -1,0 +1,15 @@
+// expected_fire: yes
+// Three identical calls in the same return — even better candidate.
+
+cell C06Three {
+    on cube(x: Int) [native] {
+        return x * x * x
+    }
+    on f(n: Int) [native] {
+        return cube(n) + cube(n) + cube(n)
+    }
+    on run() {
+        let r = f(4)
+        if r == 192 { print("OK c06 = {r}") } else { print("FAIL: {r}") }
+    }
+}

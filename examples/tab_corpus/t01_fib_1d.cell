@@ -1,0 +1,14 @@
+// expected_fire: yes
+// 1D fill: fib is the textbook tabulation case. All self-call args are
+// `n - k` shrinks. Auto-tabulation should fire and emit a Vec<i64> fill.
+
+cell T01Fib {
+    on fib(n: Int) [native] {
+        if n < 2 { return n }
+        return fib(n - 1) + fib(n - 2)
+    }
+    on run() {
+        let r = fib(30)
+        if r == 832040 { print("OK t01 = {r}") } else { print("FAIL: {r}") }
+    }
+}

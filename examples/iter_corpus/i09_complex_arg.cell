@@ -1,0 +1,19 @@
+// expected_fire: yes
+// Tail call where the argument is a non-trivial expression involving
+// parameters and locals. Detection only requires tail position; the
+// arg expression itself can be arbitrarily complex.
+
+cell I09ComplexArg {
+    on f(a: Int, b: Int) [native] {
+        if a == 0 { return b }
+        let q = a / 3
+        let r = a - q * 3
+        return f(q, b + r)
+    }
+    on run() {
+        let r = f(100, 0)
+        // f reads digits in base 3 from least significant; sum is the digit sum.
+        // 100 in base 3 = 10201 → 1+0+2+0+1 = 4
+        if r == 4 { print("OK i09 = {r}") } else { print("FAIL: {r}") }
+    }
+}

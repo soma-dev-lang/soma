@@ -1,0 +1,20 @@
+// expected_fire: no
+// Mutual recursion: f calls g, g calls f. Even if `f` ends with
+// `return g(...)` (a tail call to a sibling), auto-iteration only
+// rewrites *self* recursion. The siblings remain function calls.
+
+cell I08Mutual {
+    on f(n: Int) [native] {
+        if n == 0 { return 0 }
+        return g(n - 1)
+    }
+    on g(n: Int) [native] {
+        if n == 0 { return 1 }
+        return f(n - 1)
+    }
+    on run() {
+        let r = f(10)
+        // f(10)→g(9)→f(8)→g(7)→f(6)→g(5)→f(4)→g(3)→f(2)→g(1)→f(0)=0
+        if r == 0 { print("OK i08 = {r}") } else { print("FAIL: {r}") }
+    }
+}

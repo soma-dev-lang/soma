@@ -1,0 +1,17 @@
+// expected_fire: no
+// Two self-calls in the same body. Even though one of them happens to
+// be in tail position, the other is not, and converting only one would
+// change semantics. Auto-iteration requires *exactly one* self-call.
+
+cell I03TwoSelf {
+    on f(n: Int) [native] {
+        if n == 0 { return 1 }
+        if n == 1 { return 1 }
+        let a = f(n - 1)
+        return a + f(n - 2)
+    }
+    on run() {
+        let r = f(10)
+        if r == 89 { print("OK i03 = {r}") } else { print("FAIL: {r}") }
+    }
+}

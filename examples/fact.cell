@@ -12,4 +12,9 @@ cell Fact {
         }
         return n * compute(n - 1)
     }
+
+    on run() {
+        let r = compute(20)
+        if r == 2432902008176640000 { print("OK fact(20) = {r}") } else { print("FAIL: {r}") }
+    }
 }

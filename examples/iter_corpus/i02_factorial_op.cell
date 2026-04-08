@@ -1,0 +1,16 @@
+// expected_fire: no
+// Self-call appears inside a multiplication: NOT a tail call.
+// `n * f(n-1)` requires the recursive result before multiplying.
+// Auto-iteration must REJECT (the conservative version doesn't do
+// fold-rewrites — only pure tail calls).
+
+cell I02FactorialOp {
+    on fact(n: Int) [native] {
+        if n <= 1 { return 1 }
+        return n * fact(n - 1)
+    }
+    on run() {
+        let r = fact(10)
+        if r == 3628800 { print("OK i02_fact = {r}") } else { print("FAIL: {r}") }
+    }
+}

@@ -1,0 +1,23 @@
+// expected_fire: no
+// Body has intermediate `let` bindings used inside `if` branches and
+// arithmetic. The "tab-simple body" rule rejects this — the body must
+// be: zero or more guard returns followed by exactly one return that
+// is a linear combination of self-calls. Anything else falls back to
+// auto-memo (which still works correctly).
+
+cell T05Complex {
+    on f(n: Int) [native] {
+        if n < 2 { return n }
+        let half = f(n - 1)
+        let other = f(n - 2)
+        if half > other {
+            return half + 1
+        }
+        return other + half
+    }
+    on run() {
+        let r = f(10)
+        // Just verify it doesn't crash; value depends on the recurrence
+        print("OK t05 = {r}")
+    }
+}

@@ -1,0 +1,16 @@
+// expected_fire: no
+// Self-call is in tail position but a parameter is String. The strict
+// rule rejects String params (no scalar-only requirement). The compiler
+// could probably handle &str rebinding inside a loop, but until we
+// validate it carefully we exclude this case.
+
+cell I06StringParam {
+    on f(s: String, n: Int) [native] {
+        if n == 0 { return len(s) }
+        return f(s, n - 1)
+    }
+    on run() {
+        let r = f("hello", 3)
+        if r == 5 { print("OK i06 = {r}") } else { print("FAIL: {r}") }
+    }
+}

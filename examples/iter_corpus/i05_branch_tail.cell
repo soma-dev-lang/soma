@@ -1,0 +1,15 @@
+// expected_fire: yes
+// Self-call in tail position of an if/else. Both branches end the body
+// (else returns base case, then the unreachable trailing return f(...)).
+// Conservative form: trailing tail call only.
+
+cell I05BranchTail {
+    on f(n: Int, acc: Int) [native] {
+        if n == 0 { return acc }
+        return f(n - 1, acc + n)
+    }
+    on run() {
+        let r = f(10, 0)
+        if r == 55 { print("OK i05 = {r}") } else { print("FAIL: {r}") }
+    }
+}

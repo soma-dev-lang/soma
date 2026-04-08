@@ -1,0 +1,16 @@
+// expected_fire: yes
+// Two calls to a pure [native] sibling with the same args in the same
+// straight-line return. Auto-CSE should hoist the first into a local.
+
+cell C01Two {
+    on sq(x: Int) [native] {
+        return x * x
+    }
+    on f(n: Int) [native] {
+        return sq(n) + sq(n) + 1
+    }
+    on run() {
+        let r = f(7)
+        if r == 99 { print("OK c01 = {r}") } else { print("FAIL: {r}") }
+    }
+}

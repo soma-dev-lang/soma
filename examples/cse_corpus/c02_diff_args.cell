@@ -1,0 +1,16 @@
+// expected_fire: no
+// Same function, different argument expressions. CSE only fires on
+// syntactically-identical call expressions.
+
+cell C02Diff {
+    on sq(x: Int) [native] {
+        return x * x
+    }
+    on f(n: Int) [native] {
+        return sq(n) + sq(n + 1)
+    }
+    on run() {
+        let r = f(7)
+        if r == 49 + 64 { print("OK c02 = {r}") } else { print("FAIL: {r}") }
+    }
+}

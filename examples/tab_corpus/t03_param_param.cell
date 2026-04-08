@@ -1,0 +1,18 @@
+// expected_fire: no
+// Partition-style: p(n - k, k). The first arg is param-param. Auto-memo
+// accepts this; auto-tabulation REJECTS because the first arg's value
+// depends on another runtime param, which breaks the simple
+// "fill from 0 to N" loop order. (Memo handles it correctly via HashMap.)
+
+cell T03Partition {
+    on p(n: Int, k: Int) [native] {
+        if n == 0 { return 1 }
+        if k == 0 { return 0 }
+        if n < 0 { return 0 }
+        return p(n - k, k) + p(n, k - 1)
+    }
+    on run() {
+        let r = p(10, 10)
+        if r == 42 { print("OK t03 = {r}") } else { print("FAIL: {r}") }
+    }
+}

@@ -1,0 +1,15 @@
+// expected_fire: no
+// The repeated call is to an impure builtin (random). CSE must reject
+// — each call legitimately produces a different value.
+
+cell C04Impure {
+    on f() [native] {
+        let a = random()
+        let b = random()
+        return a + b
+    }
+    on run() {
+        let r = f()
+        if r >= 0.0 { print("OK c04 (sum={r})") } else { print("FAIL: {r}") }
+    }
+}

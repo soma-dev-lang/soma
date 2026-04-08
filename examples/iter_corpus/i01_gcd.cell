@@ -1,0 +1,15 @@
+// expected_fire: yes
+// Textbook tail call: pure self-call as the entire return expression.
+// Auto-iteration must convert to a while loop.
+
+cell I01Gcd {
+    on gcd(a: Int, b: Int) [native] {
+        if b == 0 { return a }
+        return gcd(b, a % b)
+    }
+    on run() {
+        let r = gcd(123456, 7890)
+        // gcd(123456, 7890) = 6
+        if r == 6 { print("OK i01_gcd = {r}") } else { print("FAIL: {r}") }
+    }
+}

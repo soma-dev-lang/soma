@@ -1,0 +1,16 @@
+// expected_fire: yes
+// 1D fill with three self-calls all of the form `n - k`. Same shape as
+// fib but with three terms. Must fire.
+
+cell T06Trib {
+    on t(n: Int) [native] {
+        if n == 0 { return 0 }
+        if n == 1 { return 0 }
+        if n == 2 { return 1 }
+        return t(n - 1) + t(n - 2) + t(n - 3)
+    }
+    on run() {
+        let r = t(15)
+        if r == 1705 { print("OK t06 = {r}") } else { print("FAIL: {r}") }
+    }
+}

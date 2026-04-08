@@ -1,0 +1,22 @@
+// expected_fire: no
+// The two calls are in different branches of an if/else. CSE only
+// hoists within the SAME straight-line block — hoisting across
+// branches would compute the call when only one branch needs it,
+// changing the cost profile (and possibly observability if the call
+// could panic).
+
+cell C05Branches {
+    on sq(x: Int) [native] {
+        return x * x
+    }
+    on f(n: Int) [native] {
+        if n > 0 {
+            return sq(n) + 1
+        }
+        return sq(n) - 1
+    }
+    on run() {
+        let r = f(5)
+        if r == 26 { print("OK c05 = {r}") } else { print("FAIL: {r}") }
+    }
+}

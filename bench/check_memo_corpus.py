@@ -114,25 +114,26 @@ def check_cell(path):
         actual = 'no'
     return expected, actual
 
-print(f"{'cell':35s} {'expected':10s} {'actual':10s} {'verdict'}")
-print('-' * 75)
+if __name__ == '__main__':
+    print(f"{'cell':35s} {'expected':10s} {'actual':10s} {'verdict'}")
+    print('-' * 75)
 
-ok = 0
-mismatches = 0
-for path in sorted(glob.glob('examples/memo_corpus/m*.cell')):
-    name = os.path.basename(path).replace('.cell', '')
-    expected, actual = check_cell(path)
-    if expected is None:
-        verdict = "?? (no annotation)"
-        mismatches += 1
-    elif expected == actual:
-        verdict = "✓"
-        ok += 1
-    else:
-        verdict = "✗ MISMATCH"
-        mismatches += 1
-    print(f"{name:35s} {expected or '?':10s} {actual:10s} {verdict}")
+    ok = 0
+    mismatches = 0
+    for path in sorted(glob.glob('examples/memo_corpus/m*.cell')):
+        name = os.path.basename(path).replace('.cell', '')
+        expected, actual = check_cell(path)
+        if expected is None:
+            verdict = "?? (no annotation)"
+            mismatches += 1
+        elif expected == actual:
+            verdict = "✓"
+            ok += 1
+        else:
+            verdict = "✗ MISMATCH"
+            mismatches += 1
+        print(f"{name:35s} {expected or '?':10s} {actual:10s} {verdict}")
 
-print('-' * 75)
-print(f"  match: {ok} / {ok + mismatches}")
-sys.exit(0 if mismatches == 0 else 1)
+    print('-' * 75)
+    print(f"  match: {ok} / {ok + mismatches}")
+    sys.exit(0 if mismatches == 0 else 1)

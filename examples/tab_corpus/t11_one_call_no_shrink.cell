@@ -1,0 +1,18 @@
+// expected_fire: no
+// One call shrinks, the other doesn't. Tabulation must reject — the
+// non-shrinking call is a self-loop in tab fill order. Memo handles
+// it correctly via the HashMap (or via runtime cycle detection if the
+// recursion diverges; here the base cases prevent reaching it).
+
+cell T11OneNoShrink {
+    on f(n: Int, k: Int) [native] {
+        if n == 0 { return k }
+        if k == 0 { return n }
+        // Second call has zero shrink — self-loop in tab order
+        return f(n - 1, k) + f(n, k)
+    }
+    on run() {
+        let r = f(0, 5)  // hits base immediately
+        if r == 5 { print("OK t11 = {r}") } else { print("FAIL: {r}") }
+    }
+}

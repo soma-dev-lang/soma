@@ -1,0 +1,21 @@
+// expected_fire: yes
+// Two calls separated by an unrelated `let` binding (which doesn't
+// reassign the call's args). CSE hoists across pure intervening
+// statements as long as no referenced var is mutated.
+
+cell C07Separated {
+    on sq(x: Int) [native] {
+        return x * x
+    }
+    on f(n: Int) [native] {
+        let a = sq(n)
+        let unrelated = n + 100
+        let b = sq(n)
+        return a + b + unrelated
+    }
+    on run() {
+        let r = f(5)
+        // sq(5)=25; 25+25+105 = 155
+        if r == 155 { print("OK c07 = {r}") } else { print("FAIL: {r}") }
+    }
+}
