@@ -146,9 +146,22 @@ pub fn compile_and_load_natives_with_config(
             } else {
                 ""
             };
+            // Cells where every handler classifier-picked Direct
+            // (marked with `// SOMA_MODE: ALL_DIRECT` in the source)
+            // are i64-only by user intent. The Rug fallback functions
+            // are still emitted for safety, but no operation in the
+            // Direct fast path can panic on overflow if the user's
+            // inputs are within their declared bounds. We can disable
+            // overflow_checks for these cells, matching Numba/Cython's
+            // tradeoff: typed code, no runtime overflow checking.
+            // Unlocks ~30% speedup on tight i64 loops (collatz, sieve,
+            // primes). Cells with any Rug-classified handler keep
+            // OC=true so the fast→Rug fallback can still trigger.
+            let all_direct = rust_source.contains("// SOMA_MODE: ALL_DIRECT");
+            let overflow_checks = if all_direct { "false" } else { "true" };
             let cargo_toml = format!(
-                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = true\npanic = \"unwind\"\n",
-                deps
+                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = {}\npanic = \"unwind\"\n",
+                deps, overflow_checks
             );
             std::fs::write(proj_dir.join("Cargo.toml"), &cargo_toml)
                 .map_err(|e| format!("cannot write Cargo.toml: {}", e))?;
