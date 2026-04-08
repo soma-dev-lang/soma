@@ -1,0 +1,94 @@
+// ============================================================================
+// Dice probabilities — distribution of sums
+// ============================================================================
+//
+// Compute the probability of each possible sum when rolling n dice with f
+// faces. Verifies P(sum = 7) for 2 standard d6 = 6/36 = 1/6.
+//
+// Run: soma run dice.cell
+
+cell Dice {
+
+    on slot_bits() [native] { return 32 }
+
+    on get(arr: Int, i: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        return band(shr(arr, i * w), mask)
+    }
+
+    on put(arr: Int, i: Int, v: Int) [native] {
+        let w = slot_bits()
+        let mask = shl(1, w) - 1
+        let cleared = band(arr, bnot(shl(mask, i * w)))
+        return bor(cleared, shl(v, i * w))
+    }
+
+    // Number of ways to get sum s with n dice of f faces
+    on ways(n: Int, f: Int, s: Int) [native] {
+        // dp[t] = number of ways to get sum t with current number of dice
+        let dp = put(0, 0, 1)
+        let max_sum = n * f
+        let i = 1
+        while i <= n {
+            let new_dp = 0
+            let t = i
+            while t <= i * f {
+                let total = 0
+                let r = 1
+                while r <= f {
+                    if t - r >= 0 {
+                        total = total + get(dp, t - r)
+                    }
+                    r = r + 1
+                }
+                new_dp = put(new_dp, t, total)
+                t = t + 1
+            }
+            dp = new_dp
+            i = i + 1
+        }
+        if s < n { return 0 }
+        if s > max_sum { return 0 }
+        return get(dp, s)
+    }
+
+    on total_outcomes(n: Int, f: Int) [native] {
+        let r = 1
+        let i = 0
+        while i < n {
+            r = r * f
+            i = i + 1
+        }
+        return r
+    }
+
+    on run() {
+        print("Dice probabilities")
+        print("==================")
+        print("")
+        // 2d6: P(sum=7) = 6/36
+        let w7 = ways(2, 6, 7)
+        let t = total_outcomes(2, 6)
+        if w7 == 6 { if t == 36 { print("  2d6 sum=7: 6/36 ✓") } }
+
+        // 3d6: P(sum=10) = 27/216
+        let w10 = ways(3, 6, 10)
+        let t3 = total_outcomes(3, 6)
+        if w10 == 27 { if t3 == 216 { print("  3d6 sum=10: 27/216 ✓") } }
+
+        // 4d6: P(sum=14) = 146/1296
+        let w14 = ways(4, 6, 14)
+        let t4 = total_outcomes(4, 6)
+        if w14 == 146 { if t4 == 1296 { print("  4d6 sum=14: 146/1296 ✓") } }
+
+        // Sum of all P(s) for 3d6 should equal 216
+        let sum_ways = 0
+        let s = 3
+        while s <= 18 {
+            sum_ways = sum_ways + ways(3, 6, s)
+            s = s + 1
+        }
+        if sum_ways == 216 { print("  3d6: total outcomes = 216 ✓") } else { print("  got {sum_ways}") }
+    }
+}

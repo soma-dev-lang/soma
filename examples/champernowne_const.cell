@@ -1,0 +1,71 @@
+// ============================================================================
+// Champernowne's constant — the n-th digit
+// ============================================================================
+//
+// 0.123456789101112131415... — concatenate the decimal representations of
+// 1, 2, 3, ... and read off the n-th digit (1-indexed) after the radix point.
+//
+// Project Euler #40: d_1 · d_10 · d_100 · d_1000 · d_10000 · d_100000 · d_1000000
+//
+// Run: soma run champernowne_const.cell
+
+cell ChampernowneConst {
+
+    // Number of digits in n
+    on num_digits(n: Int) [native] {
+        if n == 0 { return 1 }
+        let d = 0
+        let m = n
+        while m > 0 {
+            d = d + 1
+            m = m / 10
+        }
+        return d
+    }
+
+    // n-th digit (1-indexed) of Champernowne's constant
+    on digit_at(n: Int) [native] {
+        // Skip whole groups of fixed-width numbers.
+        // Group k uses 9·10^(k−1) numbers each with k digits.
+        let rem = n
+        let k = 1
+        let block_size = 9
+        let first = 1
+        while rem > block_size * k {
+            rem = rem - block_size * k
+            k = k + 1
+            block_size = block_size * 10
+            first = first * 10
+        }
+        // Now rem is in [1 .. block_size·k]
+        // The number containing it is first + (rem-1)/k
+        let idx = (rem - 1) / k
+        let pos = (rem - 1) % k        // 0-indexed digit within the number
+        let num = first + idx
+        // Extract the (k - pos - 1)-th decimal digit of `num`
+        let digit_pos = k - pos - 1
+        let d = 0
+        let i = 0
+        let m = num
+        while i <= digit_pos {
+            d = m % 10
+            m = m / 10
+            i = i + 1
+        }
+        return d
+    }
+
+    on run() {
+        print("Champernowne's constant — n-th digit")
+        print("====================================")
+        print("")
+        // First few digits: 1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 0, 1, 1, ...
+        if digit_at(1) == 1 { print("  d_1 = 1 ✓") }
+        if digit_at(10) == 1 { print("  d_10 = 1 ✓") }
+        if digit_at(11) == 0 { print("  d_11 = 0 ✓") }
+        // Project Euler #40
+        let p = digit_at(1) * digit_at(10) * digit_at(100) * digit_at(1000)
+              * digit_at(10000) * digit_at(100000) * digit_at(1000000)
+        if p == 210 { print("  PE #40 product: {p} ✓") } else { print("  got {p}") }
+    }
+}

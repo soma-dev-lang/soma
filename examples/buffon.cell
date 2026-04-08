@@ -1,0 +1,61 @@
+// ============================================================================
+// Buffon's needle — Monte Carlo estimate of π
+// ============================================================================
+//
+// A needle of length 1 is dropped onto a plane with parallel lines spaced
+// 1 apart. Probability of crossing = 2/π. So π ≈ 2N / (crossings).
+//
+// Run: soma run buffon.cell
+
+cell Buffon {
+
+    // Xorshift PRNG → float in [0, 1)
+    on rand_float(state: Int) [native] {
+        let x = state
+        x = bxor(x, shl(x, 13))
+        x = bxor(x, shr(x, 7))
+        x = bxor(x, shl(x, 17))
+        if x < 0 { x = 0 - x }
+        return x
+    }
+
+    on simulate(trials: Int, seed: Int) [native] {
+        let state = seed
+        let cross = 0
+        let i = 0
+        while i < trials {
+            state = rand_float(state)
+            // Center distance to nearest line in [0, 0.5]
+            let d = (to_float(state % 1000000) / 1000000.0) * 0.5
+            state = rand_float(state)
+            // Angle θ in [0, π/2]
+            let theta = (to_float(state % 1000000) / 1000000.0) * 1.5707963267948966
+            // Crosses if (1/2) sin θ > d
+            if 0.5 * sin(theta) > d {
+                cross = cross + 1
+            }
+            i = i + 1
+        }
+        if cross == 0 { return 0.0 }
+        return (2.0 * to_float(trials)) / to_float(cross)
+    }
+
+    on near(a: Float, b: Float, eps: Float) [native] {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        if d < eps { return 1 }
+        return 0
+    }
+
+    on run() {
+        print("Buffon's needle — π estimate")
+        print("============================")
+        print("")
+        let p = simulate(1000000, 12345)
+        if near(p, 3.14159, 0.01) == 1 {
+            print("  π ≈ {p} (1M trials) ✓")
+        } else {
+            print("  got {p}")
+        }
+    }
+}

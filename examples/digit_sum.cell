@@ -1,0 +1,82 @@
+// ============================================================================
+// Digit sums and persistence
+// ============================================================================
+//
+// Sum of digits of n. The "additive persistence" is the number of times
+// you must repeat the digit-sum until you reach a single digit (0–9).
+//
+// We compute the digit sum of large factorials by handing the BigInt
+// to to_string and summing the byte values.
+//
+// Run: soma run digit_sum.cell
+
+cell DigitSum {
+
+    on digit_sum(n: Int) [native] {
+        let m = n
+        let s = 0
+        if m < 0 { m = 0 - m }
+        while m > 0 {
+            s = s + m % 10
+            m = m / 10
+        }
+        return s
+    }
+
+    on additive_persistence(n: Int) [native] {
+        let m = n
+        let p = 0
+        while m >= 10 {
+            m = digit_sum(m)
+            p = p + 1
+        }
+        return p
+    }
+
+    // Digit sum of a String of decimal digits.
+    on string_digit_sum(s: String) [native] {
+        let n = str_len(s)
+        let i = 0
+        let total = 0
+        while i < n {
+            let c = str_at(s, i)
+            // '0'=48..'9'=57
+            if c >= 48 {
+                if c <= 57 {
+                    total = total + c - 48
+                }
+            }
+            i = i + 1
+        }
+        return total
+    }
+
+    on factorial_digit_sum(n: Int) [native] {
+        let f = 1
+        let i = 2
+        while i <= n {
+            f = f * i
+            i = i + 1
+        }
+        return string_digit_sum(to_string(f))
+    }
+
+    on run() {
+        print("Digit sum and persistence")
+        print("=========================")
+        print("")
+        if digit_sum(123) == 6 { print("  digit_sum(123) = 6 ✓") }
+        if digit_sum(99) == 18 { print("  digit_sum(99) = 18 ✓") }
+        if additive_persistence(199) == 3 { print("  ap(199) = 3 ✓") }
+        if additive_persistence(99) == 2 { print("  ap(99) = 2 ✓") }
+
+        // PE #20 — sum of digits in 100!
+        let s = factorial_digit_sum(100)
+        if s == 648 { print("  digit-sum(100!) = 648 ✓ (PE #20)") } else { print("  got {s}") }
+
+        // 1000! — much bigger
+        let s2 = factorial_digit_sum(1000)
+        // Known: 10539
+        if s2 == 10539 { print("  digit-sum(1000!) = 10539 ✓") } else { print("  got {s2}") }
+    }
+}

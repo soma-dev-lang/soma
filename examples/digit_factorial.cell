@@ -1,0 +1,62 @@
+// ============================================================================
+// Factorions and digit-factorial sums (Project Euler #34)
+// ============================================================================
+//
+// A "factorion" equals the sum of factorials of its decimal digits.
+// Only four exist: 1, 2, 145, 40585. PE #34 asks for the sum of all
+// numbers equal to the sum of factorials of their digits, in [3..N].
+//
+// Run: soma run digit_factorial.cell
+
+cell DigitFactorial {
+
+    on factorial(n: Int) [native] {
+        let f = 1
+        let i = 2
+        while i <= n {
+            f = f * i
+            i = i + 1
+        }
+        return f
+    }
+
+    // Sum of digit factorials of n
+    on sdf(n: Int) [native] {
+        let m = n
+        let s = 0
+        while m > 0 {
+            s = s + factorial(m % 10)
+            m = m / 10
+        }
+        return s
+    }
+
+    on pe34() [native] {
+        let total = 0
+        // Upper bound: 9! · 7 = 2540160 (numbers larger than this can't equal their sdf)
+        let n = 3
+        while n < 2540160 {
+            if sdf(n) == n { total = total + n }
+            n = n + 1
+        }
+        return total
+    }
+
+    on run() {
+        print("Digit factorials")
+        print("================")
+        print("")
+        if sdf(145) == 145 { print("  145 = 1!+4!+5! ✓") }
+        if sdf(40585) == 40585 { print("  40585 = factorion ✓") }
+
+        let start = now_ms()
+        let s = pe34()
+        let elapsed = now_ms() - start
+        // PE #34 answer: 40730 = 145 + 40585
+        if s == 40730 {
+            print("  PE #34: sum = {s}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {s}, expected 40730")
+        }
+    }
+}

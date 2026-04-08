@@ -1,0 +1,93 @@
+// ============================================================================
+// Circular primes — Project Euler #35
+// ============================================================================
+//
+// A circular prime is a prime where every cyclic rotation of its decimal
+// representation is also prime. Below 1 million, there are 55 such primes.
+//
+// Run: soma run circular_primes.cell
+
+cell CircularPrimes {
+
+    on is_prime(n: Int) [native] {
+        if n < 2 { return 0 }
+        if n < 4 { return 1 }
+        if n % 2 == 0 { return 0 }
+        let i = 3
+        while i * i <= n {
+            if n % i == 0 { return 0 }
+            i = i + 2
+        }
+        return 1
+    }
+
+    on num_digits(n: Int) [native] {
+        if n == 0 { return 1 }
+        let d = 0
+        let m = n
+        while m > 0 {
+            d = d + 1
+            m = m / 10
+        }
+        return d
+    }
+
+    on pow10(k: Int) [native] {
+        let r = 1
+        let i = 0
+        while i < k {
+            r = r * 10
+            i = i + 1
+        }
+        return r
+    }
+
+    on rotate(n: Int) [native] {
+        let d = num_digits(n)
+        let last = n % 10
+        let rest = n / 10
+        return last * pow10(d - 1) + rest
+    }
+
+    on is_circular(n: Int) [native] {
+        let d = num_digits(n)
+        let cur = n
+        let i = 0
+        while i < d {
+            if is_prime(cur) == 0 { return 0 }
+            cur = rotate(cur)
+            i = i + 1
+        }
+        return 1
+    }
+
+    on count_circular(limit: Int) [native] {
+        let count = 0
+        let n = 2
+        while n < limit {
+            if is_circular(n) == 1 { count = count + 1 }
+            n = n + 1
+        }
+        return count
+    }
+
+    on run() {
+        print("Circular primes (Project Euler #35)")
+        print("===================================")
+        print("")
+        // Known small circular primes: 2, 3, 5, 7, 11, 13, 17, 31, 37, 71, 73, 79, 97
+        // → 13 below 100
+        let c100 = count_circular(100)
+        if c100 == 13 { print("  count below 100: {c100} ✓") } else { print("  got {c100}") }
+
+        let start = now_ms()
+        // PE #35: 55 circular primes below 1,000,000
+        let c = count_circular(1000000)
+        let elapsed = now_ms() - start
+        if c == 55 {
+            print("  PE #35: {c}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {c}")
+        }
+    }
+}

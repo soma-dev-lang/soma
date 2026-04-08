@@ -1,0 +1,47 @@
+// ============================================================================
+// Leibniz formula for π
+// ============================================================================
+//
+// π/4 = 1 − 1/3 + 1/5 − 1/7 + 1/9 − ...
+//
+// Famously slow-converging — needs ~10^6 terms for 6 decimal places. We
+// use 10 million terms for the headline.
+//
+// Run: soma run leibniz.cell
+
+cell Leibniz {
+
+    on leibniz_pi(n: Int) [native] {
+        let s = 0.0
+        let k = 0
+        let sign = 1.0
+        while k < n {
+            s = s + sign / to_float(2 * k + 1)
+            sign = 0.0 - sign
+            k = k + 1
+        }
+        return 4.0 * s
+    }
+
+    on near(a: Float, b: Float, eps: Float) [native] {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        if d < eps { return 1 }
+        return 0
+    }
+
+    on run() {
+        print("Leibniz formula for π")
+        print("=====================")
+        print("")
+        let start = now_ms()
+        let p = leibniz_pi(10000000)
+        let elapsed = now_ms() - start
+        // Should be within ~1e-7 of π
+        if near(p, 3.141592653589793, 0.0000005) == 1 {
+            print("  π via 10M Leibniz terms = {p}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {p}")
+        }
+    }
+}

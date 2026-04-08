@@ -1,0 +1,43 @@
+// ============================================================================
+// Apéry's constant — ζ(3) = Σ 1/n³
+// ============================================================================
+//
+// ζ(3) ≈ 1.2020569031595942...
+//
+// We sum naively until the term drops below the noise floor. Apéry proved
+// ζ(3) is irrational; no closed form is known.
+//
+// Run: soma run zeta3.cell
+
+cell Zeta3 {
+
+    on zeta3(n: Int) [native] {
+        let s = 0.0
+        let k = 1
+        while k <= n {
+            let kf = to_float(k)
+            s = s + 1.0 / (kf * kf * kf)
+            k = k + 1
+        }
+        return s
+    }
+
+    on near(a: Float, b: Float, eps: Float) [native] {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        if d < eps { return 1 }
+        return 0
+    }
+
+    on run() {
+        print("Apéry's constant ζ(3)")
+        print("=====================")
+        print("")
+        let z = zeta3(1000000)
+        if near(z, 1.2020569031595942, 0.0000005) == 1 {
+            print("  ζ(3) ≈ {z} ✓")
+        } else {
+            print("  got {z}")
+        }
+    }
+}

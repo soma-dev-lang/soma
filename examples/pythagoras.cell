@@ -1,0 +1,87 @@
+// ============================================================================
+// Pythagorean triples — primitive triples with a + b + c = N
+// ============================================================================
+//
+// For each (a, b) with a < b, check whether c² = a² + b² is a perfect
+// square and a+b+c = N. The classic Project Euler #9 finds the unique
+// triple with N = 1000 and reports a · b · c.
+//
+// Run: soma run pythagoras.cell
+
+cell Pythagoras {
+
+    on isqrt(n: Int) [native] {
+        if n < 2 { return n }
+        let x = n
+        let y = (x + 1) / 2
+        while y < x {
+            x = y
+            y = (x + n / x) / 2
+        }
+        return x
+    }
+
+    on is_square(n: Int) [native] {
+        let r = isqrt(n)
+        if r * r == n { return 1 }
+        return 0
+    }
+
+    on count_triples_under(perimeter: Int) [native] {
+        let count = 0
+        let a = 1
+        while a < perimeter / 3 {
+            let b = a + 1
+            while b < perimeter / 2 {
+                let c = perimeter - a - b
+                if c <= b { b = perimeter }
+                if c > b {
+                    if a * a + b * b == c * c {
+                        count = count + 1
+                    }
+                }
+                b = b + 1
+            }
+            a = a + 1
+        }
+        return count
+    }
+
+    on pe9() [native] {
+        let a = 1
+        while a < 1000 {
+            let b = a + 1
+            while b < 1000 - a {
+                let c = 1000 - a - b
+                if c < b { b = 1000 }
+                if c >= b {
+                    if a * a + b * b == c * c {
+                        return a * b * c
+                    }
+                }
+                b = b + 1
+            }
+            a = a + 1
+        }
+        return 0
+    }
+
+    on run() {
+        print("Pythagorean triples")
+        print("===================")
+        print("")
+        if is_square(25) == 1 { print("  is_square(25) = true ✓") }
+        if is_square(26) == 0 { print("  is_square(26) = false ✓") }
+
+        // PE #9: 31875000 = 200 · 375 · 425
+        let p = pe9()
+        if p == 31875000 { print("  PE #9 product: {p} ✓") } else { print("  got {p}") }
+
+        let c = count_triples_under(120)
+        // Triples with perimeter exactly 120: (8,15,17), (10,24,26), (15,20,25), (24,32,40), (45,40,?)
+        // 8+15+17=40 — no, perimeter must be 120
+        // Actually count triples with perimeter ≤ 120 — but we count == 120.
+        // Known: 3 triples with perimeter 120 (40,42,58), (24,45,51), (20,48,52)
+        if c == 3 { print("  triples with p=120: 3 ✓") } else { print("  got {c}") }
+    }
+}

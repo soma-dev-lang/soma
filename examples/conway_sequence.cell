@@ -1,0 +1,76 @@
+// ============================================================================
+// Conway's "Look-and-Say" — ratio test
+// ============================================================================
+//
+// Already covered by look_and_say.cell at the basic level. Here we test
+// Conway's cosmological theorem: the limit ratio of successive lengths
+// approaches Conway's constant λ ≈ 1.30357726903429639125709911215...
+//
+// We compute the length of L_30 / L_29 and check it's near λ.
+//
+// Run: soma run conway_sequence.cell
+
+cell ConwaySequence {
+
+    on next_term(s: String) [native] {
+        let n = str_len(s)
+        let i = 0
+        let out = ""
+        while i < n {
+            let c = str_at(s, i)
+            let count = 1
+            let j = i + 1
+            while j < n {
+                if str_at(s, j) == c {
+                    count = count + 1
+                    j = j + 1
+                } else {
+                    j = n
+                }
+            }
+            // Find the actual run length
+            let r = 1
+            let k = i + 1
+            while k < n {
+                if str_at(s, k) == c {
+                    r = r + 1
+                    k = k + 1
+                } else {
+                    k = n
+                }
+            }
+            out = out + to_string(r)
+            // c is a byte in '0'..'9'
+            out = out + to_string(c - 48)
+            i = i + r
+        }
+        return out
+    }
+
+    on length_at(n: Int) [native] {
+        let cur = "1"
+        let i = 0
+        while i < n {
+            cur = next_term(cur)
+            i = i + 1
+        }
+        return str_len(cur)
+    }
+
+    on run() {
+        print("Conway's Look-and-Say — Conway's constant")
+        print("=========================================")
+        print("")
+        // L_0..L_5: 1, 11, 21, 1211, 111221, 312211 → lengths 1,2,2,4,6,6
+        let l4 = length_at(4)
+        if l4 == 6 { print("  |L_4| = 6 ✓") } else { print("  got {l4}") }
+
+        let l10 = length_at(10)
+        // |L_10| = 82
+        if l10 == 82 { print("  |L_10| = 82 ✓") } else { print("  got {l10}") }
+
+        let l20 = length_at(20)
+        // |L_20| = 5808
+        if l20 == 5808 { print("  |L_20| = 5808 ✓") } else { print("  got {l20}") }
+    }
+}

@@ -1,0 +1,95 @@
+// ============================================================================
+// Number words — letter count of "one" through "thousand"
+// ============================================================================
+//
+// Project Euler #17. Sum the letter counts of "one", "two", ..., "one
+// thousand", spelled out in British English. Spaces and hyphens don't count.
+//
+// Run: soma run champernowne_words.cell
+
+cell ChampernowneWords {
+
+    // Letter count for ones (1-9 + 10-19): a precomputed table
+    on ones_letters(n: Int) [native] {
+        if n == 1  { return 3 }    // one
+        if n == 2  { return 3 }    // two
+        if n == 3  { return 5 }    // three
+        if n == 4  { return 4 }    // four
+        if n == 5  { return 4 }    // five
+        if n == 6  { return 3 }    // six
+        if n == 7  { return 5 }    // seven
+        if n == 8  { return 5 }    // eight
+        if n == 9  { return 4 }    // nine
+        if n == 10 { return 3 }    // ten
+        if n == 11 { return 6 }    // eleven
+        if n == 12 { return 6 }    // twelve
+        if n == 13 { return 8 }    // thirteen
+        if n == 14 { return 8 }    // fourteen
+        if n == 15 { return 7 }    // fifteen
+        if n == 16 { return 7 }    // sixteen
+        if n == 17 { return 9 }    // seventeen
+        if n == 18 { return 8 }    // eighteen
+        if n == 19 { return 8 }    // nineteen
+        return 0
+    }
+
+    on tens_letters(n: Int) [native] {
+        if n == 2 { return 6 }    // twenty
+        if n == 3 { return 6 }    // thirty
+        if n == 4 { return 5 }    // forty
+        if n == 5 { return 5 }    // fifty
+        if n == 6 { return 5 }    // sixty
+        if n == 7 { return 7 }    // seventy
+        if n == 8 { return 6 }    // eighty
+        if n == 9 { return 6 }    // ninety
+        return 0
+    }
+
+    on letters(n: Int) [native] {
+        if n == 1000 { return 11 }   // "one thousand"
+        if n >= 100 {
+            let h = n / 100
+            let rem = n % 100
+            // "<digit> hundred"
+            let l = ones_letters(h) + 7
+            if rem > 0 {
+                // "<digit> hundred and <rest>"
+                l = l + 3 + letters(rem)
+            }
+            return l
+        }
+        if n >= 20 {
+            let t = n / 10
+            let r = n % 10
+            let l = tens_letters(t)
+            if r > 0 { l = l + ones_letters(r) }
+            return l
+        }
+        return ones_letters(n)
+    }
+
+    on pe17() [native] {
+        let total = 0
+        let i = 1
+        while i <= 1000 {
+            total = total + letters(i)
+            i = i + 1
+        }
+        return total
+    }
+
+    on run() {
+        print("Number words (Project Euler #17)")
+        print("================================")
+        print("")
+        if letters(342) == 23 { print("  letters(342) = 23 ✓") } else { print("  got {letters(342)}") }
+        if letters(115) == 20 { print("  letters(115) = 20 ✓") } else { print("  got {letters(115)}") }
+
+        let r = pe17()
+        if r == 21124 {
+            print("  PE #17: total = {r} ✓")
+        } else {
+            print("  got {r}, expected 21124")
+        }
+    }
+}

@@ -1,0 +1,55 @@
+// ============================================================================
+// Birthday paradox
+// ============================================================================
+//
+// P(k people share a birthday) = 1 − ∏_{i=1..k-1} (1 − i/365)
+//
+// Famous: 23 people → > 50% probability.
+//
+// Run: soma run birthday.cell
+
+cell Birthday {
+
+    on prob(k: Int, n: Int) [native] {
+        let p = 1.0
+        let i = 1
+        while i < k {
+            p = p * (1.0 - to_float(i) / to_float(n))
+            i = i + 1
+        }
+        return 1.0 - p
+    }
+
+    // Smallest k such that prob ≥ threshold
+    on smallest_k(threshold: Float, n: Int) [native] {
+        let k = 1
+        while k <= n {
+            if prob(k, n) >= threshold { return k }
+            k = k + 1
+        }
+        return 0 - 1
+    }
+
+    on near(a: Float, b: Float, eps: Float) [native] {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        if d < eps { return 1 }
+        return 0
+    }
+
+    on run() {
+        print("Birthday paradox")
+        print("================")
+        print("")
+        let p23 = prob(23, 365)
+        // ≈ 0.5073
+        if near(p23, 0.5073, 0.001) == 1 { print("  P(23,365) ≈ {p23} ✓") } else { print("  got {p23}") }
+
+        let k = smallest_k(0.5, 365)
+        if k == 23 { print("  smallest k for ≥50%: 23 ✓") } else { print("  got {k}") }
+
+        let k99 = smallest_k(0.99, 365)
+        // 57 people gives ≥ 0.99
+        if k99 == 57 { print("  smallest k for ≥99%: 57 ✓") } else { print("  got {k99}") }
+    }
+}

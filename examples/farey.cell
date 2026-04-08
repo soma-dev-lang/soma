@@ -1,0 +1,64 @@
+// ============================================================================
+// Farey sequence — count of fractions ≤ N
+// ============================================================================
+//
+// |F_n| = 1 + Σ_{k=1..n} φ(k)
+//
+// where φ is Euler's totient. We compute F_100, F_1000, F_10000.
+//
+// Run: soma run farey.cell
+
+cell Farey {
+
+    on phi(n: Int) [native] {
+        if n <= 1 { return n }
+        let result = n
+        let m = n
+        let p = 2
+        while p * p <= m {
+            if m % p == 0 {
+                while m % p == 0 { m = m / p }
+                result = result - result / p
+            }
+            p = p + 1
+        }
+        if m > 1 { result = result - result / m }
+        return result
+    }
+
+    on farey_size(n: Int) [native] {
+        let s = 1
+        let k = 1
+        while k <= n {
+            s = s + phi(k)
+            k = k + 1
+        }
+        return s
+    }
+
+    on check(n: Int, expected: Int) {
+        let r = farey_size(n)
+        if r == expected {
+            print("  |F_{n}| = {r} ✓")
+        } else {
+            print("  got {r}, expected {expected}")
+        }
+    }
+
+    on run() {
+        print("Farey sequence size")
+        print("===================")
+        print("")
+        check(8, 23)
+        check(100, 3045)
+        check(1000, 304193)
+        let start = now_ms()
+        let r = farey_size(10000)
+        let elapsed = now_ms() - start
+        if r == 30397487 {
+            print("  |F_10000| = {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {r}, expected 30397487")
+        }
+    }
+}

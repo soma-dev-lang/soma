@@ -1,0 +1,49 @@
+// ============================================================================
+// Fermat primality test
+// ============================================================================
+//
+// If n is prime, then for any 1 ≤ a < n: a^(n−1) ≡ 1 (mod n).
+// We test with a = 2, 3, 5, 7. The test produces false positives
+// (Carmichael numbers and other Fermat pseudoprimes) but is fast.
+//
+// Run: soma run fermat.cell
+
+cell Fermat {
+
+    on fermat_test(n: Int) [native] {
+        if n < 2 { return 0 }
+        if n == 2 { return 1 }
+        if n == 3 { return 1 }
+        if n % 2 == 0 { return 0 }
+        if pow_mod(2, n - 1, n) != 1 { return 0 }
+        if pow_mod(3, n - 1, n) != 1 { return 0 }
+        if pow_mod(5, n - 1, n) != 1 { return 0 }
+        if pow_mod(7, n - 1, n) != 1 { return 0 }
+        return 1
+    }
+
+    on count_pseudo_primes(limit: Int) [native] {
+        let count = 0
+        let n = 2
+        while n <= limit {
+            if fermat_test(n) == 1 { count = count + 1 }
+            n = n + 1
+        }
+        return count
+    }
+
+    on run() {
+        print("Fermat primality test")
+        print("=====================")
+        print("")
+        // π(10000) = 1229. Fermat catches all primes plus some pseudoprimes.
+        // Carmichael numbers ≤ 10000: 561, 1105, 1729, 2465, 2821, 6601, 8911 → 7
+        // (a few pass with a∈{2,3,5,7} not all of them, so the count is close to 1229+epsilon)
+        let c = count_pseudo_primes(10000)
+        // The actual count is 1229 (true primes) + the Carmichael numbers and some
+        // strong-pseudoprimes for {2,3,5,7}. For our chosen base set, the answer
+        // happens to be 1229 (no Carmichael in [2,10000] passes all four bases).
+        // 1729 fails for a=5 → not pseudoprime here.
+        if c == 1229 { print("  Fermat ≤ 10000: {c} ✓") } else { print("  got {c}") }
+    }
+}

@@ -1,0 +1,72 @@
+// ============================================================================
+// 1D Random walk — expected distance from origin after n steps
+// ============================================================================
+//
+// E[|S_n|] ≈ √(2n/π) for symmetric ±1 walk. We verify by Monte Carlo.
+//
+// Run: soma run random_walk.cell
+
+cell RandomWalk {
+
+    on rand(state: Int) [native] {
+        let x = state
+        x = bxor(x, shl(x, 13))
+        x = bxor(x, shr(x, 7))
+        x = bxor(x, shl(x, 17))
+        return x
+    }
+
+    on simulate(steps: Int, trials: Int, seed: Int) [native] {
+        let state = seed
+        let total = 0.0
+        let t = 0
+        while t < trials {
+            let pos = 0
+            let i = 0
+            while i < steps {
+                state = rand(state)
+                if state % 2 == 0 {
+                    pos = pos + 1
+                } else {
+                    pos = pos - 1
+                }
+                i = i + 1
+            }
+            let p = pos
+            if p < 0 { p = 0 - p }
+            total = total + to_float(p)
+            t = t + 1
+        }
+        return total / to_float(trials)
+    }
+
+    on expected(steps: Int) [native] {
+        return sqrt(2.0 * to_float(steps) / 3.141592653589793)
+    }
+
+    on near(a: Float, b: Float, rel: Float) [native] {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        let m = a
+        if b > m { m = b }
+        if m < 0.0 { m = 0.0 - m }
+        if d < rel * m { return 1 }
+        return 0
+    }
+
+    on run() {
+        print("1D random walk")
+        print("==============")
+        print("")
+        let e100 = expected(100)
+        // ≈ 7.978845608
+        if near(e100, 7.97884, 0.001) == 1 { print("  E[|S_100|] ≈ {e100} ✓") } else { print("  got {e100}") }
+
+        let m = simulate(100, 10000, 42)
+        if near(m, 7.97884, 0.05) == 1 {
+            print("  Monte Carlo ≈ {m} ✓ (10k trials, 100 steps)")
+        } else {
+            print("  got {m}")
+        }
+    }
+}

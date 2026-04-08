@@ -1,0 +1,84 @@
+// ============================================================================
+// Square root continued fractions — odd period count (PE #64)
+// ============================================================================
+//
+// The continued-fraction expansion of √n has period p(n). For n in
+// 2..10000, count how many have odd p(n).
+//
+// Use the standard recurrence:
+//   m₀ = 0, d₀ = 1, a₀ = ⌊√n⌋
+//   m_{k+1} = d_k · a_k − m_k
+//   d_{k+1} = (n − m_{k+1}²) / d_k
+//   a_{k+1} = ⌊(a₀ + m_{k+1}) / d_{k+1}⌋
+// Period ends when (m_k, d_k) returns to (m_1, d_1).
+//
+// Run: soma run odd_period.cell
+
+cell OddPeriod {
+
+    on isqrt(n: Int) [native] {
+        if n < 2 { return n }
+        let x = n
+        let y = (x + 1) / 2
+        while y < x {
+            x = y
+            y = (x + n / x) / 2
+        }
+        return x
+    }
+
+    on period(n: Int) [native] {
+        let a0 = isqrt(n)
+        if a0 * a0 == n { return 0 }
+        let m = 0
+        let d = 1
+        let a = a0
+        let p = 0
+        while 1 == 1 {
+            m = d * a - m
+            d = (n - m * m) / d
+            a = (a0 + m) / d
+            p = p + 1
+            if a == 2 * a0 { return p }
+            if p > 10000 { return p }
+        }
+        return p
+    }
+
+    on count_odd_periods(limit: Int) [native] {
+        let count = 0
+        let n = 2
+        while n <= limit {
+            let p = period(n)
+            if p > 0 {
+                if p % 2 == 1 {
+                    count = count + 1
+                }
+            }
+            n = n + 1
+        }
+        return count
+    }
+
+    on run() {
+        print("Continued-fraction periods (Project Euler #64)")
+        print("==============================================")
+        print("")
+        // period(13) = 5 (odd)
+        let p13 = period(13)
+        if p13 == 5 { print("  period(13) = 5 ✓") } else { print("  got {p13}") }
+        // period(23) = 4 (even)
+        let p23 = period(23)
+        if p23 == 4 { print("  period(23) = 4 ✓") } else { print("  got {p23}") }
+
+        let start = now_ms()
+        let r = count_odd_periods(10000)
+        let elapsed = now_ms() - start
+        // PE #64: 1322
+        if r == 1322 {
+            print("  PE #64: {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {r}, expected 1322")
+        }
+    }
+}

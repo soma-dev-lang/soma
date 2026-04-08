@@ -1,0 +1,91 @@
+// ============================================================================
+// Triangle word names — letter-value scoring + triangle test
+// ============================================================================
+//
+// We can't read files in [native], so we hard-code 8 sample names and
+// classify each: a name has letter sum equal to T_n for some n.
+//
+// Letter values: A=1, B=2, ..., Z=26.
+//
+// Run: soma run triangle_words.cell
+
+cell TriangleWords {
+
+    on letter_sum(s: String) [native] {
+        let n = str_len(s)
+        let i = 0
+        let total = 0
+        while i < n {
+            let c = str_at(s, i)
+            // 'A'=65..'Z'=90
+            if c >= 65 {
+                if c <= 90 {
+                    total = total + c - 64
+                }
+            }
+            // 'a'=97..'z'=122
+            if c >= 97 {
+                if c <= 122 {
+                    total = total + c - 96
+                }
+            }
+            i = i + 1
+        }
+        return total
+    }
+
+    // True iff x is triangular: x = n(n+1)/2 for some n
+    on is_triangular(x: Int) [native] {
+        // n = (-1 + √(1+8x)) / 2 — must be a positive integer
+        let s = 1 + 8 * x
+        // isqrt
+        let r = 0
+        let lo = 0
+        let hi = s
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if mid * mid <= s {
+                r = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        if r * r != s { return 0 }
+        if (r - 1) % 2 != 0 { return 0 }
+        return 1
+    }
+
+    on classify(name: String) [native] {
+        let v = letter_sum(name)
+        if is_triangular(v) == 1 { return 1 }
+        return 0
+    }
+
+    on count_triangle_names() [native] {
+        let count = 0
+        if classify("SKY") == 1 { count = count + 1 }     // 19+11+25 = 55 = T_10 ✓
+        if classify("CAT") == 1 { count = count + 1 }     // 3+1+20 = 24, not triangular
+        if classify("TREE") == 1 { count = count + 1 }    // 20+18+5+5 = 48, not triangular
+        if classify("AB") == 1 { count = count + 1 }      // 1+2 = 3 = T_2 ✓
+        if classify("ABC") == 1 { count = count + 1 }     // 6 = T_3 ✓
+        if classify("ABCD") == 1 { count = count + 1 }    // 10 = T_4 ✓
+        if classify("BIG") == 1 { count = count + 1 }     // 2+9+7 = 18, not triangular
+        if classify("HAT") == 1 { count = count + 1 }     // 8+1+20 = 29, not triangular
+        return count
+    }
+
+    on run() {
+        print("Triangle word names")
+        print("===================")
+        print("")
+        let s = letter_sum("SKY")
+        if s == 55 { print("  SKY = 55 ✓") }
+        if is_triangular(55) == 1 { print("  55 = T_10 ✓") }
+        if is_triangular(56) == 0 { print("  56 not triangular ✓") }
+
+        let c = count_triangle_names()
+        // SKY, AB, ABC, ABCD → 4 triangle words from the 8
+        if c == 4 { print("  4 triangle names found ✓") } else { print("  got {c}") }
+    }
+}

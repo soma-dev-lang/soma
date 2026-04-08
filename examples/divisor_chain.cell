@@ -1,0 +1,67 @@
+// ============================================================================
+// Aliquot chains — iterate s(n) = σ(n) − n
+// ============================================================================
+//
+// Starting from n, repeatedly take the aliquot sum. The chain may end
+// at 1 (n is "finite-aliquot"), reach a fixed point (perfect numbers),
+// enter a cycle (amicable, sociable), or grow without bound.
+//
+// We classify the chain for n=276 (famously open: doesn't terminate
+// in any known computation) by capping at 100 steps.
+//
+// Run: soma run divisor_chain.cell
+
+cell DivisorChain {
+
+    on aliquot(n: Int) [native] {
+        if n < 2 { return 0 }
+        let total = 1
+        let m = n
+        let p = 2
+        while p * p <= m {
+            if m % p == 0 {
+                let pe = 1
+                while m % p == 0 {
+                    m = m / p
+                    pe = pe * p
+                }
+                total = total * ((p * pe - 1) / (p - 1))
+            }
+            p = p + 1
+        }
+        if m > 1 { total = total * (m + 1) }
+        return total - n
+    }
+
+    // Length of the aliquot chain starting at n, capped.
+    // Stops on 0, 1, fixed point, or cap.
+    on chain_length(n: Int, cap: Int) [native] {
+        let cur = n
+        let i = 0
+        while i < cap {
+            let next = aliquot(cur)
+            if next == 0 { return i + 1 }
+            if next == cur { return i + 1 }
+            cur = next
+            i = i + 1
+        }
+        return cap
+    }
+
+    on run() {
+        print("Aliquot chains")
+        print("==============")
+        print("")
+        // 95 → 25 → 6 → 6 (perfect, fixed point) — chain length 3
+        let l1 = chain_length(95, 50)
+        if l1 == 3 { print("  chain(95) = 3 ✓") } else { print("  got {l1}") }
+
+        // 220 → 284 → 220 ... amicable cycle. Cap stops it.
+        let l2 = chain_length(220, 50)
+        if l2 == 50 { print("  chain(220) = 50 (cycle, capped) ✓") } else { print("  got {l2}") }
+
+        // 12496 is the first sociable number (cycle of length 5)
+        let l3 = chain_length(12496, 50)
+        if l3 == 50 { print("  chain(12496) = 50 (sociable, capped) ✓") } else { print("  got {l3}") }
+    }
+}

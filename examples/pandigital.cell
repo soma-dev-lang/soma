@@ -1,0 +1,100 @@
+// ============================================================================
+// Pandigital products — Project Euler #32
+// ============================================================================
+//
+// A 1–9 pandigital uses each digit 1..9 exactly once. Find all products
+// a · b = c such that the concatenation of a, b, c uses each digit 1..9
+// exactly once. Sum the distinct c values.
+//
+// Run: soma run pandigital.cell
+
+cell Pandigital {
+
+    on num_digits(n: Int) [native] {
+        if n == 0 { return 1 }
+        let d = 0
+        let m = n
+        while m > 0 {
+            d = d + 1
+            m = m / 10
+        }
+        return d
+    }
+
+    // Returns the bitmask of digits seen in n. 0 if any digit is repeated
+    // or if 0 appears.
+    on digit_mask(n: Int) [native] {
+        let mask = 0
+        let m = n
+        while m > 0 {
+            let d = m % 10
+            if d == 0 { return 0 }
+            let bit = shl(1, d)
+            if band(mask, bit) != 0 { return 0 }
+            mask = bor(mask, bit)
+            m = m / 10
+        }
+        return mask
+    }
+
+    on pe32() [native] {
+        // Sum of distinct products c such that a · b = c uses 1..9 once.
+        // Track distinct c via a bitset of (c-1).
+        let seen = 0
+        let total = 0
+        let target = shl(1, 10) - 2   // bits 1..9 = 0b1111111110 = 1022
+        let a = 1
+        while a < 100 {
+            let b = a + 1
+            while b < 10000 {
+                let c = a * b
+                if c > 9999 { b = 10000 }
+                if c <= 9999 {
+                    let na = num_digits(a)
+                    let nb = num_digits(b)
+                    let nc = num_digits(c)
+                    if na + nb + nc == 9 {
+                        let ma = digit_mask(a)
+                        let mb = digit_mask(b)
+                        let mc = digit_mask(c)
+                        // None of them have repeated/zero digits
+                        if ma != 0 {
+                            if mb != 0 {
+                                if mc != 0 {
+                                    let combined = bor(ma, bor(mb, mc))
+                                    let no_overlap = ma + mb + mc
+                                    if combined == target {
+                                        if no_overlap == target {
+                                            // Have we counted this c?
+                                            if band(shr(seen, c), 1) == 0 {
+                                                seen = bor(seen, shl(1, c))
+                                                total = total + c
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                b = b + 1
+            }
+            a = a + 1
+        }
+        return total
+    }
+
+    on run() {
+        print("Pandigital products (Project Euler #32)")
+        print("=======================================")
+        print("")
+        let start = now_ms()
+        let r = pe32()
+        let elapsed = now_ms() - start
+        if r == 45228 {
+            print("  PE #32: sum = {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {r}, expected 45228")
+        }
+    }
+}

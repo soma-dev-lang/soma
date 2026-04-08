@@ -1,0 +1,42 @@
+// ============================================================================
+// Wallis product for π
+// ============================================================================
+//
+// π/2 = ∏_{n=1..∞} (4n²) / (4n² − 1)
+//
+// Converges slowly. We multiply 10^6 terms.
+//
+// Run: soma run wallis.cell
+
+cell Wallis {
+
+    on wallis_pi(n: Int) [native] {
+        let p = 1.0
+        let k = 1
+        while k <= n {
+            let kk = to_float(k * k)
+            p = p * (4.0 * kk) / (4.0 * kk - 1.0)
+            k = k + 1
+        }
+        return 2.0 * p
+    }
+
+    on near(a: Float, b: Float, eps: Float) [native] {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        if d < eps { return 1 }
+        return 0
+    }
+
+    on run() {
+        print("Wallis product for π")
+        print("====================")
+        print("")
+        let p = wallis_pi(1000000)
+        if near(p, 3.141592653589793, 0.000005) == 1 {
+            print("  π via 10⁶ Wallis terms = {p} ✓")
+        } else {
+            print("  got {p}")
+        }
+    }
+}

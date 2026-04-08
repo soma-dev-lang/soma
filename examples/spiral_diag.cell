@@ -1,0 +1,44 @@
+// ============================================================================
+// Spiral diagonals — Project Euler #28
+// ============================================================================
+//
+// Sum of the four corners of each ring of a 1001×1001 number spiral.
+// For a spiral of side 2k+1, the four corners are
+//   (2k+1)², (2k+1)² − 2k, (2k+1)² − 4k, (2k+1)² − 6k
+// Sum over rings k = 1..500, plus the central 1, gives the answer.
+//
+// Run: soma run spiral_diag.cell
+
+cell SpiralDiag {
+
+    on spiral_sum(side: Int) [native] {
+        let total = 1
+        let k = 1
+        let max_k = (side - 1) / 2
+        while k <= max_k {
+            let n = 2 * k + 1
+            let sq = n * n
+            // Four corners: sq, sq - 2k, sq - 4k, sq - 6k
+            // Sum: 4·sq - 12k = 4(2k+1)² - 12k = 16k² + 4k + 4
+            total = total + 4 * sq - 12 * k
+            k = k + 1
+        }
+        return total
+    }
+
+    on run() {
+        print("Spiral diagonals (Project Euler #28)")
+        print("====================================")
+        print("")
+        // 5×5 spiral diagonal sum = 101
+        if spiral_sum(5) == 101 { print("  spiral_sum(5) = 101 ✓") }
+
+        // PE #28: 1001 × 1001 → 669171001
+        let r = spiral_sum(1001)
+        if r == 669171001 {
+            print("  PE #28: {r} ✓")
+        } else {
+            print("  got {r}")
+        }
+    }
+}

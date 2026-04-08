@@ -1,0 +1,98 @@
+// ============================================================================
+// Abundant numbers (Project Euler #23)
+// ============================================================================
+//
+// n is "abundant" if σ(n) − n > n. PE #23: find the sum of all positive
+// integers that cannot be written as the sum of two abundant numbers.
+// Empirically true: every integer > 28123 is the sum of two abundants.
+//
+// Run: soma run abundant.cell
+
+cell Abundant {
+
+    on aliquot(n: Int) [native] {
+        if n < 2 { return 0 }
+        let total = 1
+        let m = n
+        let p = 2
+        while p * p <= m {
+            if m % p == 0 {
+                let pe = 1
+                while m % p == 0 {
+                    m = m / p
+                    pe = pe * p
+                }
+                total = total * ((p * pe - 1) / (p - 1))
+            }
+            p = p + 1
+        }
+        if m > 1 { total = total * (m + 1) }
+        return total - n
+    }
+
+    on is_abundant(n: Int) [native] {
+        if aliquot(n) > n { return 1 }
+        return 0
+    }
+
+    // Bitset of abundant numbers ≤ N, packed in a BigInt
+    on abundant_bitset(n: Int) [native] {
+        let bs = 0
+        let i = 12
+        while i <= n {
+            if is_abundant(i) == 1 {
+                bs = bor(bs, shl(1, i))
+            }
+            i = i + 1
+        }
+        return bs
+    }
+
+    on bit(bs: Int, i: Int) [native] {
+        return band(shr(bs, i), 1)
+    }
+
+    on pe23() [native] {
+        let limit = 28123
+        let bs = abundant_bitset(limit)
+        let total = 0
+        let n = 1
+        while n <= limit {
+            // Is n the sum of two abundants?
+            let found = 0
+            let i = 12
+            while i <= n - 12 {
+                if i * 2 > n { i = n }
+                if bit(bs, i) == 1 {
+                    if bit(bs, n - i) == 1 {
+                        found = 1
+                        i = n
+                    }
+                }
+                i = i + 1
+            }
+            if found == 0 { total = total + n }
+            n = n + 1
+        }
+        return total
+    }
+
+    on run() {
+        print("Abundant numbers (Project Euler #23)")
+        print("====================================")
+        print("")
+        if is_abundant(12) == 1 { print("  12 is abundant ✓") }
+        if is_abundant(28) == 0 { print("  28 is perfect (not abundant) ✓") }
+        if is_abundant(945) == 1 { print("  945 is abundant (smallest odd) ✓") }
+
+        let start = now_ms()
+        let r = pe23()
+        let elapsed = now_ms() - start
+        // PE #23: 4179871
+        if r == 4179871 {
+            print("  PE #23: {r}  ({elapsed}ms) ✓")
+        } else {
+            print("  got {r}, expected 4179871")
+        }
+    }
+}
