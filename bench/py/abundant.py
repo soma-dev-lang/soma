@@ -18,9 +18,10 @@ def aliquot(n):
 def is_abundant(n):
     return aliquot(n) > n
 
-def pe23_under(limit):
-    abundants = [n for n in range(12, limit + 1) if is_abundant(n)]
-    abundant_set = set(abundants)
+def pe23():
+    limit = 28123
+    abundant_set = set(n for n in range(12, limit + 1) if is_abundant(n))
+    abundants = sorted(abundant_set)
     total = 0
     for n in range(1, limit + 1):
         found = False
@@ -34,7 +35,6 @@ def pe23_under(limit):
     return total
 
 def workload():
-    pe23_under(50)
-    pe23_under(1000)
+    pe23()
 
 inner(workload)
