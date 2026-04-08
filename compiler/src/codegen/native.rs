@@ -1246,6 +1246,7 @@ fn arith_op_str(op: BinOp) -> &'static str {
 fn is_bounded_builtin(name: &str) -> bool {
     matches!(name,
         "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_len"
+        | "bit_test" | "bit_set" | "bit_clr" | "bit_next"
         | "gcd" | "sqrt_int" | "pow_mod"
         | "abs" | "min" | "max"
         | "floor" | "ceil" | "round"
@@ -1381,20 +1382,72 @@ impl FnGenerator {
     ///   - small ± small, small / small, small % small
     ///   - small * literal, literal * small
     ///   - NOT small * small (potential unbounded growth)
-    fn classify_int_vars(&mut self, _body: &[Spanned<Statement>], _int_params: &HashSet<String>) {
-        // Universal dual-mode: every handler has a fast Direct path that
-        // uses i64 throughout, AND a Rug fallback that uses Integer
-        // throughout. The Rug fallback exists precisely to handle the
-        // cases where i64 doesn't suffice — using i64 inside it (via the
-        // small_int_var optimization) defeats its purpose: the same
-        // overflow that would have crashed Direct now crashes Rug too,
-        // escaping the dispatch wrapper's catch_unwind.
+    fn classify_int_vars(&mut self, body: &[Spanned<Statement>], int_params: &HashSet<String>) {
+        // Re-enable small_int_var with a safer initialization rule.
         //
-        // So small_int_vars is always empty. The Rug fallback is slower
-        // (Integer arithmetic for everything) but correct, and it only
-        // runs when the fast path failed — by definition the case where
-        // we needed BigInt anyway.
-        self.small_int_vars = HashSet::new();
+        // Background: the previous implementation classified any var as
+        // "small i64" if its assignments looked bounded (e.g. self+literal),
+        // but missed that the INITIAL value could already be near i64::MAX,
+        // causing overflow inside the Rug fallback (uncaught by the
+        // dispatch wrapper). The fix: only classify as small if the
+        // initial value is a small literal (|n| < 2^60), giving 8x
+        // headroom before any sane loop count overflows.
+        //
+        // This is critical for performance: without it, every loop
+        // counter and intermediate i64-bounded value in a Rug-mode
+        // handler is wrapped as Integer, paying ~30x overhead per op.
+        //
+        // Only meaningful in Rug mode — Direct mode is i64 throughout.
+        if self.mode != Mode::Rug { return; }
+
+        // Initial candidate set: every Int local whose first assignment
+        // (Let or earliest Assign) is a "safe-init" expression.
+        let mut small: HashSet<String> = HashSet::new();
+        Self::collect_safe_init(body, &mut small, int_params);
+
+        // Iterate the existing classifier to fixpoint, removing any var
+        // whose subsequent assignments aren't bounded.
+        loop {
+            let prev = small.clone();
+            Self::run_classifier(body, &mut small, &self.siblings, Some(&self.var_types));
+            if small == prev { break; }
+        }
+
+        self.small_int_vars = small;
+    }
+
+    /// Collect locals whose initialization is a "safe init" — currently
+    /// either a literal in [-2^60, 2^60] or assigned from another already-
+    /// safe-initialized var. Excludes int_params (they arrive from FFI
+    /// and may already be BigInt).
+    fn collect_safe_init(
+        body: &[Spanned<Statement>],
+        small: &mut HashSet<String>,
+        int_params: &HashSet<String>,
+    ) {
+        const LIMIT: i64 = 1 << 60;
+        for stmt in body {
+            match &stmt.node {
+                Statement::Let { name, value } => {
+                    if int_params.contains(name) { continue; }
+                    if let Expr::Literal(Literal::Int(n)) = &value.node {
+                        if *n >= -LIMIT && *n <= LIMIT {
+                            small.insert(name.clone());
+                        }
+                    } else if let Expr::Ident(src) = &value.node {
+                        if small.contains(src) { small.insert(name.clone()); }
+                    }
+                }
+                Statement::If { then_body, else_body, .. } => {
+                    Self::collect_safe_init(then_body, small, int_params);
+                    Self::collect_safe_init(else_body, small, int_params);
+                }
+                Statement::While { body, .. } | Statement::For { body, .. } => {
+                    Self::collect_safe_init(body, small, int_params);
+                }
+                _ => {}
+            }
+        }
     }
 
     /// One classifier pass: walk the body and remove variables from `small`
@@ -1717,6 +1770,7 @@ impl FnGenerator {
                     "to_float" => NativeType::Float,
                     "to_int" | "len" | "floor" | "ceil" | "round" => NativeType::Int,
                     "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_len" => NativeType::Int,
+                    "bit_test" | "bit_set" | "bit_clr" | "bit_next" => NativeType::Int,
                     "gcd" | "pow_mod" | "sqrt_int" => NativeType::Int,
                     "str_len" | "str_at" => NativeType::Int,
                     "str_eq" => NativeType::Bool,
@@ -1908,10 +1962,12 @@ impl FnGenerator {
             }
             Expr::Ident(name) => {
                 let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
-                // In Rug mode an Int Ident is an `rug::Integer`, not an i64.
-                // We can't just emit `name` and treat it as primitive — we
-                // must explicitly convert to the target representation.
-                if var_ty == NativeType::Int && self.mode == Mode::Rug {
+                // In Rug mode an Int Ident is normally an `rug::Integer` and
+                // needs explicit conversion. EXCEPT small_int_vars are
+                // already i64 — treat them like Direct mode.
+                if var_ty == NativeType::Int && self.mode == Mode::Rug
+                   && !self.small_int_vars.contains(name)
+                {
                     return match target_ty {
                         NativeType::Int => format!("({}.to_i64().expect(\"BigInt overflow\"))", name),
                         NativeType::Float => format!("({}.to_f64())", name),
@@ -2115,6 +2171,34 @@ impl FnGenerator {
             "bit_len" if args.len() == 1 => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 format!("(64 - ({} as i64).leading_zeros() as i64)", a)
+            }
+            // Bit-position primitives. In Direct mode (i64), test/set/clr
+            // are 1-2 cycle ops. In Rug mode they map to GMP's O(1)
+            // bit accessors (see gen_fn_call_rug).
+            "bit_test" if args.len() == 2 => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                format!("((({} >> {}) & 1i64))", a, b)
+            }
+            "bit_set" if args.len() == 2 => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                format!("(({}) | (1i64 << {}))", a, b)
+            }
+            "bit_clr" if args.len() == 2 => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                format!("(({}) & !(1i64 << {}))", a, b)
+            }
+            "bit_next" if args.len() == 2 => {
+                // Find lowest set bit at position ≥ b. We mask off bits
+                // below b, then trailing_zeros gives the answer (or -1 if 0).
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                format!(
+                    "{{ let _x: i64 = ({}) & !((1i64 << ({})) - 1); if _x == 0 {{ -1i64 }} else {{ _x.trailing_zeros() as i64 }} }}",
+                    a, b
+                )
             }
             // Number theory
             "gcd" if args.len() == 2 => {
@@ -2708,6 +2792,7 @@ impl FnGenerator {
     ) -> String {
         if let Some(s) = self.try_square_mut(name, value, ind) { return s; }
         if let Some(s) = self.try_inplace_op(name, value, ind) { return s; }
+        if let Some(s) = self.try_inplace_bit(name, value, ind) { return s; }
 
         if let Expr::Literal(Literal::Int(n)) = value {
             return format!("{}{}.assign({}i64);\n", ind, name, n);
@@ -2744,6 +2829,24 @@ impl FnGenerator {
 
         let expr = self.gen_expr_rug_incomplete(value);
         format!("{}{}.assign({});\n", ind, name, expr)
+    }
+
+    /// Match `name = bit_set(name, i)` or `name = bit_clr(name, i)` and
+    /// produce an in-place `.set_bit(i, true/false)`. Critical for hot
+    /// bitmap-build loops where allocating a new BigInt per iteration is
+    /// O(N) and would dominate.
+    fn try_inplace_bit(&self, name: &str, value: &Expr, ind: &str) -> Option<String> {
+        let Expr::FnCall { name: fname, args } = value else { return None; };
+        if args.len() != 2 { return None; }
+        let Expr::Ident(src) = &args[0].node else { return None; };
+        if src != name { return None; }
+        let bit_value = match fname.as_str() {
+            "bit_set" => "true",
+            "bit_clr" => "false",
+            _ => return None,
+        };
+        let i = self.gen_int_to_i64_rug(&args[1].node);
+        Some(format!("{}{}.set_bit(({}) as u32, {});\n", ind, name, i, bit_value))
     }
 
     /// Match `name = name * name` and produce `name.square_mut()`.
@@ -3015,6 +3118,64 @@ impl FnGenerator {
             "bit_len" if args.len() == 1 => {
                 let a = self.gen_expr_rug(&args[0].node);
                 format!("Integer::from(({}).significant_bits() as i64)", a)
+            }
+            // O(1) bit operations on rug::Integer. Replace the slow
+            // band(shr(x, i), 1) / bor(x, shl(1, i)) patterns whose cost
+            // is O(N/64) per call (the shift allocates a fresh BigInt).
+            "bit_test" if args.len() == 2 => {
+                // get_bit only needs &self — no clone — when the operand is
+                // an Integer ident. For small_int_var idents (i64), use a
+                // pure-i64 shift. For non-idents, fall through to building
+                // an Integer.
+                let b = self.gen_int_to_i64_rug(&args[1].node);
+                if let Expr::Ident(name) = &args[0].node {
+                    if self.small_int_vars.contains(name) {
+                        return format!("Integer::from((({}) >> ({})) & 1i64)", name, b);
+                    }
+                    return format!(
+                        "Integer::from(if {}.get_bit(({}) as u32) {{ 1i64 }} else {{ 0i64 }})",
+                        name, b
+                    );
+                }
+                let a = self.gen_expr_rug(&args[0].node);
+                format!("Integer::from(if ({}).get_bit(({}) as u32) {{ 1i64 }} else {{ 0i64 }})", a, b)
+            }
+            "bit_set" if args.len() == 2 => {
+                // Returns x with bit i set. Need a clone since we want a
+                // new value (for non-self-assign uses; self-assign goes
+                // through try_inplace_bit and never reaches here).
+                let a = self.gen_expr_rug(&args[0].node);
+                let b = self.gen_int_to_i64_rug(&args[1].node);
+                format!("{{ let mut _t = {}.clone(); _t.set_bit(({}) as u32, true); _t }}", a, b)
+            }
+            "bit_clr" if args.len() == 2 => {
+                let a = self.gen_expr_rug(&args[0].node);
+                let b = self.gen_int_to_i64_rug(&args[1].node);
+                format!("{{ let mut _t = {}.clone(); _t.set_bit(({}) as u32, false); _t }}", a, b)
+            }
+            // bit_next(x, start) — find the next 1-bit at position ≥ start
+            // (or -1 if none). Maps to rug's find_one which uses GMP's
+            // mpz_scan1 — O(1) amortized over the limbs.
+            "bit_next" if args.len() == 2 => {
+                let b = self.gen_int_to_i64_rug(&args[1].node);
+                if let Expr::Ident(name) = &args[0].node {
+                    if self.small_int_vars.contains(name) {
+                        // i64 path: mask off bits below b, then trailing_zeros
+                        return format!(
+                            "Integer::from({{ let _x: i64 = ({}) & !((1i64 << ({})) - 1); if _x == 0 {{ -1i64 }} else {{ _x.trailing_zeros() as i64 }} }})",
+                            name, b
+                        );
+                    }
+                    return format!(
+                        "Integer::from({}.find_one(({}) as u32).map(|v| v as i64).unwrap_or(-1i64))",
+                        name, b
+                    );
+                }
+                let a = self.gen_expr_rug(&args[0].node);
+                format!(
+                    "Integer::from(({}).find_one(({}) as u32).map(|v| v as i64).unwrap_or(-1i64))",
+                    a, b
+                )
             }
             // Number theory: rug has these as methods. All args must be &Integer.
             "gcd" if args.len() == 2 => {

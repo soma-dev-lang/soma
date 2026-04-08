@@ -230,6 +230,28 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let b = val_to_i64(&args[1]);
             Some(Ok(Value::Int(SomaInt::from_i64(a.wrapping_shr(b as u32)))))
         }
+        "bit_test" if args.len() >= 2 => {
+            let a = val_to_i64(&args[0]);
+            let b = val_to_i64(&args[1]);
+            Some(Ok(Value::Int(SomaInt::from_i64((a >> b) & 1))))
+        }
+        "bit_set" if args.len() >= 2 => {
+            let a = val_to_i64(&args[0]);
+            let b = val_to_i64(&args[1]);
+            Some(Ok(Value::Int(SomaInt::from_i64(a | (1 << b)))))
+        }
+        "bit_clr" if args.len() >= 2 => {
+            let a = val_to_i64(&args[0]);
+            let b = val_to_i64(&args[1]);
+            Some(Ok(Value::Int(SomaInt::from_i64(a & !(1 << b)))))
+        }
+        "bit_next" if args.len() >= 2 => {
+            let a = val_to_i64(&args[0]);
+            let b = val_to_i64(&args[1]);
+            let masked = a & !((1i64 << b) - 1);
+            let r: i64 = if masked == 0 { -1 } else { masked.trailing_zeros() as i64 };
+            Some(Ok(Value::Int(SomaInt::from_i64(r))))
+        }
         "bit_len" if args.len() >= 1 => {
             match &args[0] {
                 Value::Int(si) => {
