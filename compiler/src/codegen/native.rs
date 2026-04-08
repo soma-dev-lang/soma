@@ -1896,6 +1896,17 @@ impl FnGenerator {
             }
             Expr::Ident(name) => {
                 let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
+                // In Rug mode an Int Ident is an `rug::Integer`, not an i64.
+                // We can't just emit `name` and treat it as primitive — we
+                // must explicitly convert to the target representation.
+                if var_ty == NativeType::Int && self.mode == Mode::Rug {
+                    return match target_ty {
+                        NativeType::Int => format!("({}.to_i64().expect(\"BigInt overflow\"))", name),
+                        NativeType::Float => format!("({}.to_f64())", name),
+                        NativeType::Bool => format!("({} != 0)", name),
+                        NativeType::String => format!("{}.to_string()", name),
+                    };
+                }
                 self.coerce_direct(name.clone(), var_ty, target_ty)
             }
             Expr::BinaryOp { left, op, right } => {
