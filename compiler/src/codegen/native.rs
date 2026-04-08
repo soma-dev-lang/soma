@@ -863,6 +863,16 @@ fn gen_direct_inner_fn(
         .collect::<Vec<_>>()
         .join(", ");
 
+    // #[inline] hint for small Direct inner functions. Lets LLVM
+    // inline them across call sites in the same dylib, exposing the
+    // whole nested loop to the optimizer (loop-invariant code motion,
+    // branch simplification, autovectorization). Doesn't change
+    // semantics — just an optimization hint. Threshold is conservative
+    // (≤ 30 AST statements counted recursively) so we don't bloat the
+    // dylib for large helper functions.
+    if count_body_statements(&handler.body) <= 30 {
+        out.push_str("#[inline]\n");
+    }
     out.push_str(&format!(
         "fn inner_{}({}) -> {} {{\n",
         fn_name, param_str, ret_type.rust_str()
@@ -1635,6 +1645,26 @@ fn emit_array_wrapper(
 /// (doesn't model overwrite-before-read inside If/While bodies).
 fn body_references(body: &[Spanned<Statement>], name: &str) -> bool {
     body.iter().any(|s| stmt_references(&s.node, name))
+}
+
+/// Count statements in a body recursively (descends into if/while/for).
+/// Used as a "small enough to inline" heuristic.
+fn count_body_statements(body: &[Spanned<Statement>]) -> usize {
+    let mut n = 0;
+    for s in body {
+        n += 1;
+        match &s.node {
+            Statement::If { then_body, else_body, .. } => {
+                n += count_body_statements(then_body);
+                n += count_body_statements(else_body);
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => {
+                n += count_body_statements(body);
+            }
+            _ => {}
+        }
+    }
+    n
 }
 
 // ── Swap-safe variable analysis ──────────────────────────────────────
