@@ -20,6 +20,7 @@ def workload():
     for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 100, 1000):
         hq_table(n)
     hq_table(10000)
+    hq_table(1000000)
 
 def warmup():
     try: hq_table(2)

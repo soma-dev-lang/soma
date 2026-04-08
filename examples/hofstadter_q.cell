@@ -5,45 +5,32 @@
 // Q(1) = Q(2) = 1
 // Q(n) = Q(n − Q(n−1)) + Q(n − Q(n−2))     for n ≥ 3
 //
-// Notoriously chaotic. Naive recursion is exponential, so we need to
-// memoize the sequence. [native] doesn't have arrays — instead we pack
-// the entire Q[1..n] table into a single BigInt, with each Q value
-// occupying 16 bits. Read/write via shr/shl/band/bor.
+// Notoriously chaotic — naive recursion is exponential. Tabulate by
+// building Q[1..n] in a fixed-size i64 buffer with O(1) random access.
 //
 // Run: soma run hofstadter_q.cell
 
 cell HofstadterQ {
 
-    // Compute Q(target) by building Q[1..target] in a packed BigInt.
-    // Each slot is 16 bits (Q values for n ≤ 10^5 stay below 2^15).
+    // Compute Q(target) by building Q[1..target] in a Vec<i64> buffer.
     on q(target: Int) [native] {
         if target == 1 { return 1 }
         if target == 2 { return 1 }
 
-        // Mask for one slot: 2^16 - 1 = 65535
-        let mask = 65535
-        // Initialize packed with Q[1] = 1 and Q[2] = 1
-        let packed = bor(shl(1, 0), shl(1, 16))
+        let qbuf = buffer(target + 1)
+        buf_set(qbuf, 1, 1)
+        buf_set(qbuf, 2, 1)
 
         let k = 3
         while k <= target {
-            // Read Q[k-1] from slot k-2
-            let q1 = band(shr(packed, (k - 2) * 16), mask)
-            // Read Q[k-2] from slot k-3
-            let q2 = band(shr(packed, (k - 3) * 16), mask)
-            // Q[k] = Q[k - q1] + Q[k - q2]
-            let i1 = k - q1
-            let i2 = k - q2
-            let v1 = band(shr(packed, (i1 - 1) * 16), mask)
-            let v2 = band(shr(packed, (i2 - 1) * 16), mask)
-            let qk = v1 + v2
-            // Write into slot k-1
-            packed = bor(packed, shl(qk, (k - 1) * 16))
+            let q1 = buf_get(qbuf, k - 1)
+            let q2 = buf_get(qbuf, k - 2)
+            let v1 = buf_get(qbuf, k - q1)
+            let v2 = buf_get(qbuf, k - q2)
+            buf_set(qbuf, k, v1 + v2)
             k = k + 1
         }
-
-        // Read Q[target] from slot target-1
-        return band(shr(packed, (target - 1) * 16), mask)
+        return buf_get(qbuf, target)
     }
 
     on check(n: Int, expected: Int) {
@@ -84,5 +71,10 @@ cell HofstadterQ {
         let r = q(10000)
         let elapsed = now_ms() - start
         print("  Q(10000) = {r}  ({elapsed}ms)")
+
+        let start2 = now_ms()
+        let r2 = q(1000000)
+        let elapsed2 = now_ms() - start2
+        print("  Q(1000000) = {r2}  ({elapsed2}ms)")
     }
 }

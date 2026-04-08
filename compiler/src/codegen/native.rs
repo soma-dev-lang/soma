@@ -2779,6 +2779,13 @@ struct FnGenerator {
     /// before being read. Critical for hot BigInt loops (PI spigot:
     /// 75s → ~50s by avoiding clone_from of growing limbs).
     swap_safe_vars: HashSet<String>,
+    /// Variables that hold a fixed-size i64 buffer (`Vec<i64>`),
+    /// created via the `buffer(N)` builtin and accessed via
+    /// `buf_get(b, i)` and `buf_set(b, i, v)`. The codegen emits
+    /// these as direct Vec indexing, providing O(1) random access
+    /// without going through GMP bit operations. Closes the
+    /// hofstadter_q gap (Numba was 245× faster).
+    buf_vars: HashSet<String>,
     /// Errors encountered during codegen — checked at the end of generation.
     errors: RefCell<Vec<String>>,
     /// Name of the handler being compiled (for error context).
@@ -2809,6 +2816,7 @@ impl FnGenerator {
             mode,
             small_int_vars: HashSet::new(),
             swap_safe_vars: HashSet::new(),
+            buf_vars: HashSet::new(),
             errors: RefCell::new(Vec::new()),
             handler_name: String::new(),
             fn_return_type: NativeType::Float,
@@ -3203,6 +3211,16 @@ impl FnGenerator {
     fn infer_stmt_types(&mut self, stmt: &Statement) {
         match stmt {
             Statement::Let { name, value } => {
+                // Detect `let X = buffer(N)` — mark X as a Vec<i64>
+                // buffer var. Doesn't go in var_types as a NativeType
+                // (it's not Int/Float/Bool/String), tracked separately
+                // in buf_vars.
+                if let Expr::FnCall { name: fname, .. } = &value.node {
+                    if fname == "buffer" {
+                        self.buf_vars.insert(name.clone());
+                        return;
+                    }
+                }
                 let ty = self.infer_expr_type(&value.node);
                 self.var_types.insert(name.clone(), ty);
             }
@@ -3349,6 +3367,19 @@ impl FnGenerator {
         let ind = Self::indent(indent);
         match stmt {
             Statement::Let { name, value } => {
+                // Buffer creation: `let X = buffer(N)` →
+                // `let mut X: Vec<i64> = vec![0i64; (N) as usize];`
+                if self.buf_vars.contains(name) {
+                    if let Expr::FnCall { name: fname, args } = &value.node {
+                        if fname == "buffer" && args.len() == 1 {
+                            let n_expr = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                            return format!(
+                                "{}let mut {}: Vec<i64> = vec![0i64; ({}) as usize];\n",
+                                ind, name, n_expr
+                            );
+                        }
+                    }
+                }
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
                 let expr = self.gen_expr_direct(&value.node, ty);
                 format!("{}let mut {}: {} = {};\n", ind, name, ty.rust_str(), expr)
@@ -3431,6 +3462,20 @@ impl FnGenerator {
             Statement::Break => format!("{}break;\n", ind),
             Statement::Continue => format!("{}continue;\n", ind),
             Statement::ExprStmt { expr } => {
+                // Special-case buf_set: emit a clean Vec assignment
+                // (no `let _ =`, no closure block, no return value).
+                if let Expr::FnCall { name: fname, args } = &expr.node {
+                    if fname == "buf_set" && args.len() == 3 {
+                        if let Expr::Ident(buf_name) = &args[0].node {
+                            let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                            return format!(
+                                "{}{}[({}) as usize] = {};\n",
+                                ind, buf_name, i, v
+                            );
+                        }
+                    }
+                }
                 // Statement-level expression (e.g. a fn call for side effects).
                 // Drop the result via `let _ =` to silence unused-result warnings.
                 let code = self.gen_expr_direct(&expr.node, NativeType::Float);
@@ -3583,6 +3628,30 @@ impl FnGenerator {
 
     fn gen_fn_call_direct(&self, name: &str, args: &[Spanned<Expr>], target_ty: NativeType) -> String {
         match name {
+            // Buffer accessors — emit raw Vec indexing.
+            "buf_get" if args.len() == 2 => {
+                if let Expr::Ident(buf_name) = &args[0].node {
+                    let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let inner = format!("{}[({}) as usize]", buf_name, i);
+                    return self.coerce_direct(inner, NativeType::Int, target_ty);
+                }
+                self.err("buf_get: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            "buf_set" if args.len() == 3 => {
+                // buf_set is statement-like — when it appears as an
+                // expression, we wrap it in a block that returns 0i64
+                // so the type system stays happy. The ExprStmt path
+                // detects the call directly and emits a clean
+                // assignment.
+                if let Expr::Ident(buf_name) = &args[0].node {
+                    let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                    return format!("{{ {}[({}) as usize] = {}; 0i64 }}", buf_name, i, v);
+                }
+                self.err("buf_set: first arg must be an identifier");
+                "0i64".to_string()
+            }
             "random" => "unsafe { _soma_random() }".to_string(),
             "sqrt" | "log" | "exp" | "sin" | "cos" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
@@ -3907,6 +3976,18 @@ impl FnGenerator {
         let ind = Self::indent(indent);
         match stmt {
             Statement::Let { name, value } => {
+                // Buffer creation: same as Direct mode — emit Vec<i64>.
+                if self.buf_vars.contains(name) {
+                    if let Expr::FnCall { name: fname, args } = value.node.clone() {
+                        if fname == "buffer" && args.len() == 1 {
+                            let n_expr = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                            return format!(
+                                "{}let mut {}: Vec<i64> = vec![0i64; ({}) as usize];\n",
+                                ind, name, n_expr
+                            );
+                        }
+                    }
+                }
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
                 if ty == NativeType::Int
                     && !self.small_int_vars.contains(name)
@@ -3973,6 +4054,19 @@ impl FnGenerator {
             Statement::Break => format!("{}break;\n", ind),
             Statement::Continue => format!("{}continue;\n", ind),
             Statement::ExprStmt { expr } => {
+                // buf_set special-case (same as Direct mode)
+                if let Expr::FnCall { name: fname, args } = &expr.node {
+                    if fname == "buf_set" && args.len() == 3 {
+                        if let Expr::Ident(buf_name) = &args[0].node {
+                            let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                            return format!(
+                                "{}{}[({}) as usize] = {};\n",
+                                ind, buf_name, i, v
+                            );
+                        }
+                    }
+                }
                 let code = self.gen_expr_rug(&expr.node);
                 format!("{}let _ = {};\n", ind, code)
             }
@@ -4675,6 +4769,28 @@ impl FnGenerator {
 
     fn gen_fn_call_rug(&self, name: &str, args: &[Spanned<Expr>]) -> String {
         match name {
+            // Buffer accessors — emit Vec indexing wrapped in Integer
+            // (callers in Rug mode expect Integer return values).
+            "buf_get" if args.len() == 2 => {
+                if let Expr::Ident(buf_name) = &args[0].node {
+                    let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("Integer::from({}[({}) as usize])", buf_name, i);
+                }
+                self.err("buf_get: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            "buf_set" if args.len() == 3 => {
+                if let Expr::Ident(buf_name) = &args[0].node {
+                    let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                    return format!(
+                        "{{ {}[({}) as usize] = {}; Integer::from(0i64) }}",
+                        buf_name, i, v
+                    );
+                }
+                self.err("buf_set: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
             "abs" => {
                 let a = self.gen_expr_rug(&args[0].node);
                 format!("({}).abs()", a)

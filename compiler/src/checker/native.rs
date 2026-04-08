@@ -66,6 +66,11 @@ const ALLOWED_BUILTINS: &[&str] = &[
     "pow_mod", "gcd", "sqrt_int",
     // String introspection
     "str_len", "str_at", "str_eq",
+    // Fixed-size i64 buffer (random-access array primitive for [native])
+    // — `buffer(N)` creates a Vec<i64> of size N initialized to 0;
+    //   `buf_get(buf, i)` reads buf[i]; `buf_set(buf, i, v)` writes buf[i] = v.
+    // Closes the array-primitive gap with Numba/Cython.
+    "buffer", "buf_get", "buf_set",
 ];
 
 /// Validate all statements in a [native] handler body.
