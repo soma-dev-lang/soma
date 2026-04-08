@@ -2704,12 +2704,20 @@ impl FnGenerator {
         if let Expr::Ident(src) = value {
             let var_ty = self.var_types.get(src).copied().unwrap_or(NativeType::Float);
             if var_ty == NativeType::Int && src != name {
-                // Swap is correct only if `src` is not read in the rest of
-                // the current body. Otherwise the read would see `name`'s
-                // OLD value (which the swap put into `src`).
-                if !body_references(rest, src) {
-                    return format!("{}std::mem::swap(&mut {}, &mut {});\n", ind, name, src);
-                }
+                // The swap optimization (mem::swap instead of clone_from) is
+                // only correct when `src` is dead after this assignment.
+                // `body_references(rest, src)` checks the *current* body's
+                // remainder, but it does NOT see enclosing loop scopes —
+                // an outer-loop condition reading `src` will still observe
+                // the swapped value on the next iteration. To be safe, only
+                // swap when the assignment is at function-top-level (i.e.
+                // not inside any loop or conditional). The conservative
+                // path (clone_from) is correct in all contexts.
+                //
+                // Detection: if `rest` happens to be the entire function
+                // tail and we're in straight-line code, the caller passes
+                // the function-level rest. We can't easily tell from here,
+                // so always emit clone_from.
                 return format!("{}{}.clone_from(&{});\n", ind, name, src);
             }
         }
@@ -2972,8 +2980,13 @@ impl FnGenerator {
                 format!("Integer::from(({}) {} ({}))", a, op, b)
             }
             "bnot" if args.len() == 1 => {
+                // bnot is meaningful only for fixed-width values. rug::Integer
+                // is unbounded, so `!x` produces `-x - 1` — wrong when used
+                // as a bit-clearing mask. Convert to i64 first, then negate
+                // bits at i64 width. The caller is responsible for ensuring
+                // the operand fits i64.
                 let a = self.gen_expr_rug(&args[0].node);
-                format!("Integer::from(!({}))", a)
+                format!("Integer::from(!(({}).to_i64().unwrap_or(0)))", a)
             }
             "shl" if args.len() == 2 => {
                 // Wrap the base in Integer so the shift can produce a BigInt
