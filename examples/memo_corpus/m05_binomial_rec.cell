@@ -1,0 +1,14 @@
+// expected_memo: yes
+// Pascal's recurrence: C(n,k) = C(n-1,k-1) + C(n-1,k)
+
+cell M05Binomial {
+    on c(n: Int, k: Int) [native] {
+        if k == 0 { return 1 }
+        if k == n { return 1 }
+        return c(n - 1, k - 1) + c(n - 1, k)
+    }
+    on run() {
+        let r = c(20, 10)
+        if r == 184756 { print("OK m05_binomial(20,10) = {r}") } else { print("FAIL: {r}") }
+    }
+}

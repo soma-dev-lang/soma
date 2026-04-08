@@ -1,0 +1,15 @@
+// expected_memo: yes
+// Lucas numbers: L(n) = L(n-1) + L(n-2). Same shape as Fibonacci with
+// different base case. Two self-calls, both shrinks.
+
+cell M09Lucas {
+    on l(n: Int) [native] {
+        if n == 0 { return 2 }
+        if n == 1 { return 1 }
+        return l(n - 1) + l(n - 2)
+    }
+    on run() {
+        let r = l(20)
+        if r == 15127 { print("OK m09_lucas(20) = {r}") } else { print("FAIL: {r}") }
+    }
+}

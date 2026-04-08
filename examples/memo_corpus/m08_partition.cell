@@ -1,0 +1,19 @@
+// expected_memo: yes
+// Integer partition via the standard 2-arg recurrence:
+//   p(n, k) = p(n-k, k) + p(n, k-1)
+// where k is the largest part allowed. Two self-calls, both with
+// simple shrinks. (n-k uses parameter k, which the rule allows since
+// k is itself a parameter — not a derived local.)
+
+cell M08Partition {
+    on p(n: Int, k: Int) [native] {
+        if n == 0 { return 1 }
+        if n < 0 { return 0 }
+        if k == 0 { return 0 }
+        return p(n - k, k) + p(n, k - 1)
+    }
+    on run() {
+        let r = p(20, 20)
+        if r == 627 { print("OK m08_partition(20) = {r}") } else { print("FAIL: {r}") }
+    }
+}

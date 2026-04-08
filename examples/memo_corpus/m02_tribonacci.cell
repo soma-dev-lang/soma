@@ -1,0 +1,15 @@
+// expected_memo: yes
+// Tribonacci: T(n) = T(n-1) + T(n-2) + T(n-3). Three simple shrinks.
+
+cell M02Trib {
+    on trib(n: Int) [native] {
+        if n == 0 { return 0 }
+        if n == 1 { return 0 }
+        if n == 2 { return 1 }
+        return trib(n - 1) + trib(n - 2) + trib(n - 3)
+    }
+    on run() {
+        let r = trib(20)
+        if r == 35890 { print("OK m02_trib(20) = {r}") } else { print("FAIL: {r}") }
+    }
+}

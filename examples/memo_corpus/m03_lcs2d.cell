@@ -1,0 +1,20 @@
+// expected_memo: yes
+// 2D DP recurrence on (i, j). Three self-calls, all args are param-shrinks
+// or unchanged params. Classic LCS shape using just int positions.
+
+cell M03Lcs2d {
+    // f(i, j) = the diagonal of an (i+1)x(j+1) lattice path count
+    on f(i: Int, j: Int) [native] {
+        if i == 0 { return j }
+        if j == 0 { return i }
+        let a = f(i - 1, j)
+        let b = f(i, j - 1)
+        let c = f(i - 1, j - 1)
+        return a + b + c
+    }
+    on run() {
+        // f(8, 8) — exponential without memo (3^8 = 6561 calls)
+        let r = f(8, 8)
+        if r == 332688 { print("OK m03_lcs2d(8,8) = {r}") } else { print("FAIL: {r}") }
+    }
+}

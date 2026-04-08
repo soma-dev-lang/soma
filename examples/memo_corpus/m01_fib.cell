@@ -1,0 +1,14 @@
+// expected_memo: yes
+// Classic Fibonacci. f(n-1) + f(n-2). Two self-calls, both args
+// are param-minus-small-literal. Textbook overlap.
+
+cell M01Fib {
+    on fib(n: Int) [native] {
+        if n < 2 { return n }
+        return fib(n - 1) + fib(n - 2)
+    }
+    on run() {
+        let r = fib(25)
+        if r == 75025 { print("OK m01_fib(25) = {r}") } else { print("FAIL: {r}") }
+    }
+}

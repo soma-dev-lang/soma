@@ -1,0 +1,27 @@
+// expected_memo: no
+// Mixed-args: one self-call has simple args (eligible) but another has
+// a derived/local arg (ineligible). The rule must reject if ANY self-call
+// fails the eligibility check — partial memoization would silently miss
+// hits and produce wrong results.
+
+cell M19MixedArgs {
+    on f(n: Int) [native] {
+        if n <= 1 { return 1 }
+        let half = n / 2
+        // First call is eligible (n - 1)
+        let a = f(n - 1)
+        // Second call uses local — ineligible
+        let b = f(half)
+        return a + b
+    }
+    on run() {
+        let r = f(15)
+        // f(15) = f(14) + f(7) = ...
+        // f(0)=f(1)=1; f(2)=f(1)+f(1)=2; f(3)=f(2)+f(1)=3; f(4)=f(3)+f(2)=5
+        // f(5)=f(4)+f(2)=7; f(6)=f(5)+f(3)=10; f(7)=f(6)+f(3)=13
+        // f(8)=f(7)+f(4)=18; f(9)=f(8)+f(4)=23; f(10)=f(9)+f(5)=30
+        // f(11)=f(10)+f(5)=37; f(12)=f(11)+f(6)=47; f(13)=f(12)+f(6)=57
+        // f(14)=f(13)+f(7)=70; f(15)=f(14)+f(7)=83
+        if r == 83 { print("OK m19_mixed(15) = {r}") } else { print("FAIL: {r}") }
+    }
+}

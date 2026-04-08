@@ -1,0 +1,16 @@
+// expected_memo: yes
+// Ackermann: A(m, n) has a NESTED self-call as the second arg of the
+// outer self-call. The rule's recursive eligibility check accepts this
+// because the inner call's args are themselves simple shrinks of params.
+
+cell M17AckermannNested {
+    on a(m: Int, n: Int) [native] {
+        if m == 0 { return n + 1 }
+        if n == 0 { return a(m - 1, 1) }
+        return a(m - 1, a(m, n - 1))
+    }
+    on run() {
+        let r = a(3, 8)
+        if r == 2045 { print("OK m17_ack(3,8) = {r}") } else { print("FAIL: {r}") }
+    }
+}

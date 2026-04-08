@@ -1,0 +1,19 @@
+// expected_memo: no
+// Binary search: log-depth recursion via mid local. Two self-calls but
+// both bound to local `mid` and the comparison-derived branch. Disjoint.
+
+cell M14Binsearch {
+    on bs(lo: Int, hi: Int, target: Int) [native] {
+        if lo >= hi { return 0 - 1 }
+        let mid = (lo + hi) / 2
+        if mid == target { return mid }
+        if mid < target {
+            return bs(mid + 1, hi, target)
+        }
+        return bs(lo, mid, target)
+    }
+    on run() {
+        let r = bs(0, 1000, 537)
+        if r == 537 { print("OK m14_binsearch(537) = {r}") } else { print("FAIL: {r}") }
+    }
+}

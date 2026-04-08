@@ -1,0 +1,20 @@
+// expected_memo: no
+// Mergesort skeleton: count comparisons over a partitioned range.
+// Two self-calls but both use the LOCAL `mid`, which is a divide-and-
+// conquer split point. Subproblems are disjoint — memoization is dead
+// weight (every key visited exactly once).
+
+cell M12MergesortSim {
+    on count(lo: Int, hi: Int) [native] {
+        if hi - lo <= 1 { return 0 }
+        let mid = (lo + hi) / 2
+        let left = count(lo, mid)
+        let right = count(mid, hi)
+        return left + right + (hi - lo)
+    }
+    on run() {
+        // count over [0, 100): a perfect divide gives n*log2(n) ≈ 700
+        let r = count(0, 100)
+        if r == 672 { print("OK m12_mergesort_sim(0,100) = {r}") } else { print("FAIL: {r}") }
+    }
+}

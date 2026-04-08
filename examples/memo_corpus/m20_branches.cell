@@ -1,0 +1,20 @@
+// expected_memo: yes
+// Self-calls in different branches of the same function. Both args
+// are simple shrinks. Tests that the detection rule walks through
+// if/else and counts self-calls across branches.
+
+cell M20Branches {
+    on f(n: Int) [native] {
+        if n == 0 { return 0 }
+        if n == 1 { return 1 }
+        if n % 2 == 0 {
+            return f(n - 2) + 1
+        } else {
+            return f(n - 1) + f(n - 3)
+        }
+    }
+    on run() {
+        let r = f(20)
+        if r == 10 { print("OK m20_branches(20) = {r}") } else { print("FAIL: {r}") }
+    }
+}

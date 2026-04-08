@@ -1,0 +1,19 @@
+// expected_memo: yes
+// Edit distance shape: f(i-1,j), f(i,j-1), f(i-1,j-1) with min.
+// Same arg pattern as m03 but with min/branch instead of sum.
+
+cell M04Edit {
+    on f(i: Int, j: Int) [native] {
+        if i == 0 { return j }
+        if j == 0 { return i }
+        let d1 = f(i - 1, j)
+        let d2 = f(i, j - 1)
+        let d3 = f(i - 1, j - 1)
+        return 1 + min(min(d1, d2), d3)
+    }
+    on run() {
+        let r = f(7, 7)
+        // pure recurrence: f(7, 7) = 8
+        if r == 7 { print("OK m04_edit(7,7) = {r}") } else { print("FAIL: {r}") }
+    }
+}

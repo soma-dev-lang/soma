@@ -1,0 +1,30 @@
+// expected_memo: no
+// Self-call inside a LOOP whose iterator is a local variable. The
+// arg uses the loop variable, not just parameters. The rule should
+// reject this — the call site visits a range of arguments that depends
+// on a runtime local, which the static analysis can't bound.
+//
+// Concretely: f(n) = sum over i in [0, n) of f(n - 1 - i) is the same
+// as the Catalan-shaped recurrence. It DOES benefit from memoization
+// in principle, but the rule's syntactic check (every arg must be a
+// simple shrink of params) excludes args that involve loop locals.
+// We accept this as a known limitation: Catalan-shaped recurrences
+// need to be expressed without explicit loops to be auto-memoized.
+
+cell M18LoopRecursion {
+    on f(n: Int) [native] {
+        if n == 0 { return 1 }
+        let s = 0
+        let i = 0
+        while i < n {
+            s = s + f(n - 1 - i)  // arg uses loop local `i`
+            i = i + 1
+        }
+        return s
+    }
+    on run() {
+        // f(n) = 2^(n-1) for n ≥ 1: f(1)=1, f(2)=2, f(3)=4, f(4)=8, ...
+        let r = f(10)
+        if r == 512 { print("OK m18_loop_rec(10) = {r}") } else { print("FAIL: {r}") }
+    }
+}

@@ -1,0 +1,16 @@
+// expected_memo: yes
+// 2·h(n-1) written as h(n-1) + 1 + h(n-1). The two self-calls have the
+// IDENTICAL arg pattern, so memoization collapses 2^n calls to n.
+// This is the most extreme case of "self-calls with simple shrinks
+// that overlap" — they don't just overlap, they're literally the same.
+
+cell M15Hanoi {
+    on h(n: Int) [native] {
+        if n == 0 { return 0 }
+        return h(n - 1) + 1 + h(n - 1)
+    }
+    on run() {
+        let r = h(20)
+        if r == 1048575 { print("OK m15_hanoi(20) = {r}") } else { print("FAIL: {r}") }
+    }
+}

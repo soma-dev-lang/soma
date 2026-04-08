@@ -1,0 +1,15 @@
+// expected_memo: yes
+// Delannoy numbers: D(m,n) = D(m-1,n) + D(m,n-1) + D(m-1,n-1).
+// 2D recurrence with three self-calls, all simple shrinks.
+
+cell M06Delannoy {
+    on d(m: Int, n: Int) [native] {
+        if m == 0 { return 1 }
+        if n == 0 { return 1 }
+        return d(m - 1, n) + d(m, n - 1) + d(m - 1, n - 1)
+    }
+    on run() {
+        let r = d(8, 8)
+        if r == 265729 { print("OK m06_delannoy(8,8) = {r}") } else { print("FAIL: {r}") }
+    }
+}

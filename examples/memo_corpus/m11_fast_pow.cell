@@ -1,0 +1,21 @@
+// expected_memo: no
+// Fast exponentiation: base^n via halving. Two self-calls but the arg
+// is `n / 2` — a derived expression, not param ± literal. The rule
+// rejects it. (Even if it accepted it, fast_pow has zero overlap —
+// each (base, exp) pair is visited once.)
+
+cell M11FastPow {
+    on pw(base: Int, n: Int) [native] {
+        if n == 0 { return 1 }
+        if n == 1 { return base }
+        let half = pw(base, n / 2)
+        if n % 2 == 0 {
+            return half * half
+        }
+        return base * pw(base, n - 1)
+    }
+    on run() {
+        let r = pw(2, 30)
+        if r == 1073741824 { print("OK m11_fast_pow(2, 30) = {r}") } else { print("FAIL: {r}") }
+    }
+}

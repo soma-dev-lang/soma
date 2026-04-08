@@ -1,0 +1,16 @@
+// expected_memo: yes
+// Motzkin numbers via the linear recurrence:
+//   M(n) = ((2n+1)·M(n-1) + 3(n-1)·M(n-2)) / (n+2)
+// Two self-calls, both args param-shrinks. Closed coefficients.
+
+cell M07Motzkin {
+    on m(n: Int) [native] {
+        if n == 0 { return 1 }
+        if n == 1 { return 1 }
+        return ((2 * n + 1) * m(n - 1) + 3 * (n - 1) * m(n - 2)) / (n + 2)
+    }
+    on run() {
+        let r = m(15)
+        if r == 310572 { print("OK m07_motzkin(15) = {r}") } else { print("FAIL: {r}") }
+    }
+}

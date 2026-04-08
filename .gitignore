@@ -8,3 +8,4 @@ compiler/target/
 .DS_Store
 examples/data/
 bench/py/__pycache__/
+bench/__pycache__/

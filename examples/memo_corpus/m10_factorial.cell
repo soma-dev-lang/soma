@@ -1,0 +1,14 @@
+// expected_memo: no
+// Factorial: f(n) = n * f(n-1). Single self-call. The rule's first
+// check (≥2 self-calls) rejects it immediately.
+
+cell M10Factorial {
+    on f(n: Int) [native] {
+        if n <= 1 { return 1 }
+        return n * f(n - 1)
+    }
+    on run() {
+        let r = f(15)
+        if r == 1307674368000 { print("OK m10_factorial(15) = {r}") } else { print("FAIL: {r}") }
+    }
+}
