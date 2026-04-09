@@ -1,0 +1,239 @@
+// ═══════════════════════════════════════════════════════════════════
+// Optimizer — pure cell, deterministic trade-list math.
+//
+// Three passes, all deterministic and replay-friendly:
+//   1. Per-name delta with position cap
+//   2. Turnover cap (proportional scale-down)
+//   3. Cash floor (drop BUY trades until cash ≥ floor)
+//
+// No LLM. The risk team owns this cell.
+// ═══════════════════════════════════════════════════════════════════
+
+cell Optimizer {
+
+    // Pure entry point: build a trade list from current state + targets.
+    //
+    // Inputs (Map):
+    //   total_value:     Float-as-string, full strategy NAV
+    //   current:         List of {symbol, qty, price} for the strategy
+    //                    (contains every CURRENTLY HELD position only)
+    //   targets:         Map<String, String> symbol → target weight (0..1)
+    //   prices:          Map<String, String> symbol → price for every
+    //                    symbol that might be traded (UNION of current
+    //                    and targets). Required to price BUYs of names
+    //                    we don't currently hold.
+    //   max_position:    String, cap on per-name weight (e.g. "0.10")
+    //   max_turnover:    String, cap on turnover as fraction of NAV
+    //   cash_floor:      String, minimum cash weight (e.g. "0.02")
+    //   allow_shorting:  String, "true" | "false"
+    //
+    // Output: { trades: List, gross_turnover, scaled, cash_floor_ok, n_trades, error? }
+
+    on optimize(input: Map) {
+        let total_value    = to_float(input.total_value ?? "0")
+        let current        = input.current ?? list()
+        let targets        = input.targets ?? map()
+        let prices_in      = input.prices ?? map()
+        let max_position   = to_float(input.max_position ?? "1.0")
+        let max_turnover   = to_float(input.max_turnover ?? "1.0")
+        let cash_floor     = to_float(input.cash_floor ?? "0.0")
+        let allow_shorting = (input.allow_shorting ?? "false") == "true"
+
+        if total_value <= 0.0 {
+            return map("trades", list(), "gross_turnover", "0", "error", "non-positive NAV", "n_trades", "0", "scaled", "false", "cash_floor_ok", "false")
+        }
+
+        // Build a quick lookup: symbol → current qty (signed) + price.
+        // Prices come from `current` first (so existing marks win), then
+        // fall back to the `prices` map for symbols we don't yet hold.
+        let cur_qty = map()
+        let cur_price = map()
+        for c in current {
+            cur_qty   = cur_qty   |> with(c.symbol, to_string(c.qty))
+            cur_price = cur_price |> with(c.symbol, to_string(c.price))
+        }
+        for k in prices_in.keys() {
+            if cur_price.get(k) == () {
+                cur_price = cur_price |> with(k, prices_in.get(k))
+            }
+        }
+
+        // Universe = current symbols ∪ target symbols.
+        let universe = list()
+        let seen = map()
+        for c in current {
+            if seen.get(c.symbol) == () {
+                seen = seen |> with(c.symbol, "1")
+                universe = push(universe, c.symbol)
+            }
+        }
+        for k in targets.keys() {
+            if seen.get(k) == () {
+                seen = seen |> with(k, "1")
+                universe = push(universe, k)
+            }
+        }
+
+        // ── Pass 1: per-name delta with position cap ───────────
+        let proposed = list()
+        for sym in universe {
+            // CASH is bookkept by the orchestrator from buy/sell flows;
+            // it must never appear as a tradeable line in the optimizer.
+            if sym != "CASH" {
+                let cur_q   = to_float(cur_qty.get(sym) ?? "0")
+                let price   = to_float(cur_price.get(sym) ?? "0")
+                let raw_tgt = to_float(targets.get(sym) ?? "0")
+
+                // Per-name position cap
+                let tgt_w = raw_tgt
+                if tgt_w > max_position { tgt_w = max_position }
+                if tgt_w < 0.0 {
+                    if allow_shorting == false { tgt_w = 0.0 }
+                }
+
+                let cur_w = 0.0
+                if price > 0.0 {
+                    cur_w = (cur_q * price) / total_value
+                }
+
+                let delta_w = tgt_w - cur_w
+                let delta_dollars = delta_w * total_value
+
+                let delta_qty = 0.0
+                if price > 0.0 {
+                    delta_qty = round(delta_dollars / price)
+                }
+
+                // No-short clamp: if we'd end up net short, sell only what we hold.
+                if allow_shorting == false {
+                    let resulting = cur_q + delta_qty
+                    if resulting < 0.0 {
+                        delta_qty = 0.0 - cur_q
+                    }
+                }
+
+                if delta_qty != 0.0 {
+                    let side = "BUY"
+                    if delta_qty < 0.0 { side = "SELL" }
+                    let abs_qty = abs(delta_qty)
+                    let trade = map(
+                        "symbol",   sym,
+                        "side",     side,
+                        "qty",      to_string(abs_qty),
+                        "price",    to_string(price),
+                        "notional", to_string(abs_qty * price)
+                    )
+                    proposed = push(proposed, trade)
+                }
+            }
+        }
+
+        // ── Pass 2: turnover cap ───────────────────────────────
+        let gross = 0.0
+        for t in proposed {
+            gross = gross + to_float(t.notional)
+        }
+        let cap_dollars = max_turnover * total_value
+
+        let scaled_flag = "false"
+        let final_trades = proposed
+        if gross > cap_dollars {
+            if cap_dollars > 0.0 {
+                let scale = cap_dollars / gross
+                let scaled_list = list()
+                for t in proposed {
+                    let new_qty = round(to_float(t.qty) * scale)
+                    if new_qty > 0.0 {
+                        let new_notional = new_qty * to_float(t.price)
+                        let scaled_t = t
+                            |> with("qty", to_string(new_qty))
+                            |> with("notional", to_string(new_notional))
+                            |> with("scaled", "true")
+                        scaled_list = push(scaled_list, scaled_t)
+                    }
+                }
+                final_trades = scaled_list
+                scaled_flag = "true"
+            } else {
+                final_trades = list()
+                scaled_flag = "true"
+            }
+        }
+
+        // ── Pass 3: cash floor ─────────────────────────────────
+        // Note: `current` includes the special CASH position. Compute
+        // starting cash as total_value − Σ(qty × price) for non-cash
+        // names; this matches the orchestrator's bookkeeping convention.
+        let cash_now = total_value
+        for c in current {
+            if c.symbol != "CASH" {
+                cash_now = cash_now - (to_float(c.qty) * to_float(c.price))
+            }
+        }
+        let cash_after = cash_now
+        for t in final_trades {
+            let n = to_float(t.notional)
+            if t.side == "BUY"  { cash_after = cash_after - n }
+            if t.side == "SELL" { cash_after = cash_after + n }
+        }
+        let floor_dollars = cash_floor * total_value
+
+        let cash_kept = "true"
+        if cash_after < floor_dollars {
+            // Scale ALL BUYs down proportionally so that cash exactly
+            // meets the floor. This is the right behaviour for a target-
+            // allocation strategy: every position survives, just slightly
+            // smaller, instead of dropping a name entirely. SELLs are
+            // never touched — they only increase cash.
+            let need = floor_dollars - cash_after
+            let total_buys = 0.0
+            for t in final_trades {
+                if t.side == "BUY" {
+                    total_buys = total_buys + to_float(t.notional)
+                }
+            }
+
+            if total_buys > 0.0 {
+                let scale = 1.0 - (need / total_buys)
+                if scale < 0.0 { scale = 0.0 }
+
+                let rescaled = list()
+                for t in final_trades {
+                    if t.side == "BUY" {
+                        // Use floor() so we're guaranteed to leave at least
+                        // the floor amount of cash. round() can bump qty up
+                        // and push us back below the floor.
+                        let new_qty = floor(to_float(t.qty) * scale)
+                        if new_qty > 0.0 {
+                            let new_notional = new_qty * to_float(t.price)
+                            let scaled_t = t
+                                |> with("qty", to_string(new_qty))
+                                |> with("notional", to_string(new_notional))
+                                |> with("cash_floored", "true")
+                            rescaled = push(rescaled, scaled_t)
+                        }
+                    } else {
+                        rescaled = push(rescaled, t)
+                    }
+                }
+                final_trades = rescaled
+            } else {
+                // No BUYs to scale — nothing we can do; floor stays violated.
+                cash_kept = "false"
+            }
+        }
+
+        let gross_after = 0.0
+        for t in final_trades {
+            gross_after = gross_after + to_float(t.notional)
+        }
+
+        map(
+            "trades",         final_trades,
+            "gross_turnover", to_string(gross_after),
+            "scaled",         scaled_flag,
+            "cash_floor_ok",  cash_kept,
+            "n_trades",       to_string(len(final_trades))
+        )
+    }
+}

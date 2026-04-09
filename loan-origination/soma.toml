@@ -1,0 +1,45 @@
+[package]
+name = "loan-origination"
+description = "Verified consumer lending pipeline — every application reaches `closed`"
+
+[models.fast]
+provider = "ollama"
+model = "gemma4:26b"
+
+[models.smart]
+provider = "ollama"
+model = "gemma4:26b"
+
+[verify]
+deadlock_free = true
+eventually = ["closed"]
+
+[verify.after.submitted]
+eventually = ["closed"]
+
+[verify.after.kyc_pending]
+eventually = ["closed"]
+
+[verify.after.underwriting]
+eventually = ["closed"]
+
+[verify.after.decision_pending]
+eventually = ["closed"]
+
+[verify.after.offered]
+eventually = ["closed"]
+
+[verify.after.accepted]
+eventually = ["closed"]
+
+[verify.after.funded]
+eventually = ["closed"]
+
+[verify.after.rejected]
+eventually = ["closed"]
+
+[verify.after.declined]
+eventually = ["closed"]
+
+[verify.after.withdrawn]
+eventually = ["closed"]

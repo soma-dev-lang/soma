@@ -1,0 +1,303 @@
+// ═══════════════════════════════════════════════════════════════════
+// Alpha unit tests — pure deterministic math, no LLM, no network.
+//
+//   soma test rebalancer/tests/test_alpha.cell
+//
+// Each helper handler is one scenario: builds the input, calls
+// `compute()`, hand-checks the result, returns true on pass.
+// The `cell test` block has one assert per scenario.
+// ═══════════════════════════════════════════════════════════════════
+
+use lib::alpha
+
+cell AlphaScenarios {
+
+    // Float "approximately equal" — needed because of accumulated
+    // round-off in normalized weights.
+    on _approx(a: Float, b: Float) {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        d < 0.0001
+    }
+
+    // ── MOMENTUM SCENARIOS ─────────────────────────────────────
+
+    // Three symbols with strictly distinct returns; top_k=2 should
+    // pick the highest-return pair and equally weight them at 0.5.
+    on test_momentum_top2_of_3() {
+        let input = map(
+            "method", "momentum",
+            "universe", list("AAPL", "MSFT", "NVDA"),
+            "histories", map(
+                "AAPL", list("100", "110"),
+                "MSFT", list("200", "230"),
+                "NVDA", list("50",  "60")
+            ),
+            "top_k", "2",
+            "lookback", "5"
+        )
+        let result = compute(input)
+        let targets = result.targets ?? map()
+        let n_sel = to_int(result.n_selected ?? "0")
+        let nvda_w = to_float(targets.get("NVDA") ?? "0")
+        let msft_w = to_float(targets.get("MSFT") ?? "0")
+        let aapl_w = to_float(targets.get("AAPL") ?? "0")
+        if n_sel != 2 {
+            print("  FAIL n_sel={n_sel}")
+            return false
+        }
+        if _approx(nvda_w, 0.5) == false {
+            print("  FAIL nvda_w={nvda_w}")
+            return false
+        }
+        if _approx(msft_w, 0.5) == false {
+            print("  FAIL msft_w={msft_w}")
+            return false
+        }
+        if _approx(aapl_w, 0.0) == false {
+            print("  FAIL aapl_w={aapl_w}")
+            return false
+        }
+        true
+    }
+
+    // top_k larger than universe → every symbol that has a return
+    // gets selected, weight = 1/n.
+    on test_momentum_top_k_clips_to_universe() {
+        let input = map(
+            "method", "momentum",
+            "universe", list("AAPL", "MSFT"),
+            "histories", map(
+                "AAPL", list("100", "110"),
+                "MSFT", list("200", "220")
+            ),
+            "top_k", "10",
+            "lookback", "5"
+        )
+        let result = compute(input)
+        let n_sel = to_int(result.n_selected ?? "0")
+        let aapl_w = to_float((result.targets ?? map()).get("AAPL") ?? "0")
+        let msft_w = to_float((result.targets ?? map()).get("MSFT") ?? "0")
+        if n_sel != 2 {
+            print("  FAIL n_sel={n_sel}")
+            return false
+        }
+        if _approx(aapl_w, 0.5) == false {
+            print("  FAIL aapl_w={aapl_w}")
+            return false
+        }
+        if _approx(msft_w, 0.5) == false {
+            print("  FAIL msft_w={msft_w}")
+            return false
+        }
+        true
+    }
+
+    // lookback longer than available history must clip to (n-1) and
+    // still produce a return.
+    on test_momentum_lookback_clipped() {
+        let input = map(
+            "method", "momentum",
+            "universe", list("AAPL"),
+            "histories", map(
+                "AAPL", list("100", "120")
+            ),
+            "top_k", "1",
+            "lookback", "100"
+        )
+        let result = compute(input)
+        let n_sel = to_int(result.n_selected ?? "0")
+        let aapl_w = to_float((result.targets ?? map()).get("AAPL") ?? "0")
+        if n_sel != 1 {
+            print("  FAIL n_sel={n_sel}")
+            return false
+        }
+        if _approx(aapl_w, 1.0) == false {
+            print("  FAIL aapl_w={aapl_w}")
+            return false
+        }
+        true
+    }
+
+    // All symbols with negative returns: top_k still selects the
+    // least-negative ones.
+    on test_momentum_all_negative() {
+        let input = map(
+            "method", "momentum",
+            "universe", list("A", "B", "C"),
+            "histories", map(
+                "A", list("100", "90"),
+                "B", list("100", "80"),
+                "C", list("100", "95")
+            ),
+            "top_k", "2",
+            "lookback", "5"
+        )
+        let result = compute(input)
+        let n_sel = to_int(result.n_selected ?? "0")
+        let a = to_float((result.targets ?? map()).get("A") ?? "0")
+        let b = to_float((result.targets ?? map()).get("B") ?? "0")
+        let c = to_float((result.targets ?? map()).get("C") ?? "0")
+        // Expected selection: C (-0.05), A (-0.10). B excluded.
+        if n_sel != 2 {
+            print("  FAIL n_sel={n_sel}")
+            return false
+        }
+        if _approx(a, 0.5) == false {
+            print("  FAIL a={a}")
+            return false
+        }
+        if _approx(b, 0.0) == false {
+            print("  FAIL b={b}")
+            return false
+        }
+        if _approx(c, 0.5) == false {
+            print("  FAIL c={c}")
+            return false
+        }
+        true
+    }
+
+    // Symbol missing from histories must be skipped, not crash.
+    on test_momentum_missing_history() {
+        let input = map(
+            "method", "momentum",
+            "universe", list("AAPL", "MISSING"),
+            "histories", map(
+                "AAPL", list("100", "110")
+            ),
+            "top_k", "5",
+            "lookback", "5"
+        )
+        let result = compute(input)
+        let n_sel = to_int(result.n_selected ?? "0")
+        if n_sel != 1 {
+            print("  FAIL n_sel={n_sel}")
+            return false
+        }
+        true
+    }
+
+    // ── INVERSE VOL SCENARIOS ──────────────────────────────────
+
+    // Two symbols, one with low vol and one with high vol; the
+    // low-vol name should get the bigger weight.
+    on test_inverse_vol_low_beats_high() {
+        let input = map(
+            "method", "inverse_vol",
+            "universe", list("LOW", "HIGH"),
+            "histories", map(
+                "LOW",  list("100", "100.1", "100.2", "100.1", "100.2", "100.3"),
+                "HIGH", list("100", "110", "90", "115", "85", "120")
+            ),
+            "lookback", "20"
+        )
+        let result = compute(input)
+        let targets = result.targets ?? map()
+        let low_w  = to_float(targets.get("LOW") ?? "0")
+        let high_w = to_float(targets.get("HIGH") ?? "0")
+        if low_w <= high_w {
+            print("  FAIL low_w={low_w} high_w={high_w}")
+            return false
+        }
+        let s = low_w + high_w
+        if _approx(s, 1.0) == false {
+            print("  FAIL sum={s}")
+            return false
+        }
+        true
+    }
+
+    // Two symbols with identical price series → equal vol → equal weight.
+    on test_inverse_vol_equal_vols() {
+        let series = list("100", "102", "98", "103", "97", "104")
+        let input = map(
+            "method", "inverse_vol",
+            "universe", list("A", "B"),
+            "histories", map("A", series, "B", series),
+            "lookback", "20"
+        )
+        let result = compute(input)
+        let a = to_float((result.targets ?? map()).get("A") ?? "0")
+        let b = to_float((result.targets ?? map()).get("B") ?? "0")
+        if _approx(a, 0.5) == false {
+            print("  FAIL a={a}")
+            return false
+        }
+        if _approx(b, 0.5) == false {
+            print("  FAIL b={b}")
+            return false
+        }
+        true
+    }
+
+    // Constant prices → vol = 0 → must be excluded from the result.
+    on test_inverse_vol_zero_vol_excluded() {
+        let input = map(
+            "method", "inverse_vol",
+            "universe", list("FLAT", "MOVES"),
+            "histories", map(
+                "FLAT",  list("100", "100", "100", "100", "100"),
+                "MOVES", list("100", "102", "98", "103", "97")
+            ),
+            "lookback", "20"
+        )
+        let result = compute(input)
+        let targets = result.targets ?? map()
+        let flat = to_float(targets.get("FLAT") ?? "0")
+        let moves = to_float(targets.get("MOVES") ?? "0")
+        if flat != 0.0 {
+            print("  FAIL flat={flat}")
+            return false
+        }
+        if _approx(moves, 1.0) == false {
+            print("  FAIL moves={moves}")
+            return false
+        }
+        true
+    }
+
+    // ── ERROR PATHS ───────────────────────────────────────────
+
+    on test_unknown_method() {
+        let input = map("method", "magic", "universe", list("X"), "histories", map())
+        let result = compute(input)
+        if result.error == () {
+            print("  FAIL no error returned")
+            return false
+        }
+        true
+    }
+
+    // Default method is momentum (when method key is missing).
+    on test_default_method_is_momentum() {
+        let input = map(
+            "universe", list("AAPL"),
+            "histories", map("AAPL", list("100", "110")),
+            "top_k", "1",
+            "lookback", "5"
+        )
+        let result = compute(input)
+        if result.method != "momentum" {
+            print("  FAIL method={result.method}")
+            return false
+        }
+        true
+    }
+}
+
+
+cell test AlphaTests {
+    rules {
+        assert test_momentum_top2_of_3()
+        assert test_momentum_top_k_clips_to_universe()
+        assert test_momentum_lookback_clipped()
+        assert test_momentum_all_negative()
+        assert test_momentum_missing_history()
+        assert test_inverse_vol_low_beats_high()
+        assert test_inverse_vol_equal_vols()
+        assert test_inverse_vol_zero_vol_excluded()
+        assert test_unknown_method()
+        assert test_default_method_is_momentum()
+    }
+}

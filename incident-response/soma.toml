@@ -1,0 +1,39 @@
+[package]
+name = "incident-response"
+description = "Verified incident response — every incident reaches `closed`"
+
+[models.fast]
+provider = "ollama"
+model = "gemma4:26b"
+
+[models.smart]
+provider = "ollama"
+model = "gemma4:26b"
+
+[verify]
+deadlock_free = true
+eventually = ["closed"]
+
+[verify.after.detected]
+eventually = ["closed"]
+
+[verify.after.triaging]
+eventually = ["closed"]
+
+[verify.after.mitigating]
+eventually = ["closed"]
+
+[verify.after.escalated]
+eventually = ["closed"]
+
+[verify.after.monitoring]
+eventually = ["closed"]
+
+[verify.after.resolved]
+eventually = ["closed"]
+
+[verify.after.postmortem_pending]
+eventually = ["closed"]
+
+[verify.after.dismissed]
+eventually = ["closed"]

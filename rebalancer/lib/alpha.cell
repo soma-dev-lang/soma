@@ -1,0 +1,162 @@
+// ═══════════════════════════════════════════════════════════════════
+// Alpha — pure cell, deterministic signal computation.
+//
+// Two methods, both completely deterministic and replay-friendly.
+// No LLM. The quant team owns this cell.
+//
+//   momentum    — rank symbols by total return over `lookback`,
+//                 give the top K equal weight (1/K each).
+//   inverse_vol — weight ∝ 1/σ where σ is the realized stdev of
+//                 simple returns over `lookback`, normalized to 1.
+//
+// Inputs (Map):
+//   method:    "momentum" | "inverse_vol"
+//   universe:  List<String>      symbols to consider
+//   histories: Map<sym, List>    recent prices per symbol
+//   lookback:  String (Int)      window length
+//   top_k:     String (Int)      momentum only
+//
+// Output: { method, targets: Map<sym, weight-as-string>, ... }
+// ═══════════════════════════════════════════════════════════════════
+
+cell Alpha {
+
+    on compute(input: Map) {
+        let method = input.method ?? "momentum"
+        if method == "momentum" {
+            return _momentum(input)
+        }
+        if method == "inverse_vol" {
+            return _inverse_vol(input)
+        }
+        map("error", "unknown method: " + method, "targets", map())
+    }
+
+    on _momentum(input: Map) {
+        let universe = input.universe ?? list()
+        let histories = input.histories ?? map()
+        let top_k = to_int(input.top_k ?? "5")
+        let lookback = to_int(input.lookback ?? "20")
+
+        // Compute total return over the lookback window for each symbol.
+        let returns = list()
+        for sym in universe {
+            let prices = histories.get(sym)
+            if prices != () {
+                let n = len(prices)
+                if n >= 2 {
+                    let lb = lookback
+                    if lb > n - 1 { lb = n - 1 }
+                    let last  = to_float(nth(prices, n - 1))
+                    let first = to_float(nth(prices, n - 1 - lb))
+                    if first > 0.0 {
+                        let r = (last - first) / first
+                        returns = push(returns, map("symbol", sym, "ret", to_string(r)))
+                    }
+                }
+            }
+        }
+
+        // Top-K by return — repeated max selection. O(N*K), fine for K small.
+        let selected = list()
+        let used = map()
+        let k_remaining = top_k
+        let n_returns = len(returns)
+        if k_remaining > n_returns { k_remaining = n_returns }
+
+        for i in range(0, k_remaining) {
+            let best_sym = ""
+            let best_r = 0.0 - 1000000.0
+            let found = "false"
+            for r in returns {
+                if used.get(r.symbol) == () {
+                    let val = to_float(r.ret)
+                    if val > best_r {
+                        best_r = val
+                        best_sym = r.symbol
+                        found = "true"
+                    }
+                }
+            }
+            if found == "true" {
+                used = used |> with(best_sym, "1")
+                selected = push(selected, best_sym)
+            }
+        }
+
+        // Equal-weight the selected names: 1/K.
+        let targets = map()
+        let n_sel = len(selected)
+        if n_sel > 0 {
+            let w = 1.0 / to_float(n_sel)
+            for s in selected {
+                targets = targets |> with(s, to_string(w))
+            }
+        }
+        map("method", "momentum", "targets", targets, "n_selected", to_string(n_sel))
+    }
+
+    on _inverse_vol(input: Map) {
+        let universe = input.universe ?? list()
+        let histories = input.histories ?? map()
+        let lookback = to_int(input.lookback ?? "20")
+
+        // For each symbol, compute realized vol of simple returns.
+        let vols = list()
+        for sym in universe {
+            let prices = histories.get(sym)
+            if prices != () {
+                let n = len(prices)
+                if n >= 3 {
+                    let lb = lookback
+                    if lb > n - 1 { lb = n - 1 }
+                    let start = n - 1 - lb
+                    if start < 0 { start = 0 }
+
+                    let rets = list()
+                    for i in range(start, n - 1) {
+                        let p0 = to_float(nth(prices, i))
+                        let p1 = to_float(nth(prices, i + 1))
+                        if p0 > 0.0 {
+                            let r = (p1 / p0) - 1.0
+                            rets = push(rets, r)
+                        }
+                    }
+                    let m = len(rets)
+                    if m >= 2 {
+                        // Mean
+                        let s = 0.0
+                        for r in rets { s = s + r }
+                        let mean = s / to_float(m)
+                        // Population variance, then stdev
+                        let v = 0.0
+                        for r in rets {
+                            let d = r - mean
+                            v = v + (d * d)
+                        }
+                        let var = v / to_float(m)
+                        let vol = sqrt(var)
+                        if vol > 0.0 {
+                            let inv = 1.0 / vol
+                            vols = push(vols, map("symbol", sym, "vol", to_string(vol), "inv", to_string(inv)))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Normalize 1/vol so weights sum to 1.
+        let total_inv = 0.0
+        for v in vols {
+            total_inv = total_inv + to_float(v.inv)
+        }
+        let targets = map()
+        if total_inv > 0.0 {
+            for v in vols {
+                let w = to_float(v.inv) / total_inv
+                targets = targets |> with(v.symbol, to_string(w))
+            }
+        }
+        map("method", "inverse_vol", "targets", targets, "n", to_string(len(vols)))
+    }
+}

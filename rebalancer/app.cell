@@ -1,0 +1,835 @@
+// ═══════════════════════════════════════════════════════════════════
+// Systematic Rebalancer — Verified Quant Portfolio Workflow
+//
+// A real systematic rebalancing pipeline for a quantitative
+// investment firm. Targets come from upstream alpha models;
+// this system computes trades, runs pre-trade compliance,
+// executes (simulated against submitted marks), reconciles,
+// and writes a post-trade commentary for the PM.
+//
+// 4 cells, clean separation of deterministic vs. LLM work:
+//
+//   Optimizer   — PURE. Position deltas, turnover cap, cash floor,
+//                 optional shorting. No LLM. Replay-friendly.
+//   Compliance  — LLM. Pre-trade reviewer. APPROVE | FLAG | BLOCK.
+//                 Never makes investment decisions, only flags risk.
+//   Commentary  — LLM. Post-trade narrator for the PM morning report.
+//   Portfolio   — Orchestrator: state machine, audit log, HTTP API.
+//
+// State machine PROVES every run reaches `closed`.
+// Soma's compiler statically extracts every transition along with
+// its path condition, so an auditor can read the proof off the
+// `soma verify` output without rerunning the program.
+//
+//   soma serve rebalancer/app.cell -p 8080
+// ═══════════════════════════════════════════════════════════════════
+
+use lib::alpha
+use lib::optimizer
+
+// ═══════════════════════════════════════════════════════════════════
+// Compliance — LLM pre-trade reviewer.
+// Receives the trade list and the firm's policy text. Returns one of
+// APPROVE | FLAG | BLOCK plus reasoning. Never decides what to trade,
+// only whether the trades the optimizer produced are policy-compliant.
+// ═══════════════════════════════════════════════════════════════════
+
+cell agent Compliance [model: smart] {
+    on review(strategy: Map, trades_text: String, policy_text: String, gross_turnover: String, nav: String) {
+        let name = strategy.name ?? "unnamed"
+        let prompt = "You are a pre-trade compliance officer at a quantitative investment firm. Review this proposed trade list against the firm's written policy and return a verdict.\n\nStrategy: {name}\nNAV: {nav}\nGross turnover: {gross_turnover}\n\nProposed trades:\n{trades_text}\n\nFirm policy:\n{policy_text}\n\nReturn three lines exactly:\nVERDICT: APPROVE|FLAG|BLOCK\nREASON: <one sentence>\nNOTES: <comma-separated specific concerns, or NONE>\n\nUse APPROVE if the trades are clearly within policy. Use FLAG if a human reviewer should look but no clear violation. Use BLOCK only for a clear policy violation."
+        let result = think(prompt)
+        map("agent", "compliance", "result", result)
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// Commentary — LLM post-trade narrator for the PM morning report.
+// ═══════════════════════════════════════════════════════════════════
+
+cell agent Commentary [model: smart] {
+    on narrate(strategy: Map, pre_weights: String, post_weights: String, trades_text: String, gross_turnover: String) {
+        let name = strategy.name ?? "unnamed"
+        let prompt = "Write a 3-sentence post-trade commentary for the PM morning report on the `{name}` strategy. Be calm, factual, no hedging. Mention the largest position changes and the gross turnover. No marketing language.\n\nPre-trade weights:\n{pre_weights}\n\nPost-trade weights:\n{post_weights}\n\nTrades executed:\n{trades_text}\n\nGross turnover: {gross_turnover}"
+        let result = think(prompt)
+        map("agent", "commentary", "result", result)
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// Portfolio — orchestrator. State machine, persistence, HTTP API.
+// ═══════════════════════════════════════════════════════════════════
+
+cell Portfolio {
+    memory {
+        positions:     Map<String, String> [persistent, consistent]
+        strategies:    Map<String, String> [persistent, consistent]
+        prices:        Map<String, String> [persistent]
+        price_history: Map<String, String> [persistent]
+        runs:          Map<String, String> [persistent, consistent]
+        trades:        Map<String, String> [persistent, consistent]
+        snapshots:     Map<String, String> [persistent]
+        audit:         Map<String, String> [persistent]
+        policy:        Map<String, String> [persistent]
+    }
+
+    state rebalance {
+        initial: requested
+        requested -> signal_pending
+        signal_pending -> optimizing
+        signal_pending -> failed
+        optimizing -> optimized
+        optimizing -> failed
+        optimized -> compliance_review
+        compliance_review -> approved
+        compliance_review -> flagged
+        compliance_review -> blocked
+        flagged -> approved
+        flagged -> cancelled
+        approved -> executing
+        executing -> executed
+        executing -> failed
+        executed -> reconciling
+        reconciling -> reconciled
+        reconciled -> closed
+        blocked -> closed
+        cancelled -> closed
+        failed -> closed
+    }
+
+    // ── Private helpers ────────────────────────────────────────
+
+    on _audit(run_id: String, kind: String, detail: String) {
+        let entry = map(
+            "run_id", run_id,
+            "kind",   kind,
+            "detail", detail,
+            "ts",     to_string(now())
+        )
+        let key = run_id + "_" + to_string(now()) + "_" + to_string(random(100000))
+        audit.set(key, to_json(entry))
+    }
+
+    on _save_run(id: String, run: Map) {
+        runs.set(id, to_json(run))
+    }
+
+    on _load_run(id: String) {
+        let raw = runs.get(id)
+        if raw == () {
+            return ()
+        }
+        from_json(raw)
+    }
+
+    on _load_strategy(id: String) {
+        let raw = strategies.get(id)
+        if raw == () {
+            return ()
+        }
+        from_json(raw)
+    }
+
+    on _parse_verdict(text: String) {
+        let v = "FLAG"
+        if contains(text, "APPROVE") { v = "APPROVE" }
+        if contains(text, "BLOCK")   { v = "BLOCK" }
+        v
+    }
+
+    // Build the list of {symbol, qty, price} positions for a strategy
+    // by walking the positions store and joining with the prices store.
+
+    on _positions_for(strategy_id: String) {
+        let out = list()
+        for k in positions.keys() {
+            let raw = positions.get(k)
+            let p = from_json(raw)
+            if p.strategy == strategy_id {
+                let price_raw = prices.get(p.symbol)
+                let price_s = "0"
+                if price_raw != () { price_s = price_raw }
+                let row = map(
+                    "symbol", p.symbol,
+                    "qty",    p.qty,
+                    "price",  price_s
+                )
+                out = push(out, row)
+            }
+        }
+        out
+    }
+
+    // NAV for a strategy = Σ(qty × price) for its positions, plus its
+    // CASH position (special symbol).
+
+    on _nav_for(strategy_id: String) {
+        let total = 0.0
+        for k in positions.keys() {
+            let p = from_json(positions.get(k))
+            if p.strategy == strategy_id {
+                if p.symbol == "CASH" {
+                    total = total + to_float(p.qty)
+                } else {
+                    let price_raw = prices.get(p.symbol)
+                    let price = 0.0
+                    if price_raw != () { price = to_float(price_raw) }
+                    total = total + (to_float(p.qty) * price)
+                }
+            }
+        }
+        total
+    }
+
+    on _weights_for(strategy_id: String) {
+        let nav = _nav_for(strategy_id)
+        let out = list()
+        if nav <= 0.0 { return out }
+        for k in positions.keys() {
+            let p = from_json(positions.get(k))
+            if p.strategy == strategy_id {
+                let value = 0.0
+                if p.symbol == "CASH" {
+                    value = to_float(p.qty)
+                } else {
+                    let price_raw = prices.get(p.symbol)
+                    if price_raw != () {
+                        value = to_float(p.qty) * to_float(price_raw)
+                    }
+                }
+                let w = value / nav
+                let row = map(
+                    "symbol", p.symbol,
+                    "qty",    p.qty,
+                    "value",  to_string(value),
+                    "weight", to_string(w)
+                )
+                out = push(out, row)
+            }
+        }
+        out
+    }
+
+    on _trades_to_text(trade_list: List) {
+        let parts = list()
+        for t in trade_list {
+            let line = t.side + "  " + t.symbol + "  qty=" + t.qty + "  notional=" + t.notional
+            parts = push(parts, line)
+        }
+        join(parts, "\n")
+    }
+
+    on _weights_to_text(weight_list: List) {
+        let parts = list()
+        for w in weight_list {
+            let line = w.symbol + "  weight=" + w.weight
+            parts = push(parts, line)
+        }
+        join(parts, "\n")
+    }
+
+    // ── Strategy & position admin ──────────────────────────────
+
+    on upsert_strategy(payload: Map) {
+        let id = payload.id ?? to_string(next_id())
+        // `alpha` is optional. When present, the rebalance hot path will
+        // call the Alpha cell to compute targets from price history
+        // instead of using the static `targets` map. Manual targets are
+        // kept as a fallback in case the alpha config is removed later.
+        let strat = map(
+            "id",             id,
+            "name",           payload.name ?? "unnamed",
+            "targets",        payload.targets ?? map(),
+            "alpha",          payload.alpha ?? (),
+            "max_position",   payload.max_position ?? "0.20",
+            "max_turnover",   payload.max_turnover ?? "0.30",
+            "cash_floor",     payload.cash_floor ?? "0.02",
+            "allow_shorting", payload.allow_shorting ?? "false",
+            "updated_at",     to_string(now())
+        )
+        strategies.set(id, to_json(strat))
+        map("id", id, "status", "saved", "alpha", strat.alpha != ())
+    }
+
+    on set_history(payload: Map) {
+        let symbol = payload.symbol ?? ""
+        let prices = payload.prices ?? list()
+        if symbol == "" {
+            return map("error", "symbol required")
+        }
+        price_history.set(symbol, to_json(prices))
+        map("symbol", symbol, "n", len(prices))
+    }
+
+    on upsert_position(payload: Map) {
+        let symbol = payload.symbol ?? ""
+        let strategy_id = payload.strategy ?? ""
+        let qty = payload.qty ?? "0"
+        if symbol == "" {
+            return map("error", "symbol required")
+        }
+        if strategy_id == "" {
+            return map("error", "strategy required")
+        }
+        let key = strategy_id + ":" + symbol
+        let pos = map(
+            "symbol",   symbol,
+            "strategy", strategy_id,
+            "qty",      to_string(qty),
+            "updated_at", to_string(now())
+        )
+        positions.set(key, to_json(pos))
+        map("symbol", symbol, "strategy", strategy_id, "qty", qty)
+    }
+
+    on set_prices(payload: Map) {
+        let supplied = payload.prices ?? map()
+        let n = 0
+        for k in supplied.keys() {
+            prices.set(k, supplied.get(k))
+            n = n + 1
+        }
+        map("updated", n)
+    }
+
+    on set_policy(payload: Map) {
+        let key = payload.key ?? ""
+        let value = payload.value ?? ""
+        if key == "" { return map("error", "key required") }
+        policy.set(key, value)
+        map("key", key, "value", value)
+    }
+
+    // ── The main hot path: rebalance a strategy ────────────────
+    //
+    // requested → optimizing → optimized → compliance_review →
+    //   { approved | flagged | blocked }
+    //
+    // Approve, execute, reconcile happen in separate handlers so
+    // a human can gate them via the HTTP API. The exception is
+    // BLOCK and APPROVE auto-paths from compliance, which fall
+    // through to the next state without human intervention.
+
+    on rebalance(payload: Map) {
+        let strategy_id = payload.strategy_id ?? ""
+        if strategy_id == "" {
+            return map("error", "strategy_id required")
+        }
+        let strat = _load_strategy(strategy_id)
+        if strat == () {
+            return map("error", "unknown strategy", "strategy_id", strategy_id)
+        }
+
+        let run_id = "RUN-" + to_string(next_id())
+        let nav = _nav_for(strategy_id)
+        let pre_weights = _weights_for(strategy_id)
+
+        let run = map(
+            "id",          run_id,
+            "strategy_id", strategy_id,
+            "status",      "requested",
+            "nav",         to_string(nav),
+            "opened_at",   to_string(now())
+        )
+        _save_run(run_id, run)
+        _audit(run_id, "requested", "rebalance requested for {strategy_id}, NAV={nav}")
+
+        // Snapshot the pre-trade weights immediately. The reconciler
+        // will read them back to drive the post-trade commentary, and
+        // the audit log will reference the same snapshot key.
+        let snap = map(
+            "run_id", run_id,
+            "ts",     to_string(now()),
+            "nav",    to_string(nav),
+            "weights", pre_weights
+        )
+        snapshots.set(run_id, to_json(snap))
+        _audit(run_id, "snapshot", "pre-trade weights captured (n=" + to_string(len(pre_weights)) + ")")
+
+        // ── Signal computation (Alpha cell) ────────────────────
+        //
+        // If the strategy is configured with an `alpha` block, call
+        // the Alpha cell to compute targets from price history. The
+        // Alpha cell is pure and deterministic — no LLM. If alpha is
+        // not configured, fall through with the strategy's static
+        // `targets` map.
+        transition(run_id, "signal_pending")
+        let run_sig = run |> with("status", "signal_pending")
+        _save_run(run_id, run_sig)
+
+        let effective_targets = strat.targets ?? map()
+        let alpha_cfg = strat.alpha
+        if alpha_cfg != () {
+            let universe = alpha_cfg.universe ?? list()
+            let histories = map()
+            for sym in universe {
+                let raw = price_history.get(sym)
+                if raw != () {
+                    let parsed = from_json(raw)
+                    histories = histories |> with(sym, parsed)
+                }
+            }
+            let alpha_input = map(
+                "method",    alpha_cfg.method ?? "momentum",
+                "universe",  universe,
+                "histories", histories,
+                "top_k",     alpha_cfg.top_k ?? "5",
+                "lookback",  alpha_cfg.lookback ?? "20"
+            )
+            let alpha_result = delegate("Alpha", "compute", alpha_input)
+
+            if alpha_result.error != () {
+                transition(run_id, "failed")
+                _audit(run_id, "alpha_failed", alpha_result.error)
+                transition(run_id, "closed")
+                let final_run = run_sig
+                    |> with("status", "closed")
+                    |> with("error", alpha_result.error)
+                    |> with("closed_at", to_string(now()))
+                _save_run(run_id, final_run)
+                return map("run_id", run_id, "status", "closed", "error", alpha_result.error)
+            }
+
+            effective_targets = alpha_result.targets
+            _audit(run_id, "alpha_computed", "method=" + (alpha_cfg.method ?? "momentum"))
+        }
+
+        // ── Optimize ───────────────────────────────────────────
+        transition(run_id, "optimizing")
+        let run1 = run_sig |> with("status", "optimizing")
+        _save_run(run_id, run1)
+
+        let current = _positions_for(strategy_id)
+
+        // Build the price map the optimizer needs. It must contain a
+        // price for every symbol that might appear as a trade — i.e.
+        // the union of currently-held names and target names. Names
+        // we currently hold already have their price stamped in
+        // `current`; we top up with target names from the prices store.
+        let price_map = map()
+        for k in effective_targets.keys() {
+            let p = prices.get(k)
+            if p != () {
+                price_map = price_map |> with(k, p)
+            }
+        }
+
+        let opt_input = map(
+            "total_value",    to_string(nav),
+            "current",        current,
+            "targets",        effective_targets,
+            "prices",         price_map,
+            "max_position",   strat.max_position,
+            "max_turnover",   strat.max_turnover,
+            "cash_floor",     strat.cash_floor,
+            "allow_shorting", strat.allow_shorting
+        )
+        let opt = delegate("Optimizer", "optimize", opt_input)
+
+        if opt.error != () {
+            transition(run_id, "failed")
+            _audit(run_id, "optimize_failed", opt.error)
+            transition(run_id, "closed")
+            let final_run = run1
+                |> with("status", "closed")
+                |> with("error", opt.error)
+                |> with("closed_at", to_string(now()))
+            _save_run(run_id, final_run)
+            return map("run_id", run_id, "status", "closed", "error", opt.error)
+        }
+
+        transition(run_id, "optimized")
+        let run2 = run1
+            |> with("status", "optimized")
+            |> with("gross_turnover", opt.gross_turnover)
+            |> with("n_trades", opt.n_trades)
+            |> with("scaled", opt.scaled)
+        _save_run(run_id, run2)
+        _audit(run_id, "optimized", "n_trades=" + opt.n_trades + " gross=" + opt.gross_turnover + " scaled=" + opt.scaled)
+
+        // Stash trades on the run for execute() / read API
+        let i = 0
+        for t in opt.trades {
+            let key = run_id + "_" + to_string(i)
+            let stamped = t |> with("run_id", run_id) |> with("status", "proposed")
+            trades.set(key, to_json(stamped))
+            i = i + 1
+        }
+
+        // ── Compliance review ──────────────────────────────────
+        transition(run_id, "compliance_review")
+        let run3 = run2 |> with("status", "compliance_review")
+        _save_run(run_id, run3)
+
+        let trades_text = _trades_to_text(opt.trades)
+        let policy_text = policy.get("compliance_doc") ?? "Default firm policy: no single name > 20% of NAV; gross turnover capped per strategy; no naked shorts unless strategy allows."
+
+        let review = delegate("Compliance", "review", strat, trades_text, policy_text, opt.gross_turnover, to_string(nav))
+        _audit(run_id, "compliance", review.result)
+        let verdict = _parse_verdict(review.result)
+        let run4 = run3
+            |> with("compliance_verdict", verdict)
+            |> with("compliance_notes", review.result)
+        _save_run(run_id, run4)
+
+        if verdict == "BLOCK" {
+            transition(run_id, "blocked")
+            _audit(run_id, "blocked", "compliance blocked the trade list")
+            transition(run_id, "closed")
+            let final_run = run4
+                |> with("status", "closed")
+                |> with("closed_at", to_string(now()))
+            _save_run(run_id, final_run)
+            return map("run_id", run_id, "status", "closed", "blocked", true, "verdict", verdict)
+        }
+
+        if verdict == "APPROVE" {
+            transition(run_id, "approved")
+            let run5 = run4 |> with("status", "approved")
+            _save_run(run_id, run5)
+            _audit(run_id, "approved", "auto-approved by compliance")
+            return map("run_id", run_id, "status", "approved", "verdict", verdict, "n_trades", opt.n_trades, "gross_turnover", opt.gross_turnover)
+        }
+
+        // FLAG → wait for human approve/cancel
+        transition(run_id, "flagged")
+        let run5 = run4 |> with("status", "flagged")
+        _save_run(run_id, run5)
+        _audit(run_id, "flagged", "human review required")
+        map("run_id", run_id, "status", "flagged", "verdict", verdict, "n_trades", opt.n_trades, "gross_turnover", opt.gross_turnover, "compliance_notes", review.result)
+    }
+
+    // ── Manual gates ───────────────────────────────────────────
+
+    on approve(payload: Map) {
+        let run_id = payload.run_id ?? ""
+        let run = _load_run(run_id)
+        if run == () { return map("error", "not found") }
+        if run.status != "flagged" {
+            return map("error", "run not in 'flagged' state", "status", run.status)
+        }
+        transition(run_id, "approved")
+        let updated = run |> with("status", "approved") |> with("approved_at", to_string(now()))
+        _save_run(run_id, updated)
+        _audit(run_id, "approved", "approved by operator")
+        map("run_id", run_id, "status", "approved")
+    }
+
+    on cancel(payload: Map) {
+        let run_id = payload.run_id ?? ""
+        let reason = payload.reason ?? ""
+        let run = _load_run(run_id)
+        if run == () { return map("error", "not found") }
+        if run.status != "flagged" {
+            return map("error", "run not in 'flagged' state", "status", run.status)
+        }
+        transition(run_id, "cancelled")
+        let updated = run
+            |> with("status", "cancelled")
+            |> with("cancel_reason", reason)
+        _save_run(run_id, updated)
+        _audit(run_id, "cancelled", reason)
+        transition(run_id, "closed")
+        let final_run = updated |> with("status", "closed") |> with("closed_at", to_string(now()))
+        _save_run(run_id, final_run)
+        map("run_id", run_id, "status", "closed", "cancelled", true)
+    }
+
+    // ── Execute (simulated against current marks) ──────────────
+
+    on execute(payload: Map) {
+        let run_id = payload.run_id ?? ""
+        let run = _load_run(run_id)
+        if run == () { return map("error", "not found") }
+        if run.status != "approved" {
+            return map("error", "run not in 'approved' state", "status", run.status)
+        }
+        transition(run_id, "executing")
+        let run_x = run |> with("status", "executing")
+        _save_run(run_id, run_x)
+        _audit(run_id, "executing", "submitting fills against current marks")
+
+        // Walk the trades for this run, fill at the price stamped at
+        // optimization time, and apply to positions.
+        let strategy_id = run.strategy_id
+        let n_filled = 0
+        let n_failed = 0
+        for k in trades.keys() {
+            if starts_with(k, run_id + "_") {
+                let raw = trades.get(k)
+                let t = from_json(raw)
+                let symbol = t.symbol
+                let qty = to_float(t.qty)
+                let price = to_float(t.price)
+                let side = t.side
+
+                let pos_key = strategy_id + ":" + symbol
+                let cur_raw = positions.get(pos_key)
+                let cur_qty = 0.0
+                if cur_raw != () {
+                    let cur_p = from_json(cur_raw)
+                    cur_qty = to_float(cur_p.qty)
+                }
+
+                let new_qty = cur_qty
+                let cash_delta = 0.0
+                if side == "BUY" {
+                    new_qty = cur_qty + qty
+                    cash_delta = 0.0 - (qty * price)
+                }
+                if side == "SELL" {
+                    new_qty = cur_qty - qty
+                    cash_delta = qty * price
+                }
+
+                let new_pos = map(
+                    "symbol",     symbol,
+                    "strategy",   strategy_id,
+                    "qty",        to_string(new_qty),
+                    "updated_at", to_string(now())
+                )
+                positions.set(pos_key, to_json(new_pos))
+
+                // Apply cash delta
+                let cash_key = strategy_id + ":CASH"
+                let cash_raw = positions.get(cash_key)
+                let cash_now = 0.0
+                if cash_raw != () {
+                    let cash_p = from_json(cash_raw)
+                    cash_now = to_float(cash_p.qty)
+                }
+                let new_cash = cash_now + cash_delta
+                let new_cash_pos = map(
+                    "symbol",     "CASH",
+                    "strategy",   strategy_id,
+                    "qty",        to_string(new_cash),
+                    "updated_at", to_string(now())
+                )
+                positions.set(cash_key, to_json(new_cash_pos))
+
+                let filled_t = t
+                    |> with("status", "filled")
+                    |> with("filled_at", to_string(now()))
+                trades.set(k, to_json(filled_t))
+                n_filled = n_filled + 1
+            }
+        }
+
+        transition(run_id, "executed")
+        let run_e = run_x
+            |> with("status", "executed")
+            |> with("n_filled", to_string(n_filled))
+            |> with("executed_at", to_string(now()))
+        _save_run(run_id, run_e)
+        _audit(run_id, "executed", "filled " + to_string(n_filled) + " trades")
+        map("run_id", run_id, "status", "executed", "filled", n_filled)
+    }
+
+    // ── Reconcile (compute post-trade weights, write commentary) ──
+
+    on reconcile(payload: Map) {
+        let run_id = payload.run_id ?? ""
+        let run = _load_run(run_id)
+        if run == () { return map("error", "not found") }
+        if run.status != "executed" {
+            return map("error", "run not in 'executed' state", "status", run.status)
+        }
+        transition(run_id, "reconciling")
+        let run_r = run |> with("status", "reconciling")
+        _save_run(run_id, run_r)
+
+        let strategy_id = run.strategy_id
+        let strat = _load_strategy(strategy_id)
+        let post_weights = _weights_for(strategy_id)
+
+        // Read the pre-trade weight snapshot stamped at the start of
+        // the rebalance hot path. The snapshot was written immediately
+        // after we computed NAV but before any signal/optimize work,
+        // so it is a faithful "where we were" record.
+        let pre_text  = "(no snapshot)"
+        let snap_raw  = snapshots.get(run_id)
+        if snap_raw != () {
+            let snap = from_json(snap_raw)
+            pre_text = _weights_to_text(snap.weights ?? list())
+        }
+        let post_text = _weights_to_text(post_weights)
+
+        // Build the trade summary
+        let trade_lines = list()
+        for k in trades.keys() {
+            if starts_with(k, run_id + "_") {
+                let t = from_json(trades.get(k))
+                trade_lines = push(trade_lines, t.side + "  " + t.symbol + "  qty=" + t.qty)
+            }
+        }
+        let trades_text = join(trade_lines, "\n")
+
+        let comm = delegate("Commentary", "narrate", strat, pre_text, post_text, trades_text, run.gross_turnover ?? "0")
+        _audit(run_id, "commentary", comm.result)
+
+        transition(run_id, "reconciled")
+        let run_done = run_r
+            |> with("status", "reconciled")
+            |> with("commentary", comm.result)
+            |> with("reconciled_at", to_string(now()))
+        _save_run(run_id, run_done)
+
+        transition(run_id, "closed")
+        let final_run = run_done
+            |> with("status", "closed")
+            |> with("closed_at", to_string(now()))
+        _save_run(run_id, final_run)
+        _audit(run_id, "closed", "run closed after reconciliation")
+
+        map("run_id", run_id, "status", "closed", "commentary", comm.result)
+    }
+
+    // ── Read API ───────────────────────────────────────────────
+
+    on get_portfolio() {
+        let by_strategy = map()
+        let strat_ids = list()
+        for k in strategies.keys() {
+            strat_ids = push(strat_ids, k)
+        }
+        let out = list()
+        for sid in strat_ids {
+            let nav = _nav_for(sid)
+            let weights = _weights_for(sid)
+            let row = map(
+                "strategy_id", sid,
+                "nav",         to_string(nav),
+                "weights",     weights
+            )
+            out = push(out, row)
+        }
+        out
+    }
+
+    on list_strategies() {
+        let out = list()
+        for k in strategies.keys() {
+            out = push(out, from_json(strategies.get(k)))
+        }
+        out
+    }
+
+    on get_strategy(id: String) {
+        let s = _load_strategy(id)
+        if s == () { return map("error", "not found") }
+        s
+    }
+
+    on list_runs() {
+        let out = list()
+        for k in runs.keys() {
+            out = push(out, from_json(runs.get(k)))
+        }
+        out
+    }
+
+    on get_run(id: String) {
+        let r = _load_run(id)
+        if r == () { return map("error", "not found") }
+        r
+    }
+
+    on get_trades(run_id: String) {
+        let out = list()
+        for k in trades.keys() {
+            if starts_with(k, run_id + "_") {
+                out = push(out, from_json(trades.get(k)))
+            }
+        }
+        out
+    }
+
+    on get_audit(run_id: String) {
+        let out = list()
+        for k in audit.keys() {
+            if starts_with(k, run_id + "_") {
+                out = push(out, from_json(audit.get(k)))
+            }
+        }
+        out
+    }
+
+    on get_policy() {
+        let out = list()
+        for k in policy.keys() {
+            out = push(out, map("key", k, "value", policy.get(k)))
+        }
+        out
+    }
+
+    on get_snapshot(run_id: String) {
+        let raw = snapshots.get(run_id)
+        if raw == () { return map("error", "no snapshot") }
+        from_json(raw)
+    }
+
+    on get_history(symbol: String) {
+        let raw = price_history.get(symbol)
+        if raw == () { return map("error", "no history") }
+        let parsed = from_json(raw)
+        map("symbol", symbol, "n", len(parsed), "prices", parsed)
+    }
+
+    // ── HTTP routing ───────────────────────────────────────────
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"} -> map(
+                "name", "Soma Systematic Rebalancer",
+                "strategies", strategies.len(),
+                "runs", runs.len(),
+                "endpoints", list(
+                    "POST /strategies      body: {id, name, targets:{sym:w}, alpha:{method,universe,top_k,lookback}, max_position, max_turnover, cash_floor, allow_shorting}",
+                    "POST /positions       body: {symbol, strategy, qty}",
+                    "POST /prices          body: {prices: {sym: price}}",
+                    "POST /history         body: {symbol, prices: [p1, p2, ...]}",
+                    "POST /policy          body: {key, value}",
+                    "POST /rebalance       body: {strategy_id}",
+                    "POST /approve         body: {run_id}",
+                    "POST /cancel          body: {run_id, reason}",
+                    "POST /execute         body: {run_id}",
+                    "POST /reconcile       body: {run_id}",
+                    "GET  /portfolio",
+                    "GET  /strategies",
+                    "GET  /strategy/{id}",
+                    "GET  /history/{symbol}",
+                    "GET  /runs",
+                    "GET  /run/{id}",
+                    "GET  /trades/{run_id}",
+                    "GET  /audit/{run_id}",
+                    "GET  /snapshot/{run_id}",
+                    "GET  /policy"
+                )
+            )
+            {method: "POST", path: "/strategies"} -> upsert_strategy(from_json(body))
+            {method: "POST", path: "/positions"}  -> upsert_position(from_json(body))
+            {method: "POST", path: "/prices"}     -> set_prices(from_json(body))
+            {method: "POST", path: "/history"}    -> set_history(from_json(body))
+            {method: "POST", path: "/policy"}     -> set_policy(from_json(body))
+            {method: "POST", path: "/rebalance"}  -> rebalance(from_json(body))
+            {method: "POST", path: "/approve"}    -> approve(from_json(body))
+            {method: "POST", path: "/cancel"}     -> cancel(from_json(body))
+            {method: "POST", path: "/execute"}    -> execute(from_json(body))
+            {method: "POST", path: "/reconcile"}  -> reconcile(from_json(body))
+            {method: "GET",  path: "/portfolio"}  -> get_portfolio()
+            {method: "GET",  path: "/strategies"} -> list_strategies()
+            {method: "GET",  path: "/runs"}       -> list_runs()
+            {method: "GET",  path: "/policy"}     -> get_policy()
+            {method: "GET",  path: "/strategy/" + id} -> get_strategy(id)
+            {method: "GET",  path: "/history/" + sym} -> get_history(sym)
+            {method: "GET",  path: "/run/" + id}      -> get_run(id)
+            {method: "GET",  path: "/trades/" + id}   -> get_trades(id)
+            {method: "GET",  path: "/audit/" + id}    -> get_audit(id)
+            {method: "GET",  path: "/snapshot/" + id} -> get_snapshot(id)
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

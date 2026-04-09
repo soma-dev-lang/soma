@@ -1,0 +1,515 @@
+// ═══════════════════════════════════════════════════════════════════
+// Optimizer unit tests — pure deterministic math, no LLM, no network.
+//
+//   soma test rebalancer/tests/test_optimizer.cell
+// ═══════════════════════════════════════════════════════════════════
+
+use lib::optimizer
+
+cell OptimizerScenarios {
+
+    on _approx(a: Float, b: Float) {
+        let d = a - b
+        if d < 0.0 { d = 0.0 - d }
+        d < 0.01
+    }
+
+    // Find a trade by symbol; returns () if absent.
+    on _find(trades: List, sym: String) {
+        let result = ()
+        for t in trades {
+            if t.symbol == sym {
+                result = t
+            }
+        }
+        result
+    }
+
+    // ── BASIC ARITHMETIC ──────────────────────────────────────
+
+    // NAV=10000 in cash. Target AAPL=0.5 at $100 → buy 50 shares.
+    on test_basic_buy_one() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            "targets",     map("AAPL", "0.5"),
+            "prices",      map("AAPL", "100"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        let n = to_int(r.n_trades ?? "0")
+        if n != 1 {
+            print("  FAIL n_trades={n}")
+            return false
+        }
+        let t = _find(r.trades, "AAPL")
+        if t == () {
+            print("  FAIL no AAPL trade")
+            return false
+        }
+        if t.side != "BUY" {
+            print("  FAIL side={t.side}")
+            return false
+        }
+        let qty = to_float(t.qty)
+        if _approx(qty, 50.0) == false {
+            print("  FAIL qty={qty}")
+            return false
+        }
+        true
+    }
+
+    // Two-name basic buy: NAV=10000, target AAPL 0.5 @ $100, MSFT 0.5 @ $200.
+    // Expected: BUY 50 AAPL, BUY 25 MSFT, gross 10000.
+    on test_basic_buy_two() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            "targets",     map("AAPL", "0.5", "MSFT", "0.5"),
+            "prices",      map("AAPL", "100", "MSFT", "200"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        if to_int(r.n_trades) != 2 {
+            print("  FAIL n_trades={r.n_trades}")
+            return false
+        }
+        let aapl = _find(r.trades, "AAPL")
+        let msft = _find(r.trades, "MSFT")
+        if _approx(to_float(aapl.qty), 50.0) == false {
+            print("  FAIL aapl qty={aapl.qty}")
+            return false
+        }
+        if _approx(to_float(msft.qty), 25.0) == false {
+            print("  FAIL msft qty={msft.qty}")
+            return false
+        }
+        // Optimizer doesn't trade CASH itself
+        if _find(r.trades, "CASH") != () {
+            print("  FAIL CASH appeared as a trade")
+            return false
+        }
+        true
+    }
+
+    // No change: current already matches target.
+    on test_no_op() {
+        // 50 shares of AAPL at $100 = $5000, plus $5000 cash = $10000 NAV
+        // Target: AAPL 0.5 → already there → no trade
+        let input = map(
+            "total_value", "10000",
+            "current",     list(
+                map("symbol", "AAPL", "qty", "50", "price", "100"),
+                map("symbol", "CASH", "qty", "5000", "price", "1")
+            ),
+            "targets",     map("AAPL", "0.5"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        if to_int(r.n_trades) != 0 {
+            print("  FAIL expected 0 trades, got {r.n_trades}")
+            return false
+        }
+        true
+    }
+
+    // ── POSITION CAP ──────────────────────────────────────────
+
+    // Target 0.5 but max_position 0.3 → trade only fills to 0.3.
+    on test_position_cap() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            "targets",     map("AAPL", "0.5"),
+            "prices",      map("AAPL", "100"),
+            "max_position", "0.3",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        let aapl = _find(r.trades, "AAPL")
+        if aapl == () {
+            print("  FAIL no AAPL trade")
+            return false
+        }
+        // 0.3 of 10000 = 3000$ at $100 = 30 shares
+        if _approx(to_float(aapl.qty), 30.0) == false {
+            print("  FAIL aapl qty={aapl.qty}")
+            return false
+        }
+        true
+    }
+
+    // ── TURNOVER CAP ──────────────────────────────────────────
+
+    // Naive trades would total 10000 gross; turnover cap = 0.5 (5000).
+    // Should scale every trade by 0.5 and flag scaled=true.
+    on test_turnover_cap() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            "targets",     map("AAPL", "0.5", "MSFT", "0.5"),
+            "prices",      map("AAPL", "100", "MSFT", "200"),
+            "max_position", "1.0",
+            "max_turnover", "0.5",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        if r.scaled != "true" {
+            print("  FAIL scaled flag={r.scaled}")
+            return false
+        }
+        // Gross should be ~5000, not 10000. Allow rounding slack of
+        // up to one share per name (the scale-down rounds to nearest).
+        let gross = to_float(r.gross_turnover)
+        if gross > 5500.0 {
+            print("  FAIL gross={gross}")
+            return false
+        }
+        // AAPL quantity should have been scaled from 50 → 25
+        let aapl = _find(r.trades, "AAPL")
+        if aapl == () {
+            print("  FAIL no AAPL")
+            return false
+        }
+        if _approx(to_float(aapl.qty), 25.0) == false {
+            print("  FAIL aapl qty={aapl.qty}")
+            return false
+        }
+        true
+    }
+
+    // ── SELL ──────────────────────────────────────────────────
+
+    // Hold AAPL 100 shares at $100; target 0 → SELL 100 shares.
+    on test_sell_to_zero() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "AAPL", "qty", "100", "price", "100")),
+            "targets",     map("AAPL", "0.0"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        let aapl = _find(r.trades, "AAPL")
+        if aapl == () {
+            print("  FAIL no AAPL trade")
+            return false
+        }
+        if aapl.side != "SELL" {
+            print("  FAIL side={aapl.side}")
+            return false
+        }
+        if _approx(to_float(aapl.qty), 100.0) == false {
+            print("  FAIL qty={aapl.qty}")
+            return false
+        }
+        true
+    }
+
+    // Hold AAPL 100 @ $100; target 0.3 → reduce to 30 shares → SELL 70.
+    on test_sell_partial() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "AAPL", "qty", "100", "price", "100")),
+            "targets",     map("AAPL", "0.3"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        let aapl = _find(r.trades, "AAPL")
+        if aapl.side != "SELL" {
+            print("  FAIL side={aapl.side}")
+            return false
+        }
+        if _approx(to_float(aapl.qty), 70.0) == false {
+            print("  FAIL qty={aapl.qty}")
+            return false
+        }
+        true
+    }
+
+    // ── NO-SHORT CLAMP ────────────────────────────────────────
+
+    // Target negative weight with shorting disabled → no trade.
+    on test_no_short_clamps_negative_target() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            "targets",     map("AAPL", "-0.2"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        if _find(r.trades, "AAPL") != () {
+            print("  FAIL produced a trade for clamped negative target")
+            return false
+        }
+        true
+    }
+
+    // Hold AAPL 50 @ $100; target -0.5; shorting disabled.
+    // Naive delta = -100 shares; clamped to sell only the 50 we hold.
+    on test_no_short_clamps_oversell() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "AAPL", "qty", "50", "price", "100")),
+            "targets",     map("AAPL", "-0.5"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        let aapl = _find(r.trades, "AAPL")
+        if aapl == () {
+            // The clamp turns target to 0 (because raw_tgt < 0 and no shorting),
+            // and current is 50 shares → SELL 50.
+            print("  FAIL no AAPL trade")
+            return false
+        }
+        if aapl.side != "SELL" {
+            print("  FAIL side={aapl.side}")
+            return false
+        }
+        if _approx(to_float(aapl.qty), 50.0) == false {
+            print("  FAIL qty={aapl.qty}")
+            return false
+        }
+        true
+    }
+
+    // ── CASH FLOOR ────────────────────────────────────────────
+
+    // NAV=10000, all cash. Target = 1.0 in AAPL → buys all cash.
+    // cash_floor = 0.05 → algorithm scales the BUY to leave $500 cash:
+    //   need = 500, total_buys = 10000, scale = 0.95
+    //   new qty = round(100 * 0.95) = 95 → notional 9500, cash 500.
+    on test_cash_floor_scales_single() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            "targets",     map("AAPL", "1.0"),
+            "prices",      map("AAPL", "100"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.05",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        if to_int(r.n_trades) != 1 {
+            print("  FAIL expected 1 trade, got {r.n_trades}")
+            return false
+        }
+        let aapl = _find(r.trades, "AAPL")
+        // floor(100 * 0.95) = floor(95.0) = 95
+        if _approx(to_float(aapl.qty), 95.0) == false {
+            print("  FAIL aapl qty={aapl.qty} (expected 95)")
+            return false
+        }
+        if aapl.cash_floored != "true" {
+            print("  FAIL cash_floored flag not set")
+            return false
+        }
+        // Cash after = 10000 - 9500 = 500 = exactly the floor.
+        let resulting_cash = 10000.0 - to_float(aapl.notional)
+        if resulting_cash < 500.0 {
+            print("  FAIL cash {resulting_cash} below floor 500")
+            return false
+        }
+        true
+    }
+
+    // The hardest constraint: after the algorithm runs, cash MUST be
+    // ≥ floor. Stress this with rounding-prone fractional prices.
+    on test_cash_floor_strict_invariant() {
+        let input = map(
+            "total_value", "5000000",
+            "current",     list(map("symbol", "CASH", "qty", "5000000", "price", "1")),
+            "targets",     map("NVDA", "0.333", "META", "0.333", "AAPL", "0.333"),
+            "prices",      map("NVDA", "1180", "META", "510", "AAPL", "190"),
+            "max_position", "0.40",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.05",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        let total = 0.0
+        for t in r.trades {
+            if t.side == "BUY" {
+                total = total + to_float(t.notional)
+            }
+        }
+        let cash = 5000000.0 - total
+        let floor = 0.05 * 5000000.0
+        if cash < floor {
+            print("  FAIL cash {cash} < floor {floor}")
+            return false
+        }
+        // Critically, all 3 names survive (the original demo bug).
+        if to_int(r.n_trades) != 3 {
+            print("  FAIL expected 3 trades, got {r.n_trades}")
+            return false
+        }
+        true
+    }
+
+    // Multi-name buy: every position must SURVIVE the cash floor —
+    // they all get scaled proportionally instead of any being dropped.
+    on test_cash_floor_scales_all() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            "targets",     map("AAPL", "0.4", "MSFT", "0.4", "GOOG", "0.2"),
+            "prices",      map("AAPL", "10", "MSFT", "10", "GOOG", "10"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.05",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        // Naive: BUY $4000 + $4000 + $2000 = $10000 → cash 0 → need 500
+        // Scaled: each BUY × 0.95 → AAPL 380, MSFT 380, GOOG 190
+        let n = to_int(r.n_trades)
+        if n != 3 {
+            print("  FAIL expected 3 trades after scale, got {n}")
+            return false
+        }
+        let aapl = _find(r.trades, "AAPL")
+        let msft = _find(r.trades, "MSFT")
+        let goog = _find(r.trades, "GOOG")
+        if aapl == () || msft == () || goog == () {
+            print("  FAIL one of the trades was dropped")
+            return false
+        }
+        if _approx(to_float(aapl.qty), 380.0) == false {
+            print("  FAIL aapl qty={aapl.qty}")
+            return false
+        }
+        if _approx(to_float(goog.qty), 190.0) == false {
+            print("  FAIL goog qty={goog.qty}")
+            return false
+        }
+        true
+    }
+
+    // Resulting cash must be ≥ floor after scaling.
+    on test_cash_floor_satisfies_constraint() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            "targets",     map(
+                "A", "0.20",
+                "B", "0.20",
+                "C", "0.20",
+                "D", "0.20",
+                "E", "0.20"
+            ),
+            "prices",      map("A","10","B","10","C","10","D","10","E","10"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.10",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        // 5 trades × $2000 = $10000 → cash 0; floor 1000.
+        // Scale = (1 - 1000/10000) = 0.9 → each qty 200 → 180.
+        // Total = 5 × 1800 = $9000. Cash = $1000. Exactly at floor.
+        let total = 0.0
+        for t in r.trades {
+            if t.side == "BUY" {
+                total = total + to_float(t.notional)
+            }
+        }
+        // Total trades + cash floor must equal NAV (modulo rounding).
+        let resulting_cash = 10000.0 - total
+        if resulting_cash < 999.0 {
+            print("  FAIL resulting cash {resulting_cash} < floor 1000")
+            return false
+        }
+        // All 5 names must survive
+        if to_int(r.n_trades) != 5 {
+            print("  FAIL expected 5 trades, got {r.n_trades}")
+            return false
+        }
+        true
+    }
+
+    // ── ERRORS ────────────────────────────────────────────────
+
+    on test_zero_nav_returns_error() {
+        let input = map(
+            "total_value", "0",
+            "current", list(),
+            "targets", map("AAPL", "0.5")
+        )
+        let r = optimize(input)
+        if r.error == () {
+            print("  FAIL no error for zero NAV")
+            return false
+        }
+        true
+    }
+
+    // ── CASH NOT TRADED ───────────────────────────────────────
+
+    // The orchestrator stores CASH as a position. The optimizer must
+    // never produce a trade *for* CASH even if a target says so.
+    on test_cash_never_traded() {
+        let input = map(
+            "total_value", "10000",
+            "current",     list(map("symbol", "CASH", "qty", "10000", "price", "1")),
+            // Adversarial input — try to fool the optimizer
+            "targets",     map("AAPL", "0.4", "CASH", "0.6"),
+            "prices",      map("AAPL", "100"),
+            "max_position", "1.0",
+            "max_turnover", "1.0",
+            "cash_floor",   "0.0",
+            "allow_shorting", "false"
+        )
+        let r = optimize(input)
+        if _find(r.trades, "CASH") != () {
+            print("  FAIL CASH was traded")
+            return false
+        }
+        true
+    }
+}
+
+
+cell test OptimizerTests {
+    rules {
+        assert test_basic_buy_one()
+        assert test_basic_buy_two()
+        assert test_no_op()
+        assert test_position_cap()
+        assert test_turnover_cap()
+        assert test_sell_to_zero()
+        assert test_sell_partial()
+        assert test_no_short_clamps_negative_target()
+        assert test_no_short_clamps_oversell()
+        assert test_cash_floor_scales_single()
+        assert test_cash_floor_scales_all()
+        assert test_cash_floor_satisfies_constraint()
+        assert test_cash_floor_strict_invariant()
+        assert test_zero_nav_returns_error()
+        assert test_cash_never_traded()
+    }
+}

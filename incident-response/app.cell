@@ -1,0 +1,390 @@
+// ═══════════════════════════════════════════════════════════════════
+// Incident Response — Verified On-Call System
+//
+// A real on-call workflow: ingest monitoring alerts, triage with an
+// LLM, drive incidents through a verified state machine, draft
+// customer comms and a blameless postmortem from the timeline.
+//
+// 4 cells:
+//   Triager           — classifies alerts (P1..P4), suggests cause + runbook
+//   Communicator      — drafts customer-facing status updates
+//   PostmortemDrafter — drafts a blameless postmortem from the timeline
+//   IncidentManager   — orchestrator + state machine + HTTP API
+//
+// State machine PROVES every incident reaches `closed`.
+// soma serve incident-response/app.cell -p 8080
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Triager Agent ───────────────────────────────────────────────
+
+cell agent Triager [model: smart] {
+    on triage(alert: Map) {
+        let service = alert.service ?? "unknown"
+        let summary = alert.summary ?? "no summary"
+        let metric  = alert.metric ?? "unknown"
+        let value   = alert.value ?? "n/a"
+
+        let prompt = "You are an SRE on-call engineer. Classify this alert and suggest a likely cause and a runbook step.\n\nService: {service}\nSummary: {summary}\nMetric: {metric}\nObserved value: {value}\n\nReturn three lines exactly:\nSEVERITY: P1|P2|P3|P4\nCAUSE: <one-sentence likely cause>\nRUNBOOK: <one concrete first step>"
+        let result = think(prompt)
+        map("agent", "triager", "service", service, "result", result)
+    }
+}
+
+// ── Communicator Agent ──────────────────────────────────────────
+
+cell agent Communicator [model: smart] {
+    on draft_update(incident: Map, phase: String) {
+        let title   = incident.title ?? "incident"
+        let service = incident.service ?? "unknown"
+        let prompt = "Write a 2-sentence customer-facing status update for an incident on `{service}`. Title: \"{title}\". Phase: {phase}. Be calm, factual, no jargon, no apologies stacked."
+        let result = think(prompt)
+        map("agent", "communicator", "phase", phase, "result", result)
+    }
+}
+
+// ── PostmortemDrafter Agent ────────────────────────────────────
+
+cell agent PostmortemDrafter [model: smart] {
+    on draft(incident: Map, timeline: String) {
+        let title   = incident.title ?? "incident"
+        let service = incident.service ?? "unknown"
+        let prompt = "Draft a brief BLAMELESS postmortem with these sections, in order: Summary, Customer impact, Root cause, Contributing factors, Action items (numbered).\n\nIncident: {title}\nService: {service}\nTimeline:\n{timeline}\n\nMax 12 lines. No blame. No marketing language."
+        let result = think(prompt)
+        map("agent", "postmortem", "result", result)
+    }
+}
+
+// ── IncidentManager — Orchestrator ─────────────────────────────
+
+cell IncidentManager {
+    memory {
+        incidents: Map<String, String> [persistent, consistent]
+        timeline:  Map<String, String> [persistent]
+        oncall:    Map<String, String> [persistent]
+    }
+
+    state incident {
+        initial: detected
+        detected -> triaging
+        triaging -> mitigating
+        triaging -> dismissed
+        mitigating -> monitoring
+        mitigating -> escalated
+        escalated -> resolved
+        escalated -> dismissed
+        monitoring -> resolved
+        resolved -> postmortem_pending
+        postmortem_pending -> closed
+        dismissed -> closed
+    }
+
+    // ── Private helpers ────────────────────────────────────────
+
+    on _record(id: String, event: String, detail: String) {
+        let entry = map(
+            "incident", id,
+            "event", event,
+            "detail", detail,
+            "ts", to_string(now())
+        )
+        let key = id + "_" + to_string(now()) + "_" + to_string(random(100000))
+        timeline.set(key, to_json(entry))
+    }
+
+    on _load(id: String) {
+        let raw = incidents.get(id)
+        if raw == () {
+            return ()
+        }
+        from_json(raw)
+    }
+
+    on _save(id: String, inc: Map) {
+        incidents.set(id, to_json(inc))
+    }
+
+    on _assigned(service: String) {
+        let raw = oncall.get(service)
+        if raw == () {
+            return "unassigned"
+        }
+        raw
+    }
+
+    on _parse_severity(text: String) {
+        let sev = "P3"
+        if contains(text, "P1") { sev = "P1" }
+        if contains(text, "P2") { sev = "P2" }
+        if contains(text, "P4") { sev = "P4" }
+        sev
+    }
+
+    // ── Public: alert ingestion ────────────────────────────────
+    //
+    // The full hot path: detect → triage → (dismiss | mitigate).
+    // The triager's severity decides whether the incident gets
+    // auto-dismissed (P4) or escalated to a human responder.
+
+    on alert(payload: Map) {
+        let id = "INC-" + to_string(next_id())
+        let service = payload.service ?? "unknown"
+        let title = payload.summary ?? "untitled alert"
+        let now_str = to_string(now())
+
+        let inc = map(
+            "id", id,
+            "service", service,
+            "title", title,
+            "status", "detected",
+            "severity", "P3",
+            "assignee", _assigned(service),
+            "opened_at", now_str
+        )
+        _save(id, inc)
+        _record(id, "detected", "alert ingested for {service}")
+
+        // Move to triaging and call the LLM
+        transition(id, "triaging")
+        let inc1 = inc |> with("status", "triaging")
+        _save(id, inc1)
+
+        let triage = delegate("Triager", "triage", payload)
+        let result_text = triage.result
+        _record(id, "triaged", result_text)
+
+        let sev = _parse_severity(result_text)
+        let inc2 = inc1 |> with("severity", sev) |> with("triage", result_text)
+        _save(id, inc2)
+
+        // P4 → auto-dismiss → close
+        if sev == "P4" {
+            transition(id, "dismissed")
+            _record(id, "dismissed", "P4 — auto-dismissed by triager")
+            transition(id, "closed")
+            let final_inc = inc2
+                |> with("status", "closed")
+                |> with("closed_at", to_string(now()))
+            _save(id, final_inc)
+            return map("id", id, "status", "closed", "severity", sev, "auto_dismissed", true)
+        }
+
+        // P1/P2/P3 → mitigating
+        transition(id, "mitigating")
+        let inc3 = inc2 |> with("status", "mitigating")
+        _save(id, inc3)
+        _record(id, "mitigating", "responder engaged: {inc3.assignee}")
+
+        // P1/P2 also get a customer-facing comms draft
+        if sev == "P1" {
+            let upd = delegate("Communicator", "draft_update", inc3, "investigating")
+            _record(id, "comms_draft", upd.result)
+        }
+        if sev == "P2" {
+            let upd = delegate("Communicator", "draft_update", inc3, "investigating")
+            _record(id, "comms_draft", upd.result)
+        }
+
+        map("id", id, "status", "mitigating", "severity", sev, "triage", result_text)
+    }
+
+    // ── Public: lifecycle transitions ──────────────────────────
+
+    on monitor(id: String, note: String) {
+        let inc = _load(id)
+        if inc == () { return map("error", "not found") }
+        transition(id, "monitoring")
+        let updated = inc |> with("status", "monitoring")
+        _save(id, updated)
+        _record(id, "monitoring", note)
+        map("id", id, "status", "monitoring")
+    }
+
+    on escalate(id: String, reason: String) {
+        let inc = _load(id)
+        if inc == () { return map("error", "not found") }
+        transition(id, "escalated")
+        let updated = inc |> with("status", "escalated") |> with("escalation_reason", reason)
+        _save(id, updated)
+        _record(id, "escalated", reason)
+        map("id", id, "status", "escalated")
+    }
+
+    on resolve(id: String, fix: String) {
+        let inc = _load(id)
+        if inc == () { return map("error", "not found") }
+        transition(id, "resolved")
+        let updated = inc
+            |> with("status", "resolved")
+            |> with("fix", fix)
+            |> with("resolved_at", to_string(now()))
+        _save(id, updated)
+        _record(id, "resolved", fix)
+
+        let upd = delegate("Communicator", "draft_update", updated, "resolved")
+        _record(id, "comms_draft", upd.result)
+
+        map("id", id, "status", "resolved")
+    }
+
+    on postmortem(id: String) {
+        let inc = _load(id)
+        if inc == () { return map("error", "not found") }
+        transition(id, "postmortem_pending")
+        let updated = inc |> with("status", "postmortem_pending")
+        _save(id, updated)
+
+        // Build a chronological timeline string for the drafter
+        let lines = list()
+        for k in timeline.keys() {
+            if starts_with(k, id + "_") {
+                let raw = timeline.get(k)
+                let entry = from_json(raw)
+                let line = entry.ts + "  " + entry.event + "  " + entry.detail
+                lines = push(lines, line)
+            }
+        }
+        let tl = join(lines, "\n")
+
+        let draft = delegate("PostmortemDrafter", "draft", updated, tl)
+        _record(id, "postmortem_drafted", draft.result)
+
+        let with_pm = updated |> with("postmortem", draft.result)
+        _save(id, with_pm)
+
+        map("id", id, "status", "postmortem_pending", "postmortem", draft.result)
+    }
+
+    on close(id: String) {
+        let inc = _load(id)
+        if inc == () { return map("error", "not found") }
+        transition(id, "closed")
+        let final_inc = inc
+            |> with("status", "closed")
+            |> with("closed_at", to_string(now()))
+        _save(id, final_inc)
+        _record(id, "closed", "closed by operator")
+        map("id", id, "status", "closed")
+    }
+
+    on dismiss(id: String, reason: String) {
+        let inc = _load(id)
+        if inc == () { return map("error", "not found") }
+        transition(id, "dismissed")
+        let updated = inc |> with("status", "dismissed") |> with("dismiss_reason", reason)
+        _save(id, updated)
+        _record(id, "dismissed", reason)
+        transition(id, "closed")
+        let final_inc = updated
+            |> with("status", "closed")
+            |> with("closed_at", to_string(now()))
+        _save(id, final_inc)
+        map("id", id, "status", "closed", "dismissed", true)
+    }
+
+    // ── On-call rotation ───────────────────────────────────────
+
+    on assign_oncall(service: String, engineer: String) {
+        oncall.set(service, engineer)
+        map("service", service, "engineer", engineer)
+    }
+
+    // ── Read API ───────────────────────────────────────────────
+
+    on get_incident(id: String) {
+        let inc = _load(id)
+        if inc == () { return map("error", "not found") }
+        inc
+    }
+
+    on list_incidents() {
+        let out = list()
+        for k in incidents.keys() {
+            let inc = from_json(incidents.get(k))
+            out = push(out, inc)
+        }
+        out
+    }
+
+    on get_timeline(id: String) {
+        let out = list()
+        for k in timeline.keys() {
+            if starts_with(k, id + "_") {
+                let raw = timeline.get(k)
+                out = push(out, from_json(raw))
+            }
+        }
+        out
+    }
+
+    on get_oncall() {
+        let out = list()
+        for k in oncall.keys() {
+            let entry = map("service", k, "engineer", oncall.get(k))
+            out = push(out, entry)
+        }
+        out
+    }
+
+    // ── HTTP routing ───────────────────────────────────────────
+    //
+    // Routes are action-on-body to keep match arms flat. The cell
+    // ID lives in the JSON body, not the URL.
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"} -> map(
+                "name", "Soma Incident Response",
+                "incidents", incidents.len(),
+                "endpoints", list(
+                    "POST /alerts                  body: {service, summary, metric, value}",
+                    "POST /monitor                 body: {id, note}",
+                    "POST /escalate                body: {id, reason}",
+                    "POST /resolve                 body: {id, fix}",
+                    "POST /postmortem              body: {id}",
+                    "POST /dismiss                 body: {id, reason}",
+                    "POST /close                   body: {id}",
+                    "POST /oncall                  body: {service, engineer}",
+                    "GET  /incidents",
+                    "GET  /incident/{id}",
+                    "GET  /timeline/{id}",
+                    "GET  /oncall"
+                )
+            )
+            {method: "POST", path: "/alerts"} -> alert(from_json(body))
+            {method: "POST", path: "/monitor"} -> {
+                let d = from_json(body)
+                monitor(d.id ?? "", d.note ?? "")
+            }
+            {method: "POST", path: "/escalate"} -> {
+                let d = from_json(body)
+                escalate(d.id ?? "", d.reason ?? "")
+            }
+            {method: "POST", path: "/resolve"} -> {
+                let d = from_json(body)
+                resolve(d.id ?? "", d.fix ?? "")
+            }
+            {method: "POST", path: "/postmortem"} -> {
+                let d = from_json(body)
+                postmortem(d.id ?? "")
+            }
+            {method: "POST", path: "/dismiss"} -> {
+                let d = from_json(body)
+                dismiss(d.id ?? "", d.reason ?? "")
+            }
+            {method: "POST", path: "/close"} -> {
+                let d = from_json(body)
+                close(d.id ?? "")
+            }
+            {method: "POST", path: "/oncall"} -> {
+                let d = from_json(body)
+                assign_oncall(d.service ?? "", d.engineer ?? "")
+            }
+            {method: "GET", path: "/incidents"} -> list_incidents()
+            {method: "GET", path: "/oncall"} -> get_oncall()
+            {method: "GET", path: "/incident/" + id} -> get_incident(id)
+            {method: "GET", path: "/timeline/" + id} -> get_timeline(id)
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

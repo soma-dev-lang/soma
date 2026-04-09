@@ -1,0 +1,57 @@
+[package]
+name = "rebalancer"
+description = "Verified systematic rebalancer for a quantitative investment firm"
+
+[models.fast]
+provider = "ollama"
+model = "gemma4:26b"
+
+[models.smart]
+provider = "ollama"
+model = "gemma4:26b"
+
+[verify]
+deadlock_free = true
+eventually = ["closed"]
+
+[verify.after.requested]
+eventually = ["closed"]
+
+[verify.after.signal_pending]
+eventually = ["closed"]
+
+[verify.after.optimizing]
+eventually = ["closed"]
+
+[verify.after.optimized]
+eventually = ["closed"]
+
+[verify.after.compliance_review]
+eventually = ["closed"]
+
+[verify.after.flagged]
+eventually = ["closed"]
+
+[verify.after.approved]
+eventually = ["closed"]
+
+[verify.after.executing]
+eventually = ["closed"]
+
+[verify.after.executed]
+eventually = ["closed"]
+
+[verify.after.reconciling]
+eventually = ["closed"]
+
+[verify.after.reconciled]
+eventually = ["closed"]
+
+[verify.after.blocked]
+eventually = ["closed"]
+
+[verify.after.cancelled]
+eventually = ["closed"]
+
+[verify.after.failed]
+eventually = ["closed"]
