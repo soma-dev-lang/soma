@@ -244,18 +244,17 @@ cell Messenger {
         // For 1:1 threads, derive a canonical id from sorted usernames
         // so that alice→bob and bob→alice resolve to the same thread.
         // For groups, use a generated id.
-        let thread_id = if provided_id != "" {
-            provided_id
-        } else {
+        let thread_id = provided_id
+        if thread_id == "" {
             if len(members) == 2 {
                 let sorted = members |> sort_by("")
                 let a = nth(sorted, 0)
                 let b = nth(sorted, 1)
-                "{a}:{b}"
+                thread_id = "{a}:{b}"
             } else {
                 let t = to_string(now())
                 let r = to_string(random(100000))
-                "g_{t}_{r}"
+                thread_id = "g_{t}_{r}"
             }
         }
         if threads.has(thread_id) {
