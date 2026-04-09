@@ -297,8 +297,17 @@ pub fn check_property(graph: &StateMachineGraph, property: &Property) -> Propert
         }
 
         Property::Eventually(pred) => {
-            // Check: every path from initial eventually reaches a state where pred holds
-            let counter = graph.find_path_avoiding(&graph.initial, pred, 50);
+            // Check: every path from initial eventually reaches a state where pred holds.
+            //
+            // SOUNDNESS NOTE: the depth bound for the counter-example search must be
+            // ≥ |reachable| so that any acyclic path through the reachable subgraph
+            // can be fully explored before we conclude "no counter-example exists".
+            // The previous hard-coded `50` was a soundness gap: on a 60-state linear
+            // chain ending in a non-satisfying terminal, the DFS gave up at depth 50
+            // and reported the property as PASSING when in fact every path is a
+            // counter-example. See `tests/rigor_eventually_long_chain.rs`.
+            let bound = reachable.len() + 1;
+            let counter = graph.find_path_avoiding(&graph.initial, pred, bound);
             if let Some(path) = counter {
                 PropertyResult {
                     property: format!("eventually({})", pred.describe()),
@@ -326,7 +335,10 @@ pub fn check_property(graph: &StateMachineGraph, property: &Property) -> Propert
                     counter_example: None,
                 };
             }
-            let counter = graph.find_path_avoiding(state, pred, 50);
+            // Same soundness fix as Eventually above: the bound must be ≥ |reachable|
+            // so the DFS can explore every acyclic path through the subgraph.
+            let bound = reachable.len() + 1;
+            let counter = graph.find_path_avoiding(state, pred, bound);
             if let Some(mut path) = counter {
                 // Prepend path from initial to the trigger state
                 if let Some(prefix) = graph.find_path_to(&graph.initial, &StatePredicate::InState(state.clone())) {

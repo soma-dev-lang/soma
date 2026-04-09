@@ -13,7 +13,20 @@ This document covers four things:
   3. State-explosion honesty: where `soma verify` is bounded
   4. The V1.2 subtraction and what it teaches
 
-It is meant to be read alongside `docs/V1.md`.
+It is meant to be read alongside `docs/V1.md`. For the **CTL model
+checker soundness theorem** that turns the temporal property checks
+into a real claim, see `docs/SOUNDNESS.md`. For the **adversary model**
+each property holds against, see `docs/ADVERSARIES.md`. For the
+**executable witness** of backend equivalence on the intersection
+corpus, see `compiler/tests/equivalence.rs`. For the **measured**
+state-explosion cliff, see `docs/rigor/results/state_explosion.md`.
+
+> **2026-04-10 rigor pass status:** the CTL soundness gap from the
+> hard-coded depth-50 DFS bound was found and closed in this revision.
+> Repro and regression test:
+> `compiler/tests/rigor_eventually_long_chain.rs`. Bench data and
+> equivalence harness now back the §2 and §3 claims with reproducible
+> numbers. The rigor scorecard is at `docs/rigor/README.md`.
 
 ---
 
@@ -187,6 +200,39 @@ nondet list is empty, every call in the handler body was either pure
 or to a deterministic builtin; given the same args and initial memory,
 the body produces the same value. ∎
 
+### 1.7 CTL model checker soundness
+
+Refinement (§1.5) and the runtime transition guard
+(`do_transition_for`) together give:
+
+**Lemma 1.7 (Runtime fidelity).** *Every successful runtime
+`transition(id, target)` call lies in the abstract state machine `→`
+of some declared state block.*
+
+This is the trust base on which the temporal property checker rests.
+The full theorem statements for `Always`, `Never`, `DeadlockFree`,
+`Mutex`, `Eventually`, and `After` — along with the assumptions
+they depend on, the gaps that remain, and the **soundness fix
+applied 2026-04-10** that closed the depth-50 false-positive on
+liveness — are in **`docs/SOUNDNESS.md`**.
+
+The short version:
+
+  - **Safety properties** (`Always`, `Never`, `DeadlockFree`, `Mutex`)
+    are sound *and* complete with respect to the abstract state
+    machine. Closed-form proof in SOUNDNESS §3.1.
+  - **Liveness properties** (`Eventually`, `After`) are sound after
+    the depth-bound fix. The DFS bound is now `|Reach(G)| + 1`, which
+    suffices to explore every acyclic path; before, it was a hard-
+    coded `50`, which produced false positives on long chains.
+    Regression test: `compiler/tests/rigor_eventually_long_chain.rs`.
+  - **Guard predicates** are over-approximated as `true`. This is
+    sound for safety, conservative for liveness. SMT-backed guard
+    reasoning is V1.4.
+
+The adversary model under which each property holds is in
+**`docs/ADVERSARIES.md`**.
+
 ---
 
 ## 2. Backend equivalence: `interpreter ≡ bytecode ≡ [native]`
@@ -194,53 +240,101 @@ the body produces the same value. ∎
 Soma has three execution backends:
 
   1. **Interpreter** — tree-walking over the AST (`compiler/src/interpreter`)
-  2. **Bytecode VM** — stack machine over a custom IR (`compiler/src/vm`)
+  2. **Bytecode VM** — stack machine over a custom IR (`compiler/src/vm`),
+     invoked via the deprecated `--jit` flag, **feature-incomplete**
   3. **`[native]`** — Rust source → `cdylib` per cell (`compiler/src/codegen/native.rs`)
 
 **Conjecture (Backend equivalence).** *For every well-typed Soma program
-`P`, every signal `Sig`, every input `v̅`, and every backend `B ∈ {interp,
-vm, native}`:*
+`P` in the intersection of features supported by both the interpreter
+and the bytecode VM, every signal `Sig`, every input `v̅`, and every
+backend `B ∈ {interp, vm}`:*
 
     run_B(P, Sig, v̅) = run_interp(P, Sig, v̅)
 
-That is: the three backends are observationally equivalent on terminating
-programs. Without this property, the 200×–300× `[native]` speedup would be
-meaningless — it could be 200× the wrong answer.
+That is: the two interpreted backends are observationally equivalent on
+terminating programs in the intersection corpus. Without this property,
+the speedup of any backend would be meaningless — it could be the wrong
+answer faster.
 
-**Status in V1.** This is a *conjecture*, not a theorem. We support it via:
+**Status in V1.** This is a *conjecture* with an **executable witness**.
 
-  - **Differential testing.** `examples/clbg_corpus/` and the 100 verified
-    Soma use cases run under all three backends and the results are
-    bit-compared. The `[native]` SomaInt fallback (overflow → BigInt) is
-    enforced by `overflow_checks = true` + `panic::catch_unwind`, so any
-    arithmetic disagreement panics rather than silently miscalculating.
-  - **The integer correctness contract** (§1.2), which is the most likely
-    source of divergence.
+  - **Differential testing harness.** `compiler/tests/equivalence.rs`
+    runs a curated corpus of programs through both backends and asserts
+    bit-equal output, every call to `cargo test --test equivalence`. The
+    corpus exercises the integer correctness contract (§1.2) — including
+    `25!` overflow → BigInt promotion, which is the most likely source
+    of divergence — plus arithmetic, control flow, recursion, lists, maps,
+    string ops, and multi-arg dispatch.
+    As of 2026-04-10: **16/16 cases pass**.
+  - **Documented gaps.** The intersection corpus deliberately excludes
+    features the VM does not yet implement (string interpolation, pipes
+    with lambdas, complex pattern matching, `delegate`, `transition`,
+    LLM builtins). The list is at the bottom of `equivalence.rs` and
+    must grow monotonically with the VM's capability.
 
-A formal proof — by showing that the bytecode compiler and the native
-codegen are simulations of the small-step semantics in §1 — is V1.2 work.
+A formal proof — showing that the bytecode compiler is a simulation of
+the small-step semantics in §1, and that the native codegen preserves
+the same observation function — remains V1.4 work. Until then, the
+empirical witness is what stands between Soma and a backend miscompile.
 
 ---
 
 ## 3. State-explosion honesty
 
-`soma verify` is a bounded model checker. The cliff:
+`soma verify` is a bounded model checker. The previous version of this
+doc had a hand-waved cliff table; the rigor pass replaced it with
+**measured** numbers from `docs/rigor/bin/bench_state_explosion.sh`.
 
-| `|Σ_M|`            | wall clock        | memory     | comment                          |
-|--------------------|-------------------|------------|----------------------------------|
-| ≤ 100              | < 1 ms            | KB         | most production state machines   |
-| 100 – 10 000       | 1 – 100 ms        | MB         | comfortable                      |
-| 10 000 – 65 536    | 100 ms – seconds  | tens of MB | hard ceiling in V1               |
-| > 65 536           | refused           | —          | warning, no proof attempted      |
+The bench generates synthetic state machines of three topologies:
 
-If your machine is >65 K states, you're using state machines wrong —
-factor the system into multiple smaller cells, each with its own
-state machine, connected by signals. The session-type checker (when it
-actually does ordering checks, V1.2) will then prove the composition
-deadlock-free *without* exploring the product state space. That's the
-whole point of session types — and also the reason V1's exhaustiveness-
-only check was theatre: it didn't prove anything new beyond what
-`face` blocks already proved.
+  - **Linear chain**: `s0 → s1 → … → s_{N-1} → done`. Worst case for
+    path search.
+  - **Diamond**: bounded fan-out × fan-in, k ≈ √N layers. Best case
+    for reachability.
+  - **Cyclic**: linear chain plus one back-edge that creates a cycle
+    so `eventually(s_{N-1})` has a counter-example. Measures the cost
+    of the failing-property path.
+
+Latest numbers (from `docs/rigor/results/state_explosion.md`,
+single-run wall time on a single machine — characterise the cliff,
+not microbench precision):
+
+| `|Σ_M|` | linear  | diamond | cyclic (counter-ex) |
+|--------:|--------:|--------:|--------------------:|
+| 10      | 30 ms   | 21 ms   | 21 ms               |
+| 100     | 20 ms   | 20 ms   | 21 ms               |
+| 1 000   | 61 ms   | 21 ms   | 76 ms               |
+| 2 000   | 193 ms  | 22 ms   | 249 ms              |
+| 5 000   | 1.1 s   | 25 ms   | (skipped)           |
+| 10 000  | 4.5 s   | (skipped) | (skipped)         |
+
+**The honest cliff:**
+
+  - **≤1 000 states**: well under 100 ms on every topology. Fits any
+    production state machine. This is the comfortable zone.
+  - **1 000 – 5 000 states**: linear chains hit the seconds range
+    here. Diamonds stay flat because BFS reachability is essentially
+    O(V+E) and the diameter is bounded.
+  - **5 000 – 10 000 states**: the linear cliff. 10K states on a
+    linear topology is 4.5 seconds — still verifiable in CI, but
+    no longer interactive. **This is where you should be factoring
+    your state machine into smaller compositional pieces.**
+  - **>10 000 states**: not measured. Extrapolating from the linear
+    topology suggests roughly tens of seconds for 20K and minutes for
+    50K. There is no hard refusal — `soma verify` will keep trying.
+
+**The previous doc was wrong about two things.** It claimed
+"100 – 10 000 states: 1 – 100 ms" — that's true for diamonds but
+**false for linear chains**, which hit 1 second at 5 K states. And it
+claimed "> 65 536 states: refused" — there is no such refusal in the
+implementation. The corrected story above is what the bench actually
+measures.
+
+If your machine is in the cliff zone, you're using state machines
+wrong: factor the system into multiple smaller cells, each with its
+own state machine, connected by signals. Composition verification —
+the V1.2 subtraction story — would have helped here, and is tracked
+as future work in `SOUNDNESS.md` G3.
 
 ---
 
