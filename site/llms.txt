@@ -78,6 +78,12 @@ cell System {
 | Bytecode VM              | `soma run file.cell --jit`                             | Better startup-amortized cost for hot loops without going native. |
 | Native (Rust `cdylib`)   | `[native]` handler annotation, or `soma build`         | Tight numeric loops. Whole-loop BigInt dispatches to GMP via `rug`. Single BigInt ops cross FFI and are slower. |
 
+### Performance vs Numba
+
+`bench/compare_B.sh` runs Soma vs Python+Numba on the same 100 challenges. Across the 27 cells where both sides have a measurable inner-time, the geometric mean (over 3 independent runs) is **~2.6× Soma faster**. Soma wins ≥2× on 15 / 27 cells (concentrated on BigInt and auto-memo workloads); Numba wins ≥2× on 0 / 27. Numba edges out by 1.3-1.5× on 2-3 tight i64 loops where its `nsw nuw` UB optimizations help.
+
+Critically: **Soma never returns wrong answers on integer overflow.** The dual-mode dispatch wrapper catches the i64 fast path's overflow panic and falls back to GMP/Rug for the correct BigInt result. Numba's `@njit` silently produces wrong values when intermediates exceed int64 (LLVM `nsw nuw` UB). Four regression cells in `examples/overflow_corpus/` exercise this on every commit. Writeup: `bench/results/SUMMARY_bench_B_v9_corrected.md`.
+
 ## Verified AI Agent — the specialty
 
 ```soma

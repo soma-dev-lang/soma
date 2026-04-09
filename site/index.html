@@ -45,7 +45,7 @@
     "Formal verification — CTL model checker proves state machine properties",
     "Distributed by declaration — scale { replicas: 50, consistency: strong }",
     "Compile-time CAP analysis — consistency vs availability checked before deploy",
-    "Native compilation — [native] compiles numeric handlers to Rust for ~100–300x speedup on tight loops",
+    "Native compilation — [native] compiles numeric handlers to Rust for ~100–300x speedup on tight loops, ~2.6x faster than Numba on geomean — and never returns wrong answers on integer overflow (Numba does)",
     "Zero-config clustering — soma serve --join host:port",
     "Pipe composition — data |> filter() |> map() |> sort_by() |> top()",
     "Machine-readable output — soma check --json, soma verify --json, soma describe",
@@ -869,7 +869,47 @@ $ soma run hot.cell --signal hot 10000000
 <tr><td>Tree-walking interpreter</td><td>~1,250 ms</td><td>1&times;</td></tr>
 <tr><td><code>[native]</code> (Rust <code>cdylib</code>, sequential)</td><td>~3&ndash;5 ms</td><td><strong>~300&times;</strong></td></tr>
 </table>
-<p style="font-size:.8125rem;color:var(--dim);margin-top:-.5rem">Measured on an Apple M-series with the bundled <code>[native]</code> codegen. Numbers vary with workload &mdash; this is a tight integer loop, the best case for the JIT path. The reproducible benchmark suite under <code>bench/compare.sh</code> runs 90+ math/CS challenges Soma-vs-Python with both wall-time and inner timings; <code>[compute.parallel]</code> for cross-handler thread fan-out is wired up but the headline parallel numbers are workload-specific &mdash; check the suite for your shape.</p>
+<p style="font-size:.8125rem;color:var(--dim);margin-top:-.5rem">Measured on an Apple M-series with the bundled <code>[native]</code> codegen. Numbers vary with workload &mdash; this is a tight integer loop, the best case for the JIT path. The reproducible benchmark suite under <code>bench/compare.sh</code> runs 100+ math/CS challenges Soma-vs-Python with both wall-time and inner timings; <code>[compute.parallel]</code> for cross-handler thread fan-out is wired up but the headline parallel numbers are workload-specific &mdash; check the suite for your shape.</p>
+
+<h3 style="margin-top:2rem">vs Numba (the honest comparison)</h3>
+
+<p>&ldquo;100&ndash;300&times; over CPython&rdquo; is a real number, but CPython is the wrong baseline for a compiled language. The honest comparison is against a JIT compiler that targets the same hardware. <a href="https://numba.pydata.org">Numba</a> compiles Python through LLVM and reaches C-level performance on its supported subset, so it's the closest meaningful peer.</p>
+
+<p>The reproducible suite under <code>bench/compare_B.sh</code> runs Soma vs Numba on the same 100 challenges. Across the 27 cells where both sides have a measurable inner-time, the geometric mean over three independent runs is:</p>
+
+<table>
+<tr><th>Soma vs Numba (inner-time geomean)</th><th>~2.6&times; faster</th></tr>
+<tr><td>Cells where Soma is &ge;2&times; faster</td><td>15 / 27</td></tr>
+<tr><td>Cells where Numba is &ge;2&times; faster</td><td>0 / 27</td></tr>
+<tr><td>Cells where they're tied (within &plusmn;10%)</td><td>6 / 27</td></tr>
+</table>
+
+<p>Soma's wins concentrate on cells that exercise:</p>
+<ul>
+<li><strong>BigInt operations</strong> (GMP via <code>rug</code>): <code>truncatable_primes</code> 49&times;, <code>matrix_fib</code> 15&times;, <code>mersenne</code> 14&times;, <code>miller_rabin</code> 11&times;, <code>cf_sqrt</code> 10&times;</li>
+<li><strong>Auto-memoization</strong> (compiler detects recursive shape, adds a cache): <code>levenshtein</code> 11&times;, <code>digit_factorial</code> 10&times;, <code>circular_primes</code> 8&times;</li>
+<li><strong>String-builder peephole</strong>: <code>look_and_say</code> 9&times;</li>
+</ul>
+
+<p>The cells where Numba slightly edges out (1.3&ndash;1.5&times;) are tight i64 loops like <code>collatz</code> &mdash; LLVM's <code>nsw nuw</code> flags let it optimize around the assumption that overflow is undefined behavior, which Soma <strong>refuses to do</strong>. (See below.)</p>
+
+<h3 style="margin-top:2rem">Correctness, not just speed</h3>
+
+<p>Numba's <code>@njit</code> compiles to LLVM IR with <code>nsw</code>/<code>nuw</code> flags &mdash; LLVM treats integer overflow as undefined behavior. <strong>Numba returns wrong answers on integer overflow</strong>, silently, without warning. A <code>fact(25)</code> in <code>@njit</code> produces garbage in microseconds; the user only sees it if they look at the result.</p>
+
+<p>Soma's contract is the opposite. The user writes <code>Int</code>; the compiler picks i64 OR BigInt; the answer is <em>always</em> correct. The dual-mode dispatch wrapper is the foundation: the Direct fast path tries i64 with full overflow checking, panics on overflow, and the dispatch catches the panic and falls back to Rug/GMP for the correct BigInt result. The user sees the right answer either way; the only difference is which path computed it.</p>
+
+<p>Four regression tests in <code>examples/overflow_corpus/</code> exercise this:</p>
+<ul style="font-size:.875rem">
+<li><code>o01_mul_overflow</code>: <code>fact(21) = 51090942171709440000</code> (&gt; i64::MAX)</li>
+<li><code>o02_add_overflow</code>: <code>2^63 = 9223372036854775808</code> (&gt; i64::MAX)</li>
+<li><code>o03_mul3_plus1</code>: <code>c_len(2305843009213693951)</code> doesn't crash, returns correct length via Rug</li>
+<li><code>o04_subtract_overflow</code>: <code>-2^63 - 1 = -9223372036854775809</code></li>
+</ul>
+
+<p>Each runs on every commit. The 100&ndash;300&times; speedup is real, the 2.6&times; over Numba is real, and the answers are <em>also</em> always correct. That last part is what Numba can't claim.</p>
+
+<p style="font-size:.8125rem;color:var(--dim);margin-top:-.5rem">Bench B writeup: <code>bench/results/SUMMARY_bench_B_v9_corrected.md</code>. Reproduce with <code>bench/compare_B.sh</code> after pre-warming the Numba JIT cache.</p>
 
 <p>The code is the same in all three rows. <code>[native]</code> compiles to machine code. Adding <code>[compute.parallel]</code> in <code>soma.toml</code> splits the work across cores automatically. No threads, no mutexes, no <code>async</code>/<code>await</code>, no rewrite. One word in the code, two lines in the config.</p>
 
