@@ -12,20 +12,30 @@
 #
 # Drives three users (alice, bob, carol) through a realistic conversation:
 # 1:1 + group chat, typing indicators, read receipts, presence updates.
+#
+# The cell is server-rendered (HTML responses + SSE), so we extract
+# message ids by grepping the chat-panel HTML for `id="msg-..."`
+# rather than parsing JSON.
 
-set -euo pipefail
+set -uo pipefail
 HOST=${HOST:-http://localhost:8080}
 
 post() {  # post <path> <json>
-    curl -fsS -X POST "$HOST$1" \
+    curl -sS -X POST "$HOST$1" \
          -H 'Content-Type: application/json' \
          -d "$2" >/dev/null
-    sleep 0.4
+    sleep 0.3
 }
 
 step() {
     echo
     echo "── $1 ──"
+}
+
+msg_ids_in() {  # msg_ids_in <viewer> <thread>
+    curl -sS "$HOST/thread/$1/$2" \
+        | grep -oE 'id="msg-[^"]*"' \
+        | sed 's/id="msg-//;s/"$//'
 }
 
 step "1. register three users"
@@ -40,27 +50,27 @@ post /presence '{"user":"carol","status":"online"}'
 
 step "3. alice opens a 1:1 with bob and starts typing"
 post /typing '{"user":"alice","thread":"alice:bob","is_typing":true}'
-sleep 1
+sleep 0.6
 post /send '{"from":"alice","thread":"alice:bob","text":"hey bob, you free for dinner tonight?"}'
 post /typing '{"user":"alice","thread":"alice:bob","is_typing":false}'
 
 step "4. bob replies"
 post /typing '{"user":"bob","thread":"alice:bob","is_typing":true}'
-sleep 1
+sleep 0.6
 post /send '{"from":"bob","thread":"alice:bob","text":"sure! 8pm at the usual place?"}'
 post /typing '{"user":"bob","thread":"alice:bob","is_typing":false}'
 
-step "5. alice acknowledges (read receipt + reply)"
-LAST_BOB=$(curl -fsS "$HOST/thread/alice:bob" | \
-           python3 -c 'import json,sys;m=[x for x in json.load(sys.stdin)["messages"] if x["from"]=="bob"];print(m[-1]["id"])')
-post /read "{\"message_id\":\"$LAST_BOB\",\"by\":\"alice\"}"
+step "5. alice acknowledges (read receipts via /read)"
+for MID in $(msg_ids_in alice "alice:bob"); do
+    post /read "{\"message_id\":\"$MID\",\"by\":\"alice\"}"
+done
 post /send '{"from":"alice","thread":"alice:bob","text":"perfect, see you there"}'
 
 step "6. carol creates a group thread for the three of them"
-GROUP=$(curl -fsS -X POST "$HOST/thread/new" \
+GROUP=$(curl -sS -X POST "$HOST/thread/new" \
         -H 'Content-Type: application/json' \
-        -d '{"creator":"carol","members":["alice","bob","carol"]}' | \
-        python3 -c 'import json,sys;print(json.load(sys.stdin)["thread"])')
+        -d '{"creator":"carol","members":["alice","bob","carol"]}' \
+        | python3 -c 'import json,sys;print(json.load(sys.stdin)["thread"])')
 echo "  group thread id: $GROUP"
 
 step "7. group conversation"
@@ -69,26 +79,19 @@ post /send "{\"from\":\"alice\",\"thread\":\"$GROUP\",\"text\":\"of course! 8pm\
 post /send "{\"from\":\"bob\",\"thread\":\"$GROUP\",\"text\":\"see you both then\"}"
 
 step "8. everyone reads the group messages (read receipts)"
-curl -fsS "$HOST/thread/$GROUP" | \
-    python3 -c '
-import json,sys,subprocess
-d = json.load(sys.stdin)
-for m in d["messages"]:
-    for reader in ["alice","bob","carol"]:
-        if reader != m["from"]:
-            subprocess.run(["curl","-fsS","-X","POST",
-                "'"$HOST"'/read","-H","Content-Type: application/json",
-                "-d", json.dumps({"message_id": m["id"], "by": reader})],
-                check=False, stdout=subprocess.DEVNULL)
-'
+for READER in alice bob carol; do
+    for MID in $(msg_ids_in "$READER" "$GROUP"); do
+        post /read "{\"message_id\":\"$MID\",\"by\":\"$READER\"}"
+    done
+done
 
-step "9. summary"
+step "9. summary (alice's view)"
 echo
-echo "  alice's threads:"
-curl -fsS "$HOST/threads/alice" | python3 -m json.tool | sed 's/^/    /'
+echo "  alice's threads (sidebar HTML):"
+curl -sS "$HOST/threads/alice" | head -20 | sed 's/^/    /'
 echo
-echo "  group history:"
-curl -fsS "$HOST/thread/$GROUP" | python3 -m json.tool | sed 's/^/    /'
+echo "  alice's view of the group chat:"
+curl -sS "$HOST/thread/alice/$GROUP" | head -25 | sed 's/^/    /'
 
 step "10. bob goes offline"
 post /presence '{"user":"bob","status":"offline"}'

@@ -1,33 +1,51 @@
 # Soma Messages
 
-A WhatsApp-class messenger built on Soma.
+A WhatsApp-class messenger built on Soma. **One cell. Zero JavaScript application code.**
 
 ```sh
 soma serve examples/messenger/app.cell -p 8080
 open http://localhost:8080
 ```
 
-Then open the same URL in a second browser window (or incognito tab),
-sign in as a different user, and chat with yourself in real time.
+Then open the same URL in a second browser context (incognito window
+or a different browser) and sign in as a different user. Chat with
+yourself in real time. Read receipts, typing indicators, online
+presence, group chats — all of it. None of it written in JavaScript.
 
 ## What's in the box
 
 | Feature                       | How                                                              |
 |-------------------------------|------------------------------------------------------------------|
-| 1:1 messaging                 | `POST /send` with a 1:1 thread id (auto-canonicalised)           |
-| Group messaging               | `POST /thread/new` with > 2 members                              |
-| Persistent history            | `[persistent, consistent]` memory → SQLite, zero config          |
+| 1:1 messaging                 | `_send` handler + canonical thread ids (`alice:bob`)             |
+| Group messaging               | `_create_thread` with > 2 members                                |
+| Persistent history            | `[persistent, consistent]` memory → SQLite, transparent          |
 | Read receipts                 | `state message_lifecycle { sent → delivered → read }`            |
-| Typing indicators             | `emit typing_indicator` → SSE push, no storage                   |
-| Online presence               | `[ephemeral, local]` presence slot + heartbeat GC every 30s      |
-| Real-time delivery            | `sse("new_message", "message_status", …)` + `EventSource` client |
-| Web client                    | `static/index.html` — vanilla HTML+CSS+JS, no frameworks         |
+| Typing indicators             | `publish("typing_<thread>", html)` → htmx `sse-swap`             |
+| Online presence               | `[ephemeral, local]` slot + 30s GC heartbeat                     |
+| Real-time delivery            | `publish("messages_<thread>_<viewer>", html)` per-user channels  |
+| Web client                    | **server-rendered HTML + htmx**, no application JS               |
 
-The whole server is **one Soma cell** (`app.cell`, ~310 lines including
-comments). The whole client is **one HTML file** (~430 lines including
-inline CSS and JS, no build step). That is the entire codebase.
+The whole thing is **one Soma cell** (`app.cell`, ~780 lines including
+comments and inline HTML/CSS). The "client" is one library — htmx —
+loaded once at the top of the page. Every interaction either makes an
+htmx request that returns an HTML fragment, or consumes an SSE event
+whose payload is also an HTML fragment. There is no application
+JavaScript anywhere.
 
-## Why it's interesting
+## Why server-rendered
+
+The first version of this messenger had a 430-line vanilla JS client
+that maintained its own message cache, presence cache, typing cache,
+and render loop. That client was a parallel state machine the V1.3
+refinement check **could not verify** — the spec lived in the cell,
+the implementation lived in the browser, and they could drift apart
+silently. Exactly the bug refinement was supposed to prevent.
+
+The server-rendered version puts every state transition the user can
+observe inside a Soma handler. The cell is the system, all the way
+to the pixel.
+
+## Why this is interesting
 
 ### The message lifecycle is formally verified
 
@@ -51,13 +69,29 @@ check on the handler bodies and proves three things:
 3. Per-handler effect summary, with path conditions:
 
 ```
-✓ refinement: handler `mark_delivered` ⟶ {delivered [if msg.status == "sent"]}
-✓ refinement: handler `mark_read` ⟶ {delivered [if msg.status == "sent"], read}
-✓ refinement: handler `delete_msg` ⟶ {deleted}
+✓ refinement: handler `_mark_delivered` ⟶ {delivered [if msg.status == "sent"]}
+✓ refinement: handler `_mark_read`      ⟶ {delivered [if msg.status == "sent"], read}
+✓ refinement: handler `_delete_msg`     ⟶ {deleted}
 ```
 
-The spec and the code can no longer drift apart. This is the WOW
-feature from `docs/SEMANTICS.md §1.5` working on a real cell.
+The spec and the code can no longer drift apart. **This applies to
+every state transition the user can observe**, because every state
+transition lives in the cell. There is no JS counterpart to verify
+separately.
+
+### Real-time delivery via dynamic SSE channels
+
+Each browser tab subscribes to a small set of stable, dynamic SSE
+event names like `messages_alice:bob_alice` (alice's view of the
+alice:bob thread) and `threads_alice` (alice's sidebar). When a
+state-changing handler runs, it calls `publish("messages_alice:bob_alice", html)`
+to push the updated HTML fragment to every browser listening for that
+exact event name. htmx's `sse-swap` attribute consumes it and swaps
+the new fragment into place.
+
+Each event is per-thread, per-viewer. A typical multi-user run
+generates events on ~10 distinct stream names, and each browser only
+processes the streams for the elements actually on its page.
 
 ### The cluster topology is in the source
 
@@ -77,128 +111,140 @@ scale {
 (`soma serve app.cell`) or N machines (`soma serve app.cell --join
 host:port`). No deploy YAML, no Helm chart, no Terraform.
 
-### HTTP, persistence, pub/sub, and real-time are built in
+### HTTP, persistence, pub/sub, real-time, AND rendering — built in
 
 - **HTTP routing**: `on request(method, path, body)` with pattern
   matching. No Express, no Flask.
 - **Persistence**: `[persistent, consistent]` memory → SQLite. No
   Postgres driver, no migrations file.
-- **Real-time**: `sse(...)` returns a server-sent-events response;
-  `emit event_name(payload)` pushes to every connected client. No
-  Socket.IO, no Redis pub/sub.
-- **Auto-serialization**: `messages.set(id, to_json(msg))` and
-  `from_json(messages.get(id))` — no schema registry, no Avro.
+- **Pub/sub**: `publish(stream_name, html)` builtin pushes HTML
+  fragments to every SSE client subscribed to that name. No Socket.IO,
+  no Redis pub/sub.
+- **Server-rendered HTML**: `html(200, """ <html>{interpolation}... """)`
+  triple-quoted strings with full expression interpolation. No
+  templating engine, no React, no SSR framework.
 
-The cell IS the system. Compare the line count to the equivalent
-in any mainstream stack.
+The cell IS the system. There is nothing else.
 
 ## API
 
 ```http
-POST /register           {"username": "alice", "display_name": "Alice"}
-POST /thread/new         {"creator": "alice", "members": ["alice","bob"]}
-POST /send               {"from": "alice", "thread": "alice:bob", "text": "hi"}
-POST /read               {"message_id": "...", "by": "bob"}
-POST /delivered          {"message_id": "..."}
-POST /delete             {"message_id": "..."}
-POST /typing             {"thread": "alice:bob", "user": "alice", "is_typing": true}
-POST /presence           {"user": "alice", "status": "online"}
-
-GET  /users
-GET  /threads/<user>     — user's threads with unread counts, sorted by recency
-GET  /thread/<id>        — thread metadata + full message history
-GET  /events             — SSE stream (new_message, message_status, typing_indicator,
-                           presence_change, thread_created)
-GET  /                   — web client
+GET  /                       — login form
+POST /register               — register; HX-Redirect → /app/<user>
+GET  /app/<user>             — full app shell
+GET  /threads/<user>         — sidebar HTML fragment
+GET  /thread/<user>/<id>     — chat panel HTML fragment
+POST /send                   — send a message; emit SSE; return 204
+POST /read                   — mark as read; emit SSE; return 204
+POST /delivered              — mark as delivered; return 204
+POST /typing                 — broadcast typing; return 204
+POST /presence               — update presence; return 204
+POST /thread/new             — create a thread; HX-Redirect + JSON body
+GET  /events                 — SSE stream for live updates
 ```
 
 For 1:1 chats the thread id is the canonical sorted-username form
 (`alice:bob`), so it's the same regardless of who initiated. Groups
 get a generated id like `g_1738000000_42`.
 
-## Smoke test
+## Multi-user testing
+
+### 1. Two browser windows
+
+The current user is encoded in the URL path (`/app/alice`,
+`/app/bob`), so two regular tabs work — no localStorage clash. Even
+simpler, use two browser contexts:
+
+- Chrome regular + Chrome incognito
+- Chrome + Firefox
+
+Sign in twice as different users and watch messages flow live.
+
+### 2. Curl
 
 ```sh
-SOMA=./compiler/target/release/soma
-
-# 1. Compile-time checks (✓ check, ✓ verify, ✓ refinement)
-$SOMA check  examples/messenger/app.cell
-$SOMA verify examples/messenger/app.cell
-
-# 2. Start the server
-$SOMA serve  examples/messenger/app.cell -p 8080 &
-
-# 3. Register two users
-curl -s -X POST localhost:8080/register \
-     -d '{"username":"alice","display_name":"Alice"}'
-curl -s -X POST localhost:8080/register \
-     -d '{"username":"bob","display_name":"Bob"}'
-
-# 4. Send a message
-curl -s -X POST localhost:8080/send \
-     -d '{"from":"alice","thread":"alice:bob","text":"hello bob"}'
-
-# 5. Fetch the thread
-curl -s localhost:8080/thread/alice:bob
-
-# 6. Subscribe to the event stream (Ctrl-C to stop)
-curl -N localhost:8080/events
+curl -X POST localhost:8080/register -d '{"username":"alice"}'
+curl -X POST localhost:8080/register -d '{"username":"bob"}'
+curl -X POST localhost:8080/send \
+     -d '{"from":"alice","thread":"alice:bob","text":"hi"}'
+curl localhost:8080/threads/bob              # sidebar HTML
+curl localhost:8080/thread/bob/alice:bob     # chat panel HTML
+curl -N localhost:8080/events                # SSE stream
 ```
+
+### 3. Multi-user simulator
+
+```sh
+soma serve examples/messenger/app.cell -p 8080
+./examples/messenger/sim.sh
+```
+
+The simulator drives three users (alice, bob, carol) through a
+realistic conversation: 1:1 chat, typing, read receipts, group
+creation, group chat, group read receipts, presence change. Generates
+~75 SSE events across ~10 distinct dynamic stream names in a few
+seconds. Useful for end-to-end smoke testing without browser
+juggling.
 
 ## Architecture diagram (in text)
 
 ```
-              ┌─────────────────────────────────────┐
-              │   Web client (static/index.html)    │
-              │   vanilla HTML+JS, EventSource SSE  │
-              └──────────────┬──────────────────────┘
-                             │
-                  HTTP + SSE  │
-                             ▼
-              ┌─────────────────────────────────────┐
-              │            Messenger cell           │
-              │                                     │
-              │   face   :  HTTP routes via         │
-              │             on request(...)         │
-              │                                     │
-              │   memory :  users, messages,        │
-              │             threads, presence       │
-              │             [persistent,consistent] │
-              │             → SQLite, transparent   │
-              │                                     │
-              │   state  :  message_lifecycle       │
-              │             VERIFIED by V1.3        │
-              │             refinement check        │
-              │                                     │
-              │   scale  :  5 replicas, CP, q=3     │
-              │             same source, N nodes    │
-              │                                     │
-              │   every 30s: presence GC            │
-              └─────────────────────────────────────┘
+              ┌───────────────────────────────────────┐
+              │          Browser (htmx only)          │
+              │   No application JS. Just sse-swap    │
+              │   attributes wired to dynamic event   │
+              │   names like messages_alice:bob_alice │
+              └──────────────────┬────────────────────┘
+                                 │
+                  HTTP + SSE      │  every payload is HTML
+                                 ▼
+              ┌───────────────────────────────────────┐
+              │             Messenger cell            │
+              │                                       │
+              │   on request(method, path, body)      │
+              │     → render_login()                  │
+              │     → render_app(user)                │
+              │     → render_thread_list_inner(user)  │
+              │     → render_chat_panel(u, thread)    │
+              │     → _send / _mark_read / _typing    │
+              │                                       │
+              │   memory : users, messages, threads,  │
+              │            presence (auto SQLite +    │
+              │            in-memory ephemeral)       │
+              │                                       │
+              │   state  : message_lifecycle          │
+              │            VERIFIED by V1.3           │
+              │                                       │
+              │   scale  : 5 replicas, CP, q=3        │
+              │                                       │
+              │   publish(stream, html) → SSE bus     │
+              │   every 30s: presence GC              │
+              └───────────────────────────────────────┘
 ```
-
-## Limitations (intentional)
-
-- **No end-to-end encryption.** This is a transport-and-state demo,
-  not Signal. E2E would need a key-exchange protocol modelled as a
-  state machine of its own — interesting future work.
-- **No phone-number verification.** Sign in is `username + display_name`.
-  In production you'd plug in OTP via SMS.
-- **No media (images / voice / video).** Add a `[persistent]` blob
-  store and an upload endpoint when you need them; the cell won't
-  fight you.
-- **No mobile clients.** The web client is the demo. The HTTP+SSE
-  API is the same for any client.
 
 ## Files
 
 ```
 examples/messenger/
-├── app.cell             # the entire server (~310 lines)
+├── app.cell             # the entire server + client renderer (~780 lines)
+├── sim.sh               # multi-user end-to-end simulator
 ├── soma.toml            # manifest + verify config
-├── static/
-│   └── index.html       # the entire client (~430 lines)
 └── README.md            # this file
 ```
 
-That's the whole project.
+That's the whole project. **No `static/` directory, no JS bundle, no
+build step, no `package.json`, no framework.** The cell renders the
+shell, the cell renders every fragment, the cell pushes the live
+updates. Every state transition the user can observe lives in a
+handler that V1.3 refinement has verified.
+
+## Limitations (intentional)
+
+- **No end-to-end encryption.** This is a transport-and-state demo,
+  not Signal. E2E would need a key-exchange state machine, which
+  Soma's refinement check would happily verify too.
+- **No phone-number verification.** Sign in is `username + display_name`.
+- **No media (images / voice / video).** Add a `[persistent]` blob
+  store and an upload endpoint when you need them.
+- **No mobile clients.** The web client is the demo. The HTTP+SSE
+  API is the same for any client.

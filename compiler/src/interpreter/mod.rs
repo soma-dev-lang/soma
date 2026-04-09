@@ -177,6 +177,31 @@ pub fn map_from_pairs(pairs: Vec<(String, Value)>) -> Value {
     Value::Map(pairs.into_iter().collect())
 }
 
+/// Proper JSON string escaping per RFC 8259 §7. Escapes the structural
+/// characters (`"`, `\`) plus all control characters U+0000–U+001F so
+/// downstream JSON parsers don't choke on multi-line strings emitted
+/// by `to_json` (e.g. LLM output that contains newlines).
+fn json_escape_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"'  => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0c' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -196,8 +221,7 @@ impl std::fmt::Display for Value {
                     if i > 0 { write!(f, ", ")?; }
                     match item {
                         Value::String(s) => {
-                            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-                            write!(f, "\"{}\"", escaped)?
+                            write!(f, "\"{}\"", json_escape_str(s))?
                         }
                         other => write!(f, "{}", other)?,
                     }
@@ -208,12 +232,10 @@ impl std::fmt::Display for Value {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
-                    let escaped_k = k.replace('\\', "\\\\").replace('"', "\\\"");
-                    write!(f, "\"{}\": ", escaped_k)?;
+                    write!(f, "\"{}\": ", json_escape_str(k))?;
                     match v {
                         Value::String(s) => {
-                            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-                            write!(f, "\"{}\"", escaped)?
+                            write!(f, "\"{}\"", json_escape_str(s))?
                         }
                         other => write!(f, "{}", other)?,
                     }

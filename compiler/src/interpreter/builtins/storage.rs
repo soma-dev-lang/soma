@@ -108,6 +108,30 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 Some(Err(RuntimeError::TypeError("gather(list, cell_name, signal_name) requires 3 args".to_string())))
             }
         }
+        // ── publish(stream_name, data) — push to SSE on a dynamic stream ─
+        // Soma's `emit X(...)` uses static signal names baked into the AST.
+        // For per-thread / per-user real-time channels we need a runtime-
+        // chosen stream name. publish() pushes a BusEvent with the supplied
+        // string as the stream name; any SSE connection whose `sse-swap`
+        // attribute matches will receive the data.
+        "publish" => {
+            if args.len() < 2 {
+                return Some(Err(RuntimeError::TypeError(
+                    "publish(stream_name, data) requires 2 args".to_string(),
+                )));
+            }
+            let stream = format!("{}", args[0]);
+            let data = args[1].clone();
+            if let Some(ref bus) = interp.event_bus {
+                let event = crate::interpreter::BusEvent { stream, data };
+                if let Ok(senders) = bus.lock() {
+                    for sender in senders.iter() {
+                        let _ = sender.send(event.clone());
+                    }
+                }
+            }
+            return Some(Ok(Value::Unit));
+        }
         // ── Agent: broadcast(signal, data) — emit to all cells ──────
         "broadcast" => {
             if args.len() >= 2 {
