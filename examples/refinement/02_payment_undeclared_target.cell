@@ -1,0 +1,48 @@
+// ============================================================================
+// Refinement: the handler tries to transition to a state the spec doesn't have
+// ============================================================================
+//
+//   $ soma verify examples/refinement/02_payment_undeclared_target.cell
+//
+// This file is **intentionally broken**. The state machine declares
+// {pending, authorized, captured, settled, refunded} but the `settle`
+// handler calls `transition("t", "completed")` — there is no state called
+// "completed". V1.3 catches this:
+//
+//   ✗ refinement: handler `settle` calls transition(_, "completed") but
+//       "completed" is not in state machine `lifecycle`
+//
+// The build fails. The spec and the code can no longer drift.
+
+cell payment_broken {
+    state lifecycle {
+        initial: pending
+        pending -> authorized
+        authorized -> captured
+        captured -> settled
+        * -> refunded
+    }
+
+    on authorize() {
+        transition("t", "authorized")
+    }
+
+    on capture() {
+        transition("t", "captured")
+    }
+
+    on settle() {
+        // BUG: typo! should be "settled". The state machine has no
+        //      "completed" state.  Today V1.3 catches this at compile
+        //      time; before V1.3 it would have shipped.
+        transition("t", "completed")
+    }
+
+    on refund() {
+        transition("t", "refunded")
+    }
+
+    on run() {
+        print("you should not see this — soma verify rejects the cell")
+    }
+}

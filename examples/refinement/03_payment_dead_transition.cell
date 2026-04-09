@@ -1,0 +1,45 @@
+// ============================================================================
+// Refinement: the spec declares a transition no handler implements
+// ============================================================================
+//
+//   $ soma verify examples/refinement/03_payment_dead_transition.cell
+//
+// This file declares the full payment lifecycle but the handlers only
+// cover the happy path — `refunded` is in the spec, but no handler ever
+// calls `transition("t", "refunded")`. V1.3 surfaces this as a warning,
+// not an error, because the spec might be aspirational (you intend to
+// add the refund handler later). The warning gives you a checklist:
+//
+//   ⚠ refinement: declared transition `* → refunded` is never reached
+//       by any handler — spec may be aspirational or stale
+//
+// `soma verify` exit code is 0 (warnings, not failures).
+
+cell payment_partial {
+    state lifecycle {
+        initial: pending
+        pending -> authorized
+        authorized -> captured
+        captured -> settled
+        * -> refunded
+    }
+
+    on authorize() {
+        transition("t", "authorized")
+    }
+
+    on capture() {
+        transition("t", "captured")
+    }
+
+    on settle() {
+        transition("t", "settled")
+    }
+
+    // No `refund` handler — V1.3 warns the reader that the
+    // `refunded` state in the spec is currently dead code.
+
+    on run() {
+        print("payment_partial — refund path declared but not yet implemented")
+    }
+}

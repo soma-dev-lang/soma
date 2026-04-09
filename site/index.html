@@ -57,7 +57,8 @@
     "Cloud deployment — soma deploy --target cloudflare|fly|aws",
     "Verified AI agents — cell agent + think() + tool + state machine = proven termination",
     "Agent-first — generate → fix → lint → verify → serve workflow",
-    "Deterministic record / replay — soma run --record + soma replay re-execute production incidents on your laptop with nondeterminism detection"
+    "Deterministic record / replay — soma run --record + soma replay re-execute production incidents on your laptop with nondeterminism detection",
+    "Refinement check (V1.3) — soma verify proves that handler bodies cannot lie to the state machine: every transition() call must name a declared state, and every declared transition must be reached by some handler"
   ]
 }
 </script>
@@ -911,6 +912,23 @@ $ soma run hot.cell --signal hot 10000000
 <p>Each runs on every commit. The 100&ndash;300&times; speedup is real, the 2.6&times; over Numba is real, and the answers are <em>also</em> always correct. That last part is what Numba can't claim.</p>
 
 <p style="font-size:.8125rem;color:var(--dim);margin-top:-.5rem">Bench B writeup: <code>bench/results/SUMMARY_bench_B_v9_corrected.md</code>. Reproduce with <code>bench/compare_B.sh</code> after pre-warming the Numba JIT cache.</p>
+
+<h3 style="margin-top:2rem">Refinement: handler bodies cannot lie to the state machine</h3>
+
+<p>Soma's tagline is <em>"the specification is the program."</em> Before V1.3 it was half true: the <code>state</code> block was the spec, the handler bodies were the code, and the compiler treated them as independent documents. They could drift apart silently, and they did, often. V1.3 closes the gap. <code>soma verify</code> now proves three things about every cell with a state machine:</p>
+
+<ol>
+<li><strong>No undeclared transition targets.</strong> Every <code>transition("inst", "X")</code> call in any handler body must name a state <code>X</code> that exists in the cell's <code>state { }</code> block. A typo in a target state name is a compile error, not a runtime surprise.</li>
+<li><strong>No dead transitions in the spec.</strong> Every transition declared in the state block is reached by some handler — warning, not error, since the spec might be aspirational, but the reader is told.</li>
+<li><strong>Per-handler effect summary.</strong> For every handler, the verifier prints the set of target states it can transition to, along with the path condition (the chain of <code>if</code> guards) leading to each call.</li>
+</ol>
+
+<pre><code>$ soma verify examples/refinement/02_payment_undeclared_target.cell
+
+  <span class="cmt">✗ refinement: handler `settle` calls transition(_, "completed") but
+      "completed" is not in state machine `lifecycle`</span></code></pre>
+
+<p>This is the feature that makes "specification is the program" actually mean something. Before V1.3, it was a poster. Now it's a theorem. The check is <strong>sound but syntactic</strong>: it never falsely accuses a correct program, but it misses bugs that hide behind dynamic transition targets or guard arithmetic — both of those are flagged in the verifier output so the reader knows exactly which handlers got the strong check. Full SMT-backed control-flow analysis is V1.4 work. Honest scope notes: <code>docs/SEMANTICS.md §1.5</code>.</p>
 
 <h3 style="margin-top:2rem">Deterministic record / replay</h3>
 

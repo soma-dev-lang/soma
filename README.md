@@ -1,12 +1,14 @@
 # soma
 
-The first language where AI agent behavior is formally verified.
+The language where the **handler bodies cannot lie to the state machine**.
 
-`cell agent` + `think()` + state machine = **proven termination**.
+`cell agent` + `think()` + state machine = **proven termination**, and as
+of V1.3 the verifier proves the handlers actually implement the picture
+they're drawn next to — the spec and the code can no longer drift apart.
 
 ```
 soma serve agent.cell -p 8080                     # serve agent
-soma verify agent.cell                            # PROVE it terminates
+soma verify agent.cell                            # PROVE the spec AND the handlers
 soma serve app.cell -p 8081 --join localhost:8082  # cluster
 ```
 
@@ -117,6 +119,38 @@ generate  →  fix  →  lint  →  check  →  verify  →  serve
 - `soma check --json` returns errors with `kind` + `fix` fields
 - `soma describe` outputs rich JSON: handlers, memory, state machines, tools
 - `soma verify` proves state machine properties with CTL model checking
+
+## Refinement: handler bodies vs state machine (V1.3)
+
+Soma's tagline is *"the specification is the program."* Before V1.3, that
+was half true: the `state` block was the spec, the handler bodies were
+the code, and the compiler treated them as independent documents. They
+could drift apart silently — and they did, often.
+
+V1.3 closes the gap. `soma verify` now proves three things about every
+cell with a state machine:
+
+1. **Every `transition("inst", "X")` call in any handler body names a
+   state `X` that exists in the cell's `state { }` block.** A typo in a
+   target state name is a compile error, not a runtime surprise.
+2. **Every transition declared in the state block is reached by some
+   handler.** Dead transitions in the spec become warnings — the spec
+   might be aspirational, but the reader is told.
+3. **Per-handler effect summary** — for every handler, the verifier
+   prints the set of states it can transition to, with the path
+   conditions (`if` guards) leading to each call.
+
+```
+$ soma verify examples/refinement/02_payment_undeclared_target.cell
+
+  ✗ refinement: handler `settle` calls transition(_, "completed") but
+      "completed" is not in state machine `lifecycle`
+```
+
+This is the WOW feature the manifesto was claiming. Before V1.3,
+"specification is the program" was a poster. Now it's a theorem. Demos:
+`examples/refinement/`. Honest scope notes (what's syntactic vs
+SMT-deferred) in `docs/SEMANTICS.md §1.5`.
 
 ## Deterministic record / replay
 

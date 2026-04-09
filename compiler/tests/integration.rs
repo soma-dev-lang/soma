@@ -328,3 +328,84 @@ fn test_verify_agent_state_machine() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── Refinement (V1.3) ────────────────────────────────────────────────
+//
+// `soma verify` now proves that handler bodies don't lie to the state
+// machine they live next to. These tests pin the three core checks:
+//
+//   1. correct case → exit 0, "✓ refinement: handler X ⟶ {…}" emitted
+//   2. undeclared transition target → exit 1, error message names handler
+//   3. dead transition (declared but unreached) → exit 0, warning emitted
+
+#[test]
+fn test_refinement_correct_case_passes() {
+    let (out, _, code) = soma(&["verify", "../examples/refinement/01_payment_correct.cell"]);
+    assert_eq!(code, 0, "01_payment_correct.cell must verify cleanly");
+    assert!(out.contains("refinement: handler `authorize` ⟶"),
+        "expected per-handler effect summary in output: {}", out);
+    assert!(out.contains("authorized"));
+    assert!(out.contains("captured"));
+    assert!(out.contains("settled"));
+    assert!(out.contains("refunded"));
+}
+
+#[test]
+fn test_refinement_undeclared_target_fails() {
+    let (out, _, code) = soma(&["verify", "../examples/refinement/02_payment_undeclared_target.cell"]);
+    assert_eq!(code, 1, "02_payment_undeclared_target.cell must fail verify (exit 1)");
+    assert!(out.contains("\"completed\""),
+        "error message must name the offending target literal: {}", out);
+    assert!(out.contains("settle"),
+        "error message must name the offending handler: {}", out);
+    assert!(out.contains("refinement"),
+        "failure must be tagged as a refinement check: {}", out);
+}
+
+#[test]
+fn test_refinement_dead_transition_warns_only() {
+    let (out, _, code) = soma(&["verify", "../examples/refinement/03_payment_dead_transition.cell"]);
+    assert_eq!(code, 0, "03_payment_dead_transition.cell must verify (warning, not error)");
+    assert!(out.contains("never reached by any handler"),
+        "expected dead-transition warning in output: {}", out);
+    assert!(out.contains("refunded"),
+        "warning should name the unused state: {}", out);
+}
+
+#[test]
+fn test_refinement_path_conditions_surfaced() {
+    let (out, _, code) = soma(&["verify", "../examples/refinement/04_path_conditions.cell"]);
+    assert_eq!(code, 0, "04_path_conditions.cell must verify cleanly");
+    assert!(out.contains("if amount > 0"),
+        "path condition must appear in handler effect summary: {}", out);
+    assert!(out.contains("if not (amount > 0)"),
+        "negated path condition must appear in else branch: {}", out);
+}
+
+#[test]
+fn test_refinement_dispatch_undeclared_at_top_level_in_loop() {
+    // A handler with a transition() inside a for-loop must still be
+    // analyzed (the walker recurses into For/While/If bodies).
+    let dir = std::env::temp_dir().join("test_refinement_loop");
+    let _ = std::fs::create_dir_all(&dir);
+    let cell_path = dir.join("loop.cell");
+    std::fs::write(&cell_path, r#"
+        cell loopy {
+            state s {
+                initial: a
+                a -> b
+            }
+            on run() {
+                let i = 0
+                while i < 3 {
+                    transition("t", "ZZZ")
+                    i = i + 1
+                }
+            }
+        }
+    "#).unwrap();
+    let (out, _, code) = soma(&["verify", cell_path.to_str().unwrap()]);
+    assert_eq!(code, 1, "verify should fail: ZZZ is not a declared state");
+    assert!(out.contains("\"ZZZ\""), "must name the bad target: {}", out);
+    let _ = std::fs::remove_dir_all(&dir);
+}

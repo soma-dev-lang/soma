@@ -3,6 +3,7 @@ mod signals;
 pub mod verify;
 pub mod temporal;
 pub mod native;
+pub mod refinement;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;

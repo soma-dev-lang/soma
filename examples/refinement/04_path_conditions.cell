@@ -1,0 +1,48 @@
+// ============================================================================
+// Refinement: per-handler effect summary with path conditions
+// ============================================================================
+//
+//   $ soma verify examples/refinement/04_path_conditions.cell
+//
+// V1.3's per-handler effect summary records *which* target states each
+// handler can reach AND the path condition (the chain of `if` guards
+// leading to each transition call). The verifier output looks like:
+//
+//   ✓ refinement: handler `process` ⟶
+//       {authorized [if amount > 0],
+//        rejected [if not (amount > 0)]}
+//
+// Read: `process` reaches `authorized` only when `amount > 0`, and
+// reaches `rejected` only on the negation. The two branches are
+// disjoint, mutually exclusive, and together cover the input space.
+//
+// V1.3 records the path condition as text. V1.4 will let the SMT
+// solver reason about whether the path condition implies the
+// state-machine guard, closing the last refinement gap.
+
+cell processor {
+    state review {
+        initial: pending
+        pending -> authorized
+        pending -> rejected
+        authorized -> finalized
+        rejected -> finalized
+    }
+
+    on process(amount: Int) {
+        if amount > 0 {
+            transition("t", "authorized")
+        } else {
+            transition("t", "rejected")
+        }
+    }
+
+    on finalize() {
+        transition("t", "finalized")
+    }
+
+    on run() {
+        process(100)
+        finalize()
+    }
+}

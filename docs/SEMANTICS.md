@@ -84,7 +84,78 @@ agree on the handler-selection rule:
   > multiple cells declare a handler, the dispatcher picks the first
   > one in source order. (Multiple-binding routing is V1.2.)
 
-### 1.5 Recording & replay (the one V1 feature)
+### 1.5 Refinement: handler bodies cannot lie to the state machine
+
+Soma's tagline is *"the specification is the program"*. Before V1.3,
+it was half true: the `state` block was a spec, and the handler
+bodies were code, and `soma verify` only proved CTL properties about
+the spec (the picture). The handler bodies could call `transition()`
+with whatever target they wanted. They could lie. They no longer can.
+
+For each cell with a `state M { … }` block, define:
+
+  - `States(M)` = the set of state names mentioned anywhere in `M`
+    (the initial state, every `from`, every `to`, excluding the
+    wildcard `*`)
+  - `Transitions(M)` = the set of declared `(from, to)` edges in `M`
+  - For each handler `H`, let `Effect(H)` = the multiset of pairs
+    `(target, path_condition)` where `target` is the literal target
+    of every static `transition("inst", target)` call inside `H`'s
+    body, and `path_condition` is the chain of `if` guards leading
+    to that call site.
+
+**The refinement check** rejects a program iff any of the following hold:
+
+  1. **Undeclared target.** ∃ handler `H`, ∃ `(target, _) ∈ Effect(H)`,
+     such that `target ∉ States(M)`. The compiler reports the handler
+     name, the bad target, and the file location.
+  2. **Dead transition.** ∃ `(from, to) ∈ Transitions(M)` such that
+     `to ∉ ⋃ₕ { target : (target, _) ∈ Effect(H) }`. Reported as a
+     warning (the spec might be aspirational), unless any handler has
+     a *dynamic* transition target — in which case dead-transition
+     warnings are suppressed because we cannot be sure they're real.
+
+**Theorem (Refinement soundness, V1.3 — syntactic).** *If `soma verify`
+emits no `UndeclaredTarget` finding for cell `C`, then no execution
+of `C` can reach a state outside `States(M)` via a static
+`transition()` call. Equivalently: every literal target of every
+`transition()` call in `C`'s handler bodies is a state the verifier
+already proved CTL properties about.*
+
+*Proof sketch.* By construction. The walker in
+`compiler/src/checker/refinement.rs` recurses into every statement
+and expression of every handler body — `If`, `Else`, `For`, `While`,
+`Match`, `Try`, lambda bodies, pipes, ifexprs — and emits a finding
+for every literal-target `transition()` call whose target is not in
+`States(M)`. Since the only call sites that *can* reach a non-literal
+target are flagged as `DynamicTarget`, the user is told exactly when
+the soundness claim degrades. ∎
+
+**What V1.3 does NOT yet prove** (V1.4 work):
+
+  - **Source-state correctness.** A handler doesn't statically know
+    which state the machine was in when it was called — that's runtime
+    info. V1.3 only checks the *target* of each `transition()` call,
+    not that the call is legal *from the current state*. SMT-backed
+    control-flow analysis closes this gap.
+  - **Guard implication.** When the state block says
+    `pending → authorized when amount > 0` and the handler writes
+    `if amount > 0 { transition(…) }`, V1.3 records both as text but
+    doesn't prove implication. SMT.
+  - **Dynamic targets.** `transition(id, target_var)` where
+    `target_var` is computed at runtime: V1.3 emits a warning that
+    refinement coverage is incomplete here.
+
+These are intentional. V1.3 is the *syntactic, sound* refinement
+check — incomplete (some real bugs slip through dynamic targets and
+guard arithmetic) but it never falsely accuses a correct program.
+The incompleteness is documented per-handler in the verifier output
+so the user can see exactly which handlers got the strong check.
+
+This is the WOW feature the manifesto was claiming. Before V1.3,
+"the specification is the program" was a poster. Now it's a theorem.
+
+### 1.6 Recording & replay (the one V1 feature kept after V1.2 subtraction)
 
 A cell run under `soma run --record` writes one JSON-line entry per
 handler invocation to `<source>.somalog`. The entry contains:
@@ -115,9 +186,6 @@ nondeterministic builtin (`now`, `now_ms`, `timestamp`, `today`,
 nondet list is empty, every call in the handler body was either pure
 or to a deterministic builtin; given the same args and initial memory,
 the body produces the same value. ∎
-
-This is a small theorem with a real implementation — it's the only
-thing in V1 we can prove without hand-waving.
 
 ---
 

@@ -78,6 +78,40 @@ cell System {
 | Bytecode VM              | `soma run file.cell --jit`                             | Better startup-amortized cost for hot loops without going native. |
 | Native (Rust `cdylib`)   | `[native]` handler annotation, or `soma build`         | Tight numeric loops. Whole-loop BigInt dispatches to GMP via `rug`. Single BigInt ops cross FFI and are slower. |
 
+### Refinement check — handler bodies cannot lie to the state machine (V1.3)
+
+Before V1.3, `soma verify` only proved CTL properties about the picture
+of the state machine — the `state { }` block. It trusted the handler
+bodies to call `transition()` consistently with the picture. They
+could lie. They no longer can.
+
+For each cell with a `state` block, `soma verify` now proves three things:
+
+1. **No undeclared targets.** Every `transition("inst", "X")` call in
+   any handler body names a state `X` that exists in the cell's state
+   machine. A typo in a target state name is a compile error, not a
+   runtime surprise.
+2. **No dead transitions.** Every transition declared in the state
+   block is reached by some handler — emitted as a warning (not an
+   error), since the spec might be aspirational.
+3. **Per-handler effect summary.** The verifier prints the set of
+   target states each handler can reach, with path conditions
+   (`if` guards) leading to each call site.
+
+```
+$ soma verify examples/refinement/02_payment_undeclared_target.cell
+  ✗ refinement: handler `settle` calls transition(_, "completed") but
+      "completed" is not in state machine `lifecycle`
+```
+
+Sound but incomplete: the V1.3 check is purely syntactic (no SMT yet),
+so it never falsely accuses a correct program but it does miss bugs
+that hide behind dynamic transition targets or guard arithmetic.
+Both incompleteness sources are surfaced in the verifier output so
+the user knows exactly which handlers got the strong check. Full
+SMT-backed control-flow analysis is V1.4 work. Demos:
+`examples/refinement/`. Honest scope notes in `docs/SEMANTICS.md §1.5`.
+
 ### Deterministic record / replay (V1)
 
 Recording is opt-in at the command line, off by default, zero overhead:

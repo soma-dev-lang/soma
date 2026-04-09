@@ -35,7 +35,77 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
         if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
         for section in &cell.node.sections {
             if let Section::State(ref sm) = section.node {
-                results.push(verify_state_machine(sm, &cell.node));
+                let mut result = verify_state_machine(sm, &cell.node);
+                // ── V1.3: refinement check ─────────────────────────────
+                // The CTL checker proves properties about the *picture* of
+                // the state machine. The refinement check proves the
+                // *handler bodies* don't lie to the picture: every
+                // transition() call targets a declared state, every
+                // declared transition is reached by some handler, and we
+                // surface a per-handler effect summary so the reader can
+                // see the proof at a glance.
+                let handlers: Vec<(&OnSection, Span)> = cell.node.sections.iter()
+                    .filter_map(|s| if let Section::OnSignal(ref on) = s.node { Some((on, s.span)) } else { None })
+                    .collect();
+                let findings = super::refinement::check_refinement(sm, &handlers);
+                for f in findings {
+                    use super::refinement::RefinementFinding::*;
+                    match f {
+                        UndeclaredTarget { handler, target, path, span } => {
+                            let path_text = if path.is_empty() {
+                                String::new()
+                            } else {
+                                format!("  [{}]", path.join(" ∧ "))
+                            };
+                            result.checks.push(VerifyCheck::Fail(
+                                format!(
+                                    "refinement: handler `{}` calls transition(_, \"{}\") but \"{}\" is not in state machine `{}`{}",
+                                    handler, target, target, sm.name, path_text
+                                ),
+                                Some(vec![format!("at byte offset {}–{}", span.start, span.end)]),
+                            ));
+                        }
+                        DynamicTarget { handler, span: _ } => {
+                            result.checks.push(VerifyCheck::Warning(
+                                format!(
+                                    "refinement: handler `{}` calls transition() with a non-literal target — V1.3 cannot statically verify this; refinement coverage incomplete here",
+                                    handler
+                                ),
+                            ));
+                        }
+                        DeadTransition { from, to } => {
+                            result.checks.push(VerifyCheck::Warning(
+                                format!(
+                                    "refinement: declared transition `{} → {}` is never reached by any handler — spec may be aspirational or stale",
+                                    from, to
+                                ),
+                            ));
+                        }
+                        HandlerEffect { handler, targets, has_dynamic } => {
+                            if targets.is_empty() && !has_dynamic { continue; }
+                            let target_strs: Vec<String> = targets.iter().map(|c| {
+                                if c.path.is_empty() {
+                                    c.target.clone()
+                                } else {
+                                    format!("{} [{}]", c.target, c.path.join(" ∧ "))
+                                }
+                            }).collect();
+                            let mut summary = if target_strs.is_empty() {
+                                String::new()
+                            } else {
+                                format!("{{{}}}", target_strs.join(", "))
+                            };
+                            if has_dynamic {
+                                if !summary.is_empty() { summary.push_str(" + "); }
+                                summary.push_str("<dynamic>");
+                            }
+                            result.checks.push(VerifyCheck::Pass(
+                                format!("refinement: handler `{}` ⟶ {}", handler, summary)
+                            ));
+                        }
+                    }
+                }
+                results.push(result);
             }
         }
         // Verify scale section if present

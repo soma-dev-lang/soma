@@ -1,0 +1,45 @@
+// ============================================================================
+// Refinement (V1.3): the handler bodies cannot lie to the state machine
+// ============================================================================
+//
+//   $ soma verify examples/refinement/01_payment_correct.cell
+//
+// This is the correct version. Every transition() call in every handler
+// targets a state declared in `state lifecycle { }`, every declared
+// transition is reached by some handler, and the verifier prints a
+// per-handler effect summary so the reader can see, at a glance, exactly
+// which target states each handler can produce.
+//
+// Try the broken counterparts:
+//   - 02_payment_undeclared_target.cell  (a handler invents a state)
+//   - 03_payment_dead_transition.cell    (the spec declares unused work)
+
+cell payment {
+    state lifecycle {
+        initial: pending
+        pending -> authorized
+        authorized -> captured
+        captured -> settled
+        * -> refunded
+    }
+
+    on authorize() {
+        transition("t", "authorized")
+    }
+
+    on capture() {
+        transition("t", "captured")
+    }
+
+    on settle() {
+        transition("t", "settled")
+    }
+
+    on refund() {
+        transition("t", "refunded")
+    }
+
+    on run() {
+        print("payment cell — all handlers refine the state machine")
+    }
+}
