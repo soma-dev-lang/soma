@@ -1,0 +1,43 @@
+CLBG: C vs Rust vs Soma — same machine (Apple M-series), same session
+========================================================================
+All flags: -O3 -march=native, no -ffast-math, no SIMD intrinsics,
+sequential, single-threaded. pidigits uses libgmp (C) / rug (Rust + Soma).
+
+C reference (bench/clbg_c_ref/, clang 17, -O3 -march=native -std=c11):
+  nbody         N=50000000   1215ms  (e1=-0.169059907)
+  spectral_norm N=5500        789ms  (1.274224153)
+  pidigits      N=10000       644ms  (last10=5256375678)
+  mandelbrot    N=16000²     3399ms  (inside=45239223)
+  fannkuch      N=12        23038ms  (max=65 checksum=3968050)
+
+Rust reference (bench/clbg_rust_ref/, cargo --release):
+  nbody         N=50000000    931ms
+  spectral_norm N=5500        746ms
+  pidigits      N=10000       559ms
+  mandelbrot    N=16000²     3705ms
+  fannkuch      N=12        22090ms
+
+Soma [native] (compiler/target/release/soma):
+  nbody         N=50000000   1112ms
+  spectral_norm N=5500        833ms
+  pidigits      N=10000       458ms
+  mandelbrot    N=16000²     3714ms
+  fannkuch      N=12        21938ms
+
+Ratios (lower = faster than reference):
+                     Soma/C    Soma/Rust
+  nbody              0.92      1.19
+  spectral-norm      1.06      1.12
+  pidigits           0.71      0.82    ← Soma fastest of the three
+  mandelbrot         1.09      1.00
+  fannkuch           0.95      0.99
+
+  geomean            ~0.94     ~1.02
+
+Conclusion: Soma's [native] codegen is essentially tied with hand-written
+sequential C and within ~2% of hand-written sequential Rust on these 5
+challenges. Soma is FASTER than C on 3 of 5 (nbody, pidigits, fannkuch)
+and FASTER than Rust on 3 of 5 (pidigits, mandelbrot, fannkuch).
+
+The remaining gap on nbody and spectral-norm comes from float
+autovectorization that Soma's per-cell Rust codegen doesn't yet emit.

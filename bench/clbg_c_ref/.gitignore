@@ -1,0 +1,7 @@
+nbody
+spectral_norm
+mandelbrot
+fannkuch
+pidigits
+*.o
+*.dSYM
