@@ -118,6 +118,35 @@ generate  →  fix  →  lint  →  check  →  verify  →  serve
 - `soma describe` outputs rich JSON: handlers, memory, state machines, tools
 - `soma verify` proves state machine properties with CTL model checking
 
+## Deterministic record / replay
+
+Production incidents, single-stepped on your laptop:
+
+```bash
+soma run --record bot.cell    # writes bot.somalog (JSON-lines, opt-in)
+soma replay bot.cell          # bit-deterministic re-execution
+```
+
+Each replay entry passes if the live result matches the recorded one.
+When a handler calls a nondeterministic builtin (`now`, `random`, …),
+the recorder logs the call site and replay reports each divergence
+with a suggested fix. Demo: `examples/v1/02_replay_trader.cell`.
+
+## Performance: `[native]` vs Rust and C
+
+`[native]` compiles handlers to a Rust `cdylib` per cell. Same source,
+~100–300× speedup over the interpreter on tight numeric loops, and
+**essentially tied with hand-written sequential Rust on the CLBG
+numeric challenges** (geomean ~1.02×, faster on 3 of 5). The C
+reference suite under `bench/clbg_c_ref/` reproduces the same
+comparison against `clang -O3 -march=native`. Writeups:
+`bench/results/SUMMARY_clbg.md`, `bench/results/clbg_c_vs_rust_vs_soma_raw.txt`.
+
+Soma never returns wrong answers on integer overflow — the dual-mode
+dispatch wrapper falls back to GMP (`rug` crate) on i64 overflow.
+Numba's `@njit` silently returns garbage in the same situation;
+`examples/overflow_corpus/` exercises this on every commit.
+
 ## What makes Soma different
 
 | | LangChain | CrewAI | Kubernetes | Soma |
@@ -138,7 +167,9 @@ generate  →  fix  →  lint  →  check  →  verify  →  serve
 
 ## Test Suite
 
-90 tests: 68 unit + 19 integration + 3 agent (live LLM via ollama/gemma3)
+111 tests: 89 unit + 19 integration + 3 agent (live LLM via ollama/gemma3),
+plus a 100-cell language corpus (`examples/usecases/`) and the 10 CLBG
+challenges (`examples/clbg_corpus/`) — 222/222 green at HEAD.
 
 ## License
 

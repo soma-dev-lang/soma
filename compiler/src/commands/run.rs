@@ -107,11 +107,18 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
             (handler_names[0].clone(), arg_values)
         }
     } else {
-        // No explicit signal: prefer handler matching arg count, then "run", then first zero-arg handler
+        // No explicit signal: dispatch by best match.
+        //   1. `run` with exactly the right arity wins (the canonical entry point)
+        //   2. any handler with the right arity (e.g. `compute` for `soma run fact.cell 5`)
+        //   3. fall back to a zero-arg `run`
+        //   4. any zero-arg handler
+        // This used to put step 3 ahead of step 2, which made
+        // `soma run fact.cell 5` try to call `run(5)` and error out
+        // even when `compute(n: Int)` was right there.
         let n_args = arg_values.len();
         let default = handler_params.iter().find(|(h, p)| h == "run" && *p == n_args)
-            .or_else(|| handler_params.iter().find(|(h, _)| h == "run"))
             .or_else(|| handler_params.iter().find(|(_, p)| *p == n_args))
+            .or_else(|| handler_params.iter().find(|(h, _)| h == "run"))
             .or_else(|| handler_params.iter().find(|(_, p)| *p == 0))
             .unwrap_or(&handler_params[0]);
         (default.0.clone(), arg_values)
@@ -192,11 +199,18 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
             (handler_names[0].clone(), arg_values)
         }
     } else {
-        // No explicit signal: prefer handler matching arg count, then "run", then first zero-arg handler
+        // No explicit signal: dispatch by best match.
+        //   1. `run` with exactly the right arity wins (the canonical entry point)
+        //   2. any handler with the right arity (e.g. `compute` for `soma run fact.cell 5`)
+        //   3. fall back to a zero-arg `run`
+        //   4. any zero-arg handler
+        // This used to put step 3 ahead of step 2, which made
+        // `soma run fact.cell 5` try to call `run(5)` and error out
+        // even when `compute(n: Int)` was right there.
         let n_args = arg_values.len();
         let default = handler_params.iter().find(|(h, p)| h == "run" && *p == n_args)
-            .or_else(|| handler_params.iter().find(|(h, _)| h == "run"))
             .or_else(|| handler_params.iter().find(|(_, p)| *p == n_args))
+            .or_else(|| handler_params.iter().find(|(h, _)| h == "run"))
             .or_else(|| handler_params.iter().find(|(_, p)| *p == 0))
             .unwrap_or(&handler_params[0]);
         (default.0.clone(), arg_values)
