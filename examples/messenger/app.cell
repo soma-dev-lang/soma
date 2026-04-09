@@ -1,0 +1,384 @@
+// ============================================================================
+// Soma Messages — a WhatsApp-class messenger in one cell
+// ============================================================================
+//
+//   soma serve examples/messenger/app.cell -p 8080
+//   open http://localhost:8080
+//
+// What this is:
+//
+//   - 1:1 + group messaging with persistent history
+//   - Real-time delivery to web clients via SSE (EventSource)
+//   - Read receipts (sent → delivered → read), formally specified
+//   - Typing indicators
+//   - Online presence
+//   - Web client served from static/index.html — vanilla HTML+JS, no
+//     frameworks, no build step
+//
+// What it isn't (yet):
+//
+//   - End-to-end encryption (V2 work)
+//   - Voice / video / media (V2 work)
+//   - Phone number verification (this is a demo, not production)
+//
+// What's interesting about it:
+//
+//   - The message lifecycle (`state message_lifecycle`) is **formally
+//     verified** by `soma verify`: the V1.3 refinement check proves
+//     that every transition() call in every handler body targets a
+//     state declared in the spec, and every declared transition is
+//     reached by some handler. The spec and the code cannot drift
+//     apart.
+//
+//   - The `scale { }` block declares cluster topology in the source
+//     itself: 5 replicas, sharded by message id, strong consistency,
+//     tolerates 2 node failures. The same source runs on 1 machine
+//     (`soma serve`) or N machines (`soma serve --join`).
+//
+//   - HTTP, SSE, persistence, and pub/sub are all built into the
+//     language. No Express, no Redis, no Socket.IO, no Postgres
+//     driver, no JWT library — the cell IS the system.
+//
+// API (HTTP):
+//
+//   POST /register      {"username": "alice", "display_name": "Alice"}
+//   POST /send          {"from": "alice", "thread": "alice:bob", "text": "hi"}
+//   POST /thread/new    {"creator": "alice", "members": ["alice", "bob"]}
+//                       — for groups: members has > 2 entries
+//   POST /read          {"message_id": "...", "by": "bob"}
+//   POST /typing        {"thread": "alice:bob", "user": "alice", "is_typing": true}
+//   POST /presence      {"user": "alice", "status": "online"}
+//
+//   GET  /users
+//   GET  /threads/<user>
+//   GET  /thread/<thread_id>
+//   GET  /events                — SSE stream of all real-time events
+//   GET  /                       — web client
+
+cell Messenger {
+
+    memory {
+        users:    Map<String, String> [persistent, consistent]
+        messages: Map<String, String> [persistent, consistent]
+        threads:  Map<String, String> [persistent, consistent]
+        presence: Map<String, String> [ephemeral, local]
+    }
+
+    scale {
+        replicas: 5
+        shard: messages
+        consistency: strong
+        tolerance: 2
+        cpu: 1
+        memory: "256Mi"
+    }
+
+    // ── Formally verified message lifecycle ────────────────────────────
+    // V1.3 refinement: every transition() call in any handler MUST name
+    // one of these states, and every state below MUST be reached by
+    // some handler. `soma verify` enforces both.
+    state message_lifecycle {
+        initial: sent
+        sent -> delivered
+        delivered -> read
+        * -> deleted
+    }
+
+    // ── Periodic cleanup: GC very old presence entries ─────────────────
+    every 30s {
+        let t = now()
+        let stale = presence.values()
+            |> map(s => from_json(s))
+            |> filter(p => p.user != ())
+            |> filter(p => t - to_int(p.last_seen ?? "0") > 120)
+        for p in stale {
+            presence.delete(p.user)
+        }
+    }
+
+    // ── Account ─────────────────────────────────────────────────────────
+
+    on register(data: Map) {
+        let username = data.username ?? ""
+        if username == "" { return response(400, map("error", "username required")) }
+        if users.has(username) {
+            return map("status", "exists", "username", username)
+        }
+        let display = data.display_name ?? username
+        users.set(username, to_json(map(
+            "username", username,
+            "display_name", display,
+            "joined_at", to_string(now())
+        )))
+        return map("status", "registered", "username", username)
+    }
+
+    // ── Messaging ───────────────────────────────────────────────────────
+
+    on send(data: Map) {
+        let from = data.from ?? ""
+        let thread_id = data.thread ?? ""
+        let text = data.text ?? ""
+        if from == "" || thread_id == "" || text == "" {
+            return response(400, map("error", "from, thread, text required"))
+        }
+        if !users.has(from) {
+            return response(404, map("error", "sender not registered"))
+        }
+        // Make sure the thread exists. If a 1:1 thread is implied by
+        // its canonical id (e.g. "alice:bob"), auto-create it.
+        if !threads.has(thread_id) {
+            let parts = split(thread_id, ":")
+            if len(parts) == 2 {
+                create_thread(map(
+                    "creator", from,
+                    "members", parts,
+                    "thread", thread_id
+                ))
+            } else {
+                return response(404, map("error", "thread not found; create it first"))
+            }
+        }
+        let thread = from_json(threads.get(thread_id))
+
+        let t = now()
+        let msg_id = thread_id + "_" + to_string(t) + "_" + to_string(random(100000))
+        let msg = map(
+            "id", msg_id,
+            "thread", thread_id,
+            "from", from,
+            "text", text,
+            "status", "sent",
+            "sent_at", to_string(t)
+        )
+        messages.set(msg_id, to_json(msg))
+
+        // Update thread metadata: last message preview
+        let updated_thread = thread
+            |> with("last_message", text)
+            |> with("last_from", from)
+            |> with("last_message_at", to_string(t))
+        threads.set(thread_id, to_json(updated_thread))
+
+        // Real-time push to all SSE clients
+        emit new_message(msg)
+
+        // If any recipient is online, mark as delivered immediately.
+        let members = thread.members ?? list()
+        let any_online = false
+        for m in members {
+            if m != from {
+                let p = presence.get(m)
+                if p != () {
+                    any_online = true
+                }
+            }
+        }
+        if any_online {
+            mark_delivered(map("message_id", msg_id))
+        }
+
+        return map("status", "sent", "id", msg_id, "thread", thread_id)
+    }
+
+    on mark_delivered(data: Map) {
+        let id = data.message_id ?? ""
+        if id == "" { return response(400, map("error", "message_id required")) }
+        let raw = messages.get(id)
+        if raw == () { return response(404, map("error", "message not found")) }
+        let msg = from_json(raw)
+        if msg.status == "sent" {
+            transition(id, "delivered")
+            let updated = msg |> with("status", "delivered") |> with("delivered_at", to_string(now()))
+            messages.set(id, to_json(updated))
+            emit message_status(updated)
+        }
+        return map("status", "delivered", "id", id)
+    }
+
+    on mark_read(data: Map) {
+        let id = data.message_id ?? ""
+        let by = data.by ?? ""
+        if id == "" || by == "" {
+            return response(400, map("error", "message_id and by required"))
+        }
+        let raw = messages.get(id)
+        if raw == () { return response(404, map("error", "message not found")) }
+        let msg = from_json(raw)
+        // Make sure delivered first (state machine: sent -> delivered -> read)
+        if msg.status == "sent" {
+            transition(id, "delivered")
+        }
+        transition(id, "read")
+        let updated = msg
+            |> with("status", "read")
+            |> with("read_by", by)
+            |> with("read_at", to_string(now()))
+        messages.set(id, to_json(updated))
+        emit message_status(updated)
+        return map("status", "read", "id", id)
+    }
+
+    on delete_msg(data: Map) {
+        let id = data.message_id ?? ""
+        if id == "" { return response(400, map("error", "message_id required")) }
+        let raw = messages.get(id)
+        if raw == () { return response(404, map("error", "message not found")) }
+        let msg = from_json(raw)
+        transition(id, "deleted")
+        let updated = msg |> with("status", "deleted") |> with("deleted_at", to_string(now()))
+        messages.set(id, to_json(updated))
+        emit message_status(updated)
+        return map("status", "deleted", "id", id)
+    }
+
+    // ── Threads (1:1 and groups) ────────────────────────────────────────
+
+    on create_thread(data: Map) {
+        let creator = data.creator ?? ""
+        let members = data.members ?? list()
+        let provided_id = data.thread ?? ""
+        if creator == "" || len(members) < 2 {
+            return response(400, map("error", "creator and ≥2 members required"))
+        }
+        // For 1:1 threads, derive a canonical id from sorted usernames
+        // so that alice→bob and bob→alice resolve to the same thread.
+        // For groups, use a generated id.
+        let thread_id = if provided_id != "" {
+            provided_id
+        } else {
+            if len(members) == 2 {
+                let sorted = members |> sort_by("")
+                let a = nth(sorted, 0)
+                let b = nth(sorted, 1)
+                "{a}:{b}"
+            } else {
+                let t = to_string(now())
+                let r = to_string(random(100000))
+                "g_{t}_{r}"
+            }
+        }
+        if threads.has(thread_id) {
+            return map("status", "exists", "thread", thread_id)
+        }
+        let kind = if len(members) == 2 { "direct" } else { "group" }
+        let t = map(
+            "id", thread_id,
+            "kind", kind,
+            "members", members,
+            "creator", creator,
+            "created_at", to_string(now()),
+            "last_message", "",
+            "last_from", "",
+            "last_message_at", "0"
+        )
+        threads.set(thread_id, to_json(t))
+        emit thread_created(t)
+        return map("status", "created", "thread", thread_id, "kind", kind)
+    }
+
+    on get_threads(data: Map) {
+        let user = data.user ?? ""
+        if user == "" { return response(400, map("error", "user required")) }
+        let mine = threads.values()
+            |> map(s => from_json(s))
+            |> filter(t => t.id != ())
+            |> filter(t => any(t.members ?? list(), m => m == user))
+            |> sort_by("last_message_at", "desc")
+        // Annotate each with unread count for this user
+        let annotated = mine |> map(t => {
+            let unread = messages.values()
+                |> map(s => from_json(s))
+                |> filter(m => m.id != ())
+                |> filter(m => m.thread == t.id)
+                |> filter(m => m.from != user)
+                |> filter(m => m.status != "read")
+                |> filter(m => m.status != "deleted")
+            t |> with("unread", to_string(len(unread)))
+        })
+        return annotated
+    }
+
+    on get_thread(data: Map) {
+        let thread_id = data.thread ?? ""
+        if thread_id == "" { return response(400, map("error", "thread required")) }
+        let raw = threads.get(thread_id)
+        if raw == () { return response(404, map("error", "thread not found")) }
+        let history = messages.values()
+            |> map(s => from_json(s))
+            |> filter(m => m.id != ())
+            |> filter(m => m.thread == thread_id)
+            |> filter(m => m.status != "deleted")
+            |> sort_by("sent_at")
+        let t = from_json(raw)
+        return map("thread", t, "messages", history)
+    }
+
+    // ── Typing & presence ───────────────────────────────────────────────
+
+    on typing(data: Map) {
+        let user = data.user ?? ""
+        let thread = data.thread ?? ""
+        let is_typing = data.is_typing ?? true
+        if user == "" || thread == "" {
+            return response(400, map("error", "user and thread required"))
+        }
+        emit typing_indicator(map("user", user, "thread", thread, "is_typing", is_typing))
+        return map("status", "ok")
+    }
+
+    on presence_update(data: Map) {
+        let user = data.user ?? ""
+        let status = data.status ?? "online"
+        if user == "" { return response(400, map("error", "user required")) }
+        presence.set(user, to_json(map(
+            "user", user,
+            "status", status,
+            "last_seen", to_string(now())
+        )))
+        emit presence_change(map("user", user, "status", status))
+        return map("status", "ok", "user", user, "presence", status)
+    }
+
+    on get_users(data: Map) {
+        return users.values() |> map(s => from_json(s)) |> filter(u => u.username != ())
+    }
+
+    // ── Real-time event stream ──────────────────────────────────────────
+    // Web clients GET /events to open one persistent SSE connection that
+    // receives every new_message, message_status, typing_indicator,
+    // presence_change, and thread_created event the server emits.
+    on stream_events(data: Map) {
+        return sse("new_message", "message_status", "typing_indicator", "presence_change", "thread_created")
+    }
+
+    // ── HTTP router ─────────────────────────────────────────────────────
+
+    on request(method: String, path: String, body: String) {
+        if method == "POST" {
+            match path {
+                "/register"   -> register(body)
+                "/send"       -> send(body)
+                "/read"       -> mark_read(body)
+                "/delivered"  -> mark_delivered(body)
+                "/delete"     -> delete_msg(body)
+                "/typing"     -> typing(body)
+                "/presence"   -> presence_update(body)
+                "/thread/new" -> create_thread(body)
+                _             -> response(404, map("error", "not found"))
+            }
+        } else {
+            // GET routes
+            if path == "/"        { return redirect("/static/index.html") }
+            if path == "/users"   { return get_users(map()) }
+            if path == "/events"  { return stream_events(map()) }
+
+            // /threads/<user>
+            match path {
+                "/threads/" + u   -> get_threads(map("user", u))
+                "/thread/" + tid  -> get_thread(map("thread", tid))
+                _                 -> response(404, map("error", "not found"))
+            }
+        }
+    }
+}

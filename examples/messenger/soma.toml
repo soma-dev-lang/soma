@@ -1,0 +1,11 @@
+[package]
+name = "soma-messages"
+version = "0.1.0"
+
+[verify]
+deadlock_free = true
+# Every reachable message state must be able to reach `deleted` (the
+# terminal state) — V1.3 refinement also proves the handler bodies
+# don't lie to this lifecycle.
+eventually = ["deleted"]
+never = []
