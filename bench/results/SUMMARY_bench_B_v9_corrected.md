@@ -56,30 +56,33 @@ correct 25-digit BigInt.
 
 ## Headline result
 
-**Soma vs Numba geometric mean: 3.29× (Soma faster)** with
-**correctness fully preserved**.
+**Soma vs Numba geometric mean: ~2.6-2.8× (Soma faster)** with
+**correctness fully preserved**. (Three independent runs of the
+suite landed at 2.45×, 2.79×, and 2.68× — stable around 2.6×.)
 
 | Version | Geomean | Median | Soma ≥2× | Numba ≥2× | Correct? |
 |---|---|---|---|---|---|
 | v1 (initial) | 1.00× | 1.49× | 12 | 5 | yes |
 | v8 (cheating) | 3.06× | 2.68× | 16 | 1 | **NO** — silently wrong on overflow |
-| **v9 (correct)** | **3.29×** | **2.83×** | **15** | **0** | **YES** |
+| **v9 (correct, mean of 3 runs)** | **~2.6-2.8×** | ~2.5× | ~15 | **0** | **YES** |
 
-The v8 → v9 difference is within measurement noise. **The cost of
-correctness is essentially zero.** What I gained from cheating was
+The v8 → v9 perf cost of ~10-15% is the real, honest cost of
+correctness — not "essentially zero" as I had originally claimed.
+This is the price of guaranteeing Soma never returns wrong answers
+on integer overflow, which Numba does not. What I gained from cheating was
 ~30% on a handful of tight i64 loops (collatz, sieve, sophie_germain),
-but the geomean barely moved because:
+which contributed maybe 10-15% to the geomean. That's the real cost
+of correctness, and it's worth paying.
 
-- Most cells in the bench (~70%) never went through the OC=false path
-  because they had Rug-classified handlers (BigInt cells use the
-  catch_unwind dispatch regardless of OC).
-- The few cells that did benefit (~5-10) contributed maybe 5% to the
-  geomean.
-- That ~5% gets absorbed by measurement variance from one bench run
-  to the next.
+After running v9 three independent times (to wash out the per-run
+noise of ±10%), the stable geomean is **~2.6-2.8×**. Compared to
+the cheated v8's 3.06×, the cost of correctness is roughly 10-15%.
+The honest number, stated conservatively, is:
 
-So the "speed win" from cheating was illusory. The honest number is
-the v9 number: **~3× Soma faster than Numba, fully correct**.
+> Soma is approximately **2.6× faster than Numba** on the
+> geometric-mean inner-time of measurable benchmark cells, while
+> guaranteeing correct answers on integer overflow that Numba
+> silently produces wrong values for.
 
 ## All measured cells (v9)
 
@@ -173,8 +176,14 @@ done
 
 ## Honest takeaway
 
-Soma is **~3× geometric-mean faster than Numba** on the median
-measurable benchmark cell, while **never returning wrong answers on
-integer overflow** — which is more than Numba can claim.
+Soma is **~2.6× geometric-mean faster than Numba** on the median
+measurable benchmark cell (averaged over 3 independent runs of the
+suite), while **never returning wrong answers on integer overflow** —
+which Numba silently produces.
+
+The 10-15% perf cost vs the previous v8 cheated number is the real,
+honest cost of guaranteeing correctness. It's the right tradeoff:
+when someone says "Soma is 2.6× faster than Numba", they're not
+also saying "and silently wrong sometimes".
 
 100/100 challenges + 4/4 overflow corpus + 48/48 stress corpora pass.
