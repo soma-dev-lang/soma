@@ -10,3 +10,4 @@ examples/data/
 bench/py/__pycache__/
 bench/__pycache__/
 bench/numba/__pycache__/
+bench/clbg_rust_ref/target/
