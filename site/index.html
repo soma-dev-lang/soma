@@ -56,7 +56,8 @@
     "Design by contract — ensure postconditions, memory invariants",
     "Cloud deployment — soma deploy --target cloudflare|fly|aws",
     "Verified AI agents — cell agent + think() + tool + state machine = proven termination",
-    "Agent-first — generate → fix → lint → verify → serve workflow"
+    "Agent-first — generate → fix → lint → verify → serve workflow",
+    "Deterministic record / replay — soma run --record + soma replay re-execute production incidents on your laptop with nondeterminism detection"
   ]
 }
 </script>
@@ -910,6 +911,35 @@ $ soma run hot.cell --signal hot 10000000
 <p>Each runs on every commit. The 100&ndash;300&times; speedup is real, the 2.6&times; over Numba is real, and the answers are <em>also</em> always correct. That last part is what Numba can't claim.</p>
 
 <p style="font-size:.8125rem;color:var(--dim);margin-top:-.5rem">Bench B writeup: <code>bench/results/SUMMARY_bench_B_v9_corrected.md</code>. Reproduce with <code>bench/compare_B.sh</code> after pre-warming the Numba JIT cache.</p>
+
+<h3 style="margin-top:2rem">Deterministic record / replay</h3>
+
+<p>Production incidents, single-stepped on your laptop. Soma ships a record/replay loop that logs every handler invocation to a JSON-lines file and re-executes it bit-deterministically against a fresh interpreter:</p>
+
+<pre><code><span class="cmt"># 1. Record a run (opt-in flag, off by default, zero overhead)</span>
+$ soma run --record bot.cell
+[record] writing replay log &rarr; bot.somalog
+&hellip;
+
+<span class="cmt"># 2. Replay it on any machine, any time</span>
+$ soma replay bot.cell
+soma replay: 4 entries from bot.somalog
+  #1     bot.tick(100)  ok
+  #2     bot.tick(187)  ok
+  #3     bot.tick(412)  ok
+  #4     bot.run()      ok
+replayed 4 entries: 4 ok, 0 diverged</code></pre>
+
+<p>When a handler calls a nondeterministic builtin (<code>now</code>, <code>now_ms</code>, <code>random</code>, &hellip;) the recorder logs the call site and replay reports each divergence with the cause and a suggested fix:</p>
+
+<pre><code>  divergence at entry #1: bot.tick
+      args:     100
+      recorded: 102
+      replayed: 103
+      cause:    nondeterminism in handler &mdash; calls to now_ms
+      fix:      mark the handler [pure] or pass the clock as an explicit input parameter</code></pre>
+
+<p>This is the only V1 feature that survived an internal value audit. The implementation is small (~330 lines: <code>compiler/src/interpreter/record_log.rs</code> + <code>compiler/src/commands/replay.rs</code>) and the contract is sharp: if recording detected no nondeterministic builtins, replay is bit-equivalent to the original run; if it did, the replay diff names the call. Demo: <code>examples/v1/02_replay_trader.cell</code>.</p>
 
 <p>The code is the same in all three rows. <code>[native]</code> compiles to machine code. Adding <code>[compute.parallel]</code> in <code>soma.toml</code> splits the work across cores automatically. No threads, no mutexes, no <code>async</code>/<code>await</code>, no rewrite. One word in the code, two lines in the config.</p>
 

@@ -78,6 +78,26 @@ cell System {
 | Bytecode VM              | `soma run file.cell --jit`                             | Better startup-amortized cost for hot loops without going native. |
 | Native (Rust `cdylib`)   | `[native]` handler annotation, or `soma build`         | Tight numeric loops. Whole-loop BigInt dispatches to GMP via `rug`. Single BigInt ops cross FFI and are slower. |
 
+### Deterministic record / replay (V1)
+
+Recording is opt-in at the command line, off by default, zero overhead:
+
+```sh
+soma run --record bot.cell           # writes bot.somalog (JSON-lines)
+soma replay bot.cell                 # re-executes every entry, bit-compares
+```
+
+Each replayed entry passes if `live_result == recorded_result`, fails
+otherwise. When a handler calls a nondeterministic builtin
+(`now`, `now_ms`, `timestamp`, `today`, `date_now`, `random`, `rand`),
+the recorder logs the call site and replay reports the divergence with
+a suggested fix: "mark the handler [pure] or pass the clock as an
+explicit input parameter." This makes production incidents
+single-step debuggable on a laptop. The full feature lives in
+`compiler/src/interpreter/record_log.rs` (~150 lines) and
+`compiler/src/commands/replay.rs` (~140 lines). Demo:
+`examples/v1/02_replay_trader.cell`.
+
 ### Performance vs Numba
 
 `bench/compare_B.sh` runs Soma vs Python+Numba on the same 100 challenges. Across the 27 cells where both sides have a measurable inner-time, the geometric mean (over 3 independent runs) is **~2.6× Soma faster**. Soma wins ≥2× on 15 / 27 cells (concentrated on BigInt and auto-memo workloads); Numba wins ≥2× on 0 / 27. Numba edges out by 1.3-1.5× on 2-3 tight i64 loops where its `nsw nuw` UB optimizations help.
@@ -292,6 +312,8 @@ ensure balance >= 0              // postcondition
 | `soma run file.cell [args]`             | Execute the entry handler in the tree-walking interpreter            |
 | `soma run file.cell --signal name [args]`| Execute a specific named handler                                    |
 | `soma run file.cell --jit [args]`       | Execute via the bytecode VM                                          |
+| `soma run file.cell --record [args]`    | Record every handler invocation to `<file>.somalog` (V1)             |
+| `soma replay file.cell [--log path]`    | Re-execute a `.somalog` deterministically + report any divergence (V1) |
 | `soma serve file.cell [-p port]`        | HTTP server (HTTP `:port`, WS `:port+1`, TCP bus `:port+2`)          |
 | `soma serve file.cell --watch`          | Hot reload on `.cell` change                                         |
 | `soma serve file.cell --join host:port` | Join an existing cluster via that seed's bus port                    |
