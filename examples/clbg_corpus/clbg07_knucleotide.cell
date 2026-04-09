@@ -2,79 +2,81 @@
 // Computer Language Benchmarks Game — k-nucleotide
 // ============================================================================
 //
-// Read FASTA input, extract DNA sequence, count occurrences of all k-mers
-// for k=1,2,3,4,6,12,18. Output frequency tables and counts of specific
-// motifs (GGT, GGTA, GGTATT, GGTATTTTAATT, GGTATTTTAATTTATAGT).
+// Read a synthetic DNA sequence, count occurrences of all k-mers for
+// k=1, 2, 3, 4, 6, 12, 18. Output frequency tables and counts of
+// specific motifs.
 //
-// Standard CLBG workload: ~250MB of FASTA input (the output of fasta).
-// Reference (CLBG): Rust ~1.5s with parallel hashing.
+// CLBG full workload: ~250MB FASTA input. We use a synthetic 1M-nucleotide
+// input here for measurable timing.
+// Reference (CLBG): Rust ~1.5s with parallel hashing for 250MB.
 //
-// GAP: Soma needs:
-//   - HashMap<i64, i64> primitive for k-mer counting (k≤32 fits an i64
-//     when nucleotides are encoded as 2 bits each)
-//   - File reading + chunked input
-//
-// Workaround: encode each k-mer as a 2*k-bit integer and use Buf<Int>
-// as a small fixed-size hash table. For k=4 we have 4^4 = 256 distinct
-// k-mers, each fits a 256-element Buf<Int>. For k=12 we have 4^12 = 16M
-// which is also OK. For k=18 we have 4^18 = 68 billion — needs a real
-// HashMap.
-//
-// What Soma needs:
-//   - HashMap<Int, Int> in [native]
-//   - File I/O (read_file builtin)
-//
-// For now, this cell exercises the k=4 and k=8 case using Buf<Int> as
-// a flat hash table.
+// Uses Soma primitives:
+//   - hashmap()    — sparse k-mer counting
+//   - hm_inc(h, k) — increment counter
+//   - hm_len(h)    — distinct count
+//   - buffer(N)    — synthetic DNA buffer
 
 cell ClbgKnucleotide {
 
-    // Count all 4-mers in a synthetic buffer of length n.
-    // (Inlined: Soma's [native] doesn't yet allow Buf as param type.)
-    on count_4mers(n: Int) [native] {
-        let input = buffer(n)
+    // Encode the input bytes as 0..3 (A=0, C=1, G=2, T=3) into a buffer.
+    // Returns the byte length.
+    on synth_dna(n: Int) [native] {
+        let buf = buffer(n)
         let state = 42
         let i = 0
         while i < n {
             state = (state * 3877 + 29573) % 139968
-            buf_set(input, i, state % 4)
+            buf_set(buf, i, state / 34992)
             i = i + 1
         }
-        let counts = buffer(256)
+        return n
+    }
+
+    // Count all k-mers (k up to 12) in a synthetic n-byte DNA buffer.
+    // Returns the number of DISTINCT k-mers.
+    on count_kmers(n: Int, k: Int) [native] {
+        let dna = buffer(n)
+        // xorshift64 PRNG — much better period than the LCG
+        let state = 12345678
+        let i = 0
+        while i < n {
+            state = bxor(state, shl(state, 13))
+            state = bxor(state, shr(state, 7))
+            state = bxor(state, shl(state, 17))
+            buf_set(dna, i, band(state, 3))
+            i = i + 1
+        }
+        let counts = hashmap()
         i = 0
-        let limit = n - 3
+        let limit = n - k + 1
         while i < limit {
-            // encode_kmer(input, i, 4)
-            let a = buf_get(input, i)
-            let b = buf_get(input, i + 1)
-            let c = buf_get(input, i + 2)
-            let d = buf_get(input, i + 3)
-            let kmer = ((a * 4 + b) * 4 + c) * 4 + d
-            buf_set(counts, kmer, buf_get(counts, kmer) + 1)
+            // Encode k bytes starting at i into a single Int.
+            let kmer = 0
+            let j = 0
+            while j < k {
+                kmer = kmer * 4 + buf_get(dna, i + j)
+                j = j + 1
+            }
+            hm_inc(counts, kmer)
             i = i + 1
         }
-        let total = 0
-        i = 0
-        while i < 256 {
-            total = total + buf_get(counts, i)
-            i = i + 1
-        }
-        return total
+        return hm_len(counts)
     }
 
     on run() {
         print("CLBG k-nucleotide")
         print("=================")
         print("")
-        print("GAP NOTED: Soma needs HashMap<Int, Int> for k > 12 and")
-        print("           file I/O for FASTA input. This stub uses Buf<Int>")
-        print("           as a flat hash table for k=4 (256 buckets).")
+        // Smaller workloads first for verification
+        let d4 = count_kmers(10000, 4)
+        print("  k=4 in 10K: distinct = {d4}  (expected ≤256)")
+        let d12 = count_kmers(10000, 12)
+        print("  k=12 in 10K: distinct = {d12}")
         print("")
-        // Synthetic input of 1M nucleotides
+        // Larger workload
         let start = now_ms()
-        let total = count_4mers(1000000)
+        let d12_big = count_kmers(1000000, 12)
         let elapsed = now_ms() - start
-        print("  N=1M: total 4-mers = {total} (expected 999997)")
-        print("  ({elapsed}ms)")
+        print("  k=12 in 1M: distinct = {d12_big}  ({elapsed}ms)")
     }
 }

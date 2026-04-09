@@ -141,11 +141,14 @@ pub fn compile_and_load_natives_with_config(
 
             // Write Cargo.toml — only include rug if a Rug-mode handler is present
             let uses_rug = rust_source.contains("use rug::Integer");
-            let deps = if uses_rug {
-                "rug = { version = \"1\", default-features = false, features = [\"integer\"] }\n"
-            } else {
-                ""
-            };
+            let uses_regex = rust_source.contains("regex::Regex");
+            let mut deps = String::new();
+            if uses_rug {
+                deps.push_str("rug = { version = \"1\", default-features = false, features = [\"integer\"] }\n");
+            }
+            if uses_regex {
+                deps.push_str("regex = \"1\"\n");
+            }
             // CORRECTNESS RULE: every cell uses overflow_checks=true.
             //
             // Soma's contract is: when the user writes `Int`, the

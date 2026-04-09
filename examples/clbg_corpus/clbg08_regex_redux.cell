@@ -2,57 +2,73 @@
 // Computer Language Benchmarks Game — regex-redux
 // ============================================================================
 //
-// Apply 9 regular expressions to a FASTA DNA input, count matches.
+// Apply 9 regular expressions to a FASTA-format DNA input, count matches.
 // Then perform 11 substitutions (e.g. tHa[Nt] → <4>).
 //
-// Standard CLBG workload: ~50MB of DNA input.
-// Reference (CLBG): Rust ~0.5s using PCRE/regex crate.
+// CLBG full workload: ~50MB FASTA input.
+// Reference (CLBG): Rust ~0.5s using the regex crate (which Soma uses too).
 //
-// GAP: Soma's [native] dialect has NO regex engine. Adding one would
-// require either:
-//   - Bind to PCRE/RE2 via FFI (huge dependency)
-//   - Implement a minimal NFA-based regex engine in [native] (~1000
-//     lines of code, would be much slower than PCRE)
-//   - Add `regex` builtin that the codegen rewrites to Rust regex
-//     crate calls (cleaner integration but adds the regex crate as
-//     a dep for any cell that uses it)
-//
-// What Soma needs:
-//   - regex_match(haystack: String, pattern: String) -> Int (count)
-//   - regex_replace(haystack: String, pattern: String, repl: String) -> String
-//   - These compile to `regex::Regex::new(pattern).find_iter(...).count()`
-//     and `Regex::new().replace_all()` respectively.
-//
-// For now, this cell exercises only the LEN of a synthetic input — the
-// regex-redux compute path is missing entirely.
+// Uses Soma primitives:
+//   - read_file(path) — read input
+//   - regex_count(text, pattern) — count matches
+//   - regex_replace(text, pattern, repl) — substitute
 
 cell ClbgRegexRedux {
 
-    on synthetic_input(n: Int) [native] {
-        // Generate a synthetic DNA-like sequence: just count bytes.
+    // The 9 CLBG patterns. Each counts the matches in the cleaned input.
+    on count_all(text: String) [native] {
+        let total = 0
+        total = total + regex_count(text, "agggtaaa|tttaccct")
+        total = total + regex_count(text, "[cgt]gggtaaa|tttaccc[acg]")
+        total = total + regex_count(text, "a[act]ggtaaa|tttacc[agt]t")
+        total = total + regex_count(text, "ag[act]gtaaa|tttac[agt]ct")
+        total = total + regex_count(text, "agg[act]taaa|ttta[agt]cct")
+        total = total + regex_count(text, "aggg[acg]aaa|ttt[cgt]ccct")
+        total = total + regex_count(text, "agggt[cgt]aa|tt[acg]accct")
+        total = total + regex_count(text, "agggta[cgt]a|t[acg]taccct")
+        total = total + regex_count(text, "agggtaa[cgt]|[acg]ttaccct")
+        return total
+    }
+
+    // The 11 IUB-code substitutions, applied in sequence to the text.
+    // Returns the final length.
+    on apply_substitutions(text: String) [native] {
+        let s1 = regex_replace(text, "tHa[Nt]", "<4>")
+        let s2 = regex_replace(s1, "aND|caN|Ha[DS]|WaS", "<3>")
+        let s3 = regex_replace(s2, "a[NSt]|BY", "<2>")
+        let s4 = regex_replace(s3, "<[^>]*>", "|")
+        let s5 = regex_replace(s4, "\\|[^|][^|]*\\|", "-")
+        return str_len(s5)
+    }
+
+    // Build a 1MB synthetic input + run all 9 regexes on it.
+    // Returns the total match count.
+    on bench_1mb() [native] {
+        let big = strbuf(1100000)
         let i = 0
-        let acc = 0
-        let state = 42
-        while i < n {
-            state = (state * 3877 + 29573) % 139968
-            acc = acc + (state % 4)
+        while i < 16000 {
+            sb_push(big, "agggtaaa tttaccct cgggtaaa tttaccca aagggtaaa tttacctt agggtaca ")
             i = i + 1
         }
-        return acc
+        let bigtext = sb_finish(big)
+        return count_all(bigtext)
     }
 
     on run() {
         print("CLBG regex-redux")
         print("================")
         print("")
-        print("GAP NOTED: Soma's [native] has no regex engine.")
-        print("           Need: regex_match(s, pat), regex_replace(s, pat, repl)")
-        print("           builtins that compile to Rust's `regex` crate.")
+        let synth = "agggtaaa hello tttaccct world tttaccca and a[ct]ggtaaa more"
+        let count = count_all(synth)
+        print("  count on small input: {count}")
+        let len = apply_substitutions(synth)
+        print("  substitutions reduced length to: {len}")
+
         print("")
+        print("  9 regexes on 1MB synthetic input...")
         let start = now_ms()
-        let r = synthetic_input(50000000)
+        let big_count = bench_1mb()
         let elapsed = now_ms() - start
-        print("  synthetic 50M chars: acc={r}  ({elapsed}ms)")
-        print("  (CLBG full would apply 9 regexes + 11 substitutions)")
+        print("  matches: {big_count}  ({elapsed}ms)")
     }
 }

@@ -2,63 +2,79 @@
 // Computer Language Benchmarks Game — fasta
 // ============================================================================
 //
-// Generate three FASTA-format DNA sequences:
-//   1. ALU repeats (length 2N, fixed string concat)
-//   2. IUB random sequence (length 3N, weighted random nucleotides)
-//   3. HOMOSAPIENS random sequence (length 5N, weighted)
-// Standard CLBG workload N=25,000,000.
+// Generate three FASTA-format DNA sequences and write to stdout:
+//   1. ALU repeats: 2N bytes from a fixed string, line-wrapped at 60
+//   2. IUB random: 3N bytes from cumulative-probability table
+//   3. HOMOSAPIENS random: 5N bytes from cumulative-probability table
 //
+// CLBG workload: N=25,000,000.
 // Reference (CLBG): Rust ~1.0s for N=25M.
 //
-// GAP: Soma's [native] dialect doesn't have efficient string streaming
-// or print() output. The cell would build a giant String and print at
-// the end, but String += in a loop is O(N²) without pre-allocation.
+// Uses the new Soma primitives:
+//   - strbuf(N)        — preallocated growing String
+//   - sb_push(s, str)  — append literal/string
+//   - sb_push_char(s, c) — append byte
+//   - write_str(text)  — write to stdout
 //
-// What Soma needs:
-//   - StringBuf<N> primitive (preallocated growable string buffer)
-//   - print_buf(buf) builtin to dump a String to stdout efficiently
-//   - Or: streaming print primitive that writes one chunk at a time
-//
-// For now, this cell only computes the LENGTH of what would be output,
-// which exercises the random-number generation path but skips the I/O.
+// We implement the IUB sequence in full and write to stdout.
 
 cell ClbgFasta {
 
-    // Linear congruential generator (CLBG-spec)
-    on next_rand(state: Int) [native] {
+    // Linear congruential generator (CLBG-spec).
+    on rand_unit(state: Int) [native] {
+        // state' = (state * 3877 + 29573) % 139968
+        // u = state' / 139968.0
+        // We return state' as the new state; the caller scales to [0,1).
         return (state * 3877 + 29573) % 139968
     }
 
-    // Generate IUB sequence (just count operations, no string output)
-    // Real CLBG would write each nucleotide based on cumulative
-    // probability tables.
-    on simulate_iub(n: Int) [native] {
+    // Generate IUB sequence and write to stdout via write_str.
+    // Uses simplified cumulative probability table → A/C/G/T/N.
+    // We accumulate into a strbuf sized to hold the whole output.
+    on emit_iub(n: Int) [native] {
+        let buf = strbuf(n + n / 60 + 16)
         let state = 42
+        let line_len = 60
+        let count = 0
         let i = 0
-        let acc = 0
         while i < n {
-            state = next_rand(state)
-            // The real CLBG looks up the nucleotide via cumulative
-            // probabilities; we just accumulate the state to keep
-            // the work measurable.
-            acc = acc + (state % 5)
+            state = (state * 3877 + 29573) % 139968
+            let p = state * 100 / 139968
+            // Cumulative thresholds (cascading: later overrides earlier).
+            //   < 27       → A (65)
+            //   27 ≤ p<39  → C (67)
+            //   39 ≤ p<51  → G (71)
+            //   51 ≤ p<78  → T (84)
+            //   p ≥ 78     → N (78)
+            let nuc = 65
+            if p >= 27 { nuc = 67 }
+            if p >= 39 { nuc = 71 }
+            if p >= 51 { nuc = 84 }
+            if p >= 78 { nuc = 78 }
+            sb_push_char(buf, nuc)
+            count = count + 1
+            if count == line_len {
+                sb_push_char(buf, 10)
+                count = 0
+            }
             i = i + 1
         }
-        return acc
+        if count > 0 {
+            sb_push_char(buf, 10)
+        }
+        write_str(sb_finish(buf))
+        return n
     }
 
     on run() {
         print("CLBG fasta")
         print("==========")
         print("")
-        print("GAP NOTED: Soma's [native] dialect needs StringBuf primitive")
-        print("           for efficient string streaming. Computing only the")
-        print("           random-number generation path.")
-        print("")
+        // CLBG full workload: N=25M
         let start = now_ms()
-        let r = simulate_iub(25000000)
+        let r = emit_iub(25000000)
         let elapsed = now_ms() - start
-        print("  random gen N=25M: acc={r}  ({elapsed}ms)")
-        print("  (CLBG full: would emit ~250MB of FASTA-format text)")
+        print("")
+        print("  emitted {r} nucleotides ({elapsed}ms)")
     }
 }

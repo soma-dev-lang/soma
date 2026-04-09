@@ -72,6 +72,14 @@ const ALLOWED_BUILTINS: &[&str] = &[
     // Closes the array-primitive gap with Numba/Cython.
     "buffer", "buf_get", "buf_set",
     "buffer_f", "buf_get_f", "buf_set_f",
+    // HashMap<Int, Int> primitive — compiles to std::collections::HashMap
+    "hashmap", "hm_get", "hm_set", "hm_inc", "hm_len", "hm_has",
+    // Regex builtins — compile to Rust `regex` crate calls
+    "regex_count", "regex_replace", "regex_match",
+    // StringBuf primitive — preallocated growable string
+    "strbuf", "sb_push", "sb_push_int", "sb_push_char", "sb_finish", "sb_len",
+    // File I/O — for [native] handlers that need to read files / stdin
+    "read_file", "read_stdin", "write_str",
 ];
 
 /// Validate all statements in a [native] handler body.

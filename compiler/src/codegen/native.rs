@@ -2813,6 +2813,19 @@ struct FnGenerator {
     /// `buf_get_f(b, i)` and `buf_set_f(b, i, v)`. Used by
     /// float-heavy CLBG challenges (spectral-norm).
     buf_f_vars: HashSet<String>,
+    /// Variables that hold a `HashMap<i64, i64>`, created via the
+    /// `hashmap()` builtin and accessed via `hm_get`/`hm_set`/`hm_inc`/
+    /// `hm_len`/`hm_has`. Used for sparse counting (k-nucleotide,
+    /// histogram-style cells).
+    hm_vars: HashSet<String>,
+    /// Per-call-site counter for regex pattern caching. Each
+    /// `regex_count`/`regex_replace`/`regex_match` site gets a unique
+    /// `static REGEX_<n>: OnceLock<Regex>` so the pattern is compiled
+    /// once per cell load, not per call.
+    regex_counter: RefCell<usize>,
+    /// Variables that hold a `String` (preallocated builder), created
+    /// via `strbuf(N)` and accessed via `sb_push`/`sb_push_int`/etc.
+    sb_vars: HashSet<String>,
     /// Errors encountered during codegen — checked at the end of generation.
     errors: RefCell<Vec<String>>,
     /// Name of the handler being compiled (for error context).
@@ -2845,6 +2858,9 @@ impl FnGenerator {
             swap_safe_vars: HashSet::new(),
             buf_vars: HashSet::new(),
             buf_f_vars: HashSet::new(),
+            hm_vars: HashSet::new(),
+            regex_counter: RefCell::new(0),
+            sb_vars: HashSet::new(),
             errors: RefCell::new(Vec::new()),
             handler_name: String::new(),
             fn_return_type: NativeType::Float,
@@ -3252,6 +3268,14 @@ impl FnGenerator {
                         self.buf_f_vars.insert(name.clone());
                         return;
                     }
+                    if fname == "hashmap" {
+                        self.hm_vars.insert(name.clone());
+                        return;
+                    }
+                    if fname == "strbuf" {
+                        self.sb_vars.insert(name.clone());
+                        return;
+                    }
                 }
                 let ty = self.infer_expr_type(&value.node);
                 self.var_types.insert(name.clone(), ty);
@@ -3328,6 +3352,15 @@ impl FnGenerator {
                     "gcd" | "pow_mod" | "sqrt_int" => NativeType::Int,
                     "str_len" | "str_at" => NativeType::Int,
                     "str_eq" => NativeType::Bool,
+                    // Buffer/HashMap/StringBuf accessors that return values
+                    "buf_get" | "hm_get" | "hm_inc" | "hm_set" | "hm_len" | "hm_has"
+                    | "sb_len" | "buf_set" | "buf_set_f" | "sb_push" | "sb_push_int"
+                    | "sb_push_char" | "write_str" => NativeType::Int,
+                    "buf_get_f" => NativeType::Float,
+                    // String-returning builtins
+                    "sb_finish" | "read_file" | "read_stdin" | "regex_replace" => NativeType::String,
+                    // Regex match/count return Int
+                    "regex_count" | "regex_match" => NativeType::Int,
                     "abs" | "min" | "max" => {
                         if args.is_empty() { NativeType::Float }
                         else { self.infer_expr_type(&args[0].node) }
@@ -3423,6 +3456,27 @@ impl FnGenerator {
                         }
                     }
                 }
+                if self.hm_vars.contains(name) {
+                    if let Expr::FnCall { name: fname, args } = &value.node {
+                        if fname == "hashmap" && args.is_empty() {
+                            return format!(
+                                "{}let mut {}: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();\n",
+                                ind, name
+                            );
+                        }
+                    }
+                }
+                if self.sb_vars.contains(name) {
+                    if let Expr::FnCall { name: fname, args } = &value.node {
+                        if fname == "strbuf" && args.len() == 1 {
+                            let cap = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                            return format!(
+                                "{}let mut {}: String = String::with_capacity(({}) as usize);\n",
+                                ind, name, cap
+                            );
+                        }
+                    }
+                }
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
                 let expr = self.gen_expr_direct(&value.node, ty);
                 format!("{}let mut {}: {} = {};\n", ind, name, ty.rust_str(), expr)
@@ -3505,8 +3559,9 @@ impl FnGenerator {
             Statement::Break => format!("{}break;\n", ind),
             Statement::Continue => format!("{}continue;\n", ind),
             Statement::ExprStmt { expr } => {
-                // Special-case buf_set / buf_set_f: emit clean Vec
-                // assignments (no `let _ =`, no closure block).
+                // Special-case buf_set / buf_set_f / hm_set / hm_inc:
+                // emit clean assignments (no `let _ =`, no closure
+                // block, no return value).
                 if let Expr::FnCall { name: fname, args } = &expr.node {
                     if fname == "buf_set" && args.len() == 3 {
                         if let Expr::Ident(buf_name) = &args[0].node {
@@ -3527,6 +3582,47 @@ impl FnGenerator {
                                 ind, buf_name, i, v
                             );
                         }
+                    }
+                    if fname == "hm_set" && args.len() == 3 {
+                        if let Expr::Ident(hm) = &args[0].node {
+                            let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                            return format!("{}{}.insert({}, {});\n", ind, hm, k, v);
+                        }
+                    }
+                    if fname == "hm_inc" && args.len() == 2 {
+                        if let Expr::Ident(hm) = &args[0].node {
+                            let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            return format!("{}*{}.entry({}).or_insert(0i64) += 1;\n", ind, hm, k);
+                        }
+                    }
+                    if fname == "sb_push" && args.len() == 2 {
+                        if let Expr::Ident(sb) = &args[0].node {
+                            let s = self.gen_expr_direct(&args[1].node, NativeType::String);
+                            return format!("{}{}.push_str(&{});\n", ind, sb, s);
+                        }
+                    }
+                    if fname == "sb_push_int" && args.len() == 2 {
+                        if let Expr::Ident(sb) = &args[0].node {
+                            let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            return format!(
+                                "{}{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); }}\n",
+                                ind, sb, v
+                            );
+                        }
+                    }
+                    if fname == "sb_push_char" && args.len() == 2 {
+                        if let Expr::Ident(sb) = &args[0].node {
+                            let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            return format!("{}{}.push((({}) as u8) as char);\n", ind, sb, v);
+                        }
+                    }
+                    if fname == "write_str" && args.len() == 1 {
+                        let s = self.gen_expr_direct(&args[0].node, NativeType::String);
+                        return format!(
+                            "{}{{ use std::io::Write; let _ = std::io::stdout().write_all({}.as_bytes()); }}\n",
+                            ind, s
+                        );
                     }
                 }
                 // Statement-level expression (e.g. a fn call for side effects).
@@ -3723,6 +3819,154 @@ impl FnGenerator {
                 }
                 self.err("buf_set_f: first arg must be an identifier");
                 "0.0f64".to_string()
+            }
+            // HashMap accessors
+            "hm_get" if args.len() == 2 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let inner = format!("(*{}.get(&({})).unwrap_or(&0i64))", hm, k);
+                    return self.coerce_direct(inner, NativeType::Int, target_ty);
+                }
+                self.err("hm_get: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            "hm_set" if args.len() == 3 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                    return format!("{{ {}.insert({}, {}); 0i64 }}", hm, k, v);
+                }
+                self.err("hm_set: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            "hm_inc" if args.len() == 2 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("{{ *{}.entry({}).or_insert(0i64) += 1; 0i64 }}", hm, k);
+                }
+                self.err("hm_inc: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            "hm_len" if args.len() == 1 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let inner = format!("({}.len() as i64)", hm);
+                    return self.coerce_direct(inner, NativeType::Int, target_ty);
+                }
+                self.err("hm_len: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            "hm_has" if args.len() == 2 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let inner = format!("(if {}.contains_key(&({})) {{ 1i64 }} else {{ 0i64 }})", hm, k);
+                    return self.coerce_direct(inner, NativeType::Int, target_ty);
+                }
+                self.err("hm_has: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            // Regex builtins — pattern is a literal String, compiled once
+            // per call site via OnceLock and cached. Each call site gets
+            // a unique counter-named static.
+            "regex_count" if args.len() == 2 => {
+                let pat = match &args[1].node {
+                    Expr::Literal(Literal::String(s)) => s.clone(),
+                    _ => { self.err("regex_count: pattern must be a string literal"); return "0i64".to_string(); }
+                };
+                let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
+                let text = self.gen_expr_direct(&args[0].node, NativeType::String);
+                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let inner = format!(
+                    "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
+                     RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).find_iter(&{}).count() as i64 }}",
+                    counter, counter, pat_escaped, text
+                );
+                self.coerce_direct(inner, NativeType::Int, target_ty)
+            }
+            "regex_match" if args.len() == 2 => {
+                let pat = match &args[1].node {
+                    Expr::Literal(Literal::String(s)) => s.clone(),
+                    _ => { self.err("regex_match: pattern must be a string literal"); return "0i64".to_string(); }
+                };
+                let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
+                let text = self.gen_expr_direct(&args[0].node, NativeType::String);
+                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let inner = format!(
+                    "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
+                     if RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).is_match(&{}) {{ 1i64 }} else {{ 0i64 }} }}",
+                    counter, counter, pat_escaped, text
+                );
+                self.coerce_direct(inner, NativeType::Int, target_ty)
+            }
+            "regex_replace" if args.len() == 3 => {
+                let pat = match &args[1].node {
+                    Expr::Literal(Literal::String(s)) => s.clone(),
+                    _ => { self.err("regex_replace: pattern must be a string literal"); return "String::new()".to_string(); }
+                };
+                let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
+                let text = self.gen_expr_direct(&args[0].node, NativeType::String);
+                let repl = self.gen_expr_direct(&args[2].node, NativeType::String);
+                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                let inner = format!(
+                    "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
+                     RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).replace_all(&{}, &{} as &str).into_owned() }}",
+                    counter, counter, pat_escaped, text, repl
+                );
+                self.coerce_direct(inner, NativeType::String, target_ty)
+            }
+            // StringBuf accessors
+            "sb_push" if args.len() == 2 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    let s = self.gen_expr_direct(&args[1].node, NativeType::String);
+                    return format!("{{ {}.push_str(&{}); 0i64 }}", sb, s);
+                }
+                self.err("sb_push: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            "sb_push_int" if args.len() == 2 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); 0i64 }}", sb, v);
+                }
+                self.err("sb_push_int: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            "sb_push_char" if args.len() == 2 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("{{ {}.push((({}) as u8) as char); 0i64 }}", sb, v);
+                }
+                self.err("sb_push_char: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            "sb_finish" if args.len() == 1 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    let inner = format!("std::mem::take(&mut {})", sb);
+                    return self.coerce_direct(inner, NativeType::String, target_ty);
+                }
+                self.err("sb_finish: first arg must be an identifier");
+                "String::new()".to_string()
+            }
+            "sb_len" if args.len() == 1 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    let inner = format!("({}.len() as i64)", sb);
+                    return self.coerce_direct(inner, NativeType::Int, target_ty);
+                }
+                self.err("sb_len: first arg must be an identifier");
+                "0i64".to_string()
+            }
+            // File I/O — read_file/read_stdin return String, write_str takes &str
+            "read_file" if args.len() == 1 => {
+                let path = self.gen_expr_direct(&args[0].node, NativeType::String);
+                let inner = format!("std::fs::read_to_string(&{}).unwrap_or_default()", path);
+                self.coerce_direct(inner, NativeType::String, target_ty)
+            }
+            "read_stdin" if args.is_empty() => {
+                let inner = "{ use std::io::Read; let mut _s = String::new(); std::io::stdin().read_to_string(&mut _s).unwrap_or(0); _s }".to_string();
+                self.coerce_direct(inner, NativeType::String, target_ty)
+            }
+            "write_str" if args.len() == 1 => {
+                let s = self.gen_expr_direct(&args[0].node, NativeType::String);
+                return format!("{{ use std::io::Write; let _ = std::io::stdout().write_all({}.as_bytes()); 0i64 }}", s);
             }
             "random" => "unsafe { _soma_random() }".to_string(),
             "sqrt" | "log" | "exp" | "sin" | "cos" => {
@@ -4071,6 +4315,27 @@ impl FnGenerator {
                         }
                     }
                 }
+                if self.hm_vars.contains(name) {
+                    if let Expr::FnCall { name: fname, args } = value.node.clone() {
+                        if fname == "hashmap" && args.is_empty() {
+                            return format!(
+                                "{}let mut {}: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();\n",
+                                ind, name
+                            );
+                        }
+                    }
+                }
+                if self.sb_vars.contains(name) {
+                    if let Expr::FnCall { name: fname, args } = value.node.clone() {
+                        if fname == "strbuf" && args.len() == 1 {
+                            let cap = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                            return format!(
+                                "{}let mut {}: String = String::with_capacity(({}) as usize);\n",
+                                ind, name, cap
+                            );
+                        }
+                    }
+                }
                 let ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
                 if ty == NativeType::Int
                     && !self.small_int_vars.contains(name)
@@ -4137,7 +4402,7 @@ impl FnGenerator {
             Statement::Break => format!("{}break;\n", ind),
             Statement::Continue => format!("{}continue;\n", ind),
             Statement::ExprStmt { expr } => {
-                // buf_set / buf_set_f special-case (same as Direct mode)
+                // buf_set / buf_set_f / hm_set / hm_inc special-case
                 if let Expr::FnCall { name: fname, args } = &expr.node {
                     if fname == "buf_set" && args.len() == 3 {
                         if let Expr::Ident(buf_name) = &args[0].node {
@@ -4157,6 +4422,19 @@ impl FnGenerator {
                                 "{}{}[({}) as usize] = {};\n",
                                 ind, buf_name, i, v
                             );
+                        }
+                    }
+                    if fname == "hm_set" && args.len() == 3 {
+                        if let Expr::Ident(hm) = &args[0].node {
+                            let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                            return format!("{}{}.insert({}, {});\n", ind, hm, k, v);
+                        }
+                    }
+                    if fname == "hm_inc" && args.len() == 2 {
+                        if let Expr::Ident(hm) = &args[0].node {
+                            let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                            return format!("{}*{}.entry({}).or_insert(0i64) += 1;\n", ind, hm, k);
                         }
                     }
                 }
@@ -4816,6 +5094,35 @@ impl FnGenerator {
                 let r = self.gen_expr_rug_string(&right.node);
                 format!("format!(\"{{}}{{}}\", {}, {})", l, r)
             }
+            // sb_finish, read_file, read_stdin, regex_replace — String-returning builtins
+            Expr::FnCall { name, args } if name == "sb_finish" && args.len() == 1 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    return format!("std::mem::take(&mut {})", sb);
+                }
+                "String::new()".to_string()
+            }
+            Expr::FnCall { name, args } if name == "read_file" && args.len() == 1 => {
+                let path = self.gen_expr_rug_string(&args[0].node);
+                format!("std::fs::read_to_string(&{}).unwrap_or_default()", path)
+            }
+            Expr::FnCall { name, args } if name == "read_stdin" && args.is_empty() => {
+                "{ use std::io::Read; let mut _s = String::new(); std::io::stdin().read_to_string(&mut _s).unwrap_or(0); _s }".to_string()
+            }
+            Expr::FnCall { name, args } if name == "regex_replace" && args.len() == 3 => {
+                let pat = match &args[1].node {
+                    Expr::Literal(Literal::String(s)) => s.clone(),
+                    _ => return "String::new()".to_string(),
+                };
+                let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
+                let text = self.gen_expr_rug_string(&args[0].node);
+                let repl = self.gen_expr_rug_string(&args[2].node);
+                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                format!(
+                    "{{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
+                     RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).replace_all(&{}, &{} as &str).into_owned() }}",
+                    counter, counter, pat_escaped, text, repl
+                )
+            }
             Expr::FnCall { name, args } if name == "to_string" && args.len() == 1 => {
                 let arg_ty = self.infer_expr_type(&args[0].node);
                 if arg_ty == NativeType::Int {
@@ -4904,6 +5211,113 @@ impl FnGenerator {
                 }
                 self.err("buf_set_f: first arg must be an identifier");
                 "Integer::from(0i64)".to_string()
+            }
+            // HashMap accessors (Rug-mode wrapping)
+            "hm_get" if args.len() == 2 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("Integer::from(*{}.get(&({})).unwrap_or(&0i64))", hm, k);
+                }
+                self.err("hm_get: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            "hm_set" if args.len() == 3 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                    return format!("{{ {}.insert({}, {}); Integer::from(0i64) }}", hm, k, v);
+                }
+                self.err("hm_set: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            "hm_inc" if args.len() == 2 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("{{ *{}.entry({}).or_insert(0i64) += 1; Integer::from(0i64) }}", hm, k);
+                }
+                self.err("hm_inc: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            "hm_len" if args.len() == 1 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    return format!("Integer::from({}.len() as i64)", hm);
+                }
+                self.err("hm_len: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            "hm_has" if args.len() == 2 => {
+                if let Expr::Ident(hm) = &args[0].node {
+                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("Integer::from(if {}.contains_key(&({})) {{ 1i64 }} else {{ 0i64 }})", hm, k);
+                }
+                self.err("hm_has: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            // StringBuf accessors (Rug-mode wrapping)
+            "sb_push" if args.len() == 2 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    let s = self.gen_expr_rug_string(&args[1].node);
+                    return format!("{{ {}.push_str(&{}); Integer::from(0i64) }}", sb, s);
+                }
+                self.err("sb_push: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            "sb_push_int" if args.len() == 2 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); Integer::from(0i64) }}", sb, v);
+                }
+                self.err("sb_push_int: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            "sb_push_char" if args.len() == 2 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                    return format!("{{ {}.push((({}) as u8) as char); Integer::from(0i64) }}", sb, v);
+                }
+                self.err("sb_push_char: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            "sb_len" if args.len() == 1 => {
+                if let Expr::Ident(sb) = &args[0].node {
+                    return format!("Integer::from({}.len() as i64)", sb);
+                }
+                self.err("sb_len: first arg must be an identifier");
+                "Integer::from(0i64)".to_string()
+            }
+            // write_str: side-effecting, returns 0
+            "write_str" if args.len() == 1 => {
+                let s = self.gen_expr_rug_string(&args[0].node);
+                return format!("{{ use std::io::Write; let _ = std::io::stdout().write_all({}.as_bytes()); Integer::from(0i64) }}", s);
+            }
+            // Regex count/match in Rug mode
+            "regex_count" if args.len() == 2 => {
+                let pat = match &args[1].node {
+                    Expr::Literal(Literal::String(s)) => s.clone(),
+                    _ => return "Integer::from(0i64)".to_string(),
+                };
+                let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
+                let text = self.gen_expr_rug_string(&args[0].node);
+                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                return format!(
+                    "Integer::from({{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
+                     RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).find_iter(&{}).count() as i64 }})",
+                    counter, counter, pat_escaped, text
+                );
+            }
+            "regex_match" if args.len() == 2 => {
+                let pat = match &args[1].node {
+                    Expr::Literal(Literal::String(s)) => s.clone(),
+                    _ => return "Integer::from(0i64)".to_string(),
+                };
+                let counter = { let mut c = self.regex_counter.borrow_mut(); let v = *c; *c += 1; v };
+                let text = self.gen_expr_rug_string(&args[0].node);
+                let pat_escaped = pat.replace('\\', "\\\\").replace('"', "\\\"");
+                return format!(
+                    "Integer::from({{ static RX_{}: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new(); \
+                     if RX_{}.get_or_init(|| regex::Regex::new(\"{}\").unwrap()).is_match(&{}) {{ 1i64 }} else {{ 0i64 }} }})",
+                    counter, counter, pat_escaped, text
+                );
             }
             "abs" => {
                 let a = self.gen_expr_rug(&args[0].node);

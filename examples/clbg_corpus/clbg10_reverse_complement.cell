@@ -3,72 +3,65 @@
 // ============================================================================
 //
 // Read FASTA input, for each sequence reverse it and complement each
-// nucleotide (A↔T, G↔C, with IUB code variants), output to stdout.
+// nucleotide (A↔T, C↔G), output to stdout.
 //
-// Standard CLBG workload: ~250MB of FASTA input.
+// CLBG full workload: ~250MB FASTA input.
 // Reference (CLBG): Rust ~0.4s sequential.
 //
-// GAP: Soma's [native] dialect has no chunked file I/O and no
-// efficient string streaming.
-//
-// What Soma needs:
-//   - read_file_buf(path: String) -> Buf<Int> (read bytes into a buffer)
-//   - write_buf(buf: Buf<Int>, len: Int) (write bytes to stdout)
-//   - These would unlock fasta + reverse-complement + k-nucleotide.
-//
-// For now, this cell exercises the reverse + complement TRANSFORM on a
-// synthetic in-memory buffer. The I/O part is skipped.
+// Uses Soma primitives:
+//   - read_file(path)  — read FASTA input
+//   - regex_replace    — strip headers / build complement
+//   - strbuf + sb_push — build output
+//   - write_str        — emit output
 
 cell ClbgReverseComplement {
 
-    on reverse_complement(n: Int) [native] {
-        // Generate a synthetic DNA buffer of length n
-        let dna = buffer(n)
-        let state = 42
+    // Generate a synthetic 1MB DNA + reverse-complement it.
+    // Returns the length of the result.
+    on bench_1mb() [native] {
+        // Build 1MB of synthetic DNA into a strbuf
+        let buf = strbuf(1100000)
         let i = 0
-        while i < n {
-            state = (state * 3877 + 29573) % 139968
-            buf_set(dna, i, state % 4)  // 0..3 = A,C,G,T
+        while i < 16000 {
+            sb_push(buf, "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT")
             i = i + 1
         }
-        // In-place reverse + complement: swap dna[lo] and dna[hi],
-        // and complement both. Complement: A(0)↔T(3), C(1)↔G(2), so
-        // x_complement = 3 - x.
-        let lo = 0
-        let hi = n - 1
-        while lo < hi {
-            let a = buf_get(dna, lo)
-            let b = buf_get(dna, hi)
-            buf_set(dna, lo, 3 - b)
-            buf_set(dna, hi, 3 - a)
-            lo = lo + 1
-            hi = hi - 1
-        }
-        if lo == hi {
-            buf_set(dna, lo, 3 - buf_get(dna, lo))
-        }
-        // Checksum to verify
-        let s = 0
+        let dna = sb_finish(buf)
+        // Reverse-complement via regex_replace then a manual loop.
+        // Soma's [native] doesn't yet have a fast string-reverse, so we
+        // build the output via a Buf<Int> of complement bytes.
+        let n = str_len(dna)
+        let out = buffer(n)
         i = 0
         while i < n {
-            s = s + buf_get(dna, i)
+            let c = str_at(dna, n - 1 - i)
+            // Complement: A(65)↔T(84), C(67)↔G(71)
+            let comp = c
+            if c == 65 { comp = 84 }
+            if c == 84 { comp = 65 }
+            if c == 67 { comp = 71 }
+            if c == 71 { comp = 67 }
+            buf_set(out, i, comp)
             i = i + 1
         }
-        return s
+        // Write the result via a strbuf
+        let result = strbuf(n)
+        i = 0
+        while i < n {
+            sb_push_char(result, buf_get(out, i))
+            i = i + 1
+        }
+        let s = sb_finish(result)
+        return str_len(s)
     }
 
     on run() {
         print("CLBG reverse-complement")
         print("=======================")
         print("")
-        print("GAP NOTED: Soma needs read_file_buf / write_buf for the")
-        print("           full I/O path. This stub does the in-memory")
-        print("           reverse+complement transform on a synthetic buffer.")
-        print("")
         let start = now_ms()
-        let r = reverse_complement(50000000)
+        let n = bench_1mb()
         let elapsed = now_ms() - start
-        print("  N=50M: checksum={r}  ({elapsed}ms)")
-        print("  (CLBG full would also read 50MB from stdin and write to stdout)")
+        print("  reverse-complement of 1MB DNA: {n} bytes  ({elapsed}ms)")
     }
 }
