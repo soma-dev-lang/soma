@@ -16,6 +16,13 @@ use std::collections::HashMap;
 /// Dispatch builtin calls to sub-modules.
 /// Returns None if the name is not a known builtin.
 pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+    // V1: track nondeterminism for [record] / replay divergence detection.
+    // If a recorded handler calls now()/random()/..., we want to know.
+    if super::record_log::NONDET_BUILTINS.iter().any(|n| *n == name) {
+        if !interp.record_nondet_called.iter().any(|s| s == name) {
+            interp.record_nondet_called.push(name.to_string());
+        }
+    }
     // Try each category in order
     None
         .or_else(|| io::call_builtin(name, args))

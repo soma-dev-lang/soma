@@ -1,6 +1,7 @@
 pub mod builtins;
 pub mod native_ffi;
 pub mod soma_int;
+pub mod record_log;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -347,6 +348,17 @@ pub struct Interpreter {
     pub agent_config: Option<crate::pkg::manifest::AgentConfig>,
     /// Named model configs (from soma.toml [models.*] sections)
     pub agent_models: std::collections::HashMap<String, crate::pkg::manifest::AgentConfig>,
+    // ── V1: record/replay ───────────────────────────────────────────
+    /// Set of (cell, handler) pairs that should be recorded
+    pub(crate) record_handlers: std::collections::HashSet<(String, String)>,
+    /// Path to the .somalog file for the current run (None = no recording)
+    pub record_log_path: Option<std::path::PathBuf>,
+    /// Names of nondeterministic builtins called during the current handler.
+    /// Reset at the start of each [record] handler call.
+    pub(crate) record_nondet_called: Vec<String>,
+    /// Replay mode: when true, [record] handlers do NOT append to the log;
+    /// instead the runner compares results against pre-loaded entries.
+    pub replay_mode: bool,
 }
 
 impl Interpreter {
@@ -354,6 +366,7 @@ impl Interpreter {
         let mut cells = HashMap::new();
         let mut handler_cache = HashMap::new();
         let mut state_machines = HashMap::new();
+        let mut record_handlers: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
         for cell in &program.cells {
             cells.insert(cell.node.name.clone(), cell.node.clone());
             for section in &cell.node.sections {
@@ -364,6 +377,9 @@ impl Interpreter {
                     }
                     let value = (Arc::new(on.params.clone()), Arc::new(on.body.clone()));
                     handler_cache.insert(key, value);
+                    if on.properties.iter().any(|p| p == "record") {
+                        record_handlers.insert((cell.node.name.clone(), on.signal_name.clone()));
+                    }
                 }
                 if let Section::State(ref sm) = section.node {
                     state_machines.insert(
@@ -416,6 +432,10 @@ impl Interpreter {
             agent_pending_approval: None,
             agent_config: None,
             agent_models: std::collections::HashMap::new(),
+            record_handlers,
+            record_log_path: None,
+            record_nondet_called: Vec::new(),
+            replay_mode: false,
         }
     }
 
@@ -535,12 +555,22 @@ impl Interpreter {
         signal_name: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        // V1: [record] mode — set up nondet tracking before invoking the handler.
+        let is_recorded = self.record_handlers.contains(&(cell_name.to_string(), signal_name.to_string()));
+        let recorded_args = if is_recorded { Some(args.clone()) } else { None };
+        if is_recorded {
+            self.record_nondet_called.clear();
+        }
+
         // Check for [native] FFI handler first — fast path
         let native_key = (cell_name.to_string(), signal_name.to_string());
         if self.native_handlers.contains_key(&native_key) {
             let native = self.native_handlers.get(&native_key).unwrap();
             match native_ffi::call_native(native, &args) {
-                Ok(val) => return Ok(val),
+                Ok(val) => {
+                    self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), &val);
+                    return Ok(val);
+                }
                 Err(e) if e.contains("overflow_rerun") => {
                     // i128 overflow — fall through to interpreted path for BigInt
                     eprintln!("[native] i128 overflow, falling back to interpreted BigInt");
@@ -570,7 +600,38 @@ impl Interpreter {
         let result = self.call_signal_resolved(cell_name, signal_name, args, &params, &body);
 
         self.current_handler = prev_handler;
+        if let Ok(ref val) = result {
+            self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), val);
+        }
         result
+    }
+
+    /// Append a record entry to the .somalog file if recording is active.
+    fn maybe_record(
+        &mut self,
+        is_recorded: bool,
+        cell_name: &str,
+        signal_name: &str,
+        args: Option<&Vec<Value>>,
+        result: &Value,
+    ) {
+        if !is_recorded || self.replay_mode { return; }
+        let Some(path) = self.record_log_path.clone() else { return; };
+        let Some(args) = args else { return; };
+        let entry = record_log::RecordEntry {
+            ts_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            cell: cell_name.to_string(),
+            handler: signal_name.to_string(),
+            args: args.clone(),
+            result: result.clone(),
+            nondet: std::mem::take(&mut self.record_nondet_called),
+        };
+        if let Err(e) = record_log::append(&path, &entry) {
+            eprintln!("warning: failed to append to {}: {}", path.display(), e);
+        }
     }
 
     /// Fast path: execute a signal handler with pre-resolved params/body.

@@ -1,0 +1,30 @@
+// ============================================================================
+// V1 feature #5: Deterministic time-travel replay
+// ============================================================================
+//
+//   $ soma run    examples/v1/02_replay_trader.cell    # records every tick
+//   $ soma replay examples/v1/02_replay_trader.cell    # replays from .somalog
+//
+// The first run writes a `.somalog` file alongside the .cell. The second
+// run replays it: each recorded handler invocation is re-executed against
+// a fresh interpreter and the result is bit-compared against the recorded
+// one. Any divergence is reported with the *cause* — the nondeterministic
+// builtin(s) the original handler called — plus a suggested fix.
+//
+// Try uncommenting the `now_ms()` line below and re-running. Replay will
+// flag the handler and tell you exactly how to make it deterministic.
+
+cell trader {
+    on tick(price: Int) [record] {
+        // let n = now_ms()           // uncomment to introduce nondeterminism
+        // return price * 2 + (n % 5) // replay will report divergence here
+        return price * 2
+    }
+
+    on run() {
+        let r1 = tick(100)
+        let r2 = tick(187)
+        let r3 = tick(412)
+        print("ticks: {r1} {r2} {r3}")
+    }
+}

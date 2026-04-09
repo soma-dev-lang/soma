@@ -54,6 +54,16 @@ pub trait StorageBackend: Send + Sync {
     fn has(&self, key: &str) -> bool;
     fn len(&self) -> usize;
     fn backend_name(&self) -> &str;
+    /// V1: vector clock for a key, if this backend is causal. Default: empty.
+    fn causal_clock(&self, _key: &str) -> std::collections::HashMap<String, i64> {
+        std::collections::HashMap::new()
+    }
+}
+
+/// Public helper used by the `clock_of` builtin so callers don't have to
+/// dance around the trait object. Just calls the trait method.
+pub fn causal_clock_of(backend: &Arc<dyn StorageBackend>, key: &str) -> std::collections::HashMap<String, i64> {
+    backend.causal_clock(key)
 }
 
 /// In-memory storage — used for [ephemeral] or [local] properties
@@ -125,6 +135,100 @@ impl StorageBackend for MemoryBackend {
 
     fn backend_name(&self) -> &str {
         "memory"
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// V1: Causal memory backend (Lamport / vector-clock metadata)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// `[causal]` memory wraps any inner backend with a per-key vector clock.
+// Every write extends the wrapper's per-replica counter and stores the
+// resulting clock as a sidecar entry. Reads return the value normally;
+// the clock is exposed via the `clock_of(slot, key)` builtin.
+//
+// In V1 the "replicas" dimension of the vector clock is just one entry
+// (the local node), so it's effectively a Lamport clock. The data
+// structure is the same Map[String, Int] we'd use for a fully sharded
+// vector clock — when distribution lands in V1.1 nothing in user code
+// has to change.
+
+pub struct CausalBackend {
+    inner: Arc<dyn StorageBackend>,
+    /// Replica id (machine name); single-node = "local"
+    replica: String,
+    /// Per-key vector clocks (distinct from the user-facing keys)
+    clocks: RwLock<HashMap<String, HashMap<String, i64>>>,
+    /// Local Lamport counter — monotonic, increments on every write
+    local_counter: RwLock<i64>,
+}
+
+impl CausalBackend {
+    pub fn new(inner: Arc<dyn StorageBackend>, replica: &str) -> Self {
+        Self {
+            inner,
+            replica: replica.to_string(),
+            clocks: RwLock::new(HashMap::new()),
+            local_counter: RwLock::new(0),
+        }
+    }
+
+    /// Read the vector clock for a key (or empty if never written).
+    pub fn clock_of(&self, key: &str) -> HashMap<String, i64> {
+        self.clocks
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Whether `a` happens-before `b` (a ≼ b in the vector-clock partial order).
+    pub fn happens_before(a: &HashMap<String, i64>, b: &HashMap<String, i64>) -> bool {
+        let mut strict = false;
+        for (k, v) in a {
+            let bv = b.get(k).copied().unwrap_or(0);
+            if *v > bv { return false; }
+            if *v < bv { strict = true; }
+        }
+        for (k, v) in b {
+            if !a.contains_key(k) && *v > 0 { strict = true; }
+        }
+        strict
+    }
+}
+
+impl StorageBackend for CausalBackend {
+    fn get(&self, key: &str) -> Option<StoredValue> { self.inner.get(key) }
+    fn set(&self, key: &str, value: StoredValue) {
+        // Extend the local clock and stamp this key.
+        let mut counter = self.local_counter.write().unwrap_or_else(|e| e.into_inner());
+        *counter += 1;
+        let new_count = *counter;
+        let mut clocks = self.clocks.write().unwrap_or_else(|e| e.into_inner());
+        let entry = clocks.entry(key.to_string()).or_default();
+        entry.insert(self.replica.clone(), new_count);
+        drop(clocks);
+        drop(counter);
+        self.inner.set(key, value);
+    }
+    fn delete(&self, key: &str) -> bool {
+        // Treat deletes as writes for clock purposes.
+        let mut counter = self.local_counter.write().unwrap_or_else(|e| e.into_inner());
+        *counter += 1;
+        self.clocks.write().unwrap_or_else(|e| e.into_inner()).remove(key);
+        drop(counter);
+        self.inner.delete(key)
+    }
+    fn append(&self, value: StoredValue) { self.inner.append(value); }
+    fn list(&self) -> Vec<StoredValue> { self.inner.list() }
+    fn keys(&self) -> Vec<String> { self.inner.keys() }
+    fn values(&self) -> Vec<StoredValue> { self.inner.values() }
+    fn has(&self, key: &str) -> bool { self.inner.has(key) }
+    fn len(&self) -> usize { self.inner.len() }
+    fn backend_name(&self) -> &str { "causal" }
+    fn causal_clock(&self, key: &str) -> HashMap<String, i64> {
+        self.clock_of(key)
     }
 }
 
@@ -451,13 +555,20 @@ pub fn resolve_backend_from_registry(
     registry: &crate::registry::Registry,
 ) -> Arc<dyn StorageBackend> {
     // Ask the registry which backend matches these properties
-    if let Some(backend_def) = registry.resolve_backend(properties) {
+    let inner: Arc<dyn StorageBackend> = if let Some(backend_def) = registry.resolve_backend(properties) {
         let native = backend_def.native_impl.as_deref().unwrap_or("memory");
-        return instantiate_native_backend(native, cell_name, slot_name);
-    }
+        instantiate_native_backend(native, cell_name, slot_name)
+    } else {
+        // Fallback: use old hardcoded logic
+        resolve_backend(cell_name, slot_name, properties)
+    };
 
-    // Fallback: use old hardcoded logic
-    resolve_backend(cell_name, slot_name, properties)
+    // V1: wrap in CausalBackend if [causal] is requested
+    if properties.iter().any(|p| p == "causal") {
+        Arc::new(CausalBackend::new(inner, "local"))
+    } else {
+        inner
+    }
 }
 
 /// Fallback resolver (used when no registry is available)
@@ -469,10 +580,16 @@ pub fn resolve_backend(
     let is_persistent = properties.iter().any(|p| p == "persistent");
     let is_ephemeral = properties.iter().any(|p| p == "ephemeral");
 
-    if is_persistent && !is_ephemeral {
+    let inner: Arc<dyn StorageBackend> = if is_persistent && !is_ephemeral {
         Arc::new(FileBackend::new(cell_name, slot_name))
     } else {
         Arc::new(MemoryBackend::new())
+    };
+
+    if properties.iter().any(|p| p == "causal") {
+        Arc::new(CausalBackend::new(inner, "local"))
+    } else {
+        inner
     }
 }
 

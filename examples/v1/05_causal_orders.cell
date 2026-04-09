@@ -1,0 +1,46 @@
+// ============================================================================
+// V1 feature #3: Causal memory — Lamport clocks as a property
+// ============================================================================
+//
+//   $ soma run examples/v1/05_causal_orders.cell
+//
+// Every memory slot tagged `[causal]` automatically tracks a vector clock
+// per key. Reads and writes carry the clock, and the runtime exposes two
+// builtins for inspection:
+//
+//   clock_of(slot, key)        → Map[String, Int]   the vector clock
+//   happens_before(c1, c2)     → Bool               partial-order test
+//
+// CRDTs become an implementation detail of `[causal]`, not a library
+// import. Today's V1 is single-replica (so the vector is one entry); when
+// distribution lands in V1.1 nothing in user code has to change — the
+// vector simply grows additional entries for additional replicas.
+
+cell shop {
+    memory {
+        orders:    Map<String, String> [causal]
+        inventory: Map<String, Int>    [causal]
+    }
+
+    on place_order(id: String, sku: String) {
+        orders.set(id, sku)
+        // happens-after orders.set: the inventory write inherits the
+        // updated clock automatically.
+        let cur = inventory.get(sku)
+        let n = if cur == () { 0 } else { cur }
+        inventory.set(sku, n - 1)
+        let oc = clock_of("orders", id)
+        let ic = clock_of("inventory", sku)
+        print("placed {id} -> {sku}; orders.clock = {oc}; inventory.clock = {ic}")
+    }
+
+    on run() {
+        place_order("o1", "widget")
+        place_order("o2", "gadget")
+        place_order("o3", "widget")
+        let c1 = clock_of("orders", "o1")
+        let c3 = clock_of("orders", "o3")
+        print("o1 ⪯ o3 ? {happens_before(c1, c3)}")
+        print("o3 ⪯ o1 ? {happens_before(c3, c1)}")
+    }
+}

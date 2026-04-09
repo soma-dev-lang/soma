@@ -1,0 +1,38 @@
+// ============================================================================
+// V1 feature #1: `prove` blocks export Lean 4 proof witnesses
+// ============================================================================
+//
+//   $ soma verify examples/v1/03_prove_payment.cell --export-proof
+//
+// emits proofs/payment.lean — a self-contained Lean 4 file encoding the
+// state machine as an `inductive Step` term and one `theorem` skeleton
+// per declared invariant. Any third party can `lake build` this file
+// and replay the verification *without trusting the Soma binary*.
+//
+// Why this matters: today the Soma verifier is the only thing standing
+// between the user and a wrong answer. With Lean 4 export, the trust
+// chain becomes
+//
+//      Soma source → Lean term → Lean kernel → ✓
+//
+// CompCert-grade credibility in one annotation.
+
+cell payment {
+    state lifecycle {
+        initial: pending
+        pending -> authorized
+        authorized -> captured
+        captured -> settled
+        * -> refunded
+    }
+
+    prove lifecycle {
+        safety:   captured implies eventually settled or eventually refunded
+        liveness: pending implies eventually settled or eventually refunded
+        export: lean4 -> "proofs/payment.lean"
+    }
+
+    on run() {
+        print("payment cell — run `soma verify --export-proof` to emit Lean")
+    }
+}

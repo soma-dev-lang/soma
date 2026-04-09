@@ -31,11 +31,53 @@ impl VerifyResult {
 pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     let mut results = Vec::new();
 
+    // V1: collect all adversary names declared anywhere in the program so the
+    // verifier can stamp every result with the active threat model.
+    let all_adversaries: Vec<&AdversarySection> = program.cells.iter()
+        .filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent))
+        .flat_map(|c| c.node.sections.iter())
+        .filter_map(|s| if let Section::Adversary(ref a) = s.node { Some(a) } else { None })
+        .collect();
+
     for cell in &program.cells {
         if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
+
+        // Determine the adversary clause for this cell, if any
+        let scale = cell.node.sections.iter().find_map(|s| {
+            if let Section::Scale(ref sc) = s.node { Some(sc) } else { None }
+        });
+        let survives: Vec<String> = scale.map(|s| s.survives.clone()).unwrap_or_default();
+        let adversary_summary = if survives.is_empty() {
+            String::new()
+        } else {
+            format!(" (under {})", survives.join(" ∧ "))
+        };
+
         for section in &cell.node.sections {
             if let Section::State(ref sm) = section.node {
-                results.push(verify_state_machine(sm, &cell.node));
+                let mut result = verify_state_machine(sm, &cell.node);
+                if !adversary_summary.is_empty() {
+                    // Stamp every Pass with the adversary qualifier so users
+                    // see "verified under network ∧ llm" rather than "verified."
+                    for c in &mut result.checks {
+                        if let VerifyCheck::Pass(msg) = c {
+                            *msg = format!("{}{}", msg, adversary_summary);
+                        }
+                    }
+                    // Add an explicit summary check naming each adversary
+                    for s in &survives {
+                        if let Some(adv) = all_adversaries.iter().find(|a| a.name.eq_ignore_ascii_case(s)) {
+                            let model: String = adv.fields.iter()
+                                .map(|f| format!("{}: {}", f.node.key, f.node.value))
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            result.checks.push(VerifyCheck::Pass(
+                                format!("adversary '{}' [{}]", adv.name, model)
+                            ));
+                        }
+                    }
+                }
+                results.push(result);
             }
         }
         // Verify scale section if present

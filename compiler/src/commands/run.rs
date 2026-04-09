@@ -204,6 +204,13 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     let mut interp = interpreter::Interpreter::new(&program);
 
+    // V1: enable .somalog recording if any handler is [record]
+    if !interp.record_handlers.is_empty() {
+        let log_path = interpreter::record_log::default_log_path(source_path);
+        eprintln!("[record] writing replay log → {}", log_path.display());
+        interp.record_log_path = Some(log_path);
+    }
+
     for prog_cell in &program.cells {
         if !matches!(prog_cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
         for section in &prog_cell.node.sections {

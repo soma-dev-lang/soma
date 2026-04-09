@@ -96,6 +96,82 @@ pub enum Section {
     After(EverySection),
     /// Orchestration: scale { replicas: 100, shard: data, ... }
     Scale(ScaleSection),
+    /// V1: session-typed signal protocol
+    Protocol(ProtocolSection),
+    /// V1: declarative threat model
+    Adversary(AdversarySection),
+    /// V1: proof-carrying invariant on a state machine
+    Prove(ProveSection),
+}
+
+// ── V1: Protocol (session types) ─────────────────────────────────────
+
+/// `protocol Auction { bidder -> seller : Bid(amount: Int); ... }`
+///
+/// A linearised script of who-sends-what-when. The session-type checker
+/// rejects any handler-set that doesn't exhaust this script.
+#[derive(Debug, Clone)]
+pub struct ProtocolSection {
+    pub name: String,
+    pub roles: Vec<String>,
+    pub steps: Vec<Spanned<ProtocolStep>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ProtocolStep {
+    /// `from -> to : Msg(p1: T1, p2: T2)`
+    Send {
+        from: String,
+        to: String,
+        message: String,
+        params: Vec<Param>,
+    },
+    /// `loop { steps }` — repeats zero or more times until a terminating choice
+    Loop(Vec<Spanned<ProtocolStep>>),
+    /// `choice { branch1 { ... }  branch2 { ... } }` — receiver picks
+    Choice(Vec<Vec<Spanned<ProtocolStep>>>),
+}
+
+// ── V1: Adversary (declarative threat model) ─────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct AdversarySection {
+    pub name: String,
+    pub fields: Vec<Spanned<AdversaryField>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdversaryField {
+    pub key: String,
+    /// Free-form value: e.g. "up to 30% of messages", "arbitrary",
+    /// "bounded(5s)", "any minority subset". Stored as a single string
+    /// so verifier rules can pattern-match.
+    pub value: String,
+}
+
+// ── V1: Prove (exportable proof witness) ─────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ProveSection {
+    pub target: String,            // name of the state machine
+    pub invariants: Vec<Spanned<ProveInvariant>>,
+    pub export: Option<ProveExport>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProveInvariant {
+    /// Optional label: `safety: ...` or `liveness: ...`. Empty if unlabeled.
+    pub label: String,
+    /// The invariant text, kept as a string so we don't need a temporal-logic
+    /// AST in V1. Lean4/Coq emitters embed this as a comment + a stub goal.
+    pub formula: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProveExport {
+    /// "lean4" | "coq"
+    pub backend: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +192,9 @@ pub struct ScaleSection {
     pub cpu: Option<u64>,           // cores
     pub memory: Option<String>,     // "8Gi", "512Mi"
     pub disk: Option<String>,       // "100Gi", "1Ti"
+    /// V1: list of adversary names this scale must survive.
+    /// `survives: network ∧ llm` parses to ["network", "llm"].
+    pub survives: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

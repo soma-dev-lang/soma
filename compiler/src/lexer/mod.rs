@@ -80,6 +80,10 @@ pub enum Token {
     Requires,
     MutexGroup,
     Check,
+    // V1 keywords (TARGET_SOMA_V1)
+    Protocol,
+    Adversary,
+    Prove,
 
     // Identifiers and literals
     Ident(String),
@@ -518,6 +522,9 @@ impl<'a> Lexer<'a> {
                     "requires" => Token::Requires,
                     "mutex_group" => Token::MutexGroup,
                     "check" => Token::Check,
+                    "protocol" => Token::Protocol,
+                    "adversary" => Token::Adversary,
+                    "prove" => Token::Prove,
                     _ => {
                         if ident.chars().next().unwrap().is_ascii_uppercase() {
                             Token::TypeIdent(ident)

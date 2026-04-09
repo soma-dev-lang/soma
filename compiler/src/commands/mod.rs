@@ -11,6 +11,7 @@ pub mod provider;
 pub mod describe;
 pub mod deploy;
 pub mod lint;
+pub mod replay;
 
 use std::fs;
 use std::path::{Path, PathBuf};

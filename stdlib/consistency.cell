@@ -32,3 +32,20 @@ cell property local {
         mutex_group consistency
     }
 }
+
+// V1: causal consistency — every read returns a value tagged with its
+// vector clock; every write extends it. Stronger than eventual, weaker
+// than linearizable. The compiler tracks happens-before so handlers
+// cannot observe effects out of causal order. CRDTs are an
+// implementation detail of [causal], not a library import.
+cell property causal {
+    face {
+        promise "reads observe a causally consistent snapshot"
+        promise "writes carry vector-clock metadata"
+        promise "no observation of effects out of causal order"
+    }
+    rules {
+        contradicts [consistent, eventual, local]
+        mutex_group consistency
+    }
+}
