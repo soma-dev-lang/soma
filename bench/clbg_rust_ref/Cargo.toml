@@ -1,0 +1,32 @@
+[package]
+name = "clbg_rust_ref"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rug = { version = "1", default-features = false, features = ["integer"] }
+
+[[bin]]
+name = "nbody"
+path = "src/nbody.rs"
+
+[[bin]]
+name = "spectral_norm"
+path = "src/spectral_norm.rs"
+
+[[bin]]
+name = "mandelbrot"
+path = "src/mandelbrot.rs"
+
+[[bin]]
+name = "fannkuch"
+path = "src/fannkuch.rs"
+
+[[bin]]
+name = "pidigits"
+path = "src/pidigits.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,72 @@
+// ============================================================================
+// Computer Language Benchmarks Game — mandelbrot
+// ============================================================================
+//
+// Compute the mandelbrot set for an N×N grid, output count of "inside"
+// points. CLBG spec is N=16000 with iter=50, output a PBM image. We
+// time the compute only and verify by comparing the inside count.
+//
+// Reference (CLBG): Rust ~1.5s for N=16000 (sequential).
+//
+// Soma already has examples/mandelbrot.cell with multiple resolutions.
+// This CLBG-spec version uses N=16000, max_iter=50 — the standard
+// CLBG workload — and outputs only the count for timing purposes.
+
+cell ClbgMandelbrot {
+
+    on count_inside(grid_n: Int, max_iter: Int) [native] {
+        let x_min = -2.0
+        let x_max = 1.0
+        let y_min = -1.5
+        let y_max = 1.5
+        let dx = (x_max - x_min) / to_float(grid_n)
+        let dy = (y_max - y_min) / to_float(grid_n)
+
+        let inside = 0
+        let py = 0
+        while py < grid_n {
+            let cy = y_min + to_float(py) * dy
+            let px = 0
+            while px < grid_n {
+                let cx = x_min + to_float(px) * dx
+                let zx = 0.0
+                let zy = 0.0
+                let zx2 = 0.0
+                let zy2 = 0.0
+                let iter = 0
+                while iter < max_iter {
+                    if zx2 + zy2 >= 4.0 {
+                        iter = max_iter + 1
+                    } else {
+                        zy = 2.0 * zx * zy + cy
+                        zx = zx2 - zy2 + cx
+                        zx2 = zx * zx
+                        zy2 = zy * zy
+                        iter = iter + 1
+                    }
+                }
+                if iter == max_iter {
+                    inside = inside + 1
+                }
+                px = px + 1
+            }
+            py = py + 1
+        }
+        return inside
+    }
+
+    on run() {
+        print("CLBG mandelbrot")
+        print("===============")
+        // Sanity at small grid
+        let r100 = count_inside(100, 50)
+        print("  100x100 iters=50: inside = {r100}")
+        // CLBG-spec workload: 16000 grid, 50 iters
+        print("")
+        print("  CLBG workload: N=16000 iters=50")
+        let start = now_ms()
+        let r = count_inside(16000, 50)
+        let elapsed = now_ms() - start
+        print("  inside = {r}  ({elapsed}ms)")
+    }
+}

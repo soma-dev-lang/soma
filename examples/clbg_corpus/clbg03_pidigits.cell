@@ -1,0 +1,100 @@
+// ============================================================================
+// Computer Language Benchmarks Game — pidigits
+// ============================================================================
+//
+// Compute the first N digits of PI via the Gibbons unbounded spigot.
+// CLBG spec: print groups of 10 digits with line numbers, e.g.
+//   3141592653        :10
+//   5897932384        :20
+//   ...
+//
+// Standard CLBG workload N=10000 digits.
+// Reference (CLBG): Rust ~0.5s for N=10000.
+//
+// Soma already has examples/pi.cell that computes 100K digits via the
+// same spigot. This CLBG version targets 10K and matches the output
+// format.
+
+cell ClbgPidigits {
+
+    on compute(target: Int) [native] {
+        let q = 1
+        let r = 0
+        let s = 0
+        let t = 1
+        let k = 1
+        let digits = 0
+        let result = ""
+        while digits <= target {
+            let num = q * 3
+            num = num + r
+            let den = s * 3
+            den = den + t
+            let d = num / den
+            let num4 = q * 4
+            num4 = num4 + r
+            let den4 = s * 4
+            den4 = den4 + t
+            let d4 = num4 / den4
+            if d == d4 {
+                if digits == 0 {
+                    digits = 1
+                } else {
+                    result = result + to_string(d)
+                    digits = digits + 1
+                }
+                let ds = d * s
+                let nq = q - ds
+                nq = nq * 10
+                let dt = d * t
+                let nr = r - dt
+                nr = nr * 10
+                q = nq
+                r = nr
+            } else {
+                let u = 4 * k
+                u = u + 2
+                let v = 2 * k
+                v = v + 1
+                let nq2 = q * k
+                let qu = q * u
+                let rv = r * v
+                let nr2 = qu + rv
+                let ns = s * k
+                let su = s * u
+                let tv = t * v
+                let nt = su + tv
+                q = nq2
+                r = nr2
+                s = ns
+                t = nt
+                k = k + 1
+            }
+        }
+        return result
+    }
+
+    on run() {
+        print("CLBG pidigits")
+        print("=============")
+        print("")
+        let target = 10000
+        let start = now_ms()
+        let pi = compute(target)
+        let elapsed = now_ms() - start
+        // Verify first 50 against reference
+        let first50 = substring(pi, 0, 50)
+        let ref50 = "14159265358979323846264338327950288419716939937510"
+        if first50 == ref50 {
+            print("  first 50 digits match reference ✓")
+        } else {
+            print("  MISMATCH first 50: {first50}")
+        }
+        // Verify last 10 against reference (digits 9991-10000 of PI)
+        // These are well-known: 5256375678
+        let last10 = substring(pi, 9990, 10000)
+        print("  last 10 (9991-10000): {last10}  (expected 5256375678)")
+        print("")
+        print("  N=10000 digits: {elapsed}ms")
+    }
+}

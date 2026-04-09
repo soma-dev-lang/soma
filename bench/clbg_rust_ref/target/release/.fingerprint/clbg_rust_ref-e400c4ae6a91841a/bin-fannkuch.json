@@ -1,0 +1,1 @@
+{"rustc":17940977064402226622,"features":"[]","declared_features":"[]","target":16632022315774053241,"profile":9033018735798582828,"path":2171553079718509061,"deps":[],"local":[{"CheckDepInfo":{"dep_info":"release/.fingerprint/clbg_rust_ref-e400c4ae6a91841a/dep-bin-fannkuch","checksum":false}}],"rustflags":["-C","target-cpu=native"],"config":8247474407144887393,"compile_kind":0}

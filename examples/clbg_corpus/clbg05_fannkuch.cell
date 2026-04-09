@@ -1,0 +1,113 @@
+// ============================================================================
+// Computer Language Benchmarks Game — fannkuch-redux
+// ============================================================================
+//
+// For each permutation of [0..n-1] (lexicographic order), apply the
+// "fannkuch" flip until perm[0] == 0, count the number of flips.
+// Output: the maximum flip count + a parity-weighted checksum.
+//
+// Standard CLBG workload N=12 → 479,001,600 permutations.
+// Reference (CLBG): Rust ~10s for N=12 (sequential).
+//
+// We start with N=10 (3.6M permutations) for quick measurement, then
+// scale up. Soma's Buf<Int> primitive is exactly what this needs.
+
+cell ClbgFannkuch {
+
+    on solve(n: Int) [native] {
+        let perm = buffer(n)
+        let perm1 = buffer(n)
+        let count = buffer(n)
+
+        // Initialize perm1 = [0, 1, ..., n-1]
+        let i = 0
+        while i < n {
+            buf_set(perm1, i, i)
+            i = i + 1
+        }
+
+        let max_flips = 0
+        let checksum = 0
+        let r = n
+        let permutation_count = 0
+
+        while true {
+            // Generate next permutation if r > 1
+            while r != 1 {
+                buf_set(count, r - 1, r)
+                r = r - 1
+            }
+
+            // Copy perm1 → perm
+            i = 0
+            while i < n {
+                buf_set(perm, i, buf_get(perm1, i))
+                i = i + 1
+            }
+
+            // Count flips
+            let flips = 0
+            let k = buf_get(perm, 0)
+            while k != 0 {
+                // Reverse perm[0..k+1]
+                let j = 0
+                let m = k
+                while j < m {
+                    let tmp = buf_get(perm, j)
+                    buf_set(perm, j, buf_get(perm, m))
+                    buf_set(perm, m, tmp)
+                    j = j + 1
+                    m = m - 1
+                }
+                flips = flips + 1
+                k = buf_get(perm, 0)
+            }
+
+            if flips > max_flips { max_flips = flips }
+            if (permutation_count % 2) == 0 {
+                checksum = checksum + flips
+            } else {
+                checksum = checksum - flips
+            }
+            permutation_count = permutation_count + 1
+
+            // Generate next permutation in perm1
+            // Standard countdown counting up
+            while true {
+                if r == n {
+                    return max_flips * 1000000 + checksum  // pack two ints
+                }
+                let p0 = buf_get(perm1, 0)
+                let i2 = 0
+                while i2 < r {
+                    let next = i2 + 1
+                    buf_set(perm1, i2, buf_get(perm1, next))
+                    i2 = next
+                }
+                buf_set(perm1, r, p0)
+                let cr = buf_get(count, r) - 1
+                buf_set(count, r, cr)
+                if cr > 0 { break }
+                r = r + 1
+            }
+        }
+        return 0
+    }
+
+    on run() {
+        print("CLBG fannkuch-redux")
+        print("===================")
+        print("")
+        // N=7: max 16, checksum 228
+        let r7 = solve(7)
+        // packed: max * 1M + (checksum & 0xfff for sign...)
+        // Let's just print and check
+        print("  N=7 packed: {r7}  (expect 16000228)")
+        print("")
+        let start = now_ms()
+        let r10 = solve(12)
+        let elapsed = now_ms() - start
+        print("  N=12: {r10}  ({elapsed}ms)")
+        print("  expected: max=65, checksum=3968050 → packed 68968050")
+    }
+}

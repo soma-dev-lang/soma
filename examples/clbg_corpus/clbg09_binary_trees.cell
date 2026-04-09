@@ -1,0 +1,84 @@
+// ============================================================================
+// Computer Language Benchmarks Game — binary-trees
+// ============================================================================
+//
+// Allocate and traverse binary trees of various depths. Specifically:
+//   1. Allocate one tree at depth max_depth+1, traverse, free.
+//   2. For each depth d in [min_depth..max_depth] step 2:
+//      Allocate (1 << (max_depth - d + min_depth)) trees of depth d,
+//      sum their checksums.
+//   3. Allocate one tree at max_depth, traverse, free.
+//
+// Standard CLBG workload max_depth=21 → ~16M nodes total.
+// Reference (CLBG): Rust ~3-5s using bumpalo arenas.
+//
+// GAP: Soma's [native] dialect has no heap-allocated structs. The cell
+// model uses cells, but cells are top-level entities, not lightweight
+// nodes. Workarounds:
+//   - Encode tree nodes as flat arrays (Buf<Int>): index 0 = root,
+//     index 2i+1 = left, index 2i+2 = right. Works for fixed-depth
+//     trees but wastes memory for unbalanced ones.
+//   - Add `Tree<T>` primitive in [native] backed by an arena allocator.
+//
+// What Soma needs:
+//   - struct primitive in [native] (or arena-allocated trees)
+//   - OR a `tree` builtin that allocates a Buf<Int>-backed binary heap
+//
+// For now, this cell uses Buf<Int> as a flat tree (binary heap layout).
+// Each node stores its depth as a checksum proxy.
+
+cell ClbgBinaryTrees {
+
+    // Build a fully-populated binary heap of depth d, sum the leaves.
+    // The buffer size is 2^(d+1) - 1 nodes.
+    on build_and_sum(d: Int) [native] {
+        // Total nodes for depth d: 2^(d+1) - 1
+        let total = 1
+        let i = 0
+        while i < d {
+            total = total * 2
+            i = i + 1
+        }
+        total = total * 2 - 1
+        let tree = buffer(total)
+
+        // Populate: tree[i] = i (just to write each node)
+        i = 0
+        while i < total {
+            buf_set(tree, i, i)
+            i = i + 1
+        }
+
+        // Sum (traversal proxy)
+        let s = 0
+        i = 0
+        while i < total {
+            s = s + buf_get(tree, i)
+            i = i + 1
+        }
+        return s
+    }
+
+    on run() {
+        print("CLBG binary-trees")
+        print("=================")
+        print("")
+        print("GAP NOTED: Soma's [native] has no heap-allocated structs.")
+        print("           This stub uses Buf<Int> as a flat binary heap.")
+        print("")
+        // CLBG-equivalent depths: 4, 6, 8, ..., 20 (max=21 means deepest test=20)
+        let total_check = 0
+        let d = 4
+        while d <= 16 {
+            let r = build_and_sum(d)
+            total_check = total_check + r
+            d = d + 2
+        }
+        print("  depths 4..16 even: checksum = {total_check}")
+        // Single max-depth tree
+        let start = now_ms()
+        let big = build_and_sum(20)  // 2^21 - 1 = 2,097,151 nodes
+        let elapsed = now_ms() - start
+        print("  depth=20 (2M nodes): sum={big}  ({elapsed}ms)")
+    }
+}

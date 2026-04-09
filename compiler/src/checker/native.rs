@@ -71,6 +71,7 @@ const ALLOWED_BUILTINS: &[&str] = &[
     //   `buf_get(buf, i)` reads buf[i]; `buf_set(buf, i, v)` writes buf[i] = v.
     // Closes the array-primitive gap with Numba/Cython.
     "buffer", "buf_get", "buf_set",
+    "buffer_f", "buf_get_f", "buf_set_f",
 ];
 
 /// Validate all statements in a [native] handler body.

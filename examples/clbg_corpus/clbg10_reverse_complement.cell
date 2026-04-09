@@ -1,0 +1,74 @@
+// ============================================================================
+// Computer Language Benchmarks Game — reverse-complement
+// ============================================================================
+//
+// Read FASTA input, for each sequence reverse it and complement each
+// nucleotide (A↔T, G↔C, with IUB code variants), output to stdout.
+//
+// Standard CLBG workload: ~250MB of FASTA input.
+// Reference (CLBG): Rust ~0.4s sequential.
+//
+// GAP: Soma's [native] dialect has no chunked file I/O and no
+// efficient string streaming.
+//
+// What Soma needs:
+//   - read_file_buf(path: String) -> Buf<Int> (read bytes into a buffer)
+//   - write_buf(buf: Buf<Int>, len: Int) (write bytes to stdout)
+//   - These would unlock fasta + reverse-complement + k-nucleotide.
+//
+// For now, this cell exercises the reverse + complement TRANSFORM on a
+// synthetic in-memory buffer. The I/O part is skipped.
+
+cell ClbgReverseComplement {
+
+    on reverse_complement(n: Int) [native] {
+        // Generate a synthetic DNA buffer of length n
+        let dna = buffer(n)
+        let state = 42
+        let i = 0
+        while i < n {
+            state = (state * 3877 + 29573) % 139968
+            buf_set(dna, i, state % 4)  // 0..3 = A,C,G,T
+            i = i + 1
+        }
+        // In-place reverse + complement: swap dna[lo] and dna[hi],
+        // and complement both. Complement: A(0)↔T(3), C(1)↔G(2), so
+        // x_complement = 3 - x.
+        let lo = 0
+        let hi = n - 1
+        while lo < hi {
+            let a = buf_get(dna, lo)
+            let b = buf_get(dna, hi)
+            buf_set(dna, lo, 3 - b)
+            buf_set(dna, hi, 3 - a)
+            lo = lo + 1
+            hi = hi - 1
+        }
+        if lo == hi {
+            buf_set(dna, lo, 3 - buf_get(dna, lo))
+        }
+        // Checksum to verify
+        let s = 0
+        i = 0
+        while i < n {
+            s = s + buf_get(dna, i)
+            i = i + 1
+        }
+        return s
+    }
+
+    on run() {
+        print("CLBG reverse-complement")
+        print("=======================")
+        print("")
+        print("GAP NOTED: Soma needs read_file_buf / write_buf for the")
+        print("           full I/O path. This stub does the in-memory")
+        print("           reverse+complement transform on a synthetic buffer.")
+        print("")
+        let start = now_ms()
+        let r = reverse_complement(50000000)
+        let elapsed = now_ms() - start
+        print("  N=50M: checksum={r}  ({elapsed}ms)")
+        print("  (CLBG full would also read 50MB from stdin and write to stdout)")
+    }
+}

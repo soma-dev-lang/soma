@@ -1,0 +1,64 @@
+// ============================================================================
+// Computer Language Benchmarks Game — fasta
+// ============================================================================
+//
+// Generate three FASTA-format DNA sequences:
+//   1. ALU repeats (length 2N, fixed string concat)
+//   2. IUB random sequence (length 3N, weighted random nucleotides)
+//   3. HOMOSAPIENS random sequence (length 5N, weighted)
+// Standard CLBG workload N=25,000,000.
+//
+// Reference (CLBG): Rust ~1.0s for N=25M.
+//
+// GAP: Soma's [native] dialect doesn't have efficient string streaming
+// or print() output. The cell would build a giant String and print at
+// the end, but String += in a loop is O(N²) without pre-allocation.
+//
+// What Soma needs:
+//   - StringBuf<N> primitive (preallocated growable string buffer)
+//   - print_buf(buf) builtin to dump a String to stdout efficiently
+//   - Or: streaming print primitive that writes one chunk at a time
+//
+// For now, this cell only computes the LENGTH of what would be output,
+// which exercises the random-number generation path but skips the I/O.
+
+cell ClbgFasta {
+
+    // Linear congruential generator (CLBG-spec)
+    on next_rand(state: Int) [native] {
+        return (state * 3877 + 29573) % 139968
+    }
+
+    // Generate IUB sequence (just count operations, no string output)
+    // Real CLBG would write each nucleotide based on cumulative
+    // probability tables.
+    on simulate_iub(n: Int) [native] {
+        let state = 42
+        let i = 0
+        let acc = 0
+        while i < n {
+            state = next_rand(state)
+            // The real CLBG looks up the nucleotide via cumulative
+            // probabilities; we just accumulate the state to keep
+            // the work measurable.
+            acc = acc + (state % 5)
+            i = i + 1
+        }
+        return acc
+    }
+
+    on run() {
+        print("CLBG fasta")
+        print("==========")
+        print("")
+        print("GAP NOTED: Soma's [native] dialect needs StringBuf primitive")
+        print("           for efficient string streaming. Computing only the")
+        print("           random-number generation path.")
+        print("")
+        let start = now_ms()
+        let r = simulate_iub(25000000)
+        let elapsed = now_ms() - start
+        print("  random gen N=25M: acc={r}  ({elapsed}ms)")
+        print("  (CLBG full: would emit ~250MB of FASTA-format text)")
+    }
+}

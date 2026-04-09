@@ -1,0 +1,58 @@
+// ============================================================================
+// Computer Language Benchmarks Game — regex-redux
+// ============================================================================
+//
+// Apply 9 regular expressions to a FASTA DNA input, count matches.
+// Then perform 11 substitutions (e.g. tHa[Nt] → <4>).
+//
+// Standard CLBG workload: ~50MB of DNA input.
+// Reference (CLBG): Rust ~0.5s using PCRE/regex crate.
+//
+// GAP: Soma's [native] dialect has NO regex engine. Adding one would
+// require either:
+//   - Bind to PCRE/RE2 via FFI (huge dependency)
+//   - Implement a minimal NFA-based regex engine in [native] (~1000
+//     lines of code, would be much slower than PCRE)
+//   - Add `regex` builtin that the codegen rewrites to Rust regex
+//     crate calls (cleaner integration but adds the regex crate as
+//     a dep for any cell that uses it)
+//
+// What Soma needs:
+//   - regex_match(haystack: String, pattern: String) -> Int (count)
+//   - regex_replace(haystack: String, pattern: String, repl: String) -> String
+//   - These compile to `regex::Regex::new(pattern).find_iter(...).count()`
+//     and `Regex::new().replace_all()` respectively.
+//
+// For now, this cell exercises only the LEN of a synthetic input — the
+// regex-redux compute path is missing entirely.
+
+cell ClbgRegexRedux {
+
+    on synthetic_input(n: Int) [native] {
+        // Generate a synthetic DNA-like sequence: just count bytes.
+        let i = 0
+        let acc = 0
+        let state = 42
+        while i < n {
+            state = (state * 3877 + 29573) % 139968
+            acc = acc + (state % 4)
+            i = i + 1
+        }
+        return acc
+    }
+
+    on run() {
+        print("CLBG regex-redux")
+        print("================")
+        print("")
+        print("GAP NOTED: Soma's [native] has no regex engine.")
+        print("           Need: regex_match(s, pat), regex_replace(s, pat, repl)")
+        print("           builtins that compile to Rust's `regex` crate.")
+        print("")
+        let start = now_ms()
+        let r = synthetic_input(50000000)
+        let elapsed = now_ms() - start
+        print("  synthetic 50M chars: acc={r}  ({elapsed}ms)")
+        print("  (CLBG full would apply 9 regexes + 11 substitutions)")
+    }
+}

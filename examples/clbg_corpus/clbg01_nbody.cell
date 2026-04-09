@@ -1,0 +1,315 @@
+// ============================================================================
+// Computer Language Benchmarks Game — n-body
+// ============================================================================
+//
+// Gravitational simulation of 5 bodies (Sun + Jupiter + Saturn + Uranus +
+// Neptune), Verlet-style integration. Standard CLBG workload is N=50M
+// iterations; we use N=5M here so the bench finishes in <10 sec on a
+// laptop. The expected energy values are independent of N (after
+// momentum offset).
+//
+// Reference (Rust hand-written): ~5.0s for N=50M
+// Reference (Numba @njit):       ~10s for N=50M
+//
+// CLBG spec: print energy at start and end, both should be -0.16907 ish.
+//
+// All state is in scalar locals (no arrays) — n-body has only 5 bodies
+// so unrolling by hand is the standard approach. Soma's [native] handles
+// this fine.
+
+cell ClbgNbody {
+
+    // Pre-computed expected start energy: -0.169075164
+    // Pre-computed expected end energy after 50M iters: -0.169059907
+
+    // Run N iterations and return the final energy.
+    // The 5-body state is hand-unrolled into 30 scalar locals
+    // (5 bodies × (x,y,z,vx,vy,vz)) plus 5 masses.
+    on simulate(n: Int) [native] {
+        // Constants
+        let pi = 3.141592653589793
+        let sm = 4.0 * pi * pi
+        let dy = 365.24
+
+        // Sun (initially at rest, mass 1.0 in solar units)
+        let s_x = 0.0
+        let s_y = 0.0
+        let s_z = 0.0
+        let s_vx = 0.0
+        let s_vy = 0.0
+        let s_vz = 0.0
+        let s_m = sm
+
+        // Jupiter
+        let j_x = 4.84143144246472090
+        let j_y = 0.0 - 1.16032004402742839
+        let j_z = 0.0 - 0.103622044471123109
+        let j_vx = 0.00166007664274403694 * dy
+        let j_vy = 0.00769901118419740425 * dy
+        let j_vz = 0.0 - 0.0000690460016972063023 * dy
+        let j_m = 0.000954791938424326609 * sm
+
+        // Saturn
+        let a_x = 8.34336671824457987
+        let a_y = 4.12479856412430479
+        let a_z = 0.0 - 0.403523417114321381
+        let a_vx = 0.0 - 0.00276742510726862411 * dy
+        let a_vy = 0.00499852801234917238 * dy
+        let a_vz = 0.0000230417297573763929 * dy
+        let a_m = 0.000285885980666130812 * sm
+
+        // Uranus
+        let u_x = 12.8943695621391310
+        let u_y = 0.0 - 15.1111514016986312
+        let u_z = 0.0 - 0.223307578892655734
+        let u_vx = 0.00296460137564761618 * dy
+        let u_vy = 0.00237847173959480950 * dy
+        let u_vz = 0.0 - 0.0000296589568540237556 * dy
+        let u_m = 0.0000436624404335156298 * sm
+
+        // Neptune
+        let n_x = 15.3796971148509165
+        let n_y = 0.0 - 25.9193146099879641
+        let n_z = 0.179258772950371181
+        let n_vx = 0.00268067772490389322 * dy
+        let n_vy = 0.00162824170038242295 * dy
+        let n_vz = 0.0 - 0.000095159225451971189 * dy
+        let n_m = 0.0000515138902046611451 * sm
+
+        // Offset Sun's momentum so the system has zero net momentum.
+        // px = sum(m_i * vx_i) over the 4 planets
+        let px = j_vx * j_m + a_vx * a_m + u_vx * u_m + n_vx * n_m
+        let py = j_vy * j_m + a_vy * a_m + u_vy * u_m + n_vy * n_m
+        let pz = j_vz * j_m + a_vz * a_m + u_vz * u_m + n_vz * n_m
+        s_vx = 0.0 - px / s_m
+        s_vy = 0.0 - py / s_m
+        s_vz = 0.0 - pz / s_m
+
+        let dt = 0.01
+        let i = 0
+        while i < n {
+            // 10 pairwise forces (5 choose 2). Each pair: compute dx,dy,dz,
+            // distance, magnitude, then update both bodies' velocities.
+
+            // Sun — Jupiter
+            let dx = s_x - j_x
+            let dy2 = s_y - j_y
+            let dz = s_z - j_z
+            let d2 = dx*dx + dy2*dy2 + dz*dz
+            let mag = dt / (d2 * sqrt(d2))
+            s_vx = s_vx - dx * j_m * mag
+            s_vy = s_vy - dy2 * j_m * mag
+            s_vz = s_vz - dz * j_m * mag
+            j_vx = j_vx + dx * s_m * mag
+            j_vy = j_vy + dy2 * s_m * mag
+            j_vz = j_vz + dz * s_m * mag
+
+            // Sun — Saturn
+            dx = s_x - a_x
+            dy2 = s_y - a_y
+            dz = s_z - a_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            s_vx = s_vx - dx * a_m * mag
+            s_vy = s_vy - dy2 * a_m * mag
+            s_vz = s_vz - dz * a_m * mag
+            a_vx = a_vx + dx * s_m * mag
+            a_vy = a_vy + dy2 * s_m * mag
+            a_vz = a_vz + dz * s_m * mag
+
+            // Sun — Uranus
+            dx = s_x - u_x
+            dy2 = s_y - u_y
+            dz = s_z - u_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            s_vx = s_vx - dx * u_m * mag
+            s_vy = s_vy - dy2 * u_m * mag
+            s_vz = s_vz - dz * u_m * mag
+            u_vx = u_vx + dx * s_m * mag
+            u_vy = u_vy + dy2 * s_m * mag
+            u_vz = u_vz + dz * s_m * mag
+
+            // Sun — Neptune
+            dx = s_x - n_x
+            dy2 = s_y - n_y
+            dz = s_z - n_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            s_vx = s_vx - dx * n_m * mag
+            s_vy = s_vy - dy2 * n_m * mag
+            s_vz = s_vz - dz * n_m * mag
+            n_vx = n_vx + dx * s_m * mag
+            n_vy = n_vy + dy2 * s_m * mag
+            n_vz = n_vz + dz * s_m * mag
+
+            // Jupiter — Saturn
+            dx = j_x - a_x
+            dy2 = j_y - a_y
+            dz = j_z - a_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            j_vx = j_vx - dx * a_m * mag
+            j_vy = j_vy - dy2 * a_m * mag
+            j_vz = j_vz - dz * a_m * mag
+            a_vx = a_vx + dx * j_m * mag
+            a_vy = a_vy + dy2 * j_m * mag
+            a_vz = a_vz + dz * j_m * mag
+
+            // Jupiter — Uranus
+            dx = j_x - u_x
+            dy2 = j_y - u_y
+            dz = j_z - u_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            j_vx = j_vx - dx * u_m * mag
+            j_vy = j_vy - dy2 * u_m * mag
+            j_vz = j_vz - dz * u_m * mag
+            u_vx = u_vx + dx * j_m * mag
+            u_vy = u_vy + dy2 * j_m * mag
+            u_vz = u_vz + dz * j_m * mag
+
+            // Jupiter — Neptune
+            dx = j_x - n_x
+            dy2 = j_y - n_y
+            dz = j_z - n_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            j_vx = j_vx - dx * n_m * mag
+            j_vy = j_vy - dy2 * n_m * mag
+            j_vz = j_vz - dz * n_m * mag
+            n_vx = n_vx + dx * j_m * mag
+            n_vy = n_vy + dy2 * j_m * mag
+            n_vz = n_vz + dz * j_m * mag
+
+            // Saturn — Uranus
+            dx = a_x - u_x
+            dy2 = a_y - u_y
+            dz = a_z - u_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            a_vx = a_vx - dx * u_m * mag
+            a_vy = a_vy - dy2 * u_m * mag
+            a_vz = a_vz - dz * u_m * mag
+            u_vx = u_vx + dx * a_m * mag
+            u_vy = u_vy + dy2 * a_m * mag
+            u_vz = u_vz + dz * a_m * mag
+
+            // Saturn — Neptune
+            dx = a_x - n_x
+            dy2 = a_y - n_y
+            dz = a_z - n_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            a_vx = a_vx - dx * n_m * mag
+            a_vy = a_vy - dy2 * n_m * mag
+            a_vz = a_vz - dz * n_m * mag
+            n_vx = n_vx + dx * a_m * mag
+            n_vy = n_vy + dy2 * a_m * mag
+            n_vz = n_vz + dz * a_m * mag
+
+            // Uranus — Neptune
+            dx = u_x - n_x
+            dy2 = u_y - n_y
+            dz = u_z - n_z
+            d2 = dx*dx + dy2*dy2 + dz*dz
+            mag = dt / (d2 * sqrt(d2))
+            u_vx = u_vx - dx * n_m * mag
+            u_vy = u_vy - dy2 * n_m * mag
+            u_vz = u_vz - dz * n_m * mag
+            n_vx = n_vx + dx * u_m * mag
+            n_vy = n_vy + dy2 * u_m * mag
+            n_vz = n_vz + dz * u_m * mag
+
+            // Update positions
+            s_x = s_x + dt * s_vx
+            s_y = s_y + dt * s_vy
+            s_z = s_z + dt * s_vz
+            j_x = j_x + dt * j_vx
+            j_y = j_y + dt * j_vy
+            j_z = j_z + dt * j_vz
+            a_x = a_x + dt * a_vx
+            a_y = a_y + dt * a_vy
+            a_z = a_z + dt * a_vz
+            u_x = u_x + dt * u_vx
+            u_y = u_y + dt * u_vy
+            u_z = u_z + dt * u_vz
+            n_x = n_x + dt * n_vx
+            n_y = n_y + dt * n_vy
+            n_z = n_z + dt * n_vz
+
+            i = i + 1
+        }
+
+        // Compute final energy and return it
+        let e = 0.0
+        // Kinetic energy: 0.5 * m * |v|^2
+        e = e + 0.5 * s_m * (s_vx*s_vx + s_vy*s_vy + s_vz*s_vz)
+        e = e + 0.5 * j_m * (j_vx*j_vx + j_vy*j_vy + j_vz*j_vz)
+        e = e + 0.5 * a_m * (a_vx*a_vx + a_vy*a_vy + a_vz*a_vz)
+        e = e + 0.5 * u_m * (u_vx*u_vx + u_vy*u_vy + u_vz*u_vz)
+        e = e + 0.5 * n_m * (n_vx*n_vx + n_vy*n_vy + n_vz*n_vz)
+        // Potential energy: -m_i * m_j / |r_i - r_j| over all pairs
+        let dx_sj = s_x - j_x
+        let dy_sj = s_y - j_y
+        let dz_sj = s_z - j_z
+        e = e - s_m * j_m / sqrt(dx_sj*dx_sj + dy_sj*dy_sj + dz_sj*dz_sj)
+        let dx_sa = s_x - a_x
+        let dy_sa = s_y - a_y
+        let dz_sa = s_z - a_z
+        e = e - s_m * a_m / sqrt(dx_sa*dx_sa + dy_sa*dy_sa + dz_sa*dz_sa)
+        let dx_su = s_x - u_x
+        let dy_su = s_y - u_y
+        let dz_su = s_z - u_z
+        e = e - s_m * u_m / sqrt(dx_su*dx_su + dy_su*dy_su + dz_su*dz_su)
+        let dx_sn = s_x - n_x
+        let dy_sn = s_y - n_y
+        let dz_sn = s_z - n_z
+        e = e - s_m * n_m / sqrt(dx_sn*dx_sn + dy_sn*dy_sn + dz_sn*dz_sn)
+        let dx_ja = j_x - a_x
+        let dy_ja = j_y - a_y
+        let dz_ja = j_z - a_z
+        e = e - j_m * a_m / sqrt(dx_ja*dx_ja + dy_ja*dy_ja + dz_ja*dz_ja)
+        let dx_ju = j_x - u_x
+        let dy_ju = j_y - u_y
+        let dz_ju = j_z - u_z
+        e = e - j_m * u_m / sqrt(dx_ju*dx_ju + dy_ju*dy_ju + dz_ju*dz_ju)
+        let dx_jn = j_x - n_x
+        let dy_jn = j_y - n_y
+        let dz_jn = j_z - n_z
+        e = e - j_m * n_m / sqrt(dx_jn*dx_jn + dy_jn*dy_jn + dz_jn*dz_jn)
+        let dx_au = a_x - u_x
+        let dy_au = a_y - u_y
+        let dz_au = a_z - u_z
+        e = e - a_m * u_m / sqrt(dx_au*dx_au + dy_au*dy_au + dz_au*dz_au)
+        let dx_an = a_x - n_x
+        let dy_an = a_y - n_y
+        let dz_an = a_z - n_z
+        e = e - a_m * n_m / sqrt(dx_an*dx_an + dy_an*dy_an + dz_an*dz_an)
+        let dx_un = u_x - n_x
+        let dy_un = u_y - n_y
+        let dz_un = u_z - n_z
+        e = e - u_m * n_m / sqrt(dx_un*dx_un + dy_un*dy_un + dz_un*dz_un)
+        return e
+    }
+
+    on run() {
+        print("CLBG n-body")
+        print("===========")
+        // Quick correctness check at small N
+        let e0 = simulate(0)
+        // After 0 iterations the energy is the initial value (with momentum offset)
+        // Expected: -0.169075164
+        print("  energy at iter 0: {e0}")
+
+        // Headline run — full CLBG workload
+        print("")
+        print("N=50,000,000 (full CLBG workload):")
+        let start = now_ms()
+        let e = simulate(50000000)
+        let elapsed = now_ms() - start
+        // Expected (verified against C reference): -0.169059907
+        print("  energy at iter 50M: {e}")
+        print("  ({elapsed}ms)")
+    }
+}
