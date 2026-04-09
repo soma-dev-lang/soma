@@ -20,17 +20,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             let Some(backend) = backend else {
                 return Some(Ok(Value::Map(indexmap::IndexMap::new())));
             };
-            // Try to downcast the trait object to CausalBackend.
-            // We can't downcast Arc<dyn Trait> directly, so use a tag check
-            // (backend_name == "causal") plus a side-channel: in V1 we
-            // store the clock as a sidecar key __clock_<key> in the same
-            // backend. Since CausalBackend keeps clocks in-memory, we
-            // expose them via a small reflective API by name match.
-            if backend.backend_name() != "causal" {
-                return Some(Ok(Value::Map(indexmap::IndexMap::new())));
-            }
-            // Use Any-style downcast through the trait. We added the
-            // method via runtime::storage::causal_clock_of below.
+            // V1.1: causal memory is default-on, so every backend has a
+            // (possibly-empty) causal_clock method. Just call it.
             let clock = crate::runtime::storage::causal_clock_of(&backend, &key);
             let mut m = indexmap::IndexMap::new();
             for (k, v) in clock {

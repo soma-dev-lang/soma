@@ -1,25 +1,28 @@
 // ============================================================================
-// V1 feature #3: Causal memory — Lamport clocks as a property
+// V1.1 feature #3: Causal memory — Lamport clocks, default-on
 // ============================================================================
 //
 //   $ soma run examples/v1/05_causal_orders.cell
 //
-// Every memory slot tagged `[causal]` automatically tracks a vector clock
-// per key. Reads and writes carry the clock, and the runtime exposes two
-// builtins for inspection:
+// **No annotation needed.** Every memory slot transparently carries a
+// per-key vector clock; the cost is one extra HashMap per slot. The
+// runtime exposes two builtins for inspection:
 //
 //   clock_of(slot, key)        → Map[String, Int]   the vector clock
 //   happens_before(c1, c2)     → Bool               partial-order test
 //
-// CRDTs become an implementation detail of `[causal]`, not a library
-// import. Today's V1 is single-replica (so the vector is one entry); when
-// distribution lands in V1.1 nothing in user code has to change — the
+// CRDTs become an implementation detail of memory, not a library import.
+// Today's V1 is single-replica (so the vector is one entry); when
+// distribution lands in V1.2 nothing in user code has to change — the
 // vector simply grows additional entries for additional replicas.
+//
+// Hot paths that genuinely cannot afford a counter increment can opt
+// out with [uncausal]. In practice no benchmark in the corpus needed to.
 
 cell shop {
     memory {
-        orders:    Map<String, String> [causal]
-        inventory: Map<String, Int>    [causal]
+        orders:    Map<String, String>
+        inventory: Map<String, Int>
     }
 
     on place_order(id: String, sku: String) {

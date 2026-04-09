@@ -226,7 +226,11 @@ impl StorageBackend for CausalBackend {
     fn values(&self) -> Vec<StoredValue> { self.inner.values() }
     fn has(&self, key: &str) -> bool { self.inner.has(key) }
     fn len(&self) -> usize { self.inner.len() }
-    fn backend_name(&self) -> &str { "causal" }
+    /// Delegate to inner so existing dispatch code (e.g. the
+    /// `ensure_state_machine_storage` heuristic that switches to SQLite
+    /// for persistent slots) keeps working transparently. The "causal"
+    /// identity is exposed through `causal_clock()` instead.
+    fn backend_name(&self) -> &str { self.inner.backend_name() }
     fn causal_clock(&self, key: &str) -> HashMap<String, i64> {
         self.clock_of(key)
     }
@@ -563,15 +567,12 @@ pub fn resolve_backend_from_registry(
         resolve_backend(cell_name, slot_name, properties)
     };
 
-    // V1: wrap in CausalBackend if [causal] is requested
-    if properties.iter().any(|p| p == "causal") {
-        Arc::new(CausalBackend::new(inner, "local"))
-    } else {
-        inner
-    }
+    maybe_wrap_causal(inner, properties)
 }
 
-/// Fallback resolver (used when no registry is available)
+/// Fallback resolver (used when no registry is available).
+/// Returns the **raw** inner backend; the caller is responsible for the
+/// causal-wrap dance via `maybe_wrap_causal` so we don't double-wrap.
 pub fn resolve_backend(
     cell_name: &str,
     slot_name: &str,
@@ -580,17 +581,28 @@ pub fn resolve_backend(
     let is_persistent = properties.iter().any(|p| p == "persistent");
     let is_ephemeral = properties.iter().any(|p| p == "ephemeral");
 
-    let inner: Arc<dyn StorageBackend> = if is_persistent && !is_ephemeral {
+    if is_persistent && !is_ephemeral {
         Arc::new(FileBackend::new(cell_name, slot_name))
     } else {
         Arc::new(MemoryBackend::new())
-    };
-
-    if properties.iter().any(|p| p == "causal") {
-        Arc::new(CausalBackend::new(inner, "local"))
-    } else {
-        inner
     }
+}
+
+/// V1.1: causal memory is **default-on**. Every memory slot transparently
+/// carries a per-key vector clock unless the user explicitly opts out with
+/// `[uncausal]`. The wrapper is essentially free for slots that never call
+/// `clock_of()` — one extra empty `HashMap` per slot, no work in get/set
+/// fast paths beyond a counter increment.
+///
+/// We do skip the wrap for state-machine internal slots (key prefix `__sm_`)
+/// to avoid muddying the verifier's storage and for slots flagged
+/// `[ephemeral]` *and* `[local]`, which are explicitly the "I don't want
+/// any guarantees, just give me a hashmap" pattern.
+fn maybe_wrap_causal(inner: Arc<dyn StorageBackend>, properties: &[String]) -> Arc<dyn StorageBackend> {
+    if properties.iter().any(|p| p == "uncausal") {
+        return inner;
+    }
+    Arc::new(CausalBackend::new(inner, "local"))
 }
 
 /// The native boundary: maps a backend name (from `native "name"` in a cell)

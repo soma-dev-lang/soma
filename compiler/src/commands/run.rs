@@ -8,7 +8,7 @@ use crate::runtime;
 use crate::vm;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
-pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&str>, registry: &mut Registry) {
+pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&str>, record_all: bool, registry: &mut Registry) {
     if use_jit {
         eprintln!("warning: --jit is deprecated. Use [native] on handlers for 200x performance.");
         eprintln!("  on simulate(n: Int) [native] {{ ... }}");
@@ -60,7 +60,7 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
     } else if use_jit {
         run_with_vm(program, arg_values, registry, &source, signal_flag);
     } else {
-        run_single_cell(program, arg_values, registry, signal_flag, path, &source);
+        run_single_cell(program, arg_values, registry, signal_flag, record_all, path, &source);
     }
 }
 
@@ -139,7 +139,7 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
     }
 }
 
-fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, signal_flag: Option<&str>, source_path: &PathBuf, source: &str) {
+fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, signal_flag: Option<&str>, record_all: bool, source_path: &PathBuf, source: &str) {
     let requested_signal = arg_values.first().and_then(|v| {
         if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None }
     });
@@ -204,7 +204,18 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     let mut interp = interpreter::Interpreter::new(&program);
 
-    // V1: enable .somalog recording if any handler is [record]
+    // V1.1: --record flag turns on recording for *every* handler in the
+    // program. The user no longer annotates handlers; opt-in is at the
+    // command line. Per-handler [record] still works as a compat shim.
+    if record_all {
+        for prog_cell in &program.cells {
+            for section in &prog_cell.node.sections {
+                if let ast::Section::OnSignal(ref on) = section.node {
+                    interp.record_handlers.insert((prog_cell.node.name.clone(), on.signal_name.clone()));
+                }
+            }
+        }
+    }
     if !interp.record_handlers.is_empty() {
         let log_path = interpreter::record_log::default_log_path(source_path);
         eprintln!("[record] writing replay log → {}", log_path.display());

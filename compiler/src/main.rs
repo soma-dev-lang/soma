@@ -69,6 +69,11 @@ enum Commands {
         /// Signal handler to call (default: auto-detect)
         #[arg(long)]
         signal: Option<String>,
+        /// V1.1: record every handler invocation to a .somalog file
+        /// (use `soma replay` to deterministically re-execute it).
+        /// Default off — no perf overhead unless asked.
+        #[arg(long)]
+        record: bool,
     },
     /// Start HTTP server: soma serve app.cell [-p 8080] [--join host:port]
     Serve {
@@ -262,7 +267,7 @@ fn main_inner() {
         Commands::Build { file, output } => commands::build::cmd_build(&file, output.as_deref(), &mut registry),
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
-        Commands::Run { file, args, jit, signal } => commands::run::cmd_run(&file, &args, jit, signal.as_deref(), &mut registry),
+        Commands::Run { file, args, jit, signal, record } => commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry),
         Commands::Serve { file, port, watch, verbose, join } => {
             if watch {
                 commands::serve::cmd_serve_watch(&file, port, &mut registry);

@@ -304,31 +304,76 @@ product state space — that's the whole point of session types.
 
 ---
 
-## 6. V1 deferments
+## 6. The V1.1 inversion: brackets are compiler output, not user input
 
-What landed in V1:
+Halfway through V1 we realised that adding `[record]` and `[causal]` to
+the property bag was a category mistake: brackets were never a clean
+abstraction. They mix three semantically distinct kinds of annotation:
 
-  | Feature                         | Status                                       |
-  |---------------------------------|----------------------------------------------|
-  | Session-typed `protocol`        | exhaustiveness check ✓                       |
-  | `[record]` + `soma replay`      | full record/replay + nondet detection ✓      |
-  | `prove` → Lean 4 export         | inductive Step + theorem skeletons ✓         |
-  | `adversary` blocks              | declared, scoped, stamped on PASS messages ✓ |
-  | `[causal]` memory               | per-key vector clocks, `clock_of` builtin ✓  |
-  | Rigor doc (this file)           | normative semantics ✓                        |
+  - **Tags** — transparent, removable: `[native]`, `[pure]`. The program
+    still does the same thing if you delete them.
+  - **Storage selectors** — backend swap: `[persistent]`, `[ephemeral]`.
+    The program means the same thing but the bytes go elsewhere.
+  - **Effectful modifiers** — change observable behavior: `[record]`
+    starts writing to disk; `[causal]` adds new operations (`clock_of`).
+    Removing them changes what the program does.
 
-What was punted to V1.1:
+A reader scanning `[native, record]` reasonably assumes both are tags.
+They're not. One is a side effect.
+
+The right fix is not "add axis labels" — that's bureaucracy on top of a
+wrong abstraction. The right fix is **the compiler infers what it can
+and defaults the rest**. Brackets become read-out, not write-in.
+
+V1.1 lands the first step of this inversion:
+
+  | Annotation     | V1                            | V1.1                                                |
+  |----------------|-------------------------------|------------------------------------------------------|
+  | `[record]`     | per-handler property          | **dropped from syntax** — `soma run --record` flag   |
+  | `[causal]`     | per-slot property             | **dropped from syntax** — default-on, every slot     |
+  | `[uncausal]`   | (didn't exist)                | new opt-out for performance-critical slots           |
+  | `[pure]`       | (was unused)                  | inference deferred to V1.2; nothing in corpus uses it |
+  | `[persistent]` | per-slot property             | unchanged (test-driven inference is V1.2)             |
+  | `[consistent]` | per-slot property             | unchanged (conflict-driven inference is V1.2)         |
+  | `[native]`     | per-handler property          | unchanged (genuine codegen flag, behaves as a tag)    |
+
+The brackets that remain are the ones that pass the smell test "if I
+remove this, does the program still do the same thing?". Memory-slot
+brackets are now optional — `orders: Map<String, String>` is a legal
+slot declaration, no annotation required.
+
+The migration cost: zero. None of the 100 verified use cases or 10 CLBG
+challenges used `[record]` or `[causal]` — they were only in the V1
+example files I added. The V1 examples were updated to drop the
+annotations and use the new shapes.
+
+### What landed across V1 and V1.1
+
+  | Feature                         | Status                                                |
+  |---------------------------------|-------------------------------------------------------|
+  | Session-typed `protocol`        | exhaustiveness check ✓                                |
+  | `soma run --record` + replay    | full record/replay + nondet detection ✓ (V1.1)        |
+  | `prove` → Lean 4 export         | inductive Step + theorem skeletons ✓                  |
+  | `adversary` blocks              | declared, scoped, stamped on PASS messages ✓          |
+  | causal memory (default-on)      | per-key vector clocks, `clock_of` builtin ✓ (V1.1)    |
+  | Rigor doc (this file)           | normative semantics + inversion notes ✓               |
+
+### What was punted to V1.2
 
   - **Session-type ordering** (loop/choice exhaustion, not just exhaustiveness)
-  - **Static causal happens-before check** (V1 has runtime clocks, not types)
+  - **Static causal happens-before check** (V1.1 has runtime clocks, not types)
   - **Adversary-aware verification** (V1 is advisory: it stamps but doesn't reweight)
   - **Backend-equivalence theorem** (V1 has differential tests, not a proof)
   - **Lean kernel discharge** (V1 emits theorem skeletons with `trivial` bodies)
   - **`uses P as role`** explicit role binding (V1 matches role to cell name)
+  - **Test-driven `[persistent]` inference** (V1.2: read test assertions, infer)
+  - **Conflict-driven `[consistent]` inference** (V1.2: read-modify-write ⇒ consistent)
+  - **`[pure]` inference** (V1.2: AST walk, mark side-effect-free handlers)
+  - **`[native]` auto-promotion** (V1.2: cost model, hot loop detection)
 
-These are all known and tracked. The point of v1 is to ship the
-*shapes* of the theorems — to make every annotation a theorem in
-*statement* if not yet in *proof*. v1.1 fills in the proof bodies.
+These are all known and tracked. The point of v1 is to ship the *shapes*
+of the theorems and to start subtracting annotations the compiler can
+derive. Every V1.x release should remove more brackets than it adds.
 
 ---
 

@@ -768,18 +768,25 @@ impl Parser {
         let (name, _) = self.expect_ident()?;
         self.expect(Token::Colon)?;
         let ty = self.parse_type_expr()?;
-        self.expect(Token::LBracket)?;
 
+        // V1.1: the property bracket is now **optional**. Bare slots like
+        // `orders: Map<String, String>` are legal; the compiler infers the
+        // right backend (and adds default-on causal-clock metadata).
         let mut properties = Vec::new();
-        while !self.check(&Token::RBracket) && !self.is_at_end() {
-            properties.push(self.parse_memory_property()?);
-            if self.check(&Token::Comma) {
-                self.advance();
+        let end_span;
+        if self.check(&Token::LBracket) {
+            self.advance();
+            while !self.check(&Token::RBracket) && !self.is_at_end() {
+                properties.push(self.parse_memory_property()?);
+                if self.check(&Token::Comma) {
+                    self.advance();
+                }
             }
+            end_span = self.peek_span();
+            self.expect(Token::RBracket)?;
+        } else {
+            end_span = self.prev_span();
         }
-
-        let end = self.peek_span();
-        self.expect(Token::RBracket)?;
 
         Ok(Spanned::new(
             MemorySlot {
@@ -787,7 +794,7 @@ impl Parser {
                 ty,
                 properties,
             },
-            start.merge(end),
+            start.merge(end_span),
         ))
     }
 
