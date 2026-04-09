@@ -32,28 +32,3 @@ cell property local {
         mutex_group consistency
     }
 }
-
-// V1.1: causal memory is **default-on** for every memory slot — no
-// annotation needed. Every slot transparently carries a per-key vector
-// clock; the runtime cost is one HashMap per slot. The `clock_of(slot,
-// key)` and `happens_before(c1, c2)` builtins expose the clocks to
-// handler code that wants to assert ordering.
-//
-// `causal` remains as a no-op compat alias for files written against V1.
-// `uncausal` is the rare opt-out for performance-critical hot paths
-// where even a counter increment is too much.
-cell property causal {
-    face {
-        promise "reads observe a causally consistent snapshot (default-on; this annotation is a no-op alias kept for V1 compat)"
-    }
-    // No contradictions: causal is now additive runtime metadata, not a
-    // mutually-exclusive consistency choice. It composes with [persistent],
-    // [consistent], [eventual], [local].
-}
-
-cell property uncausal {
-    face {
-        promise "no vector clock attached to this slot — opt-out for hot paths"
-        promise "clock_of() returns the empty map for keys in this slot"
-    }
-}

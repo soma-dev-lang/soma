@@ -1,66 +1,107 @@
-# Soma V1 / V1.1 examples
+# Soma V1 example
 
-The five `TARGET_SOMA_V1` features, one example each. Each file is a
-self-contained, runnable demo. Run `soma check` first to see the static
-guarantees, then `soma run` to see them in motion.
+After the V1.2 subtraction, V1 ships exactly one feature:
+**deterministic record / replay**. There is one example.
 
-| File                                  | Feature               | Try                                                                       |
-|---------------------------------------|-----------------------|---------------------------------------------------------------------------|
-| `01_session_types_auction.cell`       | session-typed signal  | `soma check 01_session_types_auction.cell`                                |
-| `02_replay_trader.cell`               | record / replay       | `soma run --record 02_replay_trader.cell && soma replay 02_replay_trader.cell` |
-| `03_prove_payment.cell`               | Lean 4 proof export   | `soma verify 03_prove_payment.cell --export-proof`                        |
-| `04_adversary_quorum.cell`            | declarative threat    | `soma verify 04_adversary_quorum.cell`                                    |
-| `05_causal_orders.cell`               | causal memory (default-on) | `soma run 05_causal_orders.cell`                                     |
+| File                       | Feature                       | Try                                                          |
+|----------------------------|-------------------------------|--------------------------------------------------------------|
+| `02_replay_trader.cell`    | `--record` + `soma replay`    | `soma run --record 02_replay_trader.cell && soma replay 02_replay_trader.cell` |
 
-See `docs/SEMANTICS.md` for the normative semantics that backs every
-guarantee these examples make.
+That's it. Four other examples were deleted in V1.2 because the
+features they demonstrated didn't bring value over what already
+existed in the language. See `docs/V1.md` and `docs/SEMANTICS.md §4`
+for the full subtraction story.
 
-## V1.1: brackets are compiler output, not user input
+## Why replay survived
 
-After V1 shipped, we recognised that `[record]` and `[causal]` were a
-category mistake. The intuition for `[brackets]` is "tags": adjectives
-that *describe* a thing without changing what it does. But:
+The two tests every V1 feature was held to:
 
-  - `[record]` writes to disk on every call — a side effect, not a tag.
-  - `[causal]` adds new operations (`clock_of`) — semantic, not metadata.
+  1. **Does it work end-to-end?** Replay does — it logs JSON-lines,
+     re-executes, bit-compares, detects nondeterminism via
+     `now()`/`random()` interception, suggests fixes.
+  2. **Does it bring value over what existed?** Yes — production
+     debugging via deterministic re-execution is genuinely useful and
+     no other Soma primitive provides it.
 
-V1.1 removes both from the user-facing syntax:
+The other four features (`protocol`, `prove`, `adversary`, `causal`)
+failed test #2: they shipped hooks for things that weren't actually
+working, or restated existing checks in fancier syntax.
 
-  - **`[record]` → `soma run --record`** — recording is opt-in at the
-    command line, off by default, zero overhead. The user no longer
-    annotates handlers; the operator decides what to record.
-  - **`[causal]` → default-on** — every memory slot transparently
-    carries a per-key vector clock. The cost is one extra HashMap
-    per slot. Hot paths can opt out with `[uncausal]`.
-  - **Bracket on memory slots is now optional** — `orders: Map<String, String>`
-    is a legal slot declaration.
+## How this example works
 
-The brackets that remain (`[native]`, `[persistent]`, `[consistent]`)
-are the ones that pass the smell test "if I delete this, does the
-program still do the same thing?". Effects don't go in tag bags.
+```soma
+cell trader {
+    on tick(price: Int) {
+        return price * 2
+    }
 
-## Why this is "in the spirit of Soma"
+    on run() {
+        let r1 = tick(100)
+        let r2 = tick(187)
+        let r3 = tick(412)
+        print("ticks: {r1} {r2} {r3}")
+    }
+}
+```
 
-- **`protocol` blocks** look exactly like signal declarations, just at
-  the program scope. Same shape; zero new vocabulary except `loop` and
-  `choice` for branches.
+Run it normally — no log written, zero overhead:
 
-- **Recording** is now an *operator* concern (the person running the
-  program decides), not a *programmer* concern (the person writing the
-  cell). This matches Soma's philosophy that operations live in
-  `scale {}` blocks and CLI flags, not in handler bodies.
+```sh
+$ soma run examples/v1/02_replay_trader.cell
+ticks: 200 374 824
+```
 
-- **`prove`** lives next to `state`, like `face` lives next to `memory`.
-  It's the exportable counterpart of an `assert` rule.
+Run it with `--record` — every handler invocation is logged:
 
-- **`adversary`** lives next to `cell`, like `cell property` does.
-  The `survives:` clause in `scale {}` references it by name — same
-  shape as the existing `shard:` and `consistency:` clauses.
+```sh
+$ soma run --record examples/v1/02_replay_trader.cell
+[record] writing replay log → examples/v1/02_replay_trader.somalog
+ticks: 200 374 824
+```
 
-- **Causal memory** is just *what memory does now*. No annotation. The
-  vector clocks are always there; `clock_of()` and `happens_before()`
-  let handlers inspect them when they care.
+Replay the log:
 
-Five features, zero new vocabulary categories, two annotations
-*subtracted*. The cell calculus absorbed every feature, and V1.1
-proved that subtraction is sometimes the right answer.
+```sh
+$ soma replay examples/v1/02_replay_trader.cell
+soma replay: 4 entries from examples/v1/02_replay_trader.somalog
+--------------------------------------------------------------
+  #1     trader.tick(100)  ok
+  #2     trader.tick(187)  ok
+  #3     trader.tick(412)  ok
+  #4     trader.run()  ok
+--------------------------------------------------------------
+replayed 4 entries: 4 ok, 0 diverged
+```
+
+Now uncomment the `now_ms()` line in the file and re-run:
+
+```sh
+$ soma run --record examples/v1/02_replay_trader.cell
+$ soma replay examples/v1/02_replay_trader.cell
+  divergence at entry #1: trader.tick
+      args:     100
+      recorded: 102
+      replayed: 103
+      cause:    nondeterminism in handler — calls to now_ms
+      fix:      mark the handler [pure] or pass the clock as an explicit input parameter
+```
+
+That's the whole feature. Recording is opt-in at the command line
+(operators decide what to record, not programmers); replay is
+deterministic (any divergence is a bug in either the program or the
+runtime, and we can tell you which); nondeterminism is detected at
+the source (the call to `now_ms` is named in the divergence report).
+
+## What's "in the spirit of Soma" about it
+
+- **Recording is an operator concern, not a programmer concern.** The
+  person running the program decides what to record; the person
+  writing the cell doesn't have to think about it. This matches
+  Soma's philosophy that operations live in CLI flags and `scale {}`
+  blocks, not in handler bodies.
+- **No new vocabulary.** Handler bodies are unchanged. The flag is
+  the only API surface.
+- **The implementation does what it claims.** No stubs, no theatre.
+  111/111 existing tests still pass after V1.2 (100 use cases + 10
+  CLBG + this one example), and recording overhead is zero when the
+  flag is off.

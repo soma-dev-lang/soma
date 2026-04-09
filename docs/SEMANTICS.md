@@ -1,26 +1,25 @@
-# Soma v1 — Operational Semantics & Soundness Notes
+# Soma v1 — Operational Semantics & Honesty Notes
 
-> The unglamorous spine of v1. These notes turn the manifesto's claims
-> from a vibe into theorems with explicit quantifiers. They are
-> deliberately *normative*: anywhere the v1 implementation deviates from
-> the rules below, that's a v1 bug to be filed against the compiler, not
-> a license to weaken the rules.
+> The unglamorous spine of v1, after the V1.2 subtraction. These notes
+> turn the manifesto's claims from a vibe into theorems with explicit
+> quantifiers. Anywhere the v1 implementation deviates from the rules
+> below, that's a v1 bug to be filed against the compiler, not a
+> license to weaken the rules.
 
-This document covers six things:
+This document covers four things:
 
-  0. Notation & whole-program structure
   1. Cell calculus — small-step operational semantics
-  2. State machines, verification & soundness statement
-  3. Backend equivalence: `interpreter ≡ bytecode ≡ [native]`
-  4. Adversary-quantified guarantees (deadlock-free *under what?*)
-  5. State-explosion honesty: where `soma verify` is bounded
-  6. V1 deferments (what landed and what was punted to V1.1)
+  2. Backend equivalence: `interpreter ≡ bytecode ≡ [native]`
+  3. State-explosion honesty: where `soma verify` is bounded
+  4. The V1.2 subtraction and what it teaches
 
-It is meant to be read alongside `TARGET_SOMA_V1.md`.
+It is meant to be read alongside `docs/V1.md`.
 
 ---
 
-## 0. Notation & whole-program structure
+## 1. Cell calculus — small-step operational semantics
+
+### 1.1 Whole-program structure
 
 A Soma program `P` is a finite, ordered set of cells:
 
@@ -28,46 +27,38 @@ A Soma program `P` is a finite, ordered set of cells:
 
 Each cell `C` is a tuple
 
-    C = ⟨name, face, memory, handlers, state, scale, protocol?, prove?, adversary?⟩
+    C = ⟨name, face, memory, handlers, state, scale⟩
 
 where:
 
   - `face`     declares signals the cell exposes (`signal name(args)`)
-  - `memory`   declares typed slots, each tagged with a list of properties:
-               `[persistent]`, `[ephemeral]`, `[consistent]`, `[causal]`, …
+  - `memory`   declares typed slots, each tagged with a property bag:
+               `[persistent]`, `[ephemeral]`, `[consistent]`, `[eventual]`,
+               `[local]`
   - `handlers` is a finite set of `on Sig(args) [props] { body }`
   - `state`    is an optional finite state machine over a set Σ_C
-  - `scale`    is an optional orchestration block including a `survives:` clause
-  - `protocol` is an optional V1 session-type script (see §1.4)
-  - `prove`    is an optional V1 invariant block (see §2.4)
-  - `adversary` is an optional V1 threat model (see §4)
-
-We write `Σ` for the global state space:
-
-    Σ  =  Π_C { handler stacks } × { memory snapshots } × { in-flight signals }
+  - `scale`    is an optional orchestration block
 
 A program configuration is `σ ∈ Σ`. The initial configuration `σ₀`
 empties every handler stack, sets every memory slot to its declared
 default, and starts every state machine in its `initial:` state.
 
----
-
-## 1. Cell calculus — small-step operational semantics
-
-### 1.1 Expressions
+### 1.2 Expressions
 
 Expressions are pure: `e ::= n | x | e₁ ⊕ e₂ | f(e̅) | …`. Their
 evaluation is single-step `e ⇓ v` and is fully standard. Two notes:
 
-  - Integer arithmetic is **always correct**: every operation either
+  - **Integer arithmetic is always correct.** Every operation either
     produces a mathematically exact result or rolls over into the
     BigInt fallback (`SomaInt::Big`). There is no silent wraparound.
     The `[native]` codegen preserves this contract via dual-mode
-    dispatch + `panic::catch_unwind` on overflow.
-  - Float arithmetic is IEEE 754 binary64 with `to_nearest_even`. We
-    never use `-ffast-math` style reordering in any backend.
+    dispatch + `panic::catch_unwind` on overflow. This is *the*
+    correctness contract Soma makes — it's the reason a Soma program
+    can never give a wrong arithmetic answer that compiles.
+  - **Float arithmetic is IEEE 754 binary64 with `to_nearest_even`.**
+    We never use `-ffast-math` style reordering in any backend.
 
-### 1.2 Statements & handlers
+### 1.3 Statements & handlers
 
 Handler bodies are sequences of statements `s`. Statement evaluation is
 a small-step relation
@@ -79,31 +70,7 @@ memory snapshot. The rules `(Let)`, `(Assign)`, `(If)`, `(While)`,
 `(For)`, `(Return)`, `(Emit)`, `(Require)`, `(Ensure)` are the obvious
 ones; we omit them for brevity.
 
-The two non-obvious rules:
-
-**(MemRead-Causal):** Reading from a `[causal]` slot extends the
-current handler's read-clock with the slot's vector clock:
-
-    μ(slot)[k] = (v, c)
-    ──────────────────────────────────────
-    ⟨slot.get(k), env, μ⟩ → ⟨v, env ⊕ {clock ∪= c}, μ⟩
-
-**(MemWrite-Causal):** Writing to a `[causal]` slot extends the cell's
-local Lamport counter and stamps the new value with the resulting
-clock:
-
-    cell.counter' = cell.counter + 1
-    c' = (env.clock ∪ {(replica, cell.counter')})
-    ─────────────────────────────────────────────
-    ⟨slot.set(k, v), env, μ⟩ → ⟨(), env ⊕ {clock = c'}, μ[slot ↦ μ(slot)[k ↦ (v, c')]]⟩
-
-In V1 the implementation tracks the clock per-key but does *not* yet
-enforce read-after-write happens-before in the type system; the
-`clock_of(slot, key)` and `happens_before(c1, c2)` builtins expose the
-clock so handlers can assert ordering manually. The static check is
-deferred to V1.1; see §6.
-
-### 1.3 Signal dispatch
+### 1.4 Signal dispatch
 
 Cells communicate via signals:
 
@@ -115,114 +82,46 @@ agree on the handler-selection rule:
 
   > For each signal name, there is at most one handler per cell. If
   > multiple cells declare a handler, the dispatcher picks the first
-  > one in source order. (Multiple-binding routing is V1.1.)
+  > one in source order. (Multiple-binding routing is V1.2.)
 
-### 1.4 Session-typed protocols (V1)
+### 1.5 Recording & replay (the one V1 feature)
 
-A `protocol` block declares a finite ordered script:
+A cell run under `soma run --record` writes one JSON-line entry per
+handler invocation to `<source>.somalog`. The entry contains:
 
-    proto  ::=  send | loop { proto* } | choice { proto* } | proto · proto
-    send   ::=  role → role : Msg(args)
-
-The session-type checker walks the script and produces a set of
-**handler obligations** for each role:
-
-    Δ(role) = { (Msg, arity) : ∃ step `_ → role : Msg(p̅)` ∈ proto }
-
-A program is **session-well-typed** iff for every protocol `P` and
-every role `r ∈ roles(P)`:
-
-    ∀ (Msg, n) ∈ Δ(r),  ∃ handler `on Msg(p̅)` in cell named `r` with |p̅| = n.
-
-V1 checks this exhaustiveness property statically. *Ordering* checks
-(receiver may not handle Msg₂ before Msg₁ if the protocol orders them)
-require a real session-type unification with Loop/Choice and are
-deferred to V1.1.
-
-**Theorem (Session safety, V1).** *If a program is session-well-typed,
-no execution can reach a configuration in which a protocol-declared
-message is enqueued at a role with no matching handler.*
-
-*Proof sketch.* Trivial by construction: the checker rejects any
-program that violates Δ. Since the dispatcher only selects handlers
-declared at the role, an undelivered message is impossible. ∎
-
----
-
-## 2. State machines & soundness of `soma verify`
-
-Each `state` block defines a finite state machine `M = (Σ_M, →_M, init)`
-with `→_M ⊆ Σ_M × Σ_M`. Wildcard transitions `* → s` desugar to
-`{(s', s) : s' ∈ Σ_M, s' ≠ s}`.
-
-`soma verify` constructs the reachability graph `G(M)` and answers:
-
-  - `Reach(M)` — set of states reachable from `init`
-  - `Term(M)`  — set of states with no outgoing edges
-  - `Live(M, P)` — `∀ s ∈ Reach(M). ∃ t ∈ P. s →* t`
-  - `Deadlock(M)` — `∃ s ∈ Reach(M). s ∉ Term(M) ∧ s has no outgoing edges`
-
-V1 also checks user properties from `[verify]` in `soma.toml`:
-`eventually`, `always`, `never`, `after.X.eventually`, `after.X.never`.
-
-### 2.1 Verifier soundness
-
-**Theorem (Verifier soundness, V1 — bounded reachability).** *Let `M`
-be a state machine with `|Σ_M|` ≤ 2¹⁶. If `soma verify` reports
-`PASS: live(M, P)`, then in every concrete execution of any cell whose
-state machine is `M`, every reachable state has a path in `→_M` to some
-state in `P`.*
-
-*Proof sketch.* By construction `G(M)` is the literal `→_M` graph. The
-liveness check is BFS from each reachable state to `P`. Since the
-small-step rules of §1 only fire transitions that are edges in `→_M`,
-any concrete execution is a path in `G(M)`. ∎
-
-### 2.2 Bound
-
-`|Σ_M|` is bounded by 2¹⁶ in V1 because the verifier uses a `HashSet<String>`
-keyed by state name; programs that exceed this fall back to a warning.
-See §5 for the cliff.
-
-### 2.3 What V1 does *not* prove
-
-V1's verifier is a finite-state model checker over `Σ_M`. It does **not**
-yet:
-
-  - reason about handler bodies (effect systems, V1.2)
-  - reason about distributed execution traces (TLA-style refinement, V1.3)
-  - reason about real-valued time (timed automata, never, probably)
-
-These are intentional. The session-type checker (§1.4), the causal
-memory check (§1.2), and the adversary qualifier (§4) cover most of the
-distributed-systems claims that V1 makes.
-
-### 2.4 Lean 4 export
-
-A `prove` block
-
-    prove M {
-      invariant: φ
-      export: lean4 -> "path.lean"
+    {
+      "v": 1,
+      "ts": <unix-ms>,
+      "cell": <cell name>,
+      "handler": <signal name>,
+      "args": <serialized arg list>,
+      "result": <serialized return value>,
+      "nondet": [<names of nondeterministic builtins called>]
     }
 
-emits a Lean 4 file that encodes `M` as `inductive Step : State →
-State → Prop` and each invariant as a `theorem` skeleton. The point is
-*not* that the Lean kernel automatically discharges φ — it's that any
-third party can `lake build path.lean`, write the proof themselves,
-and use the file as a permanent regression target.
+`soma replay <source>` re-runs each entry against a fresh interpreter
+and bit-compares the result. **Theorem (Replay determinism, V1).**
+*If a recorded handler call returns value `v` during recording and
+the same handler is replayed against an identically-initialised
+interpreter with the same args, then either:*
 
-This closes the "trust the verifier" circle. Today the Soma binary is
-the only thing standing between the user and a wrong answer; with Lean
-export the trust chain is
+  1. *the replay returns the same `v` (verbatim equivalence), OR*
+  2. *the replay's `nondet` list contains at least one builtin —
+     and replay reports it as a divergence cause with a suggested fix.*
 
-    Soma source → Lean term → Lean kernel → ✓
+*Proof sketch.* The `call_builtin` dispatch records every call to a
+nondeterministic builtin (`now`, `now_ms`, `timestamp`, `today`,
+`date_now`, `random`, `rand`) before delegating. If the recorded
+nondet list is empty, every call in the handler body was either pure
+or to a deterministic builtin; given the same args and initial memory,
+the body produces the same value. ∎
 
-and the kernel is small enough to audit by hand.
+This is a small theorem with a real implementation — it's the only
+thing in V1 we can prove without hand-waving.
 
 ---
 
-## 3. Backend equivalence: `interpreter ≡ bytecode ≡ [native]`
+## 2. Backend equivalence: `interpreter ≡ bytecode ≡ [native]`
 
 Soma has three execution backends:
 
@@ -247,7 +146,7 @@ meaningless — it could be 200× the wrong answer.
     bit-compared. The `[native]` SomaInt fallback (overflow → BigInt) is
     enforced by `overflow_checks = true` + `panic::catch_unwind`, so any
     arithmetic disagreement panics rather than silently miscalculating.
-  - **The integer correctness contract** (§1.1), which is the most likely
+  - **The integer correctness contract** (§1.2), which is the most likely
     source of divergence.
 
 A formal proof — by showing that the bytecode compiler and the native
@@ -255,36 +154,7 @@ codegen are simulations of the small-step semantics in §1 — is V1.2 work.
 
 ---
 
-## 4. Adversary-quantified guarantees
-
-Every claim made by `soma verify` is now stamped with the adversary
-clause it was proven *under*. Concretely:
-
-    cell C {
-      scale {
-        survives: network ∧ llm
-      }
-    }
-
-instructs the verifier to print every `PASS` as `PASS (under network ∧
-llm)`. The `network` and `llm` names must resolve to in-scope
-`adversary` blocks; the V1 checker rejects undeclared names.
-
-In V1 the adversary is *advisory*: the verifier doesn't yet weaken its
-claims based on the threat model (e.g. "10% drop changes the liveness
-proof"). What it does do is make every guarantee carry an explicit
-quantifier — closing the "deadlock-free under what model?" gap that
-plagued the pre-V1 manifesto. Adversary-aware verification is V1.1
-work.
-
-The LLM adversary is the honest answer to "what if the agent
-hallucinates": it declares the LLM's output as `arbitrary string` (i.e.
-adversarially chosen) and lets you bound it with `rate: bounded(...)`.
-No other production language ships this primitive.
-
----
-
-## 5. State-explosion honesty
+## 3. State-explosion honesty
 
 `soma verify` is a bounded model checker. The cliff:
 
@@ -294,91 +164,60 @@ No other production language ships this primitive.
 | 100 – 10 000       | 1 – 100 ms        | MB         | comfortable                      |
 | 10 000 – 65 536    | 100 ms – seconds  | tens of MB | hard ceiling in V1               |
 | > 65 536           | refused           | —          | warning, no proof attempted      |
-| 10⁶+ (compositional)| not yet           | —          | requires V1.2 partial-order red. |
 
 If your machine is >65 K states, you're using state machines wrong —
 factor the system into multiple smaller cells, each with its own
-state machine, connected by signals. The session-type checker (§1.4)
-then proves the composition deadlock-free *without* exploring the
-product state space — that's the whole point of session types.
+state machine, connected by signals. The session-type checker (when it
+actually does ordering checks, V1.2) will then prove the composition
+deadlock-free *without* exploring the product state space. That's the
+whole point of session types — and also the reason V1's exhaustiveness-
+only check was theatre: it didn't prove anything new beyond what
+`face` blocks already proved.
 
 ---
 
-## 6. The V1.1 inversion: brackets are compiler output, not user input
+## 4. The V1.2 subtraction and what it teaches
 
-Halfway through V1 we realised that adding `[record]` and `[causal]` to
-the property bag was a category mistake: brackets were never a clean
-abstraction. They mix three semantically distinct kinds of annotation:
+V1 originally proposed five features. Four were subtracted in V1.2
+because they didn't bring value over what already existed.
 
-  - **Tags** — transparent, removable: `[native]`, `[pure]`. The program
-    still does the same thing if you delete them.
-  - **Storage selectors** — backend swap: `[persistent]`, `[ephemeral]`.
-    The program means the same thing but the bytes go elsewhere.
-  - **Effectful modifiers** — change observable behavior: `[record]`
-    starts writing to disk; `[causal]` adds new operations (`clock_of`).
-    Removing them changes what the program does.
+| Feature             | Why it didn't survive                                            |
+|---------------------|------------------------------------------------------------------|
+| `protocol` blocks   | Exhaustiveness only — already covered by `face { signal X }`     |
+| `prove` → Lean 4    | Theorem stubs with `trivial` bodies — aspirational, not real     |
+| `adversary` blocks  | Stamped output without actually modeling the threats — misleading|
+| `causal` memory     | Vector clocks with one replica = sequence numbers + ceremony     |
+| `--record` / replay | **Kept.** Real implementation, real value, honest theorem.       |
 
-A reader scanning `[native, record]` reasonably assumes both are tags.
-They're not. One is a side effect.
+The principle:
 
-The right fix is not "add axis labels" — that's bureaucracy on top of a
-wrong abstraction. The right fix is **the compiler infers what it can
-and defaults the rest**. Brackets become read-out, not write-in.
+> **A feature ships when it works end-to-end and brings value over
+> what existed. Stubs, hooks, and ceremony do not count.**
 
-V1.1 lands the first step of this inversion:
+This is the *operational* counterpart to the V1.1 inversion ("brackets
+are compiler output, not user input"): both are subtraction. V1.1
+removed annotations the compiler could infer. V1.2 removed features
+the implementation didn't actually deliver. Both releases shipped
+*less code* than the previous one — and that's the right direction.
 
-  | Annotation     | V1                            | V1.1                                                |
-  |----------------|-------------------------------|------------------------------------------------------|
-  | `[record]`     | per-handler property          | **dropped from syntax** — `soma run --record` flag   |
-  | `[causal]`     | per-slot property             | **dropped from syntax** — default-on, every slot     |
-  | `[uncausal]`   | (didn't exist)                | new opt-out for performance-critical slots           |
-  | `[pure]`       | (was unused)                  | inference deferred to V1.2; nothing in corpus uses it |
-  | `[persistent]` | per-slot property             | unchanged (test-driven inference is V1.2)             |
-  | `[consistent]` | per-slot property             | unchanged (conflict-driven inference is V1.2)         |
-  | `[native]`     | per-handler property          | unchanged (genuine codegen flag, behaves as a tag)    |
-
-The brackets that remain are the ones that pass the smell test "if I
-remove this, does the program still do the same thing?". Memory-slot
-brackets are now optional — `orders: Map<String, String>` is a legal
-slot declaration, no annotation required.
-
-The migration cost: zero. None of the 100 verified use cases or 10 CLBG
-challenges used `[record]` or `[causal]` — they were only in the V1
-example files I added. The V1 examples were updated to drop the
-annotations and use the new shapes.
-
-### What landed across V1 and V1.1
-
-  | Feature                         | Status                                                |
-  |---------------------------------|-------------------------------------------------------|
-  | Session-typed `protocol`        | exhaustiveness check ✓                                |
-  | `soma run --record` + replay    | full record/replay + nondet detection ✓ (V1.1)        |
-  | `prove` → Lean 4 export         | inductive Step + theorem skeletons ✓                  |
-  | `adversary` blocks              | declared, scoped, stamped on PASS messages ✓          |
-  | causal memory (default-on)      | per-key vector clocks, `clock_of` builtin ✓ (V1.1)    |
-  | Rigor doc (this file)           | normative semantics + inversion notes ✓               |
-
-### What was punted to V1.2
+### Things deferred to V1.2 *with intent to actually deliver*
 
   - **Session-type ordering** (loop/choice exhaustion, not just exhaustiveness)
-  - **Static causal happens-before check** (V1.1 has runtime clocks, not types)
-  - **Adversary-aware verification** (V1 is advisory: it stamps but doesn't reweight)
-  - **Backend-equivalence theorem** (V1 has differential tests, not a proof)
-  - **Lean kernel discharge** (V1 emits theorem skeletons with `trivial` bodies)
-  - **`uses P as role`** explicit role binding (V1 matches role to cell name)
-  - **Test-driven `[persistent]` inference** (V1.2: read test assertions, infer)
-  - **Conflict-driven `[consistent]` inference** (V1.2: read-modify-write ⇒ consistent)
-  - **`[pure]` inference** (V1.2: AST walk, mark side-effect-free handlers)
-  - **`[native]` auto-promotion** (V1.2: cost model, hot loop detection)
+  - **Adversary-aware verification** (model drops/reorders/partitions in the state space)
+  - **Distributed causal memory** (vector clocks become useful with >1 replica)
+  - **Proof-carrying Lean 4 export with discharged proofs** (not stubs)
+  - **Backend-equivalence theorem** (formalise the conjecture in §2)
+  - **`[pure]` / `[persistent]` / `[consistent]` inference** (continue subtracting brackets)
 
-These are all known and tracked. The point of v1 is to ship the *shapes*
-of the theorems and to start subtracting annotations the compiler can
-derive. Every V1.x release should remove more brackets than it adds.
+These will only ship when they bring value. If a year from now we
+realise we still can't make session-type ordering work cleanly, we'll
+say so honestly and move it to V1.3 or drop it entirely.
 
 ---
 
 ## The single sentence
 
-> Soma v1 is the language where every annotation is a theorem,
-> every protocol is a type, every replay is deterministic,
-> and every guarantee names its adversary.
+> Soma v1 is the language where every production incident is a single
+> command away from being replayed deterministically on your laptop —
+> and where every other promise is held back until the implementation
+> can actually carry it.

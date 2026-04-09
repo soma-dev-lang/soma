@@ -3,49 +3,6 @@ use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     match name {
-        // V1: causal memory introspection. `clock_of(slot, key)` returns
-        // the vector clock attached to a key in a [causal] memory slot.
-        // Returns an empty Map if the slot is not [causal] or the key is
-        // unwritten.
-        "clock_of" => {
-            if args.len() < 2 {
-                return Some(Err(RuntimeError::TypeError("clock_of(slot, key) requires 2 args".to_string())));
-            }
-            let slot = format!("{}", args[0]);
-            let key = format!("{}", args[1]);
-            // Look up the backend (with cell prefix or bare)
-            let backend = interp.storage.get(&format!("{}.{}", cell_name, slot))
-                .or_else(|| interp.storage.get(&slot))
-                .cloned();
-            let Some(backend) = backend else {
-                return Some(Ok(Value::Map(indexmap::IndexMap::new())));
-            };
-            // V1.1: causal memory is default-on, so every backend has a
-            // (possibly-empty) causal_clock method. Just call it.
-            let clock = crate::runtime::storage::causal_clock_of(&backend, &key);
-            let mut m = indexmap::IndexMap::new();
-            for (k, v) in clock {
-                m.insert(k, Value::Int(SomaInt::from_i64(v)));
-            }
-            return Some(Ok(Value::Map(m)));
-        }
-        "happens_before" => {
-            // happens_before(map_a, map_b) -> Bool
-            if args.len() < 2 {
-                return Some(Err(RuntimeError::TypeError("happens_before(a, b) requires 2 args".to_string())));
-            }
-            let to_clock = |v: &Value| -> std::collections::HashMap<String, i64> {
-                if let Value::Map(m) = v {
-                    m.iter().map(|(k, v)| {
-                        let n = if let Value::Int(si) = v { si.to_i64().unwrap_or(0) } else { 0 };
-                        (k.clone(), n)
-                    }).collect()
-                } else { Default::default() }
-            };
-            let a = to_clock(&args[0]);
-            let b = to_clock(&args[1]);
-            return Some(Ok(Value::Bool(crate::runtime::storage::CausalBackend::happens_before(&a, &b))));
-        }
         "next_id" => {
             let counter_key = "__next_id";
             let slot = interp.storage.iter()

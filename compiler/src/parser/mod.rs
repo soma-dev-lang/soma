@@ -170,46 +170,8 @@ impl Parser {
             }
         }
 
-        // V1: collect free-standing protocol/adversary/prove blocks at the
-        // top level and stash them in a synthetic cell so the checker finds
-        // them. Cell name `__top__` is reserved.
-        let mut top_sections: Vec<Spanned<Section>> = Vec::new();
-
         while !self.is_at_end() {
-            match self.peek() {
-                Token::Protocol => {
-                    let start = self.peek_span();
-                    let p = self.parse_protocol_section()?;
-                    top_sections.push(Spanned::new(Section::Protocol(p), start.merge(self.prev_span())));
-                }
-                Token::Adversary => {
-                    let start = self.peek_span();
-                    let a = self.parse_adversary_section()?;
-                    top_sections.push(Spanned::new(Section::Adversary(a), start.merge(self.prev_span())));
-                }
-                Token::Prove => {
-                    let start = self.peek_span();
-                    let p = self.parse_prove_section()?;
-                    top_sections.push(Spanned::new(Section::Prove(p), start.merge(self.prev_span())));
-                }
-                _ => cells.push(self.parse_cell_def()?),
-            }
-        }
-        if !top_sections.is_empty() {
-            // Wrap into a hidden cell so downstream passes find these sections
-            // without any AST refactor.
-            let span = top_sections.first().map(|s| s.span).unwrap_or(Span::new(0, 0));
-            cells.push(Spanned::new(
-                CellDef {
-                    kind: CellKind::Cell,
-                    name: "__top__".to_string(),
-                    type_params: Vec::new(),
-                    sections: top_sections,
-                    agent_model: None,
-                    agent_skill: None,
-                },
-                span,
-            ));
+            cells.push(self.parse_cell_def()?);
         }
         Ok(Program { imports, cells })
     }
@@ -515,18 +477,6 @@ impl Parser {
                 let sc = self.parse_scale_section()?;
                 Ok(Spanned::new(Section::Scale(sc), start.merge(self.prev_span())))
             }
-            Token::Protocol => {
-                let p = self.parse_protocol_section()?;
-                Ok(Spanned::new(Section::Protocol(p), start.merge(self.prev_span())))
-            }
-            Token::Adversary => {
-                let a = self.parse_adversary_section()?;
-                Ok(Spanned::new(Section::Adversary(a), start.merge(self.prev_span())))
-            }
-            Token::Prove => {
-                let p = self.parse_prove_section()?;
-                Ok(Spanned::new(Section::Prove(p), start.merge(self.prev_span())))
-            }
             Token::Assert => {
                 // In test cells, `assert expr` is syntactic sugar for a Rules section with Assert rules
                 let mut rules = Vec::new();
@@ -542,7 +492,7 @@ impl Parser {
                 ))
             }
             _ => Err(ParseError::Expected {
-                expected: "face, memory, interior, on, rules, runtime, state, every, scale, protocol, adversary, or prove".to_string(),
+                expected: "face, memory, interior, on, rules, runtime, state, every, or scale".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -1192,7 +1142,6 @@ impl Parser {
         let mut cpu: Option<u64> = None;
         let mut memory_res: Option<String> = None;
         let mut disk: Option<String> = None;
-        let mut survives: Vec<String> = Vec::new();
 
         while !self.check(&Token::RBrace) && !self.is_at_end() {
             let (key, _) = self.expect_ident()?;
@@ -1266,28 +1215,9 @@ impl Parser {
                         _ => {}
                     }
                 }
-                "survives" => {
-                    // Accept either: `survives: [name1, name2]` or
-                    // `survives: name1 ∧ name2` (we tokenize ∧ as Ident with
-                    // unicode, so just accept idents joined by AndAnd or `∧` ident).
-                    if self.check(&Token::LBracket) {
-                        survives = self.parse_name_list()?;
-                    } else {
-                        loop {
-                            let (name, _) = self.expect_ident()?;
-                            survives.push(name);
-                            // Accept `&&`, `,`, or stop at next key
-                            if self.check(&Token::AndAnd) || self.check(&Token::Comma) {
-                                self.advance();
-                                continue;
-                            }
-                            break;
-                        }
-                    }
-                }
                 other => {
                     return Err(ParseError::Expected {
-                        expected: "replicas, shard, consistency, tolerance, cpu, memory, disk, or survives".to_string(),
+                        expected: "replicas, shard, consistency, tolerance, cpu, memory, or disk".to_string(),
                         found: Token::Ident(other.to_string()),
                         span: self.prev_span(),
                     });
@@ -1296,265 +1226,7 @@ impl Parser {
         }
         self.expect(Token::RBrace)?;
 
-        Ok(ScaleSection { replicas, shard, consistency, tolerance, cpu, memory: memory_res, disk, survives })
-    }
-
-    // ── V1: Protocol (session types) ──────────────────────────────────
-
-    fn parse_protocol_section(&mut self) -> Result<ProtocolSection, ParseError> {
-        self.expect(Token::Protocol)?;
-        let (name, _) = self.expect_ident()?;
-        self.expect(Token::LBrace)?;
-
-        let mut roles: Vec<String> = Vec::new();
-        let steps = self.parse_protocol_steps(&mut roles)?;
-
-        self.expect(Token::RBrace)?;
-        Ok(ProtocolSection { name, roles, steps })
-    }
-
-    /// Parse a sequence of protocol steps until `}` (recursive for loop/choice).
-    fn parse_protocol_steps(
-        &mut self,
-        roles: &mut Vec<String>,
-    ) -> Result<Vec<Spanned<ProtocolStep>>, ParseError> {
-        let mut steps = Vec::new();
-        while !self.check(&Token::RBrace) && !self.is_at_end() {
-            let start = self.peek_span();
-            // `loop { ... }` — `loop` is parsed as Ident
-            if let Token::Ident(kw) = self.peek().clone() {
-                if kw == "loop" {
-                    self.advance();
-                    self.expect(Token::LBrace)?;
-                    let body = self.parse_protocol_steps(roles)?;
-                    self.expect(Token::RBrace)?;
-                    steps.push(Spanned::new(
-                        ProtocolStep::Loop(body),
-                        start.merge(self.prev_span()),
-                    ));
-                    continue;
-                }
-                if kw == "choice" {
-                    self.advance();
-                    self.expect(Token::LBrace)?;
-                    let mut branches: Vec<Vec<Spanned<ProtocolStep>>> = Vec::new();
-                    while !self.check(&Token::RBrace) && !self.is_at_end() {
-                        // Each branch is a `{ ... }` block, optionally separated by `or`/`|`
-                        if self.check(&Token::LBrace) {
-                            self.advance();
-                            let b = self.parse_protocol_steps(roles)?;
-                            self.expect(Token::RBrace)?;
-                            branches.push(b);
-                        } else if let Token::Ident(s) = self.peek().clone() {
-                            if s == "or" {
-                                self.advance();
-                                continue;
-                            }
-                            // Bare branch — parse one step inline
-                            let mut tmp_roles = std::mem::take(roles);
-                            let one = self.parse_one_protocol_step(&mut tmp_roles)?;
-                            *roles = tmp_roles;
-                            branches.push(vec![one]);
-                        } else {
-                            break;
-                        }
-                    }
-                    self.expect(Token::RBrace)?;
-                    steps.push(Spanned::new(
-                        ProtocolStep::Choice(branches),
-                        start.merge(self.prev_span()),
-                    ));
-                    continue;
-                }
-            }
-            // Otherwise: a `from -> to : Msg(...)` send
-            let one = self.parse_one_protocol_step(roles)?;
-            steps.push(one);
-        }
-        Ok(steps)
-    }
-
-    fn parse_one_protocol_step(
-        &mut self,
-        roles: &mut Vec<String>,
-    ) -> Result<Spanned<ProtocolStep>, ParseError> {
-        let start = self.peek_span();
-        let (from, _) = self.expect_ident()?;
-        self.expect(Token::Arrow)?;
-        let (to, _) = self.expect_ident()?;
-        self.expect(Token::Colon)?;
-        // Message name is a TypeIdent (capitalized) or ident
-        let message = match self.peek().clone() {
-            Token::TypeIdent(s) => { self.advance(); s }
-            Token::Ident(s) => { self.advance(); s }
-            other => {
-                return Err(ParseError::Expected {
-                    expected: "message name".to_string(),
-                    found: other,
-                    span: self.peek_span(),
-                });
-            }
-        };
-        // Optional `(name: Type, ...)`
-        let mut params = Vec::new();
-        if self.check(&Token::LParen) {
-            self.advance();
-            params = self.parse_param_list()?;
-            self.expect(Token::RParen)?;
-        }
-        if !roles.contains(&from) { roles.push(from.clone()); }
-        if !roles.contains(&to) { roles.push(to.clone()); }
-        Ok(Spanned::new(
-            ProtocolStep::Send { from, to, message, params },
-            start.merge(self.prev_span()),
-        ))
-    }
-
-    // ── V1: Adversary (declarative threat model) ──────────────────────
-
-    fn parse_adversary_section(&mut self) -> Result<AdversarySection, ParseError> {
-        self.expect(Token::Adversary)?;
-        let (name, _) = self.expect_ident()?;
-        self.expect(Token::LBrace)?;
-        let mut fields = Vec::new();
-        while !self.check(&Token::RBrace) && !self.is_at_end() {
-            let start = self.peek_span();
-            let (key, _) = self.expect_ident()?;
-            self.expect(Token::Colon)?;
-            // Value is a free-form line until newline / next key.
-            // We accumulate token text until we hit an ident followed by ':'
-            // (the next key) or the closing brace.
-            let value = self.parse_adversary_value()?;
-            fields.push(Spanned::new(
-                AdversaryField { key, value },
-                start.merge(self.prev_span()),
-            ));
-        }
-        self.expect(Token::RBrace)?;
-        Ok(AdversarySection { name, fields })
-    }
-
-    fn parse_adversary_value(&mut self) -> Result<String, ParseError> {
-        let mut parts: Vec<String> = Vec::new();
-        let mut paren_depth: i32 = 0;
-        loop {
-            // Stop if we hit the closing `}` of the parent block (only when not nested in parens).
-            if paren_depth == 0 && self.check(&Token::RBrace) { break; }
-            // Lookahead: ident followed by `:` means a new key starts here.
-            if paren_depth == 0 {
-                if let Token::Ident(_) = self.peek().clone() {
-                    if self.pos + 1 < self.tokens.len()
-                        && matches!(self.tokens[self.pos + 1].token, Token::Colon)
-                    {
-                        break;
-                    }
-                }
-            }
-            let tok = self.peek().clone();
-            self.advance();
-            // Render any token as text so invariant formulas survive intact.
-            let rendered = match tok {
-                Token::Ident(s) | Token::TypeIdent(s) | Token::StringLit(s) => s,
-                Token::IntLit(n) => n.to_string(),
-                Token::BigIntLit(s) => s,
-                Token::FloatLit(f) => f.to_string(),
-                Token::PercentLit(p) => format!("{}%", p),
-                Token::Percent => "%".to_string(),
-                Token::DurationLit(v, u) => {
-                    let unit = match u {
-                        crate::lexer::DurationUnitTok::Ms => "ms",
-                        crate::lexer::DurationUnitTok::S => "s",
-                        crate::lexer::DurationUnitTok::Min => "min",
-                        crate::lexer::DurationUnitTok::H => "h",
-                        crate::lexer::DurationUnitTok::D => "d",
-                        crate::lexer::DurationUnitTok::Years => "y",
-                    };
-                    format!("{}{}", v, unit)
-                }
-                Token::LParen => { paren_depth += 1; "(".to_string() }
-                Token::RParen => { paren_depth -= 1; ")".to_string() }
-                Token::Comma => ",".to_string(),
-                Token::Lt => "<".to_string(),
-                Token::Gt => ">".to_string(),
-                Token::Le => "≤".to_string(),
-                Token::Ge => "≥".to_string(),
-                Token::EqEq => "==".to_string(),
-                Token::Ne => "≠".to_string(),
-                Token::Eq => "=".to_string(),
-                Token::Plus => "+".to_string(),
-                Token::Minus => "-".to_string(),
-                Token::Star => "*".to_string(),
-                Token::Slash => "/".to_string(),
-                Token::AndAnd => "∧".to_string(),
-                Token::OrOr => "∨".to_string(),
-                Token::Bang => "¬".to_string(),
-                Token::Arrow => "→".to_string(),
-                Token::FatArrow => "⇒".to_string(),
-                Token::Implies => "implies".to_string(),
-                Token::Requires => "requires".to_string(),
-                Token::Contradicts => "contradicts".to_string(),
-                Token::True => "true".to_string(),
-                Token::False => "false".to_string(),
-                Token::If => "if".to_string(),
-                Token::Else => "else".to_string(),
-                Token::Where => "where".to_string(),
-                Token::In => "in".to_string(),
-                Token::Eof => break,
-                _ => continue,
-            };
-            parts.push(rendered);
-        }
-        Ok(parts.join(" "))
-    }
-
-    // ── V1: Prove (exportable proof witness) ──────────────────────────
-
-    fn parse_prove_section(&mut self) -> Result<ProveSection, ParseError> {
-        self.expect(Token::Prove)?;
-        let (target, _) = self.expect_ident()?;
-        self.expect(Token::LBrace)?;
-        let mut invariants = Vec::new();
-        let mut export: Option<ProveExport> = None;
-        while !self.check(&Token::RBrace) && !self.is_at_end() {
-            let start = self.peek_span();
-            let (key, _) = self.expect_ident()?;
-            self.expect(Token::Colon)?;
-            match key.as_str() {
-                "invariant" | "safety" | "liveness" => {
-                    let label = if key == "invariant" { String::new() } else { key.clone() };
-                    let formula = self.parse_adversary_value()?;
-                    invariants.push(Spanned::new(
-                        ProveInvariant { label, formula },
-                        start.merge(self.prev_span()),
-                    ));
-                }
-                "export" => {
-                    // export: lean4 -> "proofs/payment.lean"
-                    let (backend, _) = self.expect_ident()?;
-                    self.expect(Token::Arrow)?;
-                    let path = match self.peek().clone() {
-                        Token::StringLit(s) => { self.advance(); s }
-                        other => {
-                            return Err(ParseError::Expected {
-                                expected: "string path for export".to_string(),
-                                found: other,
-                                span: self.peek_span(),
-                            });
-                        }
-                    };
-                    export = Some(ProveExport { backend, path });
-                }
-                other => {
-                    return Err(ParseError::Expected {
-                        expected: "invariant, safety, liveness, or export".to_string(),
-                        found: Token::Ident(other.to_string()),
-                        span: self.prev_span(),
-                    });
-                }
-            }
-        }
-        self.expect(Token::RBrace)?;
-        Ok(ProveSection { target, invariants, export })
+        Ok(ScaleSection { replicas, shard, consistency, tolerance, cpu, memory: memory_res, disk })
     }
 
     // ── Interior ─────────────────────────────────────────────────────

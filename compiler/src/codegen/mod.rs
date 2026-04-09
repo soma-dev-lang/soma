@@ -1,5 +1,4 @@
 pub mod native;
-pub mod lean4;
 
 use crate::ast::*;
 

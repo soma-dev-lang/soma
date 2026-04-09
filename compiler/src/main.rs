@@ -125,11 +125,6 @@ enum Commands {
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
-        /// V1: emit a Lean 4 proof witness for every `prove` block to the
-        /// path specified in `export: lean4 -> "..."`. Use `--export-proof=auto`
-        /// to honour the path declared in source.
-        #[arg(long)]
-        export_proof: bool,
     },
     /// Run test assertions in a .cell file
     Test {
@@ -286,13 +281,13 @@ fn main_inner() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
-        Commands::Verify { files, json, export_proof } => cmd_verify(&files, json, export_proof),
+        Commands::Verify { files, json } => cmd_verify(&files, json),
         Commands::Deploy { file, target, region } => commands::deploy::cmd_deploy(&file, &target, region.as_deref()),
         Commands::Describe { file } => commands::describe::cmd_describe(&file),
     }
 }
 
-fn cmd_verify(files: &[PathBuf], json: bool, export_proof: bool) {
+fn cmd_verify(files: &[PathBuf], json: bool) {
     use checker::temporal::*;
 
     let mut all_results = Vec::new();
@@ -377,54 +372,6 @@ fn cmd_verify(files: &[PathBuf], json: bool, export_proof: bool) {
                     all_temporal.push((sm.name.clone(), results));
                 }
             }
-        }
-    }
-
-    // ── V1: --export-proof — emit Lean 4 witnesses for every `prove` block ──
-    if export_proof {
-        let mut emitted = 0usize;
-        for path in files {
-            let source = commands::read_source(path);
-            let tokens = commands::lex(&source);
-            let mut program = commands::parse(tokens);
-            commands::resolve_imports(&mut program, path);
-            for cell in &program.cells {
-                if !matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
-                // Find every (prove, state_machine) pair where prove.target == sm.name
-                let machines: Vec<&ast::StateMachineSection> = cell.node.sections.iter()
-                    .filter_map(|s| if let ast::Section::State(ref sm) = s.node { Some(sm) } else { None })
-                    .collect();
-                for section in &cell.node.sections {
-                    if let ast::Section::Prove(ref pv) = section.node {
-                        let Some(sm) = machines.iter().find(|m| m.name == pv.target) else {
-                            eprintln!("warning: prove block targets unknown state machine '{}' in cell '{}'", pv.target, cell.node.name);
-                            continue;
-                        };
-                        let lean = codegen::lean4::emit(pv, sm, &cell.node);
-                        let out_path = pv.export.as_ref().map(|e| std::path::PathBuf::from(&e.path))
-                            .unwrap_or_else(|| {
-                                let mut p = path.clone();
-                                p.set_file_name(format!("{}_{}.lean", cell.node.name, sm.name));
-                                p
-                            });
-                        if let Some(parent) = out_path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        match std::fs::write(&out_path, lean) {
-                            Ok(_) => {
-                                eprintln!("[prove] {} → {}", cell.node.name, out_path.display());
-                                emitted += 1;
-                            }
-                            Err(e) => eprintln!("error: failed to write {}: {}", out_path.display(), e),
-                        }
-                    }
-                }
-            }
-        }
-        if emitted == 0 {
-            eprintln!("note: no `prove` blocks found in input");
-        } else {
-            eprintln!("[prove] emitted {} Lean 4 witness file(s)", emitted);
         }
     }
 

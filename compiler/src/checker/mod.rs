@@ -3,13 +3,9 @@ mod signals;
 pub mod verify;
 pub mod temporal;
 pub mod native;
-pub mod protocols;
-pub mod adversary;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
-pub use protocols::ProtocolChecker;
-pub use adversary::AdversaryChecker;
 
 use crate::ast::*;
 use crate::registry::Registry;
@@ -116,40 +112,6 @@ pub enum CheckError {
         promise: String,
         span: Span,
     },
-
-    // ── V1: protocol (session-type) errors ──────────────────────────
-    #[error("protocol '{protocol}' references role '{role}' but no sibling cell with that name exists")]
-    ProtocolRoleMissingCell {
-        protocol: String,
-        role: String,
-        span: Span,
-    },
-
-    #[error("protocol '{protocol}': role '{role}' has no handler for message '{message}' (would deadlock)")]
-    ProtocolStepNotHandled {
-        protocol: String,
-        role: String,
-        message: String,
-        span: Span,
-    },
-
-    #[error("protocol '{protocol}': role '{role}' handles '{message}' with {actual} params, protocol declares {expected}")]
-    ProtocolArityMismatch {
-        protocol: String,
-        role: String,
-        message: String,
-        expected: usize,
-        actual: usize,
-        span: Span,
-    },
-
-    // ── V1: adversary (threat-model) errors ─────────────────────────
-    #[error("scale: 'survives: {name}' references undeclared adversary in cell '{cell}'")]
-    AdversaryUndeclared {
-        cell: String,
-        name: String,
-        span: Span,
-    },
 }
 
 #[derive(Debug)]
@@ -237,42 +199,6 @@ impl<'a> Checker<'a> {
     }
 
     pub fn check(&mut self, program: &Program) {
-        // ── V1: top-level protocol/adversary checks ────────────────
-        // Programs may declare protocols and adversaries as top-level
-        // pseudo-cells (a protocol section attached to any cell at the
-        // top scope plays the same role). Collect them and run the
-        // session-type and threat-model checkers across the top scope.
-        let top_cells: Vec<&CellDef> = program.cells.iter()
-            .filter(|c| c.node.kind == CellKind::Cell || c.node.kind == CellKind::Agent)
-            .map(|c| &c.node)
-            .collect();
-        let top_cells_with_span: Vec<(&CellDef, Span)> = program.cells.iter()
-            .filter(|c| c.node.kind == CellKind::Cell || c.node.kind == CellKind::Agent)
-            .map(|c| (&c.node, c.span))
-            .collect();
-
-        let top_protocols: Vec<(&ProtocolSection, Span)> = top_cells.iter()
-            .flat_map(|c| c.sections.iter())
-            .filter_map(|s| {
-                if let Section::Protocol(ref p) = s.node { Some((p, s.span)) } else { None }
-            })
-            .collect();
-        if !top_protocols.is_empty() {
-            let mut pc = ProtocolChecker::new();
-            pc.check_scope(&top_protocols, &top_cells);
-            self.errors.extend(pc.errors);
-        }
-
-        let top_adversaries: Vec<&AdversarySection> = top_cells.iter()
-            .flat_map(|c| c.sections.iter())
-            .filter_map(|s| if let Section::Adversary(ref a) = s.node { Some(a) } else { None })
-            .collect();
-        if !top_adversaries.is_empty() {
-            let mut ac = AdversaryChecker::new();
-            ac.check_scope(&top_adversaries, &top_cells_with_span);
-            self.errors.extend(ac.errors);
-        }
-
         for cell in &program.cells {
             // Skip meta-cells (they define the language, not the program)
             if cell.node.kind != CellKind::Cell && cell.node.kind != CellKind::Agent {
@@ -305,36 +231,6 @@ impl<'a> Checker<'a> {
                 sig_checker.check_siblings(&interior.cells);
                 self.errors.extend(sig_checker.errors);
                 self.warnings.extend(sig_checker.warnings);
-
-                // 3b. V1: protocol/adversary checks across interior siblings
-                let child_cells: Vec<&CellDef> = interior.cells.iter()
-                    .filter(|c| c.node.kind == CellKind::Cell || c.node.kind == CellKind::Agent)
-                    .map(|c| &c.node)
-                    .collect();
-                let child_with_spans: Vec<(&CellDef, Span)> = interior.cells.iter()
-                    .filter(|c| c.node.kind == CellKind::Cell || c.node.kind == CellKind::Agent)
-                    .map(|c| (&c.node, c.span))
-                    .collect();
-                let interior_protocols: Vec<(&ProtocolSection, Span)> = interior.cells.iter()
-                    .flat_map(|c| c.node.sections.iter())
-                    .filter_map(|s| {
-                        if let Section::Protocol(ref p) = s.node { Some((p, s.span)) } else { None }
-                    })
-                    .collect();
-                if !interior_protocols.is_empty() {
-                    let mut pc = ProtocolChecker::new();
-                    pc.check_scope(&interior_protocols, &child_cells);
-                    self.errors.extend(pc.errors);
-                }
-                let interior_adversaries: Vec<&AdversarySection> = interior.cells.iter()
-                    .flat_map(|c| c.node.sections.iter())
-                    .filter_map(|s| if let Section::Adversary(ref a) = s.node { Some(a) } else { None })
-                    .collect();
-                if !interior_adversaries.is_empty() {
-                    let mut ac = AdversaryChecker::new();
-                    ac.check_scope(&interior_adversaries, &child_with_spans);
-                    self.errors.extend(ac.errors);
-                }
 
                 // 4. Recurse into children
                 for child in &interior.cells {
