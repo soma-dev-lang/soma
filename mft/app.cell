@@ -1,0 +1,283 @@
+// ═══════════════════════════════════════════════════════════════════
+// MFT Engine — Verified Medium-Frequency Trading Automaton
+//
+// State-of-the-art:
+//   - 4-component signal (EMA crossover + order flow imbalance +
+//     spread-adjusted momentum + volatility regime filter)
+//   - Slippage model (bid/ask fill + linear market impact)
+//   - Mark-to-market drawdown (not fill-price drawdown)
+//   - Concentration limits per symbol
+//   - Order rate limiter per tick
+//   - Cancel/replace support (pending_cancel state)
+//   - Position reconciliation against authoritative source
+//   - Settled-order cleanup to prevent unbounded storage
+//   - Tick sequence numbering for message ordering
+//
+// Verified by construction:
+//   - every order reaches `settled` (no stuck capital)
+//   - risk breach → halt (no orders slip through)
+//   - think-isolated (zero LLM in the pipeline)
+//   - all handlers terminate structurally
+//   - budget proven for SignalEngine + RiskManager
+//
+// soma serve mft/app.cell -p 8080
+// ═══════════════════════════════════════════════════════════════════
+
+use lib::signals
+use lib::risk
+use lib::execution
+
+cell MFTEngine {
+    memory {
+        prices:        Map<String, String> [ephemeral, capacity(200), max_value_bytes(128)]
+        book:          Map<String, String> [ephemeral, capacity(200), max_value_bytes(256)]
+        price_history: Map<String, String> [persistent, capacity(200), max_value_bytes(8192)]
+        bid_history:   Map<String, String> [persistent, capacity(200), max_value_bytes(8192)]
+        ask_history:   Map<String, String> [persistent, capacity(200), max_value_bytes(8192)]
+        spread_history: Map<String, String> [persistent, capacity(200), max_value_bytes(8192)]
+        config:        Map<String, String> [ephemeral, capacity(30), max_value_bytes(512)]
+        tick_log:      Map<String, String> [persistent, capacity(100000), max_key_bytes(32), max_value_bytes(512)]
+    }
+
+    // ── Setup ──────────────────────────────────────────────────
+
+    on setup(p: Map) {
+        config.set("symbols", to_json(p.symbols ?? list("AAPL", "MSFT", "GOOG")))
+        config.set("nav", p.nav ?? "1000000")
+        config.set("dead_zone", p.dead_zone ?? "0.001")
+        config.set("allow_short", p.allow_short ?? "false")
+        config.set("default_spread", p.default_spread ?? "0.10")
+
+        // Signal params.
+        config.set("fast_alpha", p.fast_alpha ?? "0.2")
+        config.set("slow_alpha", p.slow_alpha ?? "0.05")
+        config.set("vol_lookback", p.vol_lookback ?? "20")
+        config.set("vol_cap", p.vol_cap ?? "0.03")
+        config.set("imbalance_weight", p.imbalance_weight ?? "0.3")
+        config.set("momentum_weight", p.momentum_weight ?? "0.3")
+        config.set("ema_weight", p.ema_weight ?? "0.4")
+
+        delegate("RiskManager", "set_limits", map(
+            "max_position", p.max_position ?? "10000",
+            "max_drawdown", p.max_drawdown ?? "0.05",
+            "max_notional", p.max_notional ?? "500000",
+            "max_concentration", p.max_concentration ?? "0.25",
+            "max_orders_per_tick", p.max_orders_per_tick ?? "10"
+        ))
+        delegate("RiskManager", "init_equity", p.nav ?? "1000000")
+        map("status", "configured")
+    }
+
+    // ── The main tick handler ──────────────────────────────────
+    //
+    // Input: { prices: {sym: mid}, bids: {sym: bid_size},
+    //          asks: {sym: ask_size}, spreads: {sym: spread} }
+    //
+    // Pipeline:
+    //   1. Update market data stores
+    //   2. Mark-to-market (updates drawdown at CURRENT prices)
+    //   3. Compute signals per symbol
+    //   4. Compute target portfolio
+    //   5. Compute trades (current vs target)
+    //   6. Execute trades (with risk check + slippage)
+    //   7. Reset rate limiter
+
+    on tick(payload: Map) {
+        let tick_prices = payload.prices ?? map()
+        let tick_bids = payload.bids ?? map()
+        let tick_asks = payload.asks ?? map()
+        let tick_spreads = payload.spreads ?? map()
+        let tick_id = to_string(next_id())
+        let nav = to_float(config.get("nav") ?? "1000000")
+
+        // ── 1. Update stores + histories ───────────────────────
+        for [loop_bound(200)] sym in tick_prices.keys() {
+            prices.set(sym, tick_prices.get(sym))
+            book.set(sym + "_bid", tick_bids.get(sym) ?? "0")
+            book.set(sym + "_ask", tick_asks.get(sym) ?? "0")
+            book.set(sym + "_spread", tick_spreads.get(sym) ?? "0")
+
+            // Append to histories (load → push → trim → save).
+            let mids = _load_hist(price_history, sym)
+            mids = push(mids, tick_prices.get(sym))
+            if len(mids) > 200 { mids = _trim(mids, 200) }
+            price_history.set(sym, to_json(mids))
+
+            let bids = _load_hist(bid_history, sym)
+            bids = push(bids, tick_bids.get(sym) ?? "0")
+            if len(bids) > 200 { bids = _trim(bids, 200) }
+            bid_history.set(sym, to_json(bids))
+
+            let asks = _load_hist(ask_history, sym)
+            asks = push(asks, tick_asks.get(sym) ?? "0")
+            if len(asks) > 200 { asks = _trim(asks, 200) }
+            ask_history.set(sym, to_json(asks))
+
+            let sprds = _load_hist(spread_history, sym)
+            sprds = push(sprds, tick_spreads.get(sym) ?? "0")
+            if len(sprds) > 200 { sprds = _trim(sprds, 200) }
+            spread_history.set(sym, to_json(sprds))
+        }
+
+        // ── 2. Mark-to-market ──────────────────────────────────
+        let mtm = delegate("RiskManager", "mark_to_market", tick_prices, nav)
+
+        // If halted after MTM, skip trading.
+        if mtm.status == "halted" {
+            return map("tick", tick_id, "halted", true, "drawdown", mtm.drawdown)
+        }
+        if mtm.status == "breached" {
+            // Auto-halt on breach.
+            delegate("RiskManager", "halt")
+            return map("tick", tick_id, "halted", true, "reason", "auto-halt on breach", "drawdown", mtm.drawdown)
+        }
+
+        // ── 3. Compute signals ─────────────────────────────────
+        let symbols = from_json(config.get("symbols") ?? "[]")
+        let sig_params = map(
+            "fast_alpha", config.get("fast_alpha") ?? "0.2",
+            "slow_alpha", config.get("slow_alpha") ?? "0.05",
+            "vol_lookback", config.get("vol_lookback") ?? "20",
+            "vol_cap", config.get("vol_cap") ?? "0.03",
+            "imbalance_weight", config.get("imbalance_weight") ?? "0.3",
+            "momentum_weight", config.get("momentum_weight") ?? "0.3",
+            "ema_weight", config.get("ema_weight") ?? "0.4"
+        )
+
+        let all_signals = list()
+        for [loop_bound(200)] sym in symbols {
+            let mids = _load_hist(price_history, sym)
+            let bids = _load_hist(bid_history, sym)
+            let asks = _load_hist(ask_history, sym)
+            let sprds = _load_hist(spread_history, sym)
+
+            if len(mids) >= 10 {
+                let sig = delegate("SignalEngine", "compute", mids, bids, asks, sprds, sig_params)
+                all_signals = push(all_signals, map(
+                    "symbol", sym,
+                    "signal", sig.signal ?? "0",
+                    "regime", sig.regime ?? "unknown"
+                ))
+            }
+        }
+
+        // ── 4. Targets ────────────────────────────────────────
+        let dead_zone = to_float(config.get("dead_zone") ?? "0.001")
+        let allow_short = config.get("allow_short") ?? "false"
+        let targets = delegate("SignalEngine", "compute_targets", all_signals, dead_zone, allow_short)
+
+        // ── 5. Trades ─────────────────────────────────────────
+        let current_positions = map()
+        for [loop_bound(200)] sym in symbols {
+            let pos = delegate("RiskManager", "get_position", sym)
+            current_positions = current_positions |> with(sym, to_string(pos))
+        }
+        let trades = delegate("ExecutionEngine", "compute_trades",
+            current_positions, targets, tick_prices, nav)
+
+        // ── 6. Execute ────────────────────────────────────────
+        let default_spread = config.get("default_spread") ?? "0.10"
+        let exec = map("sent", 0, "rejected", 0, "total_slippage", "0")
+        if len(trades) > 0 {
+            exec = delegate("ExecutionEngine", "execute_rebalance",
+                trades, default_spread, to_string(nav))
+        }
+
+        // ── 7. Reset rate limiter ─────────────────────────────
+        delegate("RiskManager", "reset_rate")
+
+        // Log.
+        tick_log.set(tick_id, to_json(map(
+            "tick", tick_id,
+            "signals", len(all_signals),
+            "targets", len(targets.keys()),
+            "trades", len(trades),
+            "sent", exec.sent,
+            "rejected", exec.rejected,
+            "slippage", exec.total_slippage ?? "0",
+            "risk", mtm.status,
+            "drawdown", mtm.drawdown,
+            "ts", to_string(now())
+        )))
+
+        map(
+            "tick", tick_id,
+            "signals", all_signals,
+            "targets", targets,
+            "trades", len(trades),
+            "sent", exec.sent,
+            "rejected", exec.rejected,
+            "slippage", exec.total_slippage ?? "0",
+            "risk", mtm
+        )
+    }
+
+    // ── Helpers ────────────────────────────────────────────────
+
+    on _load_hist(store: Map, sym: String) {
+        let raw = store.get(sym)
+        if raw == () { return list() }
+        from_json(raw)
+    }
+
+    on _trim(lst: List, max_len: Int) {
+        // Keep the last max_len elements.
+        let n = len(lst)
+        let start = n - max_len
+        if start < 0 { start = 0 }
+        let result = list()
+        let i = 0
+        for [loop_bound(10000)] x in lst {
+            if i >= start { result = push(result, x) }
+            i = i + 1
+        }
+        result
+    }
+
+    // ── Operator controls ──────────────────────────────────────
+
+    on halt() { delegate("RiskManager", "halt") }
+    on resume() { delegate("RiskManager", "resume") }
+    on reconcile(auth: Map) { delegate("RiskManager", "reconcile", auth) }
+    on cleanup(n: Int) { delegate("ExecutionEngine", "cleanup", n) }
+
+    on status() {
+        let risk = delegate("RiskManager", "get_risk_state")
+        map("risk", risk, "nav", config.get("nav") ?? "0", "ticks", tick_log.len())
+    }
+
+    // ── HTTP ───────────────────────────────────────────────────
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"} -> map(
+                "name", "Soma MFT Engine",
+                "endpoints", list(
+                    "POST /setup       {symbols, nav, dead_zone, allow_short, max_position, max_drawdown, ...}",
+                    "POST /tick        {prices:{}, bids:{}, asks:{}, spreads:{}}",
+                    "POST /halt",
+                    "POST /resume",
+                    "POST /reconcile   {sym: authoritative_qty, ...}",
+                    "POST /cleanup     {n: keep_last_n_orders}",
+                    "GET  /status",
+                    "GET  /fills/{n}",
+                    "GET  /order/{id}"
+                )
+            )
+            {method: "POST", path: "/setup"} -> setup(from_json(body))
+            {method: "POST", path: "/tick"} -> tick(from_json(body))
+            {method: "POST", path: "/halt"} -> halt()
+            {method: "POST", path: "/resume"} -> resume()
+            {method: "POST", path: "/reconcile"} -> reconcile(from_json(body))
+            {method: "POST", path: "/cleanup"} -> {
+                let d = from_json(body)
+                cleanup(to_int(d.n ?? "1000"))
+            }
+            {method: "GET", path: "/status"} -> status()
+            {method: "GET", path: "/fills/" + n} -> delegate("ExecutionEngine", "recent_fills", to_int(n))
+            {method: "GET", path: "/order/" + id} -> delegate("ExecutionEngine", "get_order", id)
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}

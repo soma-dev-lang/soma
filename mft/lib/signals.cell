@@ -1,0 +1,165 @@
+// ═══════════════════════════════════════════════════════════════════
+// Signal Engine v2 — state-of-the-art medium-frequency signals.
+//
+// Computes a composite signal from:
+//   1. Dual EMA crossover with adaptive threshold
+//   2. Order flow imbalance (top-of-book bid/ask volume ratio)
+//   3. Spread-adjusted momentum (raw return minus trading cost)
+//   4. Volatility regime filter (suppress signals in high-vol)
+//
+// Target allocation: proportional to |signal|, not equal-weight.
+// Dead zone suppresses noise: |signal| < dead_zone → flat.
+//
+// All pure. Zero LLM. Zero I/O. Budget proven.
+// ═══════════════════════════════════════════════════════════════════
+
+cell SignalEngine {
+    scale {
+        replicas: 1
+        memory: "128Mi"
+    }
+
+    on _ema(prev: Float, price: Float, alpha: Float) {
+        return alpha * price + (1.0 - alpha) * prev
+    }
+
+    // Full signal computation from market data vectors.
+    //
+    // mid_prices, bid_sizes, ask_sizes, spreads: parallel Lists,
+    //   most recent entry last.
+    // params: { fast_alpha, slow_alpha, vol_lookback, vol_cap,
+    //           imbalance_weight, momentum_weight, ema_weight }
+
+    on compute(mid_prices: List, bid_sizes: List, ask_sizes: List, spreads: List, params: Map) {
+        let n = len(mid_prices)
+        if n < 10 {
+            return map("signal", "0", "reason", "insufficient data", "regime", "unknown")
+        }
+
+        let fast_alpha = to_float(params.fast_alpha ?? "0.2")
+        let slow_alpha = to_float(params.slow_alpha ?? "0.05")
+        let vol_lookback = to_int(params.vol_lookback ?? "20")
+        let imb_w = to_float(params.imbalance_weight ?? "0.3")
+        let mom_w = to_float(params.momentum_weight ?? "0.3")
+        let ema_w = to_float(params.ema_weight ?? "0.4")
+        let vol_cap = to_float(params.vol_cap ?? "0.03")
+
+        // ── EMA crossover ──────────────────────────────────────
+        let first = to_float(nth(mid_prices, 0))
+        let fast = first
+        let slow = first
+        for [loop_bound(10000)] i in range(1, n) {
+            let p = to_float(nth(mid_prices, i))
+            fast = _ema(fast, p, fast_alpha)
+            slow = _ema(slow, p, slow_alpha)
+        }
+        let ema_sig = 0.0
+        if slow > 0.0 { ema_sig = (fast - slow) / slow }
+
+        // ── Order flow imbalance ───────────────────────────────
+        let ofi_sum = 0.0
+        let ofi_n = 0
+        let ofi_start = 0
+        if n > 20 { ofi_start = n - 20 }
+        for [loop_bound(10000)] i in range(ofi_start, n) {
+            let b = to_float(nth(bid_sizes, i))
+            let a = to_float(nth(ask_sizes, i))
+            let t = b + a
+            if t > 0.0 {
+                ofi_sum = ofi_sum + (b - a) / t
+                ofi_n = ofi_n + 1
+            }
+        }
+        let imbalance = 0.0
+        if ofi_n > 0 { imbalance = ofi_sum / to_float(ofi_n) }
+
+        // ── Spread-adjusted momentum ───────────────────────────
+        let lb = 10
+        if lb > n - 1 { lb = n - 1 }
+        let last_p = to_float(nth(mid_prices, n - 1))
+        let prev_p = to_float(nth(mid_prices, n - 1 - lb))
+        let raw_mom = 0.0
+        if prev_p > 0.0 { raw_mom = (last_p - prev_p) / prev_p }
+
+        let avg_sprd = 0.0
+        let sprd_n = 0
+        for [loop_bound(10000)] i in range(ofi_start, n) {
+            if i < len(spreads) {
+                avg_sprd = avg_sprd + to_float(nth(spreads, i))
+                sprd_n = sprd_n + 1
+            }
+        }
+        if sprd_n > 0 { avg_sprd = avg_sprd / to_float(sprd_n) }
+        let cost = 0.0
+        if last_p > 0.0 { cost = avg_sprd / last_p }
+        let adj_mom = raw_mom - cost
+
+        // ── Volatility regime filter ───────────────────────────
+        let v_start = 0
+        if n > vol_lookback + 1 { v_start = n - vol_lookback - 1 }
+        let rets = list()
+        for [loop_bound(10000)] i in range(v_start, n - 1) {
+            let p0 = to_float(nth(mid_prices, i))
+            let p1 = to_float(nth(mid_prices, i + 1))
+            if p0 > 0.0 { rets = push(rets, (p1 - p0) / p0) }
+        }
+        let vol = 0.0
+        let m = len(rets)
+        if m >= 2 {
+            let s = 0.0
+            for [loop_bound(10000)] r in rets { s = s + r }
+            let mu = s / to_float(m)
+            let v = 0.0
+            for [loop_bound(10000)] r in rets {
+                let d = r - mu
+                v = v + d * d
+            }
+            vol = sqrt(v / to_float(m))
+        }
+
+        let regime = "normal"
+        let dampener = 1.0
+        if vol > vol_cap { regime = "high_vol"  dampener = 0.0 }
+        if vol < vol_cap * 0.3 { regime = "low_vol" }
+
+        // ── Composite ──────────────────────────────────────────
+        let composite = (ema_sig * ema_w + imbalance * imb_w + adj_mom * mom_w) * dampener
+        if composite > 1.0 { composite = 1.0 }
+        if composite < -1.0 { composite = 0.0 - 1.0 }
+
+        map(
+            "signal", to_string(composite),
+            "ema", to_string(ema_sig),
+            "imbalance", to_string(imbalance),
+            "momentum", to_string(adj_mom),
+            "vol", to_string(vol),
+            "regime", regime,
+            "cost", to_string(cost)
+        )
+    }
+
+    // Target portfolio: weight ∝ |signal|, direction = sign(signal).
+    on compute_targets(signals: List, dead_zone: Float, allow_short: String) {
+        let total_w = 0.0
+        let entries = list()
+        for [loop_bound(100)] s in signals {
+            let v = to_float(s.signal ?? "0")
+            let a = abs(v)
+            if a > dead_zone {
+                total_w = total_w + a
+                entries = push(entries, map("symbol", s.symbol, "sig", v, "abs", a))
+            }
+        }
+        let targets = map()
+        if total_w > 0.0 {
+            for [loop_bound(100)] e in entries {
+                let w = to_float(e.abs) / total_w
+                if to_float(e.sig) < 0.0 {
+                    if allow_short == "true" { w = 0.0 - w } else { w = 0.0 }
+                }
+                if w != 0.0 { targets = targets |> with(e.symbol, to_string(w)) }
+            }
+        }
+        targets
+    }
+}

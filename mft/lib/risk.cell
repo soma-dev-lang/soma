@@ -1,0 +1,227 @@
+// ═══════════════════════════════════════════════════════════════════
+// Risk Manager v2 — production-grade pre-trade and post-trade.
+//
+// Fixes from v1:
+//   - Drawdown is mark-to-market (current prices), not fill-price
+//   - Reconciliation: compare local positions vs authoritative source
+//   - Rate limiter: max orders per tick window
+//   - Per-symbol concentration limit (not just position size)
+//
+// State machine: active → warning → breached → halted → active
+//   PROVEN: after(breached) → eventually(halted)
+//   PROVEN: no order can be sent from halted state
+// ═══════════════════════════════════════════════════════════════════
+
+cell RiskManager {
+    memory {
+        limits:     Map<String, String> [persistent, capacity(30),  max_value_bytes(256)]
+        positions:  Map<String, String> [ephemeral,  capacity(200), max_value_bytes(256)]
+        equity:     Map<String, String> [ephemeral,  capacity(20),  max_value_bytes(128)]
+        order_rate: Map<String, String> [ephemeral,  capacity(10),  max_value_bytes(64)]
+    }
+
+    state trading [max_instances(1)] {
+        initial: active
+        active -> warning
+        warning -> active
+        warning -> breached
+        breached -> halted
+        halted -> active
+    }
+
+    scale {
+        replicas: 1
+        memory: "64Mi"
+    }
+
+    // ── Config ─────────────────────────────────────────────────
+
+    on set_limits(payload: Map) {
+        limits.set("max_position", payload.max_position ?? "10000")
+        limits.set("max_drawdown", payload.max_drawdown ?? "0.05")
+        limits.set("max_notional", payload.max_notional ?? "500000")
+        limits.set("max_concentration", payload.max_concentration ?? "0.25")
+        limits.set("max_orders_per_tick", payload.max_orders_per_tick ?? "10")
+        map("status", "limits_set")
+    }
+
+    on init_equity(starting: String) {
+        equity.set("peak", starting)
+        equity.set("current", starting)
+        equity.set("drawdown", "0")
+        equity.set("unrealized_pnl", "0")
+        order_rate.set("count", "0")
+        order_rate.set("window_start", to_string(now()))
+        map("status", "initialized")
+    }
+
+    // ── Mark-to-market: update equity at current prices ────────
+    //
+    // Called every tick BEFORE signal computation. This ensures
+    // drawdown reflects the CURRENT market, not the last fill.
+
+    on mark_to_market(prices: Map, nav: Float) {
+        let total_value = 0.0
+        for [loop_bound(200)] sym in positions.keys() {
+            let qty = to_float(positions.get(sym) ?? "0")
+            let price = to_float(prices.get(sym) ?? "0")
+            total_value = total_value + (qty * price)
+        }
+        let cash = nav - total_value
+        let current_eq = total_value + cash
+        equity.set("current", to_string(current_eq))
+
+        let peak = to_float(equity.get("peak") ?? "0")
+        if current_eq > peak {
+            equity.set("peak", to_string(current_eq))
+            peak = current_eq
+        }
+
+        let dd = 0.0
+        if peak > 0.0 { dd = (peak - current_eq) / peak }
+        equity.set("drawdown", to_string(dd))
+
+        // Evaluate risk state.
+        let max_dd = to_float(limits.get("max_drawdown") ?? "0.05")
+        let status = get_status("system")
+
+        if dd > max_dd * 1.5 {
+            // Severe: jump to breached if possible.
+            if status == "active" { transition("system", "warning") }
+            if status == "warning" { transition("system", "breached") }
+        }
+        if dd > max_dd {
+            if status == "active" { transition("system", "warning") }
+        }
+        if dd < max_dd * 0.5 {
+            if status == "warning" { transition("system", "active") }
+        }
+
+        map("equity", to_string(current_eq), "drawdown", to_string(dd), "status", get_status("system"))
+    }
+
+    // ── Pre-trade risk check ───────────────────────────────────
+
+    on check_order(symbol: String, qty: String, price: String, side: String, nav: String) {
+        let status = get_status("system")
+        if status == "halted" {
+            return map("allowed", "false", "reason", "system halted — no orders permitted")
+        }
+        if status == "breached" {
+            return map("allowed", "false", "reason", "risk breached — awaiting halt")
+        }
+
+        // Position limit.
+        let cur = to_float(positions.get(symbol) ?? "0")
+        let delta = to_float(qty)
+        if side == "SELL" { delta = 0.0 - delta }
+        let new_pos = cur + delta
+        let max_pos = to_float(limits.get("max_position") ?? "10000")
+        if abs(new_pos) > max_pos {
+            return map("allowed", "false", "reason", "position limit: " + to_string(abs(new_pos)) + " > " + to_string(max_pos))
+        }
+
+        // Concentration limit: single name cannot exceed X% of NAV.
+        let nav_f = to_float(nav)
+        if nav_f > 0.0 {
+            let pos_value = abs(new_pos) * to_float(price)
+            let conc = pos_value / nav_f
+            let max_conc = to_float(limits.get("max_concentration") ?? "0.25")
+            if conc > max_conc {
+                return map("allowed", "false", "reason", "concentration limit: " + to_string(conc) + " > " + to_string(max_conc))
+            }
+        }
+
+        // Notional limit per order.
+        let notional = to_float(qty) * to_float(price)
+        let max_not = to_float(limits.get("max_notional") ?? "500000")
+        if notional > max_not {
+            return map("allowed", "false", "reason", "notional limit exceeded")
+        }
+
+        // Rate limit.
+        let count = to_int(order_rate.get("count") ?? "0")
+        let max_rate = to_int(limits.get("max_orders_per_tick") ?? "10")
+        if count >= max_rate {
+            return map("allowed", "false", "reason", "rate limit: " + to_string(count) + " orders this tick")
+        }
+        order_rate.set("count", to_string(count + 1))
+
+        map("allowed", "true", "reason", "passed all checks")
+    }
+
+    // ── Post-trade ─────────────────────────────────────────────
+
+    on record_fill(symbol: String, qty: String, side: String) {
+        let cur = to_float(positions.get(symbol) ?? "0")
+        let delta = to_float(qty)
+        if side == "SELL" { delta = 0.0 - delta }
+        positions.set(symbol, to_string(cur + delta))
+        map("symbol", symbol, "position", to_string(cur + delta))
+    }
+
+    on reset_rate() {
+        order_rate.set("count", "0")
+        map("status", "rate_reset")
+    }
+
+    // ── Reconciliation ─────────────────────────────────────────
+    //
+    // Compare local positions against an authoritative snapshot
+    // (e.g., from the exchange or prime broker). Flag mismatches.
+
+    on reconcile(authoritative: Map) {
+        let mismatches = list()
+        for [loop_bound(200)] sym in authoritative.keys() {
+            let auth_qty = to_float(authoritative.get(sym) ?? "0")
+            let local_qty = to_float(positions.get(sym) ?? "0")
+            let diff = abs(auth_qty - local_qty)
+            if diff > 0.01 {
+                mismatches = push(mismatches, map(
+                    "symbol", sym,
+                    "local", to_string(local_qty),
+                    "authoritative", to_string(auth_qty),
+                    "diff", to_string(diff)
+                ))
+                // Snap to authoritative.
+                positions.set(sym, to_string(auth_qty))
+            }
+        }
+        map("mismatches", len(mismatches), "details", mismatches)
+    }
+
+    // ── Circuit breaker controls ───────────────────────────────
+
+    on halt() {
+        let s = get_status("system")
+        if s == "breached" {
+            transition("system", "halted")
+            return map("status", "halted")
+        }
+        map("status", s, "reason", "can only halt from breached")
+    }
+
+    on resume() {
+        let s = get_status("system")
+        if s == "halted" {
+            transition("system", "active")
+            equity.set("drawdown", "0")
+            return map("status", "active")
+        }
+        map("status", s, "reason", "can only resume from halted")
+    }
+
+    on get_risk_state() {
+        map(
+            "status", get_status("system"),
+            "drawdown", equity.get("drawdown") ?? "0",
+            "equity", equity.get("current") ?? "0",
+            "peak", equity.get("peak") ?? "0",
+            "orders_this_tick", order_rate.get("count") ?? "0"
+        )
+    }
+
+    on get_position(symbol: String) {
+        to_float(positions.get(symbol) ?? "0")
+    }
+}

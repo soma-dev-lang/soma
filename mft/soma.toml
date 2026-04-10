@@ -1,0 +1,41 @@
+[package]
+name = "mft"
+description = "Verified medium-frequency trading automaton — secured by construction"
+
+[verify]
+deadlock_free = true
+
+# Order lifecycle: every order MUST reach settled.
+[verify.after.pending]
+eventually = ["settled"]
+
+[verify.after.risk_check]
+eventually = ["settled"]
+
+[verify.after.sent]
+eventually = ["settled"]
+
+[verify.after.acked]
+eventually = ["settled"]
+
+[verify.after.filled]
+eventually = ["settled"]
+
+[verify.after.cancelled]
+eventually = ["settled"]
+
+[verify.after.rejected]
+eventually = ["settled"]
+
+[verify.after.pending_cancel]
+eventually = ["settled"]
+
+[verify.after.partially_filled]
+eventually = ["settled"]
+
+# Risk: breach always leads to halt.
+[verify.after.breached]
+eventually = ["halted"]
+
+[verify.after.warning]
+eventually = ["halted", "active"]
