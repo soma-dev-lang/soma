@@ -3547,7 +3547,7 @@ impl FnGenerator {
                 s.push_str(&format!("{}}}\n", ind));
                 s
             }
-            Statement::For { var, iter, body } => {
+            Statement::For { var, iter, body, bound: _ } => {
                 let iter_code = self.gen_for_iter_direct(&iter.node);
                 let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
                 for st in body {
@@ -4392,7 +4392,7 @@ impl FnGenerator {
                 s.push_str(&format!("{}}}\n", ind));
                 s
             }
-            Statement::For { var, iter, body } => {
+            Statement::For { var, iter, body, bound: _ } => {
                 let iter_code = self.gen_for_iter_direct(&iter.node);
                 let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
                 s.push_str(&self.gen_body_rug(body, indent + 1, ctx));

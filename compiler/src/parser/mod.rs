@@ -956,6 +956,23 @@ impl Parser {
     fn parse_state_machine(&mut self) -> Result<StateMachineSection, ParseError> {
         self.expect(Token::State)?;
         let (name, _) = self.expect_ident()?;
+
+        // Optional bracketed annotations: `state foo [max_instances(1000)] { ... }`.
+        // Used by the V1.4 budget checker (compiler/src/checker/budget.rs).
+        let mut sm_properties: Vec<Spanned<MemoryProperty>> = Vec::new();
+        if self.check(&Token::LBracket) {
+            self.advance();
+            if !self.check(&Token::RBracket) {
+                sm_properties.push(self.parse_memory_property()?);
+                while self.check(&Token::Comma) {
+                    self.advance();
+                    if self.check(&Token::RBracket) { break; }
+                    sm_properties.push(self.parse_memory_property()?);
+                }
+            }
+            self.expect(Token::RBracket)?;
+        }
+
         self.expect(Token::LBrace)?;
 
         let mut initial = String::new();
@@ -1043,7 +1060,7 @@ impl Parser {
             }
         }
 
-        Ok(StateMachineSection { name, initial, transitions })
+        Ok(StateMachineSection { name, initial, transitions, properties: sm_properties })
     }
 
     // ── Every (scheduler) ─────────────────────────────────────────────
@@ -1357,8 +1374,28 @@ impl Parser {
                 ))
             }
             Token::For => {
-                // for var in expr { body }
+                // for [loop_bound(N)] var in expr { body }
+                // or:    for var in expr { body }
                 self.advance();
+                // Optional [loop_bound(N), ...] annotations.
+                let mut bound: Option<u64> = None;
+                if self.check(&Token::LBracket) {
+                    self.advance();
+                    while !self.check(&Token::RBracket) && !self.is_at_end() {
+                        let prop = self.parse_memory_property()?;
+                        if let MemoryProperty::Param(ref pp) = prop.node {
+                            if pp.name == "loop_bound" {
+                                if let Some(lit) = pp.values.first() {
+                                    if let Literal::Int(n) = lit.node {
+                                        if n >= 0 { bound = Some(n as u64); }
+                                    }
+                                }
+                            }
+                        }
+                        if self.check(&Token::Comma) { self.advance(); }
+                    }
+                    self.expect(Token::RBracket)?;
+                }
                 let (var, _) = self.expect_ident()?;
                 self.expect(Token::In)?;
                 let iter = self.parse_expr()?;
@@ -1369,7 +1406,7 @@ impl Parser {
                 }
                 self.expect(Token::RBrace)?;
                 Ok(Spanned::new(
-                    Statement::For { var, iter, body },
+                    Statement::For { var, iter, body, bound },
                     start.merge(self.prev_span()),
                 ))
             }

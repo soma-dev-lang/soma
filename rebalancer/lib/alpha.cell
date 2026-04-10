@@ -20,6 +20,13 @@
 // ═══════════════════════════════════════════════════════════════════
 
 cell Alpha {
+    // V1.4 budget proof obligation. Alpha is pure (no LLM, no HTTP)
+    // and only allocates transient working sets bounded by the
+    // conservative loop estimator. soma check proves the bound.
+    scale {
+        replicas: 1
+        memory: "128Mi"
+    }
 
     on compute(input: Map) {
         let method = input.method ?? "momentum"
@@ -40,7 +47,7 @@ cell Alpha {
 
         // Compute total return over the lookback window for each symbol.
         let returns = list()
-        for sym in universe {
+        for [loop_bound(100)] sym in universe {
             let prices = histories.get(sym)
             if prices != () {
                 let n = len(prices)
@@ -68,7 +75,7 @@ cell Alpha {
             let best_sym = ""
             let best_r = 0.0 - 1000000.0
             let found = "false"
-            for r in returns {
+            for [loop_bound(100)] r in returns {
                 if used.get(r.symbol) == () {
                     let val = to_float(r.ret)
                     if val > best_r {
@@ -89,7 +96,7 @@ cell Alpha {
         let n_sel = len(selected)
         if n_sel > 0 {
             let w = 1.0 / to_float(n_sel)
-            for s in selected {
+            for [loop_bound(100)] s in selected {
                 targets = targets |> with(s, to_string(w))
             }
         }
@@ -103,7 +110,7 @@ cell Alpha {
 
         // For each symbol, compute realized vol of simple returns.
         let vols = list()
-        for sym in universe {
+        for [loop_bound(100)] sym in universe {
             let prices = histories.get(sym)
             if prices != () {
                 let n = len(prices)
@@ -114,7 +121,7 @@ cell Alpha {
                     if start < 0 { start = 0 }
 
                     let rets = list()
-                    for i in range(start, n - 1) {
+                    for [loop_bound(500)] i in range(start, n - 1) {
                         let p0 = to_float(nth(prices, i))
                         let p1 = to_float(nth(prices, i + 1))
                         if p0 > 0.0 {
@@ -126,11 +133,11 @@ cell Alpha {
                     if m >= 2 {
                         // Mean
                         let s = 0.0
-                        for r in rets { s = s + r }
+                        for [loop_bound(500)] r in rets { s = s + r }
                         let mean = s / to_float(m)
                         // Population variance, then stdev
                         let v = 0.0
-                        for r in rets {
+                        for [loop_bound(500)] r in rets {
                             let d = r - mean
                             v = v + (d * d)
                         }
@@ -147,12 +154,12 @@ cell Alpha {
 
         // Normalize 1/vol so weights sum to 1.
         let total_inv = 0.0
-        for v in vols {
+        for [loop_bound(100)] v in vols {
             total_inv = total_inv + to_float(v.inv)
         }
         let targets = map()
         if total_inv > 0.0 {
-            for v in vols {
+            for [loop_bound(100)] v in vols {
                 let w = to_float(v.inv) / total_inv
                 targets = targets |> with(v.symbol, to_string(w))
             }

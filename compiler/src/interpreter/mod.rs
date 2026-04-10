@@ -898,7 +898,7 @@ impl Interpreter {
                 }
             }
 
-            Statement::For { var, iter, body } => {
+            Statement::For { var, iter, body, bound: _ } => {
                 // Fast path: for i in range(start, end) — no allocation
                 if let Expr::FnCall { name: fn_name, args: fn_args } = &iter.node {
                     if fn_name == "range" && fn_args.len() >= 2 {

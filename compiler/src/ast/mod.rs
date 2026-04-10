@@ -285,6 +285,10 @@ pub struct StateMachineSection {
     pub name: String,
     pub initial: String,
     pub transitions: Vec<Spanned<Transition>>,
+    /// Optional bracketed annotations: `state foo [max_instances(1000)] { ... }`.
+    /// Used by the budget checker (V1.4) to bound the per-instance storage
+    /// footprint of dynamic state-machine instance IDs.
+    pub properties: Vec<Spanned<MemoryProperty>>,
 }
 
 #[derive(Debug, Clone)]
@@ -339,6 +343,10 @@ pub enum Statement {
         var: String,
         iter: Spanned<Expr>,
         body: Vec<Spanned<Statement>>,
+        /// Optional `[loop_bound(N)]` annotation, used by the V1.4
+        /// budget checker. When present, overrides the default
+        /// conservative iteration count for this loop.
+        bound: Option<u64>,
     },
     While {
         condition: Spanned<Expr>,

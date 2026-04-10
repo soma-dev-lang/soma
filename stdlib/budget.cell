@@ -1,0 +1,45 @@
+// Budget axis: parameters that bound a slot's storage footprint.
+//
+// These properties are read by the V1.4 budget checker
+// (compiler/src/checker/budget.rs) to compute a closed-form upper
+// bound on a cell's peak memory and verify it against the declared
+// scale { memory: "..." } budget.
+//
+// Each property is parameterised: write [capacity(1000)],
+// [max_value_bytes(4096)], etc. on a memory slot.
+//
+// All four are independent (no contradictions, no mutex groups).
+// Omitting an annotation falls back to a conservative default in
+// the checker.
+
+cell property capacity {
+    face {
+        promise "upper bound on number of entries in this collection slot"
+    }
+}
+
+cell property max_key_bytes {
+    face {
+        promise "upper bound on the byte size of any key in this slot (Map slots)"
+    }
+}
+
+cell property max_value_bytes {
+    face {
+        promise "upper bound on the byte size of any value in this slot"
+    }
+}
+
+cell property max_element_bytes {
+    face {
+        promise "upper bound on the byte size of each element (List slots)"
+    }
+}
+
+// State-machine-level annotation, applied as `state foo [max_instances(N)] { ... }`.
+// Bounds the number of distinct instance IDs the cell can carry.
+cell property max_instances {
+    face {
+        promise "upper bound on number of live state-machine instance IDs"
+    }
+}

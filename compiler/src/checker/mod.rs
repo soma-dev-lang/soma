@@ -4,6 +4,7 @@ pub mod verify;
 pub mod temporal;
 pub mod native;
 pub mod refinement;
+pub mod budget;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
@@ -113,6 +114,17 @@ pub enum CheckError {
         promise: String,
         span: Span,
     },
+
+    /// Memory-budget proof failure: the cell's statically computed bound
+    /// exceeds the declared `scale { memory: ... }` budget.
+    #[error("budget exceeded in cell '{cell}': proven peak {proven} > declared budget {budget}")]
+    BudgetExceeded {
+        cell: String,
+        proven: String,
+        budget: String,
+        breakdown: String,
+        span: Span,
+    },
 }
 
 #[derive(Debug)]
@@ -152,6 +164,34 @@ pub enum CheckWarning {
         cell: String,
         span: Span,
     },
+    /// Memory-budget proof obligation: the cell DOES have a declared
+    /// `scale { memory: ... }` budget but the static analyser cannot
+    /// produce a closed-form bound because some handler calls a builtin
+    /// classified as unbounded (think, from_json, http_get, …). The
+    /// declared budget is left as an advisory rather than a proof.
+    BudgetAdvisory {
+        cell: String,
+        budget: String,
+        bounded_portion: String,
+        unbounded_reasons: Vec<String>,
+    },
+    /// Memory-budget proof success: the cell's statically computed
+    /// bound fits within the declared budget. Emitted as an info-level
+    /// note so the user can see the proven number.
+    BudgetOk {
+        cell: String,
+        proven: String,
+        budget: String,
+        breakdown: String,
+    },
+}
+
+impl CheckWarning {
+    /// True for informational notes (BudgetOk) that should not be
+    /// counted as warnings in the human-readable tally.
+    pub fn is_note(&self) -> bool {
+        matches!(self, CheckWarning::BudgetOk { .. })
+    }
 }
 
 impl std::fmt::Display for CheckWarning {
@@ -177,6 +217,24 @@ impl std::fmt::Display for CheckWarning {
             }
             Self::AgentMissingStateMachine { cell, .. } => {
                 write!(f, "warning: agent cell '{cell}' has no state machine — add a state section for verified behavior")
+            }
+            Self::BudgetAdvisory { cell, budget, bounded_portion, unbounded_reasons } => {
+                let reasons = unbounded_reasons.iter()
+                    .take(3)
+                    .map(|r| format!("\n      → {r}"))
+                    .collect::<String>();
+                let more = if unbounded_reasons.len() > 3 {
+                    format!("\n      → … ({} more)", unbounded_reasons.len() - 3)
+                } else {
+                    String::new()
+                };
+                write!(
+                    f,
+                    "advisory: cell '{cell}' declares budget {budget}; bounded portion is {bounded_portion}, but the following handlers call unbounded builtins so the proof is incomplete:{reasons}{more}"
+                )
+            }
+            Self::BudgetOk { cell, proven, budget, breakdown } => {
+                write!(f, "✓ budget proven for cell '{cell}': peak ≤ {proven} ≤ declared {budget}\n    breakdown: {breakdown}")
             }
         }
     }
@@ -257,6 +315,91 @@ impl<'a> Checker<'a> {
         // 9. Agent-specific checks
         if cell.kind == CellKind::Agent {
             self.check_agent_contracts(cell);
+        }
+
+        // 10. Memory-budget proof obligation (V1.4).
+        // If the cell declares scale { memory: "..." }, the budget
+        // checker either proves the bound, fails, or downgrades to
+        // an advisory if a handler calls an unbounded builtin.
+        self.check_memory_budget(cell);
+    }
+
+    fn check_memory_budget(&mut self, cell: &CellDef) {
+        let report = budget::check_cell(cell);
+        match report.verdict() {
+            budget::BudgetVerdict::NoBudgetDeclared => { /* opt-in: silent */ }
+            budget::BudgetVerdict::Pass => {
+                let proven = budget::format_cost(&report.total);
+                let budget_str = report
+                    .budget
+                    .map(budget::format_bytes)
+                    .unwrap_or_else(|| "?".to_string());
+                let breakdown = format!(
+                    "slots {} + max-handler {} + state {} + runtime {}",
+                    budget::format_cost(&report.slot_sum),
+                    budget::format_cost(&report.handler_max),
+                    budget::format_cost(&report.sm_bound),
+                    budget::format_bytes(report.runtime),
+                );
+                self.warnings.push(CheckWarning::BudgetOk {
+                    cell: cell.name.clone(),
+                    proven,
+                    budget: budget_str,
+                    breakdown,
+                });
+            }
+            budget::BudgetVerdict::Fail => {
+                let proven = budget::format_cost(&report.total);
+                let budget_str = report
+                    .budget
+                    .map(budget::format_bytes)
+                    .unwrap_or_else(|| "?".to_string());
+                let breakdown = format!(
+                    "slots {} + max-handler {} + state {} + runtime {}",
+                    budget::format_cost(&report.slot_sum),
+                    budget::format_cost(&report.handler_max),
+                    budget::format_cost(&report.sm_bound),
+                    budget::format_bytes(report.runtime),
+                );
+                let span = cell
+                    .sections
+                    .iter()
+                    .find(|s| matches!(s.node, Section::Scale(_)))
+                    .map(|s| s.span)
+                    .unwrap_or_else(|| Span::new(0, 0));
+                self.errors.push(CheckError::BudgetExceeded {
+                    cell: cell.name.clone(),
+                    proven,
+                    budget: budget_str,
+                    breakdown,
+                    span,
+                });
+            }
+            budget::BudgetVerdict::Advisory => {
+                // Total is Unbounded — collect the reasons.
+                let reasons: Vec<String> = match &report.total {
+                    budget::Cost::Unbounded(rs) => rs.clone(),
+                    _ => vec![],
+                };
+                // Compute the bounded portion (slots + state + runtime;
+                // skip handler_max which is the unbounded one).
+                let bounded_only = report
+                    .slot_sum
+                    .clone()
+                    .plus(report.sm_bound.clone())
+                    .plus(budget::Cost::bytes(report.runtime));
+                let bounded_str = budget::format_cost(&bounded_only);
+                let budget_str = report
+                    .budget
+                    .map(budget::format_bytes)
+                    .unwrap_or_else(|| "?".to_string());
+                self.warnings.push(CheckWarning::BudgetAdvisory {
+                    cell: cell.name.clone(),
+                    budget: budget_str,
+                    bounded_portion: bounded_str,
+                    unbounded_reasons: reasons,
+                });
+            }
         }
     }
 
@@ -625,18 +768,30 @@ impl<'a> Checker<'a> {
             output.push_str(&format!("error: {}\n", error));
         }
 
-        if self.errors.is_empty() && self.warnings.is_empty() {
+        // Tally only real warnings, not informational notes (BudgetOk).
+        let note_count = self.warnings.iter().filter(|w| w.is_note()).count();
+        let real_warning_count = self.warnings.len() - note_count;
+
+        if self.errors.is_empty() && real_warning_count == 0 && note_count == 0 {
             output.push_str("✓ All checks passed.\n");
         } else if self.errors.is_empty() {
-            output.push_str(&format!(
-                "✓ {} warning(s), no errors.\n",
-                self.warnings.len()
-            ));
+            if note_count > 0 && real_warning_count == 0 {
+                output.push_str(&format!(
+                    "✓ All checks passed ({} note{}).\n",
+                    note_count,
+                    if note_count == 1 { "" } else { "s" }
+                ));
+            } else {
+                output.push_str(&format!(
+                    "✓ {} warning(s), no errors.\n",
+                    real_warning_count
+                ));
+            }
         } else {
             output.push_str(&format!(
                 "✗ {} error(s), {} warning(s).\n",
                 self.errors.len(),
-                self.warnings.len()
+                real_warning_count
             ));
         }
 

@@ -200,12 +200,165 @@ nondet list is empty, every call in the handler body was either pure
 or to a deterministic builtin; given the same args and initial memory,
 the body produces the same value. ∎
 
-### 1.7 CTL model checker soundness
+### 1.7 Memory-budget proof obligation (V1.4)
+
+`scale { memory: "256Mi" }` was an advisory until V1.4. The V1.4
+budget checker (`compiler/src/checker/budget.rs`) turns it into a
+**compile-time proof obligation**: `soma check` either proves
+`peak_memory(C) ≤ B` for the declared budget `B`, or it produces a
+concrete bound that exceeds `B` and fails, or it downgrades to an
+advisory listing the unbounded builtins that prevent the proof.
+
+**The formula.**
+
+```
+peak_memory(C) ≤ slot_sum(C)
+              + max_{h ∈ handlers(C)} handler_peak(h)
+              + state_machine_bound(C)
+              + C_runtime
+```
+
+The crucial detail is that the handler contribution is the **maximum**
+across handlers, not the **sum**. A previous design (the original
+proposal in `discussions/budget_proposal.md`) used `sum`, which was
+unsound by a factor of `|handlers|`: it modelled "every handler holds
+its own stack frame simultaneously", but the Soma runtime only ever
+executes one handler at a time per cell instance. The unit test
+`budget_pass_many_handlers_uses_max_not_sum`
+(`compiler/tests/rigor_budget.rs`) pins this corrected formulation.
+
+**Slot bound.** For each `Map<K, V> [capacity(N), max_key_bytes(K),
+max_value_bytes(V)]`, the contribution is `N × (K + V + 64)` bytes
+(64 bytes for per-entry header). Missing annotations fall back to
+conservative defaults:
+
+| annotation         | default      |
+|--------------------|-------------:|
+| `capacity`         |       10 000 |
+| `max_key_bytes`    |          256 |
+| `max_value_bytes`  |        4 096 |
+| `max_element_bytes`|        4 096 |
+
+**Handler peak.** A recursive walk over the handler body (statements
+and expressions) sums per-allocation costs:
+
+  - Each `list(...)` allocates `64 + n × 16` bytes;
+  - Each `map(...)` allocates `256 + (n/2) × 64`;
+  - Each `with(m, k, v)`, `push(l, v)` adds a small constant;
+  - String literals contribute `len + 32` bytes;
+  - For loops multiply the body cost by the iteration count, taken
+    from (in priority order): an explicit `[loop_bound(N)]`
+    annotation, a literal `range(0, N)` argument, or
+    `DEFAULT_CAPACITY = 10 000` as a conservative fallback;
+  - Branches (`if/else`, `match`) take the `max` of arm costs;
+  - Calls to *unbounded builtins* (`think`, `from_json`, `http_get`,
+    `read_file`, `delegate`, …) propagate `Unbounded(reason)` up the
+    cost lattice.
+
+A single per-handler stack overhead of 8 MiB is added at the end.
+With the max-not-sum aggregate, the cell pays for **one** active
+stack frame at a time.
+
+**State machine bound.** Each `state foo [max_instances(N)] { … }`
+contributes `N × 256` bytes (256 bytes per instance ID entry,
+matching the storage backend's per-row overhead).
+
+**Runtime constant.** `C_runtime = 16 MiB` covers the interpreter,
+the storage backends, the HTTP server when present, the agent
+trace, and string interning.
+
+**Cost lattice.** The analyzer operates over an abstract cost type
+`Cost = Bounded(n) | Unbounded(reasons)` with three operations:
+
+  - `plus`: sequential composition (`Bounded(a) + Bounded(b) = Bounded(a+b)`)
+  - `max`: branching join (`Bounded(a) ⊔ Bounded(b) = Bounded(max(a,b))`)
+  - `times n`: loop unrolling (`Bounded(a) × n = Bounded(a × n)`)
+
+`Unbounded` absorbs everything: `plus`, `max`, and `times` with an
+`Unbounded` operand return `Unbounded` (the reasons accumulate).
+
+**Theorem 1.7 (Budget soundness, V1.4 — Tier 1).** *Let `C` be a cell
+with declared budget `B`. If `soma check` reports `BudgetOk` for `C`,
+then for every execution of `C` against a local-adversary call schedule
+(see `docs/ADVERSARIES.md` §1) that does not invoke any builtin in
+`unbounded_builtin_reason()` (see `compiler/src/checker/budget.rs`),
+the peak resident memory of the cell does not exceed `B`.*
+
+*Proof sketch.* The bound is computed by a closed-form recursive
+walk of the AST. For each construct, the per-construct cost is at
+least the maximum number of bytes the runtime can allocate during
+that construct's evaluation, by inspection of
+`compiler/src/interpreter/builtins/*.rs`. Sequential composition is
+sound by `cost_composition_sound` (mechanized in
+`docs/rigor/coq/Soma_Budget.v`). Branching is sound by `cmax_lub`
+(mechanized). Loop unrolling is sound by `ctimes_monotone_l` and
+the explicit `[loop_bound(N)]` annotation when present, or the
+literal `range(0, N)` form, or the conservative default. The cell-
+level aggregate uses **max** over handlers (not sum), which is
+sound under the local adversary because the runtime only schedules
+one handler at a time per cell instance. ∎
+
+**Mechanization.** The cost lattice operations and the headline
+composition theorem are mechanically verified in
+`docs/rigor/coq/Soma_Budget.v` (Rocq 9.1.1, no axioms, no
+`Admitted`, 6 theorems all `Closed under the global context`).
+What remains on paper is the bridge from the abstract `Cost` type
+in Coq to the AST walk in Rust — that bridge is by inspection of
+`compiler/src/checker/budget.rs::expr_cost` and `stmt_cost` matching
+the operations of the abstract lattice.
+
+**Empirical witness.** `docs/rigor/bin/bench_budget_runtime.sh` runs
+each test cell under a real OS memory cap set to
+`proven_peak + 32 MiB safety margin` and asserts that the cell
+completes without OOM. Three cells (trivial, many-handlers, state-
+machine) pass at HEAD; results in
+`docs/rigor/results/budget_runtime.md`.
+
+**Production cells with proven bounds.** Two cells in the rebalancer
+production code carry `scale { memory: ... }` declarations and pass
+the budget proof:
+
+  - `rebalancer/lib/optimizer.cell::Optimizer`: peak ≤ 69.89 MiB ≤ 128 MiB
+  - `rebalancer/lib/alpha.cell::Alpha`: peak ≤ 62.49 MiB ≤ 128 MiB
+
+Both are pure cells (no LLM, no HTTP, no JSON parsing of unknown
+inputs). The orchestrator cells (Portfolio, Compliance, Commentary)
+do not yet declare budgets because they call unbounded builtins; the
+checker would emit advisories listing the call sites if asked.
+
+**Tiers (where this lives in the proposal staging).**
+
+  - **Tier 1 (V1.4, this section)**: slot-level bounds + handler-body
+    walk + cost lattice composition + corrected max-not-sum aggregate
+    + mechanized soundness for the lattice. *Shipped.*
+  - **Tier 2 (future)**: smarter loop bounds (length-of-list inference,
+    SMT-backed loop count inference), per-statement live-vs-dead
+    allocation tracking (currently we conservatively sum within a
+    handler body), recursion-depth bounds via well-founded measure.
+  - **Tier 3 (research-grade)**: Hoffmann's RAML potential-function
+    technique for amortized per-request bounds.
+
+**What V1.4 does not yet prove:**
+
+  - Cells that call unbounded builtins (the analyzer correctly
+    degrades to ADVISORY rather than claiming a false bound).
+  - Cross-cell flows: a cell that `delegate`s to another cell ships
+    data to the receiver, and the receiver's budget is checked
+    independently. The aggregate fleet bound is the sum of per-cell
+    bounds.
+  - Concurrent handler execution (the local-adversary assumption).
+  - The bridge from abstract `Cost` to operational allocation
+    semantics in Coq (V1.5 work).
+
+For the full open-question list, see `docs/rigor/README.md` and
+`docs/SOUNDNESS.md` §6.
+
+### 1.8 CTL model checker soundness
 
 Refinement (§1.5) and the runtime transition guard
 (`do_transition_for`) together give:
 
-**Lemma 1.7 (Runtime fidelity).** *Every successful runtime
+**Lemma 1.8 (Runtime fidelity).** *Every successful runtime
 `transition(id, target)` call lies in the abstract state machine `→`
 of some declared state block.*
 

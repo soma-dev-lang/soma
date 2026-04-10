@@ -127,7 +127,7 @@ impl BytecodeCompiler {
                 chunk.patch_jump(exit_jump, chunk.len() as u16);
             }
 
-            Statement::For { var, iter, body } => {
+            Statement::For { var, iter, body, bound: _ } => {
                 // Compile iterator expression
                 self.compile_expr(chunk, &iter.node);
                 chunk.emit(Op::IterInit);

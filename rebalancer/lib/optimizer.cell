@@ -10,6 +10,19 @@
 // ═══════════════════════════════════════════════════════════════════
 
 cell Optimizer {
+    // V1.4 budget proof obligation. The Optimizer is pure (no LLM, no
+    // HTTP, no JSON parsing of unknown payloads), so its peak memory
+    // is closed-form bounded. `soma check` proves the bound below.
+    //
+    // The runtime constants in `compiler/src/checker/budget.rs`
+    // (8 MiB stack, 16 MiB runtime) dominate the bound for a cell
+    // with no memory slots; the cell itself only allocates transient
+    // working sets bounded by the input size, which is bounded by
+    // the caller's budget.
+    scale {
+        replicas: 1
+        memory: "128Mi"
+    }
 
     // Pure entry point: build a trade list from current state + targets.
     //
