@@ -48,6 +48,53 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     .filter_map(|s| if let Section::OnSignal(ref on) = s.node { Some((on, s.span)) } else { None })
                     .collect();
                 let findings = super::refinement::check_refinement(sm, &handlers);
+
+                // ── V1.4: think-isolation check ────────────────────────
+                // If all transition targets are literal (no DynamicTarget),
+                // then CTL safety properties hold regardless of what
+                // think() / any LLM builtin returns. See isolation.rs.
+                let isolation = super::isolation::check_isolation(
+                    &cell.node.name, &findings);
+                match &isolation {
+                    super::isolation::IsolationFinding::ThinkIsolated { n_handlers, n_transitions, .. } => {
+                        result.checks.push(VerifyCheck::Pass(
+                            format!(
+                                "think-isolated: CTL safety properties hold regardless of LLM output ({} handlers, {} literal transitions, 0 dynamic)",
+                                n_handlers, n_transitions
+                            )
+                        ));
+                    }
+                    super::isolation::IsolationFinding::NotIsolated { dynamic_handlers, .. } => {
+                        result.checks.push(VerifyCheck::Warning(
+                            format!(
+                                "NOT think-isolated: handlers [{}] use dynamic transition targets — safety under adversarial LLM is not proven for this cell",
+                                dynamic_handlers.join(", ")
+                            )
+                        ));
+                    }
+                    super::isolation::IsolationFinding::NoStateMachine => {
+                        // No state machine → no isolation finding
+                    }
+                }
+
+                // ── V1.4: handler termination check ──────────────
+                let term_findings = super::termination::check_cell_termination(&cell.node);
+                let all_terminate = term_findings.iter().all(|f|
+                    matches!(f, super::termination::TerminationFinding::Terminates { .. }));
+                if all_terminate && !term_findings.is_empty() {
+                    result.checks.push(VerifyCheck::Pass(
+                        format!("termination: all {} handlers structurally terminate", term_findings.len())
+                    ));
+                } else {
+                    for tf in &term_findings {
+                        if let super::termination::TerminationFinding::MayNotTerminate { handler, reasons } = tf {
+                            for reason in reasons {
+                                result.checks.push(VerifyCheck::Warning(reason.clone()));
+                            }
+                        }
+                    }
+                }
+
                 for f in findings {
                     use super::refinement::RefinementFinding::*;
                     match f {

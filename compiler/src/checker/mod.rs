@@ -5,6 +5,8 @@ pub mod temporal;
 pub mod native;
 pub mod refinement;
 pub mod budget;
+pub mod isolation;
+pub mod termination;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
