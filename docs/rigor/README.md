@@ -19,11 +19,12 @@ against the implementation as it stands today.
 | Replay determinism | Paper theorem + proof sketch | [`docs/SEMANTICS.md`](../SEMANTICS.md) §1.6 |
 | **CTL safety soundness** (Always, Never, DeadlockFree, Mutex) | **Paper theorem + proof, sound and complete** | [`docs/SOUNDNESS.md`](../SOUNDNESS.md) §3.1 |
 | **CTL liveness soundness** (Eventually, After) | **Paper theorem + proof + closed soundness gap** | [`docs/SOUNDNESS.md`](../SOUNDNESS.md) §3.2 |
+| **Mechanized depth-bound theorem** | **Coq proof, no axioms, no Admitted** | [`docs/rigor/coq/Soma_CTL.v`](coq/Soma_CTL.v) — 5 theorems, all `Closed under the global context` |
 | Backend equivalence (interp ≡ vm) | Conjecture, executable witness on intersection corpus | [`compiler/tests/equivalence.rs`](../../compiler/tests/equivalence.rs) — 16/16 cases |
 | Backend equivalence (interp ≡ native) | Conjecture, no harness yet | — |
 | State-explosion bench | Measured numbers, three topologies | [`docs/rigor/results/state_explosion.md`](results/state_explosion.md) |
 | Adversary models | Per-property table with explicit quantifiers | [`docs/ADVERSARIES.md`](../ADVERSARIES.md) |
-| Mechanised soundness (Coq/Lean) | **Not done** | tracked as V1.4 |
+| Full mechanized cell calculus | Not yet (separate file, V1.4+) | — |
 
 ## Bugs found by the rigor pass
 
@@ -72,11 +73,15 @@ cd compiler && cargo test --test rigor_eventually_long_chain --release -- --noca
 # 3. State-explosion bench (overwrites results/state_explosion.md)
 bash docs/rigor/bin/bench_state_explosion.sh
 
-# 4. Static verification of the rebalancer (the property pack
+# 4. Mechanized Coq proof (requires Rocq Prover 9.1+)
+make -C docs/rigor/coq check
+# Expected: 5 lines saying "Closed under the global context"
+
+# 5. Static verification of the rebalancer (the property pack
 #    that exercises the most state-machine surface)
 ./compiler/target/release/soma verify rebalancer/app.cell
 
-# 5. End-to-end sanity (rebalancer test suite still green)
+# 6. End-to-end sanity (rebalancer test suite still green)
 ./rebalancer/bin/test_all.sh
 ```
 
@@ -89,12 +94,20 @@ the regression is "fixed" by changing the property.
 
 In honest order of decreasing seriousness:
 
-1. **Mechanised proof in Coq or Lean.** Everything in this directory
-   is on paper or in tests. A real soundness theorem for a model
-   checker is a formalisation of the operational semantics, the
-   abstraction relation, and a forward-simulation theorem. That is
-   genuinely V1.4-or-later work; nobody has done it yet for any
-   verified language smaller than CompCert.
+1. ~~**Mechanised proof in Coq or Lean.**~~ **Partially closed.**
+   The central depth-bound theorem is now mechanically verified in
+   Rocq Prover 9.1.1 (`docs/rigor/coq/Soma_CTL.v`, 5 theorems, all
+   `Closed under the global context`). What is still on paper:
+     (a) the connection between the abstract `Graph` of `Soma_CTL.v`
+         and Soma's cell calculus from `docs/SEMANTICS.md` §1
+         (requires mechanizing the reduction relation),
+     (b) the cyclic-counter-example branch of the DFS (the bug was
+         in the acyclic case; the proof covers it),
+     (c) the four safety theorems (Always, Never, DeadlockFree,
+         Mutex) which reduce trivially to `forall x in reach, P x`
+         but are not yet in the `.v` file.
+   These remaining items are incremental: each is a separate file
+   that builds on `Soma_CTL.v`. Tracked as V1.4.
 2. **Native codegen equivalence.** The intersection harness covers
    interpreter vs bytecode VM. The `[native]` backend (compiles
    handlers to a Rust `cdylib`) needs its own harness that compares
@@ -132,6 +145,10 @@ docs/
     ├── README.md            (you are here)
     ├── bin/
     │   └── bench_state_explosion.sh    bench generator + runner
+    ├── coq/
+    │   ├── Makefile         build + check no-axioms
+    │   ├── Soma_CTL.v       MECHANIZED depth-bound theorem (Rocq 9.1)
+    │   └── .gitignore
     └── results/
         └── state_explosion.md          last bench run
 
@@ -146,7 +163,9 @@ compiler/
 
 > The rigor pass replaces Soma's verification claims with theorems
 > whose assumptions are explicit, whose gaps are listed, whose proof
-> sketches are reproducible by reading the source, whose backend
-> equivalence has an executable witness, and whose state-explosion
-> cliff is measured rather than asserted — and in doing so it found
-> and closed a real soundness bug in the CTL liveness checker.
+> sketches are reproducible by reading the source, whose central
+> depth-bound lemma is now mechanically verified in Rocq with no
+> axioms and no `Admitted`, whose backend equivalence has an
+> executable witness, and whose state-explosion cliff is measured
+> rather than asserted — and in doing so it found and closed a real
+> soundness bug in the CTL liveness checker.

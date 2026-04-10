@@ -334,13 +334,45 @@ paths longer than 50. **Status:** fixed in
 
 In order of decreasing seriousness:
 
-  1. **Mechanised soundness in Coq or Lean.** The proof above is on
-     paper. A real soundness theorem for a model checker is a
-     formalisation of (a) the operational semantics in
-     `docs/SEMANTICS.md`, (b) the abstraction relation between the
-     concrete machine and `G(M)`, and (c) a forward simulation theorem.
-     This is V1.4 (or later) work. *Until it ships, every claim in
-     this document is "we believe X" rather than "we have proven X".*
+  1. ~~**Mechanised soundness in Coq or Lean.**~~ **Partially closed.**
+     The central pigeonhole-on-walks lemma — the mathematical fact that
+     justifies the depth bound `length(reachable) + 1` and therefore
+     Theorem 3.2 above — has been mechanically verified in Rocq Prover
+     9.1.1. The proof file `docs/rigor/coq/Soma_CTL.v` ships with the
+     repository; `make -C docs/rigor/coq check` builds it and verifies
+     that all five theorems certify `Closed under the global context`
+     (zero axioms, zero `Admitted`, zero `Abort`).
+
+     The mechanized theorems are:
+
+     - `acyclic_walk_bounded` — every walk through a finite graph that
+       visits no state twice has length ≤ |states|. This is the
+       central lemma.
+     - `walk_too_long_must_repeat` — contrapositive: any walk longer
+       than |states| revisits some state.
+     - `bound_at_least_states_is_sufficient` — the exact form needed
+       by the Rust fix: any acyclic walk fits within `|states| + 1`.
+     - `walk_g4` — concrete witness: a 4-state acyclic walk hitting
+       the tight bound.
+     - `any_5_walk_in_g4_must_repeat` — pigeonhole in concrete form.
+
+     What is *still* on paper, not in Coq:
+
+     - The full operational correspondence between the abstract
+       `Graph` of `Soma_CTL.v` and Soma's cell calculus from
+       `docs/SEMANTICS.md` §1. Bridging this gap requires mechanizing
+       Soma's reduction relation in Coq — a substantial separate file.
+     - The cyclic-counter-example branch of the DFS (the runtime
+       handles cycles via its `visited` set; we verified the acyclic
+       case where the bug actually lived).
+     - The full §3.1 safety theorems (Always, Never, DeadlockFree,
+       Mutex). These reduce trivially to `forall x in reachable, P x`,
+       but the mechanization is not yet in `Soma_CTL.v`.
+
+     The architecture is now: **the abstract math is mechanically
+     proven; the bridge from abstract to concrete is on paper**. This
+     is exactly the same posture CompCert takes between its proven
+     C semantics and the LLVM passes that don't have one.
   2. **Soundness of the bytecode VM and native codegen.** The argument
      above is over the *interpreter*. The VM and native backends each
      need their own simulation theorem against the operational
