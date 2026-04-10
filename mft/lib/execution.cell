@@ -210,6 +210,99 @@ cell ExecutionEngine {
         map("sent", n_ok, "rejected", n_rej, "total_slippage", to_string(total_slippage))
     }
 
+    // ── Cancel ALL open orders (exchange-level kill switch) ────
+    //
+    // Called during the halt sequence: breached → cancelling_all →
+    // cancel every order that is not yet settled → halted.
+    // Returns the count of orders cancelled.
+
+    on cancel_all_open() {
+        let cancelled_count = 0
+        for [loop_bound(10000)] k in orders.keys() {
+            let raw = orders.get(k)
+            if raw != () {
+                let o = from_json(raw)
+                let s = o.status ?? "settled"
+                if s == "acked" {
+                    transition(k, "pending_cancel")
+                    transition(k, "cancelled")
+                    transition(k, "settled")
+                    orders.set(k, to_json(o |> with("status", "settled") |> with("cancelled", "kill_switch")))
+                    cancelled_count = cancelled_count + 1
+                }
+                if s == "partially_filled" {
+                    transition(k, "pending_cancel")
+                    transition(k, "cancelled")
+                    transition(k, "settled")
+                    orders.set(k, to_json(o |> with("status", "settled") |> with("cancelled", "kill_switch")))
+                    cancelled_count = cancelled_count + 1
+                }
+                if s == "sent" {
+                    // sent → rejected is a valid edge (exchange reject).
+                    transition(k, "rejected")
+                    transition(k, "settled")
+                    orders.set(k, to_json(o |> with("status", "settled") |> with("cancelled", "kill_switch")))
+                    cancelled_count = cancelled_count + 1
+                }
+            }
+        }
+        map("cancelled", cancelled_count)
+    }
+
+    // ── Partial fill: report a partial execution from the exchange ──
+    //
+    // In live mode, the exchange reports partial fills. This handler
+    // updates the cumulative filled quantity and transitions to
+    // partially_filled. When cumulative >= order qty, transitions to filled.
+
+    on report_partial_fill(id: String, fill_qty: String, fill_price: String) {
+        let raw = orders.get(id)
+        if raw == () { return map("error", "not found") }
+        let o = from_json(raw)
+        let s = o.status ?? ""
+        if s != "acked" {
+            if s != "partially_filled" {
+                return map("error", "cannot fill from state: " + s)
+            }
+        }
+
+        let cum_qty = to_float(o.cum_qty ?? "0") + to_float(fill_qty)
+        let order_qty = to_float(o.qty ?? "0")
+
+        if s == "acked" {
+            transition(id, "partially_filled")
+        }
+
+        let updated = o
+            |> with("cum_qty", to_string(cum_qty))
+            |> with("last_fill_price", fill_price)
+            |> with("status", "partially_filled")
+
+        if cum_qty >= order_qty {
+            transition(id, "filled")
+            updated = updated |> with("status", "filled")
+            // Record in risk manager.
+            delegate("RiskManager", "record_fill", o.symbol ?? "", o.qty ?? "0", o.side ?? "BUY")
+            transition(id, "settled")
+            updated = updated |> with("status", "settled")
+        }
+
+        orders.set(id, to_json(updated))
+
+        // Log the partial fill.
+        let seq = to_int(sequence.get("fill_seq") ?? "0") + 1
+        sequence.set("fill_seq", to_string(seq))
+        fills.set(id + "_" + to_string(seq), to_json(map(
+            "id", id, "symbol", o.symbol ?? "",
+            "side", o.side ?? "", "fill_qty", fill_qty,
+            "fill_price", fill_price, "cum_qty", to_string(cum_qty),
+            "seq", to_string(seq), "ts", to_string(now())
+        )))
+
+        map("id", id, "cum_qty", to_string(cum_qty), "order_qty", to_string(order_qty),
+            "status", updated.status)
+    }
+
     // ── Cleanup settled orders older than N ─────────────────────
 
     on cleanup(keep_last: Int) {

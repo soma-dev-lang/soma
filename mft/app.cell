@@ -82,6 +82,11 @@ cell MFTEngine {
     //   6. Execute trades (with risk check + slippage)
     //   7. Reset rate limiter
 
+    // Auto-cleanup every 60 seconds to prevent unbounded storage.
+    every 60s {
+        delegate("ExecutionEngine", "cleanup", 5000)
+    }
+
     on tick(payload: Map) {
         let tick_prices = payload.prices ?? map()
         let tick_bids = payload.bids ?? map()
@@ -89,6 +94,17 @@ cell MFTEngine {
         let tick_spreads = payload.spreads ?? map()
         let tick_id = to_string(next_id())
         let nav = to_float(config.get("nav") ?? "1000000")
+        let tick_seq = payload.seq ?? tick_id
+        let auth_token = payload.auth ?? ""
+
+        // ── 0. Validate tick (auth + sequence + sanity) ────────
+        let validation = delegate("RiskManager", "validate_tick", payload, tick_seq, auth_token)
+        if validation.valid != "true" {
+            return map("tick", tick_id, "rejected", true, "reason", validation.reason)
+        }
+
+        // Record tick for warm-up counter.
+        delegate("RiskManager", "record_tick")
 
         // ── 1. Update stores + histories ───────────────────────
         for [loop_bound(200)] sym in tick_prices.keys() {
@@ -127,9 +143,21 @@ cell MFTEngine {
             return map("tick", tick_id, "halted", true, "drawdown", mtm.drawdown)
         }
         if mtm.status == "breached" {
-            // Auto-halt on breach.
-            delegate("RiskManager", "halt")
-            return map("tick", tick_id, "halted", true, "reason", "auto-halt on breach", "drawdown", mtm.drawdown)
+            // Kill switch: cancel all open orders THEN halt.
+            let halt_result = delegate("RiskManager", "halt")
+            if halt_result.status == "cancelling_all" {
+                let cancel_result = delegate("ExecutionEngine", "cancel_all_open")
+                delegate("RiskManager", "complete_halt")
+            }
+            return map("tick", tick_id, "halted", true, "reason", "auto-halt on breach",
+                "drawdown", mtm.drawdown)
+        }
+        if mtm.status == "cancelling_all" {
+            return map("tick", tick_id, "halted", true, "reason", "cancelling orders")
+        }
+        if mtm.status == "warming_up" {
+            // Still warming up: update stores but don't trade.
+            return map("tick", tick_id, "warming_up", true)
         }
 
         // ── 3. Compute signals ─────────────────────────────────
@@ -236,7 +264,17 @@ cell MFTEngine {
 
     // ── Operator controls ──────────────────────────────────────
 
-    on halt() { delegate("RiskManager", "halt") }
+    on halt() {
+        let r = delegate("RiskManager", "halt")
+        if r.status == "cancelling_all" {
+            // Exchange-level kill switch: cancel all open orders.
+            let c = delegate("ExecutionEngine", "cancel_all_open")
+            delegate("RiskManager", "complete_halt")
+            return map("status", "halted", "orders_cancelled", c.cancelled)
+        }
+        r
+    }
+
     on resume() { delegate("RiskManager", "resume") }
     on reconcile(auth: Map) { delegate("RiskManager", "reconcile", auth) }
     on cleanup(n: Int) { delegate("ExecutionEngine", "cleanup", n) }

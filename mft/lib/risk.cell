@@ -21,11 +21,13 @@ cell RiskManager {
     }
 
     state trading [max_instances(1)] {
-        initial: active
+        initial: warming_up
+        warming_up -> active
         active -> warning
         warning -> active
         warning -> breached
-        breached -> halted
+        breached -> cancelling_all
+        cancelling_all -> halted
         halted -> active
     }
 
@@ -42,6 +44,9 @@ cell RiskManager {
         limits.set("max_notional", payload.max_notional ?? "500000")
         limits.set("max_concentration", payload.max_concentration ?? "0.25")
         limits.set("max_orders_per_tick", payload.max_orders_per_tick ?? "10")
+        limits.set("warmup_ticks", payload.warmup_ticks ?? "50")
+        limits.set("max_spread_pct", payload.max_spread_pct ?? "0.05")
+        limits.set("auth_secret", payload.auth_secret ?? "")
         map("status", "limits_set")
     }
 
@@ -50,9 +55,81 @@ cell RiskManager {
         equity.set("current", starting)
         equity.set("drawdown", "0")
         equity.set("unrealized_pnl", "0")
+        equity.set("tick_count", "0")
         order_rate.set("count", "0")
         order_rate.set("window_start", to_string(now()))
         map("status", "initialized")
+    }
+
+    // ── Warm-up: suppress trading until N ticks accumulated ────
+    //
+    // The signal engine needs history to produce meaningful signals.
+    // During warming_up, check_order returns false. After warmup_ticks
+    // ticks, transition to active.
+
+    on record_tick() {
+        let count = to_int(equity.get("tick_count") ?? "0") + 1
+        equity.set("tick_count", to_string(count))
+        let warmup = to_int(limits.get("warmup_ticks") ?? "50")
+        let status = get_status("system")
+        if status == "warming_up" {
+            if count >= warmup {
+                transition("system", "active")
+                return map("status", "active", "ticks", count)
+            }
+        }
+        map("status", status, "ticks", count)
+    }
+
+    // ── Tick validation: reject aberrant market data ───────────
+    //
+    // Checks:
+    //   1. No negative prices
+    //   2. No extreme spreads (> max_spread_pct of mid)
+    //   3. Sequence number monotonically increasing
+    //   4. Auth token matches configured secret
+
+    on validate_tick(payload: Map, seq: String, auth_token: String) {
+        // Auth check.
+        let secret = limits.get("auth_secret") ?? ""
+        if secret != "" {
+            if auth_token != secret {
+                return map("valid", "false", "reason", "auth failed: invalid token")
+            }
+        }
+
+        // Sequence check.
+        let last_seq = to_int(limits.get("last_tick_seq") ?? "0")
+        let this_seq = to_int(seq)
+        if this_seq <= last_seq {
+            return map("valid", "false", "reason", "sequence gap or replay: got " + seq + " expected > " + to_string(last_seq))
+        }
+        limits.set("last_tick_seq", seq)
+
+        // Price sanity.
+        let tick_prices = payload.prices ?? map()
+        for [loop_bound(200)] sym in tick_prices.keys() {
+            let p = to_float(tick_prices.get(sym) ?? "0")
+            if p <= 0.0 {
+                return map("valid", "false", "reason", "negative/zero price for " + sym + ": " + to_string(p))
+            }
+        }
+
+        // Spread sanity.
+        let tick_spreads = payload.spreads ?? map()
+        let max_spread_pct = to_float(limits.get("max_spread_pct") ?? "0.05")
+        for [loop_bound(200)] sym in tick_spreads.keys() {
+            let sprd = to_float(tick_spreads.get(sym) ?? "0")
+            let mid = to_float(tick_prices.get(sym) ?? "0")
+            if mid > 0.0 {
+                let pct = sprd / mid
+                if pct > max_spread_pct {
+                    return map("valid", "false", "reason", "extreme spread for " + sym + ": " + to_string(pct * 100.0) + "% > " + to_string(max_spread_pct * 100.0) + "%")
+                }
+            }
+        }
+
+        map("valid", "true", "seq", seq)
     }
 
     // ── Mark-to-market: update equity at current prices ────────
@@ -109,6 +186,12 @@ cell RiskManager {
         }
         if status == "breached" {
             return map("allowed", "false", "reason", "risk breached — awaiting halt")
+        }
+        if status == "cancelling_all" {
+            return map("allowed", "false", "reason", "cancelling all orders — no new orders")
+        }
+        if status == "warming_up" {
+            return map("allowed", "false", "reason", "warming up — need more ticks before trading")
         }
 
         // Position limit.
@@ -192,13 +275,28 @@ cell RiskManager {
 
     // ── Circuit breaker controls ───────────────────────────────
 
+    // Halt now goes through cancelling_all: breach → cancel all open
+    // orders at the exchange → THEN halt. This ensures no orders are
+    // orphaned when the system stops trading.
     on halt() {
         let s = get_status("system")
         if s == "breached" {
+            transition("system", "cancelling_all")
+            // The orchestrator calls cancel_all_open() on ExecutionEngine
+            // BEFORE calling complete_halt(). This is the exchange-level
+            // kill switch.
+            return map("status", "cancelling_all", "action_required", "cancel all open orders then call complete_halt")
+        }
+        map("status", s, "reason", "can only halt from breached")
+    }
+
+    on complete_halt() {
+        let s = get_status("system")
+        if s == "cancelling_all" {
             transition("system", "halted")
             return map("status", "halted")
         }
-        map("status", s, "reason", "can only halt from breached")
+        map("status", s, "reason", "can only complete halt from cancelling_all")
     }
 
     on resume() {

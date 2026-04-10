@@ -5,7 +5,7 @@ description = "Verified medium-frequency trading automaton — secured by constr
 [verify]
 deadlock_free = true
 
-# Order lifecycle: every order MUST reach settled.
+# ── Order lifecycle: every order MUST reach settled ──────────────
 [verify.after.pending]
 eventually = ["settled"]
 
@@ -33,9 +33,15 @@ eventually = ["settled"]
 [verify.after.partially_filled]
 eventually = ["settled"]
 
-# Risk: breach always leads to halt.
+# ── Risk state machine ──────────────────────────────────────────
 [verify.after.breached]
+eventually = ["halted"]
+
+[verify.after.cancelling_all]
 eventually = ["halted"]
 
 [verify.after.warning]
 eventually = ["halted", "active"]
+
+[verify.after.warming_up]
+eventually = ["active"]
