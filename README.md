@@ -224,22 +224,40 @@ Technical details: `docs/SEMANTICS.md` §1.7. Coq proof:
 The model checker's correctness is not just claimed — it's proven.
 
 - **CTL safety** (`deadlock_free`, `always`, `never`, `mutex`):
-  sound and complete on the abstract state machine. Paper proof in
-  `docs/SOUNDNESS.md` §3.1.
+  sound and complete on the abstract state machine (`Soma_CTL.v`).
 - **CTL liveness** (`eventually`, `after`): sound after a depth-bound
-  fix discovered during the rigor pass. The central pigeonhole-on-walks
-  lemma is **mechanically verified in Coq** (`docs/rigor/coq/Soma_CTL.v`).
-- **Budget composition**: the cost lattice operations are **mechanically
-  verified in Coq** (`docs/rigor/coq/Soma_Budget.v`).
+  fix discovered during the rigor pass (`Soma_CTL.v`).
+- **Think-isolation**: if all transition targets are literal,
+  **CTL safety holds regardless of what the LLM returns**
+  (`Soma_Isolation.v`). Tool handlers that call `transition()` are
+  detected and excluded. Adversarial review found and closed the
+  tool-calling side channel.
+- **Runtime fidelity → safety transfer**: the full chain from
+  "runtime guards transitions against G" to "safety holds on the
+  trace" is mechanized with **no unproven gap** (`Soma_RuntimeFidelity.v`).
+- **Budget composition**: cost lattice + per-builtin allocation
+  bounds (`Soma_Budget.v` + `Soma_BudgetOps.v`).
+- **Handler termination**: every handler body structurally
+  terminates (no unbounded `while`, bounded `for` loops,
+  decreasing recursion). `soma verify` reports it per cell.
+- **Signal composition**: every `emit` in an `interior` block has a
+  matching handler, every handler has a signal source. `soma verify`
+  reports matched pairs and orphans.
 
-11 Coq theorems total, all `Closed under the global context` (zero
-axioms). Reproduce: `make -C docs/rigor/coq check`.
+**20 Coq theorems** across 6 files, all `Closed under the global
+context` (zero axioms). Reproduce: `make -C docs/rigor/coq check`.
 
-Every property `soma verify` prints names its **adversary model**
-explicitly in `docs/ADVERSARIES.md` — "deadlock-free *under what
-assumptions*?" has a concrete answer for every row.
+```
+$ soma verify rebalancer/app.cell
 
-Full rigor scorecard: `docs/rigor/README.md`.
+✓ think-isolated: CTL safety holds regardless of LLM output
+  (5 handlers, 20 literal transitions, 0 dynamic)
+✓ termination: all 31 handlers structurally terminate
+✓ 16 temporal properties passed
+```
+
+Every property names its **adversary model** explicitly in
+`docs/ADVERSARIES.md`. Full rigor scorecard: `docs/rigor/README.md`.
 
 ## Deterministic record / replay
 
