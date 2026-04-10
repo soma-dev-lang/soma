@@ -1,0 +1,43 @@
+[package]
+name = "hft"
+description = "Verified high-frequency trading automaton — secured by construction"
+
+# ── Properties for BOTH state machines ───────────────────────────
+# Note: `eventually` is checked against ALL state machines in the
+# file. The trading SM has no terminal states (by design — it stays
+# alive), so `eventually(settled)` would fail on it. We use per-state
+# `after` properties instead, which correctly target each SM.
+[verify]
+deadlock_free = true
+
+[verify.after.pending]
+eventually = ["settled"]
+
+[verify.after.risk_check]
+eventually = ["settled"]
+
+[verify.after.sent]
+eventually = ["settled"]
+
+[verify.after.acked]
+eventually = ["settled"]
+
+[verify.after.filled]
+eventually = ["settled"]
+
+[verify.after.cancelled]
+eventually = ["settled"]
+
+[verify.after.rejected]
+eventually = ["settled"]
+
+# ── Risk state machine: different safety properties ─────────────
+# The trading SM should NOT reach settled — it stays alive.
+# Instead we verify:
+#   1. A breach ALWAYS leads to halt (no orders slip through)
+#   2. Warning is recoverable (can go back to active OR forward to breach)
+[verify.after.breached]
+eventually = ["halted"]
+
+[verify.after.warning]
+eventually = ["halted", "active"]
