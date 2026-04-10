@@ -322,6 +322,111 @@ impl<'a> Checker<'a> {
         // checker either proves the bound, fails, or downgrades to
         // an advisory if a handler calls an unbounded builtin.
         self.check_memory_budget(cell);
+
+        // 11. Aggregate budget for interior children (V1.4).
+        // Interior cells run in the same process as their parent.
+        // The parent's declared budget must cover the sum of its own
+        // peak plus all children's peaks. Children's own budgets are
+        // sub-budgets within the parent's total.
+        self.check_aggregate_budget(cell);
+    }
+
+    fn check_aggregate_budget(&mut self, cell: &CellDef) {
+        // Only applies if the parent declares a budget AND has interior children.
+        let parent_budget_bytes = cell.sections.iter().find_map(|s| {
+            if let Section::Scale(ref sc) = s.node {
+                sc.memory.as_ref().and_then(|m| budget::parse_budget_bytes(m))
+            } else {
+                None
+            }
+        });
+        let parent_budget_bytes = match parent_budget_bytes {
+            Some(b) => b,
+            None => return,
+        };
+
+        let mut children: Vec<(String, budget::BudgetReport)> = Vec::new();
+        for section in &cell.sections {
+            if let Section::Interior(ref interior) = section.node {
+                for child in &interior.cells {
+                    if child.node.kind == CellKind::Cell || child.node.kind == CellKind::Agent {
+                        let report = budget::check_cell(&child.node);
+                        children.push((child.node.name.clone(), report));
+                    }
+                }
+            }
+        }
+
+        if children.is_empty() {
+            return;
+        }
+
+        let parent_report = budget::check_cell(cell);
+
+        // Aggregate = parent's own peak + sum of children's peaks.
+        let mut aggregate = parent_report.total.clone();
+        let mut any_unbounded = false;
+        let mut child_summaries = Vec::new();
+
+        for (name, child_report) in &children {
+            match &child_report.total {
+                budget::Cost::Bounded(n) => {
+                    child_summaries.push(format!("{}: {}", name, budget::format_bytes(*n)));
+                    aggregate = aggregate.plus(budget::Cost::bytes(*n));
+                }
+                budget::Cost::Unbounded(reasons) => {
+                    any_unbounded = true;
+                    child_summaries.push(format!("{}: unbounded", name));
+                    aggregate = aggregate.plus(budget::Cost::unbounded(
+                        format!("interior cell '{}' is unbounded", name)
+                    ));
+                    let _ = reasons; // suppress unused
+                }
+            }
+        }
+
+        match &aggregate {
+            budget::Cost::Bounded(total) => {
+                if *total > parent_budget_bytes {
+                    let span = cell.sections.iter()
+                        .find(|s| matches!(s.node, Section::Scale(_)))
+                        .map(|s| s.span)
+                        .unwrap_or_else(|| Span::new(0, 0));
+                    self.errors.push(CheckError::BudgetExceeded {
+                        cell: cell.name.clone(),
+                        proven: budget::format_bytes(*total),
+                        budget: budget::format_bytes(parent_budget_bytes),
+                        breakdown: format!(
+                            "parent {} + interior children [{}]",
+                            budget::format_cost(&parent_report.total),
+                            child_summaries.join(", ")
+                        ),
+                        span,
+                    });
+                } else {
+                    self.warnings.push(CheckWarning::BudgetOk {
+                        cell: format!("{} (aggregate with interior)", cell.name),
+                        proven: budget::format_bytes(*total),
+                        budget: budget::format_bytes(parent_budget_bytes),
+                        breakdown: format!(
+                            "parent {} + interior [{}]",
+                            budget::format_cost(&parent_report.total),
+                            child_summaries.join(", ")
+                        ),
+                    });
+                }
+            }
+            budget::Cost::Unbounded(reasons) => {
+                if any_unbounded {
+                    self.warnings.push(CheckWarning::BudgetAdvisory {
+                        cell: format!("{} (aggregate)", cell.name),
+                        budget: budget::format_bytes(parent_budget_bytes),
+                        bounded_portion: budget::format_cost(&parent_report.total),
+                        unbounded_reasons: reasons.clone(),
+                    });
+                }
+            }
+        }
     }
 
     fn check_memory_budget(&mut self, cell: &CellDef) {
