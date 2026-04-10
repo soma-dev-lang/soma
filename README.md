@@ -141,16 +141,87 @@ cell with a state machine:
    conditions (`if` guards) leading to each call.
 
 ```
-$ soma verify examples/refinement/02_payment_undeclared_target.cell
+$ soma verify rebalancer/app.cell
 
-  ✗ refinement: handler `settle` calls transition(_, "completed") but
-      "completed" is not in state machine `lifecycle`
+  ✓ refinement: handler `rebalance` ⟶ {signal_pending,
+        failed [if alpha_cfg != () ∧ alpha_result.error != ()],
+        blocked [if verdict == "BLOCK"],
+        approved [if verdict == "APPROVE"],
+        flagged}
 ```
 
 This is the WOW feature the manifesto was claiming. Before V1.3,
-"specification is the program" was a poster. Now it's a theorem. Demos:
-`examples/refinement/`. Honest scope notes (what's syntactic vs
-SMT-deferred) in `docs/SEMANTICS.md §1.5`.
+"specification is the program" was a poster. Now it's a theorem.
+
+## Memory-budget proof obligation (V1.4)
+
+`scale { memory: "128Mi" }` is no longer advisory — the compiler
+**proves** your cell fits.
+
+```soma
+cell Optimizer {
+    scale {
+        replicas: 1
+        memory: "128Mi"
+    }
+
+    on optimize(input: Map) {
+        // 200 lines of constraint math: position caps, turnover caps,
+        // cash floor scaling, nested loops...
+    }
+}
+```
+
+```
+$ soma check rebalancer/app.cell
+
+✓ budget proven for cell 'Optimizer': peak ≤ 69.89 MiB ≤ declared 128.00 MiB
+    breakdown: slots 0 B + max-handler 53.89 MiB + state 0 B + runtime 16.00 MiB
+```
+
+The checker walks every handler body, counts every allocation
+(`list()`, `map()`, `push()`, string literals), unrolls loops by
+their `[loop_bound(N)]` annotation or literal `range(0, N)`, takes
+the **max** across handlers (not sum — only one runs at a time),
+adds slot capacities and runtime overhead, and compares against the
+declared budget. Three outcomes:
+
+- **Proven** — closed-form bound fits. The cell will not OOM.
+- **Exceeded** — bound exceeds budget. Compile error with breakdown.
+- **Advisory** — handler calls an unbounded builtin (`think()`,
+  `from_json()`, `http_get()`). The checker lists the exact call
+  sites that prevent the proof instead of lying.
+
+The cost lattice and the composition theorem are **mechanically
+verified in Coq** (Rocq 9.1.1, zero axioms, zero `Admitted`).
+No other general-purpose language proves memory budgets at compile
+time. The only tools that do this are $100K/seat avionics analyzers
+on restricted input languages.
+
+Technical details: `docs/SEMANTICS.md` §1.7. Coq proof:
+`docs/rigor/coq/Soma_Budget.v`.
+
+## Soundness — mechanically verified
+
+The model checker's correctness is not just claimed — it's proven.
+
+- **CTL safety** (`deadlock_free`, `always`, `never`, `mutex`):
+  sound and complete on the abstract state machine. Paper proof in
+  `docs/SOUNDNESS.md` §3.1.
+- **CTL liveness** (`eventually`, `after`): sound after a depth-bound
+  fix discovered during the rigor pass. The central pigeonhole-on-walks
+  lemma is **mechanically verified in Coq** (`docs/rigor/coq/Soma_CTL.v`).
+- **Budget composition**: the cost lattice operations are **mechanically
+  verified in Coq** (`docs/rigor/coq/Soma_Budget.v`).
+
+11 Coq theorems total, all `Closed under the global context` (zero
+axioms). Reproduce: `make -C docs/rigor/coq check`.
+
+Every property `soma verify` prints names its **adversary model**
+explicitly in `docs/ADVERSARIES.md` — "deadlock-free *under what
+assumptions*?" has a concrete answer for every row.
+
+Full rigor scorecard: `docs/rigor/README.md`.
 
 ## Deterministic record / replay
 
@@ -185,7 +256,9 @@ Numba's `@njit` silently returns garbage in the same situation;
 
 | | LangChain | CrewAI | Kubernetes | Soma |
 |---|---|---|---|---|
-| Agent termination proof | No | No | No | **Yes (CTL)** |
+| Agent termination proof | No | No | No | **Yes (CTL, mechanized in Coq)** |
+| Handler-body refinement check | No | No | No | **Compiler extracts decision tree** |
+| Memory budget proof | No | No | No | **`soma check` proves peak ≤ budget** |
 | Tool calling verified | No | No | No | **Compiler-checked** |
 | Distribution model | No | No | YAML | **In the language** |
 | Auto-repair | No | No | No | **soma fix** |
@@ -199,11 +272,37 @@ Numba's `@njit` silently returns garbage in the same situation;
 - **Paper**: [Scale as a Type](https://soma-lang.dev/paper)
 - **Examples**: `examples/` — agents, pipelines, pricing engine, chat, 100+ more
 
+## Real applications
+
+The `rebalancer/` directory is a **1400-line systematic rebalancing
+tool** for a quantitative investment firm — 5 cells (Alpha signal,
+Optimizer, Compliance LLM, Commentary LLM, Portfolio orchestrator),
+15-state verified lifecycle, 89 tests across 4 layers, a demo script,
+and two cells with mechanically-proven memory bounds. The LLM never
+makes investment decisions; all math is in pure deterministic cells.
+
+```
+$ soma verify rebalancer/app.cell
+State machine 'rebalance': 15 states, initial 'requested'
+  ✓ 15 states, 20 transitions
+  ✓ no deadlocks
+  ✓ liveness: every state can eventually reach a terminal state
+
+$ soma check rebalancer/app.cell
+✓ budget proven for cell 'Alpha':     peak ≤ 62.49 MiB ≤ declared 128.00 MiB
+✓ budget proven for cell 'Optimizer': peak ≤ 69.89 MiB ≤ declared 128.00 MiB
+```
+
+Also: `incident-response/` (SRE on-call with LLM triage) and
+`loan-origination/` (consumer lending pipeline with LLM underwriting).
+All three have verified state machines with `eventually(closed)`.
+
 ## Test Suite
 
-111 tests: 89 unit + 19 integration + 3 agent (live LLM via ollama/gemma3),
-plus a 100-cell language corpus (`examples/usecases/`) and the 10 CLBG
-challenges (`examples/clbg_corpus/`) — 222/222 green at HEAD.
+111 language tests + 89 rebalancer tests + 29 rigor tests + 11 Coq
+theorems. 100-cell language corpus (`examples/usecases/`), 10 CLBG
+challenges, state-explosion bench, backend-equivalence harness, and
+a live-LLM integration test against gemma4:26b via ollama.
 
 ## License
 

@@ -119,12 +119,13 @@ footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:v
 <div class="logo">soma</div>
 <div class="links">
 <a href="#verified-agents" style="color:var(--accent)">Verified Agents</a>
+<a href="#budget">Budget Proof</a>
+<a href="#soundness">Coq</a>
 <a href="#manifesto">Why</a>
 <a href="#syntax">Language</a>
 <a href="#agents">Tooling</a>
 <a href="#native">Performance</a>
 <a href="#fractal">Distribution</a>
-<a href="#reference">Reference</a>
 <a href="/paper.html">Paper</a>
 <a href="https://github.com/soma-dev-lang/soma">GitHub</a>
 </div>
@@ -444,6 +445,66 @@ State machine 'order': 7 states, initial 'pending'
 <tr><td>never = ["X"]</td><td>X is never reached</td><td>AG(&not;X)</td></tr>
 <tr><td>after.S.eventually = ["X"]</td><td>After S, all paths reach X</td><td>AG(S &rarr; AF(X))</td></tr>
 </table>
+</section>
+
+<!-- ═══════════════════════════════════ BUDGET ═══════════════════════════════════ -->
+<section id="budget">
+<h2>Memory-budget proof obligation <span class="dim">(V1.4)</span></h2>
+
+<p><code>scale { memory: "128Mi" }</code> is no longer advisory &mdash; the compiler <strong>proves</strong> your cell fits.</p>
+
+<pre><code><span class="kw">cell</span> Optimizer {
+    <span class="kw">scale</span> {
+        replicas: 1
+        memory: <span class="str">"128Mi"</span>
+    }
+
+    <span class="kw">on</span> optimize(input: Map) {
+        <span class="cm">// 200 lines of constraint math: position caps,</span>
+        <span class="cm">// turnover caps, cash floor scaling, nested loops...</span>
+    }
+}</code></pre>
+
+<pre><code>$ soma check rebalancer/app.cell
+
+<span class="green">&#x2713;</span> budget proven for cell 'Optimizer': peak &le; 69.89 MiB &le; declared 128.00 MiB
+    breakdown: slots 0 B + max-handler 53.89 MiB + state 0 B + runtime 16.00 MiB
+<span class="green">&#x2713;</span> budget proven for cell 'Alpha': peak &le; 62.49 MiB &le; declared 128.00 MiB
+    breakdown: slots 0 B + max-handler 46.49 MiB + state 0 B + runtime 16.00 MiB</code></pre>
+
+<p>The checker walks every handler body, counts every allocation (<code>list()</code>, <code>map()</code>, <code>push()</code>, string literals), unrolls loops by their <code>[loop_bound(N)]</code> annotation or literal <code>range(0, N)</code>, takes the <strong>max</strong> across handlers (not sum &mdash; only one runs at a time), adds slot capacities and runtime overhead, and compares against the declared budget.</p>
+
+<p>Three outcomes:</p>
+<ul>
+<li><strong>Proven</strong> &mdash; closed-form bound fits. The cell will not OOM.</li>
+<li><strong>Exceeded</strong> &mdash; bound exceeds budget. Compile error with breakdown.</li>
+<li><strong>Advisory</strong> &mdash; handler calls an unbounded builtin (<code>think()</code>, <code>from_json()</code>, <code>http_get()</code>). The checker lists the exact call sites that prevent the proof instead of lying.</li>
+</ul>
+
+<p>The cost lattice and the composition theorem are <strong>mechanically verified in Coq</strong> (Rocq 9.1.1, zero axioms, zero <code>Admitted</code>). No other general-purpose language proves memory budgets at compile time. The only tools that do this are $100K/seat avionics analyzers on restricted input languages.</p>
+</section>
+
+<!-- ═══════════════════════════════════ SOUNDNESS ═══════════════════════════════════ -->
+<section id="soundness">
+<h2>Soundness &mdash; mechanically verified</h2>
+
+<p>The model checker's correctness is not just claimed &mdash; it's proven.</p>
+
+<ul>
+<li><strong>11 Coq theorems</strong>, all <code>Closed under the global context</code> (zero axioms).</li>
+<li>The central depth-bound lemma (<em>any acyclic walk through a finite graph of n states has length &le; n</em>) is mechanically verified in <code>docs/rigor/coq/Soma_CTL.v</code>.</li>
+<li>The cost composition theorem (<em>per-statement bounds compose into a sound handler bound</em>) is mechanically verified in <code>docs/rigor/coq/Soma_Budget.v</code>.</li>
+<li>Every property names its <strong>adversary model</strong> explicitly: &ldquo;deadlock-free <em>under what assumptions?</em>&rdquo; has a concrete answer.</li>
+</ul>
+
+<p>The rigor pass found and closed a real soundness bug: the DFS counter-example search hard-coded a depth bound of 50, producing false positives on liveness properties for state machines with more than 50 reachable states. The fix is one line; the mathematical justification is a Coq proof.</p>
+
+<pre><code>$ make -C docs/rigor/coq check
+
+<span class="green">&#x2713;</span> Soma_CTL:    5 theorems &mdash; Closed under the global context
+<span class="green">&#x2713;</span> Soma_Budget: 6 theorems &mdash; Closed under the global context</code></pre>
+
+<p>Full details: <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/SOUNDNESS.md">docs/SOUNDNESS.md</a>, <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/ADVERSARIES.md">docs/ADVERSARIES.md</a>, <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/rigor/README.md">docs/rigor/README.md</a>.</p>
 </section>
 
 <!-- ═══════════════════════════════════ FOUNDATIONS ═══════════════════════════════════ -->
