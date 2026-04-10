@@ -54,7 +54,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 // then CTL safety properties hold regardless of what
                 // think() / any LLM builtin returns. See isolation.rs.
                 let isolation = super::isolation::check_isolation(
-                    &cell.node.name, &findings);
+                    &cell.node.name, &cell.node, &findings);
                 match &isolation {
                     super::isolation::IsolationFinding::ThinkIsolated { n_handlers, n_transitions, .. } => {
                         result.checks.push(VerifyCheck::Pass(
@@ -64,11 +64,11 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                             )
                         ));
                     }
-                    super::isolation::IsolationFinding::NotIsolated { dynamic_handlers, .. } => {
+                    super::isolation::IsolationFinding::NotIsolated { reasons, .. } => {
                         result.checks.push(VerifyCheck::Warning(
                             format!(
-                                "NOT think-isolated: handlers [{}] use dynamic transition targets — safety under adversarial LLM is not proven for this cell",
-                                dynamic_handlers.join(", ")
+                                "NOT think-isolated: {} — safety under adversarial LLM is not proven for this cell",
+                                reasons.join("; ")
                             )
                         ));
                     }

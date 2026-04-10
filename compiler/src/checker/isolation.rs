@@ -45,60 +45,128 @@
 //! Full theorem: `docs/SOUNDNESS.md` §3.6.
 
 use super::refinement::RefinementFinding;
+use crate::ast::*;
 
 /// Result of the think-isolation check for one cell.
 #[derive(Debug, Clone)]
 pub enum IsolationFinding {
-    /// All transition targets are literal. Safety properties hold
-    /// regardless of LLM output. Liveness holds under fairness.
+    /// All transition targets are literal AND no tool handler calls
+    /// transition(). Safety properties hold regardless of LLM output.
+    /// Liveness holds under fairness.
     ThinkIsolated {
         cell: String,
         n_handlers: usize,
         n_transitions: usize,
     },
     /// At least one handler uses a dynamic (computed) transition
-    /// target. The LLM's output could flow into that target and
-    /// reach a state the model checker didn't explore.
+    /// target, OR a tool handler calls transition() (the LLM can
+    /// invoke tools during think(), triggering transitions that the
+    /// model checker doesn't account for in the calling handler's
+    /// effect summary).
     NotIsolated {
         cell: String,
-        dynamic_handlers: Vec<String>,
+        reasons: Vec<String>,
     },
     /// Cell has no state machine — isolation is vacuously true
     /// (there are no transitions to protect).
     NoStateMachine,
 }
 
+/// Collect tool names declared in a cell's face section.
+fn collect_tool_names(cell: &CellDef) -> Vec<String> {
+    let mut tools = Vec::new();
+    for section in &cell.sections {
+        if let Section::Face(face) = &section.node {
+            for decl in &face.declarations {
+                if let FaceDecl::Tool(tool) = &decl.node {
+                    tools.push(tool.name.clone());
+                }
+            }
+        }
+    }
+    tools
+}
+
+/// Check if a handler body contains any transition() call.
+fn handler_has_transition(stmts: &[Spanned<Statement>]) -> bool {
+    for stmt in stmts {
+        match &stmt.node {
+            Statement::ExprStmt { expr } | Statement::Let { value: expr, .. }
+            | Statement::Assign { value: expr, .. } | Statement::Return { value: expr } => {
+                if expr_has_transition(&expr.node) { return true; }
+            }
+            Statement::If { then_body, else_body, .. } => {
+                if handler_has_transition(then_body) || handler_has_transition(else_body) {
+                    return true;
+                }
+            }
+            Statement::For { body, .. } | Statement::While { body, .. } => {
+                if handler_has_transition(body) { return true; }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn expr_has_transition(expr: &Expr) -> bool {
+    match expr {
+        Expr::FnCall { name, .. } if name == "transition" => true,
+        Expr::FnCall { args, .. } => args.iter().any(|a| expr_has_transition(&a.node)),
+        Expr::Match { arms, subject } => {
+            expr_has_transition(&subject.node)
+            || arms.iter().any(|arm| {
+                handler_has_transition(&arm.body)
+                || expr_has_transition(&arm.result.node)
+            })
+        }
+        Expr::IfExpr { then_body, else_body, then_result, else_result, .. } => {
+            handler_has_transition(then_body)
+            || handler_has_transition(else_body)
+            || expr_has_transition(&then_result.node)
+            || expr_has_transition(&else_result.node)
+        }
+        Expr::Pipe { left, right } => {
+            expr_has_transition(&left.node) || expr_has_transition(&right.node)
+        }
+        _ => false,
+    }
+}
+
 /// Check whether all transition targets in the given refinement
-/// findings are literal (no `DynamicTarget`). This is a second pass
-/// over the refinement results, not a new AST walk.
+/// findings are literal (no `DynamicTarget`) AND no tool handler
+/// contains a transition() call.
+///
+/// The tool-handler check addresses a soundness gap discovered by
+/// adversarial review: the LLM can invoke tools during think(),
+/// and if a tool handler calls transition(), the LLM controls
+/// state-machine transitions through the tool-calling side channel.
 pub fn check_isolation(
     cell_name: &str,
+    cell: &CellDef,
     findings: &[RefinementFinding],
 ) -> IsolationFinding {
-    let mut dynamic_handlers: Vec<String> = Vec::new();
+    let mut reasons: Vec<String> = Vec::new();
     let mut n_handlers = 0;
     let mut n_transitions = 0;
     let mut has_any_effect = false;
 
+    // Check 1: no dynamic transition targets.
     for f in findings {
         match f {
             RefinementFinding::DynamicTarget { handler, .. } => {
-                if !dynamic_handlers.contains(handler) {
-                    dynamic_handlers.push(handler.clone());
+                let reason = format!(
+                    "handler `{}` uses a dynamic (computed) transition target", handler);
+                if !reasons.contains(&reason) {
+                    reasons.push(reason);
                 }
             }
-            RefinementFinding::HandlerEffect { handler: _, targets, has_dynamic } => {
+            RefinementFinding::HandlerEffect { targets, has_dynamic, .. } => {
                 has_any_effect = true;
                 n_handlers += 1;
                 n_transitions += targets.len();
-                if *has_dynamic {
-                    // The handler has a dynamic target that may have
-                    // been reported separately as DynamicTarget.
-                    // No additional action — it's already in
-                    // dynamic_handlers if it was reported.
-                }
+                let _ = has_dynamic;
             }
-            // UndeclaredTarget and DeadTransition don't affect isolation.
             _ => {}
         }
     }
@@ -107,7 +175,28 @@ pub fn check_isolation(
         return IsolationFinding::NoStateMachine;
     }
 
-    if dynamic_handlers.is_empty() {
+    // Check 2: no tool handler calls transition().
+    // Tools are declared in `face { tool X(...) "desc" }`. The LLM
+    // can invoke them during think(). If a tool's handler calls
+    // transition(), the LLM controls state-machine transitions.
+    let tool_names = collect_tool_names(cell);
+    for tool_name in &tool_names {
+        // Find the handler for this tool.
+        for section in &cell.sections {
+            if let Section::OnSignal(on) = &section.node {
+                if on.signal_name == *tool_name {
+                    if handler_has_transition(&on.body) {
+                        reasons.push(format!(
+                            "tool `{}` has a handler that calls transition() — LLM can trigger state changes via tool calling during think()",
+                            tool_name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    if reasons.is_empty() {
         IsolationFinding::ThinkIsolated {
             cell: cell_name.to_string(),
             n_handlers,
@@ -116,7 +205,7 @@ pub fn check_isolation(
     } else {
         IsolationFinding::NotIsolated {
             cell: cell_name.to_string(),
-            dynamic_handlers,
+            reasons,
         }
     }
 }
