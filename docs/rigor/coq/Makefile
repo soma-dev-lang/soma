@@ -9,7 +9,7 @@
 
 .PHONY: all check clean
 
-all: Soma_CTL.vo Soma_Budget.vo Soma_Isolation.vo Soma_Abstraction.vo Soma_BudgetOps.vo
+all: Soma_CTL.vo Soma_Budget.vo Soma_Isolation.vo Soma_Abstraction.vo Soma_BudgetOps.vo Soma_RuntimeFidelity.vo
 
 Soma_CTL.vo: Soma_CTL.v
 	coqc Soma_CTL.v
@@ -25,6 +25,9 @@ Soma_Abstraction.vo: Soma_Abstraction.v
 
 Soma_BudgetOps.vo: Soma_BudgetOps.v
 	coqc Soma_BudgetOps.v
+
+Soma_RuntimeFidelity.vo: Soma_RuntimeFidelity.v
+	coqc Soma_RuntimeFidelity.v
 
 check: all
 	@echo
@@ -50,6 +53,11 @@ check: all
 	@echo
 	@echo "==== Soma_BudgetOps: zero axioms / zero Admitted ===="
 	@printf 'Require Import Soma_BudgetOps.\nPrint Assumptions handler_alloc_bounded.\nPrint Assumptions loop_alloc_bounded.\nPrint Assumptions branch_alloc_bounded.\n' > _check.v
+	@coqc _check.v 2>&1 | grep -E "Closed under|Axioms|axiom" || true
+	@rm -f _check.v _check.vo _check.glob _check.vok _check.vos
+	@echo
+	@echo "==== Soma_RuntimeFidelity: zero axioms / zero Admitted ===="
+	@printf 'Require Import Soma_RuntimeFidelity.\nPrint Assumptions guarded_trace_in_graph.\nPrint Assumptions full_abstraction_safety.\n' > _check.v
 	@coqc _check.v 2>&1 | grep -E "Closed under|Axioms|axiom" || true
 	@rm -f _check.v _check.vo _check.glob _check.vok _check.vos
 	@echo
