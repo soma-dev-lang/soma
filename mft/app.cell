@@ -26,6 +26,7 @@
 use lib::signals
 use lib::risk
 use lib::execution
+use lib::ib_bridge
 
 cell MFTEngine {
     memory {
@@ -281,7 +282,22 @@ cell MFTEngine {
 
     on status() {
         let risk = delegate("RiskManager", "get_risk_state")
-        map("risk", risk, "nav", config.get("nav") ?? "0", "ticks", tick_log.len())
+        let bridge = delegate("IBBridge", "get_bridge_status")
+        map("risk", risk, "nav", config.get("nav") ?? "0", "ticks", tick_log.len(), "ib", bridge)
+    }
+
+    // ── IB Bridge controls ─────────────────────────────────────
+
+    on ib_configure(payload: Map) {
+        delegate("IBBridge", "configure", payload)
+    }
+
+    on ib_connect() {
+        delegate("IBBridge", "ib_connect")
+    }
+
+    on ib_disconnect() {
+        delegate("IBBridge", "ib_disconnect")
     }
 
     // ── HTTP ───────────────────────────────────────────────────
@@ -292,12 +308,15 @@ cell MFTEngine {
             {method: "GET", path: "/"} -> map(
                 "name", "Soma MFT Engine",
                 "endpoints", list(
-                    "POST /setup       {symbols, nav, dead_zone, allow_short, max_position, max_drawdown, ...}",
-                    "POST /tick        {prices:{}, bids:{}, asks:{}, spreads:{}}",
+                    "POST /setup           {symbols, nav, dead_zone, allow_short, max_position, max_drawdown, ...}",
+                    "POST /tick            {prices:{}, bids:{}, asks:{}, spreads:{}, seq, auth}",
                     "POST /halt",
                     "POST /resume",
-                    "POST /reconcile   {sym: authoritative_qty, ...}",
-                    "POST /cleanup     {n: keep_last_n_orders}",
+                    "POST /reconcile       {sym: authoritative_qty, ...}",
+                    "POST /cleanup         {n: keep_last_n_orders}",
+                    "POST /ib/configure    {gateway_url, account_id, conids:{sym:conid}, symbols:[], auth_secret}",
+                    "POST /ib/connect",
+                    "POST /ib/disconnect",
                     "GET  /status",
                     "GET  /fills/{n}",
                     "GET  /order/{id}"
@@ -312,6 +331,9 @@ cell MFTEngine {
                 let d = from_json(body)
                 cleanup(to_int(d.n ?? "1000"))
             }
+            {method: "POST", path: "/ib/configure"} -> ib_configure(from_json(body))
+            {method: "POST", path: "/ib/connect"} -> ib_connect()
+            {method: "POST", path: "/ib/disconnect"} -> ib_disconnect()
             {method: "GET", path: "/status"} -> status()
             {method: "GET", path: "/fills/" + n} -> delegate("ExecutionEngine", "recent_fills", to_int(n))
             {method: "GET", path: "/order/" + id} -> delegate("ExecutionEngine", "get_order", id)

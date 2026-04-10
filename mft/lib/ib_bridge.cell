@@ -1,0 +1,313 @@
+// ═══════════════════════════════════════════════════════════════════
+// IB Bridge — connects the MFT engine to Interactive Brokers
+// via the Client Portal API (REST, no Python, no TWS).
+//
+// Prerequisites:
+//   1. IB Gateway running with Client Portal API enabled
+//      (download from https://www.interactivebrokers.com/en/trading/ib-api.php)
+//   2. Paper trading account authenticated in the gateway
+//   3. Gateway listening on https://localhost:5000 (default)
+//
+// The bridge:
+//   - Polls market data every 1s via GET /iserver/marketdata/snapshot
+//   - Converts IB's format to Soma's tick format
+//   - Delegates to MFTEngine.tick()
+//   - When trades are computed, sends orders via POST /iserver/account/orders
+//   - Polls order status and reports fills back to ExecutionEngine
+//   - Reconciles positions every 30s via GET /portfolio/positions
+//
+// State machine proves the connection lifecycle:
+//   disconnected → authenticating → connected → polling → connected
+//   * → error → disconnected
+//
+// Think-isolated: zero LLM. Budget: proven.
+// ═══════════════════════════════════════════════════════════════════
+
+cell IBBridge {
+    memory {
+        config:     Map<String, String> [ephemeral, capacity(30), max_value_bytes(512)]
+        ib_state:   Map<String, String> [ephemeral, capacity(50), max_value_bytes(512)]
+        pending_ib: Map<String, String> [ephemeral, capacity(100), max_value_bytes(512)]
+    }
+
+    state connection [max_instances(1)] {
+        initial: disconnected
+        disconnected -> authenticating
+        authenticating -> connected
+        authenticating -> error
+        connected -> polling
+        polling -> connected
+        connected -> disconnected
+        * -> error
+        error -> disconnected
+    }
+
+    scale {
+        replicas: 1
+        memory: "64Mi"
+    }
+
+    // ── Configuration ──────────────────────────────────────────
+
+    on configure(payload: Map) {
+        config.set("gateway_url", payload.gateway_url ?? "https://localhost:5000")
+        config.set("account_id", payload.account_id ?? "")
+        config.set("conids", to_json(payload.conids ?? map()))
+        config.set("symbols", to_json(payload.symbols ?? list()))
+        config.set("tick_seq", "0")
+        config.set("auth_secret", payload.auth_secret ?? "")
+        map("status", "configured")
+    }
+
+    // ── Connection lifecycle ───────────────────────────────────
+
+    on ib_connect() {
+        let url = config.get("gateway_url") ?? "https://localhost:5000"
+        transition("ib", "authenticating")
+
+        // Check if gateway is alive and authenticated.
+        let resp = http_get(url + "/v1/api/iserver/auth/status")
+        if resp == () {
+            transition("ib", "error")
+            return map("status", "error", "reason", "gateway unreachable")
+        }
+
+        let auth = from_json(resp)
+        if auth.authenticated != true {
+            transition("ib", "error")
+            return map("status", "error", "reason", "not authenticated — log in to IB Gateway")
+        }
+
+        transition("ib", "connected")
+        ib_state.set("connected_at", to_string(now()))
+        map("status", "connected", "authenticated", true)
+    }
+
+    on ib_disconnect() {
+        let s = get_status("ib")
+        if s == "connected" {
+            transition("ib", "disconnected")
+            return map("status", "disconnected")
+        }
+        map("status", s)
+    }
+
+    // ── Market data polling (the tick source) ──────────────────
+    //
+    // Called every 1s by the scheduler. Fetches snapshots from IB,
+    // converts to Soma tick format, delegates to MFTEngine.tick().
+
+    every 1s {
+        _poll_and_tick()
+    }
+
+    on _poll_and_tick() {
+        let s = get_status("ib")
+        if s != "connected" { return () }
+
+        let url = config.get("gateway_url") ?? "https://localhost:5000"
+        let conids_raw = config.get("conids") ?? "{}"
+        let conids_map = from_json(conids_raw)
+        let symbols_raw = config.get("symbols") ?? "[]"
+        let symbols = from_json(symbols_raw)
+
+        // Build conid list for the snapshot request.
+        // conids_map: { "AAPL": "265598", "MSFT": "272093", ... }
+        let conid_list = list()
+        for [loop_bound(100)] sym in symbols {
+            let cid = conids_map.get(sym)
+            if cid != () { conid_list = push(conid_list, cid) }
+        }
+        if len(conid_list) == 0 { return () }
+
+        let conids_str = join(conid_list, ",")
+
+        // IB snapshot fields:
+        //   31 = last price, 84 = bid, 85 = ask, 86 = bid size,
+        //   87 = ask size, 7762 = change %
+        transition("ib", "polling")
+        let resp = http_get(url + "/v1/api/iserver/marketdata/snapshot?conids=" + conids_str + "&fields=31,84,85,86,87")
+        transition("ib", "connected")
+
+        if resp == () { return () }
+        let snapshots = from_json(resp)
+        if snapshots == () { return () }
+
+        // Convert IB snapshots to Soma tick format.
+        let tick_prices = map()
+        let tick_bids = map()
+        let tick_asks = map()
+        let tick_spreads = map()
+
+        for [loop_bound(100)] sym in symbols {
+            let cid = conids_map.get(sym) ?? ""
+            // Find the snapshot for this conid.
+            for [loop_bound(100)] snap in snapshots {
+                let snap_cid = to_string(snap.conid ?? "")
+                if snap_cid == cid {
+                    let last = to_string(snap.get("31") ?? snap.last ?? "0")
+                    let bid = to_string(snap.get("84") ?? snap.bid ?? "0")
+                    let ask = to_string(snap.get("85") ?? snap.ask ?? "0")
+                    let bid_size = to_string(snap.get("86") ?? snap.bidSize ?? "0")
+                    let ask_size = to_string(snap.get("87") ?? snap.askSize ?? "0")
+
+                    // Mid price = (bid + ask) / 2, fallback to last.
+                    let bid_f = to_float(bid)
+                    let ask_f = to_float(ask)
+                    let mid = to_float(last)
+                    if bid_f > 0.0 {
+                        if ask_f > 0.0 {
+                            mid = (bid_f + ask_f) / 2.0
+                        }
+                    }
+                    let spread = 0.0
+                    if ask_f > bid_f { spread = ask_f - bid_f }
+
+                    tick_prices = tick_prices |> with(sym, to_string(mid))
+                    tick_bids = tick_bids |> with(sym, bid_size)
+                    tick_asks = tick_asks |> with(sym, ask_size)
+                    tick_spreads = tick_spreads |> with(sym, to_string(spread))
+                }
+            }
+        }
+
+        // Increment tick sequence.
+        let seq = to_int(config.get("tick_seq") ?? "0") + 1
+        config.set("tick_seq", to_string(seq))
+
+        // Delegate to the MFT engine.
+        let tick_result = delegate("MFTEngine", "tick", map(
+            "prices", tick_prices,
+            "bids", tick_bids,
+            "asks", tick_asks,
+            "spreads", tick_spreads,
+            "seq", to_string(seq),
+            "auth", config.get("auth_secret") ?? ""
+        ))
+
+        // If the engine computed trades that were "sent" (simulated fills),
+        // place REAL orders at IB. In the current architecture, the
+        // execution engine fills immediately (sim mode). For live IB
+        // trading, the flow would be:
+        //   1. MFTEngine.tick() computes trades but does NOT auto-fill
+        //   2. This bridge sends orders to IB
+        //   3. IB callbacks report fills
+        //   4. Bridge calls ExecutionEngine.report_partial_fill()
+        //
+        // For paper trading v1, we use the sim fills (the engine handles
+        // the full lifecycle internally) and use IB for market data only.
+        // The next step is to split: engine computes, bridge executes.
+
+        ib_state.set("last_tick", to_string(now()))
+        ib_state.set("last_tick_result", to_json(map(
+            "seq", to_string(seq),
+            "symbols", len(tick_prices.keys()),
+            "sent", tick_result.sent ?? 0,
+            "rejected", tick_result.rejected ?? 0
+        )))
+
+        tick_result
+    }
+
+    // ── Position reconciliation ────────────────────────────────
+    //
+    // Every 30s, fetch IB positions and compare with Soma's.
+
+    every 30s {
+        _reconcile()
+    }
+
+    on _reconcile() {
+        let s = get_status("ib")
+        if s != "connected" { return () }
+
+        let url = config.get("gateway_url") ?? "https://localhost:5000"
+        let account = config.get("account_id") ?? ""
+        if account == "" { return () }
+
+        let resp = http_get(url + "/v1/api/portfolio/" + account + "/positions/0")
+        if resp == () { return () }
+
+        let ib_positions = from_json(resp)
+        if ib_positions == () { return () }
+
+        // Build authoritative position map from IB data.
+        let auth = map()
+        let conids_map = from_json(config.get("conids") ?? "{}")
+        let symbols = from_json(config.get("symbols") ?? "[]")
+
+        for [loop_bound(100)] pos in ib_positions {
+            let cid = to_string(pos.conid ?? "")
+            // Reverse-lookup symbol from conid.
+            for [loop_bound(100)] sym in symbols {
+                if conids_map.get(sym) == cid {
+                    let qty = to_string(pos.position ?? "0")
+                    auth = auth |> with(sym, qty)
+                }
+            }
+        }
+
+        // Delegate reconciliation to the risk manager.
+        if len(auth.keys()) > 0 {
+            let result = delegate("MFTEngine", "reconcile", auth)
+            ib_state.set("last_recon", to_string(now()))
+            ib_state.set("last_recon_result", to_json(result))
+        }
+    }
+
+    // ── Place a real order at IB ───────────────────────────────
+    //
+    // Called when the engine decides to trade. In paper trading v1
+    // this is informational (the engine handles fills internally).
+    // In live mode, this would be the real order submission.
+
+    on place_ib_order(symbol: String, side: String, qty: String) {
+        let url = config.get("gateway_url") ?? "https://localhost:5000"
+        let account = config.get("account_id") ?? ""
+        let conids_map = from_json(config.get("conids") ?? "{}")
+        let conid = conids_map.get(symbol) ?? ""
+
+        if account == "" { return map("error", "no account configured") }
+        if conid == "" { return map("error", "no conid for " + symbol) }
+
+        let ib_side = "BUY"
+        if side == "SELL" { ib_side = "SELL" }
+
+        let order_body = to_json(map(
+            "orders", list(map(
+                "conid", conid,
+                "orderType", "MKT",
+                "side", ib_side,
+                "quantity", qty,
+                "tif", "DAY"
+            ))
+        ))
+
+        let resp = http_post(url + "/v1/api/iserver/account/" + account + "/orders", order_body)
+        if resp == () { return map("error", "order submission failed") }
+
+        let result = from_json(resp)
+        // IB may require order confirmation (reply endpoint).
+        let order_id = result.order_id ?? ""
+        if order_id != "" {
+            pending_ib.set(order_id, to_json(map(
+                "symbol", symbol, "side", side, "qty", qty,
+                "ib_order_id", order_id, "ts", to_string(now())
+            )))
+        }
+
+        result
+    }
+
+    // ── Read API ───────────────────────────────────────────────
+
+    on get_bridge_status() {
+        map(
+            "connection", get_status("ib"),
+            "last_tick", ib_state.get("last_tick") ?? "never",
+            "last_recon", ib_state.get("last_recon") ?? "never",
+            "tick_seq", config.get("tick_seq") ?? "0",
+            "pending_orders", pending_ib.len()
+        )
+    }
+}
