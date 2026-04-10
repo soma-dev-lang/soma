@@ -159,6 +159,51 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
         if let Some(scale_result) = verify_scale(&cell.node) {
             results.push(scale_result);
         }
+
+        // ── V1.4: composition check for interior cells ────────
+        // For each interior block, verify that every emitted signal
+        // has a matching handler and every handler has a signal source.
+        for section in &cell.node.sections {
+            if let Section::Interior(ref interior) = section.node {
+                let comp = super::composition::check_composition(
+                    &interior.cells, &cell.node);
+                if !comp.pairs.is_empty() || !comp.undelivered.is_empty() || !comp.orphans.is_empty() {
+                    let mut comp_result = VerifyResult {
+                        machine_name: format!("{}/composition", cell.node.name),
+                        states: vec![],
+                        initial: String::new(),
+                        terminal_states: vec![],
+                        transitions: vec![],
+                        checks: vec![],
+                    };
+                    if comp.undelivered.is_empty() && comp.orphans.is_empty() {
+                        comp_result.checks.push(VerifyCheck::Pass(
+                            format!("composition: {} signal pairs verified, 0 undelivered, 0 orphans",
+                                comp.pairs.len())
+                        ));
+                    } else {
+                        if !comp.pairs.is_empty() {
+                            comp_result.checks.push(VerifyCheck::Pass(
+                                format!("composition: {} signal pairs matched", comp.pairs.len())
+                            ));
+                        }
+                        for (emitter, sig) in &comp.undelivered {
+                            comp_result.checks.push(VerifyCheck::Warning(
+                                format!("composition: cell '{}' emits signal '{}' but no sibling handles it",
+                                    emitter, sig)
+                            ));
+                        }
+                        for (handler, sig) in &comp.orphans {
+                            comp_result.checks.push(VerifyCheck::Warning(
+                                format!("composition: cell '{}' handles signal '{}' but no sibling emits it and parent face doesn't expose it",
+                                    handler, sig)
+                            ));
+                        }
+                    }
+                    results.push(comp_result);
+                }
+            }
+        }
     }
 
     results

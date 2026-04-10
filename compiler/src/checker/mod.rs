@@ -7,6 +7,7 @@ pub mod refinement;
 pub mod budget;
 pub mod isolation;
 pub mod termination;
+pub mod composition;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
