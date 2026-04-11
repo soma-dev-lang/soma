@@ -95,6 +95,15 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     }
                 }
 
+                // Detect whether any handler has a dynamic transition target.
+                let has_any_dynamic = findings.iter().any(|f|
+                    matches!(f, super::refinement::RefinementFinding::DynamicTarget { .. }));
+                let refinement_label = if has_any_dynamic {
+                    "refinement (partial — dynamic targets fall back to runtime check)"
+                } else {
+                    "refinement"
+                };
+
                 for f in findings {
                     use super::refinement::RefinementFinding::*;
                     match f {
@@ -106,8 +115,8 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                             };
                             result.checks.push(VerifyCheck::Fail(
                                 format!(
-                                    "refinement: handler `{}` calls transition(_, \"{}\") but \"{}\" is not in state machine `{}`{}",
-                                    handler, target, target, sm.name, path_text
+                                    "{}: handler `{}` calls transition(_, \"{}\") but \"{}\" is not in state machine `{}`{}",
+                                    refinement_label, handler, target, target, sm.name, path_text
                                 ),
                                 Some(vec![format!("at byte offset {}–{}", span.start, span.end)]),
                             ));
@@ -115,16 +124,16 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                         DynamicTarget { handler, span: _ } => {
                             result.checks.push(VerifyCheck::Warning(
                                 format!(
-                                    "refinement: handler `{}` calls transition() with a non-literal target — V1.3 cannot statically verify this; refinement coverage incomplete here",
-                                    handler
+                                    "{}: handler `{}` calls transition() with a non-literal target — V1.3 cannot statically verify this; refinement coverage incomplete here",
+                                    refinement_label, handler
                                 ),
                             ));
                         }
                         DeadTransition { from, to } => {
                             result.checks.push(VerifyCheck::Warning(
                                 format!(
-                                    "refinement: declared transition `{} → {}` is never reached by any handler — spec may be aspirational or stale",
-                                    from, to
+                                    "{}: declared transition `{} → {}` is never reached by any handler — spec may be aspirational or stale",
+                                    refinement_label, from, to
                                 ),
                             ));
                         }
@@ -147,7 +156,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                                 summary.push_str("<dynamic>");
                             }
                             result.checks.push(VerifyCheck::Pass(
-                                format!("refinement: handler `{}` ⟶ {}", handler, summary)
+                                format!("{}: handler `{}` ⟶ {}", refinement_label, handler, summary)
                             ));
                         }
                     }

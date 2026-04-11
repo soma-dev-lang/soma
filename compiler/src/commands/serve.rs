@@ -197,6 +197,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
     eprintln!("database: {}", std::path::Path::new(".soma_data/soma.db").canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(".soma_data/soma.db")).display());
     eprintln!("listening on http://localhost:{}", port);
+    eprintln!("dashboard: http://localhost:{}/__soma/", port);
     eprintln!("---");
 
     let program = std::sync::Arc::new(program);
@@ -950,6 +951,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                 let _ = request.respond(resp);
                 return;
             }
+        }
+
+        // ── Verification dashboard ─────────────────────────────────────
+        if url == "/__soma/" || url == "/__soma" {
+            let html = super::dashboard::render_dashboard(&program);
+            let resp = tiny_http::Response::from_string(html)
+                .with_header(
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap()
+                );
+            let _ = request.respond(resp);
+            return;
         }
 
         let mut interp = interpreter::Interpreter::new(&program);

@@ -426,7 +426,13 @@ pub fn check_property(graph: &StateMachineGraph, property: &Property) -> Propert
                 PropertyResult {
                     property: format!("mutex('{}', '{}')", s1, s2),
                     passed: true,
-                    message: format!("'{}' and '{}' are mutually exclusive", s1, s2),
+                    message: format!(
+                        "'{}' and '{}' are mutually exclusive\n    \
+                         warning: mutex({}, {}) is trivially satisfied for a single-cell state machine \
+                         (a sequential machine is always in one state at a time). \
+                         Mutex is meaningful only for composed cells.",
+                        s1, s2, s1, s2
+                    ),
                     counter_example: None,
                 }
             }

@@ -292,6 +292,7 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
 
     let mut all_results = Vec::new();
     let mut all_temporal = Vec::new();
+    let mut total_cells: usize = 0;
 
     // Try to read soma.toml for user-defined properties
     let manifest = files.first()
@@ -310,6 +311,17 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
         commands::resolve_imports(&mut program, path);
 
         eprintln!("Verifying {}...", path.display());
+        total_cells += program.cells.iter()
+            .filter(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent))
+            .count();
+        // Also count interior cells
+        for cell in &program.cells {
+            for section in &cell.node.sections {
+                if let ast::Section::Interior(ref interior) = section.node {
+                    total_cells += interior.cells.len();
+                }
+            }
+        }
         let results = checker::verify::verify_program(&program);
         all_results.extend(results);
 
@@ -425,11 +437,16 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
             serde_json::json!({"state_machine": name, "properties": props})
         }).collect();
 
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "passed": !has_failures,
             "state_machines": sm_results,
             "temporal": temporal_results,
         });
+        if total_cells > 1 {
+            output["note"] = serde_json::json!(
+                "verification is per-cell. Cross-cell signal composition is not yet verified."
+            );
+        }
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
         // Human-readable output
@@ -456,6 +473,10 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
         }
 
         eprintln!("Temporal: {} passed, {} failed", passed_temporal, failed_temporal);
+
+        if total_cells > 1 {
+            eprintln!("note: verification is per-cell. Cross-cell signal composition is not yet verified.");
+        }
     }
 
     if has_failures {

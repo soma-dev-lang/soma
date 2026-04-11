@@ -340,3 +340,13 @@ fn format_literal(lit: &Literal) -> String {
         Literal::Percentage(p) => format!("{}%", p),
     }
 }
+
+/// Public re-export of `format_constraint` for the dashboard.
+pub fn format_constraint_pub(c: &Constraint) -> String {
+    format_constraint(c)
+}
+
+/// Public re-export of `format_expr` for the dashboard.
+pub fn format_expr_pub(c: &Expr) -> String {
+    format_expr(c)
+}

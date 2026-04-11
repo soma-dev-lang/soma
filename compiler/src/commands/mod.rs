@@ -12,6 +12,7 @@ pub mod describe;
 pub mod deploy;
 pub mod lint;
 pub mod replay;
+pub mod dashboard;
 
 use std::fs;
 use std::path::{Path, PathBuf};
