@@ -250,6 +250,35 @@ pub fn unbounded_builtin_reason(name: &str) -> Option<&'static str> {
     }
 }
 
+// ── Map literal extraction ─────────────────────────────────────────
+
+/// Check if the last argument is a `map(k1, v1, k2, v2, ...)` call
+/// and extract the integer value associated with the given key.
+///
+/// For example, given `think("prompt", map("max_tokens", 500, "timeout", 10000))`,
+/// calling `extract_map_literal_int(args, "max_tokens")` returns `Some(500)`.
+fn extract_map_literal_int(args: &[Spanned<Expr>], key: &str) -> Option<u64> {
+    let last = args.last()?;
+    if let Expr::FnCall { name, args: map_args } = &last.node {
+        if name != "map" { return None; }
+        // map(k1, v1, k2, v2, ...) — iterate in pairs
+        let mut i = 0;
+        while i + 1 < map_args.len() {
+            if let Expr::Literal(Literal::String(k)) = &map_args[i].node {
+                if k == key {
+                    if let Expr::Literal(Literal::Int(n)) = &map_args[i + 1].node {
+                        if *n >= 0 {
+                            return Some(*n as u64);
+                        }
+                    }
+                }
+            }
+            i += 2;
+        }
+    }
+    None
+}
+
 // ── Allocation cost for a single expression ────────────────────────
 
 /// Cost of evaluating an expression — the maximum number of transient
@@ -301,9 +330,31 @@ pub fn expr_cost(e: &Expr) -> Cost {
             for a in args {
                 arg_cost = arg_cost.plus(expr_cost(&a.node));
             }
-            // Check if the builtin itself is unbounded.
-            if let Some(reason) = unbounded_builtin_reason(name) {
-                let site = format!("{} at call site — {}", name, reason);
+            // Check if an unbounded builtin has been bounded by an options map.
+            if let Some(_reason) = unbounded_builtin_reason(name) {
+                match name.as_str() {
+                    "think" | "think_json" => {
+                        if let Some(mt) = extract_map_literal_int(args, "max_tokens") {
+                            // Bounded: 4 bytes per token (conservative)
+                            return arg_cost.plus(Cost::bytes(mt.saturating_mul(4)));
+                        }
+                    }
+                    "http_get" => {
+                        if let Some(mb) = extract_map_literal_int(args, "max_bytes") {
+                            return arg_cost.plus(Cost::bytes(mb));
+                        }
+                    }
+                    "from_json" => {
+                        // Bounded only if the argument is a literal string
+                        if args.len() == 1 {
+                            if let Expr::Literal(Literal::String(s)) = &args[0].node {
+                                return arg_cost.plus(Cost::bytes(s.len() as u64));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                let site = format!("{} at call site — {}", name, _reason);
                 return arg_cost.plus(Cost::unbounded(site));
             }
             // Specific allocation-bearing builtins with closed-form cost.

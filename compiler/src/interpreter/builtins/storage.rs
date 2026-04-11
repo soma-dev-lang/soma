@@ -178,22 +178,64 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         // ── AI Agent: think() with tool-calling loop ──────────────
         "think" => {
             if let Some(Value::String(prompt)) = args.first() {
-                let system = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-                Some(agent_think(interp, cell_name, prompt, system.as_deref(), false))
+                let (system, max_tokens, timeout_ms) = extract_think_opts(args);
+                Some(agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms))
             } else {
                 Some(Err(RuntimeError::TypeError("think(prompt: String) requires a string argument".to_string())))
             }
         }
         "think_json" => {
             if let Some(Value::String(prompt)) = args.first() {
-                let system = args.get(1).and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-                Some(agent_think(interp, cell_name, prompt, system.as_deref(), true))
+                let (system, max_tokens, timeout_ms) = extract_think_opts(args);
+                Some(agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms))
             } else {
                 Some(Err(RuntimeError::TypeError("think_json(prompt: String) requires a string argument".to_string())))
             }
         }
         _ => None,
     }
+}
+
+/// Extract system message and options from think()/think_json() args.
+///
+/// Accepted call shapes:
+///   think("prompt")
+///   think("prompt", "system")
+///   think("prompt", map("max_tokens", 500, "timeout", 10000))
+///   think("prompt", "system", map("max_tokens", 500))
+fn extract_think_opts(args: &[Value]) -> (Option<String>, Option<u64>, Option<u64>) {
+    let mut system: Option<String> = None;
+    let mut max_tokens: Option<u64> = None;
+    let mut timeout_ms: Option<u64> = None;
+
+    // Check if last arg is a Map (options)
+    let opts_map = args.last().and_then(|v| {
+        if let Value::Map(m) = v { Some(m) } else { None }
+    });
+
+    if let Some(m) = opts_map {
+        if let Some(Value::Int(n)) = m.get("max_tokens") {
+            let v = n.to_i64().unwrap_or(0);
+            if v > 0 { max_tokens = Some(v as u64); }
+        }
+        if let Some(Value::Int(n)) = m.get("timeout") {
+            let v = n.to_i64().unwrap_or(0);
+            if v > 0 { timeout_ms = Some(v as u64); }
+        }
+        // System message is arg[1] only if it's a String (not the Map)
+        if args.len() >= 3 {
+            if let Some(Value::String(s)) = args.get(1) {
+                system = Some(s.clone());
+            }
+        }
+    } else {
+        // No options map — old-style call
+        if let Some(Value::String(s)) = args.get(1) {
+            system = Some(s.clone());
+        }
+    }
+
+    (system, max_tokens, timeout_ms)
 }
 
 /// Core agent think loop with:
@@ -208,6 +250,8 @@ fn agent_think(
     prompt: &str,
     system: Option<&str>,
     json_mode: bool,
+    max_tokens: Option<u64>,
+    timeout_ms: Option<u64>,
 ) -> Result<Value, RuntimeError> {
     use super::llm;
 
@@ -294,13 +338,25 @@ fn agent_think(
     }
     interp.agent_conversation.push(serde_json::json!({"role": "user", "content": prompt}));
 
+    // Timeout tracking
+    let start = std::time::Instant::now();
+
     // Tool-calling loop
     for iteration in 0..10 {
+        // Timeout check
+        if let Some(tms) = timeout_ms {
+            if start.elapsed().as_millis() as u64 > tms {
+                return Err(RuntimeError::TypeError(format!(
+                    "think() timed out after {}ms", tms
+                )));
+            }
+        }
+
         if interp.agent_token_budget > 0 && interp.agent_tokens_used >= interp.agent_token_budget {
             return Err(RuntimeError::TypeError(format!("token budget exhausted: {}/{}", interp.agent_tokens_used, interp.agent_token_budget)));
         }
 
-        let body = llm::build_request_body(&config, &interp.agent_conversation, &tools, json_mode);
+        let body = llm::build_request_body(&config, &interp.agent_conversation, &tools, json_mode, max_tokens);
         let raw_json = llm::send_with_retry(&config, &body)?;
         let resp = llm::parse_response(&config, &raw_json);
 

@@ -190,8 +190,20 @@ impl BytecodeCompiler {
                 chunk.emit(Op::Pop);
             }
 
-            Statement::Ensure { .. } => {
-                // TODO: implement ensure in bytecode VM
+            Statement::Ensure { condition } => {
+                // Compile condition expression (pushes a value onto the stack)
+                self.compile_expr(chunk, &condition.node);
+                // If truthy, skip past the error — same pattern as Require
+                let skip = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);
+                let jump_over = chunk.emit_u16(Op::Jump, 0xFFFF);
+                chunk.patch_jump(skip, chunk.len() as u16);
+                // If false, emit a require-fail error
+                let msg_idx = chunk.add_constant(Constant::String("ensure postcondition failed".to_string()));
+                chunk.emit_u16(Op::Const, msg_idx);
+                let fail_idx = chunk.add_constant(Constant::Name("_require_fail".to_string()));
+                chunk.emit_u16_u8(Op::CallBuiltin, fail_idx, 1);
+                chunk.emit(Op::Return);
+                chunk.patch_jump(jump_over, chunk.len() as u16);
             }
 
             Statement::Break | Statement::Continue => {
@@ -497,11 +509,55 @@ impl BytecodeCompiler {
                 let name_idx = chunk.add_constant(Constant::Name("list".to_string()));
                 chunk.emit_u16_u8(Op::CallBuiltin, name_idx, elements.len() as u8);
             }
-            Expr::TryPropagate(_) => {
-                // TODO: implement ? operator in bytecode VM
+            Expr::TryPropagate(inner) => {
+                // expr? — compile inner, check .error field, return early if error
+                // 1. Compile inner expression (should produce a result map)
+                self.compile_expr(chunk, &inner.node);
+                // 2. Store result in a temp local so we can access it twice
+                let tmp_slot = chunk.add_local("__try_tmp");
+                chunk.emit_u16(Op::SetLocal, tmp_slot);
+                // 3. Load the result and access .error field
+                chunk.emit_u16(Op::GetLocal, tmp_slot);
+                let error_idx = chunk.add_constant(Constant::Name("error".to_string()));
+                chunk.emit_u16(Op::GetField, error_idx);
+                // 4. Check if .error is Unit (no error) — compare with Unit
+                chunk.emit(Op::Unit);
+                chunk.emit(Op::Eq);
+                // If error == Unit (no error), skip to unwrap .value
+                let skip_return = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);
+                // 5. No error path: load result and access .value
+                chunk.emit_u16(Op::GetLocal, tmp_slot);
+                let value_idx = chunk.add_constant(Constant::Name("value".to_string()));
+                chunk.emit_u16(Op::GetField, value_idx);
+                let jump_end = chunk.emit_u16(Op::Jump, 0xFFFF);
+                // 6. Error path: return the whole result map (early exit)
+                chunk.patch_jump(skip_return, chunk.len() as u16);
+                chunk.emit_u16(Op::GetLocal, tmp_slot);
+                chunk.emit(Op::Return);
+                // 7. End: .value is on the stack
+                chunk.patch_jump(jump_end, chunk.len() as u16);
             }
-            Expr::IfExpr { .. } => {
-                // TODO: implement if-expression in bytecode VM
+            Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
+                // 1. Compile condition
+                self.compile_expr(chunk, &condition.node);
+                // 2. Conditional jump to else branch
+                let jump_to_else = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);
+                // 3. Then branch: compile body statements, then result expression
+                for s in then_body {
+                    self.compile_stmt(chunk, &s.node);
+                }
+                self.compile_expr(chunk, &then_result.node);
+                // 4. Unconditional jump past else
+                let jump_over_else = chunk.emit_u16(Op::Jump, 0xFFFF);
+                // 5. Patch conditional jump to here (start of else)
+                chunk.patch_jump(jump_to_else, chunk.len() as u16);
+                // 6. Else branch: compile body statements, then result expression
+                for s in else_body {
+                    self.compile_stmt(chunk, &s.node);
+                }
+                self.compile_expr(chunk, &else_result.node);
+                // 7. Patch unconditional jump to here (end)
+                chunk.patch_jump(jump_over_else, chunk.len() as u16);
             }
         }
     }

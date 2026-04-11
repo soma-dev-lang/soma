@@ -29,13 +29,16 @@ pub struct ToolCall {
     pub arguments_json: String,
 }
 
-/// Build the HTTP request body for the given provider
+/// Build the HTTP request body for the given provider.
+/// If `max_tokens_override` is Some, it replaces the default 2048.
 pub fn build_request_body(
     config: &LlmConfig,
     messages: &[serde_json::Value],
     tools: &[serde_json::Value],
     json_mode: bool,
+    max_tokens_override: Option<u64>,
 ) -> serde_json::Value {
+    let mt = max_tokens_override.unwrap_or(2048);
     if config.provider == "anthropic" {
         let msgs: Vec<serde_json::Value> = messages.iter()
             .filter(|m| m["role"].as_str() != Some("system"))
@@ -43,7 +46,7 @@ pub fn build_request_body(
         let mut body = serde_json::json!({
             "model": config.model,
             "messages": msgs,
-            "max_tokens": 2048,
+            "max_tokens": mt,
             "system": config.system_msg,
         });
         if !tools.is_empty() {
@@ -61,7 +64,7 @@ pub fn build_request_body(
         let mut body = serde_json::json!({
             "model": config.model,
             "messages": messages,
-            "max_tokens": 2048,
+            "max_tokens": mt,
         });
         if !tools.is_empty() { body["tools"] = serde_json::json!(tools); }
         if json_mode { body["response_format"] = serde_json::json!({"type": "json_object"}); }

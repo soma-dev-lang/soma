@@ -57,9 +57,11 @@ cell agent Researcher {
     on research(topic: String) {
         set_budget(5000)                          // hard token cap
         transition("t", "researching")
-        let facts = think("Research: {topic}")    // LLM + tool calling
+        let facts = think("Research: {topic}",    // LLM + tool calling
+            map("max_tokens", 2000, "timeout", 30000))  // bounded: provable
         transition("t", "analyzing")
-        let summary = think("Synthesize: {facts}") // multi-turn context
+        let summary = think("Synthesize: {facts}",
+            map("max_tokens", 1000, "timeout", 15000))
         transition("t", "done")
         map("summary", summary, "tokens", tokens_used())
     }
@@ -70,7 +72,7 @@ cell agent Researcher {
 $ soma verify agent.cell
 
 ✓ no deadlocks
-✓ eventually(done | failed)     ← PROVEN: agent always terminates
+✓ eventually(done | failed)     ← PROVEN: state machine reaches terminal state
 ✓ after(researching, analyzing | failed)
 4 passed, 0 failed
 ```
@@ -188,15 +190,26 @@ declared budget. Three outcomes:
 
 - **Proven** — closed-form bound fits. The cell will not OOM.
 - **Exceeded** — bound exceeds budget. Compile error with breakdown.
-- **Advisory** — handler calls an unbounded builtin (`think()`,
-  `from_json()`, `http_get()`). The checker lists the exact call
-  sites that prevent the proof instead of lying.
+- **Advisory** — handler calls an unbounded builtin without bounds.
+  The checker lists the exact call sites that prevent the proof.
 
-The cost lattice and the composition theorem are **mechanically
-verified in Coq** (Rocq 9.1.1, zero axioms, zero `Admitted`).
-No other general-purpose language proves memory budgets at compile
-time. The only tools that do this are $100K/seat avionics analyzers
-on restricted input languages.
+Builtins become bounded when you pass an options map:
+
+```soma
+think(prompt, map("max_tokens", 500, "timeout", 10000))  // → budget proven
+http_get(url, map("max_bytes", 65536, "timeout", 5000))  // → budget proven
+think(prompt)                                              // → advisory
+```
+
+The checker reads `max_tokens` / `max_bytes` from the options map at
+compile time and computes a closed-form bound (4 bytes/token for LLM
+responses). No runtime overhead — the options also enforce the limits
+at execution time (truncation, timeout).
+
+The cost lattice laws are **mechanically verified in Coq** (Rocq
+9.1.1, zero axioms, zero `Admitted`). The per-builtin cost
+assignments and AST walker are trusted by source inspection.
+No other agent framework proves memory budgets at compile time.
 
 **How tight is the bound?** Measured on real data (10K–50K entries
 with unique ~1 KiB values):

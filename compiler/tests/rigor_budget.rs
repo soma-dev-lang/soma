@@ -363,3 +363,94 @@ cell Multi {
         "multi",
     );
 }
+
+// ── Path 5: Bounded builtins via options map ──────────────────────
+
+#[test]
+fn budget_pass_think_with_max_tokens() {
+    assert_pass(
+        r#"
+cell BoundedThink {
+    memory {
+        log: Map<String, String> [persistent, capacity(100), max_value_bytes(512)]
+    }
+    on ask(q: String) {
+        let answer = think(q, map("max_tokens", 500, "timeout", 10000))
+        return answer
+    }
+    scale {
+        replicas: 1
+        memory: "64Mi"
+    }
+}
+"#,
+        "bounded_think",
+    );
+}
+
+#[test]
+fn budget_pass_think_json_with_max_tokens() {
+    assert_pass(
+        r#"
+cell BoundedThinkJson {
+    memory {
+        log: Map<String, String> [persistent, capacity(100), max_value_bytes(512)]
+    }
+    on ask(q: String) {
+        let answer = think_json(q, "be concise", map("max_tokens", 200))
+        return answer
+    }
+    scale {
+        replicas: 1
+        memory: "64Mi"
+    }
+}
+"#,
+        "bounded_think_json",
+    );
+}
+
+#[test]
+fn budget_pass_http_get_with_max_bytes() {
+    assert_pass(
+        r#"
+cell BoundedHttp {
+    memory {
+        cache: Map<String, String> [persistent, capacity(100), max_value_bytes(512)]
+    }
+    on fetch(url: String) {
+        let r = http_get(url, map("max_bytes", 65536, "timeout", 5000))
+        return r
+    }
+    scale {
+        replicas: 1
+        memory: "64Mi"
+    }
+}
+"#,
+        "bounded_http",
+    );
+}
+
+#[test]
+fn budget_advisory_think_without_max_tokens() {
+    // think() without max_tokens remains advisory
+    assert_advisory(
+        r#"
+cell StillAdvisory {
+    memory {
+        log: Map<String, String> [persistent, capacity(100), max_value_bytes(512)]
+    }
+    on ask(q: String) {
+        let answer = think(q, "system prompt")
+        return answer
+    }
+    scale {
+        replicas: 1
+        memory: "64Mi"
+    }
+}
+"#,
+        "still_advisory",
+    );
+}

@@ -5,9 +5,33 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
     match name {
         "http_get" => {
             if let Some(Value::String(url)) = args.first() {
-                match ureq::get(url).call() {
+                // Extract optional options map as second arg
+                let opts = args.get(1).and_then(|v| if let Value::Map(m) = v { Some(m) } else { None });
+                let max_bytes = opts.and_then(|m| m.get("max_bytes")).and_then(|v| {
+                    if let Value::Int(n) = v { let v = n.to_i64().unwrap_or(0); if v > 0 { Some(v as usize) } else { None } } else { None }
+                });
+                let timeout_ms = opts.and_then(|m| m.get("timeout")).and_then(|v| {
+                    if let Value::Int(n) = v { let v = n.to_i64().unwrap_or(0); if v > 0 { Some(v as u64) } else { None } } else { None }
+                });
+
+                let result = if let Some(tms) = timeout_ms {
+                    ureq::AgentBuilder::new()
+                        .timeout(std::time::Duration::from_millis(tms))
+                        .build()
+                        .get(url)
+                        .call()
+                } else {
+                    ureq::get(url).call()
+                };
+
+                match result {
                     Ok(resp) => {
-                        let body = resp.into_string().unwrap_or_default();
+                        let mut body = resp.into_string().unwrap_or_default();
+                        if let Some(mb) = max_bytes {
+                            if body.len() > mb {
+                                body.truncate(mb);
+                            }
+                        }
                         if body.starts_with('{') || body.starts_with('[') {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                                 Some(Ok(serde_json_to_value(&v)))
