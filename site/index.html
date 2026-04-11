@@ -504,7 +504,7 @@ State machine 'order': 7 states, initial 'pending'
 <p>The model checker's correctness is not just claimed &mdash; it's proven.</p>
 
 <ul>
-<li><strong>11 Coq theorems</strong>, all <code>Closed under the global context</code> (zero axioms).</li>
+<li><strong>50 Coq theorems/lemmas</strong> across 6 files, all <code>Closed under the global context</code> (zero axioms).</li>
 <li>The central depth-bound lemma (<em>any acyclic walk through a finite graph of n states has length &le; n</em>) is mechanically verified in <code>docs/rigor/coq/Soma_CTL.v</code>.</li>
 <li>The cost composition theorem (<em>per-statement bounds compose into a sound handler bound</em>) is mechanically verified in <code>docs/rigor/coq/Soma_Budget.v</code>.</li>
 <li>Every property names its <strong>adversary model</strong> explicitly: &ldquo;deadlock-free <em>under what assumptions?</em>&rdquo; has a concrete answer.</li>
@@ -514,8 +514,12 @@ State machine 'order': 7 states, initial 'pending'
 
 <pre><code>$ make -C docs/rigor/coq check
 
-<span class="green">&#x2713;</span> Soma_CTL:    5 theorems &mdash; Closed under the global context
-<span class="green">&#x2713;</span> Soma_Budget: 6 theorems &mdash; Closed under the global context</code></pre>
+<span class="green">&#x2713;</span> Soma_CTL:            4 theorems/lemmas &mdash; Closed under the global context
+<span class="green">&#x2713;</span> Soma_Budget:        28 theorems/lemmas &mdash; Closed under the global context
+<span class="green">&#x2713;</span> Soma_BudgetOps:     10 theorems/lemmas &mdash; Closed under the global context
+<span class="green">&#x2713;</span> Soma_Abstraction:    3 theorems/lemmas &mdash; Closed under the global context
+<span class="green">&#x2713;</span> Soma_Isolation:      1 theorem          &mdash; Closed under the global context
+<span class="green">&#x2713;</span> Soma_RuntimeFidelity:4 theorems/lemmas &mdash; Closed under the global context</code></pre>
 
 <p>Full details: <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/SOUNDNESS.md">docs/SOUNDNESS.md</a>, <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/ADVERSARIES.md">docs/ADVERSARIES.md</a>, <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/rigor/README.md">docs/rigor/README.md</a>.</p>
 </section>
@@ -1398,9 +1402,7 @@ scale 'PricingEngine':
     }
 }
 <span class="cmt">// emit dispatches to all cells with matching handler</span>
-<span class="cmt">// delegate("Writer", "findings", data) for direct calls</span>
-<span class="cmt">// gather(items, "Worker", "process") for fan-out</span>
-<span class="cmt">// broadcast("alert", data) for all agents</span></code></pre>
+<span class="cmt">// delegate("Writer", "findings", data) for direct calls</span></code></pre>
 
 <h3>Syntax cheat sheet</h3>
 <pre><code><span class="cmt">// Variables</span>

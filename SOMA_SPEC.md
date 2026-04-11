@@ -184,9 +184,11 @@ on signal_name(param1: Type, param2: Type) {
 | `avg_by(list, key)` | Average field values |
 | `min_by(list, key)` / `max_by(list, key)` | Min/max by field |
 | `pluck(list, key)` | Extract field values |
-| `count_by(list, key, value)` | Count matching |
 | `group_by(list, key)` | Group by field |
 | `distinct(list, key)` | Unique values |
+| `count_by(list, key, value)` | Count matching |
+| `select(list, fields...)` | Project fields |
+| `agg(list, group_field, ops...)` | Aggregate operations |
 | `inner_join(a, b, key)` | Inner join |
 | `left_join(a, b, key)` | Left join |
 

@@ -19,8 +19,8 @@ against the implementation as it stands today.
 | Replay determinism | Paper theorem + proof sketch | [`docs/SEMANTICS.md`](../SEMANTICS.md) §1.6 |
 | **CTL safety soundness** (Always, Never, DeadlockFree, Mutex) | **Paper theorem + proof, sound and complete** | [`docs/SOUNDNESS.md`](../SOUNDNESS.md) §3.1 |
 | **CTL liveness soundness** (Eventually, After) | **Paper theorem + proof + closed soundness gap** | [`docs/SOUNDNESS.md`](../SOUNDNESS.md) §3.2 |
-| **Mechanized depth-bound theorem** | **Coq proof, no axioms, no Admitted** | [`docs/rigor/coq/Soma_CTL.v`](coq/Soma_CTL.v) — 5 theorems, all `Closed under the global context` |
-| **Memory-budget proof obligation (V1.4)** | **Implemented + executable + mechanized + production cells migrated** | [`compiler/src/checker/budget.rs`](../../compiler/src/checker/budget.rs), [`docs/SEMANTICS.md`](../SEMANTICS.md) §1.7, [`docs/rigor/coq/Soma_Budget.v`](coq/Soma_Budget.v) — 6 Coq theorems, 13 unit tests, 3 runtime validation cells, 2 production cells with proven bounds |
+| **Mechanized proofs** | **Coq proof, no axioms, no Admitted** | [`docs/rigor/coq/`](coq/) — 50 theorems/lemmas across 6 files, all `Closed under the global context` |
+| **Memory-budget proof obligation (V1.4)** | **Implemented + executable + lattice mechanized + production cells migrated** | [`compiler/src/checker/budget.rs`](../../compiler/src/checker/budget.rs), [`docs/SEMANTICS.md`](../SEMANTICS.md) §1.7, [`docs/rigor/coq/Soma_Budget.v`](coq/Soma_Budget.v) — 17 budget tests, 2 production cells with proven bounds |
 | Backend equivalence (interp ≡ vm) | Conjecture, executable witness on intersection corpus | [`compiler/tests/equivalence.rs`](../../compiler/tests/equivalence.rs) — 16/16 cases |
 | Backend equivalence (interp ≡ native) | Conjecture, no harness yet | — |
 | State-explosion bench | Measured numbers, three topologies | [`docs/rigor/results/state_explosion.md`](results/state_explosion.md) |
@@ -122,7 +122,7 @@ In honest order of decreasing seriousness:
 
 1. ~~**Mechanised proof in Coq or Lean.**~~ **Partially closed.**
    The central depth-bound theorem is now mechanically verified in
-   Rocq Prover 9.1.1 (`docs/rigor/coq/Soma_CTL.v`, 5 theorems, all
+   Rocq Prover 9.1.1 (`docs/rigor/coq/`, 50 theorems/lemmas, all
    `Closed under the global context`). What is still on paper:
      (a) the connection between the abstract `Graph` of `Soma_CTL.v`
          and Soma's cell calculus from `docs/SEMANTICS.md` §1
@@ -209,7 +209,7 @@ rebalancer/
 > sketches are reproducible by reading the source, whose central
 > depth-bound lemma AND whose memory-budget cost lattice are now
 > mechanically verified in Rocq with no axioms and no `Admitted`
-> (11 theorems total), whose backend equivalence has an executable
+> (50 theorems/lemmas across 6 files), whose backend equivalence has an executable
 > witness, whose state-explosion cliff is measured rather than
 > asserted, and whose budget proof obligation is wired into
 > `soma check` with two production cells already migrated and a

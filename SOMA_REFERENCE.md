@@ -226,7 +226,6 @@ data |> filter_by("price", ">", 100)     // operators: > >= < <= == !=
 data |> sort_by("score", "desc")
 data |> top(10)
 data |> bottom(5)
-data |> agg("sector", "price:sum", "vol:avg")
 data |> group_by("dept")
 data |> distinct("category")              // unique values
 
@@ -304,6 +303,11 @@ let value = try { risky_operation() }?
 // Agent builtins
 let answer = think("What is 2+2?")           // call LLM (configured in soma.toml)
 let data = think_json("Return as JSON: ...")  // LLM returns Map, not String
+
+// Bounded think/http — enables compile-time budget proofs
+let answer = think("prompt", map("max_tokens", 500, "timeout", 10000))
+let data = http_get(url, map("max_bytes", 65536, "timeout", 5000))
+
 delegate("Writer", "write", facts, topic)     // call another agent's handler
 remember("key", value)                        // persistent agent memory
 let val = recall("key")                       // recall from agent memory
@@ -398,6 +402,7 @@ let valid = valid_transitions("order_id") // available transitions
 ```soma
 // Run: soma serve app.cell
 // Starts HTTP on :8080, WS on :8081, signal bus on :8082
+// Dashboard: http://localhost:8080/__soma/ (state machines, budget, verification)
 
 on request(method: String, path: String, body: String) {
     match path {

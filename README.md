@@ -257,8 +257,8 @@ The model checker's correctness is not just claimed — it's proven.
   matching handler, every handler has a signal source. `soma verify`
   reports matched pairs and orphans.
 
-**20 Coq theorems** across 6 files, all `Closed under the global
-context` (zero axioms). Reproduce: `make -C docs/rigor/coq check`.
+**50 Coq theorems and lemmas** across 6 files, all `Closed under the
+global context` (zero axioms). Reproduce: `make -C docs/rigor/coq check`.
 
 ```
 $ soma verify rebalancer/app.cell
@@ -348,8 +348,8 @@ All three have verified state machines with `eventually(closed)`.
 
 ## Test Suite
 
-111 language tests + 89 rebalancer tests + 29 rigor tests + 11 Coq
-theorems. 100-cell language corpus (`examples/usecases/`), 10 CLBG
+140 compiler tests + 89 rebalancer tests + 50 Coq theorems/lemmas.
+Language corpus (`examples/usecases/`), 10 CLBG
 challenges, state-explosion bench, backend-equivalence harness, and
 a live-LLM integration test against gemma4:26b via ollama.
 
