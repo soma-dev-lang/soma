@@ -247,7 +247,7 @@ fn walk_stmt(stmt: &Statement, span: Span, path: &mut Vec<String>, eff: &mut Han
             walk_stmts(body, path, eff);
             path.pop();
         }
-        Statement::While { condition, body } => {
+        Statement::While { condition, body, .. } => {
             walk_expr(&condition.node, span, path, eff);
             path.push(format!("while {}", render_expr(&condition.node)));
             walk_stmts(body, path, eff);

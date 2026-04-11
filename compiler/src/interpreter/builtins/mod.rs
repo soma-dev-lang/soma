@@ -4,7 +4,6 @@ pub mod collection;
 pub mod pipeline;
 pub mod http;
 pub mod time;
-pub mod indicators;
 pub mod io;
 pub mod storage;
 pub mod record;
@@ -32,7 +31,6 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
         .or_else(|| pipeline::call_builtin(name, args))
         .or_else(|| http::call_builtin(name, args))
         .or_else(|| time::call_builtin(name, args))
-        .or_else(|| indicators::call_builtin(name, args))
         .or_else(|| record::call_builtin(name, args))
         .or_else(|| storage::call_builtin(interp, name, args, cell_name))
 }
@@ -41,7 +39,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
 /// Called from eval_expr directly (not through call_builtin) because we need &mut self
 pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     // reduce/fold: (list, initial, lambda)
-    if matches!(name, "reduce" | "fold") {
+    if matches!(name, "reduce") {
         if args.len() >= 3 {
             if let Some(Value::List(items)) = args.first() {
                 let initial = &args[1];
@@ -82,7 +80,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
     };
 
     match name {
-        "map" | "each" => {
+        "map" => {
             let mut result = Vec::with_capacity(list.len());
             for item in list {
                 match interp.apply_lambda(lambda, item.clone(), cell_name) {

@@ -969,7 +969,7 @@ impl Interpreter {
                 Ok(last)
             }
 
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 // Ultra-fast path: while i < N { ... i += K ... }
                 // Detect: condition is i < literal, body is all Assign with += on ints
                 // Run entirely with Rust locals, zero HashMap access per iteration
@@ -1250,7 +1250,8 @@ impl Interpreter {
                     .map(|(c, _)| c.clone())
                     .collect();
                 for target_cell in matching_cells {
-                    let _ = self.call_signal(&target_cell, sig, dispatch_args.clone());
+                    self.call_signal(&target_cell, sig, dispatch_args.clone())
+                        .map_err(ExecError::Runtime)?;
                 }
                 Ok(Value::Unit)
             }
@@ -1423,9 +1424,9 @@ impl Interpreter {
                             "next_id", "transition", "get_status", "valid_transitions", "is_type",
                             "top", "bottom", "agg", "group_by", "distinct", "describe", "flatten", "zip",
                             "sum_by", "avg_by", "min_by", "max_by", "count_by", "escape_html",
-                            "each", "find", "any", "all", "count", "sse", "link", "ws_connect", "ws_send",
-                            "subscribe", "keys", "values", "sort", "append", "sleep",
-                            "nth", "at", "read_file", "write_file", "read_csv",
+                            "find", "any", "all", "count", "sse", "link", "ws_connect", "ws_send",
+                            "subscribe", "keys", "values", "sort", "sleep",
+                            "nth", "read_file", "write_file", "read_csv",
                         ];
                         for b in &builtins { all_names.push(b.to_string()); }
 
@@ -2065,13 +2066,13 @@ impl Interpreter {
             }
             Constraint::And(a, b) => {
                 let ra = self.eval_constraint(&a.node, env, cell_name, signal_name)?;
-                let rb = self.eval_constraint(&b.node, env, cell_name, signal_name)?;
-                Ok(ra && rb)
+                if !ra { return Ok(false); }
+                self.eval_constraint(&b.node, env, cell_name, signal_name)
             }
             Constraint::Or(a, b) => {
                 let ra = self.eval_constraint(&a.node, env, cell_name, signal_name)?;
-                let rb = self.eval_constraint(&b.node, env, cell_name, signal_name)?;
-                Ok(ra || rb)
+                if ra { return Ok(true); }
+                self.eval_constraint(&b.node, env, cell_name, signal_name)
             }
             Constraint::Not(inner) => {
                 let r = self.eval_constraint(&inner.node, env, cell_name, signal_name)?;
@@ -3478,48 +3479,6 @@ mod tests {
         assert_eq!(result.to_string(), "emitted");
     }
 
-    #[test]
-    fn test_gather_fan_out() {
-        let source = r#"
-            cell Worker {
-                on process(item: String) {
-                    return "done:" + item
-                }
-            }
-            cell Main {
-                on run() {
-                    return gather(list("x", "y", "z"), "Worker", "process")
-                }
-            }
-        "#;
-        let result = run(source, "Main", "run", vec![]).unwrap();
-        if let Value::List(items) = result {
-            assert_eq!(items.len(), 3);
-            assert_eq!(items[0].to_string(), "done:x");
-            assert_eq!(items[2].to_string(), "done:z");
-        } else {
-            panic!("expected list");
-        }
-    }
-
-    #[test]
-    fn test_broadcast_to_multiple_cells() {
-        let source = r#"
-            cell A {
-                on alert(msg: String) { return "A:" + msg }
-            }
-            cell B {
-                on alert(msg: String) { return "B:" + msg }
-            }
-            cell Main {
-                on run() {
-                    return broadcast("alert", "fire")
-                }
-            }
-        "#;
-        let result = run(source, "Main", "run", vec![]).unwrap();
-        assert_eq!(result.as_int().unwrap(), 2);
-    }
 
     #[test]
     fn test_delegate_cross_cell() {

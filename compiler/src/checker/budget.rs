@@ -278,7 +278,20 @@ pub fn expr_cost(e: &Expr) -> Cost {
             // These don't themselves allocate beyond their arguments.
             match method.as_str() {
                 "set" | "get" | "delete" | "contains" | "len" | "has" => c,
-                "keys" | "values" => c.plus(Cost::bytes(4096)), // small stdlib vec
+                "keys" => {
+                    // Returns a list of all keys. Without flow analysis we
+                    // cannot tell if the target is a storage slot or a local
+                    // map, so use DEFAULT_CAPACITY × DEFAULT_MAX_KEY_BYTES.
+                    c.plus(Cost::bytes(
+                        DEFAULT_CAPACITY.saturating_mul(DEFAULT_MAX_KEY_BYTES)
+                    ))
+                }
+                "values" => {
+                    // Returns a list of all values.
+                    c.plus(Cost::bytes(
+                        DEFAULT_CAPACITY.saturating_mul(DEFAULT_MAX_VALUE_BYTES)
+                    ))
+                }
                 _ => c,
             }
         }
@@ -316,8 +329,8 @@ pub fn expr_cost(e: &Expr) -> Cost {
                     arg_cost.plus(Cost::bytes(64))
                 }
                 // Nondeterministic builtins that return small values
-                "now" | "now_ms" | "random" | "next_id" | "timestamp"
-                | "today" | "date_now" | "rand" => arg_cost,
+                "now" | "now_ms" | "random" | "next_id"
+                | "today" => arg_cost,
                 // print/log are no-op for memory
                 "print" | "log" => arg_cost,
                 // transition / state machine ops
@@ -371,13 +384,14 @@ pub fn expr_cost(e: &Expr) -> Cost {
         }
 
         Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
-            let mut then_c = expr_cost(&condition.node);
+            let cond_c = expr_cost(&condition.node);
+            let mut then_c = Cost::zero();
             for st in then_body { then_c = then_c.plus(stmt_cost(&st.node)); }
-            let then_total = then_c.clone().plus(expr_cost(&then_result.node));
+            let then_total = then_c.plus(expr_cost(&then_result.node));
             let mut else_c = Cost::zero();
             for st in else_body { else_c = else_c.plus(stmt_cost(&st.node)); }
             let else_total = else_c.plus(expr_cost(&else_result.node));
-            then_total.max(else_total)
+            cond_c.plus(then_total.max(else_total))
         }
 
         Expr::Lambda { .. } | Expr::LambdaBlock { .. } => {
@@ -448,13 +462,12 @@ pub fn stmt_cost(s: &Statement) -> Cost {
                 .unwrap_or(DEFAULT_CAPACITY);
             iter_c.plus(body_c.times(n))
         }
-        Statement::While { condition, body } => {
-            // No static bound without an annotation. Conservative:
-            // assume DEFAULT_CAPACITY iterations.
+        Statement::While { condition, body, bound } => {
             let cond_c = expr_cost(&condition.node);
             let mut body_c = Cost::zero();
             for st in body { body_c = body_c.plus(stmt_cost(&st.node)); }
-            cond_c.plus(body_c.times(DEFAULT_CAPACITY))
+            let n = bound.unwrap_or(DEFAULT_CAPACITY);
+            cond_c.plus(body_c.times(n))
         }
         Statement::Emit { args, .. } => {
             let mut c = Cost::zero();

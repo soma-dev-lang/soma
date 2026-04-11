@@ -79,7 +79,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("ends_with expects 2 arguments".to_string())))
             }
         }
-        "lowercase" | "to_lower" => {
+        "lowercase" => {
             args.first().map(|a| {
                 if let Value::String(s) = a {
                     Ok(Value::String(s.to_lowercase()))
@@ -88,7 +88,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 }
             })
         }
-        "uppercase" | "to_upper" => {
+        "uppercase" => {
             args.first().map(|a| {
                 if let Value::String(s) = a {
                     Ok(Value::String(s.to_uppercase()))
@@ -124,7 +124,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("index_of(string, substring)".to_string())))
             }
         }
-        "substring" | "substr" => {
+        "substring" => {
             if args.len() >= 3 {
                 if let (Value::String(s), Value::Int(start_si), Value::Int(end_si)) = (&args[0], &args[1], &args[2]) {
                     let start = start_si.to_i64().unwrap_or(0).max(0) as usize;
@@ -150,7 +150,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "to_string" => {
             args.first().map(|arg| Ok(Value::String(format!("{}", arg))))
         }
-        "to_int" | "int" => {
+        "to_int" => {
             args.first().map(|arg| match arg {
                 Value::Int(si) => Ok(Value::Int(si.clone())),
                 Value::Float(n) => Ok(Value::Int(SomaInt::from_i64(*n as i64))),
@@ -167,7 +167,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 _ => Ok(Value::Unit),
             })
         }
-        "to_float" | "float" => {
+        "to_float" => {
             args.first().map(|arg| match arg {
                 Value::Float(n) => Ok(Value::Float(*n)),
                 Value::Int(si) => Ok(Value::Float(si.to_f64())),
@@ -209,7 +209,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Ok(Value::String(t.to_string()))
             })
         }
-        "escape_html" | "html_escape" => {
+        "escape_html" => {
             if let Some(Value::String(s)) = args.first() {
                 let escaped = s
                     .replace('&', "&amp;")

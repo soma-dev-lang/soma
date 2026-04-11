@@ -86,28 +86,6 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 Some(Err(RuntimeError::TypeError("recall(key: String)".to_string())))
             }
         }
-        // ── Agent: gather(items, cell, signal) — fan-out pattern ────
-        // Calls cell.signal(item) for each item, collects results into a list
-        "gather" => {
-            if args.len() >= 3 {
-                if let Value::List(items) = &args[0] {
-                    let target_cell = format!("{}", args[1]);
-                    let signal_name = format!("{}", args[2]);
-                    let mut results = Vec::new();
-                    for item in items {
-                        match interp.call_signal(&target_cell, &signal_name, vec![item.clone()]) {
-                            Ok(val) => results.push(val),
-                            Err(e) => results.push(Value::String(format!("error: {}", e))),
-                        }
-                    }
-                    Some(Ok(Value::List(results)))
-                } else {
-                    Some(Err(RuntimeError::TypeError("gather(list, cell_name, signal_name)".to_string())))
-                }
-            } else {
-                Some(Err(RuntimeError::TypeError("gather(list, cell_name, signal_name) requires 3 args".to_string())))
-            }
-        }
         // ── publish(stream_name, data) — push to SSE on a dynamic stream ─
         // Soma's `emit X(...)` uses static signal names baked into the AST.
         // For per-thread / per-user real-time channels we need a runtime-
@@ -131,26 +109,6 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 }
             }
             return Some(Ok(Value::Unit));
-        }
-        // ── Agent: broadcast(signal, data) — emit to all cells ──────
-        "broadcast" => {
-            if args.len() >= 2 {
-                let signal_name = format!("{}", args[0]);
-                let data = args[1].clone();
-                // Find all cells with matching handler
-                let matching: Vec<String> = interp.handler_cache.keys()
-                    .filter(|(_, s)| s.as_str() == signal_name.as_str())
-                    .map(|(c, _)| c.clone())
-                    .collect();
-                let mut count = 0;
-                for target in matching {
-                    let _ = interp.call_signal(&target, &signal_name, vec![data.clone()]);
-                    count += 1;
-                }
-                Some(Ok(Value::Int(SomaInt::from_i64(count))))
-            } else {
-                Some(Err(RuntimeError::TypeError("broadcast(signal_name, data)".to_string())))
-            }
         }
         // ── Agent delegation: delegate(cell, signal, args...) ──────
         "delegate" => {

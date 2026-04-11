@@ -107,7 +107,7 @@ fn check_stmt(handler_name: &str, stmt: &Statement, siblings: &NativeSiblings) -
             for s in else_body { check_stmt(handler_name, &s.node, siblings)?; }
             Ok(())
         }
-        Statement::While { condition, body } => {
+        Statement::While { condition, body, .. } => {
             check_expr(handler_name, &condition.node, siblings)?;
             for s in body { check_stmt(handler_name, &s.node, siblings)?; }
             Ok(())

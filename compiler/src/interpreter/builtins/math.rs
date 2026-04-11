@@ -168,7 +168,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         // random() → float 0.0..1.0
         // random(max) → int 0..max (exclusive)
         // random(min, max) → int min..max (exclusive)
-        "random" | "rand" => {
+        "random" => {
             use std::cell::Cell;
             use std::time::{SystemTime, UNIX_EPOCH};
 

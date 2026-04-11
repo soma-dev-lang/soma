@@ -37,7 +37,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
             Some(Ok(Value::Map(entries)))
         }
-        "push" | "append" => {
+        "push" => {
             if args.len() >= 2 {
                 if let Value::List(existing) = &args[0] {
                     let mut result = existing.clone();
@@ -268,7 +268,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("sort(list) or sort(list, \"desc\")".to_string())))
             }
         }
-        "nth" | "at" | "get_at" => {
+        "nth" => {
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let idx = match &args[1] {

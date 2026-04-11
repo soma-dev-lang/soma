@@ -295,13 +295,17 @@ pub fn generate_native_source_with_config(
     }
 
     if uses_random {
-        out.push_str("static mut _SOMA_RNG_STATE: u64 = 0x12345678_9abcdef0;\n\n");
-        out.push_str("#[inline(always)]\nunsafe fn _soma_random() -> f64 {\n");
-        out.push_str("    _SOMA_RNG_STATE ^= _SOMA_RNG_STATE >> 12;\n");
-        out.push_str("    _SOMA_RNG_STATE ^= _SOMA_RNG_STATE << 25;\n");
-        out.push_str("    _SOMA_RNG_STATE ^= _SOMA_RNG_STATE >> 27;\n");
-        out.push_str("    let r = _SOMA_RNG_STATE.wrapping_mul(0x2545F4914F6CDD1D);\n");
-        out.push_str("    (r >> 11) as f64 / ((1u64 << 53) as f64)\n");
+        out.push_str("thread_local! { static _SOMA_RNG_STATE: std::cell::Cell<u64> = std::cell::Cell::new(0x12345678_9abcdef0); }\n\n");
+        out.push_str("#[inline(always)]\nfn _soma_random() -> f64 {\n");
+        out.push_str("    _SOMA_RNG_STATE.with(|cell| {\n");
+        out.push_str("        let mut s = cell.get();\n");
+        out.push_str("        s ^= s >> 12;\n");
+        out.push_str("        s ^= s << 25;\n");
+        out.push_str("        s ^= s >> 27;\n");
+        out.push_str("        cell.set(s);\n");
+        out.push_str("        let r = s.wrapping_mul(0x2545F4914F6CDD1D);\n");
+        out.push_str("        (r >> 11) as f64 / ((1u64 << 53) as f64)\n");
+        out.push_str("    })\n");
         out.push_str("}\n\n");
     }
 
@@ -320,9 +324,19 @@ pub fn generate_native_source_with_config(
     // fallback is silent.
     if !dualmode.is_empty() {
         out.push_str("static _SOMA_PANIC_HOOK_INSTALLED: std::sync::Once = std::sync::Once::new();\n");
+        out.push_str("static mut _SOMA_PREV_HOOK: Option<Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync>> = None;\n");
         out.push_str("fn _soma_install_quiet_hook() {\n");
         out.push_str("    _SOMA_PANIC_HOOK_INSTALLED.call_once(|| {\n");
-        out.push_str("        std::panic::set_hook(Box::new(|_info| {}));\n");
+        out.push_str("        let prev = std::panic::take_hook();\n");
+        out.push_str("        unsafe { _SOMA_PREV_HOOK = Some(prev); }\n");
+        out.push_str("        std::panic::set_hook(Box::new(|info| {\n");
+        out.push_str("            // Only silence overflow panics from Soma native code;\n");
+        out.push_str("            // forward everything else to the previous hook.\n");
+        out.push_str("            let msg = info.payload().downcast_ref::<&str>().copied().unwrap_or(\"\");\n");
+        out.push_str("            if !msg.contains(\"overflow\") && !msg.contains(\"divide by zero\") {\n");
+        out.push_str("                unsafe { if let Some(ref h) = _SOMA_PREV_HOOK { h(info); } }\n");
+        out.push_str("            }\n");
+        out.push_str("        }));\n");
         out.push_str("    });\n");
         out.push_str("}\n\n");
     }
@@ -621,7 +635,7 @@ fn body_calls_with_unbounded_arg(body: &[Spanned<Statement>], target: &str) -> b
                     || body_calls_with_unbounded_arg(then_body, target)
                     || body_calls_with_unbounded_arg(else_body, target)
             }
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 expr_walk(&condition.node, target)
                     || body_calls_with_unbounded_arg(body, target)
             }
@@ -665,7 +679,7 @@ fn body_siblings_called(body: &[Spanned<Statement>], siblings: &HashSet<String>)
                 for s in then_body { stmt_walk(&s.node, siblings, acc); }
                 for s in else_body { stmt_walk(&s.node, siblings, acc); }
             }
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 expr_walk(&condition.node, siblings, acc);
                 for s in body { stmt_walk(&s.node, siblings, acc); }
             }
@@ -705,7 +719,7 @@ fn body_calls(body: &[Spanned<Statement>], target: &str) -> bool {
                     || body_calls(then_body, target)
                     || body_calls(else_body, target)
             }
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 expr_has_call(&condition.node, target) || body_calls(body, target)
             }
             Statement::For { iter, body, .. } => {
@@ -760,7 +774,7 @@ fn calls_rug_int_sibling(
                     || calls_rug_int_sibling(then_body, mode_of, siblings)
                     || calls_rug_int_sibling(else_body, mode_of, siblings)
             }
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 expr_calls(&condition.node, mode_of, siblings)
                     || calls_rug_int_sibling(body, mode_of, siblings)
             }
@@ -985,47 +999,44 @@ fn emit_dualmode_wrapper(
         match ty {
             NativeType::Int => {
                 fast_decode_lines.push(format!(
-                    "        let {} = match unsafe {{ _SOMA_ARGS[{}].to_i64() }} {{ Some(v) => v, None => return None }};",
+                    "        let {} = match _soma_get_int_arg_i64({}) {{ Some(v) => v, None => return None }};",
                     local, int_idx
                 ));
                 fast_call_args.push(local);
-                rug_call_args.push(format!("unsafe {{ _SOMA_ARGS[{}].clone() }}", int_idx));
+                rug_call_args.push(format!("_soma_get_int_arg({})", int_idx));
                 int_idx += 1;
             }
             NativeType::Float => {
                 fast_decode_lines.push(format!(
-                    "        let {} = unsafe {{ f64::from_bits(_SOMA_ARGS[{}].to_i64().unwrap_or(0) as u64) }};",
+                    "        let {} = f64::from_bits(_soma_get_int_arg_i64({}).unwrap_or(0) as u64);",
                     local, int_idx
                 ));
                 fast_call_args.push(local);
                 rug_call_args.push(format!(
-                    "unsafe {{ f64::from_bits(_SOMA_ARGS[{}].to_i64().unwrap_or(0) as u64) }}",
+                    "f64::from_bits(_soma_get_int_arg_i64({}).unwrap_or(0) as u64)",
                     int_idx
                 ));
                 int_idx += 1;
             }
             NativeType::Bool => {
                 fast_decode_lines.push(format!(
-                    "        let {} = unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) != 0 }};",
+                    "        let {} = _soma_get_int_arg_i64({}).unwrap_or(0) != 0;",
                     local, int_idx
                 ));
                 fast_call_args.push(local);
                 rug_call_args.push(format!(
-                    "unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) != 0 }}",
+                    "_soma_get_int_arg_i64({}).unwrap_or(0) != 0",
                     int_idx
                 ));
                 int_idx += 1;
             }
             NativeType::String => {
-                // Pass &str to the fast inner — no clone, no allocation.
-                // The String is already owned by _SOMA_STRING_ARGS so we
-                // can borrow safely for the duration of the call.
                 fast_decode_lines.push(format!(
-                    "        let {}: &str = unsafe {{ &_SOMA_STRING_ARGS[{}] }};",
+                    "        let {}: String = _soma_get_string_arg({});",
                     local, str_idx
                 ));
-                fast_call_args.push(local);
-                rug_call_args.push(format!("unsafe {{ _SOMA_STRING_ARGS[{}].clone() }}", str_idx));
+                fast_call_args.push(local.clone());
+                rug_call_args.push(format!("_soma_get_string_arg({})", str_idx));
                 str_idx += 1;
             }
         }
@@ -1067,7 +1078,7 @@ fn emit_dualmode_wrapper(
         }
         NativeType::String => {
             // Shouldn't happen — eligibility excludes String. Handle anyway.
-            out.push_str("        unsafe { _SOMA_RESULT = Some(_fast_v); }\n");
+            out.push_str("        _soma_set_result(_fast_v);\n");
             out.push_str("        return i64::MIN + 1;\n");
         }
     }
@@ -1084,7 +1095,7 @@ fn emit_dualmode_wrapper(
             out.push_str("    if let Some(v) = _ret_val.to_i64() {\n");
             out.push_str("        v\n");
             out.push_str("    } else {\n");
-            out.push_str("        unsafe { _SOMA_RESULT = Some(_ret_val.to_string()); }\n");
+            out.push_str("        _soma_set_result(_ret_val.to_string());\n");
             out.push_str("        i64::MIN\n");
             out.push_str("    }\n");
         }
@@ -1107,7 +1118,7 @@ fn emit_dualmode_wrapper(
                 "    let _ret_val: String = inner_{}({});\n",
                 fn_name, rug_call
             ));
-            out.push_str("    unsafe { _SOMA_RESULT = Some(_ret_val); }\n");
+            out.push_str("    _soma_set_result(_ret_val);\n");
             out.push_str("    i64::MIN + 1\n");
         }
     }
@@ -1498,24 +1509,23 @@ fn gen_rug_ffi_wrapper(
         let ty = type_expr_to_native(&p.ty.node);
         match ty {
             NativeType::Int => {
-                arg_exprs.push(format!("unsafe {{ _SOMA_ARGS[{}].clone() }}", int_idx));
+                arg_exprs.push(format!("_soma_get_int_arg({})", int_idx));
                 int_idx += 1;
             }
             NativeType::String => {
-                arg_exprs.push(format!("unsafe {{ _SOMA_STRING_ARGS[{}].clone() }}", str_idx));
+                arg_exprs.push(format!("_soma_get_string_arg({})", str_idx));
                 str_idx += 1;
             }
             NativeType::Float => {
-                // The interpreter pushes f64::to_bits as i64 via _soma_push_f64
                 arg_exprs.push(format!(
-                    "unsafe {{ f64::from_bits(_SOMA_ARGS[{}].to_i64().unwrap_or(0) as u64) }}",
+                    "f64::from_bits(_soma_get_int_arg_i64({}).unwrap_or(0) as u64)",
                     int_idx
                 ));
                 int_idx += 1;
             }
             NativeType::Bool => {
                 arg_exprs.push(format!(
-                    "unsafe {{ _SOMA_ARGS[{}].to_i64().unwrap_or(0) != 0 }}",
+                    "_soma_get_int_arg_i64({}).unwrap_or(0) != 0",
                     int_idx
                 ));
                 int_idx += 1;
@@ -1529,13 +1539,13 @@ fn gen_rug_ffi_wrapper(
             out.push_str("    if let Some(v) = _ret_val.to_i64() {\n");
             out.push_str("        v\n");
             out.push_str("    } else {\n");
-            out.push_str("        unsafe { _SOMA_RESULT = Some(_ret_val.to_string()); }\n");
+            out.push_str("        _soma_set_result(_ret_val.to_string());\n");
             out.push_str("        i64::MIN\n");
             out.push_str("    }\n");
         }
         NativeType::String => {
             out.push_str(&format!("    let _ret_val: String = inner_{}({});\n", fn_name, call_args));
-            out.push_str("    unsafe { _SOMA_RESULT = Some(_ret_val); }\n");
+            out.push_str("    _soma_set_result(_ret_val);\n");
             out.push_str("    i64::MIN + 1\n");
         }
         NativeType::Float => {
@@ -1741,7 +1751,7 @@ fn collect_assignment_targets(body: &[Spanned<Statement>], out: &mut HashSet<Str
 fn collect_loop_cond_refs(body: &[Spanned<Statement>], out: &mut HashSet<String>) {
     for s in body {
         match &s.node {
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 expr_collect_idents(&condition.node, out);
                 collect_loop_cond_refs(body, out);
             }
@@ -1868,7 +1878,7 @@ fn first_ref_in_stmt(s: &Statement, var: &str) -> FirstRef {
             }
             FirstRef::None
         }
-        Statement::While { condition, body } => {
+        Statement::While { condition, body, .. } => {
             if FnGenerator::expr_references(&condition.node, var) {
                 return FirstRef::Read;
             }
@@ -1902,7 +1912,7 @@ fn stmt_references(stmt: &Statement, name: &str) -> bool {
                 || body_references(then_body, name)
                 || body_references(else_body, name)
         }
-        Statement::While { condition, body } => {
+        Statement::While { condition, body, .. } => {
             FnGenerator::expr_references(&condition.node, name)
                 || body_references(body, name)
         }
@@ -2045,7 +2055,7 @@ fn collect_self_calls<'a>(
                 collect_self_calls(then_body, fn_name, out);
                 collect_self_calls(else_body, fn_name, out);
             }
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 walk_expr(&condition.node, fn_name, out);
                 collect_self_calls(body, fn_name, out);
             }
@@ -2636,7 +2646,7 @@ fn count_self_calls_anywhere(
                 count_self_calls_anywhere(then_body, fn_name, count);
                 count_self_calls_anywhere(else_body, fn_name, count);
             }
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 walk_e(&condition.node, fn_name, count);
                 count_self_calls_anywhere(body, fn_name, count);
             }
@@ -2736,6 +2746,7 @@ fn rewrite_tail_call_to_loop(h: &mut NativeHandler) {
                 span,
             },
             body,
+            bound: None,
         },
         span,
     };
@@ -3538,7 +3549,7 @@ impl FnGenerator {
                 }
                 s
             }
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 let cond = self.gen_expr_direct(&condition.node, NativeType::Bool);
                 let mut s = format!("{}while {} {{\n", ind, cond);
                 for st in body {
@@ -3968,7 +3979,7 @@ impl FnGenerator {
                 let s = self.gen_expr_direct(&args[0].node, NativeType::String);
                 return format!("{{ use std::io::Write; let _ = std::io::stdout().write_all({}.as_bytes()); 0i64 }}", s);
             }
-            "random" => "unsafe { _soma_random() }".to_string(),
+            "random" => "_soma_random()".to_string(),
             "sqrt" | "log" | "exp" | "sin" | "cos" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
                 let method = match name { "log" => "ln", other => other };
@@ -4365,7 +4376,7 @@ impl FnGenerator {
                 }
                 s
             }
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 let cond = self.gen_cond_rug(&condition.node);
                 let mut s = String::new();
 
@@ -5591,49 +5602,91 @@ const SHARED_BUFFER_RUG: &str = r#"
 // Int args go in _SOMA_ARGS; String args go in _SOMA_STRING_ARGS.
 // Each buffer is a flat positional array; the handler param-reader knows
 // which positional index in each buffer corresponds to which parameter.
-static mut _SOMA_ARGS: Vec<Integer> = Vec::new();
-static mut _SOMA_STRING_ARGS: Vec<String> = Vec::new();
-static mut _SOMA_RESULT: Option<String> = None;
+//
+// Thread-local to avoid data races when called from parallel threads.
+use std::cell::RefCell;
+
+thread_local! {
+    static _SOMA_ARGS: RefCell<Vec<Integer>> = RefCell::new(Vec::new());
+    static _SOMA_STRING_ARGS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static _SOMA_RESULT: RefCell<Option<String>> = RefCell::new(None);
+}
 
 #[no_mangle]
 pub extern "C" fn _soma_clear_args() {
-    unsafe {
-        _SOMA_ARGS.clear();
-        _SOMA_STRING_ARGS.clear();
-    }
+    _SOMA_ARGS.with(|a| a.borrow_mut().clear());
+    _SOMA_STRING_ARGS.with(|a| a.borrow_mut().clear());
 }
 
 #[no_mangle]
 pub extern "C" fn _soma_push_i64(v: i64) {
-    unsafe { _SOMA_ARGS.push(Integer::from(v)); }
+    _SOMA_ARGS.with(|a| a.borrow_mut().push(Integer::from(v)));
 }
 
 #[no_mangle]
 pub extern "C" fn _soma_push_bigint(ptr: *const u8, len: i64) {
-    unsafe {
-        let bytes = std::slice::from_raw_parts(ptr, len as usize);
-        let s = std::str::from_utf8_unchecked(bytes);
-        let val = Integer::parse(s).unwrap();
-        _SOMA_ARGS.push(Integer::from(val));
-    }
+    if ptr.is_null() || len < 0 { return; }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let s = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let val = match Integer::parse(s) {
+        Ok(parsed) => Integer::from(parsed),
+        Err(_) => return,
+    };
+    _SOMA_ARGS.with(|a| a.borrow_mut().push(val));
 }
 
 #[no_mangle]
 pub extern "C" fn _soma_push_string(ptr: *const u8, len: i64) {
-    unsafe {
-        let bytes = std::slice::from_raw_parts(ptr, len as usize);
-        _SOMA_STRING_ARGS.push(std::str::from_utf8_unchecked(bytes).to_string());
-    }
+    if ptr.is_null() || len < 0 { return; }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+    let s = match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => return,
+    };
+    _SOMA_STRING_ARGS.with(|a| a.borrow_mut().push(s));
 }
 
 #[no_mangle]
 pub extern "C" fn _soma_result_ptr() -> *const u8 {
-    unsafe { _SOMA_RESULT.as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null()) }
+    _SOMA_RESULT.with(|r| {
+        r.borrow().as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null())
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn _soma_result_len() -> i64 {
-    unsafe { _SOMA_RESULT.as_ref().map(|s| s.len() as i64).unwrap_or(0) }
+    _SOMA_RESULT.with(|r| {
+        r.borrow().as_ref().map(|s| s.len() as i64).unwrap_or(0)
+    })
+}
+
+// Internal accessors for generated handler code
+#[inline(always)]
+fn _soma_get_int_arg(idx: usize) -> Integer {
+    _SOMA_ARGS.with(|a| a.borrow()[idx].clone())
+}
+
+#[inline(always)]
+fn _soma_get_int_arg_i64(idx: usize) -> Option<i64> {
+    _SOMA_ARGS.with(|a| a.borrow()[idx].to_i64())
+}
+
+#[inline(always)]
+fn _soma_get_string_arg(idx: usize) -> String {
+    _SOMA_STRING_ARGS.with(|a| a.borrow()[idx].clone())
+}
+
+#[inline(always)]
+fn _soma_get_string_arg_ref(idx: usize, f: impl FnOnce(&str) -> String) -> String {
+    _SOMA_STRING_ARGS.with(|a| f(&a.borrow()[idx]))
+}
+
+#[inline(always)]
+fn _soma_set_result(val: String) {
+    _SOMA_RESULT.with(|r| *r.borrow_mut() = Some(val));
 }
 "#;
 
@@ -5651,7 +5704,7 @@ fn stmt_uses_random(stmt: &Statement) -> bool {
         Statement::If { condition, then_body, else_body } => {
             expr_uses_random(&condition.node) || body_uses_random(then_body) || body_uses_random(else_body)
         }
-        Statement::While { condition, body } => {
+        Statement::While { condition, body, .. } => {
             expr_uses_random(&condition.node) || body_uses_random(body)
         }
         Statement::For { iter, body, .. } => {

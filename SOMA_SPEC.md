@@ -148,7 +148,7 @@ on signal_name(param1: Type, param2: Type) {
 | `starts_with(s, prefix)` | Check prefix |
 | `trim(s)` | Trim whitespace |
 | `lowercase(s)` | Convert to lowercase |
-| `uppercase(s)` | Convert to uppercase |
+| `uppercase(s)` | Convert to uppercase  |
 | `contains(s, sub)` | Check substring |
 | `index_of(s, sub)` | Find substring position |
 | `substring(s, start, end)` | Extract substring |
@@ -159,7 +159,7 @@ on signal_name(param1: Type, param2: Type) {
 | Function | Description |
 |----------|-------------|
 | `list(items...)` | Create list |
-| `push(list, item)` | Append item (alias: `append`) |
+| `push(list, item)` | Append item |
 | `flatten(list)` | Flatten nested lists |
 | `zip(a, b)` | Zip two lists |
 | `enumerate(list)` | Add indices |
@@ -179,18 +179,16 @@ on signal_name(param1: Type, param2: Type) {
 |----------|-------------|
 | `filter_by(list, key, value)` | Filter entries |
 | `sort_by(list, key)` | Sort by field |
-| `top(list, n)` / `take(list, n)` | First N items |
+| `top(list, n)` | First N items |
 | `sum_by(list, key)` | Sum field values |
 | `avg_by(list, key)` | Average field values |
 | `min_by(list, key)` / `max_by(list, key)` | Min/max by field |
-| `map_by(list, key)` / `pluck(list, key)` | Extract field values |
+| `pluck(list, key)` | Extract field values |
 | `count_by(list, key, value)` | Count matching |
 | `group_by(list, key)` | Group by field |
 | `distinct(list, key)` | Unique values |
 | `inner_join(a, b, key)` | Inner join |
 | `left_join(a, b, key)` | Left join |
-| `agg(list, ops...)` | Aggregate operations |
-| `select(list, fields...)` | Project fields |
 
 ### Template Functions
 
@@ -219,7 +217,7 @@ on signal_name(param1: Type, param2: Type) {
 | `slot.values()` | List all values |
 | `slot.entries()` / `slot.all()` | List all key-value pairs |
 | `slot.has(key)` / `slot.contains(key)` | Check existence |
-| `slot.append(value)` / `slot.push(value)` | Append to list storage |
+| `slot.push(value)` | Append to list storage |
 
 ## State Machines
 

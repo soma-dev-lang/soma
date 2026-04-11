@@ -230,22 +230,6 @@ data |> agg("sector", "price:sum", "vol:avg")
 data |> group_by("dept")
 data |> distinct("category")              // unique values
 
-// Column-wise (statistics)
-data |> zscore("field")                   // adds field_z column
-data |> rank("field")                     // adds field_rank column
-data |> normalize("field", 0, 100)        // adds field_norm column
-data |> winsorize("field", 0.05, 0.95)    // clamp at percentile bounds
-percentile(data, "field", 0.9)            // terminal: returns value
-median(data, "field")
-std_by(data, "field")
-
-// DataFrame
-data |> select("field1", "field2")
-data |> rename("old", "new")
-data |> with("new_field", value)          // add/update field on each map
-data |> join(other, "key")
-data |> describe("field")                 // {count, sum, avg, min, max}
-
 // Utilities
 data |> flatten()
 data |> reverse()
@@ -462,7 +446,7 @@ let rows = read_csv("data.csv")       // list of maps, auto-typed
 ```soma
 let ts = now()                // unix timestamp (seconds)
 let ms = now_ms()             // milliseconds
-let today = date_now()        // "2026-03-29"
+let today = today()           // "2026-03-29"
 let formatted = format_date(ts) // "2026-03-29"
 ```
 
@@ -558,11 +542,8 @@ cell Pipeline {
         let data = read_csv("input.csv")
         let result = data
             |> filter(s => s.score > 50)
-            |> zscore("score")
-            |> rank("score")
-            |> sort_by("score_rank", "asc")
+            |> sort_by("score", "desc")
             |> top(10)
-            |> select("name", "score", "score_rank")
         print(result)
     }
 }

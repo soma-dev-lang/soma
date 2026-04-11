@@ -1024,7 +1024,11 @@ impl Parser {
                         }
                         self.expect(Token::RBrace)?;
                     } else {
-                        self.advance();
+                        return Err(ParseError::Expected {
+                            expected: "'guard', 'effect', or '}'".to_string(),
+                            found: self.peek().clone(),
+                            span: self.peek_span(),
+                        });
                     }
                 }
                 self.expect(Token::RBrace)?;
@@ -1060,6 +1064,15 @@ impl Parser {
             }
         }
 
+        // Reject state machines with no determinable initial state
+        if initial.is_empty() && !transitions.is_empty() {
+            return Err(ParseError::Expected {
+                expected: "an 'initial:' declaration or a non-wildcard first transition".to_string(),
+                found: Token::Eof, // placeholder
+                span: self.prev_span(),
+            });
+        }
+
         Ok(StateMachineSection { name, initial, transitions, properties: sm_properties })
     }
 
@@ -1083,6 +1096,13 @@ impl Parser {
                 (val * multiplier) as u64
             }
             Token::IntLit(n) => {
+                if *n < 0 {
+                    return Err(ParseError::Expected {
+                        expected: "positive interval (e.g., 30s, 5min, 1h)".to_string(),
+                        found: tok.token.clone(),
+                        span: tok.span,
+                    });
+                }
                 self.advance();
                 (*n as u64) * 1000 // bare number = seconds
             }
@@ -1124,6 +1144,13 @@ impl Parser {
                 (val * multiplier) as u64
             }
             Token::IntLit(n) => {
+                if *n < 0 {
+                    return Err(ParseError::Expected {
+                        expected: "positive delay (e.g., 5s, 1min, 500ms)".to_string(),
+                        found: tok.token.clone(),
+                        span: tok.span,
+                    });
+                }
                 self.advance();
                 (*n as u64) * 1000
             }
@@ -1412,6 +1439,24 @@ impl Parser {
             }
             Token::While => {
                 self.advance();
+                // Optional [loop_bound(N)] annotation before condition
+                let mut bound: Option<u64> = None;
+                if self.check(&Token::LBracket) {
+                    self.advance();
+                    while !self.check(&Token::RBracket) && !self.is_at_end() {
+                        let (attr_name, _) = self.expect_ident()?;
+                        if attr_name == "loop_bound" && self.check(&Token::LParen) {
+                            self.advance();
+                            if let Token::IntLit(n) = &self.tokens[self.pos].token {
+                                if *n >= 0 { bound = Some(*n as u64); }
+                            }
+                            self.advance(); // consume the int
+                            self.expect(Token::RParen)?;
+                        }
+                        if self.check(&Token::Comma) { self.advance(); }
+                    }
+                    self.expect(Token::RBracket)?;
+                }
                 let condition = self.parse_expr()?;
                 self.expect(Token::LBrace)?;
                 let mut body = Vec::new();
@@ -1420,7 +1465,7 @@ impl Parser {
                 }
                 self.expect(Token::RBrace)?;
                 Ok(Spanned::new(
-                    Statement::While { condition, body },
+                    Statement::While { condition, body, bound },
                     start.merge(self.prev_span()),
                 ))
             }

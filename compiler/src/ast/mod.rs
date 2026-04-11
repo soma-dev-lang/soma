@@ -351,6 +351,10 @@ pub enum Statement {
     While {
         condition: Spanned<Expr>,
         body: Vec<Spanned<Statement>>,
+        /// Optional `[loop_bound(N)]` annotation, used by the V1.4
+        /// budget checker. When present, overrides the default
+        /// conservative iteration count for this loop.
+        bound: Option<u64>,
     },
     Emit {
         signal_name: String,

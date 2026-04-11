@@ -3,7 +3,7 @@ use super::serde_json_to_value;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
-        "http_get" | "fetch" => {
+        "http_get" => {
             if let Some(Value::String(url)) = args.first() {
                 match ureq::get(url).call() {
                     Ok(resp) => {

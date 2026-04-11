@@ -11,11 +11,10 @@ Every builtin follows the same pattern. Pick the right file, add a match arm, do
 | `builtins/math.rs` | Math functions | abs, sqrt, log, pow, clamp, random |
 | `builtins/string.rs` | String operations | len, contains, replace, split, trim |
 | `builtins/collection.rs` | List/Map operations | list, map, push, nth, sort, reverse, range |
-| `builtins/pipeline.rs` | Pipeline operators | filter_by, sort_by, top, agg, zscore, rank |
-| `builtins/io.rs` | I/O and HTTP responses | print, read_file, write_csv, html, response |
-| `builtins/time.rs` | Time functions | now, now_ms, date_now |
+| `builtins/pipeline.rs` | Pipeline operators | filter_by, sort_by, top, pluck, group_by, distinct |
+| `builtins/io.rs` | I/O and HTTP responses | print, read_file, html, response |
+| `builtins/time.rs` | Time functions | now, now_ms, today |
 | `builtins/http.rs` | HTTP client | http_get, http_post |
-| `builtins/indicators.rs` | Technical indicators | sma, ema, rsi, macd, bollinger |
 | `builtins/record.rs` | Record operations | is_type |
 | `builtins/storage.rs` | Storage methods | needs &Interpreter |
 

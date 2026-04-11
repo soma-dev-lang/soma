@@ -114,7 +114,7 @@ impl BytecodeCompiler {
                 }
             }
 
-            Statement::While { condition, body } => {
+            Statement::While { condition, body, .. } => {
                 let loop_start = chunk.len() as u16;
                 self.compile_expr(chunk, &condition.node);
                 let exit_jump = chunk.emit_u16(Op::JumpIfFalse, 0xFFFF);

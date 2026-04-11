@@ -4,7 +4,7 @@ use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
-        "now" | "timestamp" => {
+        "now" => {
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -18,7 +18,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 .as_millis() as i64;
             Some(Ok(Value::Int(SomaInt::from_i64(ts))))
         }
-        "sleep" | "wait" => {
+        "sleep" => {
             if let Some(ms) = args.first().map(|a| val_to_i64(a)) {
                 std::thread::sleep(std::time::Duration::from_millis(ms as u64));
                 Some(Ok(Value::Unit))
@@ -26,7 +26,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Ok(Value::Unit))
             }
         }
-        "date_now" | "today" => {
+        "today" => {
             Some(Ok(Value::String(format_unix_date(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
