@@ -273,15 +273,29 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
             // Found a transition call. The target is the second arg (index 1).
             // First arg is the instance id; we ignore it for refinement.
             if let Some(target_expr) = args.get(1) {
-                if let Expr::Literal(Literal::String(s)) = &target_expr.node {
-                    eff.static_transitions.push(TransitionCall {
-                        target: s.clone(),
-                        path: path.clone(),
-                        span,
-                    });
-                } else {
-                    // Dynamic target — flag it but don't try to analyze
-                    eff.has_dynamic_target = true;
+                match &target_expr.node {
+                    Expr::Literal(Literal::String(s)) => {
+                        eff.static_transitions.push(TransitionCall {
+                            target: s.clone(),
+                            path: path.clone(),
+                            span,
+                        });
+                    }
+                    // Bare TypeIdent: `transition(id, Validated)`.  Parsed
+                    // as Expr::Ident("Validated").  The interpreter resolves
+                    // it via the variant registry; statically the target
+                    // name is the identifier itself.
+                    Expr::Ident(name) if name.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => {
+                        eff.static_transitions.push(TransitionCall {
+                            target: name.clone(),
+                            path: path.clone(),
+                            span,
+                        });
+                    }
+                    _ => {
+                        // Dynamic target — flag it but don't try to analyze
+                        eff.has_dynamic_target = true;
+                    }
                 }
             }
             // Also walk the args in case there's a nested transition (unlikely)

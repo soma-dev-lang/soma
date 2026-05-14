@@ -46,11 +46,18 @@ cell ExecutionEngine {
     // Simulate realistic fill price:
     //   BUY  → fill at ask = mid + spread/2
     //   SELL → fill at bid = mid - spread/2
-    // Plus linear market impact: 1 bps per 1000 shares.
+    // Plus Bouchaud square-root market impact:
+    //   impact_frac = Y · σ_d · √(qty / daily_volume)         (Tóth-Lemperière-Bouchaud)
+    //   impact_$ = mid · impact_frac
+    //
+    // Uses linalg.impact_sqrt; sensible defaults if config not set.
 
     on _fill_price(mid: Float, spread: Float, qty: Float, side: String) {
         let half_spread = spread / 2.0
-        let impact = qty / 1000.0 * 0.0001 * mid
+        let dv = 1000000.0       // 1M shares; override via configurable plumbing later
+        let sigma_d = 0.02       // 2% daily vol; conservative default
+        let imp = impact_sqrt(qty, dv, sigma_d, map("Y", 1.0))
+        let impact = imp.impact * mid
         if side == "BUY" {
             return mid + half_spread + impact
         }

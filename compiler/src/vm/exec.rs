@@ -829,6 +829,7 @@ fn value_to_stored(val: &Value) -> StoredValue {
         Value::Map(entries) => StoredValue::Map(entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()),
         
         Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
+        Value::Variant { variant, .. } => StoredValue::String(variant.clone()),
     }
 }
 

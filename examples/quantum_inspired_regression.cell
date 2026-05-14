@@ -1,0 +1,115 @@
+// ============================================================================
+// Quantum-inspired linear regression
+// ============================================================================
+//
+// Demonstrates the new linalg builtins (Tang et al.):
+//
+//   matrix("1 2; 3 4")              MATLAB-style literal
+//   rows(list(...), list(...))      variadic row constructor
+//   cols(...) zeros() ones() eye() diag()   common constructors
+//   svd_lowrank(A, opts)            FKV-style sublinear SVD
+//   regress_sgd(A, b, opts)         SGD regression w/ ℓ²-norm sampling
+//   importance_sample_rows(A, opts) explicit row sampling
+//
+// Toy problem: 6 observations × 4 series, each row a noisy linear
+// combination of 2 latent factors.  Recover the factor structure via
+// svd_lowrank, then solve A·w = b for w via regress_sgd.
+//
+// Run: soma run quantum_inspired_regression.cell
+
+cell QIRegression {
+
+    on factor_model() {
+        // 6 × 4 matrix.  MATLAB-style string is the most readable form
+        // for hand-written matrices; the rows(...) builtin is preferred
+        // when you have row vectors in hand already.
+        return matrix("
+             1.0   2.0   0.5  -0.5;
+             0.5   1.5   0.3  -1.0;
+             0.0   1.0   0.1  -1.2;
+            -0.5   0.5  -0.1  -1.0;
+            -1.0   0.0  -0.3  -0.5;
+            -0.5   0.5  -0.1   0.5
+        ")
+    }
+
+    on top_singular(A: List<List<Float>>) {
+        let result = svd_lowrank(A, map(
+            "row_samples", 6,
+            "col_samples", 4,
+            "rank", 2
+        ))
+        return map(
+            "sigma_1", nth(result.S, 0),
+            "sigma_2", nth(result.S, 1),
+            "fro_norm", result.fro_norm
+        )
+    }
+
+    on residual_norm(A: List<List<Float>>, x: List<Float>, b: List<Float>) {
+        let m = len(A)
+        let sumsq = 0.0
+        let i = 0
+        while i < m {
+            let row = nth(A, i)
+            let n = len(row)
+            let ax = 0.0
+            let j = 0
+            while j < n {
+                ax = ax + nth(row, j) * nth(x, j)
+                j = j + 1
+            }
+            let diff = ax - nth(b, i)
+            sumsq = sumsq + diff * diff
+            i = i + 1
+        }
+        return sqrt(sumsq)
+    }
+
+    on run() {
+        print("Quantum-inspired regression demo")
+        print("================================")
+        print("")
+
+        let A = factor_model()
+        print("Input A: 6×4 matrix (MATLAB-style literal)")
+        print("")
+
+        print("svd_lowrank (FKV-style sublinear SVD):")
+        let svd = top_singular(A)
+        print("  sigma_1  = {svd.sigma_1}")
+        print("  sigma_2  = {svd.sigma_2}")
+        print("  ||A||_F  = {svd.fro_norm}")
+        print("")
+
+        print("regress_sgd (SGD with l2-norm sampling):")
+        let b = matrix("2.5 1.8 1.1 0.4 -0.5 0.3")  // 1×6 -> row vector
+        // For a vector argument we want the flat list, not the matrix.
+        let b_vec = nth(b, 0)
+        let fit = regress_sgd(A, b_vec, map(
+            "eps", 0.05,
+            "lambda", 0.001,
+            "samples_per_iter", 4,
+            "max_iter", 40000
+        ))
+        let res = residual_norm(A, fit.x, b_vec)
+        print("  iterations = {fit.iterations}")
+        print("  ||A||      = {fit.spec_norm}")
+        print("  eta        = {fit.eta}")
+        print("  ||Ax - b|| = {res}")
+        print("  x          = {fit.x}")
+        print("")
+
+        print("importance_sample_rows (raw ℓ²-norm sampling):")
+        let s = importance_sample_rows(A, map("samples", 4))
+        print("  sampled rows: {s.indices}")
+        print("")
+
+        print("Other constructors:")
+        print("  eye(3)              = {eye(3)}")
+        print("  zeros(2, 3)         = {zeros(2, 3)}")
+        print("  diag([1.0,2.0,3.0]) = {diag(list(1.0, 2.0, 3.0))}")
+        print("  rows(r1, r2)        = {rows(list(1.0, 2.0), list(3.0, 4.0))}")
+        print("  cols(c1, c2)        = {cols(list(1.0, 2.0), list(3.0, 4.0))}")
+    }
+}

@@ -1,0 +1,16 @@
+// Access axis: what query model does the storage backend expose?
+//
+// `[sampled]` declares that a slot supports ℓ²-norm importance
+// sampling (Tang 1807.04271 §3) in O(log n).  Subscriber backends
+// build the BST data structure on writes; readers get O(log n) row /
+// column / entry sampling.  Required by the quantum-inspired linalg
+// builtins (`svd_lowrank`, `regress_sgd`, ...) when the input matrix
+// is large enough that linear scans dominate.
+
+cell property sampled {
+    face {
+        promise "supports O(log n) ℓ²-norm importance sampling"
+        promise "stores Σ|A_{i,*}|² CDFs alongside row data"
+    }
+    rules {}
+}

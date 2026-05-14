@@ -570,3 +570,112 @@ cell OrderSystem {
     }
 }
 ```
+
+## Linear algebra & risk (`linalg`)
+
+Quantum-inspired sublinear linear algebra (Tang et al.) plus
+Bouchaud-Potters covariance cleaning and risk metrics. Every builtin
+takes an options Map carrying explicit sample / iteration / dimension
+bounds — `soma check` reads them and proves closed-form runtime.
+
+### Matrix constructors
+
+```soma
+// Most readable for hand-written matrices
+let A = matrix("1 2 3; 4 5 6")          // 2×3, MATLAB-style; ';' rows, ws/',' entries
+
+// When you have row vectors in hand
+let B = rows(list(1.0, 2.0), list(3.0, 4.0))
+
+// Column-major constructor (transposes)
+let C = cols(list(1.0, 2.0), list(3.0, 4.0))
+
+// Reshape a flat list
+let D = mat(2, 3, list(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+
+// Standard constructors
+let I = eye(3)                          // 3×3 identity
+let Z = zeros(2, 4)                     // 2×4 zeros
+let O = ones(3, 3)                      // 3×3 ones
+let G = diag(list(1.0, 2.0, 3.0))       // 3×3 diagonal
+```
+
+### Sublinear sampling (Tang)
+
+Build the BST-backed `Sampled` handle once; pay O(log n) per sample
+thereafter.
+
+```soma
+let A = to_sampled(dense, map("max_rows", 1000, "max_cols", 50))
+// A is a handle: { __sampled__, rows, cols, fro_norm, kind: "sampled" }
+
+let s   = sample_row(A)                       // O(log m) ℓ²-norm row sample
+let isr = importance_sample_rows(A, map("samples", 50))
+let svd = svd_lowrank(A, map(
+    "row_samples", 100, "col_samples", 50, "rank", 10, "max_dim", 1000
+))
+let fit = regress_sgd(A, b, map(
+    "eps", 0.01, "lambda", 0.1, "max_iter", 10000, "max_dim", 1000
+))
+
+drop_sampled(A)                               // free the registry entry
+```
+
+All four algorithms accept either a sampled handle or a dense
+`List<List<Float>>` transparently.
+
+### Covariance cleaning (Bouchaud-Potters)
+
+Replace the noise-bulk eigenvalues of a sample covariance with their
+RMT-shrunk versions. Drastically improves out-of-sample portfolio
+optimization in any regime where N (assets) is comparable to T
+(observations).
+
+```soma
+let cov = clean_covariance(returns, map(
+    "method", "rie",          // "rie" | "clip" | "raw"
+    "eta", 0.1,               // Stieltjes regularizer
+    "center", true,
+    "max_assets", 500,
+    "max_obs", 1000
+))
+// cov.matrix is the cleaned N×N matrix; cov.eigenvalues_clean is the spectrum.
+```
+
+### Market impact (Bouchaud square-root law)
+
+```soma
+let imp = impact_sqrt(qty, daily_volume, sigma, map("Y", 1.0))
+// imp.bps is the expected slippage in basis points.
+ensure imp.bps <= max_slippage_bps    // compile-time pattern, runtime check
+```
+
+### Risk metrics
+
+```soma
+let var95 = var_historical(returns, map("alpha", 0.95, "max_obs", 250))
+let es95  = expected_shortfall_historical(returns, map("alpha", 0.95))
+let varg  = var_gaussian(returns, map("alpha", 0.95))   // for comparison
+let q     = quantile(returns, 0.05)                      // empirical quantile
+```
+
+Historical estimators make no distributional assumption — the
+Bouchaud-Potters baseline for fat-tailed markets.
+
+### Verified pre-trade pattern
+
+```soma
+on submit(qty: Float, vol: Float, sigma: Float, hist: List<Float>) {
+    let imp = impact_sqrt(qty, vol, sigma, map())
+    ensure imp.bps <= 30.0                          // 30bps slippage cap
+
+    let var = var_historical(hist, map("alpha", 0.99, "max_obs", 250))
+    ensure var <= 0.05                              // 99%-VaR cap of 5%
+
+    emit place_order(qty)
+}
+```
+
+Wrap the `submit` call in `try { ... }` from the caller to catch the
+ensure-failure as a structured error and reject the order. See
+`examples/risk_check.cell` for a complete demo with budget proof.

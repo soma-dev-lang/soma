@@ -47,6 +47,12 @@ cell RiskManager {
         limits.set("warmup_ticks", payload.warmup_ticks ?? "50")
         limits.set("max_spread_pct", payload.max_spread_pct ?? "0.05")
         limits.set("auth_secret", payload.auth_secret ?? "")
+        // Bouchaud square-root impact gate (linalg.impact_sqrt).
+        // Setting max_impact_bps to 0 disables the gate.
+        limits.set("max_impact_bps", payload.max_impact_bps ?? "0")
+        limits.set("impact_Y", payload.impact_Y ?? "1.0")
+        limits.set("daily_volume", payload.daily_volume ?? "1000000")
+        limits.set("daily_sigma", payload.daily_sigma ?? "0.02")
         map("status", "limits_set")
     }
 
@@ -229,6 +235,21 @@ cell RiskManager {
             return map("allowed", "false", "reason", "rate limit: " + to_string(count) + " orders this tick")
         }
         order_rate.set("count", to_string(count + 1))
+
+        // Bouchaud square-root impact gate.  Disabled when max_impact_bps == 0.
+        let max_bps = to_float(limits.get("max_impact_bps") ?? "0")
+        if max_bps > 0.0 {
+            let y = to_float(limits.get("impact_Y") ?? "1.0")
+            let dv = to_float(limits.get("daily_volume") ?? "1000000")
+            let sigma_d = to_float(limits.get("daily_sigma") ?? "0.02")
+            let imp = impact_sqrt(to_float(qty), dv, sigma_d, map("Y", y))
+            if imp.bps > max_bps {
+                return map(
+                    "allowed", "false",
+                    "reason", "Bouchaud impact gate: " + to_string(imp.bps) + " bps > max " + to_string(max_bps) + " bps"
+                )
+            }
+        }
 
         map("allowed", "true", "reason", "passed all checks")
     }

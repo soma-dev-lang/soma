@@ -1,0 +1,101 @@
+// ============================================================================
+// Sum types — first-class tagged unions for Soma
+// ============================================================================
+//
+// `cell type Foo { variants { … } }` declares a sum type.  Each
+// variant may be unit-, tuple-, or struct-shaped.  Matching is
+// exhaustive — the compiler refuses to compile if a `match` misses
+// a variant (run `soma check` to see the error).
+//
+// Run:    soma run   examples/sum_types.cell
+// Check:  soma check examples/sum_types.cell
+
+cell type PaymentResult {
+    variants {
+        Charged { transaction_id: String, amount: Int }
+        Declined { reason: String, code: Int }
+        Pending
+    }
+}
+
+cell type Move {
+    variants {
+        Up(Int)
+        Down(Int)
+        Left(Int)
+        Right(Int)
+        Wait
+    }
+}
+
+cell type OrderStatus {
+    variants {
+        Created
+        Submitted
+        Filled
+        Cancelled
+    }
+}
+
+cell PaymentDemo {
+
+    // Tuple- and struct-variant constructors.
+    on charge(card: String, amount: Int) {
+        if amount > 0 {
+            return Charged { transaction_id: "tx-{amount}", amount: amount }
+        }
+        return Declined { reason: "non-positive amount", code: 400 }
+    }
+
+    // Exhaustive pattern match — drop any arm to see the compile error.
+    on describe(r: Map) {
+        return match r {
+            Charged { transaction_id, amount } -> "ok {transaction_id} ${amount}"
+            Declined { reason, code }           -> "rejected ({code}): {reason}"
+            Pending                              -> "..."
+        }
+    }
+
+    on travel(m: Map) {
+        return match m {
+            Up(n)    -> "up {n}"
+            Down(n)  -> "down {n}"
+            Left(n)  -> "left {n}"
+            Right(n) -> "right {n}"
+            Wait     -> "idle"
+        }
+    }
+
+    on label_status(s: Map) {
+        return match s {
+            Created   -> "new"
+            Submitted -> "in flight"
+            Filled    -> "done"
+            Cancelled -> "voided"
+        }
+    }
+
+    on run() {
+        print("Sum types — payments")
+        print("===================")
+        print(describe(charge("VISA", 100)))
+        print(describe(charge("VISA", 0 - 5)))
+        print(describe(Pending))
+        print("")
+
+        print("Sum types — moves")
+        print("=================")
+        print(travel(Up(3)))
+        print(travel(Down(7)))
+        print(travel(Right(2)))
+        print(travel(Wait))
+        print("")
+
+        print("Sum types — order status")
+        print("========================")
+        print(label_status(Created))
+        print(label_status(Submitted))
+        print(label_status(Filled))
+        print(label_status(Cancelled))
+    }
+}

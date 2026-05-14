@@ -80,6 +80,8 @@ pub enum Token {
     Requires,
     MutexGroup,
     Check,
+    // Sum types
+    Variants,
 
     // Identifiers and literals
     Ident(String),
@@ -518,6 +520,7 @@ impl<'a> Lexer<'a> {
                     "requires" => Token::Requires,
                     "mutex_group" => Token::MutexGroup,
                     "check" => Token::Check,
+                    "variants" => Token::Variants,
                     _ => {
                         if ident.chars().next().unwrap().is_ascii_uppercase() {
                             Token::TypeIdent(ident)

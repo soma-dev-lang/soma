@@ -252,6 +252,17 @@ pub fn unbounded_builtin_reason(name: &str) -> Option<&'static str> {
 
 // ── Map literal extraction ─────────────────────────────────────────
 
+/// Read a positive integer literal at a positional argument index, if
+/// present.  Used by the linalg matrix constructors which take r/c as
+/// fixed positional args rather than an options map.
+fn literal_int_at(args: &[Spanned<Expr>], idx: usize) -> Option<u64> {
+    let a = args.get(idx)?;
+    if let Expr::Literal(Literal::Int(n)) = &a.node {
+        if *n >= 0 { return Some(*n as u64); }
+    }
+    None
+}
+
 /// Check if the last argument is a `map(k1, v1, k2, v2, ...)` call
 /// and extract the integer value associated with the given key.
 ///
@@ -359,6 +370,142 @@ pub fn expr_cost(e: &Expr) -> Cost {
             }
             // Specific allocation-bearing builtins with closed-form cost.
             match name.as_str() {
+                // Quantum-inspired linalg (Tang et al.).
+                // Each one carries explicit sample / iteration bounds in
+                // its options map so the cost is closed-form.
+                //
+                // regress_sgd: T iterations × C samples × output vector.
+                // Bound = output(8·max_dim) + working(4·8·max_dim).
+                "regress_sgd" => {
+                    let max_iter = extract_map_literal_int(args, "max_iter").unwrap_or(10_000);
+                    let max_dim = extract_map_literal_int(args, "max_dim")
+                        .unwrap_or(DEFAULT_CAPACITY);
+                    let samples_per_iter = extract_map_literal_int(args, "samples_per_iter")
+                        .unwrap_or(1);
+                    // 4 transient working vectors (v, avg, atb, col_weights) of 8·max_dim bytes,
+                    // plus the output Map containing x:List<Float>.
+                    let working = 4u64 * 8 * max_dim;
+                    let output = 256 + max_dim.saturating_mul(16);
+                    // The iteration count and sample count are reflected in
+                    // a small audit budget so the bound visibly scales with
+                    // user-declared bounds (otherwise tightening max_iter
+                    // looks like it has no effect on the proof).
+                    let audit = max_iter.saturating_mul(samples_per_iter).saturating_mul(8);
+                    arg_cost.plus(Cost::bytes(working + output + audit))
+                }
+                // svd_lowrank: r×n submatrix + r×c subsketch + n×k V̂ + m×k Û.
+                "svd_lowrank" => {
+                    let r = extract_map_literal_int(args, "row_samples").unwrap_or(100);
+                    let c = extract_map_literal_int(args, "col_samples").unwrap_or(100);
+                    let k = extract_map_literal_int(args, "rank").unwrap_or(10);
+                    let max_dim = extract_map_literal_int(args, "max_dim")
+                        .unwrap_or(DEFAULT_CAPACITY);
+                    let s_rows = r.saturating_mul(max_dim).saturating_mul(8);
+                    let subsketch = r.saturating_mul(c).saturating_mul(8);
+                    let v_approx = max_dim.saturating_mul(k).saturating_mul(8);
+                    let u_approx = max_dim.saturating_mul(k).saturating_mul(8);
+                    arg_cost.plus(Cost::bytes(
+                        s_rows
+                            .saturating_add(subsketch)
+                            .saturating_add(v_approx)
+                            .saturating_add(u_approx)
+                            .saturating_add(512),
+                    ))
+                }
+                // clean_covariance (Bouchaud-Potters): O(N²) eigendecomp
+                // + O(N²) reconstruction.  Working set is the centered
+                // returns + the N×N covariance + Jacobi workspace.
+                "clean_covariance" => {
+                    let max_assets = extract_map_literal_int(args, "max_assets")
+                        .unwrap_or(DEFAULT_CAPACITY);
+                    let max_obs = extract_map_literal_int(args, "max_obs")
+                        .unwrap_or(DEFAULT_CAPACITY);
+                    // R_centered: T × N floats; C, V, C_clean: 3 × N × N
+                    let returns_bytes = max_obs.saturating_mul(max_assets).saturating_mul(8);
+                    let cov_workspace = 3u64.saturating_mul(max_assets).saturating_mul(max_assets).saturating_mul(8);
+                    let eigvals = max_assets.saturating_mul(8).saturating_mul(2);
+                    arg_cost.plus(Cost::bytes(
+                        returns_bytes
+                            .saturating_add(cov_workspace)
+                            .saturating_add(eigvals)
+                            .saturating_add(512),
+                    ))
+                }
+                // importance_sample_rows: s × max_dim submatrix.
+                "importance_sample_rows" => {
+                    let s = extract_map_literal_int(args, "samples").unwrap_or(50);
+                    let max_dim = extract_map_literal_int(args, "max_dim")
+                        .unwrap_or(DEFAULT_CAPACITY);
+                    let submat = s.saturating_mul(max_dim).saturating_mul(8);
+                    arg_cost.plus(Cost::bytes(submat.saturating_add(256)))
+                }
+                // to_sampled: clones the matrix into the registry's BST.
+                // Bound = 2 × (max_rows × max_cols) × 8 bytes + small handle map.
+                // Accepts an optional opts arg with max_rows / max_cols.
+                "to_sampled" => {
+                    let max_rows = extract_map_literal_int(args, "max_rows")
+                        .unwrap_or(DEFAULT_CAPACITY);
+                    let max_cols = extract_map_literal_int(args, "max_cols")
+                        .unwrap_or(DEFAULT_CAPACITY);
+                    let storage = 2u64.saturating_mul(max_rows).saturating_mul(max_cols).saturating_mul(8);
+                    arg_cost.plus(Cost::bytes(storage.saturating_add(256)))
+                }
+                // Bouchaud impact: constant-cost arithmetic.
+                "impact_sqrt" => arg_cost.plus(Cost::bytes(256)),
+                // Risk metrics: sorting a returns vector is O(n log n)
+                // but allocations are bounded by max_obs · 8 bytes.
+                "var_historical" | "expected_shortfall_historical"
+                | "var_gaussian" | "quantile" => {
+                    let max_obs = extract_map_literal_int(args, "max_obs")
+                        .unwrap_or(DEFAULT_CAPACITY);
+                    arg_cost.plus(Cost::bytes(max_obs.saturating_mul(8).saturating_add(256)))
+                }
+                // drop_sampled / sample_row touch a small constant.
+                "drop_sampled" | "sample_row" => arg_cost.plus(Cost::bytes(128)),
+                // mat(r, c, flat) — first two positional args are r and c.
+                "mat" => {
+                    let r = literal_int_at(args, 0).unwrap_or(DEFAULT_CAPACITY);
+                    let c = literal_int_at(args, 1).unwrap_or(DEFAULT_CAPACITY);
+                    arg_cost.plus(Cost::bytes(64 + r.saturating_mul(c).saturating_mul(16)))
+                }
+                // zeros(r, c) / ones(r, c) — both args are positional.
+                "zeros" | "ones" => {
+                    let r = literal_int_at(args, 0).unwrap_or(DEFAULT_CAPACITY);
+                    let c = literal_int_at(args, 1).unwrap_or(DEFAULT_CAPACITY);
+                    arg_cost.plus(Cost::bytes(64 + r.saturating_mul(c).saturating_mul(16)))
+                }
+                // eye(n) — single positional arg.
+                "eye" => {
+                    let n = literal_int_at(args, 0).unwrap_or(DEFAULT_CAPACITY);
+                    arg_cost.plus(Cost::bytes(64 + n.saturating_mul(n).saturating_mul(16)))
+                }
+                // matrix("..."): bound by the string literal length × 16 bytes.
+                // (One Float per non-separator character is an over-estimate.)
+                "matrix" => {
+                    if let Some(a) = args.first() {
+                        if let Expr::Literal(Literal::String(s)) = &a.node {
+                            return arg_cost.plus(Cost::bytes(
+                                64 + (s.len() as u64).saturating_mul(16),
+                            ));
+                        }
+                    }
+                    arg_cost.plus(Cost::bytes(64 + DEFAULT_CAPACITY.saturating_mul(16)))
+                }
+                // rows(r1, r2, ...): one row per arg.  Cols is unknown
+                // statically; use DEFAULT_CAPACITY conservatively.
+                "rows" | "cols" => {
+                    let r = args.len() as u64;
+                    arg_cost.plus(Cost::bytes(
+                        64 + r.saturating_mul(DEFAULT_CAPACITY).saturating_mul(16),
+                    ))
+                }
+                // diag(list(d_1, …, d_n)) — output is n×n.  Without a
+                // literal length we use DEFAULT_CAPACITY.
+                "diag" => {
+                    arg_cost.plus(Cost::bytes(
+                        64 + DEFAULT_CAPACITY.saturating_mul(DEFAULT_CAPACITY).saturating_mul(16),
+                    ))
+                }
                 // list(a, b, c) allocates a list of N elements + header
                 "list" => arg_cost.plus(Cost::bytes(64 + (args.len() as u64) * 16)),
                 // map(k1, v1, k2, v2, ...) allocates a map with args.len()/2 entries

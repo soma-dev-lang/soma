@@ -8,6 +8,7 @@ pub mod budget;
 pub mod isolation;
 pub mod termination;
 pub mod composition;
+pub mod sum_types;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
@@ -100,6 +101,12 @@ pub enum CheckError {
     ScaleShardNotFound {
         cell: String,
         slot: String,
+        span: Span,
+    },
+
+    #[error("{message}")]
+    SumTypeIssue {
+        message: String,
         span: Span,
     },
 
@@ -261,6 +268,14 @@ impl<'a> Checker<'a> {
     }
 
     pub fn check(&mut self, program: &Program) {
+        // Program-wide sum-type checks (duplicate variants,
+        // non-exhaustive matches).
+        for issue in sum_types::check_program(program) {
+            self.errors.push(CheckError::SumTypeIssue {
+                message: issue.message,
+                span: issue.span,
+            });
+        }
         for cell in &program.cells {
             // Skip meta-cells (they define the language, not the program)
             if cell.node.kind != CellKind::Cell && cell.node.kind != CellKind::Agent {

@@ -115,6 +115,27 @@ pub fn value_to_json(v: &Value) -> serde_json::Value {
             serde_json::Value::Object(obj)
         }
         Value::Lambda { .. } | Value::LambdaBlock { .. } => serde_json::Value::String("<lambda>".to_string()),
+        Value::Variant { type_name, variant, fields } => {
+            use crate::interpreter::VariantValue;
+            let mut obj = serde_json::Map::new();
+            obj.insert("_type".to_string(), serde_json::Value::String(type_name.clone()));
+            obj.insert("_variant".to_string(), serde_json::Value::String(variant.clone()));
+            match fields {
+                VariantValue::Unit => {}
+                VariantValue::Tuple(vs) => {
+                    obj.insert(
+                        "_fields".to_string(),
+                        serde_json::Value::Array(vs.iter().map(value_to_json).collect()),
+                    );
+                }
+                VariantValue::Struct(entries) => {
+                    for (k, v) in entries {
+                        obj.insert(k.clone(), value_to_json(v));
+                    }
+                }
+            }
+            serde_json::Value::Object(obj)
+        }
         Value::Unit => serde_json::Value::Null,
     }
 }

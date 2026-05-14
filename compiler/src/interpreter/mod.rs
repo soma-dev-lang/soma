@@ -42,6 +42,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::List(_) => "List",
         Value::Map(_) => "Map",
         Value::Lambda { .. } | Value::LambdaBlock { .. } => "Function",
+        Value::Variant { .. } => "Variant",
         Value::Unit => "Null",
     }
 }
@@ -168,7 +169,22 @@ pub enum Value {
         result: Box<Spanned<Expr>>,
         env: HashMap<std::string::String, Value>,
     },
+    /// Sum-type variant.  `type_name` records which `cell type` it
+    /// belongs to (needed for equality, exhaustiveness, and serialization).
+    Variant {
+        type_name: String,
+        variant: String,
+        fields: VariantValue,
+    },
     Unit,
+}
+
+/// Payload of a sum-type variant value.
+#[derive(Debug, Clone)]
+pub enum VariantValue {
+    Unit,
+    Tuple(Vec<Value>),
+    Struct(IndexMap<String, Value>),
 }
 
 /// Build a Value::Map from a Vec of (String, Value) pairs.
@@ -244,6 +260,25 @@ impl std::fmt::Display for Value {
             }
             Value::Lambda { param, .. } => write!(f, "<lambda({})>", param),
             Value::LambdaBlock { param, .. } => write!(f, "<lambda({})>", param),
+            Value::Variant { variant, fields, .. } => match fields {
+                VariantValue::Unit => write!(f, "{}", variant),
+                VariantValue::Tuple(vs) => {
+                    write!(f, "{}(", variant)?;
+                    for (i, v) in vs.iter().enumerate() {
+                        if i > 0 { write!(f, ", ")?; }
+                        write!(f, "{}", v)?;
+                    }
+                    write!(f, ")")
+                }
+                VariantValue::Struct(entries) => {
+                    write!(f, "{} {{", variant)?;
+                    for (i, (k, v)) in entries.iter().enumerate() {
+                        if i > 0 { write!(f, ", ")?; }
+                        write!(f, " {}: {}", k, v)?;
+                    }
+                    write!(f, " }}")
+                }
+            },
             Value::Unit => write!(f, "null"),
         }
     }
@@ -381,6 +416,20 @@ pub struct Interpreter {
     /// Replay mode: when true, [record] handlers do NOT append to the log;
     /// instead the runner compares results against pre-loaded entries.
     pub replay_mode: bool,
+    /// Sum-type variant registry: variant name → (type name, fields shape).
+    /// Built once at construction from `cell type Foo { variants { … } }` definitions.
+    pub(crate) variant_registry: HashMap<String, (String, VariantShape)>,
+    /// Per-type variant list: type name → ordered Vec of variant names.
+    /// Used by the exhaustiveness checker.
+    pub(crate) type_variants: HashMap<String, Vec<String>>,
+}
+
+/// What kind of payload a registered variant takes.
+#[derive(Debug, Clone)]
+pub enum VariantShape {
+    Unit,
+    Tuple(usize),         // arity
+    Struct(Vec<String>),  // field names
 }
 
 impl Interpreter {
@@ -408,6 +457,37 @@ impl Interpreter {
                         (cell.node.name.clone(), sm.name.clone()),
                         sm.clone(),
                     );
+                }
+            }
+        }
+        // Build the variant registry from any `cell type Foo` with a
+        // `variants { … }` section.  Variant names must be unique within
+        // a single program; collisions later in this loop overwrite
+        // silently (the checker pass reports a friendlier error).
+        let mut variant_registry: HashMap<String, (String, VariantShape)> = HashMap::new();
+        let mut type_variants: HashMap<String, Vec<String>> = HashMap::new();
+        for cell in &program.cells {
+            if !matches!(cell.node.kind, CellKind::Type) {
+                continue;
+            }
+            for section in &cell.node.sections {
+                if let Section::Variants(ref vs) = section.node {
+                    let mut names = Vec::with_capacity(vs.variants.len());
+                    for vd in &vs.variants {
+                        let shape = match &vd.node.fields {
+                            VariantFields::Unit => VariantShape::Unit,
+                            VariantFields::Tuple(ts) => VariantShape::Tuple(ts.len()),
+                            VariantFields::Struct(fs) => {
+                                VariantShape::Struct(fs.iter().map(|(n, _)| n.clone()).collect())
+                            }
+                        };
+                        variant_registry.insert(
+                            vd.node.name.clone(),
+                            (cell.node.name.clone(), shape),
+                        );
+                        names.push(vd.node.name.clone());
+                    }
+                    type_variants.insert(cell.node.name.clone(), names);
                 }
             }
         }
@@ -458,6 +538,8 @@ impl Interpreter {
             record_log_path: None,
             record_nondet_called: Vec::new(),
             replay_mode: false,
+            variant_registry,
+            type_variants,
         }
     }
 
@@ -1286,10 +1368,31 @@ impl Interpreter {
                 Ok(val)
             }
 
-            Expr::Ident(name) => env
-                .get(name)
-                .cloned()
-                .ok_or_else(|| ExecError::Runtime(RuntimeError::UndefinedVar(name.clone()))),
+            Expr::Ident(name) => {
+                // Identifier in expression position can be:
+                //   - a local/scope binding (most common path)
+                //   - a unit sum-type variant (e.g., `Pending`).
+                // Locals win — they shadow.
+                if let Some(v) = env.get(name) {
+                    Ok(v.clone())
+                } else if let Some((type_name, shape)) = self.variant_registry.get(name) {
+                    match shape {
+                        VariantShape::Unit => Ok(Value::Variant {
+                            type_name: type_name.clone(),
+                            variant: name.clone(),
+                            fields: VariantValue::Unit,
+                        }),
+                        VariantShape::Tuple(_) | VariantShape::Struct(_) => Err(ExecError::Runtime(
+                            RuntimeError::TypeError(format!(
+                                "variant '{}' takes payload — write a constructor expression",
+                                name
+                            )),
+                        )),
+                    }
+                } else {
+                    Err(ExecError::Runtime(RuntimeError::UndefinedVar(name.clone())))
+                }
+            }
 
             Expr::BinaryOp { left, op, right } => {
                 // Short-circuit for logical And/Or
@@ -1324,6 +1427,26 @@ impl Interpreter {
                 let mut arg_vals = Vec::new();
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
+                }
+
+                // Tuple-variant constructor: `Up(3)`, `Move(x, y)`.
+                if let Some((vtype, shape)) = self.variant_registry.get(name).cloned() {
+                    if let VariantShape::Tuple(arity) = shape {
+                        if arg_vals.len() != arity {
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "variant '{}' takes {} argument{}, got {}",
+                                name,
+                                arity,
+                                if arity == 1 { "" } else { "s" },
+                                arg_vals.len()
+                            ))));
+                        }
+                        return Ok(Value::Variant {
+                            type_name: vtype,
+                            variant: name.clone(),
+                            fields: VariantValue::Tuple(arg_vals),
+                        });
+                    }
                 }
 
                 // WebSocket builtins — need &mut self
@@ -1467,8 +1590,34 @@ impl Interpreter {
             }
 
             Expr::Record { type_name, fields } => {
-                // Record literal: User { name: "Alice", age: 30 }
-                // Evaluates to a Map with a _type field for runtime type checking
+                // Two cases:
+                //   1. Struct-variant constructor: `Accepted { id, price }` where
+                //      Accepted is a registered variant.
+                //   2. Plain record literal: `User { name, age }`.
+                if let Some((vtype, shape)) = self.variant_registry.get(type_name).cloned() {
+                    if let VariantShape::Struct(expected) = shape {
+                        let mut entries = IndexMap::new();
+                        for (field_name, field_expr) in fields {
+                            let val = self.eval_expr(&field_expr.node, env, cell_name, signal_name)?;
+                            entries.insert(field_name.clone(), val);
+                        }
+                        // Soft check: warn if fields don't match the variant declaration.
+                        for f in &expected {
+                            if !entries.contains_key(f) {
+                                return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                    "variant '{}' missing field '{}'",
+                                    type_name, f
+                                ))));
+                            }
+                        }
+                        return Ok(Value::Variant {
+                            type_name: vtype,
+                            variant: type_name.clone(),
+                            fields: VariantValue::Struct(entries),
+                        });
+                    }
+                }
+                // Fall through to record literal.
                 let mut entries = IndexMap::new();
                 entries.insert("_type".to_string(), Value::String(type_name.clone()));
                 for (field_name, field_expr) in fields {
@@ -2271,6 +2420,51 @@ impl Interpreter {
                     _ => (false, vec![]),
                 }
             }
+            MatchPattern::Variant { type_name, name, fields } => {
+                if let Value::Variant { type_name: vt, variant, fields: vfields } = val {
+                    // Type-qualifier (if present) must match.
+                    if let Some(t) = type_name {
+                        if t != vt { return (false, vec![]); }
+                    }
+                    if variant != name { return (false, vec![]); }
+                    match (fields, vfields) {
+                        (VariantPatternFields::Unit, VariantValue::Unit) => (true, vec![]),
+                        (VariantPatternFields::Tuple(subs), VariantValue::Tuple(vs))
+                            if subs.len() == vs.len() =>
+                        {
+                            let mut bindings = Vec::new();
+                            for (sub, v) in subs.iter().zip(vs.iter()) {
+                                let (m, sub_b) = self.match_pattern(sub, v);
+                                if !m { return (false, vec![]); }
+                                bindings.extend(sub_b);
+                            }
+                            (true, bindings)
+                        }
+                        (VariantPatternFields::Struct { fields: pf, rest }, VariantValue::Struct(entries)) => {
+                            // Each named field in the pattern must match the variant's field.
+                            // `rest = true` allows unmatched fields in the value.
+                            let mut bindings = Vec::new();
+                            for (fname, sub) in pf {
+                                let fv = match entries.get(fname) {
+                                    Some(v) => v.clone(),
+                                    None => return (false, vec![]),
+                                };
+                                let (m, sub_b) = self.match_pattern(sub, &fv);
+                                if !m { return (false, vec![]); }
+                                bindings.extend(sub_b);
+                            }
+                            // Without `..` the pattern fields must be exhaustive.
+                            if !*rest && pf.len() != entries.len() {
+                                return (false, vec![]);
+                            }
+                            (true, bindings)
+                        }
+                        _ => (false, vec![]),
+                    }
+                } else {
+                    (false, vec![])
+                }
+            }
         }
     }
 
@@ -2887,6 +3081,7 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
             entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()
         ),
         Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
+        Value::Variant { variant, .. } => StoredValue::String(variant.clone()),
         Value::Unit => StoredValue::Null,
     }
 }

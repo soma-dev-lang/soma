@@ -63,7 +63,12 @@ cell MFTEngine {
             "max_drawdown", p.max_drawdown ?? "0.05",
             "max_notional", p.max_notional ?? "500000",
             "max_concentration", p.max_concentration ?? "0.25",
-            "max_orders_per_tick", p.max_orders_per_tick ?? "10"
+            "max_orders_per_tick", p.max_orders_per_tick ?? "10",
+            // Bouchaud square-root impact gate (set max_impact_bps to enable).
+            "max_impact_bps", p.max_impact_bps ?? "0",
+            "impact_Y", p.impact_Y ?? "1.0",
+            "daily_volume", p.daily_volume ?? "1000000",
+            "daily_sigma", p.daily_sigma ?? "0.02"
         ))
         delegate("RiskManager", "init_equity", p.nav ?? "1000000")
         map("status", "configured")

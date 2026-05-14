@@ -1,0 +1,116 @@
+// ============================================================================
+// Pre-trade risk check — verified Bouchaud-style preconditions
+// ============================================================================
+//
+// A small cell that gates outgoing orders behind two compile-time
+// `ensure` preconditions, each backed by an empirically-grounded
+// model:
+//
+//   1. impact_sqrt (Bouchaud square-root law): expected slippage in
+//      bps must be below max_slippage_bps.
+//
+//   2. var_historical (Bouchaud-Potters fat-tail risk): the proposed
+//      order must not push 95%-VaR above max_var_pct.
+//
+// Both are closed-form; the budget checker proves the runtime cost.
+//
+// Run:    soma run   examples/risk_check.cell
+// Check:  soma check examples/risk_check.cell
+
+cell RiskCheck {
+
+    scale {
+        memory: "32Mi"
+    }
+
+    // Sample historical returns for one symbol (255 trading days).
+    // In production this would come from a [persistent] slot.
+    on returns_for(symbol: String) {
+        // Deterministic mock — 100 returns roughly N(0.0005, 0.012)
+        // with a fat left tail (one −5%, one −7% day).
+        return list(
+            0.0 - 0.07,  0.0 - 0.05,  0.0 - 0.03,  0.0 - 0.025, 0.0 - 0.02,
+            0.0 - 0.018, 0.0 - 0.015, 0.0 - 0.013, 0.0 - 0.012, 0.0 - 0.011,
+            0.0 - 0.010, 0.0 - 0.009, 0.0 - 0.008, 0.0 - 0.007, 0.0 - 0.006,
+            0.0 - 0.005, 0.0 - 0.004, 0.0 - 0.003, 0.0 - 0.002, 0.0 - 0.001,
+            0.0,         0.0,         0.001,       0.001,       0.002,
+            0.002,       0.003,       0.003,       0.004,       0.005,
+            0.005,       0.006,       0.006,       0.007,       0.008,
+            0.008,       0.009,       0.010,       0.011,       0.012,
+            0.013,       0.014,       0.015,       0.016,       0.017,
+            0.018,       0.019,       0.020,       0.022,       0.025
+        )
+    }
+
+    // Pre-trade gate.  Returns either {ok: true, ...} or {ok: false, reason}.
+    // The two `ensure` calls fail the handler if the precondition is
+    // violated — turning a model assumption into a runtime check.
+    on check_order(
+        qty: Float,
+        daily_volume: Float,
+        sigma: Float,
+        symbol: String,
+        max_bps: Float,
+        max_var: Float
+    ) {
+        let imp = impact_sqrt(qty, daily_volume, sigma, map("Y", 1.0))
+        ensure imp.bps <= max_bps
+
+        let hist = returns_for(symbol)
+        let var95 = var_historical(hist, map("alpha", 0.95, "max_obs", 64))
+        ensure var95 <= max_var
+
+        return map(
+            "ok", true,
+            "estimated_bps", imp.bps,
+            "var_95", var95,
+            "symbol", symbol,
+            "qty", qty
+        )
+    }
+
+    on report_metrics(symbol: String) {
+        let hist = returns_for(symbol)
+        let var95 = var_historical(hist, map("alpha", 0.95, "max_obs", 64))
+        let var99 = var_historical(hist, map("alpha", 0.99, "max_obs", 64))
+        let es95  = expected_shortfall_historical(hist, map("alpha", 0.95, "max_obs", 64))
+        let varg  = var_gaussian(hist, map("alpha", 0.95, "max_obs", 64))
+        return map(
+            "var_95_hist",     var95,
+            "var_99_hist",     var99,
+            "es_95_hist",      es95,
+            "var_95_gauss",    varg,
+            "gauss_underest",  var95 - varg  // historical is larger when tails are fat
+        )
+    }
+
+    on run() {
+        print("Pre-trade risk check")
+        print("====================")
+        print("")
+
+        print("Tail-risk metrics for AAPL (mock 50-day return series):")
+        let m = report_metrics("AAPL")
+        print("  VaR  95% (hist)     = {m.var_95_hist}")
+        print("  VaR  99% (hist)     = {m.var_99_hist}")
+        print("  ES   95% (hist)     = {m.es_95_hist}")
+        print("  VaR  95% (gauss)    = {m.var_95_gauss}")
+        print("  fat-tail under-est. = {m.gauss_underest}")
+        print("")
+
+        print("Order 1: 50_000 shares @ daily_vol = 5M, sigma = 2%")
+        print("  max_bps = 30, max_var = 0.05")
+        let r1 = check_order(50000.0, 5000000.0, 0.02, "AAPL", 30.0, 0.05)
+        print("  result:  {r1}")
+        print("")
+
+        print("Order 2: 500_000 shares @ same liquidity")
+        print("  same caps — this one should breach impact ceiling")
+        let r2 = try { check_order(500000.0, 5000000.0, 0.02, "AAPL", 30.0, 0.05) }
+        if r2.error != () {
+            print("  REJECTED: {r2.error}")
+        } else {
+            print("  result:  {r2.value}")
+        }
+    }
+}

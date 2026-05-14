@@ -96,6 +96,30 @@ pub enum Section {
     After(EverySection),
     /// Orchestration: scale { replicas: 100, shard: data, ... }
     Scale(ScaleSection),
+    /// Variants of a `cell type` sum type.
+    Variants(VariantsSection),
+}
+
+/// Sum-type variants.  Lives inside a `cell type Foo { variants { … } }`.
+#[derive(Debug, Clone)]
+pub struct VariantsSection {
+    pub variants: Vec<Spanned<VariantDecl>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VariantDecl {
+    pub name: String,
+    pub fields: VariantFields,
+}
+
+#[derive(Debug, Clone)]
+pub enum VariantFields {
+    /// `Pending`  — no payload
+    Unit,
+    /// `Up(Int)` / `Move(Int, Int)`
+    Tuple(Vec<Spanned<TypeExpr>>),
+    /// `Accepted { order_id: String, exec_price: Float }`
+    Struct(Vec<(String, Spanned<TypeExpr>)>),
 }
 
 #[derive(Debug, Clone)]
@@ -289,6 +313,11 @@ pub struct StateMachineSection {
     /// Used by the budget checker (V1.4) to bound the per-instance storage
     /// footprint of dynamic state-machine instance IDs.
     pub properties: Vec<Spanned<MemoryProperty>>,
+    /// Optional sum-type annotation: `state order: OrderState { ... }`.
+    /// When set, the refinement checker verifies that every transition
+    /// target is a variant of this type, and `transition(id, Variant)`
+    /// calls become type-checked.
+    pub state_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -544,6 +573,24 @@ pub enum MatchPattern {
     StringPrefix { prefix: String, rest: String },
     /// Range pattern: 1..10 matches integers in [1, 10)
     Range { from: i64, to: i64 },
+    /// Sum-type variant pattern.  `Pending`, `Accepted { id, .. }`, `Up(n)`.
+    /// `type_name` is `Some("Foo")` only when the user wrote `Foo::Variant`.
+    Variant {
+        type_name: Option<String>,
+        name: String,
+        fields: VariantPatternFields,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum VariantPatternFields {
+    Unit,
+    Tuple(Vec<MatchPattern>),
+    /// Struct fields with optional `..` rest at the end.
+    Struct {
+        fields: Vec<(String, MatchPattern)>,
+        rest: bool,
+    },
 }
 
 #[derive(Debug, Clone)]

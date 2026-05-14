@@ -8,6 +8,7 @@ pub mod io;
 pub mod storage;
 pub mod record;
 pub mod llm;
+pub mod linalg;
 
 use super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;
@@ -32,6 +33,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
         .or_else(|| http::call_builtin(name, args))
         .or_else(|| time::call_builtin(name, args))
         .or_else(|| record::call_builtin(name, args))
+        .or_else(|| linalg::call_builtin(name, args))
         .or_else(|| storage::call_builtin(interp, name, args, cell_name))
 }
 

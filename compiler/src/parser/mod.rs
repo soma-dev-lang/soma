@@ -477,6 +477,10 @@ impl Parser {
                 let sc = self.parse_scale_section()?;
                 Ok(Spanned::new(Section::Scale(sc), start.merge(self.prev_span())))
             }
+            Token::Variants => {
+                let v = self.parse_variants_section()?;
+                Ok(Spanned::new(Section::Variants(v), start.merge(self.prev_span())))
+            }
             Token::Assert => {
                 // In test cells, `assert expr` is syntactic sugar for a Rules section with Assert rules
                 let mut rules = Vec::new();
@@ -890,6 +894,70 @@ impl Parser {
 
     // ── Runtime Section ───────────────────────────────────────────────
 
+    fn parse_variants_section(&mut self) -> Result<VariantsSection, ParseError> {
+        self.expect(Token::Variants)?;
+        self.expect(Token::LBrace)?;
+        let mut variants = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let start = self.peek_span();
+            let (name, _) = match self.peek() {
+                Token::TypeIdent(t) => {
+                    let t = t.clone();
+                    self.advance();
+                    (t, start)
+                }
+                _ => return Err(ParseError::Expected {
+                    expected: "PascalCase variant name".to_string(),
+                    found: self.peek().clone(),
+                    span: self.peek_span(),
+                }),
+            };
+            // Optional fields.
+            let fields = if self.check(&Token::LBrace) {
+                // Struct variant: { field: Type, field: Type, ... }
+                self.advance();
+                let mut fields = Vec::new();
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    let (fname, _) = self.expect_ident()?;
+                    self.expect(Token::Colon)?;
+                    let ty = self.parse_type_expr()?;
+                    fields.push((fname, ty));
+                    if self.check(&Token::Comma) {
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                VariantFields::Struct(fields)
+            } else if self.check(&Token::LParen) {
+                // Tuple variant: (Type, Type, ...)
+                self.advance();
+                let mut tys = Vec::new();
+                while !self.check(&Token::RParen) && !self.is_at_end() {
+                    tys.push(self.parse_type_expr()?);
+                    if self.check(&Token::Comma) {
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RParen)?;
+                VariantFields::Tuple(tys)
+            } else {
+                VariantFields::Unit
+            };
+            variants.push(Spanned::new(
+                VariantDecl { name, fields },
+                start.merge(self.prev_span()),
+            ));
+            // Optional separator: newline or `;`.  We accept (and ignore)
+            // a trailing comma or semicolon — but the language is
+            // newline-separated, so usually nothing.
+            if self.check(&Token::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(VariantsSection { variants })
+    }
+
     fn parse_runtime_section(&mut self) -> Result<RuntimeSection, ParseError> {
         self.expect(Token::Runtime)?;
         self.expect(Token::LBrace)?;
@@ -957,6 +1025,26 @@ impl Parser {
         self.expect(Token::State)?;
         let (name, _) = self.expect_ident()?;
 
+        // Optional type annotation: `state order: OrderState { ... }`.
+        // When present, the refinement checker verifies all state names
+        // are variants of the named sum type.
+        let state_type = if self.check(&Token::Colon) {
+            self.advance();
+            if let Token::TypeIdent(ref t) = self.peek().clone() {
+                let t = t.clone();
+                self.advance();
+                Some(t)
+            } else {
+                return Err(ParseError::Expected {
+                    expected: "PascalCase sum-type name after ':' in state declaration".to_string(),
+                    found: self.peek().clone(),
+                    span: self.peek_span(),
+                });
+            }
+        } else {
+            None
+        };
+
         // Optional bracketed annotations: `state foo [max_instances(1000)] { ... }`.
         // Used by the V1.4 budget checker (compiler/src/checker/budget.rs).
         let mut sm_properties: Vec<Spanned<MemoryProperty>> = Vec::new();
@@ -983,7 +1071,7 @@ impl Parser {
             if self.check(&Token::Initial) {
                 self.advance();
                 self.expect(Token::Colon)?;
-                let (state_name, _) = self.expect_ident()?;
+                let (state_name, _) = self.expect_any_name()?;
                 initial = state_name;
                 continue;
             }
@@ -995,13 +1083,13 @@ impl Parser {
                 self.advance();
                 "*".to_string()
             } else {
-                let (name, _) = self.expect_ident()?;
+                let (name, _) = self.expect_any_name()?;
                 name
             };
 
             self.expect(Token::Arrow)?;
 
-            let (to, _) = self.expect_ident()?;
+            let (to, _) = self.expect_any_name()?;
 
             let mut guard = None;
             let mut effect = Vec::new();
@@ -1044,7 +1132,7 @@ impl Parser {
             let mut prev = to;
             while self.check(&Token::Arrow) {
                 self.advance();
-                let (next, _) = self.expect_ident()?;
+                let (next, _) = self.expect_any_name()?;
                 transitions.push(Spanned::new(
                     Transition { from: prev.clone(), to: next.clone(), guard: None, effect: vec![] },
                     start.merge(self.prev_span()),
@@ -1073,7 +1161,7 @@ impl Parser {
             });
         }
 
-        Ok(StateMachineSection { name, initial, transitions, properties: sm_properties })
+        Ok(StateMachineSection { name, initial, transitions, properties: sm_properties, state_type })
     }
 
     // ── Every (scheduler) ─────────────────────────────────────────────
@@ -1585,7 +1673,8 @@ impl Parser {
             Token::Match | Token::Try |
             Token::IntLit(_) | Token::BigIntLit(_) | Token::FloatLit(_) | Token::StringLit(_) |
             Token::True | Token::False | Token::LParen |
-            Token::Bang | Token::Minus | Token::LBracket => {
+            Token::Bang | Token::Minus | Token::LBracket |
+            Token::TypeIdent(_) => {
                 let expr = self.parse_expr()?;
                 Ok(Spanned::new(
                     Statement::ExprStmt { expr },
@@ -2145,6 +2234,18 @@ impl Parser {
                     }
                     self.expect(Token::RBrace)?;
                     Ok(Spanned::new(Expr::Record { type_name: name, fields }, start.merge(self.prev_span())))
+                } else if self.check(&Token::LParen) {
+                    // Tuple-variant constructor: Up(3), Move(x, y).
+                    // Parsed identically to a function call; the interpreter
+                    // dispatches on variant_registry.
+                    self.advance();
+                    let args = self.parse_arg_list()?;
+                    let end = self.peek_span();
+                    self.expect(Token::RParen)?;
+                    Ok(Spanned::new(
+                        Expr::FnCall { name, args },
+                        start.merge(end),
+                    ))
                 } else {
                     Ok(Spanned::new(Expr::Ident(name), start))
                 }
@@ -2387,6 +2488,81 @@ impl Parser {
                 self.advance();
                 Ok(MatchPattern::Variable(name))
             }
+        } else if let Token::TypeIdent(ref t) = self.peek().clone() {
+            // Variant pattern: PascalCase identifier in pattern position.
+            //   Pending              -> unit variant
+            //   Accepted { id, .. }  -> struct-variant pattern
+            //   Up(n)                -> tuple-variant pattern
+            //   Foo::Bar             -> qualified variant
+            let first = t.clone();
+            self.advance();
+            // Optional ::Name qualification.
+            let (type_name, name) = if self.check(&Token::Colon) {
+                // Look for ::
+                if self.pos + 1 < self.tokens.len()
+                    && matches!(self.tokens[self.pos + 1].token, Token::Colon)
+                {
+                    self.advance(); // first :
+                    self.advance(); // second :
+                    if let Token::TypeIdent(ref second) = self.peek().clone() {
+                        let name = second.clone();
+                        self.advance();
+                        (Some(first), name)
+                    } else {
+                        return Err(ParseError::Expected {
+                            expected: "variant name after '::'".to_string(),
+                            found: self.peek().clone(),
+                            span: self.peek_span(),
+                        });
+                    }
+                } else {
+                    (None, first)
+                }
+            } else {
+                (None, first)
+            };
+            // Optional fields.
+            let fields = if self.check(&Token::LBrace) {
+                // Struct-variant pattern: { field, field2: pat, .. }
+                self.advance();
+                let mut fields = Vec::new();
+                let mut rest = false;
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    if self.check(&Token::DotDot) {
+                        self.advance();
+                        rest = true;
+                        break;
+                    }
+                    let (field_name, _) = self.expect_ident()?;
+                    if self.check(&Token::Colon) {
+                        self.advance();
+                        let sub = self.parse_match_pattern()?;
+                        fields.push((field_name, sub));
+                    } else {
+                        fields.push((field_name.clone(), MatchPattern::Variable(field_name)));
+                    }
+                    if self.check(&Token::Comma) {
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RBrace)?;
+                VariantPatternFields::Struct { fields, rest }
+            } else if self.check(&Token::LParen) {
+                // Tuple-variant pattern: (sub_pat, sub_pat, ...)
+                self.advance();
+                let mut subs = Vec::new();
+                while !self.check(&Token::RParen) && !self.is_at_end() {
+                    subs.push(self.parse_match_pattern()?);
+                    if self.check(&Token::Comma) {
+                        self.advance();
+                    }
+                }
+                self.expect(Token::RParen)?;
+                VariantPatternFields::Tuple(subs)
+            } else {
+                VariantPatternFields::Unit
+            };
+            Ok(MatchPattern::Variant { type_name, name, fields })
         } else if self.check(&Token::Minus) {
             // Negative number pattern: -5, -3.14
             self.advance();

@@ -51,6 +51,244 @@ fn test_fact_bigint_100() {
     assert!(out.trim().len() > 100); // 100! has 158 digits
 }
 
+// ── Quantum-inspired linalg builtins (Tang et al.) ───────────────────
+
+#[test]
+fn test_linalg_qi_rebalancer_budget_proven() {
+    // The headline test: soma check on a cell that uses the linalg
+    // builtins with declared bounds must emit "budget proven".
+    let (out, _, code) = soma(&["check", "../examples/qi_rebalancer.cell"]);
+    assert_eq!(code, 0, "soma check failed: {out}");
+    assert!(
+        out.contains("budget proven for cell 'QiOptimizer'"),
+        "no budget proof in output: {out}"
+    );
+    // The proof must include the breakdown line.
+    assert!(out.contains("breakdown"), "no breakdown: {out}");
+}
+
+#[test]
+fn test_linalg_qi_rebalancer_runs() {
+    let (out, _, code) = soma(&["run", "../examples/qi_rebalancer.cell"]);
+    assert_eq!(code, 0, "stdout = {out}");
+    assert!(out.contains("Factor loadings"));
+    assert!(out.contains("Factor weights"));
+    assert!(out.contains("iterations = 10000"));
+    // RMT covariance cleaning section.
+    assert!(out.contains("RMT-cleaned covariance"));
+    assert!(out.contains("raw eigs"));
+    assert!(out.contains("cleaned eigs"));
+}
+
+// ── Sum types ────────────────────────────────────────────────────────
+
+#[test]
+fn test_sum_types_example_runs() {
+    let (out, _, code) = soma(&["run", "../examples/sum_types.cell"]);
+    assert_eq!(code, 0, "stdout = {out}");
+    assert!(out.contains("ok tx-100 $100"));
+    assert!(out.contains("rejected (400): non-positive amount"));
+    assert!(out.contains("up 3"));
+    assert!(out.contains("idle"));
+    assert!(out.contains("voided"));
+}
+
+#[test]
+fn test_sum_types_example_checks() {
+    let (out, _, code) = soma(&["check", "../examples/sum_types.cell"]);
+    assert_eq!(code, 0, "soma check failed: {out}");
+    assert!(out.contains("All checks passed"));
+}
+
+#[test]
+fn test_sum_types_non_exhaustive_match_fails_check() {
+    // Build a temporary cell with a non-exhaustive match and verify
+    // soma check rejects it.
+    let dir = std::env::temp_dir().join("soma_sum_nonex_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("nonex.cell");
+    std::fs::write(&path, r#"
+cell type Status {
+    variants {
+        A
+        B
+        C
+    }
+}
+cell Demo {
+    on classify() {
+        let v = A
+        return match v {
+            A -> 1
+            B -> 2
+        }
+    }
+    on run() { classify() }
+}
+"#).unwrap();
+    let (out, _, code) = soma(&["check", path.to_str().unwrap()]);
+    assert_ne!(code, 0, "expected non-exhaustive match to fail check: {out}");
+    assert!(
+        out.contains("non-exhaustive") && out.contains("`C`"),
+        "missing variant message: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_sum_types_wildcard_makes_match_exhaustive() {
+    let dir = std::env::temp_dir().join("soma_sum_wild_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("wild.cell");
+    std::fs::write(&path, r#"
+cell type Status {
+    variants {
+        A
+        B
+        C
+        D
+    }
+}
+cell Demo {
+    on classify() {
+        let v = B
+        return match v {
+            A -> "a"
+            _ -> "other"
+        }
+    }
+    on run() { print(classify()) }
+}
+"#).unwrap();
+    let (out, _, code) = soma(&["check", path.to_str().unwrap()]);
+    assert_eq!(code, 0, "wildcard should make match exhaustive: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_typed_state_machine_passes_when_variants_are_correct() {
+    let dir = std::env::temp_dir().join("soma_typed_state_ok");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("ok.cell");
+    std::fs::write(&path, r#"
+cell type OrderState {
+    variants {
+        Pending
+        Validated
+        Filled
+        Cancelled
+    }
+}
+cell Engine {
+    state order: OrderState {
+        initial: Pending
+        Pending -> Validated
+        Validated -> Filled
+        * -> Cancelled
+    }
+    on advance(id: String) {
+        transition(id, Validated)
+    }
+    on run() { advance("x") }
+}
+"#).unwrap();
+    let (out, _, code) = soma(&["check", path.to_str().unwrap()]);
+    assert_eq!(code, 0, "typed state machine should pass check: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_typed_state_machine_rejects_unknown_variant() {
+    let dir = std::env::temp_dir().join("soma_typed_state_bad");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("bad.cell");
+    std::fs::write(&path, r#"
+cell type OrderState {
+    variants {
+        Pending
+        Validated
+        Filled
+        Cancelled
+    }
+}
+cell Engine {
+    state order: OrderState {
+        initial: Pending
+        Pending -> Validated
+        Validated -> Filled
+        * -> Cancelled
+    }
+    on advance(id: String) {
+        transition(id, Shipped)
+    }
+    on run() { advance("x") }
+}
+"#).unwrap();
+    let (out, _, code) = soma(&["check", path.to_str().unwrap()]);
+    assert_ne!(code, 0, "expected typed state machine to reject bad target: {out}");
+    assert!(
+        out.contains("'Shipped'") && out.contains("OrderState"),
+        "error must name both the bad variant and the state type: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_mft_still_checks_after_impact_gate() {
+    // After wiring the Bouchaud impact gate into mft/lib/risk.cell,
+    // the engine must still pass `soma check`.  (Note: `soma verify`
+    // returns non-zero on the mft engine because the cell has known
+    // liveness violations by design — it's a long-running server.)
+    let (out_c, _, code_c) = soma(&["check", "../mft/app.cell"]);
+    assert_eq!(code_c, 0, "soma check failed: {out_c}");
+    // Temporal property count comes from verify, which prints to stderr.
+    // We just confirm the engine still compiles cleanly.
+    assert!(out_c.contains("no errors") || out_c.contains("All checks passed"));
+}
+
+#[test]
+fn test_risk_check_budget_proven() {
+    let (out, _, code) = soma(&["check", "../examples/risk_check.cell"]);
+    assert_eq!(code, 0, "stdout = {out}");
+    assert!(
+        out.contains("budget proven for cell 'RiskCheck'"),
+        "no budget proof: {out}"
+    );
+}
+
+#[test]
+fn test_risk_check_runs_and_rejects() {
+    let (out, _, code) = soma(&["run", "../examples/risk_check.cell"]);
+    assert_eq!(code, 0, "stdout = {out}");
+    // Order 1 must succeed.
+    assert!(out.contains("\"ok\": true"), "order 1 didn't pass: {out}");
+    assert!(out.contains("estimated_bps"), "no bps in output: {out}");
+    // Order 2 must be rejected by the ensure precondition.
+    assert!(out.contains("REJECTED"), "order 2 wasn't rejected: {out}");
+    // VaR metrics must be reported.
+    assert!(out.contains("VaR  95% (hist)"));
+    assert!(out.contains("ES   95% (hist)"));
+}
+
+#[test]
+fn test_linalg_qi_regression_runs() {
+    let (out, _, code) = soma(&["run", "../examples/quantum_inspired_regression.cell"]);
+    assert_eq!(code, 0, "stdout = {out}");
+    // svd_lowrank should produce two meaningful singular values.
+    assert!(out.contains("sigma_1"));
+    assert!(out.contains("sigma_2"));
+    // regress_sgd should produce a finite residual that the example
+    // prints; we don't pin a numerical value (stochastic), but we
+    // check the headline is reached.
+    assert!(out.contains("||Ax - b||"), "no regression line: {out}");
+    // Sampled rows come from importance_sample_rows.
+    assert!(out.contains("sampled rows"));
+}
+
 // ── Checker ──────────────────────────────────────────────────────────
 
 #[test]

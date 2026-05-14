@@ -204,6 +204,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     Value::List(_) => "List",
                     Value::Map(_) => "Map",
                     Value::Lambda { .. } | Value::LambdaBlock { .. } => "Lambda",
+                    Value::Variant { .. } => "Variant",
                     Value::Unit => "Unit",
                 };
                 Ok(Value::String(t.to_string()))

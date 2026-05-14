@@ -427,7 +427,7 @@ impl BytecodeCompiler {
                             let je = chunk.emit_u16(Op::Jump, 0xFFFF);
                             jump_to_end.push(je);
                         }
-                        MatchPattern::MapDestructure(_) | MatchPattern::StringPrefix { .. } | MatchPattern::Range { .. } => {
+                        MatchPattern::MapDestructure(_) | MatchPattern::StringPrefix { .. } | MatchPattern::Range { .. } | MatchPattern::Variant { .. } => {
                             // TODO: implement in bytecode VM — for now, treat as wildcard
                             for s in &arm.body {
                                 self.compile_stmt(chunk, &s.node);

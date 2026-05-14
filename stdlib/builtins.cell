@@ -207,3 +207,169 @@ cell builtin redirect {
     }
     rules { native "redirect" }
 }
+
+// ── Quantum-inspired linear algebra (Tang et al.) ────────────────────
+//
+// Sublinear matrix algorithms over ℓ²-norm sampling.  Every builtin
+// takes an explicit options Map carrying sample / iteration / error
+// bounds so the budget checker can prove closed-form runtime.
+
+cell builtin mat {
+    face {
+        promise "reshapes a flat list of floats into an r×c matrix (List<List<Float>>)"
+        signal call(rows: Int, cols: Int, values: List<Float>) -> List<List<Float>>
+    }
+    rules { native "mat" }
+}
+
+cell builtin rows {
+    face {
+        promise "build a matrix from variadic row vectors — rows(list(...), list(...), ...)"
+        signal call(args: List<List<Float>>) -> List<List<Float>>
+    }
+    rules { native "rows" }
+}
+
+cell builtin cols {
+    face {
+        promise "build a matrix from variadic column vectors (transposes each arg)"
+        signal call(args: List<List<Float>>) -> List<List<Float>>
+    }
+    rules { native "cols" }
+}
+
+cell builtin zeros {
+    face {
+        promise "r×c matrix of zeros"
+        signal call(r: Int, c: Int) -> List<List<Float>>
+    }
+    rules { native "zeros" }
+}
+
+cell builtin ones {
+    face {
+        promise "r×c matrix of ones"
+        signal call(r: Int, c: Int) -> List<List<Float>>
+    }
+    rules { native "ones" }
+}
+
+cell builtin diag {
+    face {
+        promise "n×n diagonal matrix from a length-n vector"
+        signal call(values: List<Float>) -> List<List<Float>>
+    }
+    rules { native "diag" }
+}
+
+cell builtin matrix {
+    face {
+        promise "MATLAB-style matrix literal — matrix(\"1 2 3; 4 5 6\") (rows ';', entries whitespace or ',')"
+        signal call(spec: String) -> List<List<Float>>
+    }
+    rules { native "matrix" }
+}
+
+cell builtin eye {
+    face {
+        promise "returns the n×n identity matrix as a list of rows"
+        signal call(n: Int) -> List<List<Float>>
+    }
+    rules { native "eye" }
+}
+
+cell builtin to_sampled {
+    face {
+        promise "build the BST sampling data structure (Tang 1807.04271 §3) — returns a handle Map supporting O(log n) ℓ²-norm sampling. Optional opts: max_rows, max_cols for budget proofs."
+        signal call(matrix: List<List<Float>>, opts: Map) -> Map
+    }
+    rules { native "to_sampled" }
+}
+
+cell builtin drop_sampled {
+    face {
+        promise "free a sampled-matrix registry entry; returns true if dropped"
+        signal call(handle: Map) -> Bool
+    }
+    rules { native "drop_sampled" }
+}
+
+cell builtin sample_row {
+    face {
+        promise "samples one row index ∼ ||A_i||² / ||A||_F² and returns {index, prob, weight, row}"
+        signal call(matrix: List<List<Float>>) -> Map
+    }
+    rules { native "sample_row" }
+}
+
+cell builtin importance_sample_rows {
+    face {
+        promise "ℓ²-norm row sampling per Tang 1807.04271 §3; returns {indices, weights, submatrix, fro_norm}"
+        signal call(matrix: List<List<Float>>, opts: Map) -> Map
+    }
+    rules { native "importance_sample_rows" }
+}
+
+cell builtin svd_lowrank {
+    face {
+        promise "FKV-style sublinear low-rank SVD; opts: row_samples, col_samples, rank. Returns {U, S, V, rank, row_indices, col_indices, fro_norm}"
+        signal call(matrix: List<List<Float>>, opts: Map) -> Map
+    }
+    rules { native "svd_lowrank" }
+}
+
+cell builtin impact_sqrt {
+    face {
+        promise "Bouchaud square-root market impact: Y · σ · √(Q/V). Returns {impact, bps, Y, q_over_v}"
+        signal call(qty: Float, daily_volume: Float, sigma: Float, opts: Map) -> Map
+    }
+    rules { native "impact_sqrt" }
+}
+
+cell builtin quantile {
+    face {
+        promise "empirical q-quantile of a sample"
+        signal call(values: List<Float>, q: Float) -> Float
+    }
+    rules { native "quantile" }
+}
+
+cell builtin var_historical {
+    face {
+        promise "Historical VaR at confidence α (default 0.95). opts: alpha, max_obs (for budget)."
+        signal call(returns: List<Float>, opts: Map) -> Float
+    }
+    rules { native "var_historical" }
+}
+
+cell builtin expected_shortfall_historical {
+    face {
+        promise "Historical Expected Shortfall (CVaR) at confidence α — mean of returns below VaR"
+        signal call(returns: List<Float>, opts: Map) -> Float
+    }
+    rules { native "expected_shortfall_historical" }
+}
+
+cell builtin var_gaussian {
+    face {
+        promise "Gaussian VaR. μ/σ inferred from sample unless overridden in opts. opts: alpha, mu, sigma, max_obs."
+        signal call(returns: List<Float>, opts: Map) -> Float
+    }
+    rules { native "var_gaussian" }
+}
+
+cell builtin clean_covariance {
+    face {
+        promise "RMT-cleaned sample covariance (Bouchaud-Potters). opts: method ('rie'|'clip'|'raw'), eta, center, max_assets. Returns {matrix, eigenvalues_clean, eigenvalues_raw, method, q, n_obs, n_assets}"
+        signal call(returns: List<List<Float>>, opts: Map) -> Map
+    }
+    rules { native "clean_covariance" }
+}
+
+cell builtin regress_sgd {
+    face {
+        promise "Stochastic-gradient low-rank regression (Gilyén-Song-Tang 2022). opts: eps, lambda, max_iter, samples_per_iter. Returns {x, iterations, eta, spec_norm, fro_norm}"
+        signal call(matrix: List<List<Float>>, b: List<Float>, opts: Map) -> Map
+    }
+    rules { native "regress_sgd" }
+}
