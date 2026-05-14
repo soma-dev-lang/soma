@@ -10,6 +10,7 @@ pub fn cmd_repl(_registry: &mut Registry) {
     let empty_program = ast::Program {
         imports: vec![],
         cells: vec![],
+        protocols: vec![],
     };
     let mut interp = interpreter::Interpreter::new(&empty_program);
     // Use Vec to preserve insertion order (HashMap doesn't)

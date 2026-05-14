@@ -61,6 +61,32 @@ impl HttpBackend {
                 let obj: serde_json::Map<String, serde_json::Value> = m.iter().map(|(k, v)| (k.clone(), Self::encode_value(v))).collect();
                 serde_json::json!({"type": "map", "value": obj})
             }
+            StoredValue::Variant { type_name, variant, fields } => {
+                use crate::runtime::storage::StoredVariantFields;
+                let (kind, encoded) = match fields {
+                    StoredVariantFields::Unit => ("unit", serde_json::Value::Null),
+                    StoredVariantFields::Tuple(items) => (
+                        "tuple",
+                        serde_json::Value::Array(items.iter().map(Self::encode_value).collect()),
+                    ),
+                    StoredVariantFields::Struct(entries) => (
+                        "struct",
+                        serde_json::Value::Array(entries.iter().map(|(k, v)| {
+                            serde_json::Value::Array(vec![
+                                serde_json::Value::String(k.clone()),
+                                Self::encode_value(v),
+                            ])
+                        }).collect()),
+                    ),
+                };
+                serde_json::json!({
+                    "type": "variant",
+                    "type_name": type_name,
+                    "variant": variant,
+                    "kind": kind,
+                    "fields": encoded,
+                })
+            }
         }
     }
 
@@ -81,6 +107,33 @@ impl HttpBackend {
             "map" => {
                 let entries = val.and_then(|v| v.as_object()).map(|o| o.iter().map(|(k, v)| (k.clone(), Self::decode_value(v))).collect()).unwrap_or_default();
                 StoredValue::Map(entries)
+            }
+            "variant" => {
+                use crate::runtime::storage::StoredVariantFields;
+                let type_name = v.get("type_name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let variant = v.get("variant").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("unit");
+                let fields = match kind {
+                    "tuple" => {
+                        let items = v.get("fields").and_then(|x| x.as_array())
+                            .map(|a| a.iter().map(Self::decode_value).collect())
+                            .unwrap_or_default();
+                        StoredVariantFields::Tuple(items)
+                    }
+                    "struct" => {
+                        let items = v.get("fields").and_then(|x| x.as_array())
+                            .map(|a| a.iter().filter_map(|el| {
+                                let pair = el.as_array()?;
+                                let key = pair.get(0)?.as_str()?.to_string();
+                                let val = Self::decode_value(pair.get(1)?);
+                                Some((key, val))
+                            }).collect())
+                            .unwrap_or_default();
+                        StoredVariantFields::Struct(items)
+                    }
+                    _ => StoredVariantFields::Unit,
+                };
+                StoredValue::Variant { type_name, variant, fields }
             }
             // Fallback: try as plain string/number
             _ => {

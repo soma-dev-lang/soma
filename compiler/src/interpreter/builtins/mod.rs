@@ -23,6 +23,22 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
             interp.record_nondet_called.push(name.to_string());
         }
     }
+
+    // V1.6: tool-capability enforcement. If the LLM dispatched into a tool
+    // with declared capabilities, the http/* builtins refuse URLs that do
+    // not match any declared scope.
+    if matches!(name, "http_get" | "http_post" | "http_put" | "http_delete" | "http_patch") {
+        if let Some(caps) = interp.current_tool_caps.clone() {
+            if let Some(Value::String(url)) = args.first() {
+                if !url_matches_any(url, &caps) {
+                    return Some(Err(RuntimeError::TypeError(format!(
+                        "capability denied: '{}' does not match any of {:?}", url, caps
+                    ))));
+                }
+            }
+        }
+    }
+
     // Try each category in order
     None
         .or_else(|| io::call_builtin(name, args))
@@ -35,6 +51,32 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
         .or_else(|| record::call_builtin(name, args))
         .or_else(|| linalg::call_builtin(name, args))
         .or_else(|| storage::call_builtin(interp, name, args, cell_name))
+}
+
+/// Match a URL against capability scopes.
+/// Recognized scope forms:
+///   "net:host"          — host name (exact match against URL host)
+///   "net:host/prefix"   — host + path prefix
+///   "net:*"             — any network
+///   "net:https://..."   — match prefix against full URL
+fn url_matches_any(url: &str, caps: &[String]) -> bool {
+    for cap in caps {
+        if cap == "net:*" { return true; }
+        if let Some(rest) = cap.strip_prefix("net:") {
+            // Direct URL prefix match (cap looks like a URL itself)
+            if rest.starts_with("http://") || rest.starts_with("https://") {
+                if url.starts_with(rest) { return true; }
+                continue;
+            }
+            // Otherwise: match against the URL's host (and optional path prefix)
+            let url_no_scheme = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))
+                .unwrap_or(url);
+            if url_no_scheme.starts_with(rest) { return true; }
+        }
+    }
+    false
 }
 
 /// Higher-order builtins: map, filter, find, any, each — require mutable interpreter

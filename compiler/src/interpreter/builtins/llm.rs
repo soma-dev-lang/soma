@@ -210,30 +210,65 @@ pub fn push_assistant_tool_message(
     }
 }
 
+/// V1.6: trace entries are now sum-type variants. The user matches on
+/// `Think { .. } | ToolCall { .. } | Approval { .. }` exhaustively.
+fn now_ts() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn variant_struct(name: &str, fields: Vec<(&str, Value)>) -> Value {
+    use crate::interpreter::VariantValue;
+    use indexmap::IndexMap;
+    let mut m = IndexMap::new();
+    for (k, v) in fields { m.insert(k.to_string(), v); }
+    Value::Variant {
+        type_name: "TraceStep".to_string(),
+        variant: name.to_string(),
+        fields: VariantValue::Struct(m),
+    }
+}
+
 /// Create a trace entry for a think() call
 pub fn trace_think(iteration: i64, prompt: &str, tokens: i64, total: i64, finish: &str) -> Value {
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default().as_secs() as i64;
-    map_from_pairs(vec![
-        ("event".to_string(), Value::String("think".to_string())),
-        ("iteration".to_string(), Value::Int(SomaInt::from_i64(iteration))),
-        ("prompt".to_string(), Value::String(prompt.to_string())),
-        ("tokens".to_string(), Value::Int(SomaInt::from_i64(tokens))),
-        ("total_tokens".to_string(), Value::Int(SomaInt::from_i64(total))),
-        ("finish_reason".to_string(), Value::String(finish.to_string())),
-        ("timestamp".to_string(), Value::Int(SomaInt::from_i64(ts))),
+    variant_struct("Think", vec![
+        ("iteration", Value::Int(SomaInt::from_i64(iteration))),
+        ("prompt", Value::String(prompt.to_string())),
+        ("tokens", Value::Int(SomaInt::from_i64(tokens))),
+        ("total_tokens", Value::Int(SomaInt::from_i64(total))),
+        ("finish_reason", Value::String(finish.to_string())),
+        ("timestamp", Value::Int(SomaInt::from_i64(now_ts()))),
     ])
 }
 
-/// Create a trace entry for a tool call
+/// Create a trace entry for a tool call. Field is `name` (not `tool`),
+/// because `tool` is a face-block keyword and would clash in match patterns.
 pub fn trace_tool_call(name: &str, args: &str, result: &str) -> Value {
-    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default().as_secs() as i64;
-    map_from_pairs(vec![
-        ("event".to_string(), Value::String("tool_call".to_string())),
-        ("tool".to_string(), Value::String(name.to_string())),
-        ("args".to_string(), Value::String(args.to_string())),
-        ("result".to_string(), Value::String(result.to_string())),
-        ("timestamp".to_string(), Value::Int(SomaInt::from_i64(ts))),
+    variant_struct("ToolCall", vec![
+        ("name", Value::String(name.to_string())),
+        ("args", Value::String(args.to_string())),
+        ("result", Value::String(result.to_string())),
+        ("timestamp", Value::Int(SomaInt::from_i64(now_ts()))),
+    ])
+}
+
+/// Create a trace entry for an approval gate
+pub fn trace_approval(action: &str, result: &str) -> Value {
+    variant_struct("Approval", vec![
+        ("action", Value::String(action.to_string())),
+        ("result", Value::String(result.to_string())),
+        ("timestamp", Value::Int(SomaInt::from_i64(now_ts()))),
+    ])
+}
+
+/// Create a trace entry for a state transition
+pub fn trace_transition(instance: &str, from: &str, to: &str) -> Value {
+    variant_struct("Transition", vec![
+        ("instance", Value::String(instance.to_string())),
+        ("from", Value::String(from.to_string())),
+        ("to", Value::String(to.to_string())),
+        ("timestamp", Value::Int(SomaInt::from_i64(now_ts()))),
     ])
 }

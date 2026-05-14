@@ -170,10 +170,74 @@ impl Parser {
             }
         }
 
+        let mut protocols = Vec::new();
         while !self.is_at_end() {
-            cells.push(self.parse_cell_def()?);
+            if self.check(&Token::Protocol) {
+                protocols.push(self.parse_protocol_def()?);
+            } else {
+                cells.push(self.parse_cell_def()?);
+            }
         }
-        Ok(Program { imports, cells })
+        Ok(Program { imports, cells, protocols })
+    }
+
+    /// V1.6: protocol Foo {
+    ///     roles: client = Client, server = Server
+    ///     client -> server: request(query: String)
+    ///     server -> client: reply(answer: String)
+    /// }
+    fn parse_protocol_def(&mut self) -> Result<Spanned<ProtocolDef>, ParseError> {
+        let start = self.peek_span();
+        self.expect(Token::Protocol)?;
+        let (name, _) = self.expect_ident()?;
+        self.expect(Token::LBrace)?;
+
+        let mut roles = Vec::new();
+        let mut steps = Vec::new();
+
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            // Either: "roles: a = A, b = B"  or  "from -> to: msg(args)"
+            if let Token::Ident(first) = self.peek().clone() {
+                if first == "roles" {
+                    self.advance();
+                    self.expect(Token::Colon)?;
+                    loop {
+                        let (role, _) = self.expect_ident()?;
+                        self.expect(Token::Eq)?;
+                        let (cell, _) = self.expect_ident()?;
+                        roles.push((role, cell));
+                        if self.check(&Token::Comma) { self.advance(); }
+                        else { break; }
+                    }
+                    continue;
+                }
+            }
+            // Step: from -> to: msg(args)
+            let (from, _) = self.expect_ident()?;
+            self.expect(Token::Arrow)?;
+            let (to, _) = self.expect_ident()?;
+            self.expect(Token::Colon)?;
+            let (msg, _) = self.expect_ident()?;
+            self.expect(Token::LParen)?;
+            let mut args = Vec::new();
+            while !self.check(&Token::RParen) {
+                let (an, _) = self.expect_ident()?;
+                // optional :Type — consume and discard
+                if self.check(&Token::Colon) {
+                    self.advance();
+                    let _ = self.expect_ident()?;
+                }
+                args.push(an);
+                if self.check(&Token::Comma) { self.advance(); }
+            }
+            self.expect(Token::RParen)?;
+            steps.push(ProtocolStep { from, to, message: msg, args });
+        }
+        self.expect(Token::RBrace)?;
+        Ok(Spanned::new(
+            ProtocolDef { name, roles, steps },
+            start.merge(self.prev_span()),
+        ))
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
@@ -245,6 +309,8 @@ impl Parser {
             Token::Native => { let span = tok.span; self.advance(); Ok(("native".to_string(), span)) }
             Token::Checker => { let span = tok.span; self.advance(); Ok(("checker".to_string(), span)) }
             Token::Scale => { let span = tok.span; self.advance(); Ok(("scale".to_string(), span)) }
+            Token::Cost => { let span = tok.span; self.advance(); Ok(("cost".to_string(), span)) }
+            Token::Protocol => { let span = tok.span; self.advance(); Ok(("protocol".to_string(), span)) }
             _ => Err(ParseError::Expected {
                 expected: "identifier".to_string(),
                 found: tok.token.clone(),
@@ -477,18 +543,20 @@ impl Parser {
                 let sc = self.parse_scale_section()?;
                 Ok(Spanned::new(Section::Scale(sc), start.merge(self.prev_span())))
             }
+            Token::Cost => {
+                let cs = self.parse_cost_section()?;
+                Ok(Spanned::new(Section::Cost(cs), start.merge(self.prev_span())))
+            }
             Token::Variants => {
                 let v = self.parse_variants_section()?;
                 Ok(Spanned::new(Section::Variants(v), start.merge(self.prev_span())))
             }
-            Token::Assert => {
-                // In test cells, `assert expr` is syntactic sugar for a Rules section with Assert rules
+            Token::Assert | Token::Property => {
+                // In test cells, bare `assert expr` / `property "name" forall ...`
+                // is syntactic sugar for a Rules section with the corresponding rules.
                 let mut rules = Vec::new();
-                while self.check(&Token::Assert) {
-                    let rule_start = self.peek_span();
-                    self.advance();
-                    let expr = self.parse_expr()?;
-                    rules.push(Spanned::new(Rule::Assert(expr), rule_start.merge(self.prev_span())));
+                while self.check(&Token::Assert) || self.check(&Token::Property) {
+                    rules.push(self.parse_rule()?);
                 }
                 Ok(Spanned::new(
                     Section::Rules(RulesSection { rules }),
@@ -496,7 +564,7 @@ impl Parser {
                 ))
             }
             _ => Err(ParseError::Expected {
-                expected: "face, memory, interior, on, rules, runtime, state, every, or scale".to_string(),
+                expected: "face, memory, interior, on, rules, runtime, state, every, scale, or cost".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -629,6 +697,41 @@ impl Parser {
             None
         };
 
+        // V1.6: optional capability declaration:
+        //   tool fetch(url) -> String [capability: "net:wikipedia.org"]
+        //   tool fetch(url) -> String [capabilities: "net:a.com", "net:b.com"]
+        let mut capabilities = Vec::new();
+        if self.check(&Token::LBracket) {
+            self.advance();
+            while !self.check(&Token::RBracket) && !self.is_at_end() {
+                if let Token::Ident(ref key) = self.peek().clone() {
+                    let key = key.clone();
+                    self.advance();
+                    self.expect(Token::Colon)?;
+                    if key == "capability" || key == "capabilities" {
+                        loop {
+                            if let Token::StringLit(ref s) = self.peek().clone() {
+                                capabilities.push(s.clone());
+                                self.advance();
+                            } else { break; }
+                            if self.check(&Token::Comma) {
+                                self.advance();
+                                // peek next; if it's a string keep collecting
+                                if !matches!(self.peek(), Token::StringLit(_)) { break; }
+                            } else { break; }
+                        }
+                    } else {
+                        // skip unknown attribute value
+                        self.advance();
+                    }
+                    if self.check(&Token::Comma) { self.advance(); }
+                } else {
+                    self.advance();
+                }
+            }
+            self.expect(Token::RBracket)?;
+        }
+
         // Optional description string
         let description = if let Token::StringLit(ref s) = self.peek().clone() {
             let d = s.clone();
@@ -643,6 +746,7 @@ impl Parser {
             description,
             params,
             return_type,
+            capabilities,
         })
     }
 
@@ -864,8 +968,93 @@ impl Parser {
                 let expr = self.parse_expr()?;
                 Ok(Spanned::new(Rule::Assert(expr), start.merge(self.prev_span())))
             }
+            Token::Property => {
+                // V1.6: property "name" forall x: Int in lo..hi [count N] ensures expr
+                self.advance();
+                let name = if let Token::StringLit(s) = self.peek().clone() {
+                    self.advance(); s
+                } else { return Err(ParseError::Expected {
+                    expected: "property name string".to_string(),
+                    found: self.peek().clone(),
+                    span: self.peek_span(),
+                }); };
+                // expect "forall"
+                if !matches!(self.peek(), Token::Ident(s) if s == "forall") {
+                    return Err(ParseError::Expected {
+                        expected: "forall".to_string(),
+                        found: self.peek().clone(),
+                        span: self.peek_span(),
+                    });
+                }
+                self.advance();
+                let (var, _) = self.expect_ident()?;
+                self.expect(Token::Colon)?;
+                let (ty, _) = self.expect_ident()?;
+                if !matches!(self.peek(), Token::In) {
+                    return Err(ParseError::Expected {
+                        expected: "in".to_string(),
+                        found: self.peek().clone(),
+                        span: self.peek_span(),
+                    });
+                }
+                self.advance();
+                let lo = match self.peek().clone() {
+                    Token::IntLit(n) => { self.advance(); n }
+                    Token::Minus => {
+                        self.advance();
+                        if let Token::IntLit(n) = self.peek().clone() { self.advance(); -n }
+                        else { return Err(ParseError::Expected {
+                            expected: "integer".to_string(),
+                            found: self.peek().clone(),
+                            span: self.peek_span(),
+                        }); }
+                    }
+                    _ => return Err(ParseError::Expected {
+                        expected: "integer".to_string(),
+                        found: self.peek().clone(),
+                        span: self.peek_span(),
+                    }),
+                };
+                self.expect(Token::DotDot)?;
+                let hi = match self.peek().clone() {
+                    Token::IntLit(n) => { self.advance(); n }
+                    Token::Minus => {
+                        self.advance();
+                        if let Token::IntLit(n) = self.peek().clone() { self.advance(); -n }
+                        else { return Err(ParseError::Expected {
+                            expected: "integer".to_string(),
+                            found: self.peek().clone(),
+                            span: self.peek_span(),
+                        }); }
+                    }
+                    _ => return Err(ParseError::Expected {
+                        expected: "integer".to_string(),
+                        found: self.peek().clone(),
+                        span: self.peek_span(),
+                    }),
+                };
+                // optional `count N`
+                let count = if matches!(self.peek(), Token::Ident(s) if s == "count") {
+                    self.advance();
+                    if let Token::IntLit(n) = self.peek().clone() { self.advance(); n as u32 }
+                    else { 50 }
+                } else { 50 };
+                if !matches!(self.peek(), Token::Ident(s) if s == "ensures") {
+                    return Err(ParseError::Expected {
+                        expected: "ensures".to_string(),
+                        found: self.peek().clone(),
+                        span: self.peek_span(),
+                    });
+                }
+                self.advance();
+                let body = self.parse_expr()?;
+                Ok(Spanned::new(
+                    Rule::Property { name, var, ty, lo, hi, count, body },
+                    start.merge(self.prev_span()),
+                ))
+            }
             _ => Err(ParseError::Expected {
-                expected: "contradicts, implies, requires, mutex_group, check, matches, native, or assert".to_string(),
+                expected: "contradicts, implies, requires, mutex_group, check, matches, native, assert, or property".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -1361,6 +1550,90 @@ impl Parser {
         Ok(ScaleSection { replicas, shard, consistency, tolerance, cpu, memory: memory_res, disk })
     }
 
+    // ── Cost (V1.6) ──────────────────────────────────────────────────
+
+    fn parse_cost_section(&mut self) -> Result<CostSection, ParseError> {
+        self.expect(Token::Cost)?;
+        self.expect(Token::LBrace)?;
+
+        let mut cs = CostSection::default();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let (key, _) = self.expect_ident()?;
+            self.expect(Token::Colon)?;
+            match key.as_str() {
+                "tokens" => {
+                    if let Token::IntLit(n) = self.peek().clone() {
+                        cs.tokens = Some(n);
+                        self.advance();
+                    } else {
+                        return Err(ParseError::Expected {
+                            expected: "integer".to_string(),
+                            found: self.peek().clone(),
+                            span: self.peek_span(),
+                        });
+                    }
+                }
+                "latency" => {
+                    // Accept "30s", "5000ms" — lexed as DurationLit(value, unit).
+                    match self.peek().clone() {
+                        Token::DurationLit(v, unit) => {
+                            self.advance();
+                            let ms = match unit {
+                                crate::lexer::DurationUnitTok::Ms => v,
+                                crate::lexer::DurationUnitTok::S => v * 1000.0,
+                                crate::lexer::DurationUnitTok::Min => v * 60_000.0,
+                                crate::lexer::DurationUnitTok::H => v * 3_600_000.0,
+                                crate::lexer::DurationUnitTok::D => v * 86_400_000.0,
+                                crate::lexer::DurationUnitTok::Years => v * 86_400_000.0 * 365.0,
+                            };
+                            cs.latency_ms = Some(ms as i64);
+                        }
+                        Token::IntLit(n) => {
+                            self.advance();
+                            cs.latency_ms = Some(n * 1000);  // bare int → seconds
+                        }
+                        _ => {
+                            return Err(ParseError::Expected {
+                                expected: "duration (e.g. 30s, 500ms)".to_string(),
+                                found: self.peek().clone(),
+                                span: self.peek_span(),
+                            });
+                        }
+                    }
+                }
+                "usd" => {
+                    // 0.10 → 100 milli-USD. Accept Float or Int.
+                    match self.peek().clone() {
+                        Token::FloatLit(f) => {
+                            cs.usd_milli = Some((f * 1000.0).round() as i64);
+                            self.advance();
+                        }
+                        Token::IntLit(n) => {
+                            cs.usd_milli = Some(n * 1000);
+                            self.advance();
+                        }
+                        _ => {
+                            return Err(ParseError::Expected {
+                                expected: "number".to_string(),
+                                found: self.peek().clone(),
+                                span: self.peek_span(),
+                            });
+                        }
+                    }
+                }
+                other => {
+                    return Err(ParseError::Expected {
+                        expected: "tokens, latency, or usd".to_string(),
+                        found: Token::Ident(other.to_string()),
+                        span: self.prev_span(),
+                    });
+                }
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(cs)
+    }
+
     // ── Interior ─────────────────────────────────────────────────────
 
     fn parse_interior_section(&mut self) -> Result<InteriorSection, ParseError> {
@@ -1596,7 +1869,7 @@ impl Parser {
             Token::Start | Token::Test | Token::Backend | Token::Builtin |
             Token::Check | Token::Memory | Token::Face |
             Token::Property | Token::Rules | Token::Runtime | Token::Matches |
-            Token::Native | Token::Checker | Token::Scale => {
+            Token::Native | Token::Checker | Token::Scale | Token::Cost | Token::Protocol => {
                 // Could be: assignment, target.method(args), fn_call(args), or bare expr
                 let save_pos = self.pos;
                 let (name, name_span) = self.expect_ident()?;
@@ -2255,7 +2528,7 @@ impl Parser {
             Token::Start | Token::Test | Token::Backend | Token::Builtin |
             Token::Signal | Token::Emit | Token::Check | Token::Memory | Token::Face |
             Token::Property | Token::Rules | Token::Runtime | Token::Matches |
-            Token::Native | Token::Checker | Token::Scale => {
+            Token::Native | Token::Checker | Token::Scale | Token::Cost | Token::Protocol => {
                 let name = format!("{:?}", self.peek()).to_lowercase();
                 // Get the keyword as a string name
                 let name = match self.peek() {
@@ -2265,7 +2538,7 @@ impl Parser {
                     Token::Signal => "signal", Token::Emit => "emit", Token::Check => "check", Token::Memory => "memory",
                     Token::Face => "face", Token::Property => "property", Token::Rules => "rules",
                     Token::Runtime => "runtime", Token::Matches => "matches", Token::Native => "native",
-                    Token::Checker => "checker", Token::Scale => "scale",
+                    Token::Checker => "checker", Token::Scale => "scale", Token::Cost => "cost", Token::Protocol => "protocol",
                     _ => unreachable!(),
                 }.to_string();
                 self.advance();

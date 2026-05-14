@@ -9,6 +9,11 @@ pub mod isolation;
 pub mod termination;
 pub mod composition;
 pub mod sum_types;
+pub mod determinism;
+pub mod capabilities;
+pub mod cost;
+pub mod effects;
+pub mod protocol;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
@@ -110,6 +115,28 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// V1.6: a `[deterministic]` handler made a call that breaks determinism.
+    #[error("{message}")]
+    DeterminismViolation {
+        message: String,
+        span: Span,
+    },
+
+    /// V1.6: a `think(..., map("requires", [...]))` asks for a capability
+    /// not declared by the configured model.
+    #[error("{message}")]
+    ModelCapabilityMissing {
+        message: String,
+        span: Span,
+    },
+
+    /// V1.6: cost-budget proof obligation failed.
+    #[error("{message}")]
+    CostExceeded {
+        message: String,
+        span: Span,
+    },
+
     #[error("scale: shard '{slot}' uses [{prop}] but scale declares consistency: {consistency} — contradictory")]
     ScaleConsistencyMismatch {
         slot: String,
@@ -194,13 +221,24 @@ pub enum CheckWarning {
         budget: String,
         breakdown: String,
     },
+    /// V1.6: a cost axis (tokens/latency/usd) is advisory because of
+    /// an unbounded think() or unknown model.
+    CostAdvisory {
+        message: String,
+        span: Span,
+    },
+    /// V1.6: a cost axis was proven within budget.
+    CostProven {
+        message: String,
+        span: Span,
+    },
 }
 
 impl CheckWarning {
     /// True for informational notes (BudgetOk) that should not be
     /// counted as warnings in the human-readable tally.
     pub fn is_note(&self) -> bool {
-        matches!(self, CheckWarning::BudgetOk { .. })
+        matches!(self, CheckWarning::BudgetOk { .. } | CheckWarning::CostProven { .. })
     }
 }
 
@@ -246,6 +284,8 @@ impl std::fmt::Display for CheckWarning {
             Self::BudgetOk { cell, proven, budget, breakdown } => {
                 write!(f, "✓ budget proven for cell '{cell}': peak ≤ {proven} ≤ declared {budget}\n    breakdown: {breakdown}")
             }
+            Self::CostAdvisory { message, .. } => write!(f, "advisory: {message}"),
+            Self::CostProven { message, .. } => write!(f, "✓ {message}"),
         }
     }
 }
@@ -254,6 +294,7 @@ impl std::fmt::Display for CheckWarning {
 /// Uses the Registry for data-driven property checking.
 pub struct Checker<'a> {
     pub registry: &'a Registry,
+    pub manifest: Option<&'a crate::pkg::manifest::Manifest>,
     pub errors: Vec<CheckError>,
     pub warnings: Vec<CheckWarning>,
 }
@@ -262,6 +303,7 @@ impl<'a> Checker<'a> {
     pub fn new(registry: &'a Registry) -> Self {
         Self {
             registry,
+            manifest: None,
             errors: Vec::new(),
             warnings: Vec::new(),
         }
@@ -316,6 +358,63 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+        }
+
+        // 4b. V1.6: enforce [deterministic] handler contracts.
+        for section in &cell.sections {
+            if let Section::OnSignal(ref handler) = section.node {
+                if handler.properties.iter().any(|p| p == "deterministic") {
+                    let errs = determinism::check_deterministic_handler(
+                        &handler.signal_name, &handler.body,
+                    );
+                    for e in errs {
+                        self.errors.push(CheckError::DeterminismViolation {
+                            message: e.to_string(),
+                            span: section.span,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 4d. V1.6: cost-budget proof. Walks think()/http_*/loop sites
+        // and proves peak ≤ declared. Advisory if any think() is unbounded.
+        for finding in cost::check_cell(cell, self.manifest) {
+            match finding {
+                cost::CostFinding::Exceeded { .. } => {
+                    self.errors.push(CheckError::CostExceeded {
+                        message: finding.to_string(),
+                        span: Span::new(0, 0),
+                    });
+                }
+                cost::CostFinding::Advisory { .. } => {
+                    self.warnings.push(CheckWarning::CostAdvisory {
+                        message: finding.to_string(),
+                        span: Span::new(0, 0),
+                    });
+                }
+                cost::CostFinding::Proven { .. } => {
+                    self.warnings.push(CheckWarning::CostProven {
+                        message: finding.to_string(),
+                        span: Span::new(0, 0),
+                    });
+                }
+            }
+        }
+
+        // 4c. V1.6: model capability contracts on think(..., map("requires", [...])).
+        for e in capabilities::check_cell(cell, self.manifest) {
+            // Locate the span as the cell's first OnSignal section (best effort).
+            let span = cell.sections.iter()
+                .find_map(|s| match &s.node {
+                    Section::OnSignal(h) if h.signal_name == e.handler_name => Some(s.span),
+                    _ => None,
+                })
+                .unwrap_or(Span::new(0, 0));
+            self.errors.push(CheckError::ModelCapabilityMissing {
+                message: e.to_string(),
+                span,
+            });
         }
 
         // 5. Verify face contracts: signals have handlers, param counts match

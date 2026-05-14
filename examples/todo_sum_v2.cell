@@ -1,0 +1,134 @@
+// Todo list with V1.6 sum types stored DIRECTLY in memory slots.
+//
+// Before V1.6: had to keep status as `Map<String, String>` and call a
+// `parse()` helper before each `match`.
+// V1.6: `Map<String, TodoStatus>` stores the variant value with its
+// tag; reads round-trip back to a variant, exhaustive match just works.
+//
+//   soma serve examples/todo_sum_v2.cell -p 8080
+
+cell type TodoStatus {
+    variants {
+        Pending
+        InProgress
+        Done
+        Cancelled
+    }
+}
+
+cell TodoList {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal add(text: String) -> Map
+        signal start(id: String) -> Map
+        signal finish(id: String) -> Map
+        signal cancel(id: String) -> Map
+        signal reopen(id: String) -> Map
+        promise all_persistent
+    }
+
+    memory {
+        todos:  Map<String, String>     [persistent, consistent]
+        status: Map<String, TodoStatus> [persistent, consistent]
+        meta:   Map<String, Int>        [persistent, consistent]
+    }
+
+    state todo: TodoStatus {
+        initial: Pending
+        Pending    -> InProgress
+        Pending    -> Cancelled
+        InProgress -> Done
+        InProgress -> Cancelled
+        Done       -> Pending
+        Cancelled  -> Pending
+    }
+
+    on add(text: String) {
+        let current = meta.get("next_id")
+        if current == () { meta.set("next_id", 1) }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+        todos.set(id_str, text)
+        status.set(id_str, Pending)
+        return redirect("/")
+    }
+
+    on start(id: String) {
+        if todos.get(id) == () { return response(404, map("error", "not found")) }
+        transition(id, InProgress)
+        status.set(id, InProgress)
+        return redirect("/")
+    }
+
+    on finish(id: String) {
+        if todos.get(id) == () { return response(404, map("error", "not found")) }
+        transition(id, Done)
+        status.set(id, Done)
+        return redirect("/")
+    }
+
+    on cancel(id: String) {
+        if todos.get(id) == () { return response(404, map("error", "not found")) }
+        transition(id, Cancelled)
+        status.set(id, Cancelled)
+        return redirect("/")
+    }
+
+    on reopen(id: String) {
+        if todos.get(id) == () { return response(404, map("error", "not found")) }
+        transition(id, Pending)
+        status.set(id, Pending)
+        return redirect("/")
+    }
+
+    on request(method: String, path: String, body: String) {
+        let rows = ""
+        let keys = todos.keys()
+        for k in keys {
+            let text = todos.get(k)
+            // Read the variant directly from storage and match on it.
+            // No more parse() helper.
+            let s = status.get(k)
+            let lbl = label(s)
+            rows += render(
+                "<tr>
+                    <td style='padding:8px 12px;color:#888;'>{k}</td>
+                    <td style='padding:8px 12px;'>{text}</td>
+                    <td style='padding:8px 12px;'>{lbl}</td>
+                    <td style='padding:8px 12px;text-align:right;'>
+                        <a href='/start/{k}'>start</a> &middot;
+                        <a href='/finish/{k}'>finish</a> &middot;
+                        <a href='/cancel/{k}'>cancel</a> &middot;
+                        <a href='/reopen/{k}'>reopen</a>
+                    </td>
+                </tr>",
+                "k", k, "text", text, "lbl", lbl
+            )
+        }
+        if rows == "" {
+            rows = "<tr><td colspan='4' style='padding:24px;color:#999;text-align:center;'>no todos yet</td></tr>"
+        }
+        return html(render(
+            "<!DOCTYPE html><html><body style='font-family:sans-serif;max-width:760px;margin:40px auto;'>
+            <h1>Soma TODO (variants in storage)</h1>
+            <form action='/add' method='get'>
+                <input name='text' placeholder='What needs doing?' autofocus required style='padding:10px;width:60%;'>
+                <button>Add</button>
+            </form>
+            <table style='width:100%;border-collapse:collapse;border:1px solid #eee;'>{rows}</table>
+            </body></html>",
+            "rows", rows
+        ))
+    }
+
+    // Exhaustive match on the variant — directly on the value pulled from storage.
+    on label(s: Map) {
+        return match s {
+            Pending    -> "todo"
+            InProgress -> "working on it"
+            Done       -> "complete"
+            Cancelled  -> "scrapped"
+        }
+    }
+}

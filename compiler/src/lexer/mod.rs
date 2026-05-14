@@ -66,6 +66,8 @@ pub enum Token {
     Assert,
     // Orchestration
     Scale,
+    Cost,
+    Protocol,
     // State machine
     State,
     Guard,
@@ -508,6 +510,8 @@ impl<'a> Lexer<'a> {
                     "test" => Token::Test,
                     "assert" => Token::Assert,
                     "scale" => Token::Scale,
+                    "cost" => Token::Cost,
+                    "protocol" => Token::Protocol,
                     "state" => Token::State,
                     "guard" => Token::Guard,
                     "effect" => Token::Effect,

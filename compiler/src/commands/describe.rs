@@ -192,6 +192,9 @@ fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
                             if let Some(ref desc) = tool.description {
                                 t["description"] = serde_json::json!(desc);
                             }
+                            if !tool.capabilities.is_empty() {
+                                t["capabilities"] = serde_json::json!(tool.capabilities);
+                            }
                             face_tools.push(t);
                         }
                     }

@@ -161,6 +161,20 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                         }
                     }
                 }
+                // V1.6: effect summary for think() in each handler.
+                for eff in super::effects::check_cell(&cell.node) {
+                    let tools: Vec<String> = eff.think_tools.iter().cloned().collect();
+                    let summary = if tools.is_empty() {
+                        "no tools available".to_string()
+                    } else {
+                        format!("can dispatch [{}]", tools.join(", "))
+                    };
+                    result.checks.push(VerifyCheck::Pass(
+                        format!("effects: handler `{}` calls think() {}× — {}",
+                                eff.handler, eff.think_sites, summary)
+                    ));
+                }
+
                 results.push(result);
             }
         }
@@ -212,6 +226,42 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     results.push(comp_result);
                 }
             }
+        }
+    }
+
+    // V1.6: protocol verification — one result block per protocol.
+    if !program.protocols.is_empty() {
+        let findings = super::protocol::check_program(program);
+        let mut by_protocol: std::collections::HashMap<String, Vec<&super::protocol::ProtocolFinding>>
+            = std::collections::HashMap::new();
+        for f in &findings {
+            let key = match f {
+                super::protocol::ProtocolFinding::Ok { protocol, .. } => protocol.clone(),
+                super::protocol::ProtocolFinding::UnknownRole { protocol, .. } => protocol.clone(),
+                super::protocol::ProtocolFinding::MissingHandler { protocol, .. } => protocol.clone(),
+                super::protocol::ProtocolFinding::ParamCountMismatch { protocol, .. } => protocol.clone(),
+            };
+            by_protocol.entry(key).or_default().push(f);
+        }
+        for p in &program.protocols {
+            let mut pr = VerifyResult {
+                machine_name: format!("protocol/{}", p.node.name),
+                states: vec![],
+                initial: String::new(),
+                terminal_states: vec![],
+                transitions: vec![],
+                checks: vec![],
+            };
+            if let Some(fs) = by_protocol.get(&p.node.name) {
+                for f in fs {
+                    match f {
+                        super::protocol::ProtocolFinding::Ok { .. } =>
+                            pr.checks.push(VerifyCheck::Pass(f.to_string())),
+                        _ => pr.checks.push(VerifyCheck::Fail(f.to_string(), None)),
+                    }
+                }
+            }
+            results.push(pr);
         }
     }
 

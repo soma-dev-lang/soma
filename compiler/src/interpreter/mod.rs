@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 type Env = FxHashMap<String, Value>;
 use crate::ast::*;
 use crate::runtime::storage::{StorageBackend, StoredValue};
-use crate::interpreter::soma_int::SomaInt;
+pub use crate::interpreter::soma_int::SomaInt;
 use num_bigint::BigInt;
 use thiserror::Error;
 
@@ -382,6 +382,9 @@ pub struct Interpreter {
     pub last_span: Option<crate::ast::Span>,
     /// Cached handler for the current recursive call (avoids repeated HashMap lookups)
     current_handler: Option<(String, String, Arc<Vec<Param>>, Arc<Vec<Spanned<Statement>>>)>,
+    /// V1.6: tool-capability scope. Set when the LLM dispatches into a tool
+    /// with declared capabilities; the http/* builtins consult it.
+    pub(crate) current_tool_caps: Option<Vec<String>>,
     /// Loaded [native] handler FFI function pointers, keyed by (cell_name, signal_name)
     pub native_handlers: HashMap<(String, String), native_ffi::LoadedNative>,
     /// Cluster node for distributed storage (None = standalone mode)
@@ -523,6 +526,7 @@ impl Interpreter {
             source_text: None,
             last_span: None,
             current_handler: None,
+            current_tool_caps: None,
             native_handlers: HashMap::new(),
             cluster: None,
             sharded_slots: HashMap::new(),
@@ -2576,7 +2580,7 @@ impl Interpreter {
                         };
 
                         // Dispatch to on event_name(data) handler
-                        let prog = Program { imports: vec![], cells: cells.values().map(|c| {
+                        let prog = Program { protocols: vec![], imports: vec![], cells: cells.values().map(|c| {
                             Spanned::new(c.clone(), Span::new(0, 0))
                         }).collect() };
                         let mut interp = Interpreter::new(&prog);
@@ -2648,7 +2652,7 @@ impl Interpreter {
                 match ws.read() {
                     Ok(tungstenite::Message::Text(text)) => {
                         // Parse {"event":"trade","data":{...}} format
-                        let prog = Program { imports: vec![], cells: cells.values().map(|c| {
+                        let prog = Program { protocols: vec![], imports: vec![], cells: cells.values().map(|c| {
                             Spanned::new(c.clone(), Span::new(0, 0))
                         }).collect() };
                         let mut interp = Interpreter::new(&prog);
@@ -2980,6 +2984,11 @@ impl Interpreter {
         // Perform transition
         status_slot.set(id, crate::runtime::storage::StoredValue::String(target.to_string()));
 
+        // V1.6: structured trace entry — TraceStep::Transition variant.
+        self.agent_trace.push(
+            crate::interpreter::builtins::llm::trace_transition(id, &current, target)
+        );
+
         Ok(map_from_pairs(vec![
             ("id".to_string(), Value::String(id.to_string())),
             ("from".to_string(), Value::String(current)),
@@ -3081,12 +3090,31 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
             entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()
         ),
         Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
-        Value::Variant { variant, .. } => StoredValue::String(variant.clone()),
+        Value::Variant { type_name, variant, fields } => {
+            use crate::runtime::storage::StoredVariantFields;
+            let stored_fields = match fields {
+                VariantValue::Unit => StoredVariantFields::Unit,
+                VariantValue::Tuple(items) => {
+                    StoredVariantFields::Tuple(items.iter().map(value_to_stored).collect())
+                }
+                VariantValue::Struct(entries) => {
+                    StoredVariantFields::Struct(
+                        entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()
+                    )
+                }
+            };
+            StoredValue::Variant {
+                type_name: type_name.clone(),
+                variant: variant.clone(),
+                fields: stored_fields,
+            }
+        }
         Value::Unit => StoredValue::Null,
     }
 }
 
 pub(crate) fn stored_to_value(stored: StoredValue) -> Value {
+    use crate::runtime::storage::StoredVariantFields;
     match stored {
         StoredValue::Int(n) => Value::Int(SomaInt::from_i64(n)),
         StoredValue::Float(n) => Value::Float(n),
@@ -3097,6 +3125,20 @@ pub(crate) fn stored_to_value(stored: StoredValue) -> Value {
         StoredValue::Map(map) => Value::Map(
             map.into_iter().map(|(k, v)| (k, stored_to_value(v))).collect()
         ),
+        StoredValue::Variant { type_name, variant, fields } => {
+            let v_fields = match fields {
+                StoredVariantFields::Unit => VariantValue::Unit,
+                StoredVariantFields::Tuple(items) => {
+                    VariantValue::Tuple(items.into_iter().map(stored_to_value).collect())
+                }
+                StoredVariantFields::Struct(entries) => {
+                    VariantValue::Struct(
+                        entries.into_iter().map(|(k, v)| (k, stored_to_value(v))).collect()
+                    )
+                }
+            };
+            Value::Variant { type_name, variant, fields: v_fields }
+        }
     }
 }
 

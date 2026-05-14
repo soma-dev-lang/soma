@@ -167,7 +167,7 @@ impl VM {
                             // Fall back to the interpreter for try expressions
                             // so that runtime errors are properly caught.
                             let inner = inner_expr.clone();
-                            let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![] };
+                            let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![], protocols: vec![] };
                             let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
                             // Build an env from the current locals
                             let frame_ref = self.frames.last().unwrap();
@@ -651,7 +651,7 @@ impl VM {
             }
             // Delegate all other builtins to the interpreter's dispatch
             _ => {
-                let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![] };
+                let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![], protocols: vec![] };
                 let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
                 if let Some(result) = interp.call_builtin(name, &args, "") {
                     result.unwrap_or(Value::Unit)
@@ -703,7 +703,7 @@ impl VM {
 
     /// Apply a lambda builtin (map, filter, find, any) by falling back to the interpreter
     fn apply_lambda_builtin(&self, op: &str, items: &[Value], lambda: &Value) -> Value {
-        let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![] };
+        let dummy_prog = crate::ast::Program { imports: vec![], cells: vec![], protocols: vec![] };
         let mut interp = crate::interpreter::Interpreter::new(&dummy_prog);
         match op {
             "map" | "each" => {
@@ -819,6 +819,8 @@ impl PartialOrd for Value {
 use crate::runtime::storage::StoredValue;
 
 fn value_to_stored(val: &Value) -> StoredValue {
+    use crate::runtime::storage::StoredVariantFields;
+    use crate::interpreter::VariantValue;
     match val {
         Value::Int(si) => { if let Some(n) = si.to_i64() { StoredValue::Int(n) } else { StoredValue::String(format!("{}", si)) } },
         Value::Float(n) => StoredValue::Float(*n),
@@ -827,13 +829,31 @@ fn value_to_stored(val: &Value) -> StoredValue {
         Value::Unit => StoredValue::Null,
         Value::List(items) => StoredValue::List(items.iter().map(value_to_stored).collect()),
         Value::Map(entries) => StoredValue::Map(entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()),
-        
         Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
-        Value::Variant { variant, .. } => StoredValue::String(variant.clone()),
+        Value::Variant { type_name, variant, fields } => {
+            let stored_fields = match fields {
+                VariantValue::Unit => StoredVariantFields::Unit,
+                VariantValue::Tuple(items) => {
+                    StoredVariantFields::Tuple(items.iter().map(value_to_stored).collect())
+                }
+                VariantValue::Struct(entries) => {
+                    StoredVariantFields::Struct(
+                        entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()
+                    )
+                }
+            };
+            StoredValue::Variant {
+                type_name: type_name.clone(),
+                variant: variant.clone(),
+                fields: stored_fields,
+            }
+        }
     }
 }
 
 fn stored_to_value(stored: StoredValue) -> Value {
+    use crate::runtime::storage::StoredVariantFields;
+    use crate::interpreter::VariantValue;
     match stored {
         StoredValue::Int(n) => Value::Int(SomaInt::from_i64(n)),
         StoredValue::Float(n) => Value::Float(n),
@@ -842,6 +862,20 @@ fn stored_to_value(stored: StoredValue) -> Value {
         StoredValue::Null => Value::Unit,
         StoredValue::List(items) => Value::List(items.into_iter().map(stored_to_value).collect()),
         StoredValue::Map(map) => Value::Map(map.into_iter().map(|(k, v)| (k, stored_to_value(v))).collect()),
+        StoredValue::Variant { type_name, variant, fields } => {
+            let v_fields = match fields {
+                StoredVariantFields::Unit => VariantValue::Unit,
+                StoredVariantFields::Tuple(items) => {
+                    VariantValue::Tuple(items.into_iter().map(stored_to_value).collect())
+                }
+                StoredVariantFields::Struct(entries) => {
+                    VariantValue::Struct(
+                        entries.into_iter().map(|(k, v)| (k, stored_to_value(v))).collect()
+                    )
+                }
+            };
+            Value::Variant { type_name, variant, fields: v_fields }
+        }
     }
 }
 

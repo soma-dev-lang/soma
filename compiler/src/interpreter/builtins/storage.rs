@@ -162,14 +162,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 // In run mode: auto-approve with a warning
                 eprintln!("[agent] approval requested: {}", action);
                 eprintln!("[agent] auto-approved (use soma serve for interactive approval)");
-                // Log to trace
-                interp.agent_trace.push(super::super::map_from_pairs(vec![
-                    ("event".to_string(), Value::String("approval".to_string())),
-                    ("action".to_string(), Value::String(action.clone())),
-                    ("result".to_string(), Value::String("auto_approved".to_string())),
-                    ("timestamp".to_string(), Value::Int(SomaInt::from_i64(std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64))),
-                ]));
+                // Log to trace (V1.6: TraceStep::Approval variant)
+                interp.agent_trace.push(super::llm::trace_approval(action, "auto_approved"));
                 Some(Ok(Value::Bool(true)))
             } else {
                 Some(Err(RuntimeError::TypeError("approve(action: String)".to_string())))
@@ -281,11 +275,8 @@ fn agent_think(
             s if s.starts_with("fixed:") => s[6..].to_string(),
             _ => format!("[mock] {}", prompt),
         };
-        interp.agent_trace.push(super::super::map_from_pairs(vec![
-            ("event".to_string(), Value::String("think".to_string())),
-            ("prompt".to_string(), Value::String(prompt.to_string())),
-            ("mock".to_string(), Value::Bool(true)),
-        ]));
+        // V1.6: TraceStep::Think variant (mock mode: fixed token=0)
+        interp.agent_trace.push(super::llm::trace_think(0, prompt, 0, 0, "stop"));
         if interp.agent_conversation.is_empty() {
             interp.agent_conversation.push(serde_json::json!({"role": "system", "content": "mock"}));
         }
@@ -441,8 +432,19 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
 
     // Convert JSON args to Soma Value args (positional, matching handler params)
     let mut arg_values = Vec::new();
+    let mut tool_caps: Option<Vec<String>> = None;
     if let Some(cell) = interp.cells.get(cell_name).cloned() {
         for section in &cell.sections {
+            // V1.6: pull the declared capabilities for THIS tool (from face).
+            if let crate::ast::Section::Face(ref face) = &section.node {
+                for decl in &face.declarations {
+                    if let crate::ast::FaceDecl::Tool(ref td) = decl.node {
+                        if td.name == tool_name && !td.capabilities.is_empty() {
+                            tool_caps = Some(td.capabilities.clone());
+                        }
+                    }
+                }
+            }
             if let crate::ast::Section::OnSignal(on) = &section.node {
                 if on.signal_name == tool_name {
                     for param in &on.params {
@@ -457,17 +459,20 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
                             _ => Value::String(val.map(|v| v.to_string()).unwrap_or_default()),
                         });
                     }
-                    break;
                 }
             }
         }
     }
 
-    // Call the handler
-    match interp.call_signal(cell_name, tool_name, arg_values) {
+    // Scope the capability set for the duration of the call.
+    let prev_caps = interp.current_tool_caps.take();
+    interp.current_tool_caps = tool_caps;
+    let result = match interp.call_signal(cell_name, tool_name, arg_values) {
         Ok(val) => val,
         Err(e) => Value::String(format!("tool error: {}", e)),
-    }
+    };
+    interp.current_tool_caps = prev_caps;
+    result
 }
 
 /// Resolve ${ENV_VAR} references in a string.

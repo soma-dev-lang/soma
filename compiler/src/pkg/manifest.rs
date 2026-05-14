@@ -50,6 +50,12 @@ pub struct AgentConfig {
     /// Mock mode: "echo", "fixed:response text" (for testing)
     #[serde(default)]
     pub mock: String,
+    /// V1.6: capabilities this model is known to satisfy.
+    /// Examples: "json_mode", "tools", "vision", "long_context", "structured_output".
+    /// `soma check` refuses to build if a `think(..., map("requires", [...]))`
+    /// in this cell asks for a capability missing from this list.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 fn default_retries() -> usize { 3 }
@@ -63,6 +69,7 @@ impl Default for AgentConfig {
             key: String::new(),
             retries: 3,
             mock: String::new(),
+            capabilities: Vec::new(),
         }
     }
 }

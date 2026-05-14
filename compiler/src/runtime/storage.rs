@@ -10,7 +10,21 @@ pub enum StoredValue {
     Bool(bool),
     List(Vec<StoredValue>),
     Map(HashMap<String, StoredValue>),
+    /// V1.6: sum-type values stored with their tag and fields,
+    /// so a `Map<String, TodoStatus>` round-trips through any backend.
+    Variant {
+        type_name: String,
+        variant: String,
+        fields: StoredVariantFields,
+    },
     Null,
+}
+
+#[derive(Debug, Clone)]
+pub enum StoredVariantFields {
+    Unit,
+    Tuple(Vec<StoredValue>),
+    Struct(Vec<(String, StoredValue)>),
 }
 
 impl std::fmt::Display for StoredValue {
@@ -36,6 +50,25 @@ impl std::fmt::Display for StoredValue {
                     write!(f, "{}: {}", k, v)?;
                 }
                 write!(f, "}}")
+            }
+            StoredValue::Variant { variant, fields, .. } => match fields {
+                StoredVariantFields::Unit => write!(f, "{}", variant),
+                StoredVariantFields::Tuple(items) => {
+                    write!(f, "{}(", variant)?;
+                    for (i, v) in items.iter().enumerate() {
+                        if i > 0 { write!(f, ", ")?; }
+                        write!(f, "{}", v)?;
+                    }
+                    write!(f, ")")
+                }
+                StoredVariantFields::Struct(entries) => {
+                    write!(f, "{} {{", variant)?;
+                    for (i, (k, v)) in entries.iter().enumerate() {
+                        if i > 0 { write!(f, ", ")?; }
+                        write!(f, " {}: {}", k, v)?;
+                    }
+                    write!(f, " }}")
+                }
             }
         }
     }
@@ -306,6 +339,9 @@ impl SqliteBackend {
                 let obj: serde_json::Map<String, serde_json::Value> = map.iter().map(|(k, v)| (k.clone(), stored_to_json(v))).collect();
                 (serde_json::to_string(&obj).unwrap_or_default(), "json")
             }
+            StoredValue::Variant { .. } => {
+                (serde_json::to_string(&stored_to_json(value)).unwrap_or_default(), "variant")
+            }
         }
     }
 
@@ -315,7 +351,7 @@ impl SqliteBackend {
             "float" => value.parse::<f64>().map(StoredValue::Float).unwrap_or(StoredValue::String(value.to_string())),
             "bool" => StoredValue::Bool(value == "true"),
             "null" => StoredValue::Null,
-            "json" => {
+            "json" | "variant" => {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(value) {
                     json_to_stored(&v)
                 } else {
@@ -494,7 +530,8 @@ fn instantiate_native_backend(
     }
 }
 
-/// Convert a serde_json::Value to StoredValue (preserving types)
+/// Convert a serde_json::Value to StoredValue (preserving types).
+/// A JSON object with `__variant__` key is decoded back to a Variant.
 fn json_to_stored(v: &serde_json::Value) -> StoredValue {
     match v {
         serde_json::Value::Null => StoredValue::Null,
@@ -511,12 +548,47 @@ fn json_to_stored(v: &serde_json::Value) -> StoredValue {
             StoredValue::List(arr.iter().map(json_to_stored).collect())
         }
         serde_json::Value::Object(obj) => {
+            // V1.6: decode tagged variants
+            if let (Some(serde_json::Value::String(tn)),
+                    Some(serde_json::Value::String(vn))) =
+                (obj.get("__variant__"), obj.get("__name__"))
+            {
+                let kind = obj.get("__kind__").and_then(|x| x.as_str()).unwrap_or("unit");
+                let fields = match kind {
+                    "tuple" => {
+                        let items = obj.get("__fields__")
+                            .and_then(|x| x.as_array())
+                            .map(|arr| arr.iter().map(json_to_stored).collect())
+                            .unwrap_or_default();
+                        StoredVariantFields::Tuple(items)
+                    }
+                    "struct" => {
+                        let items = obj.get("__fields__")
+                            .and_then(|x| x.as_array())
+                            .map(|arr| arr.iter().filter_map(|el| {
+                                let pair = el.as_array()?;
+                                let key = pair.get(0)?.as_str()?.to_string();
+                                let val = json_to_stored(pair.get(1)?);
+                                Some((key, val))
+                            }).collect())
+                            .unwrap_or_default();
+                        StoredVariantFields::Struct(items)
+                    }
+                    _ => StoredVariantFields::Unit,
+                };
+                return StoredValue::Variant {
+                    type_name: tn.clone(),
+                    variant: vn.clone(),
+                    fields,
+                };
+            }
             StoredValue::Map(obj.iter().map(|(k, v)| (k.clone(), json_to_stored(v))).collect())
         }
     }
 }
 
-/// Convert a StoredValue to serde_json::Value
+/// Convert a StoredValue to serde_json::Value.
+/// Variants serialize as `{ "__variant__": type, "__name__": variant, "__kind__": ..., "__fields__": ... }`
 fn stored_to_json(v: &StoredValue) -> serde_json::Value {
     match v {
         StoredValue::Int(n) => serde_json::Value::Number((*n).into()),
@@ -532,6 +604,30 @@ fn stored_to_json(v: &StoredValue) -> serde_json::Value {
                 .map(|(k, v)| (k.clone(), stored_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
+        }
+        StoredValue::Variant { type_name, variant, fields } => {
+            let (kind, encoded) = match fields {
+                StoredVariantFields::Unit => ("unit", serde_json::Value::Null),
+                StoredVariantFields::Tuple(items) => (
+                    "tuple",
+                    serde_json::Value::Array(items.iter().map(stored_to_json).collect()),
+                ),
+                StoredVariantFields::Struct(entries) => (
+                    "struct",
+                    serde_json::Value::Array(entries.iter().map(|(k, v)| {
+                        serde_json::Value::Array(vec![
+                            serde_json::Value::String(k.clone()),
+                            stored_to_json(v),
+                        ])
+                    }).collect()),
+                ),
+            };
+            serde_json::json!({
+                "__variant__": type_name,
+                "__name__": variant,
+                "__kind__": kind,
+                "__fields__": encoded,
+            })
         }
     }
 }

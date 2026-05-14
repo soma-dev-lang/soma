@@ -54,23 +54,45 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
         for section in &test_cell.sections {
             if let ast::Section::Rules(ref rules) = section.node {
                 for rule in &rules.rules {
-                    if let ast::Rule::Assert(ref expr) = rule.node {
-                        total += 1;
+                    match &rule.node {
+                        ast::Rule::Assert(expr) => {
+                            total += 1;
 
-                        match eval_test_assertion(&mut interp, &expr.node) {
-                            Ok(true) => {
-                                passed += 1;
-                                println!("  ✓ assert {}", format_expr(&expr.node));
-                            }
-                            Ok(false) => {
-                                failed += 1;
-                                println!("  ✗ assert {} — FAILED", format_expr(&expr.node));
-                            }
-                            Err(e) => {
-                                failed += 1;
-                                println!("  ✗ assert {} — ERROR: {}", format_expr(&expr.node), e);
+                            match eval_test_assertion(&mut interp, &expr.node) {
+                                Ok(true) => {
+                                    passed += 1;
+                                    println!("  ✓ assert {}", format_expr(&expr.node));
+                                }
+                                Ok(false) => {
+                                    failed += 1;
+                                    println!("  ✗ assert {} — FAILED", format_expr(&expr.node));
+                                }
+                                Err(e) => {
+                                    failed += 1;
+                                    println!("  ✗ assert {} — ERROR: {}", format_expr(&expr.node), e);
+                                }
                             }
                         }
+                        ast::Rule::Property { name, var, ty, lo, hi, count, body } => {
+                            total += 1;
+                            match run_property(&mut interp, name, var, ty, *lo, *hi, *count, &body.node) {
+                                Ok(None) => {
+                                    passed += 1;
+                                    println!("  ✓ property \"{}\" (forall {} in {}..{}, {} samples)",
+                                             name, var, lo, hi, count);
+                                }
+                                Ok(Some(cex)) => {
+                                    failed += 1;
+                                    println!("  ✗ property \"{}\" — FAILED with counter-example {} = {}",
+                                             name, var, cex);
+                                }
+                                Err(e) => {
+                                    failed += 1;
+                                    println!("  ✗ property \"{}\" — ERROR: {}", name, e);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -119,6 +141,46 @@ fn eval_test_expr(
     let env = std::collections::HashMap::new();
     interp.eval_expr_with_env(expr, &env, "", "")
         .map_err(|e| format!("{:?}", e))
+}
+
+/// V1.6: run a property-based test. Draw `count` random integers from
+/// `[lo, hi]`, bind `var`, evaluate the postcondition, expect Bool(true).
+/// Returns Ok(None) on universal pass, Ok(Some(cex)) on first failure.
+fn run_property(
+    interp: &mut interpreter::Interpreter,
+    _name: &str,
+    var: &str,
+    ty: &str,
+    lo: i64,
+    hi: i64,
+    count: u32,
+    body: &ast::Expr,
+) -> Result<Option<String>, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Simple linear congruential RNG seeded by the wall clock, kept
+    // small so we don't bring in a `rand` dependency.
+    let mut state: u64 = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64).unwrap_or(1);
+    let next = |state: &mut u64| -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state
+    };
+    if ty != "Int" {
+        return Err(format!("only Int properties supported in V1.6 (got {})", ty));
+    }
+    if hi <= lo { return Err(format!("range {}..{} is empty", lo, hi)); }
+    let span = (hi - lo) as u64;
+    for _ in 0..count {
+        let r = (next(&mut state) % span) as i64 + lo;
+        let mut env = std::collections::HashMap::new();
+        env.insert(var.to_string(), interpreter::Value::Int(interpreter::SomaInt::from_i64(r)));
+        let v = interp.eval_expr_with_env(body, &env, "", "")
+            .map_err(|e| format!("{:?}", e))?;
+        if !v.is_truthy() {
+            return Ok(Some(r.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 fn format_expr(expr: &ast::Expr) -> String {

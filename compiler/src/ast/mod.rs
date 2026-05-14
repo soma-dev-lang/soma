@@ -39,6 +39,28 @@ impl<T> Spanned<T> {
 pub struct Program {
     pub imports: Vec<String>,
     pub cells: Vec<Spanned<CellDef>>,
+    /// V1.6: top-level `protocol Name { Client -> Server: msg(args) ... }` definitions.
+    /// Used by the composition checker to verify each step has a handler.
+    pub protocols: Vec<Spanned<ProtocolDef>>,
+}
+
+/// V1.6: a multi-agent protocol — a sequence of typed messages between
+/// two roles. The checker verifies that for every `From -> To: msg(args)`
+/// step, the cell aliased to `To` has a handler for `msg`.
+#[derive(Debug, Clone)]
+pub struct ProtocolDef {
+    pub name: String,
+    /// Role bindings: role_name → cell_name.
+    pub roles: Vec<(String, String)>,
+    pub steps: Vec<ProtocolStep>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProtocolStep {
+    pub from: String,
+    pub to: String,
+    pub message: String,
+    pub args: Vec<String>,
 }
 
 // ── Cell ─────────────────────────────────────────────────────────────
@@ -96,6 +118,7 @@ pub enum Section {
     After(EverySection),
     /// Orchestration: scale { replicas: 100, shard: data, ... }
     Scale(ScaleSection),
+    Cost(CostSection),
     /// Variants of a `cell type` sum type.
     Variants(VariantsSection),
 }
@@ -126,6 +149,20 @@ pub enum VariantFields {
 pub struct EverySection {
     pub interval_ms: u64,
     pub body: Vec<Spanned<Statement>>,
+}
+
+// ── Cost (V1.6) ─────────────────────────────────────────────────────
+
+/// Cell-level cost budget. `soma check` walks every `think()` call,
+/// sums the declared `max_tokens` across handlers, computes latency
+/// from `timeout`, and estimates USD from a per-model price table —
+/// then refuses to build if the cell exceeds its declared budget.
+#[derive(Debug, Clone, Default)]
+pub struct CostSection {
+    pub tokens: Option<i64>,
+    pub latency_ms: Option<i64>,
+    /// Whole USD * 1000 (i.e. milli-USD). 0.10 USD → 100.
+    pub usd_milli: Option<i64>,
 }
 
 // ── Scale (Orchestration) ───────────────────────────────────────────
@@ -182,6 +219,11 @@ pub struct ToolDecl {
     pub description: Option<String>,
     pub params: Vec<Param>,
     pub return_type: Option<Spanned<TypeExpr>>,
+    /// V1.6: declared capabilities for this tool. Each entry is a scoped
+    /// prefix like `net:https://wikipedia.org/*`, `fs:read:/tmp/`,
+    /// `db:read`, etc. The runtime refuses any I/O that doesn't match
+    /// at least one declared capability. Empty = unrestricted (legacy).
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +323,17 @@ pub enum Rule {
     Native(String),
     /// `assert expr == expected` — test assertion
     Assert(Spanned<Expr>),
+    /// V1.6: `property "name" forall x: Int in 0..100 ensures expr`
+    /// — randomized test that quantifies over `count` random inputs.
+    Property {
+        name: String,
+        var: String,
+        ty: String,           // "Int" or "String"
+        lo: i64,
+        hi: i64,
+        count: u32,
+        body: Spanned<Expr>,
+    },
 }
 
 // ── Runtime Section ──────────────────────────────────────────────────

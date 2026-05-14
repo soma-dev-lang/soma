@@ -172,7 +172,7 @@ impl Registry {
                             Rule::MutexGroup(group) => {
                                 def.mutex_group = Some(group.clone());
                             }
-                            Rule::Check(_) | Rule::Matches(_) | Rule::Native(_) | Rule::Assert(_) => {}
+                            Rule::Check(_) | Rule::Matches(_) | Rule::Native(_) | Rule::Assert(_) | Rule::Property { .. } => {}
                         }
                     }
                 }
