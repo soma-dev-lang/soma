@@ -1,0 +1,47 @@
+// Atlas — property-based invariants.
+//
+// V1.6 #8: `property "name" forall x: T in lo..hi count N ensures expr`
+// quantifies over `count` random samples. The runner reports a
+// concrete counter-example on the first failure.
+//
+//   soma test examples/atlas/tests.cell
+
+use "app.cell"
+
+cell test AtlasInvariants {
+
+    // Spam messages must never wind up as anything but Spam — no matter
+    // how many synthetic bodies we throw at the heuristic. We encode
+    // "spam-ness" by appending the magic substring `crypto` so the
+    // classifier matches it; if it ever returns Informational, we have
+    // a leak.
+    property "spam_is_classified_as_spam"
+        forall x: Int in 0..1000 count 80
+        ensures classify("buy crypto now {x}") == Spam
+
+    // Urgent emails always extract a positive deadline_hours.
+    property "urgent_deadline_is_positive"
+        forall x: Int in 0..1000 count 50
+        ensures urgent_hours(classify("urgent reply {x}")) > 0
+
+    // The classifier is deterministic — same input, same output. We
+    // run it twice and assert equality.
+    property "classify_is_deterministic"
+        forall x: Int in 0..10000 count 50
+        ensures classify("schedule {x}") == classify("schedule {x}")
+}
+
+// Helper: pull deadline_hours from an Urgent variant, or 0 otherwise.
+// Lives in a regular cell so the tests can call it.
+cell Helpers {
+    face { signal urgent_hours(i: Map) -> Int }
+    on urgent_hours(i: Map) {
+        return match i {
+            Urgent { deadline_hours }       -> deadline_hours
+            Scheduling { duration_min }      -> 0
+            Invoice { amount_usd, vendor }   -> 0
+            Informational                    -> 0
+            Spam                             -> 0
+        }
+    }
+}

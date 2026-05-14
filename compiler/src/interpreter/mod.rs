@@ -2894,6 +2894,17 @@ impl Interpreter {
             (Value::Unit, _) | (_, Value::Unit) => {
                 Ok(Value::Bool(matches!(op, CmpOp::Ne)))
             }
+            // V1.6: variant equality. Same type + same variant + same fields.
+            (Value::Variant { type_name: t1, variant: v1, fields: f1 },
+             Value::Variant { type_name: t2, variant: v2, fields: f2 }) => {
+                let eq = t1 == t2 && v1 == v2 && variant_fields_equal(f1, f2);
+                let result = match op {
+                    CmpOp::Eq => eq,
+                    CmpOp::Ne => !eq,
+                    _ => return Err(RuntimeError::TypeError("cannot order variants".to_string())),
+                };
+                Ok(Value::Bool(result))
+            }
             _ => Err(RuntimeError::TypeError(format!(
                 "cannot compare {} and {}",
                 value_type_name(l), value_type_name(r)
@@ -3069,6 +3080,36 @@ impl Interpreter {
             }
         }
         None
+    }
+}
+
+/// V1.6: structural equality between variant payloads.
+fn variant_fields_equal(a: &VariantValue, b: &VariantValue) -> bool {
+    match (a, b) {
+        (VariantValue::Unit, VariantValue::Unit) => true,
+        (VariantValue::Tuple(xs), VariantValue::Tuple(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| value_eq(x, y))
+        }
+        (VariantValue::Struct(xs), VariantValue::Struct(ys)) => {
+            xs.len() == ys.len()
+                && xs.iter().all(|(k, x)| ys.get(k).map(|y| value_eq(x, y)).unwrap_or(false))
+        }
+        _ => false,
+    }
+}
+
+fn value_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y) == 0,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Unit, Value::Unit) => true,
+        (Value::Variant { type_name: t1, variant: v1, fields: f1 },
+         Value::Variant { type_name: t2, variant: v2, fields: f2 }) => {
+            t1 == t2 && v1 == v2 && variant_fields_equal(f1, f2)
+        }
+        _ => false,
     }
 }
 

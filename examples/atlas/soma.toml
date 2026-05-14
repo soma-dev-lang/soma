@@ -1,0 +1,29 @@
+[package]
+name = "atlas"
+description = "Autonomous executive assistant — Soma V1.6 demo"
+version = "0.1.0"
+entry = "app.cell"
+
+# Default model. Capabilities are advertised so that any think() in any
+# cell that requires "json_mode"/"tools"/"vision" is satisfied at
+# compile time. Change the model and `soma check` will tell you which
+# requires() calls break.
+[agent]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+capabilities = ["json_mode", "tools", "structured_output", "vision", "long_context"]
+mock = "fixed:{\"intent\":\"Informational\"}"
+
+[models.claude_sonnet]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+capabilities = ["json_mode", "tools", "structured_output", "vision", "long_context"]
+mock = "fixed:{\"intent\":\"Informational\"}"
+
+# A weaker model — left in to make the capability check do work.
+# `soma check` refuses to compile if Atlas requires capabilities
+# this model lacks. Try `[model: cheap]` on the cell to see it fire.
+[models.cheap]
+provider = "ollama"
+model = "gemma3:12b"
+capabilities = ["json_mode"]
