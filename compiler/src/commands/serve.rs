@@ -998,9 +998,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                 query.split('&')
                     .filter_map(|pair| {
                         let (_, v) = pair.split_once('=')?;
-                        Some(interpreter::Value::String(
-                            urlencoding_decode(v)
-                        ))
+                        Some(coerce_query_value(&urlencoding_decode(v)))
                     })
                     .collect()
             };
@@ -1028,7 +1026,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                     for pair in query_string.split('&') {
                         if let Some((_, v)) = pair.split_once('=') {
                             let decoded = urlencoding_decode(v).replace('+', " ");
-                            args.push(interpreter::Value::String(decoded));
+                            args.push(coerce_query_value(&decoded));
                         }
                     }
                 }
@@ -1254,6 +1252,24 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         }
 
         }); // end thread::spawn
+    }
+}
+
+/// Coerce a decoded query-string value to a typed Value so a handler
+/// declaring `seat: Int` receives an Int, not a String. Mirrors the
+/// path-segment and `soma run` CLI coercion: int, then float, then bool,
+/// else string.
+fn coerce_query_value(decoded: &str) -> interpreter::Value {
+    if let Ok(n) = decoded.parse::<i64>() {
+        interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
+    } else if let Ok(f) = decoded.parse::<f64>() {
+        interpreter::Value::Float(f)
+    } else if decoded == "true" {
+        interpreter::Value::Bool(true)
+    } else if decoded == "false" {
+        interpreter::Value::Bool(false)
+    } else {
+        interpreter::Value::String(decoded.to_string())
     }
 }
 

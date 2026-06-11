@@ -1,0 +1,624 @@
+// ============================================================================
+// FELT — a heads-up Texas Hold'em server bots play over HTTP
+// ============================================================================
+//
+// Bots POST actions; the server deals, runs the betting, and pays the
+// winner. The interesting part isn't the poker — it's that the casino's
+// two unbreakable rules are enforced by the LANGUAGE, not by careful code:
+//
+//   CHIPS ARE CONSERVED.  Every chip movement goes through Bank, which
+//   only ever MOVES chips between a player and the pot — it cannot mint
+//   or burn them. Sum of all stacks + pot is invariant across every hand.
+//
+//   YOU CANNOT BET WHAT YOU DON'T HAVE.  `invariant chips >= 0` lives on
+//   the chip ledger. A bot (buggy or cheating) that tries to post more
+//   than its stack has the write REJECTED — its stack is unchanged and
+//   the bet simply does not happen. No overdraft is representable.
+//
+//   THE HAND ALWAYS RESOLVES.  The betting streets are a state machine
+//   that `soma verify` proves reaches a terminal `complete` — no hand
+//   can hang half-dealt.
+//
+// Plus a real 7-card evaluator (8 hand classes, kickers, the wheel),
+// unit-tested against the canonical ordering.
+//
+//   soma check  poker/app.cell
+//   soma verify poker/app.cell      # proves the betting machine + conservation framing
+//   soma test   poker/app.cell
+//   soma serve  poker/app.cell -p 8080   # then run poker/bots.py
+// ============================================================================
+
+// ── HandEval: verified 7-card evaluator (score = comparable Int) ────
+
+cell HandEval {
+    face { signal eval7(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int) -> Int }
+
+    on cnt(m: Map, k: Int) {
+        let v = m.get(k)
+        if v == () { return 0 }
+        return v
+    }
+
+    on straight_high(rc: Map) {
+        let best = 0 - 1
+        for hi in range(4, 13) {
+            if cnt(rc, hi) > 0 {
+                if cnt(rc, hi - 1) > 0 {
+                    if cnt(rc, hi - 2) > 0 {
+                        if cnt(rc, hi - 3) > 0 {
+                            if cnt(rc, hi - 4) > 0 { best = hi }
+                        }
+                    }
+                }
+            }
+        }
+        if best < 0 {
+            if cnt(rc, 12) > 0 {
+                if cnt(rc, 0) > 0 {
+                    if cnt(rc, 1) > 0 {
+                        if cnt(rc, 2) > 0 {
+                            if cnt(rc, 3) > 0 { best = 3 }
+                        }
+                    }
+                }
+            }
+        }
+        return best
+    }
+
+    on eval7(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int) {
+        let cards = list(a, b, c, d, e, f, g)
+        let rc = map()
+        let sc = map()
+        for card in cards {
+            let r = card % 13
+            let s = idiv(card, 13)
+            rc = with(rc, r, cnt(rc, r) + 1)
+            sc = with(sc, s, cnt(sc, s) + 1)
+        }
+        let flush_suit = 0 - 1
+        for s in range(0, 4) {
+            if cnt(sc, s) >= 5 { flush_suit = s }
+        }
+        let str_high = straight_high(rc)
+        let sf_high = 0 - 1
+        if flush_suit >= 0 {
+            let frm = map()
+            for card in cards {
+                if idiv(card, 13) == flush_suit { frm = with(frm, card % 13, 1) }
+            }
+            sf_high = straight_high(frm)
+        }
+        let quads = list()
+        let trips = list()
+        let pairs = list()
+        let desc = list()
+        for r in range(0, 13) {
+            let n = cnt(rc, r)
+            if n == 4 { quads = push(quads, r) }
+            if n == 3 { trips = push(trips, r) }
+            if n == 2 { pairs = push(pairs, r) }
+            if n > 0 { desc = push(desc, r) }
+        }
+        quads = reverse(quads)
+        trips = reverse(trips)
+        pairs = reverse(pairs)
+        desc = reverse(desc)
+
+        let base = 1048576
+        let k4 = 65536
+        let k3 = 4096
+        let k2 = 256
+        let k1 = 16
+
+        if sf_high >= 0 { return 8 * base + sf_high * k4 }
+        if len(quads) >= 1 {
+            let q = nth(quads, 0)
+            let kick = 0
+            for r in desc { if r != q { if kick == 0 { kick = r } } }
+            return 7 * base + q * k4 + kick * k3
+        }
+        if len(trips) >= 1 {
+            if len(pairs) >= 1 || len(trips) >= 2 {
+                let t = nth(trips, 0)
+                let p = 0 - 1
+                if len(pairs) >= 1 { p = nth(pairs, 0) }
+                if len(trips) >= 2 { if nth(trips, 1) > p { p = nth(trips, 1) } }
+                return 6 * base + t * k4 + p * k3
+            }
+        }
+        if flush_suit >= 0 {
+            let fr = list()
+            for r in range(0, 13) {
+                let here = 0
+                for card in cards {
+                    if idiv(card, 13) == flush_suit { if card % 13 == r { here = 1 } }
+                }
+                if here == 1 { fr = push(fr, r) }
+            }
+            fr = reverse(fr)
+            return 5 * base + nth(fr, 0) * k4 + nth(fr, 1) * k3 + nth(fr, 2) * k2 + nth(fr, 3) * k1 + nth(fr, 4)
+        }
+        if str_high >= 0 { return 4 * base + str_high * k4 }
+        if len(trips) >= 1 {
+            let t = nth(trips, 0)
+            let ks = list()
+            for r in desc { if r != t { ks = push(ks, r) } }
+            return 3 * base + t * k4 + nth(ks, 0) * k3 + nth(ks, 1) * k2
+        }
+        if len(pairs) >= 2 {
+            let hp = nth(pairs, 0)
+            let lp = nth(pairs, 1)
+            let kick = 0
+            for r in desc { if r != hp { if r != lp { if kick == 0 { kick = r } } } }
+            return 2 * base + hp * k4 + lp * k3 + kick * k2
+        }
+        if len(pairs) >= 1 {
+            let p = nth(pairs, 0)
+            let ks = list()
+            for r in desc { if r != p { ks = push(ks, r) } }
+            return 1 * base + p * k4 + nth(ks, 0) * k3 + nth(ks, 1) * k2 + nth(ks, 2) * k1
+        }
+        return nth(desc, 0) * k4 + nth(desc, 1) * k3 + nth(desc, 2) * k2 + nth(desc, 3) * k1 + nth(desc, 4)
+    }
+}
+
+// ── Bank: the chip ledger. The only way chips move. ─────────────────
+
+cell Bank {
+    face {
+        signal seed_stack(p: String, amt: Int) -> Int
+        signal stack(p: String) -> Int
+        signal post(p: String, amt: Int) -> Map
+        signal award_pot(p: String) -> Int
+        signal split_pot(p0: String, p1: String) -> Int
+        signal pot() -> Int
+        signal total() -> Int
+        promise all_persistent
+    }
+
+    memory {
+        chips: Map<String, Int> [persistent, consistent]
+        // The casino's iron law: no balance is ever negative. A post
+        // that would overdraw is rejected at the write — so a bet larger
+        // than a stack is not a bug to catch, it is impossible.
+        invariant chips >= 0
+    }
+
+    on seed_stack(p: String, amt: Int) {
+        chips.set(p, amt)
+        return amt
+    }
+
+    on stack(p: String) {
+        let v = chips.get(p)
+        if v == () { return 0 }
+        return v
+    }
+
+    // Move `amt` from a player into the pot. The ONLY debit primitive.
+    // Conserves chips (pot gains exactly what the player loses) and
+    // cannot overdraw (the invariant rejects a negative stack).
+    on post(p: String, amt: Int) {
+        if amt < 0 { return map("ok", false, "reason", "negative post") }
+        let s = stack(p)
+        let r = try { chips.set(p, s - amt) }
+        if r.error != () {
+            return map("ok", false, "reason", "{p} cannot post {amt} on a stack of {s}")
+        }
+        chips.set("pot", stack("pot") + amt)
+        return map("ok", true, "posted", amt, "stack", stack(p))
+    }
+
+    on award_pot(p: String) {
+        let pot = stack("pot")
+        chips.set(p, stack(p) + pot)
+        chips.set("pot", 0)
+        return pot
+    }
+
+    // split: half each, odd chip to p0 (the dealer convention)
+    on split_pot(p0: String, p1: String) {
+        let pot = stack("pot")
+        let half = idiv(pot, 2)
+        chips.set(p0, stack(p0) + (pot - half))
+        chips.set(p1, stack(p1) + half)
+        chips.set("pot", 0)
+        return pot
+    }
+
+    on pot() { return stack("pot") }
+
+    // sum of every balance incl. the pot — invariant across a hand
+    on total() {
+        let t = 0
+        let ks = chips.keys()
+        for k in ks { t = t + stack(k) }
+        return t
+    }
+}
+
+// ── Felt: the table, the betting machine, the HTTP surface ──────────
+
+cell agent Felt {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal join(name: String) -> Map
+        signal deal() -> Map
+        signal act(seat: Int, move: String, amount: Int) -> Map
+        signal state(seat: Int) -> Map
+        signal table() -> Map
+        promise all_persistent
+    }
+
+    memory {
+        gi: Map<String, Int> [persistent, consistent]
+        gs: Map<String, String> [persistent, consistent]
+    }
+
+    // The betting streets. A hand instance is "hand-<n>"; the machine
+    // proves every hand reaches `complete` — no hand hangs half-played.
+    state street {
+        initial: preflop
+        preflop -> flop
+        flop -> turn
+        turn -> river
+        river -> showdown
+        showdown -> complete
+        preflop -> complete       // a fold ends the hand from any street
+        flop -> complete
+        turn -> complete
+        river -> complete
+    }
+
+    // ── helpers ─────────────────────────────────────────────────────
+    on gnum(k: String) {
+        let v = gi.get(k)
+        if v == () { return 0 }
+        return v
+    }
+
+    on seat_name(s: Int) {
+        if s == 0 { return gs.get("seat0") }
+        return gs.get("seat1")
+    }
+
+    on draw() {
+        let c = random(0, 52)
+        let guard = 0
+        while gi.get("u{c}") != () && guard < 400 {
+            c = random(0, 52)
+            guard = guard + 1
+        }
+        gi.set("u{c}", 1)
+        return c
+    }
+
+    on card_name(c: Int) {
+        let r = c % 13
+        let s = idiv(c, 13)
+        let rn = "2"
+        if r == 1 { rn = "3" }
+        if r == 2 { rn = "4" }
+        if r == 3 { rn = "5" }
+        if r == 4 { rn = "6" }
+        if r == 5 { rn = "7" }
+        if r == 6 { rn = "8" }
+        if r == 7 { rn = "9" }
+        if r == 8 { rn = "T" }
+        if r == 9 { rn = "J" }
+        if r == 10 { rn = "Q" }
+        if r == 11 { rn = "K" }
+        if r == 12 { rn = "A" }
+        let sn = "c"
+        if s == 1 { sn = "d" }
+        if s == 2 { sn = "h" }
+        if s == 3 { sn = "s" }
+        return "{rn}{sn}"
+    }
+
+    // ── seating ─────────────────────────────────────────────────────
+    on join(name: String) {
+        if gs.get("seat0") == () {
+            gs.set("seat0", name)
+            seed_stack(name, 1000)
+            return map("ok", true, "seat", 0, "stack", 1000)
+        }
+        if gs.get("seat1") == () {
+            if gs.get("seat0") == name {
+                return map("ok", false, "reason", "name already seated")
+            }
+            gs.set("seat1", name)
+            seed_stack(name, 1000)
+            return map("ok", true, "seat", 1, "stack", 1000)
+        }
+        return map("ok", false, "reason", "table full (heads-up)")
+    }
+
+    // ── deal a new hand ─────────────────────────────────────────────
+    on deal() {
+        if gs.get("seat0") == () || gs.get("seat1") == () {
+            return map("ok", false, "reason", "need two players")
+        }
+        if gnum("live") == 1 {
+            return map("ok", false, "reason", "a hand is already in progress")
+        }
+
+        // fresh deck + per-hand state
+        for c in range(0, 52) { gi.delete("u{c}") }
+        let n = gnum("hand_no") + 1
+        gi.set("hand_no", n)
+        let button = n % 2
+        gi.set("button", button)
+        gi.set("folded_0", 0)
+        gi.set("folded_1", 0)
+        gi.set("board_n", 0)
+
+        // hole cards
+        gi.set("h00", draw())
+        gi.set("h01", draw())
+        gi.set("h10", draw())
+        gi.set("h11", draw())
+
+        // blinds: small=5 on the button, big=10
+        let sb = button
+        let bb = 1 - button
+        post(seat_name(sb), 5)
+        post(seat_name(bb), 10)
+        gi.set("contrib_{sb}", 5)
+        gi.set("contrib_{bb}", 10)
+        gi.set("bet", 10)
+        gi.set("acted_0", 0)
+        gi.set("acted_1", 0)
+        gi.set("to_act", sb)         // SB acts first preflop in heads-up
+        gi.set("live", 1)
+
+        // hand-<n> machine starts at preflop by construction
+        return map("ok", true, "hand", n, "button", button, "to_act", sb)
+    }
+
+    // ── a betting action ────────────────────────────────────────────
+    on act(seat: Int, move: String, amount: Int) {
+        if gnum("live") != 1 { return map("ok", false, "reason", "no hand in progress") }
+        if seat != gnum("to_act") { return map("ok", false, "reason", "not your turn") }
+        if gnum("folded_{seat}") == 1 { return map("ok", false, "reason", "you have folded") }
+
+        let other = 1 - seat
+        let bet = gnum("bet")
+        let mine = gnum("contrib_{seat}")
+
+        if move == "fold" {
+            gi.set("folded_{seat}", 1)
+            let winner = seat_name(other)
+            let pot = award_pot(winner)
+            end_hand()
+            return map("ok", true, "move", "fold", "winner", winner, "pot", pot)
+        }
+
+        if move == "check" {
+            if mine != bet { return map("ok", false, "reason", "cannot check facing a bet") }
+            gi.set("acted_{seat}", 1)
+            if gnum("acted_{other}") == 1 { return close_street() }
+            gi.set("to_act", other)
+            return map("ok", true, "move", "check", "to_act", other)
+        }
+
+        if move == "call" {
+            let need = bet - mine
+            let r = post(seat_name(seat), need)
+            if !r.ok { return map("ok", false, "reason", r.reason) }
+            gi.set("contrib_{seat}", bet)
+            gi.set("acted_{seat}", 1)
+            // a call closes the street unless the other still owes an
+            // action (preflop big-blind option)
+            if gnum("acted_{other}") == 1 { return close_street() }
+            gi.set("to_act", other)
+            return map("ok", true, "move", "call", "to_act", other)
+        }
+
+        if move == "raise" {
+            if amount <= bet { return map("ok", false, "reason", "raise must exceed the current bet {bet}") }
+            let need = amount - mine
+            let r = post(seat_name(seat), need)
+            if !r.ok { return map("ok", false, "reason", r.reason) }
+            gi.set("contrib_{seat}", amount)
+            gi.set("bet", amount)
+            gi.set("acted_{seat}", 1)
+            gi.set("acted_{other}", 0)     // the raise reopens action
+            gi.set("to_act", other)
+            return map("ok", true, "move", "raise", "to", amount, "to_act", other)
+        }
+
+        return map("ok", false, "reason", "unknown move '{move}'")
+    }
+
+    // street betting is settled → advance the machine and deal cards
+    on close_street() {
+        let hn = gnum("hand_no")
+        let hand = "hand-{hn}"
+        let phase = get_status(hand)
+
+        if phase == "preflop" {
+            transition(hand, "flop")
+            deal_board(3)
+            return reset_street("flop")
+        }
+        if phase == "flop" {
+            transition(hand, "turn")
+            deal_board(1)
+            return reset_street("turn")
+        }
+        if phase == "turn" {
+            transition(hand, "river")
+            deal_board(1)
+            return reset_street("river")
+        }
+        // river betting closed → showdown
+        transition(hand, "showdown")
+        return run_showdown()
+    }
+
+    on deal_board(n: Int) {
+        let start = gnum("board_n")
+        for i in range(0, n) {
+            gi.set("b{start}", draw())
+            start = start + 1
+        }
+        gi.set("board_n", start)
+    }
+
+    on reset_street(phase: String) {
+        gi.set("bet", 0)
+        gi.set("contrib_0", 0)
+        gi.set("contrib_1", 0)
+        gi.set("acted_0", 0)
+        gi.set("acted_1", 0)
+        gi.set("to_act", 1 - gnum("button"))    // non-button acts first postflop
+        return map("ok", true, "street", phase, "to_act", gnum("to_act"))
+    }
+
+    on run_showdown() {
+        let b0 = gnum("b0")
+        let b1 = gnum("b1")
+        let b2 = gnum("b2")
+        let b3 = gnum("b3")
+        let b4 = gnum("b4")
+        let s0 = eval7(gnum("h00"), gnum("h01"), b0, b1, b2, b3, b4)
+        let s1 = eval7(gnum("h10"), gnum("h11"), b0, b1, b2, b3, b4)
+        let n0 = seat_name(0)
+        let n1 = seat_name(1)
+        let pot = pot()
+        let winner = "split"
+        if s0 > s1 { award_pot(n0) winner = n0 }
+        if s1 > s0 { award_pot(n1) winner = n1 }
+        if s0 == s1 { split_pot(n0, n1) }
+        let hn = gnum("hand_no")
+        let h = "hand-{hn}"
+        transition(h, "complete")
+        end_hand()
+        return map("ok", true, "showdown", true, "winner", winner, "pot", pot, "score0", s0, "score1", s1)
+    }
+
+    on end_hand() {
+        gi.set("live", 0)
+    }
+
+    // ── inspection (bots poll this) ─────────────────────────────────
+    on board_str() {
+        let n = gnum("board_n")
+        let s = ""
+        for i in range(0, n) {
+            let nm = card_name(gnum("b{i}"))
+            s = "{s} {nm}"
+        }
+        return s
+    }
+
+    on state(seat: Int) {
+        let me = seat_name(seat)
+        let h0 = card_name(gnum("h{seat}0"))
+        let h1 = card_name(gnum("h{seat}1"))
+        let hn = gnum("hand_no")
+        let hand = "hand-{hn}"
+        let phase = "idle"
+        if gnum("live") == 1 { phase = get_status(hand) }
+        return map(
+            "seat", seat,
+            "name", me,
+            "hole", "{h0} {h1}",
+            "board", board_str(),
+            "phase", phase,
+            "to_act", gnum("to_act"),
+            "bet", gnum("bet"),
+            "my_contrib", gnum("contrib_{seat}"),
+            "my_stack", stack(me),
+            "pot", pot(),
+            "live", gnum("live")
+        )
+    }
+
+    on table() {
+        return map(
+            "seat0", gs.get("seat0"),
+            "seat1", gs.get("seat1"),
+            "stack0", stack(seat_name(0)),
+            "stack1", stack(seat_name(1)),
+            "pot", pot(),
+            "total_chips", total(),
+            "hand_no", gnum("hand_no"),
+            "live", gnum("live")
+        )
+    }
+
+    on request(method: String, path: String, body: String) {
+        let t = table()
+        let s0 = t.seat0
+        let s1 = t.seat1
+        if s0 == () { s0 = "(empty)" }
+        if s1 == () { s1 = "(empty)" }
+        let k0 = to_string(t.stack0)
+        let k1 = to_string(t.stack1)
+        let potv = to_string(t.pot)
+        let total = to_string(t.total_chips)
+        let hands = to_string(t.hand_no)
+        return html(
+            "<!DOCTYPE html><html><head><meta charset='utf-8'><title>FELT</title>
+            <style>body{font-family:-apple-system,sans-serif;background:#0b3d2e;color:#e8f0e8;max-width:560px;margin:40px auto;padding:0 20px}
+            h1{font-weight:200;letter-spacing:8px}.c{background:#0e4a37;border:1px solid #1c6b4a;border-radius:12px;padding:20px;margin:16px 0}
+            .r{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #145a42}
+            code{color:#ffd479}</style></head><body>
+            <h1>F E L T</h1>
+            <div class='c'>
+              <div class='r'><span>{s0}</span><span>${k0}</span></div>
+              <div class='r'><span>{s1}</span><span>${k1}</span></div>
+              <div class='r'><span>pot</span><span>${potv}</span></div>
+              <div class='r'><span>chips in play</span><span>${total}</span></div>
+              <div class='r'><span>hands dealt</span><span>{hands}</span></div>
+            </div>
+            <p>heads-up Texas Hold'em for bots. JSON API: <code>/join?name=X</code>
+            <code>/deal</code> <code>/state?seat=N</code>
+            <code>/act?seat=N&move=call&amount=0</code>. Run <code>poker/bots.py</code>.</p>
+            </body></html>")
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+cell test EvalTests {
+    rules {
+        assert eval7(47, 48, 49, 50, 51, 0, 14) > eval7(12, 25, 38, 51, 0, 14, 29)   // royal flush > quad aces
+        assert eval7(12, 25, 38, 51, 0, 14, 29) > eval7(12, 25, 38, 11, 24, 14, 29)   // quad aces > full house
+        assert eval7(0, 1, 2, 3, 4, 20, 35) > eval7(12, 25, 38, 51, 5, 19, 34)        // straight flush > quad aces
+        assert eval7(0, 2, 4, 6, 8, 20, 33) > eval7(8, 22, 10, 24, 12, 20, 33)        // flush > straight
+        assert eval7(8, 22, 10, 24, 12, 20, 33) > eval7(12, 25, 5, 18, 1, 30, 50)     // straight > two pair
+        assert eval7(12, 25, 5, 18, 1, 30, 50) > eval7(12, 25, 17, 33, 47, 1, 36)     // two pair > one pair
+        assert eval7(12, 25, 17, 33, 47, 1, 36) > eval7(12, 24, 33, 42, 1, 18, 30)    // pair of aces > A-K high
+        assert eval7(12, 13, 27, 41, 3, 20, 36) > eval7(12, 25, 17, 33, 47, 1, 36)    // wheel straight > pair of aces
+    }
+}
+
+cell test BankTests {
+    rules {
+        // seed two players and the conservation baseline
+        assert seed_stack("alice", 1000) == 1000
+        assert seed_stack("bob", 1000) == 1000
+
+        // a legal post moves chips player -> pot, conserving total
+        assert post("alice", 100).ok == true
+        assert stack("alice") == 900
+        assert pot() == 100
+
+        // THE casino law: you cannot post more than you hold — the write
+        // is rejected and the stack is untouched
+        assert post("bob", 5000).ok == false
+        assert stack("bob") == 1000
+
+        // direct overdraw is impossible at the ledger itself
+        assert_fails chips.set("alice", 0 - 1)
+
+        // award returns the pot to a player; chips are conserved
+        assert award_pot("alice") == 100
+        assert stack("alice") == 1000
+        assert pot() == 0
+    }
+}

@@ -1,0 +1,8 @@
+[package]
+name = "felt"
+version = "0.1.0"
+description = "Felt — a heads-up Texas Hold'em server for bots, with a chip-conservation invariant"
+
+[verify]
+cells = ["Felt"]
+deadlock_free = true
