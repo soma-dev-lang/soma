@@ -323,8 +323,8 @@ cell MFTEngine {
                     "POST /ib/connect",
                     "POST /ib/disconnect",
                     "GET  /status",
-                    "GET  /fills/{n}",
-                    "GET  /order/{id}"
+                    "GET  /fills/{{n}}",
+                    "GET  /order/{{id}}"
                 )
             )
             {method: "POST", path: "/setup"} -> setup(from_json(body))

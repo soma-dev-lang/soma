@@ -229,6 +229,37 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
         }
     }
 
+    // V1.7: cross-machine composition lint — a handler that advances
+    // its own machine and then calls another cell's fallible handler
+    // leaves the first machine advanced with no compensation if the
+    // callee refuses. Warning-only: per-cell proofs still hold.
+    {
+        let cross = super::cross_machine::check_program(program);
+        let mut by_cell: HashMap<String, Vec<&super::cross_machine::CrossMachineWarning>> =
+            HashMap::new();
+        let mut cell_order: Vec<String> = Vec::new();
+        for w in &cross {
+            if !by_cell.contains_key(&w.cell) {
+                cell_order.push(w.cell.clone());
+            }
+            by_cell.entry(w.cell.clone()).or_default().push(w);
+        }
+        for cell_name in cell_order {
+            let mut comp_result = VerifyResult {
+                machine_name: format!("{}/composition", cell_name),
+                states: vec![],
+                initial: String::new(),
+                terminal_states: vec![],
+                transitions: vec![],
+                checks: vec![],
+            };
+            for w in &by_cell[&cell_name] {
+                comp_result.checks.push(VerifyCheck::Warning(w.message()));
+            }
+            results.push(comp_result);
+        }
+    }
+
     // V1.6: protocol verification — one result block per protocol.
     if !program.protocols.is_empty() {
         let findings = super::protocol::check_program(program);

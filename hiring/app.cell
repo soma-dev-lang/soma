@@ -238,7 +238,7 @@ cell Pipeline {
             {method: "GET", path: "/"} -> map(
                 "name", "AI Hiring Pipeline",
                 "candidates", candidates.len(),
-                "endpoints", list("/submit", "/status/{id}", "/candidates", "/audit/{id}")
+                "endpoints", list("/submit", "/status/{{id}}", "/candidates", "/audit/{{id}}")
             )
             {method: "POST", path: "/submit"} -> {
                 let data = from_json(body)

@@ -341,13 +341,13 @@ cell IncidentManager {
                     "POST /monitor                 body: {id, note}",
                     "POST /escalate                body: {id, reason}",
                     "POST /resolve                 body: {id, fix}",
-                    "POST /postmortem              body: {id}",
+                    "POST /postmortem              body: {{id}}",
                     "POST /dismiss                 body: {id, reason}",
-                    "POST /close                   body: {id}",
+                    "POST /close                   body: {{id}}",
                     "POST /oncall                  body: {service, engineer}",
                     "GET  /incidents",
-                    "GET  /incident/{id}",
-                    "GET  /timeline/{id}",
+                    "GET  /incident/{{id}}",
+                    "GET  /timeline/{{id}}",
                     "GET  /oncall"
                 )
             )

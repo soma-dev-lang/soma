@@ -52,7 +52,7 @@ fn is_native_type(ty: &TypeExpr) -> bool {
     }
 }
 
-const ALLOWED_BUILTINS: &[&str] = &[
+pub(crate) const ALLOWED_BUILTINS: &[&str] = &[
     "sqrt", "log", "exp", "pow", "abs", "min", "max", "random",
     "len", "nth", "range", "floor", "ceil", "round", "sin", "cos",
     // Pipe operations (generate parallel native code)

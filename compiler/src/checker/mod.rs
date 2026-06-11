@@ -14,6 +14,10 @@ pub mod capabilities;
 pub mod cost;
 pub mod effects;
 pub mod protocol;
+pub mod names;
+pub mod interpolation_check;
+pub mod dispatch;
+pub mod cross_machine;
 
 pub use properties::PropertyChecker;
 pub use signals::SignalChecker;
@@ -162,6 +166,22 @@ pub enum CheckError {
         breakdown: String,
         span: Span,
     },
+
+    /// V1.7: a string literal interpolates an identifier that is
+    /// provably unknown at that point in the handler.
+    #[error("{message}")]
+    InterpolationUndefined {
+        message: String,
+        span: Span,
+    },
+
+    /// V1.7: static dispatch resolution failed — undefined function or
+    /// ambiguous cross-cell call.
+    #[error("{message}")]
+    DispatchIssue {
+        message: String,
+        span: Span,
+    },
 }
 
 #[derive(Debug)]
@@ -232,6 +252,13 @@ pub enum CheckWarning {
         message: String,
         span: Span,
     },
+    /// V1.7: a call resolves to the caller's own handler while another
+    /// cell defines a handler with the same name — the silent-shadowing
+    /// trap.
+    DispatchShadow {
+        message: String,
+        span: Span,
+    },
 }
 
 impl CheckWarning {
@@ -286,6 +313,7 @@ impl std::fmt::Display for CheckWarning {
             }
             Self::CostAdvisory { message, .. } => write!(f, "advisory: {message}"),
             Self::CostProven { message, .. } => write!(f, "✓ {message}"),
+            Self::DispatchShadow { message, .. } => write!(f, "warning: {message}"),
         }
     }
 }
@@ -316,6 +344,30 @@ impl<'a> Checker<'a> {
             self.errors.push(CheckError::SumTypeIssue {
                 message: issue.message,
                 span: issue.span,
+            });
+        }
+        // V1.7: static interpolation check — every string literal in
+        // every handler body, scanned with the runtime's segmentation
+        // rules. Catches "hello {customr}" before it 500s at runtime.
+        for issue in interpolation_check::check_program(program) {
+            self.errors.push(CheckError::InterpolationUndefined {
+                message: issue.message,
+                span: issue.span,
+            });
+        }
+        // V1.7: static dispatch resolution — unknown and ambiguous
+        // bare-name calls, plus the recursive-shadowing trap.
+        let (dispatch_errors, dispatch_warnings) = dispatch::check_program(program);
+        for e in dispatch_errors {
+            self.errors.push(CheckError::DispatchIssue {
+                message: e.message,
+                span: e.span,
+            });
+        }
+        for w in dispatch_warnings {
+            self.warnings.push(CheckWarning::DispatchShadow {
+                message: w.message,
+                span: w.span,
             });
         }
         for cell in &program.cells {
@@ -1106,6 +1158,16 @@ impl<'a> Checker<'a> {
                 format!("Cell '{cell}' violates promise '{promise}'. Either satisfy the constraint or remove the promise from the face section."),
                 "promise_violation",
             ),
+            CheckError::InterpolationUndefined { .. } => (
+                format!("{}", err),
+                "Bind the variable before this string is evaluated, fix the spelling, or escape the braces as '{{...}}' if the text is literal.".to_string(),
+                "interpolation_undefined",
+            ),
+            CheckError::DispatchIssue { .. } => (
+                format!("{}", err),
+                "Define the missing handler, fix the spelling, or rename one of the colliding handlers so the call resolves to exactly one cell.".to_string(),
+                "dispatch",
+            ),
             _ => (
                 format!("{}", err),
                 "Review and fix the reported issue.".to_string(),
@@ -1128,6 +1190,10 @@ impl<'a> Checker<'a> {
             CheckWarning::UnverifiablePromise { promise, .. } => (
                 format!("{}", warn),
                 format!("Replace the descriptive promise \"{promise}\" with a machine-verifiable constraint, or accept this as documentation."),
+            ),
+            CheckWarning::DispatchShadow { .. } => (
+                format!("{}", warn),
+                "Rename one of the colliding handlers so the bare-name call is unambiguous.".to_string(),
             ),
             CheckWarning::AgentMissingStateMachine { cell, .. } => (
                 format!("{}", warn),

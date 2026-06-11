@@ -389,15 +389,15 @@ cell OriginationDesk {
                 "applications", applications.len(),
                 "endpoints", list(
                     "POST /applications      body: {name, dob, id_type, id_number, address, country, annual_income, monthly_debt, employed, credit_score, requested_amount, purpose}",
-                    "POST /accept            body: {id}",
+                    "POST /accept            body: {{id}}",
                     "POST /decline           body: {id, reason}",
                     "POST /withdraw          body: {id, reason}",
-                    "POST /fund              body: {id}",
+                    "POST /fund              body: {{id}}",
                     "POST /policy            body: {key, value}",
                     "GET  /applications",
-                    "GET  /application/{id}",
-                    "GET  /offer/{id}",
-                    "GET  /decisions/{id}",
+                    "GET  /application/{{id}}",
+                    "GET  /offer/{{id}}",
+                    "GET  /decisions/{{id}}",
                     "GET  /policy"
                 )
             )

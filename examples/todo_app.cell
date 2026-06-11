@@ -27,24 +27,24 @@ cell TodoApp {
             let checked = ""
             let line_style = ""
             if st == "done" {
-                let checked = "checked"
-                let line_style = "text-decoration: line-through; opacity: 0.6;"
+                checked = "checked"
+                line_style = "text-decoration: line-through; opacity: 0.6;"
             }
-            let items = concat(items, render(
+            items = concat(items, render(
                 "<li style='padding: 12px 16px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #eee; {line_style}'>
-                    <a href='/done/{key}' style='text-decoration:none; font-size:20px;'>{check_icon}</a>
+                    <a href='/done/{key}' style='text-decoration:none; font-size:20px;'>{{check_icon}}</a>
                     <span style='flex:1; font-size: 16px;'>{text}</span>
                     <a href='/delete/{key}' style='color:#e74c3c; text-decoration:none; font-size:14px;'>delete</a>
                 </li>",
                 "key", key,
                 "text", text,
                 "line_style", line_style,
-                "check_icon", render("{icon}", "icon", checked)
+                "check_icon", render("{{icon}}", "icon", checked)
             ))
         }
 
         if items == "" {
-            let items = "<li style='padding: 24px; text-align: center; color: #999;'>No todos yet. Add one above.</li>"
+            items = "<li style='padding: 24px; text-align: center; color: #999;'>No todos yet. Add one above.</li>"
         }
 
         let count = todos.len()
