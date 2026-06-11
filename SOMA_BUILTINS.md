@@ -85,12 +85,12 @@ think/http_*/read_*/next_id have effects but are replayed via the log itself.
 | `push` | `push(list: List, items...) -> List` | Return a new list with the items appended (the original is unchanged). |
 | `nth` | `nth(list: List, i: Int) -> Any` | Element at index i, or () when out of bounds. |
 | `reverse` | `reverse(list: List) -> List` | Return the list in reverse order. |
-| `range` | `range(start: Int, end: Int) -> List<Int>` | Integers from start up to but excluding end. |
+| `range` | `range(start: Int, end: Int, step?: Int) -> List<Int>` | Integers from start toward end (exclusive); optional step may be negative to count down. |
 | `sort` | `sort(list: List, order?: "desc") -> List` | Sort scalars ascending (or "desc"); errors on incomparable element types. |
 | `flatten` | `flatten(list: List) -> List` | Flatten one level of nested lists. |
 | `zip` | `zip(a: List, b: List) -> List<{left, right}>` | Pair elements positionally; stops at the shorter list. |
 | `enumerate` | `enumerate(list: List) -> List<{index, value}>` | Attach a 0-based index to each element. |
-| `with` | `with(m: Map, key, value, ...) -> Map` | Return a copy of the map with the given key-value pairs inserted. |
+| `with` | `with(m: Map, key, value, ...) -> Map \| with(list: List, i: Int, value) -> List` | Copy of the map with key-value pairs inserted, or copy of the list with element i replaced. |
 | `without` | `without(m: Map, keys...) -> Map` | Return a copy of the map with the given keys removed. |
 | `merge` | `merge(a: Map, b: Map) -> Map` | Copy of `a` with all entries of `b` inserted (b wins on conflict). |
 | `join` | `join(list: List, sep: String) -> String \| join(left: List, right: List, key) -> List` | Join list elements into a string — or, with two lists, an inner data join on `key`. |

@@ -117,6 +117,7 @@ on signal_name(param1: Type, param2: Type) {
 |-----------|--------|
 | Let binding | `let x = expr` |
 | Assignment | `x = expr` |
+| Index assignment | `xs[i] = expr` (list/map; in place) |
 | Return | `return expr` |
 | If/Else | `if cond { ... } else { ... }` (also works as expression) |
 | For loop | `for item in collection { ... }` |
@@ -133,6 +134,7 @@ on signal_name(param1: Type, param2: Type) {
 | Literal | `42`, `3.14`, `"string"`, `true`, `false`, `()` |
 | Identifier | `name` |
 | Field access | `obj.field` |
+| Index | `xs[i]` (list/string position), `m[k]` (map key) |
 | Method call | `obj.method(args)` |
 | Function call | `fn(args)` |
 | Binary ops | `+`, `-`, `*`, `/`, `%` |

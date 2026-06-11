@@ -121,6 +121,8 @@ let y = if cond { a } else { b }            // if IS an expression (else is requ
 - **Don't wrap stored values in `to_json()` when the value is already a map or list.** The storage layer (`slot.set`) auto-serializes `Map`/`List` values. Wrapping them manually works but produces double-encoded strings on read. Use `to_json` only when the caller explicitly wants a string.
 - **`slot.get(key)` returns `()` for missing keys**, not an error. Always check `if raw == ()` before calling `from_json(raw)`.
 - **`.keys`, `.values`, `.len` on a memory slot work with or without parentheses.** `items.keys` and `items.keys()` are equivalent; same for `.values` / `.len` / `.entries` / `.all`. `slot.get(k)` / `slot.set(k, v)` / `slot.delete(k)` / `slot.has(k)` always take parentheses (they need arguments).
+- **Bracket indexing works on lists, maps, and strings:** `xs[i]`, `m[k]`, `s[i]` read; `xs[i] = v` and `m[k] = v` assign in place (list out-of-bounds raises). `with(list, i, v)` is the functional copy-with-element-replaced. For counting/bucketing, a `list` of zeros with `rc[i] = rc[i] + 1` is cleaner than a string-keyed map.
+- **`range(start, end, step)` takes an optional step;** a negative step counts down: `range(12, -1, -1)` is `12,11,…,0`. No need to build ascending and `reverse()`.
 - **Private handlers start with `_`.** `on _helper()` is not exposed as an HTTP route. Use this to keep internal functions off the wire when serving.
 - **`unique()` does not exist. Use `distinct()`.** Same for other "obvious name" mistakes: use `push` not `append_to`, `nth` not `at`, `len` not `length`.
 - **`data.field ?? "default"` is null-coalescing** — the idiomatic guard against missing map fields.

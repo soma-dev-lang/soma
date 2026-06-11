@@ -195,9 +195,13 @@ let sum = list(1, 2, 3) |> reduce(0, p => p.acc + p.val)
 let items = list(1, 2, 3)           // or: let items = [1, 2, 3]
 let items = push(items, 4)          // append
 let pairs = enumerate(items)        // list of {index, value} maps
-let first = nth(items, 0)           // index access
+let first = items[0]                // bracket index (or nth(items, 0))
+items[0] = 99                       // index assignment (in place)
+let two = with(items, 1, 88)        // functional: copy with element 1 replaced
 let rev = reverse(items)
 let r = range(0, 10)                // [0..9]
+let down = range(9, -1, -1)         // [9,8,..,0] — step may be negative
+let evens = range(0, 10, 2)         // [0,2,4,6,8]
 let sorted = sort(items)            // ascending
 let sorted = sort(items, "desc")    // descending
 let n = len(items)
@@ -205,12 +209,17 @@ let n = len(items)
 // Map
 let m = map("name", "Alice", "age", 30)
 let name = m.name                   // field access
-let age = m.get("age")              // method access
+let age = m["age"]                  // bracket index (or m.get("age"))
+m["email"] = "a@b.com"              // index assignment
 let keys = m.keys                   // parentheses optional: m.keys() also works
 let vals = m.values
-let updated = m |> with("email", "a@b.com")
+let updated = m |> with("city", "NYC")
 let smaller = without(m, "age")     // copy minus one key
 let merged = merge(m, map("x", 1))  // right side wins on conflicts
+
+// String — bracket index returns the 1-char string at that position
+let s = "hello"
+let h = s[0]                        // "h" ; out-of-bounds raises
 ```
 
 ## Pipe operators
