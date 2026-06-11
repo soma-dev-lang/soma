@@ -101,6 +101,10 @@ fn check_stmt(handler_name: &str, stmt: &Statement, siblings: &NativeSiblings) -
         Statement::Let { value, .. } => check_expr(handler_name, &value.node, siblings),
         Statement::Assign { value, .. } => check_expr(handler_name, &value.node, siblings),
         Statement::Return { value } => check_expr(handler_name, &value.node, siblings),
+        Statement::IndexSet { .. } => Err(NativeCheckError {
+            handler_name: handler_name.to_string(),
+            reason: "index assignment is not allowed in native handlers".to_string(),
+        }),
         Statement::If { condition, then_body, else_body } => {
             check_expr(handler_name, &condition.node, siblings)?;
             for s in then_body { check_stmt(handler_name, &s.node, siblings)?; }
@@ -191,6 +195,10 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
         Expr::MethodCall { .. } => Err(NativeCheckError {
             handler_name: handler_name.to_string(),
             reason: "uses method call (not allowed in native handlers)".to_string(),
+        }),
+        Expr::Index { .. } => Err(NativeCheckError {
+            handler_name: handler_name.to_string(),
+            reason: "bracket indexing is not allowed in native handlers (use buf_get)".to_string(),
         }),
         Expr::Record { .. } => Err(NativeCheckError {
             handler_name: handler_name.to_string(),

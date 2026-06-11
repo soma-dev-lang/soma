@@ -132,6 +132,11 @@ impl<'a> Walker<'a> {
                 self.walk_expr(value);
             }
             Statement::ExprStmt { expr } => self.walk_expr(expr),
+            Statement::IndexSet { name, index, value } => {
+                self.scope.insert(name.clone());
+                self.walk_expr(index);
+                self.walk_expr(value);
+            }
             Statement::If { condition, then_body, else_body } => {
                 self.walk_expr(condition);
                 self.walk_stmts(then_body);
@@ -190,6 +195,7 @@ impl<'a> Walker<'a> {
             Expr::Literal(Literal::String(s)) => self.scan_string(s, span),
             Expr::Literal(_) | Expr::Ident(_) => {}
             Expr::FieldAccess { target, .. } => self.walk_expr(target),
+            Expr::Index { target, index } => { self.walk_expr(target); self.walk_expr(index); }
             Expr::MethodCall { target, args, .. } => {
                 self.walk_expr(target);
                 for a in args {
@@ -386,6 +392,10 @@ impl<'a> Walker<'a> {
             Expr::FieldAccess { target, .. } => {
                 self.check_segment_expr(&target.node, bound, span);
             }
+            Expr::Index { target, index } => {
+                self.check_segment_expr(&target.node, bound, span);
+                self.check_segment_expr(&index.node, bound, span);
+            }
             Expr::MethodCall { target, args, .. } => {
                 self.check_segment_expr(&target.node, bound, span);
                 for a in args {
@@ -479,6 +489,7 @@ fn bind_stmts(stmts: &[Spanned<Statement>], scope: &mut HashSet<String>) {
                 bind_expr(&value.node, scope);
             }
             Statement::ExprStmt { expr } => bind_expr(&expr.node, scope),
+            Statement::IndexSet { name, index, value } => { scope.insert(name.clone()); bind_expr(&index.node, scope); bind_expr(&value.node, scope); }
             Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => {
                 for a in args {
                     bind_expr(&a.node, scope);
@@ -546,6 +557,7 @@ fn bind_expr(expr: &Expr, scope: &mut HashSet<String>) {
             }
         }
         Expr::FieldAccess { target, .. } => bind_expr(&target.node, scope),
+        Expr::Index { target, index } => { bind_expr(&target.node, scope); bind_expr(&index.node, scope); }
         Expr::Literal(_) | Expr::Ident(_) => {}
     }
 }

@@ -89,6 +89,17 @@ impl BytecodeCompiler {
                 chunk.emit_u16(Op::SetLocal, slot);
             }
 
+            Statement::IndexSet { name, index, value } => {
+                // xs[i] = v  ⇒  xs = with(xs, i, v)
+                let slot = chunk.find_local(name).unwrap_or_else(|| chunk.add_local(name));
+                chunk.emit_u16(Op::GetLocal, slot);
+                self.compile_expr(chunk, &index.node);
+                self.compile_expr(chunk, &value.node);
+                let name_idx = chunk.add_constant(Constant::Name("with".to_string()));
+                chunk.emit_u16_u8(Op::CallBuiltin, name_idx, 3);
+                chunk.emit_u16(Op::SetLocal, slot);
+            }
+
             Statement::Return { value } => {
                 self.compile_expr(chunk, &value.node);
                 chunk.emit(Op::Return);
@@ -323,6 +334,15 @@ impl BytecodeCompiler {
                 self.compile_expr(chunk, &target.node);
                 let field_idx = chunk.add_constant(Constant::Name(field.clone()));
                 chunk.emit_u16(Op::GetField, field_idx);
+            }
+
+            Expr::Index { target, index } => {
+                // xs[i]  ⇒  nth(xs, i)  (polymorphic over list/map/string
+                // in the builtin layer)
+                self.compile_expr(chunk, &target.node);
+                self.compile_expr(chunk, &index.node);
+                let name_idx = chunk.add_constant(Constant::Name("nth".to_string()));
+                chunk.emit_u16_u8(Op::CallBuiltin, name_idx, 2);
             }
 
             Expr::MethodCall { target, method, args } => {

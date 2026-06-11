@@ -155,6 +155,7 @@ fn has_try_transition_stmts(body: &[Spanned<Statement>]) -> bool {
                 expr_has(&target.node) || args.iter().any(|a| expr_has(&a.node))
             }
             Expr::FieldAccess { target, .. } => expr_has(&target.node),
+            Expr::Index { target, index } => expr_has(&target.node) || expr_has(&index.node),
             Expr::BinaryOp { left, right, .. }
             | Expr::CmpOp { left, right, .. }
             | Expr::Pipe { left, right } => expr_has(&left.node) || expr_has(&right.node),
@@ -190,6 +191,7 @@ fn has_try_transition_stmts(body: &[Spanned<Statement>]) -> bool {
             | Statement::Return { value }
             | Statement::Ensure { condition: value } => expr_has(&value.node),
             Statement::ExprStmt { expr } => expr_has(&expr.node),
+            Statement::IndexSet { index, value, .. } => expr_has(&index.node) || expr_has(&value.node),
             Statement::If { condition, then_body, else_body } => {
                 expr_has(&condition.node) || stmts_have(then_body) || stmts_have(else_body)
             }

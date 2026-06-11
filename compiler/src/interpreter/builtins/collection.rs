@@ -51,18 +51,35 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "with" => {
-            if let Some(Value::Map(entries)) = args.first() {
-                let mut result = entries.clone();
-                let mut i = 1;
-                while i + 1 < args.len() {
-                    let key = format!("{}", args[i]);
-                    let val = args[i + 1].clone();
-                    result.insert(key, val);
-                    i += 2;
+            match args.first() {
+                Some(Value::Map(entries)) => {
+                    let mut result = entries.clone();
+                    let mut i = 1;
+                    while i + 1 < args.len() {
+                        let key = format!("{}", args[i]);
+                        let val = args[i + 1].clone();
+                        result.insert(key, val);
+                        i += 2;
+                    }
+                    Some(Ok(Value::Map(result)))
                 }
-                Some(Ok(Value::Map(result)))
-            } else {
-                Some(Err(RuntimeError::TypeError("with expects (map, key, value)".to_string())))
+                // with(list, index, value) → new list with element replaced.
+                Some(Value::List(items)) if args.len() == 3 => {
+                    let idx = match &args[1] {
+                        Value::Int(si) => si.to_i64().unwrap_or(-1),
+                        _ => return Some(Err(RuntimeError::TypeError(
+                            "with(list, index, value): index must be an Int".to_string()))),
+                    };
+                    if idx < 0 || idx as usize >= items.len() {
+                        return Some(Err(RuntimeError::TypeError(format!(
+                            "with: list index {} out of bounds (length {})", idx, items.len()))));
+                    }
+                    let mut result = items.clone();
+                    result[idx as usize] = args[2].clone();
+                    Some(Ok(Value::List(result)))
+                }
+                _ => Some(Err(RuntimeError::TypeError(
+                    "with expects (map, key, value) or (list, index, value)".to_string()))),
             }
         }
         "without" => {
@@ -241,13 +258,29 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "range" => {
+            let as_i64 = |v: &Value| match v {
+                Value::Int(si) => si.to_i64().unwrap_or(0),
+                Value::Float(n) => *n as i64,
+                _ => 0,
+            };
             if args.len() >= 2 {
-                let start = match &args[0] { Value::Int(si) => si.to_i64().unwrap_or(0), Value::Float(n) => *n as i64, _ => 0 };
-                let end = match &args[1] { Value::Int(si) => si.to_i64().unwrap_or(0), Value::Float(n) => *n as i64, _ => 0 };
-                let result: Vec<Value> = (start..end).map(|i| Value::Int(SomaInt::from_i64(i))).collect();
+                let start = as_i64(&args[0]);
+                let end = as_i64(&args[1]);
+                // Optional third arg is the step. A negative step counts
+                // DOWN from start (exclusive of end), so `range(12, -1, -1)`
+                // yields 12,11,…,0 without a reverse().
+                let step = args.get(2).map(as_i64).unwrap_or(1);
+                let mut result = Vec::new();
+                if step > 0 {
+                    let mut i = start;
+                    while i < end { result.push(Value::Int(SomaInt::from_i64(i))); i += step; }
+                } else if step < 0 {
+                    let mut i = start;
+                    while i > end { result.push(Value::Int(SomaInt::from_i64(i))); i += step; }
+                } // step == 0 → empty (avoid an infinite loop)
                 Some(Ok(Value::List(result)))
             } else {
-                Some(Err(RuntimeError::TypeError("range expects (start, end)".to_string())))
+                Some(Err(RuntimeError::TypeError("range expects (start, end) or (start, end, step)".to_string())))
             }
         }
         "sort" => {

@@ -133,6 +133,11 @@ fn check_stmt_termination(
             check_expr_termination(&value.node, handler_name, params, reasons);
         }
 
+        Statement::IndexSet { index, value, .. } => {
+            check_expr_termination(&index.node, handler_name, params, reasons);
+            check_expr_termination(&value.node, handler_name, params, reasons);
+        }
+
         // These are always terminating
         Statement::Emit { .. } | Statement::Require { .. }
         | Statement::MethodCall { .. } | Statement::Break

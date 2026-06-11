@@ -915,6 +915,40 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
+            Statement::IndexSet { name, index, value } => {
+                self.last_span = Some(value.span);
+                let idx_val = self.eval_expr(&index.node, env, cell_name, signal_name)?;
+                let new_val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
+                // A storage slot: xs[k] = v  ⇒  xs.set(k, v)
+                if self.storage.contains_key(name)
+                    || self.storage.contains_key(&format!("{}.{}", cell_name, name))
+                {
+                    self.call_storage_method(cell_name, name, "set", &[idx_val, new_val])?;
+                    return Ok(Value::Unit);
+                }
+                // A local list or map, updated in place.
+                match env.get_mut(name) {
+                    Some(Value::List(items)) => {
+                        let i = idx_val.as_int().map_err(ExecError::Runtime)?;
+                        if i < 0 || i as usize >= items.len() {
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "list index {} out of bounds (length {})", i, items.len()
+                            ))));
+                        }
+                        items[i as usize] = new_val;
+                        Ok(Value::Unit)
+                    }
+                    Some(Value::Map(entries)) => {
+                        entries.insert(format!("{}", idx_val), new_val);
+                        Ok(Value::Unit)
+                    }
+                    Some(other) => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                        "cannot index-assign into {} '{}'", value_type_name(other), name
+                    )))),
+                    None => Err(ExecError::Runtime(RuntimeError::UndefinedVar(name.clone()))),
+                }
+            }
+
             Statement::Assign { name, value } => {
                 self.last_span = Some(value.span);
                 // Optimization: items = list(items, x) → in-place append (avoids O(n²) clone)
@@ -1045,7 +1079,10 @@ impl Interpreter {
                 };
                 // Fast path: for i in range(start, end) — no allocation
                 if let Expr::FnCall { name: fn_name, args: fn_args } = &iter.node {
-                    if fn_name == "range" && fn_args.len() >= 2 {
+                    // Only the 2-arg ascending form uses the fast path; a
+                    // 3-arg range(start, end, step) falls through to the
+                    // general path so the step (incl. negative) is honored.
+                    if fn_name == "range" && fn_args.len() == 2 {
                         let start_val = self.eval_expr(&fn_args[0].node, env, cell_name, signal_name)?;
                         let end_val = self.eval_expr(&fn_args[1].node, env, cell_name, signal_name)?;
                         if let (Some(start), Some(end)) = (start_val.as_int().ok(), end_val.as_int().ok()) {
@@ -1906,6 +1943,50 @@ impl Interpreter {
                     _ => Err(ExecError::Runtime(RuntimeError::TypeError(
                         format!("cannot access field '{}' on {:?}", field, target_val),
                     )))
+                }
+            }
+
+            Expr::Index { target, index } => {
+                // `xs[i]` (list, by position), `m[k]` (map, by key),
+                // `s[i]` (string, by char). A storage-slot index reads
+                // through .get() so `slot[k]` works like slot.get(k).
+                if let Expr::Ident(ref slot_name) = target.node {
+                    if self.storage.contains_key(slot_name)
+                        || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name))
+                    {
+                        let key = self.eval_expr(&index.node, env, cell_name, signal_name)?;
+                        return self.call_storage_method(cell_name, slot_name, "get", &[key]);
+                    }
+                }
+                let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
+                let idx_val = self.eval_expr(&index.node, env, cell_name, signal_name)?;
+                match target_val {
+                    Value::List(ref items) => {
+                        let i = idx_val.as_int().map_err(ExecError::Runtime)?;
+                        if i < 0 || i as usize >= items.len() {
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "list index {} out of bounds (length {})", i, items.len()
+                            ))));
+                        }
+                        Ok(items[i as usize].clone())
+                    }
+                    Value::Map(ref entries) => {
+                        let key = format!("{}", idx_val);
+                        Ok(entries.get(&key).cloned().unwrap_or(Value::Unit))
+                    }
+                    Value::String(ref s) => {
+                        let i = idx_val.as_int().map_err(ExecError::Runtime)?;
+                        let chars: Vec<char> = s.chars().collect();
+                        if i < 0 || i as usize >= chars.len() {
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "string index {} out of bounds (length {})", i, chars.len()
+                            ))));
+                        }
+                        Ok(Value::String(chars[i as usize].to_string()))
+                    }
+                    other => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                        "cannot index {} with [{}]", value_type_name(&other), idx_val
+                    )))),
                 }
             }
 

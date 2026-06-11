@@ -309,6 +309,8 @@ pub fn expr_cost(e: &Expr) -> Cost {
 
         Expr::FieldAccess { target, .. } => expr_cost(&target.node),
 
+        Expr::Index { target, index } => expr_cost(&target.node).plus(expr_cost(&index.node)),
+
         Expr::MethodCall { target, method, args } => {
             let mut c = expr_cost(&target.node);
             for a in args {
@@ -639,6 +641,7 @@ pub fn stmt_cost(s: &Statement) -> Cost {
             expr_cost(&value.node)
         }
         Statement::Return { value } => expr_cost(&value.node),
+        Statement::IndexSet { index, value, .. } => expr_cost(&index.node).plus(expr_cost(&value.node)),
         Statement::If { condition, then_body, else_body } => {
             let cond_c = expr_cost(&condition.node);
             let mut then_c = Cost::zero();

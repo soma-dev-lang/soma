@@ -155,6 +155,7 @@ pub(super) fn collect_calls(stmts: &[Spanned<Statement>], out: &mut Vec<String>)
             | Statement::Return { value }
             | Statement::Ensure { condition: value } => collect_calls_expr(&value.node, out),
             Statement::ExprStmt { expr } => collect_calls_expr(&expr.node, out),
+            Statement::IndexSet { index, value, .. } => { collect_calls_expr(&index.node, out); collect_calls_expr(&value.node, out); }
             Statement::If { condition, then_body, else_body } => {
                 collect_calls_expr(&condition.node, out);
                 collect_calls(then_body, out);
@@ -206,6 +207,7 @@ pub(super) fn collect_calls_expr(expr: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::FieldAccess { target, .. } => collect_calls_expr(&target.node, out),
+        Expr::Index { target, index } => { collect_calls_expr(&target.node, out); collect_calls_expr(&index.node, out); }
         Expr::MethodCall { target, args, .. } => {
             collect_calls_expr(&target.node, out);
             for a in args {
@@ -280,6 +282,7 @@ fn bind_all(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) {
                 bind_all_expr(&value.node, bound);
             }
             Statement::ExprStmt { expr } => bind_all_expr(&expr.node, bound),
+            Statement::IndexSet { name, index, value } => { bound.insert(name.clone()); bind_all_expr(&index.node, bound); bind_all_expr(&value.node, bound); }
             Statement::If { condition, then_body, else_body } => {
                 bind_all_expr(&condition.node, bound);
                 bind_all(then_body, bound);
@@ -334,6 +337,10 @@ fn bind_all_expr(expr: &Expr, bound: &mut HashSet<String>) {
             for a in args {
                 bind_all_expr(&a.node, bound);
             }
+        }
+        Expr::Index { target, index } => {
+            bind_all_expr(&target.node, bound);
+            bind_all_expr(&index.node, bound);
         }
         Expr::MethodCall { target, args, .. } => {
             bind_all_expr(&target.node, bound);

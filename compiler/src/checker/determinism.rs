@@ -68,6 +68,10 @@ fn walk_stmt(handler_name: &str, stmt: &Statement, errs: &mut Vec<DeterminismErr
         | Statement::Return { value }
         | Statement::Ensure { condition: value } => walk_expr(handler_name, &value.node, errs),
         Statement::ExprStmt { expr } => walk_expr(handler_name, &expr.node, errs),
+        Statement::IndexSet { index, value, .. } => {
+            walk_expr(handler_name, &index.node, errs);
+            walk_expr(handler_name, &value.node, errs);
+        }
         Statement::If { condition, then_body, else_body } => {
             walk_expr(handler_name, &condition.node, errs);
             for s in then_body { walk_stmt(handler_name, &s.node, errs); }
@@ -129,6 +133,10 @@ fn walk_expr(handler_name: &str, expr: &Expr, errs: &mut Vec<DeterminismError>) 
             walk_expr(handler_name, &result.node, errs);
         }
         Expr::FieldAccess { target, .. } => walk_expr(handler_name, &target.node, errs),
+        Expr::Index { target, index } => {
+            walk_expr(handler_name, &target.node, errs);
+            walk_expr(handler_name, &index.node, errs);
+        }
         Expr::MethodCall { target, method, args } => {
             walk_expr(handler_name, &target.node, errs);
             if mutating_method(method) {

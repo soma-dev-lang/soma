@@ -223,6 +223,10 @@ fn walk_stmt(stmt: &Statement, span: Span, path: &mut Vec<String>, eff: &mut Han
         Statement::Return { value } => {
             walk_expr(&value.node, span, path, eff);
         }
+        Statement::IndexSet { index, value, .. } => {
+            walk_expr(&index.node, span, path, eff);
+            walk_expr(&value.node, span, path, eff);
+        }
         Statement::Ensure { condition } => {
             walk_expr(&condition.node, span, path, eff);
         }
@@ -311,6 +315,10 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
             for a in args { walk_expr(&a.node, span, path, eff); }
         }
         Expr::FieldAccess { target, .. } => walk_expr(&target.node, span, path, eff),
+        Expr::Index { target, index } => {
+            walk_expr(&target.node, span, path, eff);
+            walk_expr(&index.node, span, path, eff);
+        }
         Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
             walk_expr(&left.node, span, path, eff);
             walk_expr(&right.node, span, path, eff);

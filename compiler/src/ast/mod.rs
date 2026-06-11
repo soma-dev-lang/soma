@@ -455,6 +455,14 @@ pub enum Statement {
         method: String,
         args: Vec<Spanned<Expr>>,
     },
+    /// Index assignment: `xs[i] = v`, `m[k] = v`. `name` is the local
+    /// variable holding the list or map; the element/key is replaced in
+    /// place (value semantics — the binding is rebound to the new value).
+    IndexSet {
+        name: String,
+        index: Spanned<Expr>,
+        value: Spanned<Expr>,
+    },
     Break,
     Continue,
     /// Postcondition: ensure condition — checked after handler returns
@@ -542,6 +550,12 @@ pub enum Expr {
     FieldAccess {
         target: Box<Spanned<Expr>>,
         field: String,
+    },
+    /// Bracket indexing: `xs[i]`, `m[k]`, `s[i]`. Reads an element of a
+    /// list (by position), a map (by key), or a string (by char index).
+    Index {
+        target: Box<Spanned<Expr>>,
+        index: Box<Spanned<Expr>>,
     },
     MethodCall {
         target: Box<Spanned<Expr>>,
@@ -718,6 +732,7 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::Literal(other) => format!("{other:?}"),
         Expr::Ident(name) => name.clone(),
         Expr::FieldAccess { target, field } => format!("{}.{}", render_expr(&target.node), field),
+        Expr::Index { target, index } => format!("{}[{}]", render_expr(&target.node), render_expr(&index.node)),
         Expr::MethodCall { target, method, args } => {
             let a: Vec<String> = args.iter().map(|x| render_expr(&x.node)).collect();
             format!("{}.{}({})", render_expr(&target.node), method, a.join(", "))

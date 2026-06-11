@@ -1970,7 +1970,30 @@ impl Parser {
                 let save_pos = self.pos;
                 let (name, name_span) = self.expect_ident()?;
 
-                if self.check(&Token::Eq) {
+                if self.check(&Token::LBracket) {
+                    // name[index] = value  (index assignment) — otherwise
+                    // rewind and let it parse as a normal indexing expr.
+                    let probe = self.pos;
+                    self.advance();
+                    let index = self.parse_expr()?;
+                    if self.check(&Token::RBracket) {
+                        self.advance();
+                        if self.check(&Token::Eq) {
+                            self.advance();
+                            let value = self.parse_expr()?;
+                            return Ok(Spanned::new(
+                                Statement::IndexSet { name, index, value },
+                                start.merge(self.prev_span()),
+                            ));
+                        }
+                    }
+                    // not an index-assignment — reparse from the ident as
+                    // an expression statement (postfix handles the read)
+                    self.pos = save_pos;
+                    let _ = probe;
+                    let expr = self.parse_expr()?;
+                    Ok(Spanned::new(Statement::ExprStmt { expr }, start.merge(self.prev_span())))
+                } else if self.check(&Token::Eq) {
                     // Assignment: name = expr
                     self.advance();
                     let value = self.parse_expr()?;
@@ -2453,6 +2476,21 @@ impl Parser {
                         span,
                     );
                 }
+            } else if self.check(&Token::LBracket) {
+                // Postfix index: expr[index] — list position, map key, or
+                // string char index.
+                self.advance();
+                let index = self.parse_expr()?;
+                let end = self.peek_span();
+                self.expect(Token::RBracket)?;
+                let span = expr.span.merge(end);
+                expr = Spanned::new(
+                    Expr::Index {
+                        target: Box::new(expr),
+                        index: Box::new(index),
+                    },
+                    span,
+                );
             } else if self.check(&Token::Question) {
                 // Postfix ? operator: expr? — propagate error
                 self.advance();
