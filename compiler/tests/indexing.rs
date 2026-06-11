@@ -110,3 +110,33 @@ fn index_assign_into_undefined_errors() {
     );
     assert_eq!(c, 1, "writing into an undefined var must error: {o}");
 }
+
+#[test]
+fn numeric_reductions_over_lists() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let xs = list(3,7,2,9) return \"{sum(xs)} {product(xs)} {min(xs)} {max(xs)} {avg(xs)}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("21 378 2 9 5"), "{o}");
+}
+
+#[test]
+fn sum_promotes_to_float() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> Float } on go() { return sum(list(1.5, 2.5, 3.0)) } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("7"), "{o}");
+}
+
+#[test]
+fn coalesce_with_index_access() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let m = map(\"x\", 5) return \"{m[\\\"x\\\"] ?? 9} {m[\\\"y\\\"] ?? 9}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("5 9"), "{o}");
+}
