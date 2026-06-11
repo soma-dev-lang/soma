@@ -1,3 +1,19 @@
+//! `soma test` — run the assertions declared in `cell test` blocks.
+//!
+//! Test isolation: every memory slot of every cell is rebound to a fresh
+//! in-memory backend (`MemoryBackend`) before any assertion runs — see
+//! the slot-binding loop in `cmd_test`. Persistent storage configured on
+//! the slots (`[persistent]`, providers, .soma_data) is never read or
+//! written, so every `soma test` run starts from a clean slate and
+//! leaves no state behind for the next run.
+//!
+//! Assertion forms:
+//!   assert expr            — passes when expr is true
+//!   assert_fails expr      — passes when evaluating expr produces a
+//!                            runtime error (pin negative paths, e.g.
+//!                            invalid state transitions MUST fail)
+//!   property "n" forall …  — randomized property over an Int range
+
 use std::path::PathBuf;
 use std::process;
 
@@ -70,6 +86,21 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 Err(e) => {
                                     failed += 1;
                                     println!("  ✗ assert {} — ERROR: {}", format_expr(&expr.node), e);
+                                }
+                            }
+                        }
+                        ast::Rule::AssertFails(expr) => {
+                            total += 1;
+
+                            match eval_test_expr(&mut interp, &expr.node) {
+                                Err(_) => {
+                                    passed += 1;
+                                    println!("  ✓ assert_fails {}", format_expr(&expr.node));
+                                }
+                                Ok(v) => {
+                                    failed += 1;
+                                    println!("  ✗ assert_fails {} — FAILED: expected a runtime error, but it succeeded with {}",
+                                             format_expr(&expr.node), v);
                                 }
                             }
                         }

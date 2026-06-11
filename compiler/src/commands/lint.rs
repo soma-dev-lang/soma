@@ -141,6 +141,11 @@ impl<'a> LintPass<'a> {
     fn check_statement(&mut self, stmt: &Statement, span: &ast::Span, memory_slots: &[String]) {
         match stmt {
             Statement::MethodCall { target, method, args, .. } => {
+                // slot.append(x) -> slot.push(x): canonical alias
+                self.check_alias(method, span, true);
+                for arg in args {
+                    self.check_expr_for_lints(&arg.node, &arg.span, memory_slots);
+                }
                 // items.set(id, to_json(data)) -> redundant to_json
                 if method == "set" && memory_slots.contains(target) {
                     for arg in args {
@@ -228,6 +233,8 @@ impl<'a> LintPass<'a> {
         match expr {
             // from_json(items.get(id)) -> redundant from_json
             Expr::FnCall { name, args } => {
+                // append(xs, x) -> push(xs, x), ln(x) -> log(x): canonical aliases
+                self.check_alias(name, span, false);
                 if name == "from_json" {
                     if let Some(first) = args.first() {
                         if self.is_storage_get(&first.node, memory_slots) {
@@ -247,11 +254,18 @@ impl<'a> LintPass<'a> {
                     self.check_expr_for_lints(&arg.node, &arg.span, memory_slots);
                 }
             }
-            Expr::MethodCall { target, args, .. } => {
+            Expr::MethodCall { target, method, args } => {
+                // xs.append(x) -> xs.push(x), xs.length() -> xs.len(): canonical aliases
+                self.check_alias(method, span, true);
                 self.check_expr_for_lints(&target.node, &target.span, memory_slots);
                 for arg in args {
                     self.check_expr_for_lints(&arg.node, &arg.span, memory_slots);
                 }
+            }
+            Expr::FieldAccess { target, field } => {
+                // xs.length -> xs.len: canonical alias
+                self.check_alias(field, span, true);
+                self.check_expr_for_lints(&target.node, &target.span, memory_slots);
             }
             Expr::Pipe { left, right } => {
                 // Check for items.get(id) |> from_json()
@@ -281,6 +295,35 @@ impl<'a> LintPass<'a> {
             }
             _ => {}
         }
+    }
+
+    // ── Rule 6: canonical alias spellings ───────────────────────────
+    // The runtime accepts several spellings for the same operation.
+    // One canonical spelling keeps generated code consistent, so lint
+    // suggests it (this is a suggestion, never a check error).
+    //
+    //   append  -> push   (interpreter: "append" | "push")
+    //   ln      -> log    (builtins/math.rs: "log" | "ln")
+    //   length  -> len    (interpreter: "length" | "len")
+
+    fn check_alias(&mut self, name: &str, span: &ast::Span, is_member: bool) {
+        let canonical = match (name, is_member) {
+            ("append", _) => "push",
+            ("ln", false) => "log",
+            ("length", true) => "len",
+            _ => return,
+        };
+        let line = self.line_of(span);
+        self.warn(
+            "canonical_alias",
+            Severity::Info,
+            line,
+            &format!(
+                "'{}' is an alias of '{}' — use '{}' (one canonical spelling keeps generated code consistent)",
+                name, canonical, canonical
+            ),
+            &format!("replace '{}' with '{}'", name, canonical),
+        );
     }
 
     fn is_storage_get(&self, expr: &Expr, memory_slots: &[String]) -> bool {
@@ -566,6 +609,15 @@ impl<'a> LintPass<'a> {
 
 // ── Public entry point ──────────────────────────────────────────────
 
+/// Run the lint pass over an already-parsed program. Returns the
+/// warnings sorted by line number (separated from cmd_lint for tests).
+pub fn collect_lints(program: &ast::Program, source: &str) -> Vec<LintWarning> {
+    let mut pass = LintPass::new(source);
+    pass.check_program(program);
+    pass.warnings.sort_by_key(|w| w.line);
+    pass.warnings
+}
+
 pub fn cmd_lint(path: &PathBuf, json: bool) {
     let source = super::read_source(path);
     let file_str = path.display().to_string();
@@ -573,16 +625,12 @@ pub fn cmd_lint(path: &PathBuf, json: bool) {
     let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut program, path);
 
-    let mut pass = LintPass::new(&source);
-    pass.check_program(&program);
-
-    // Sort by line number
-    pass.warnings.sort_by_key(|w| w.line);
+    let warnings = collect_lints(&program, &source);
 
     if json {
-        print_json(&pass.warnings);
+        print_json(&warnings);
     } else {
-        print_human(path, &pass.warnings);
+        print_human(path, &warnings);
     }
 }
 
@@ -615,6 +663,84 @@ fn print_human(path: &PathBuf, warnings: &[LintWarning]) {
         parts.push(format!("{} info", info_count));
     }
     println!("{}", parts.join(", "));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lints_for(source: &str) -> Vec<LintWarning> {
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize().expect("lexer error");
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program().expect("parse error");
+        collect_lints(&program, source)
+    }
+
+    #[test]
+    fn test_lint_append_is_alias_of_push() {
+        let warnings = lints_for(r#"
+            cell C {
+                memory { items: List<String> [persistent] }
+                on add(x: String) {
+                    items.append(x)
+                    let xs = append(list(), x)
+                    return xs
+                }
+            }
+        "#);
+        let alias: Vec<&LintWarning> = warnings.iter()
+            .filter(|w| w.rule == "canonical_alias").collect();
+        assert_eq!(alias.len(), 2, "expected method + fn alias lints, got {:?}", warnings);
+        assert!(alias[0].message.contains("'append' is an alias of 'push' — use 'push' (one canonical spelling keeps generated code consistent)"),
+                "got: {}", alias[0].message);
+        assert_eq!(alias[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn test_lint_ln_is_alias_of_log() {
+        let warnings = lints_for(r#"
+            cell C {
+                on f(x: Float) {
+                    return ln(x)
+                }
+            }
+        "#);
+        assert!(warnings.iter().any(|w| w.rule == "canonical_alias"
+                && w.message.contains("'ln' is an alias of 'log' — use 'log'")),
+                "got: {:?}", warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_lint_length_is_alias_of_len() {
+        let warnings = lints_for(r#"
+            cell C {
+                memory { items: Map<String, Int> [persistent] }
+                on count() {
+                    return items.length
+                }
+            }
+        "#);
+        assert!(warnings.iter().any(|w| w.rule == "canonical_alias"
+                && w.message.contains("'length' is an alias of 'len' — use 'len'")),
+                "got: {:?}", warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_lint_canonical_spellings_are_clean() {
+        let warnings = lints_for(r#"
+            cell C {
+                memory { items: List<String> [persistent] }
+                on add(x: String) {
+                    items.push(x)
+                    return items.len
+                }
+            }
+        "#);
+        assert!(!warnings.iter().any(|w| w.rule == "canonical_alias"),
+                "canonical spellings must not be flagged: {:?}",
+                warnings.iter().map(|w| &w.message).collect::<Vec<_>>());
+    }
 }
 
 fn print_json(warnings: &[LintWarning]) {

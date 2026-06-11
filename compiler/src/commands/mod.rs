@@ -105,8 +105,8 @@ pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str
     match p.parse_program() {
         Ok(program) => program,
         Err(e) => {
-            match (&e, source) {
-                (parser::ParseError::Expected { span, .. }, Some(src)) => {
+            match (e.span(), source) {
+                (Some(span), Some(src)) => {
                     let (line, col) = crate::interpreter::span_to_location(src, span.start);
                     let location = if let Some(f) = file {
                         format!("  --> {}:{}:{}", f, line, col)

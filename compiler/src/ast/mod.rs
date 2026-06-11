@@ -323,6 +323,10 @@ pub enum Rule {
     Native(String),
     /// `assert expr == expected` — test assertion
     Assert(Spanned<Expr>),
+    /// `assert_fails expr` — negative test assertion: passes when
+    /// evaluating expr produces a runtime error (e.g. an invalid state
+    /// transition), fails when it succeeds.
+    AssertFails(Spanned<Expr>),
     /// V1.6: `property "name" forall x: Int in 0..100 ensures expr`
     /// — randomized test that quantifies over `count` random inputs.
     Property {

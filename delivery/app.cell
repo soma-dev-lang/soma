@@ -709,3 +709,26 @@ cell test MesaTests {
         assert delivery_fee(100) == 12
     }
 }
+
+// LifecycleTests drives a REAL order through the machine. `soma test`
+// rebinds every memory slot to an in-memory backend, so this never
+// touches persistent state — every run starts from zero orders.
+cell test LifecycleTests {
+    rules {
+        // place a valid order: margherita (14) + tiramisu (8) = 22,
+        // fee = 2 + 10% = 4, total = 26
+        assert place_order("ana", "r1", "margherita,tiramisu", "card") != ()
+        assert order_count() == 1
+        assert track_order("1").customer == "ana"
+        assert track_order("1").status == "Placed"
+        assert track_order("1").total == 26
+
+        // deliver before pickup MUST fail — the machine pins the order
+        // of operations, not just the set of states
+        assert_fails transition("1", "Delivered")
+
+        // the happy path still advances after the rejected move
+        assert accept_order("1") != ()
+        assert track_order("1").status == "Accepted"
+    }
+}

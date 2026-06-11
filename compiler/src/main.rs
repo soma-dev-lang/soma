@@ -126,7 +126,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Run test assertions in a .cell file
+    /// Run test assertions in a .cell file. Storage is isolated: every
+    /// memory slot uses a fresh in-memory backend, so runs never touch
+    /// persistent state and always start clean. Supports `assert expr`,
+    /// `assert_fails expr` (passes when expr errors), and `property`.
     Test {
         /// Path to the .cell file containing test cells
         file: PathBuf,

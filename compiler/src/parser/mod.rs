@@ -74,6 +74,18 @@ fn display_token(token: &Token) -> String {
     }
 }
 
+/// Render a TypeExpr back to source form (for fix-it messages).
+fn type_expr_source(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::Simple(name) => name.clone(),
+        TypeExpr::Generic { name, args } => {
+            let inner: Vec<String> = args.iter().map(|a| type_expr_source(&a.node)).collect();
+            format!("{}<{}>", name, inner.join(", "))
+        }
+        TypeExpr::CellRef { cell, member } => format!("{}.{}", cell, member),
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ParseError {
     #[error("expected {expected}, found {}", display_token(found))]
@@ -84,6 +96,23 @@ pub enum ParseError {
     },
     #[error("unexpected end of input")]
     UnexpectedEof,
+    /// A near-miss with a known correction. The message IS the fix:
+    /// it tells the writer exactly what to type instead.
+    #[error("{message}")]
+    FixIt {
+        message: String,
+        span: Span,
+    },
+}
+
+impl ParseError {
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            ParseError::Expected { span, .. } => Some(*span),
+            ParseError::FixIt { span, .. } => Some(*span),
+            ParseError::UnexpectedEof => None,
+        }
+    }
 }
 
 pub struct Parser {
@@ -912,6 +941,13 @@ impl Parser {
 
     fn parse_rule(&mut self) -> Result<Spanned<Rule>, ParseError> {
         let start = self.peek_span();
+        // `assert_fails expr` — negative assertion (lexes as a plain
+        // identifier, so handle it before the keyword match).
+        if matches!(self.peek(), Token::Ident(s) if s == "assert_fails") {
+            self.advance();
+            let expr = self.parse_expr()?;
+            return Ok(Spanned::new(Rule::AssertFails(expr), start.merge(self.prev_span())));
+        }
         match self.peek() {
             Token::Contradicts => {
                 self.advance();
@@ -1054,7 +1090,7 @@ impl Parser {
                 ))
             }
             _ => Err(ParseError::Expected {
-                expected: "contradicts, implies, requires, mutex_group, check, matches, native, assert, or property".to_string(),
+                expected: "contradicts, implies, requires, mutex_group, check, matches, native, assert, assert_fails, or property".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -1259,6 +1295,22 @@ impl Parser {
             // Check for `initial: state_name`
             if self.check(&Token::Initial) {
                 self.advance();
+                // Fix-it: `initial = draft` is the assignment spelling.
+                if self.check(&Token::Eq) {
+                    let eq_span = self.peek_span();
+                    self.advance();
+                    let state_name = match self.peek() {
+                        Token::Ident(s) | Token::TypeIdent(s) => s.clone(),
+                        _ => "state_name".to_string(),
+                    };
+                    return Err(ParseError::FixIt {
+                        message: format!(
+                            "state machines declare the start state as 'initial: {}' (colon, not equals)",
+                            state_name
+                        ),
+                        span: eq_span,
+                    });
+                }
                 self.expect(Token::Colon)?;
                 let (state_name, _) = self.expect_any_name()?;
                 initial = state_name;
@@ -1279,6 +1331,18 @@ impl Parser {
             self.expect(Token::Arrow)?;
 
             let (to, _) = self.expect_any_name()?;
+
+            // Fix-it: `a -> b when cond { }` — guards live inside the
+            // transition block, not after the target state.
+            if matches!(self.peek(), Token::Ident(s) if s == "when") {
+                return Err(ParseError::FixIt {
+                    message: format!(
+                        "guards are declared inside the transition block: {} -> {} {{ guard {{ cond }} }}",
+                        from, to
+                    ),
+                    span: self.peek_span(),
+                });
+            }
 
             let mut guard = None;
             let mut effect = Vec::new();
@@ -1676,6 +1740,28 @@ impl Parser {
                     break;
                 }
             }
+        }
+
+        // Fix-it: `on add(a: Int) -> Int { ... }` — return types belong
+        // on the signal declaration in face { }, not on the handler.
+        if self.check(&Token::Arrow) {
+            let arrow_span = self.peek_span();
+            self.advance();
+            let ret_ty = match self.peek() {
+                Token::TypeIdent(t) | Token::Ident(t) => t.clone(),
+                _ => "T".to_string(),
+            };
+            let params_str = params.iter()
+                .map(|p| format!("{}: {}", p.name, type_expr_source(&p.ty.node)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ParseError::FixIt {
+                message: format!(
+                    "handlers do not declare return types — put '-> {}' on the signal declaration inside face {{ }}, then write: on {}({}) {{ ... }}",
+                    ret_ty, signal_name, params_str
+                ),
+                span: arrow_span,
+            });
         }
 
         self.expect(Token::LBrace)?;
@@ -2655,6 +2741,14 @@ impl Parser {
                         None
                     };
 
+                    // Fix-it: `pattern => expr` is the Rust spelling.
+                    if self.check(&Token::FatArrow) {
+                        return Err(ParseError::FixIt {
+                            message: "match arms use '->', not '=>'".to_string(),
+                            span: self.peek_span(),
+                        });
+                    }
+
                     self.expect(Token::Arrow)?;
 
                     // Parse body: either a block { stmts; result_expr } or single expression
@@ -2945,6 +3039,95 @@ mod tests {
         let tokens = lexer.tokenize().expect("lexer error");
         let mut parser = Parser::new(tokens);
         parser.parse_program()
+    }
+
+    /// Parse and expect failure; return the rendered error message.
+    fn parse_err(input: &str) -> String {
+        match parse(input) {
+            Ok(_) => panic!("expected parse error for: {}", input),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    // ── Fix-it diagnostics: the error message contains its own correction ──
+
+    #[test]
+    fn test_fixit_handler_return_type() {
+        let err = parse_err("cell C { on add(a: Int) -> Int { return a } }");
+        assert!(
+            err.contains("handlers do not declare return types — put '-> Int' on the signal declaration inside face { }, then write: on add(a: Int) { ... }"),
+            "got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_fixit_match_fat_arrow() {
+        let err = parse_err(r#"
+            cell C {
+                on f(x: Int) {
+                    return match x {
+                        1 => "one"
+                        _ => "many"
+                    }
+                }
+            }
+        "#);
+        assert!(err.contains("match arms use '->', not '=>'"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_fixit_state_machine_initial_equals() {
+        let err = parse_err(r#"
+            cell C {
+                state doc {
+                    initial = draft
+                    draft -> published
+                }
+            }
+        "#);
+        assert!(
+            err.contains("state machines declare the start state as 'initial: draft' (colon, not equals)"),
+            "got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_fixit_transition_guard_when() {
+        let err = parse_err(r#"
+            cell C {
+                state doc {
+                    initial: draft
+                    draft -> published when ready { }
+                }
+            }
+        "#);
+        assert!(
+            err.contains("guards are declared inside the transition block: draft -> published { guard { cond } }"),
+            "got: {}", err
+        );
+    }
+
+    // ── assert_fails: negative test assertions ──────────────────────
+
+    #[test]
+    fn test_parse_assert_fails_rule() {
+        let input = r#"
+            cell test T {
+                rules {
+                    assert f(1) == 2
+                    assert_fails transition("1", "Delivered")
+                }
+            }
+        "#;
+        let program = parse(input).unwrap();
+        let cell = &program.cells[0].node;
+        if let Section::Rules(ref rules) = cell.sections[0].node {
+            assert_eq!(rules.rules.len(), 2);
+            assert!(matches!(rules.rules[0].node, Rule::Assert(_)));
+            assert!(matches!(rules.rules[1].node, Rule::AssertFails(_)));
+        } else {
+            panic!("expected rules section");
+        }
     }
 
     #[test]
