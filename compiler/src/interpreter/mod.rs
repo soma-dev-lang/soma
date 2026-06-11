@@ -136,6 +136,33 @@ fn levenshtein(a: &str, b: &str) -> usize {
 }
 
 /// Check if a Value is truthy (false for Bool(false), Unit, Int(0); true otherwise)
+/// Collect identifier leaves of an expression. Used to scope a memory
+/// invariant to the slots it actually names.
+fn collect_expr_idents(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+    match expr {
+        Expr::Ident(n) => { out.insert(n.clone()); }
+        Expr::FieldAccess { target, .. } => collect_expr_idents(&target.node, out),
+        Expr::MethodCall { target, args, .. } => {
+            collect_expr_idents(&target.node, out);
+            for a in args { collect_expr_idents(&a.node, out); }
+        }
+        Expr::FnCall { args, .. } => {
+            for a in args { collect_expr_idents(&a.node, out); }
+        }
+        Expr::BinaryOp { left, right, .. }
+        | Expr::CmpOp { left, right, .. }
+        | Expr::Pipe { left, right } => {
+            collect_expr_idents(&left.node, out);
+            collect_expr_idents(&right.node, out);
+        }
+        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => collect_expr_idents(&i.node, out),
+        Expr::ListLiteral(items) => {
+            for i in items { collect_expr_idents(&i.node, out); }
+        }
+        _ => {}
+    }
+}
+
 /// Result of evaluating one `{...}` interpolation segment.
 enum InterpResult {
     Value(Value),
@@ -504,18 +531,28 @@ impl Interpreter {
                 }
             }
         }
-        // Collect memory invariants from all cells
+        // Collect memory invariants from all cells. An invariant that
+        // names specific slots guards only those slots; one that uses
+        // only the generic bindings (value/key/size) guards every slot
+        // in its section.
         let mut invariants: HashMap<String, Vec<Expr>> = HashMap::new();
         for cell in &program.cells {
             for section in &cell.node.sections {
                 if let Section::Memory(ref mem) = section.node {
-                    if !mem.invariants.is_empty() {
-                        let exprs: Vec<Expr> = mem.invariants.iter().map(|i| i.node.clone()).collect();
-                        // Associate invariants with all slots in this memory section
-                        for slot in &mem.slots {
-                            let key = format!("{}.{}", cell.node.name, slot.node.name);
-                            invariants.entry(key).or_default().extend(exprs.clone());
-                            invariants.entry(slot.node.name.clone()).or_default().extend(exprs.clone());
+                    let slot_names: Vec<&str> =
+                        mem.slots.iter().map(|s| s.node.name.as_str()).collect();
+                    for inv in &mem.invariants {
+                        let mut refs: std::collections::HashSet<String> = Default::default();
+                        collect_expr_idents(&inv.node, &mut refs);
+                        let named: Vec<&str> = slot_names.iter()
+                            .filter(|n| refs.contains(**n))
+                            .copied()
+                            .collect();
+                        let targets: &[&str] = if named.is_empty() { &slot_names } else { &named };
+                        for t in targets {
+                            let key = format!("{}.{}", cell.node.name, t);
+                            invariants.entry(key).or_default().push(inv.node.clone());
+                            invariants.entry((*t).to_string()).or_default().push(inv.node.clone());
                         }
                     }
                 }
@@ -1957,7 +1994,9 @@ impl Interpreter {
             .or_else(|| self.storage.get(slot_name));
 
         let backend = match backend {
-            Some(b) => b,
+            // Arc clone: ends the borrow of self.storage so arms can call
+            // &mut self methods (invariant evaluation) before writing.
+            Some(b) => b.clone(),
             None => {
                 return Err(ExecError::Runtime(RuntimeError::TypeError(
                     format!("'{}' is not a memory slot (no storage backend)", slot_name),
@@ -2009,44 +2048,18 @@ impl Interpreter {
                 let key_str = format!("{}", key);
                 let val_str = format!("{}", val);
 
-                // Always write locally
+                // V1.8: invariants are checked BEFORE the write commits —
+                // a violated invariant must leave the slot untouched.
+                let exists = backend.get(&key_str).is_some();
+                let size_after = backend.len() as i64 + if exists { 0 } else { 1 };
+                self.check_invariants(cell_name, slot_name, &key_str, val, size_after)?;
+
+                // Write locally
                 backend.set(&key_str, value_to_stored(val));
 
                 // In cluster mode: broadcast to peers via EVENT bus
                 if is_sharded {
                     self.cluster_broadcast_set(slot_name, &key_str, &val_str);
-                }
-
-                // Check memory invariants after set
-                let prefixed_key = format!("{}.{}", cell_name, slot_name);
-                let invs = self.invariants.get(&prefixed_key)
-                    .or_else(|| self.invariants.get(slot_name))
-                    .cloned()
-                    .unwrap_or_default();
-                if !invs.is_empty() {
-                    // Re-fetch backend to get current state
-                    let inv_backend = self.storage.get(&prefixed_key)
-                        .or_else(|| self.storage.get(slot_name))
-                        .cloned();
-                    if let Some(inv_backend) = inv_backend {
-                        for inv in &invs {
-                            // Provide slot metadata as env variables for invariant evaluation
-                            let mut env = FxHashMap::default();
-                            env.insert("_slot_len".to_string(), Value::Int(SomaInt::from_i64(inv_backend.len() as i64)));
-                            env.insert("_slot_name".to_string(), Value::String(slot_name.to_string()));
-                            env.insert("_key".to_string(), Value::String(key_str.clone()));
-                            let result = self.eval_expr(inv, &mut env, cell_name, "");
-                            match result {
-                                Ok(Value::Bool(true)) => {}
-                                Ok(Value::Bool(false)) => {
-                                    return Err(ExecError::Runtime(RuntimeError::RequireFailed(
-                                        format!("memory invariant violated on '{}' after set(\"{}\")", slot_name, key_str)
-                                    )));
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
                 }
 
                 Ok(Value::Unit)
@@ -2070,6 +2083,8 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "append() requires a value argument".to_string()
                     )))?;
+                let size_after = backend.len() as i64 + 1;
+                self.check_invariants(cell_name, slot_name, "", val, size_after)?;
                 backend.append(value_to_stored(val));
                 Ok(Value::Unit)
             }
@@ -2087,7 +2102,7 @@ impl Interpreter {
             "values" => {
                 // In cluster mode: fan-out to all peers, merge with local
                 if is_sharded {
-                    return self.cluster_fan_out_values(slot_name, backend);
+                    return self.cluster_fan_out_values(slot_name, &backend);
                 }
                 let vals = backend.values();
                 Ok(Value::List(vals.into_iter().map(stored_to_value).collect()))
@@ -2746,6 +2761,60 @@ impl Interpreter {
     ) -> Result<Value, ExecError> {
         let mut fx_env: Env = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         self.eval_expr(expr, &mut fx_env, cell_name, signal_name)
+    }
+
+    /// Evaluate a slot's memory invariants against a candidate write.
+    /// Bindings visible to the invariant expression:
+    ///   <slot name> — the value being written (so `abs(position) <= 5` reads naturally)
+    ///   value       — alias for the same
+    ///   key         — the key being written ("" for push/append)
+    ///   size        — the slot's entry count AFTER the write would commit
+    /// Returns Err — and the caller must NOT commit — if any invariant is
+    /// false or cannot be evaluated. Errors are `try`-catchable.
+    fn check_invariants(
+        &mut self,
+        cell_name: &str,
+        slot_name: &str,
+        key_str: &str,
+        val: &Value,
+        size_after: i64,
+    ) -> Result<(), ExecError> {
+        let prefixed = format!("{}.{}", cell_name, slot_name);
+        let invs = match self.invariants.get(&prefixed).or_else(|| self.invariants.get(slot_name)) {
+            Some(v) if !v.is_empty() => v.clone(),
+            _ => return Ok(()),
+        };
+        for inv in &invs {
+            let mut env = FxHashMap::default();
+            env.insert(slot_name.to_string(), val.clone());
+            env.insert("value".to_string(), val.clone());
+            env.insert("key".to_string(), Value::String(key_str.to_string()));
+            env.insert("size".to_string(), Value::Int(SomaInt::from_i64(size_after)));
+            // legacy bindings (pre-V1.8 invariants)
+            env.insert("_slot_len".to_string(), Value::Int(SomaInt::from_i64(size_after)));
+            env.insert("_slot_name".to_string(), Value::String(slot_name.to_string()));
+            env.insert("_key".to_string(), Value::String(key_str.to_string()));
+            match self.eval_expr(inv, &mut env, cell_name, "") {
+                Ok(v) if is_truthy(&v) => {}
+                Ok(_) => {
+                    return Err(ExecError::Runtime(RuntimeError::RequireFailed(format!(
+                        "memory invariant violated on '{}': {} — rejected write of {} (key \"{}\"); the slot is unchanged",
+                        slot_name, crate::ast::render_expr(inv), val, key_str
+                    ))));
+                }
+                Err(e) => {
+                    let detail = match &e {
+                        ExecError::Runtime(re) => re.to_string(),
+                        other => format!("{:?}", other),
+                    };
+                    return Err(ExecError::Runtime(RuntimeError::RequireFailed(format!(
+                        "memory invariant on '{}' could not be evaluated: {} ({})",
+                        slot_name, crate::ast::render_expr(inv), detail
+                    ))));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {

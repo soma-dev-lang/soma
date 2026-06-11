@@ -260,6 +260,12 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
         }
     }
 
+    // V1.8: memory-invariant proof pass — one result block per cell
+    // that declares invariants. Writes of statically-known values are
+    // proven (or failed) against constant bounds; computed writes are
+    // reported as runtime-checked.
+    results.extend(super::invariants::verify_program_invariants(program));
+
     // V1.6: protocol verification — one result block per protocol.
     if !program.protocols.is_empty() {
         let findings = super::protocol::check_program(program);

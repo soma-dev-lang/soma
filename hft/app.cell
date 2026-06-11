@@ -155,6 +155,36 @@ cell Risk {
     }
 }
 
+// ── Ledger: the position book with a hard wall ──────────────────────
+// Defense in depth behind the Quoter's soft cap (±5) and Risk's breach
+// buffer (±7): the memory itself refuses a position outside ±7. Even a
+// bug in the engine cannot RECORD an illegal position — `soma verify`
+// proves literal writes and the runtime rejects computed ones at the
+// write boundary.
+
+cell Ledger {
+    face {
+        signal record_position(session: String, q: Int) -> Int
+        signal position_of(session: String) -> Int
+    }
+
+    memory {
+        positions: Map<String, Int> [persistent, consistent]
+        invariant abs(positions) <= 7
+    }
+
+    on record_position(session: String, q: Int) {
+        positions.set(session, q)
+        return q
+    }
+
+    on position_of(session: String) {
+        let p = positions.get(session)
+        if p == () { return 0 }
+        return p
+    }
+}
+
 // ── Microstructure: the exchange the strategy trades against ────────
 
 cell Microstructure {
@@ -296,6 +326,11 @@ cell Engine {
                 }
             }
 
+            // -- book the position: the ledger's invariant is the hard
+            //    wall — an engine bug that let q escape would error
+            //    HERE instead of trading on
+            record_position(session, q)
+
             // -- mark to market, drawdown ----------------------------
             if abs(q) > max_abs_q { max_abs_q = abs(q) }
             let equity = cash + q * mid
@@ -394,6 +429,21 @@ cell test RiskTests {
         assert_fails stand_down("t1")
         assert_fails halt_session("t1")
         assert session_state("t1") == "halted"
+    }
+}
+
+cell test LedgerTests {
+    rules {
+        // legal positions book
+        assert record_position("s1", 5) == 5
+        assert record_position("s1", 0 - 7) == 0 - 7
+        assert position_of("s1") == 0 - 7
+
+        // the wall: a position beyond ±7 cannot be RECORDED, period —
+        // and the previous value survives the rejected write
+        assert_fails record_position("s1", 8)
+        assert_fails record_position("s1", 0 - 12)
+        assert position_of("s1") == 0 - 7
     }
 }
 

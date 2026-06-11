@@ -702,3 +702,37 @@ impl fmt::Display for BinOp {
         }
     }
 }
+
+/// Render an expression back to (approximate) source text. Used by
+/// diagnostics that quote the offending expression — memory invariant
+/// violations, verify output — so the message shows `abs(position) <= 5`
+/// rather than an AST dump.
+pub fn render_expr(expr: &Expr) -> String {
+    match expr {
+        Expr::Literal(Literal::Int(n)) => n.to_string(),
+        Expr::Literal(Literal::BigInt(s)) => s.clone(),
+        Expr::Literal(Literal::Float(f)) => format!("{f:?}"),
+        Expr::Literal(Literal::String(s)) => format!("\"{s}\""),
+        Expr::Literal(Literal::Bool(b)) => b.to_string(),
+        Expr::Literal(Literal::Unit) => "()".to_string(),
+        Expr::Literal(other) => format!("{other:?}"),
+        Expr::Ident(name) => name.clone(),
+        Expr::FieldAccess { target, field } => format!("{}.{}", render_expr(&target.node), field),
+        Expr::MethodCall { target, method, args } => {
+            let a: Vec<String> = args.iter().map(|x| render_expr(&x.node)).collect();
+            format!("{}.{}({})", render_expr(&target.node), method, a.join(", "))
+        }
+        Expr::FnCall { name, args } => {
+            let a: Vec<String> = args.iter().map(|x| render_expr(&x.node)).collect();
+            format!("{}({})", name, a.join(", "))
+        }
+        Expr::BinaryOp { left, op, right } => {
+            format!("{} {} {}", render_expr(&left.node), op, render_expr(&right.node))
+        }
+        Expr::CmpOp { left, op, right } => {
+            format!("{} {} {}", render_expr(&left.node), op, render_expr(&right.node))
+        }
+        Expr::Not(inner) => format!("!{}", render_expr(&inner.node)),
+        other => format!("{other:?}"),
+    }
+}

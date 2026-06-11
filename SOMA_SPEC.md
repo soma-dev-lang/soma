@@ -55,8 +55,29 @@ face {
 ```
 memory {
     name: Type [property1, property2, parameterized_prop(value)]
+    invariant expr
 }
 ```
+
+### Invariants
+
+`invariant expr` declares a data property checked BEFORE every `.set()`/`.push()`
+on guarded slots commits. A violating write raises a try-catchable runtime
+error and the slot is left unchanged.
+
+| Binding | Meaning |
+|---------|---------|
+| `<slot name>` | the value being written |
+| `value` | alias for the value being written |
+| `key` | the key being written (`""` for push) |
+| `size` | the slot's entry count after the write |
+
+An invariant that names specific slots guards only those slots; one using
+only `value`/`key`/`size` guards every slot in its section. Invariants may
+call builtins only. `soma check` validates invariant expressions (unknown
+names are errors); `soma verify` statically proves writes of literals and
+`clamp(x, lo, hi)` against constant bounds, fails provable violations, and
+reports computed writes as runtime-checked.
 
 ### Types
 

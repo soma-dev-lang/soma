@@ -195,9 +195,17 @@ memory {
     users:  Map<String, String>  [persistent, consistent, encrypted]
     votes:  Map<String, Int>     [persistent, eventual, replicated(3)]
     audit:  List<String>         [persistent, immutable, retain(5years)]
-    invariant items.len >= 0                                    // checked on every .set()
-}
+    position: Map<String, Int>   [persistent]
+    invariant abs(position) <= 5     // checked BEFORE every write commits;
+}                                    // violation = try-catchable error, slot unchanged
 ```
+
+Invariant bindings: the slot's name (and `value`) = the value being written,
+`key` = the key, `size` = post-write entry count. An invariant naming slots
+guards only those slots; one using only value/key/size guards all slots in
+its section. `soma verify` proves literal and `clamp()` writes against
+constant bounds statically; computed writes are runtime-checked. Invariants
+may call builtins only (not handlers).
 
 ### 6.1 Axes
 

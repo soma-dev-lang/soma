@@ -1,0 +1,90 @@
+// ============================================================================
+// Memory invariants (V1.8) — promises about DATA, not just states
+// ============================================================================
+//
+// State machines prove WHERE the system can be; invariants prove WHAT
+// the data can say. An `invariant expr` inside `memory { }` is checked
+// by the runtime BEFORE every .set()/.push() commits — a violating
+// write is rejected with a try-catchable error and the slot is left
+// untouched. `soma verify` additionally proves statically-known writes
+// against constant bounds.
+//
+// Bindings available to an invariant expression:
+//   <slot name>  the value being written  (invariant abs(position) <= 5)
+//   value        alias for the same
+//   key          the key being written
+//   size         the slot's entry count after the write
+//
+// An invariant that names specific slots guards only those slots; one
+// that uses only value/key/size guards every slot in its section.
+//
+//   soma check  examples/invariants.cell      # validates the invariants themselves
+//   soma verify examples/invariants.cell      # proves literal writes, flags computed ones
+//   soma test   examples/invariants.cell
+//   soma run    examples/invariants.cell demo
+// ============================================================================
+
+cell GuardedVault {
+    face {
+        signal deposit(account: String, amount: Int) -> Map
+        signal balance_of(account: String) -> Int
+        signal demo() -> String
+        promise all_persistent
+    }
+
+    memory {
+        balances: Map<String, Int> [persistent, consistent]
+        audit: Map<String, String> [persistent, consistent]
+        invariant balances >= 0 && balances <= 1000
+        invariant size <= 100
+    }
+
+    // Untrusted input (a user, an LLM tool call, a bug) cannot put the
+    // vault into an illegal state: the write itself refuses.
+    on deposit(account: String, amount: Int) {
+        let current = balance_of(account)
+        let r = try { balances.set(account, current + amount) }
+        if r.error != () {
+            audit.set("rejected-{account}", "{r.error}")
+            return map("ok", false, "reason", "{r.error}")
+        }
+        return map("ok", true, "balance", current + amount)
+    }
+
+    on balance_of(account: String) {
+        let b = balances.get(account)
+        if b == () { return 0 }
+        return b
+    }
+
+    on demo() {
+        let first = deposit("ana", 300)
+        let second = deposit("ana", 9000)
+        let final_balance = balance_of("ana")
+        print("deposit 300:    {first}")
+        print("deposit 9000:   {second}")
+        print("after both, ana has {final_balance} (the bad write never landed)")
+        return "done"
+    }
+}
+
+cell test VaultTests {
+    rules {
+        // legal writes land
+        assert deposit("a1", 500).ok == true
+        assert balance_of("a1") == 500
+
+        // an overdraw-into-illegal write is REJECTED by the memory
+        // itself — and the slot keeps its previous value
+        assert deposit("a1", 800).ok == false
+        assert balance_of("a1") == 500
+
+        // direct breach attempts are runtime errors
+        assert_fails balances.set("x", 0 - 5)
+        assert_fails balances.set("x", 5000)
+
+        // boundary values are legal
+        assert deposit("a2", 1000).ok == true
+        assert deposit("a3", 0).ok == true
+    }
+}

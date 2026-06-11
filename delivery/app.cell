@@ -198,6 +198,9 @@ cell Orders {
         order_pay: Map<String, String> [persistent, consistent]
         order_courier: Map<String, String> [persistent, consistent]
         meta: Map<String, Int> [persistent, consistent]
+        // V1.8: the memory itself refuses a non-positive order total —
+        // no code path can record a free or negative order.
+        invariant order_total > 0
     }
 
     state order: OrderState {

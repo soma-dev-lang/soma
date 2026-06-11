@@ -16,6 +16,7 @@ pub mod effects;
 pub mod protocol;
 pub mod names;
 pub mod interpolation_check;
+pub mod invariants;
 pub mod dispatch;
 pub mod cross_machine;
 
@@ -179,6 +180,14 @@ pub enum CheckError {
     /// ambiguous cross-cell call.
     #[error("{message}")]
     DispatchIssue {
+        message: String,
+        span: Span,
+    },
+
+    /// V1.8: a memory invariant expression is itself invalid (unknown
+    /// name, non-builtin call) — it would fail at every runtime check.
+    #[error("{message}")]
+    InvariantIssue {
         message: String,
         span: Span,
     },
@@ -379,6 +388,15 @@ impl<'a> Checker<'a> {
             self.errors.push(CheckError::DispatchIssue {
                 message: e.message,
                 span: e.span,
+            });
+        }
+        // V1.8: memory invariants must themselves be valid — an
+        // invariant referencing an unknown name would reject every
+        // write at runtime with an evaluation error.
+        for issue in invariants::validate_program(program) {
+            self.errors.push(CheckError::InvariantIssue {
+                message: issue.message,
+                span: issue.span,
             });
         }
         for w in dispatch_warnings {

@@ -383,8 +383,18 @@ on withdraw(balance: Int, amount: Int) {
 memory {
     data: Map<String, String> [persistent, consistent]   // → SQLite
     cache: Map<String, String> [ephemeral, local]        // → in-memory
-    invariant data.len >= 0                               // checked on every .set()
+    balance: Map<String, Int> [persistent]
+    invariant balance >= 0 && balance <= 1000   // checked BEFORE every .set()/.push() commits
+    invariant size <= 10000                     // entry-count bound (all slots in this section)
 }
+
+// Invariant bindings: <slot name> and `value` = the value being written,
+// `key` = the key, `size` = entry count after the write. An invariant
+// that names slots guards only those; one using just value/key/size
+// guards every slot in its section. A violating write raises a
+// try-catchable error and the slot is UNCHANGED. `soma verify` proves
+// literal/clamp() writes statically; computed writes are runtime-checked.
+// Invariants may call builtins only.
 
 // In handlers:
 data.set("key", "value")
