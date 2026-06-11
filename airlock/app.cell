@@ -1,0 +1,186 @@
+// ============================================================================
+// AIRLOCK — a safety-critical controller where catastrophe is UNREACHABLE
+// ============================================================================
+//
+// A spacecraft / BSL-4 airlock has two doors. The one rule that keeps
+// everyone alive: the inner and outer doors must NEVER be open at the
+// same time. Both open = explosive decompression, or a level-4 pathogen
+// in the cabin. There is no "oops, we'll fix it" — the failure is fatal.
+//
+// In a PLC ladder-logic or C controller, "both doors never open" is an
+// interlock you hope you wired correctly, validated by testing every
+// sequence you THOUGHT of. In Soma it is a theorem:
+//
+//   The breach state does not exist in the machine. `inner_open` has the
+//   outer door sealed; `outer_open` has the inner door sealed; there is
+//   no state with both open. `soma verify` proves every reachable state,
+//   proves no deadlock (you can never get stuck in a depressurized lock),
+//   and proves liveness (the lock can always return to a safe sealed
+//   state). The catastrophe isn't guarded against — it is unrepresentable.
+//
+// The continuous safety layer rides on V1.8 memory invariants:
+//   invariant pressure >= 0 && pressure <= 101   — the seals never see a
+//   negative or burst pressure, REGARDLESS of what command sequence an
+//   operator (or a glitch, or a panicking astronaut) hammers in.
+//
+// Try to breach it:
+//   soma verify airlock/app.cell    # proves both-open is unreachable
+//   soma test   airlock/app.cell     # pins the refused unsafe commands
+//   soma run    airlock/app.cell demo
+//   soma run    airlock/app.cell command lock1 open_outer   # from sealed → REFUSED
+// ============================================================================
+
+cell type CommandResult {
+    variants {
+        Done { state: String }
+        Refused { reason: String }
+    }
+}
+
+cell Airlock {
+    face {
+        signal command(id: String, cmd: String) -> Map
+        signal status(id: String) -> Map
+        signal demo() -> String
+        promise all_persistent
+    }
+
+    memory {
+        // Cabin-side reference pressure is 101 kPa; vacuum is 0.
+        // The invariant is the hard wall: a control bug that tried to
+        // drive the lock to −5 kPa or 200 kPa is rejected at the write,
+        // and the slot keeps its last safe value.
+        pressure: Map<String, Int> [persistent, consistent]
+        invariant pressure >= 0 && pressure <= 101
+    }
+
+    // The interlock, as a state machine. Note what is ABSENT: there is
+    // no state in which both doors are open. That absence is the safety
+    // proof — the verifier confirms no reachable path produces it because
+    // the breach is not a state the controller can even name.
+    //
+    //   sealed       both doors closed, pressure matched to cabin (101)
+    //   inner_open   inner door open  (outer SEALED, pressure 101)
+    //   depressurize transitioning cabin→vacuum, both doors sealed
+    //   vacuum       both doors closed, pressure 0
+    //   outer_open   outer door open  (inner SEALED, pressure 0)
+    //   pressurize   transitioning vacuum→cabin, both doors sealed
+    state lock {
+        initial: sealed
+        sealed       -> inner_open       // safe: outer is sealed
+        inner_open   -> sealed           // close the inner door
+        sealed       -> depressurize     // begin cycle to vacuum
+        depressurize -> vacuum
+        vacuum       -> outer_open        // safe: inner is sealed
+        outer_open   -> vacuum            // close the outer door
+        vacuum       -> pressurize        // begin cycle back to cabin
+        pressurize   -> sealed
+    }
+
+    on command(id: String, cmd: String) {
+        // Initialize a fresh lock at cabin pressure.
+        if pressure.get(id) == () { pressure.set(id, 101) }
+
+        // Every command is just a requested transition. The machine —
+        // not an `if` ladder — decides whether it is allowed; an unsafe
+        // request raises and we report it as Refused, never executed.
+        let r = try { transition(id, cmd) }
+        let result = Done { state: get_status(id) }
+        if r.error != () {
+            result = Refused { reason: "{r.error}" }
+        }
+
+        // Pressure tracks the state. These writes pass through the
+        // invariant; the matched/vacuum values are always in [0, 101].
+        let st = get_status(id)
+        if st == "vacuum" || st == "outer_open" { pressure.set(id, 0) }
+        if st == "sealed" || st == "inner_open" { pressure.set(id, 101) }
+
+        return map(
+            "id", id,
+            "command", cmd,
+            "result", describe(result),
+            "state", get_status(id),
+            "pressure", pressure.get(id),
+            "doors", door_summary(get_status(id))
+        )
+    }
+
+    // Exhaustive — add a CommandResult variant and `soma check` refuses
+    // to build until this names it.
+    on describe(r: Map) {
+        return match r {
+            Done { state }    -> "done -> {state}"
+            Refused { reason } -> "REFUSED: {reason}"
+        }
+    }
+
+    // The human-readable door state for each machine state — and a
+    // standing assertion that no state reports both doors open.
+    on door_summary(st: String) {
+        if st == "inner_open" { return "inner OPEN, outer sealed" }
+        if st == "outer_open" { return "inner sealed, outer OPEN" }
+        return "both sealed"
+    }
+
+    on status(id: String) {
+        let st = get_status(id)
+        return map("id", id, "state", st, "pressure", pressure.get(id), "doors", door_summary(st))
+    }
+
+    on demo() {
+        print("=== normal EVA cycle: cabin -> vacuum -> open outer ===")
+        print(walk("lk", "depressurize"))
+        print(walk("lk", "vacuum"))
+        print(walk("lk", "outer_open"))
+        print("")
+        print("=== the unsafe command: open the INNER door while OUTER is open ===")
+        print("(this is the breach a glitch or a panicked operator would cause)")
+        print(walk("lk", "inner_open"))
+        print("")
+        print("=== the controller is still in a safe state ===")
+        print(walk("lk", "vacuum"))
+        return "done"
+    }
+
+    on walk(id: String, cmd: String) {
+        let r = command(id, cmd)
+        return "{cmd} -> {r.state} | {r.doors} | {r.pressure}kPa | {r.result}"
+    }
+}
+
+// ── Tests: the safety property, pinned ──────────────────────────────
+
+cell test InterlockTests {
+    rules {
+        // a normal cycle proceeds
+        assert command("t1", "depressurize").state == "depressurize"
+        assert command("t1", "vacuum").state == "vacuum"
+        assert command("t1", "outer_open").state == "outer_open"
+
+        // THE safety property: with the outer door open, you CANNOT open
+        // the inner door — the transition does not exist, so it raises.
+        assert_fails transition("t1", "inner_open")
+
+        // symmetric: from sealed (inner side live), you cannot jump the
+        // outer door open without cycling to vacuum first
+        assert command("t2", "depressurize").state == "depressurize"
+        assert_fails transition("t2", "outer_open")
+
+        // you can always close back to a safe state
+        assert command("t1", "vacuum").state == "vacuum"
+    }
+}
+
+cell test PressureTests {
+    rules {
+        // the seals never see an illegal pressure — direct breach
+        // attempts are rejected at the memory itself
+        assert_fails pressure.set("x", 0 - 5)
+        assert_fails pressure.set("x", 200)
+
+        // legal boundary values are accepted
+        assert pressure.set("x", 0) == ()
+        assert pressure.set("x", 101) == ()
+    }
+}

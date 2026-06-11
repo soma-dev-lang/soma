@@ -1,0 +1,12 @@
+[package]
+name = "airlock"
+version = "0.1.0"
+description = "Airlock — a safety-critical interlock where 'both doors open' is unreachable by construction"
+
+# The whole point: prove the interlock. No `eventually` goal — a lock is
+# reactive (it cycles forever), so the theorem is structural safety
+# (both-open is not a reachable state) + no deadlock + liveness back to
+# a safe state, all of which the default checks prove.
+[verify]
+cells = ["Airlock"]
+deadlock_free = true
