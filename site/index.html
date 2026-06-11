@@ -1,31 +1,220 @@
 <!DOCTYPE html>
-<html lang="en" prefix="og: https://ogp.me/ns#">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Soma — Verified agent lifecycles in a fractal cell language</title>
-<meta name="description" content="Soma is a fractal cell language for verified distributed systems and AI agents. Agent lifecycles are state machines the compiler proves terminate; set_budget caps the LLM loop inside. Memory carries distribution properties the compiler checks for CAP contradictions. Same code runs on one machine or a cluster.">
-<meta name="keywords" content="soma, programming language, distributed systems, formal verification, state machines, fractal, declarative, agent-native, cell model, CAP theorem, consistent hashing, Erlang alternative, Kubernetes alternative, TLA+, model checking, pipes, actor model">
-
-<!-- Open Graph -->
-<meta property="og:title" content="Soma — Verified agent lifecycles in a fractal cell language">
-<meta property="og:description" content="A fractal cell language where the agent's lifecycle is a state machine the compiler proves terminates, and set_budget bounds the LLM loop inside it. Verification covers the protocol; set_budget covers the LLM.">
+<title>Soma language</title>
+<meta name="description" content="Soma is an experimental programming language built around cells, state machines, memory properties, and agent-oriented tooling. This page describes what is implemented and what is not guaranteed.">
+<meta property="og:title" content="Soma language">
+<meta property="og:description" content="An experimental cell-based language with state-machine checks, memory properties, agent tooling, native numeric handlers, and record/replay.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://soma-lang.dev">
-<meta property="og:site_name" content="Soma Language">
-
-<!-- Twitter -->
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Soma — Verified agent lifecycles, fractal cells">
-<meta name="twitter:description" content="cell agent + state machine + set_budget = a lifecycle the compiler proves terminates and an LLM loop with a hard token cap. Verification covers the protocol; set_budget covers the LLM.">
-
-<!-- Canonical -->
+<meta property="og:site_name" content="Soma">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Soma language">
+<meta name="twitter:description" content="A factual overview of the Soma language implementation and its limits.">
 <link rel="canonical" href="https://soma-lang.dev">
-
-<!-- Agent-readable reference -->
 <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM Reference">
-
-<!-- Structured data for search engines and AI agents -->
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1f232c;
+  --text: #e7e9ee;
+  --muted: #a9afbd;
+  --faint: #7d8493;
+  --line: #303642;
+  --accent: #8ab4f8;
+  --ok: #7bd88f;
+  --warn: #ffd479;
+  --bad: #ff9b9b;
+  --code: #d9e2f1;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--code);
+}
+code {
+  background: var(--panel-2);
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+}
+pre {
+  margin: 1rem 0;
+  padding: 1rem;
+  overflow-x: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  line-height: 1.45;
+}
+nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem 1.25rem;
+  background: rgba(15, 17, 21, 0.94);
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.85rem;
+  font-size: 0.9rem;
+}
+.links a { color: var(--muted); }
+main {
+  width: min(980px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 3rem 0;
+}
+header {
+  padding: 1rem 0 2rem;
+}
+h1, h2, h3 {
+  line-height: 1.2;
+  margin: 0 0 1rem;
+}
+h1 {
+  font-size: clamp(2.4rem, 8vw, 4.5rem);
+  letter-spacing: -0.04em;
+}
+h2 {
+  font-size: 1.55rem;
+  padding-top: 2rem;
+}
+h3 {
+  font-size: 1.05rem;
+  color: var(--muted);
+  padding-top: 0.5rem;
+}
+p { margin: 0 0 1rem; color: var(--muted); }
+section {
+  border-top: 1px solid var(--line);
+  padding: 1.6rem 0;
+}
+ul {
+  margin: 0.5rem 0 1rem;
+  padding-left: 1.2rem;
+  color: var(--muted);
+}
+li { margin: 0.35rem 0; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0 1.5rem;
+  font-size: 0.95rem;
+}
+th, td {
+  vertical-align: top;
+  text-align: left;
+  padding: 0.65rem;
+  border-bottom: 1px solid var(--line);
+}
+th {
+  color: var(--faint);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+td { color: var(--muted); }
+.lede {
+  max-width: 760px;
+  font-size: 1.15rem;
+}
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem;
+}
+.card h3 { margin: 0 0 0.35rem; padding: 0; color: var(--text); }
+.tag {
+  display: inline-block;
+  margin-right: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+.implemented { color: #102415; background: var(--ok); }
+.partial { color: #302300; background: var(--warn); }
+.limited { color: #331111; background: var(--bad); }
+.note {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--warn);
+  border-radius: 8px;
+  padding: 1rem;
+  color: var(--muted);
+}
+.install {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  max-width: 650px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin: 1.4rem 0;
+}
+.install code {
+  flex: 1;
+  background: transparent;
+  padding: 0;
+}
+.install button {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+}
+footer {
+  border-top: 1px solid var(--line);
+  color: var(--faint);
+  padding: 2rem 0;
+  font-size: 0.9rem;
+}
+@media (max-width: 760px) {
+  nav { align-items: flex-start; flex-direction: column; }
+  .links { justify-content: flex-start; }
+  .status-grid { grid-template-columns: 1fr; }
+  table, tbody, tr, td, th { display: block; }
+  th { display: none; }
+  td { padding-left: 0; }
+  td:first-child { color: var(--text); padding-top: 1rem; }
+  .install { align-items: flex-start; flex-direction: column; }
+}
+</style>
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -33,1444 +222,235 @@
   "name": "Soma",
   "applicationCategory": "Programming Language",
   "operatingSystem": "macOS, Linux",
-  "description": "A fractal cell language for verified distributed systems and AI agents. Agent lifecycles are state machines a CTL model checker proves terminate; set_budget caps the LLM loop inside. The cell model unifies functions, services, and clusters; memory carries distribution properties (persistent, consistent, ephemeral, ttl) the compiler checks for CAP contradictions. Includes soma fix auto-repair, soma lint anti-patterns, [native] Rust codegen for hot loops, and a tree-walking interpreter, bytecode VM, and native backend.",
+  "description": "Experimental cell-based programming language with state-machine checks, memory properties, agent-oriented tooling, and a Rust implementation.",
   "url": "https://soma-lang.dev",
   "downloadUrl": "https://github.com/soma-dev-lang/soma",
   "softwareVersion": "2.2.0",
-  "license": "https://opensource.org/licenses/MIT",
+  "license": "MIT",
   "programmingLanguage": "Rust",
-  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "featureList": [
-    "Fractal cell model — same structure from function to datacenter",
-    "Formal verification — CTL model checker proves state machine properties",
-    "Distributed by declaration — scale { replicas: 50, consistency: strong }",
-    "Compile-time CAP analysis — consistency vs availability checked before deploy",
-    "Native compilation — [native] compiles numeric handlers to Rust for ~100–300x speedup on tight loops, ~2.6x faster than Numba on geomean — and never returns wrong answers on integer overflow (Numba does)",
-    "Zero-config clustering — soma serve --join host:port",
-    "Pipe composition — data |> filter() |> map() |> sort_by() |> top()",
-    "Machine-readable output — soma check --json, soma verify --json, soma describe",
-    "Auto-repair — soma fix writes missing handlers, removes contradictory properties",
-    "Linting — soma lint catches redundant to_json, unchecked .get(), if-chains",
-    "Pattern matching — map destructuring, string prefix, guard clauses, range patterns",
-    "Auto-serialize storage — .set() auto-converts maps to JSON, .get() auto-parses",
-    "Design by contract — ensure postconditions, memory invariants",
-    "Cloud deployment — soma deploy --target cloudflare|fly|aws",
-    "Verified AI agents — cell agent + think() + tool + state machine = proven termination",
-    "Agent-first — generate → fix → lint → verify → serve workflow",
-    "Deterministic record / replay — soma run --record + soma replay re-execute production incidents on your laptop with nondeterminism detection",
-    "Refinement check (V1.3) — soma verify proves that handler bodies cannot lie to the state machine: every transition() call must name a declared state, and every declared transition must be reached by some handler"
-  ]
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
 }
 </script>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
-<style>
-:root{--bg:#060910;--bg2:#0d1117;--bg3:#161b22;--text:#e5e7eb;--muted:#9ca3af;--dim:#6b7280;--accent:#818cf8;--accent2:#a78bfa;--green:#34d399;--yellow:#fbbf24;--red:#f87171;--border:rgba(255,255,255,.06);--r:12px}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
-nav{background:rgba(6,9,16,.9);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 2rem;height:56px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
-.logo{font-family:'JetBrains Mono';font-size:1.25rem;font-weight:800;color:var(--accent)}
-nav .links a{color:var(--muted);margin-left:2rem;font-size:.875rem;font-weight:500}nav .links a:hover{color:var(--text);text-decoration:none}
-.container{max-width:900px;margin:0 auto;padding:2rem}
-.hero{text-align:center;padding:6rem 1rem 2rem}
-.hero h1{font-size:5rem;font-weight:900;letter-spacing:-4px;background:linear-gradient(135deg,#e0e7ff,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:1rem}
-.hero .manifesto{color:var(--text);font-size:1.5rem;font-weight:300;max-width:700px;margin:0 auto;line-height:1.6}
-.hero .manifesto strong{color:#f0f6fc;font-weight:600}
-.hero .tagline{font-family:'JetBrains Mono';color:var(--dim);font-size:.8rem;margin-top:2rem;letter-spacing:1px}
-.install-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem 1.5rem;margin:2rem auto;max-width:600px;font-family:'JetBrains Mono';font-size:.9375rem;display:flex;align-items:center;gap:1rem}
-.install-box .prompt{color:var(--dim)}
-.install-box code{color:var(--green);flex:1}
-.install-box .copy{background:var(--bg3);border:none;color:var(--muted);padding:.375rem .75rem;border-radius:6px;cursor:pointer;font-family:inherit;font-size:.8125rem}
-.install-box .copy:hover{color:var(--text)}
-section{padding:3rem 0;border-top:1px solid var(--border)}
-section h2{font-size:1.75rem;font-weight:800;margin-bottom:1.5rem;letter-spacing:-.5px}
-section h3{font-size:1.125rem;font-weight:700;color:var(--accent);margin:2rem 0 .75rem}
-p{color:var(--muted);margin-bottom:1rem}
-blockquote{border-left:3px solid var(--accent);padding:.75rem 1.25rem;margin:1.5rem 0;background:var(--bg2);border-radius:0 var(--r) var(--r) 0}
-blockquote p{margin:0;color:var(--text);font-size:1.05rem;font-style:italic}
-blockquote cite{display:block;color:var(--dim);font-size:.8rem;margin-top:.5rem;font-style:normal}
-pre{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem;margin:1rem 0 1.5rem;overflow-x:auto;font-family:'JetBrains Mono';font-size:.8125rem;line-height:1.8;color:var(--text)}
-code{font-family:'JetBrains Mono';font-size:.875em;background:var(--bg3);padding:.125rem .375rem;border-radius:4px}
-pre code{background:none;padding:0}
-.kw{color:var(--accent)}.str{color:var(--green)}.num{color:var(--yellow)}.cmt{color:var(--dim)}.fn{color:var(--accent2)}.op{color:var(--red)}
-table{width:100%;border-collapse:collapse;margin:1rem 0 1.5rem;font-size:.875rem}
-th{text-align:left;padding:.625rem;background:var(--bg2);color:var(--dim);font-size:.75rem;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)}
-td{padding:.625rem;border-bottom:1px solid var(--border);color:var(--muted)}
-td:first-child{font-family:'JetBrains Mono';color:var(--accent);font-size:.8125rem}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
-.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin:1.5rem 0}
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.5rem}
-.card h4{font-size:.9375rem;font-weight:700;margin-bottom:.5rem}
-.card p{font-size:.875rem}
-.thesis{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:2rem;margin:2rem 0}
-.thesis h3{margin-top:0;font-size:1.2rem}
-.thesis .number{font-family:'JetBrains Mono';color:var(--accent);font-size:.75rem;letter-spacing:2px;text-transform:uppercase;margin-bottom:.5rem}
-.vs{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin:1.5rem 0}
-.vs .side{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem}
-.vs .side h4{font-size:.8rem;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:.75rem}
-.badge{display:inline-block;background:rgba(129,140,248,.1);color:var(--accent);padding:.125rem .5rem;border-radius:4px;font-size:.75rem;font-weight:600;font-family:'JetBrains Mono'}
-footer{border-top:1px solid var(--border);padding:2rem;text-align:center;color:var(--dim);font-size:.8125rem}
-@media(max-width:768px){.hero h1{font-size:3rem}.grid2,.grid3,.vs{grid-template-columns:1fr}}
-</style>
 </head>
 <body>
 <nav>
-<div class="logo">soma</div>
-<div class="links">
-<a href="#verified-agents" style="color:var(--accent)">Verified Agents</a>
-<a href="#budget">Budget Proof</a>
-<a href="#soundness">Coq</a>
-<a href="#manifesto">Why</a>
-<a href="#syntax">Language</a>
-<a href="#agents">Tooling</a>
-<a href="#native">Performance</a>
-<a href="#fractal">Distribution</a>
-<a href="/paper.html">Paper</a>
-<a href="https://github.com/soma-dev-lang/soma">GitHub</a>
-</div>
+  <div class="brand">soma</div>
+  <div class="links">
+    <a href="#status">Status</a>
+    <a href="#language">Language</a>
+    <a href="#verification">Verification</a>
+    <a href="#agents">Agents</a>
+    <a href="#runtime">Runtime</a>
+    <a href="#limits">Limits</a>
+    <a href="/paper">Paper</a>
+    <a href="https://github.com/soma-dev-lang/soma">GitHub</a>
+  </div>
 </nav>
 
-<div class="container">
+<main>
+<header>
+  <h1>Soma</h1>
+  <p class="lede">Soma is an experimental programming language built around one unit called a cell. A cell can contain an interface, memory declarations, state machines, scheduled work, and handlers. The current implementation is a Rust compiler/interpreter with static checks, a web server, agent helpers, native numeric handlers, and record/replay.</p>
+  <p>This page is intentionally factual. It separates implemented behavior from partial or experimental behavior.</p>
+  <div class="install">
+    <code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
+    <button type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
+  </div>
+  <p class="note">Installer note: the shell installer executes code fetched from the project repository. Review <a href="https://github.com/soma-dev-lang/soma/blob/main/site/setup.sh">site/setup.sh</a> before running it in an environment you care about.</p>
+</header>
 
-<!-- ═══════════════════════════════════ HERO ═══════════════════════════════════ -->
-<div class="hero">
-<h1><span class="hero-title">soma</span><span class="sr-only"> — a fractal language for verified distributed systems</span></h1>
-<p class="manifesto">
-A fractal cell language where the <strong>agent's lifecycle is a state machine the compiler proves terminates</strong>.
-State machines are proofs. Infrastructure is a constraint. Pipelines are pipes.
-</p>
-<p class="tagline">cell agent + state machine + set_budget &mdash; protocol verified at compile time, LLM loop bounded at runtime</p>
-</div>
-
-<div class="install-box">
-<span class="prompt">$</span>
-<code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
-<button class="copy" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
-</div>
-
-<pre><code><span class="kw">cell</span> Fund {
-    <span class="kw">memory</span> {
-        positions: Map&lt;String, Position&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>]   <span class="cmt">// &rarr; SQLite. Automatically.</span>
-        prices:    Map&lt;String, Float&gt;    [<span class="fn">ephemeral</span>, <span class="fn">ttl</span>(<span class="num">30</span>s)]     <span class="cmt">// &rarr; in-memory, auto-expire</span>
-    }
-
-    <span class="kw">state</span> regime {
-        <span class="kw">initial</span>: neutral
-        neutral &rarr; risk_on
-        neutral &rarr; risk_off
-        * &rarr; crisis
-        crisis &rarr; neutral
-    }
-
-    <span class="kw">every</span> <span class="num">1</span>h { rebalance() }
-
-    <span class="kw">on</span> rebalance() {
-        <span class="kw">let</span> portfolio = universe()
-            |&gt; <span class="fn">map</span>(s =&gt; score(s))
-            |&gt; <span class="fn">filter</span>(s =&gt; s.composite &gt; <span class="num">50</span>)
-            |&gt; <span class="fn">sort_by</span>(<span class="str">"composite"</span>, <span class="str">"desc"</span>)
-            |&gt; <span class="fn">top</span>(<span class="num">15</span>)
-
-        <span class="kw">for</span> stock <span class="kw">in</span> portfolio { execute(stock) }
-    }
-
-    <span class="kw">on</span> request(method: String, path: String, body: String) {
-        <span class="kw">match</span> path {
-            <span class="str">"/"</span>         &rarr; <span class="fn">html</span>(dashboard())
-            <span class="str">"/api/risk"</span> &rarr; risk_report()
-            _           &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
-        }
-    }
-}</code></pre>
-
-<!-- ═══════════════════════════════════ VERIFIED AGENTS ═══════════════════════════════════ -->
-<section id="verified-agents" style="border-top:none;padding-top:1rem">
-<div style="background:linear-gradient(135deg,rgba(129,140,248,.08),rgba(167,139,250,.08));border:1px solid rgba(129,140,248,.2);border-radius:var(--r);padding:2rem;margin:1rem 0">
-<h2 style="margin-bottom:.5rem">An agent whose <span style="color:var(--accent)">lifecycle is formally verified</span></h2>
-<p style="color:var(--muted);font-size:1.05rem">Every agent framework has the same problem: agents get stuck in loops, call tools in wrong order, never terminate. Soma is the only language where the agent's lifecycle is a state machine the compiler can <strong>prove terminates</strong> &mdash; combined with a hard <code>set_budget</code> token cap, every <code>think()</code> call is bounded by construction. Verification covers the protocol; <code>set_budget</code> covers the LLM loop.</p>
-</div>
-
-<div class="vs">
-<div class="side">
-<h4>The agent &mdash; 30 lines</h4>
-<pre><code><span class="kw">cell</span> <span class="kw">agent</span> Researcher {
-    <span class="kw">face</span> {
-        <span class="kw">signal</span> research(topic: String) -> Map
-        <span class="kw">tool</span> search(q: String) -> String
-        <span class="kw">tool</span> summarize(text: String) -> String
-    }
-
-    <span class="kw">state</span> workflow {
-        <span class="kw">initial</span>: idle
-        idle -> researching
-        researching -> analyzing
-        analyzing -> done
-        * -> failed
-    }
-
-    <span class="kw">on</span> research(topic: String) {
-        <span class="fn">set_budget</span>(<span class="num">5000</span>)                          <span class="cmt">// hard token cap</span>
-        <span class="fn">transition</span>(<span class="str">"task"</span>, <span class="str">"researching"</span>)
-        <span class="kw">let</span> data = <span class="fn">think</span>(<span class="str">"Research: {topic}"</span>)
-
-        <span class="fn">transition</span>(<span class="str">"task"</span>, <span class="str">"analyzing"</span>)
-        <span class="kw">let</span> summary = <span class="fn">think</span>(<span class="str">"Synthesize: {data}"</span>)
-
-        <span class="fn">transition</span>(<span class="str">"task"</span>, <span class="str">"done"</span>)
-        <span class="fn">map</span>(<span class="str">"summary"</span>, summary, <span class="str">"tokens"</span>, <span class="fn">tokens_used</span>())
-    }
-}</code></pre>
-</div>
-<div class="side">
-<h4>The proof &mdash; 0 lines of test code</h4>
-<pre><code>$ soma verify agent.cell
-
-State machine 'workflow': 5 states, initial 'idle'
-  States: [analyzing, done, failed, idle, researching]
-
-  <span class="green">&#x2713;</span> 5 states, 7 transitions
-  <span class="green">&#x2713;</span> all states reachable from 'idle'
-  <span class="green">&#x2713;</span> terminal states: [failed]
-  <span class="green">&#x2713;</span> no deadlocks
-  <span class="green">&#x2713;</span> liveness: every state can eventually reach a terminal state
-  <span class="green">&#x2713;</span> wildcard transitions: * -> [failed]
-
-  Temporal properties for 'workflow':
-  <span class="green">&#x2713;</span> deadlock_free
-  <span class="green">&#x2713;</span> eventually(state in [done, failed])
-  <span class="green">&#x2713;</span> after('researching', state in [analyzing, failed])
-  <span class="green">&#x2713;</span> after('analyzing', state in [done, failed])
-
-<span style="color:var(--green);font-weight:700">Temporal: 4 passed, 0 failed</span>
-
-<span class="cmt">// The compiler PROVED this lifecycle
-// always terminates. set_budget(N) caps
-// the LLM loop inside it. Together: a
-// bounded, terminating agent.</span></code></pre>
-</div>
-</div>
-
-<p><code>cell agent</code> &mdash; an AI agent is a cell. <code>think()</code> &mdash; calls any OpenAI-compatible LLM and runs the tool-calling loop with retries. <code>tool</code> &mdash; declares what the LLM is allowed to call (handler-backed). <code>state</code> &mdash; the lifecycle protocol, model-checked at compile time. The proof is over the lifecycle, not over the LLM's tokens; <code>set_budget</code> bounds the latter.</p>
-
-<h3>Multi-agent pipelines with verified handoffs</h3>
-<pre><code><span class="kw">cell</span> <span class="kw">agent</span> Pipeline {
-    <span class="kw">state</span> pipeline {
-        <span class="kw">initial</span>: idle
-        idle -> researching -> writing -> reviewing -> done
-        * -> failed
-    }
-
-    <span class="kw">on</span> run(topic: String) {
-        <span class="fn">transition</span>(<span class="str">"job"</span>, <span class="str">"researching"</span>)
-        <span class="kw">let</span> facts = <span class="fn">think</span>(<span class="str">"Research '{topic}'. List 5 key facts."</span>)
-
-        <span class="fn">transition</span>(<span class="str">"job"</span>, <span class="str">"writing"</span>)
-        <span class="kw">let</span> article = <span class="fn">think</span>(<span class="str">"Write an article from: {facts}"</span>)
-
-        <span class="fn">transition</span>(<span class="str">"job"</span>, <span class="str">"reviewing"</span>)
-        <span class="kw">let</span> review = <span class="fn">think</span>(<span class="str">"Review for accuracy: {article}"</span>)
-
-        <span class="fn">transition</span>(<span class="str">"job"</span>, <span class="str">"done"</span>)
-        <span class="fn">map</span>(<span class="str">"article"</span>, article, <span class="str">"review"</span>, review)
-    }
-}
-
-<span class="cmt">// soma verify PROVES, on the state machine:</span>
-<span class="cmt">//   - every reachable state has a path to done or failed (eventually)</span>
-<span class="cmt">//   - no deadlocks</span>
-<span class="cmt">// What it does NOT prove: that the handler body calls transition() in</span>
-<span class="cmt">// the right order. That's still on you (and on `soma check`, which</span>
-<span class="cmt">// catches missing handlers, contradictory properties, signal mismatches).</span></code></pre>
-
-<table>
-<tr><th></th><th>LangChain</th><th>CrewAI</th><th>AutoGen</th><th>Soma</th></tr>
-<tr><td>Lifecycle proven to terminate</td><td>No</td><td>No</td><td>No</td><td><strong>Yes (CTL on the state machine)</strong></td></tr>
-<tr><td>Illegal tool order rejected at compile time</td><td>No</td><td>No</td><td>No</td><td><strong>State machine + face contract</strong></td></tr>
-<tr><td>Token budget enforced as a hard cap</td><td>No</td><td>No</td><td>No</td><td><strong>Yes (<code>set_budget</code>)</strong></td></tr>
-<tr><td>Verified handoffs</td><td>No</td><td>No</td><td>No</td><td><strong>Signal types + state machines</strong></td></tr>
-<tr><td>Agent memory persistence</td><td>Plugin</td><td>Plugin</td><td>Plugin</td><td><strong>Built-in: [persistent]</strong></td></tr>
-<tr><td>Distribution</td><td>No</td><td>No</td><td>No</td><td><strong>soma serve --join</strong></td></tr>
-</table>
+<section id="status">
+  <h2>Implementation Status</h2>
+  <div class="status-grid">
+    <div class="card">
+      <h3><span class="tag implemented">implemented</span>Language core</h3>
+      <p>Cells, handlers, memory slots, state machines, pattern matching, collections, pipes, tests, and a CLI are implemented.</p>
+    </div>
+    <div class="card">
+      <h3><span class="tag partial">partial</span>Distributed runtime</h3>
+      <p>Nodes can join through the signal bus. Replication is currently broadcast-based and should be treated as eventual, not consensus-backed.</p>
+    </div>
+    <div class="card">
+      <h3><span class="tag limited">limited</span>Formal claims</h3>
+      <p>Verification applies to the declared state-machine abstraction, memory-budget model, and syntactic refinement checks. It does not prove arbitrary handler semantics or LLM output quality.</p>
+    </div>
+  </div>
 </section>
 
-<!-- ═══════════════════════════════════ MANIFESTO ═══════════════════════════════════ -->
-<section id="manifesto">
-<h2>The problem</h2>
-
-<p>A quantitative fund today needs Python + Pandas + Redis + PostgreSQL + Kafka + Flask + React + Celery + Airflow + Terraform. Ten tools, five languages, three teams. Fifty thousand lines of glue code. The specification lives in Confluence. The code lives somewhere else. They drift apart.</p>
-
-<p>An AI agent can write a function. Maybe a file. But it cannot write a <em>system</em> &mdash; services that coordinate, maintain state, handle failures, and evolve. The gap is not intelligence. The gap is that programming languages separate intent from infrastructure, specification from implementation, contract from code.</p>
-
-<p><strong>Soma closes that gap.</strong></p>
-
-<div class="thesis">
-<div class="number">Thesis I &mdash; after Lamport</div>
-<h3>The specification is the program</h3>
-<p>In Soma, you don't write specs then implement them. The <code>face</code> contract is the API. The <code>state</code> machine is the protocol. The <code>memory</code> properties are the infrastructure requirements. The compiler checks all three. The same artifact that describes what the system should do is the artifact that runs.</p>
-<blockquote>
-<p>Everyone thinks they mean the same thing by "specification" until they try to make it precise.</p>
-<cite>&mdash; Leslie Lamport, Turing Lecture 2014</cite>
-</blockquote>
-</div>
-
-<div class="thesis">
-<div class="number">Thesis II &mdash; after Hellerstein</div>
-<h3>Infrastructure is a constraint, not a configuration</h3>
-<p><code>[persistent, consistent]</code> resolves to SQLite. <code>[ephemeral]</code> resolves to in-memory. The program never names a database. It declares what it needs. The runtime resolves how. The provider protocol is extensible &mdash; custom backends can be added as <code>.cell</code> files.</p>
-<pre><code><span class="kw">memory</span> {
-    orders:   Map&lt;String, Order&gt;   [<span class="fn">persistent</span>, <span class="fn">consistent</span>]     <span class="cmt">// &rarr; SQLite</span>
-    cache:    Map&lt;String, Price&gt;   [<span class="fn">ephemeral</span>, <span class="fn">local</span>]          <span class="cmt">// &rarr; in-memory HashMap</span>
-    audit:    Log&lt;Event&gt;           [<span class="fn">persistent</span>]               <span class="cmt">// &rarr; SQLite (WAL mode)</span>
-}</code></pre>
-<blockquote>
-<p>The future of data management lies in the declarative specification of what is wanted, not the procedural specification of how to get it.</p>
-<cite>&mdash; Joseph Hellerstein, The Declarative Imperative, 2010</cite>
-</blockquote>
-</div>
-
-<div class="thesis">
-<div class="number">Thesis III &mdash; after Kay</div>
-<h3>Agents build systems, not functions</h3>
-<p>Soma's cell is fractal. The same structure &mdash; face, memory, state, handlers &mdash; works at every scale. A function is a cell. A service is a cell. An AI agent doesn't need to learn "how to deploy a distributed system." It needs to learn <em>one thing</em>: the cell. Independent cells communicate via the TCP signal bus, configured in <code>soma.toml</code>.</p>
-<pre><code><span class="cmt">// Two independent programs, connected via soma.toml</span>
-
-<span class="cmt">// exchange/app.cell</span>
-<span class="kw">cell</span> Exchange {
-    <span class="kw">on</span> order(data: Map) { place_order(data) }
-    <span class="kw">every</span> <span class="num">500</span>ms { <span class="kw">signal</span> trade(match_orders()) }
-}
-
-<span class="cmt">// trader/app.cell</span>
-<span class="kw">cell</span> Trader {
-    <span class="kw">every</span> <span class="num">3</span>s { <span class="kw">signal</span> order(quote) }
-    <span class="kw">on</span> trade(fill: Map) { record_fill(fill) }
-}
-
-<span class="cmt">// trader/soma.toml: [peers] exchange = "localhost:8082"</span></code></pre>
-<blockquote>
-<p>The best way to predict the future is to invent it.</p>
-<cite>&mdash; Alan Kay, Turing Award 2003</cite>
-</blockquote>
-</div>
-</section>
-
-<!-- ═══════════════════════════════════ CONTRACTS ═══════════════════════════════════ -->
-<section id="contracts">
-<h2>Contracts are enforced</h2>
-
-<p>The <code>face</code> section is not documentation. It is a <strong>machine-checked contract</strong>. The compiler verifies it. Break the contract &mdash; the program does not compile.</p>
-
-<pre><code><span class="kw">cell</span> API {
-    <span class="kw">face</span> {
-        <span class="kw">signal</span> create(name: String) -> Map
-        <span class="kw">signal</span> delete(id: String)            <span class="cmt">// &larr; declared but no handler</span>
-        <span class="kw">promise</span> all_persistent
+<section id="language">
+  <h2>Language Shape</h2>
+  <p>A Soma program is organized as cells. The same syntax is used for a small command-line program, an HTTP handler, an agent, or a larger composed system.</p>
+<pre><code>cell Store {
+    face {
+        signal put(key: String, value: String)
+        signal get(key: String) -> String
     }
-    <span class="kw">on</span> create(name: String) { <span class="kw">return</span> <span class="fn">map</span>(<span class="str">"name"</span>, name) }
+
+    memory {
+        data: Map&lt;String, String&gt; [persistent, consistent]
+    }
+
+    state lifecycle {
+        initial: empty
+        empty -> ready
+        ready -> ready
+    }
+
+    on put(key: String, value: String) {
+        data.set(key, value)
+        transition("store", "ready")
+    }
+
+    on get(key: String) {
+        return data.get(key)
+    }
 }</code></pre>
 
-<pre><code><span class="op">error: face contract: signal 'delete' declared in cell 'API' has no handler</span>
-<span class="dim">&rarr; Every signal in the face MUST have a matching on handler.</span>
-<span class="dim">&rarr; Param counts are verified. Contradictory properties are rejected.</span>
-<span class="dim">&rarr; Descriptive promises generate warnings. Structural promises are enforced.</span></code></pre>
-
-<p>This is what separates Soma from every other dynamic language. The face is a <strong>structural contract</strong>: it declares what signals the cell handles, and the compiler verifies the cell implements them. Signal existence, parameter counts, property contradictions, and structural promises are all checked at compile time. Return types and runtime invariants are not yet verified.</p>
+  <table>
+    <tr><th>Feature</th><th>Current behavior</th></tr>
+    <tr><td><code>face</code></td><td>Declares signals and tools. <code>soma check</code> verifies that declared signals have compatible handlers.</td></tr>
+    <tr><td><code>memory</code></td><td>Declares slots and properties such as <code>persistent</code>, <code>ephemeral</code>, <code>consistent</code>, <code>local</code>, <code>ttl</code>, and capacity bounds.</td></tr>
+    <tr><td><code>state</code></td><td>Declares a finite state-machine graph. <code>soma verify</code> checks reachability, deadlocks, liveness, temporal properties, and transition refinement.</td></tr>
+    <tr><td><code>on</code></td><td>Defines signal handlers. <code>soma run</code> executes one handler; <code>soma serve</code> maps <code>request</code> handlers to HTTP.</td></tr>
+    <tr><td><code>|&gt;</code></td><td>Composes collection operations such as <code>filter</code>, <code>map</code>, <code>sort_by</code>, <code>top</code>, <code>group_by</code>, and <code>join</code>.</td></tr>
+  </table>
 </section>
 
-<!-- ═══════════════════════════════════ VERIFY ═══════════════════════════════════ -->
-<section id="verify">
-<h2>Formal verification</h2>
+<section id="verification">
+  <h2>Verification And Checking</h2>
+  <p>Soma includes several static analyses. These are useful checks, not a proof of all runtime behavior.</p>
 
-<p><code>soma verify</code> is a <strong>model checker</strong>. It exhaustively explores every reachable state in your state machine and proves temporal properties. Not testing &mdash; <em>proving</em>.</p>
+  <table>
+    <tr><th>Command</th><th>What it checks</th><th>Known scope</th></tr>
+    <tr><td><code>soma check</code></td><td>Face contracts, property contradictions, scale coherence, structural promises, and memory-budget obligations.</td><td>Return types and arbitrary runtime data invariants are not fully statically verified.</td></tr>
+    <tr><td><code>soma verify</code></td><td>Explicit-state checks over declared state machines, temporal properties from <code>soma.toml</code>, distribution consistency checks, and transition refinement.</td><td>It explores the state graph, not all possible data values or guard arithmetic.</td></tr>
+    <tr><td><code>soma lint</code></td><td>Anti-patterns such as redundant <code>to_json</code>/<code>from_json</code> around storage and other common issues.</td><td>Lint output is advisory.</td></tr>
+    <tr><td><code>soma fix</code></td><td>Simple source rewrites, including missing handlers and some property issues.</td><td>It is intentionally narrow; review generated changes.</td></tr>
+  </table>
 
-<div class="vs">
-<div class="side">
-<h4>The code &mdash; app.cell</h4>
-<pre><code><span class="kw">state</span> order {
-    <span class="kw">initial</span>: pending
-    pending &rarr; validated
-    validated &rarr; sent
-    sent &rarr; filled
-    sent &rarr; rejected
-    filled &rarr; settled
-    * &rarr; cancelled
-}</code></pre>
-</div>
-<div class="side">
-<h4>The spec &mdash; soma.toml</h4>
 <pre><code>[verify]
 deadlock_free = true
 eventually = ["settled", "cancelled"]
 never = ["invalid"]
 
 [verify.after.sent]
-eventually = ["filled", "rejected"]
+eventually = ["filled", "rejected"]</code></pre>
 
-[verify.after.pending]
-eventually = ["validated", "cancelled"]</code></pre>
-</div>
-</div>
-
-<pre><code>$ soma verify app.cell
-
-State machine 'order': 7 states, initial 'pending'
-  States: [cancelled, filled, pending, rejected, sent, settled, validated]
-
-  <span class="green">&#x2713;</span> 7 states, 11 transitions
-  <span class="green">&#x2713;</span> all states reachable from 'pending'
-  <span class="green">&#x2713;</span> terminal states: [cancelled]
-  <span class="green">&#x2713;</span> no deadlocks
-  <span class="green">&#x2713;</span> liveness: every state can eventually reach a terminal state
-  <span class="yellow">&#x26a0;</span> validated -> sent has no guard (consider adding a guard condition)
-  <span class="green">&#x2713;</span> wildcard transitions: * -> [cancelled]
-
-  Temporal properties for 'order':
-  <span class="green">&#x2713;</span> deadlock_free &mdash; no deadlocks in any reachable state
-  <span class="green">&#x2713;</span> eventually(state in [settled, cancelled])
-  <span class="green">&#x2713;</span> never(state == 'invalid')
-  <span class="green">&#x2713;</span> after('pending', state in [validated, cancelled])
-  <span class="op">&#x2717;</span> after('sent', state in [filled, rejected]) &mdash; after reaching 'sent', predicate can be avoided
-    <span class="dim">counter-example: pending &rarr; validated &rarr; sent &rarr; cancelled</span>
-    <span class="dim">&rarr; The wildcard * &rarr; cancelled bypasses the expected filled/rejected</span></code></pre>
-
-<p>The model checker found a real bug: after <code>sent</code>, the spec requires the order to reach <code>filled</code> or <code>rejected</code>. But the wildcard <code>* &rarr; cancelled</code> allows skipping directly to <code>cancelled</code> &mdash; violating the spec. The counter-example shows the exact execution path.</p>
-
-<p>This is an <strong>explicit-state CTL model checker</strong> over the state-machine graph. It exhaustively enumerates reachable states &mdash; not data values, not guard expressions. For state machines with a few dozen states, verification runs in milliseconds and is complete over that abstraction. The spec lives in <code>soma.toml</code>, the implementation lives in <code>.cell</code>, and the proof is one command: <code>soma verify</code>. What it cannot prove: anything that depends on guard predicates over runtime data, or anything inside a handler body that doesn't show up as a transition.</p>
-
-<table>
-<tr><th>Property</th><th>Meaning</th><th>CTL equivalent</th></tr>
-<tr><td>deadlock_free</td><td>No reachable state has zero exits</td><td>AG(EX true)</td></tr>
-<tr><td>eventually = ["X"]</td><td>All paths reach X</td><td>AF(X)</td></tr>
-<tr><td>never = ["X"]</td><td>X is never reached</td><td>AG(&not;X)</td></tr>
-<tr><td>after.S.eventually = ["X"]</td><td>After S, all paths reach X</td><td>AG(S &rarr; AF(X))</td></tr>
-</table>
+  <p>The repository also contains Coq/Rocq proof files under <code>docs/rigor/coq</code>. They mechanize selected results for the CTL depth bound, memory-budget cost lattice, isolation, abstraction, and runtime-fidelity models. They are evidence for those models, not a full formalization of the whole Rust implementation.</p>
 </section>
 
-<!-- ═══════════════════════════════════ BUDGET ═══════════════════════════════════ -->
-<section id="budget">
-<h2>Memory-budget proof obligation <span class="dim">(V1.4)</span></h2>
-
-<p><code>scale { memory: "128Mi" }</code> is no longer advisory &mdash; the compiler <strong>proves</strong> your cell fits.</p>
-
-<pre><code><span class="kw">cell</span> Optimizer {
-    <span class="kw">scale</span> {
-        replicas: 1
-        memory: <span class="str">"128Mi"</span>
-    }
-
-    <span class="kw">on</span> optimize(input: Map) {
-        <span class="cm">// 200 lines of constraint math: position caps,</span>
-        <span class="cm">// turnover caps, cash floor scaling, nested loops...</span>
-    }
-}</code></pre>
-
-<pre><code>$ soma check rebalancer/app.cell
-
-<span class="green">&#x2713;</span> budget proven for cell 'Optimizer': peak &le; 69.89 MiB &le; declared 128.00 MiB
-    breakdown: slots 0 B + max-handler 53.89 MiB + state 0 B + runtime 16.00 MiB
-<span class="green">&#x2713;</span> budget proven for cell 'Alpha': peak &le; 62.49 MiB &le; declared 128.00 MiB
-    breakdown: slots 0 B + max-handler 46.49 MiB + state 0 B + runtime 16.00 MiB</code></pre>
-
-<p>The checker walks every handler body, counts every allocation (<code>list()</code>, <code>map()</code>, <code>push()</code>, string literals), unrolls loops by their <code>[loop_bound(N)]</code> annotation or literal <code>range(0, N)</code>, takes the <strong>max</strong> across handlers (not sum &mdash; only one runs at a time), adds slot capacities and runtime overhead, and compares against the declared budget.</p>
-
-<p>Three outcomes:</p>
-<ul>
-<li><strong>Proven</strong> &mdash; closed-form bound fits. The cell will not OOM.</li>
-<li><strong>Exceeded</strong> &mdash; bound exceeds budget. Compile error with breakdown.</li>
-<li><strong>Advisory</strong> &mdash; handler calls an unbounded builtin (<code>think()</code>, <code>from_json()</code>, <code>http_get()</code>). The checker lists the exact call sites that prevent the proof instead of lying.</li>
-</ul>
-
-<p>The cost lattice and the composition theorem are <strong>mechanically verified in Coq</strong> (Rocq 9.1.1, zero axioms, zero <code>Admitted</code>). No other general-purpose language proves memory budgets at compile time. The only tools that do this are $100K/seat avionics analyzers on restricted input languages.</p>
-
-<h3>How tight is the bound?</h3>
-
-<p>Measured on real data (10K&ndash;50K entries with unique ~1&nbsp;KiB values):</p>
-
-<table>
-<tr><th>Slot type</th><th>Data</th><th>Real RSS</th><th>Proven bound</th><th>Ratio</th></tr>
-<tr><td><code>[ephemeral]</code> (HashMap in RAM)</td><td>10 MiB</td><td>17 MiB</td><td>38 MiB</td><td><strong>2.2&times;</strong></td></tr>
-<tr><td><code>[ephemeral]</code> (HashMap in RAM)</td><td>50 MiB</td><td>67 MiB</td><td>~85 MiB</td><td><strong>1.3&times;</strong></td></tr>
-<tr><td><code>[persistent]</code> (SQLite on disk)</td><td>100 MiB</td><td>8 MiB</td><td>150 MiB</td><td>n/a &mdash; data on disk</td></tr>
-</table>
-
-<p>For <code>[ephemeral]</code> slots the bound is <strong>1.3&ndash;2.2&times; the real RSS</strong> &mdash; tight enough to be useful, conservative enough to be safe. For <code>[persistent]</code> slots the checker models in-memory capacity (sound upper bound) but the runtime uses SQLite, so the actual RSS is just the page cache (~2&nbsp;MiB). The checker is honest about this: the proven bound is what <em>would</em> happen with a HashMap backend, which is the worst case. Interior cells that share a process get their peaks aggregated into the parent&rsquo;s budget.</p>
-</section>
-
-<!-- ═══════════════════════════════════ SOUNDNESS ═══════════════════════════════════ -->
-<section id="soundness">
-<h2>Soundness &mdash; mechanically verified</h2>
-
-<p>The model checker's correctness is not just claimed &mdash; it's proven.</p>
-
-<ul>
-<li><strong>50 Coq theorems/lemmas</strong> across 6 files, all <code>Closed under the global context</code> (zero axioms).</li>
-<li>The central depth-bound lemma (<em>any acyclic walk through a finite graph of n states has length &le; n</em>) is mechanically verified in <code>docs/rigor/coq/Soma_CTL.v</code>.</li>
-<li>The cost composition theorem (<em>per-statement bounds compose into a sound handler bound</em>) is mechanically verified in <code>docs/rigor/coq/Soma_Budget.v</code>.</li>
-<li>Every property names its <strong>adversary model</strong> explicitly: &ldquo;deadlock-free <em>under what assumptions?</em>&rdquo; has a concrete answer.</li>
-</ul>
-
-<p>The rigor pass found and closed a real soundness bug: the DFS counter-example search hard-coded a depth bound of 50, producing false positives on liveness properties for state machines with more than 50 reachable states. The fix is one line; the mathematical justification is a Coq proof.</p>
-
-<pre><code>$ make -C docs/rigor/coq check
-
-<span class="green">&#x2713;</span> Soma_CTL:            4 theorems/lemmas &mdash; Closed under the global context
-<span class="green">&#x2713;</span> Soma_Budget:        28 theorems/lemmas &mdash; Closed under the global context
-<span class="green">&#x2713;</span> Soma_BudgetOps:     10 theorems/lemmas &mdash; Closed under the global context
-<span class="green">&#x2713;</span> Soma_Abstraction:    3 theorems/lemmas &mdash; Closed under the global context
-<span class="green">&#x2713;</span> Soma_Isolation:      1 theorem          &mdash; Closed under the global context
-<span class="green">&#x2713;</span> Soma_RuntimeFidelity:4 theorems/lemmas &mdash; Closed under the global context</code></pre>
-
-<p>Full details: <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/SOUNDNESS.md">docs/SOUNDNESS.md</a>, <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/ADVERSARIES.md">docs/ADVERSARIES.md</a>, <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/rigor/README.md">docs/rigor/README.md</a>.</p>
-</section>
-
-<!-- ═══════════════════════════════════ FOUNDATIONS ═══════════════════════════════════ -->
-<section id="foundations">
-<h2>Intellectual foundations</h2>
-
-<p>Soma is not invented from nothing. It stands on decades of research in programming language theory, distributed systems, and formal methods.</p>
-
-<div class="thesis">
-<div class="number">The Actor Model</div>
-<h3>Cells are actors with contracts</h3>
-<p>Hewitt's Actor model (1973) introduced the idea that computation is message passing between autonomous agents. Soma cells are actors: they have private state (memory), respond to messages (signals), and can spawn children (interior). What Soma adds: <strong>typed contracts</strong> on the messages (face), and <strong>declarative infrastructure</strong> on the state (properties).</p>
-<blockquote>
-<p>One Actor can send messages, create new Actors, and determine how to handle the next message it receives.</p>
-<cite>&mdash; Carl Hewitt, Peter Bishop, Richard Steiger. A Universal Modular ACTOR Formalism. 1973</cite>
-</blockquote>
-</div>
-
-<div class="thesis">
-<div class="number">Specification as Program</div>
-<h3>TLA+ made executable</h3>
-<p>Lamport showed that distributed systems need formal specifications. But specifications lived in separate documents, drifting from code. In Soma, the <code>state</code> machine IS the protocol. The <code>face</code> contract IS the API. The <code>promise</code> IS the invariant. There is no drift because there is no separation.</p>
-<blockquote>
-<p>If you're thinking without writing, you only think you're thinking.</p>
-<cite>&mdash; Leslie Lamport, Turing Award 2013</cite>
-</blockquote>
-</div>
-
-<div class="thesis">
-<div class="number">Declarative Infrastructure</div>
-<h3>What, not how</h3>
-<p>Codd's relational model (1970) proved that declaring <em>what</em> you want beats specifying <em>how</em> to get it. SQL replaced procedural data access. Soma applies the same principle to infrastructure: <code>[persistent, consistent]</code> declares the intent. The runtime resolves the backend &mdash; today, that means SQLite for <code>[persistent]</code> and an in-memory HashMap for <code>[ephemeral]</code>. The provider protocol is extensible: new backends are <code>cell backend</code> declarations under <code>stdlib/</code>, so a Redis or Postgres backend is added the same way SQLite was.</p>
-<blockquote>
-<p>Future users of large data banks must be protected from having to know how the data is organized in the machine.</p>
-<cite>&mdash; E.F. Codd, A Relational Model of Data for Large Shared Data Banks. 1970</cite>
-</blockquote>
-</div>
-
-<div class="thesis">
-<div class="number">Self-Growing Systems</div>
-<h3>The language extends itself</h3>
-<p>Kay's vision for Smalltalk was a system where everything &mdash; including the language itself &mdash; could be modified from within. In Soma, properties, checkers, and backends are defined as <code>.cell</code> files, not compiler code. Add a new property? Write a cell. Add a new storage backend? Write a cell. The compiler reads them and enforces them.</p>
-<blockquote>
-<p>The best way to predict the future is to invent it.</p>
-<cite>&mdash; Alan Kay, Turing Award 2003</cite>
-</blockquote>
-</div>
-
-<div class="thesis">
-<div class="number">Pipe Composition</div>
-<h3>Data flows, not data structures</h3>
-<p>Thompson and McIlroy's Unix pipes (1973) showed that complex programs are built by composing simple ones. Soma's <code>|></code> operator is the same idea applied to data: <code>filter |> map |> sort |> top</code>. Each stage is a pure transform. The pipeline reads like a sentence.</p>
-<blockquote>
-<p>Write programs that do one thing and do it well. Write programs to work together.</p>
-<cite>&mdash; Doug McIlroy, Unix Philosophy. 1978</cite>
-</blockquote>
-</div>
-</section>
-
-<!-- ═══════════════════════════════════ ERROR MESSAGES ═══════════════════════════════════ -->
-<section>
-<h2>Errors that help</h2>
-
-<p>Inspired by Elm and Rust. Every error shows the source line, points to the exact expression, and suggests a fix.</p>
-
-<pre><code><span class="op">error:</span> expected '=', found number '10'
-  <span class="dim">--&gt; app.cell:3:15</span>
-  |
-3 |         let x 10
-  |               <span class="op">^</span>
-
-<span class="op">error:</span> cannot add String and Int: hello + 5
-  <span class="dim">--&gt; app.cell:7:17</span>
-  |
-7 |         let r = "hello" + 5
-  |                 <span class="op">^</span>
-
-<span class="op">error:</span> undefined function: lenght (did you mean 'len'?)
-  <span class="dim">--&gt; app.cell:4:9</span>
-
-<span class="op">error:</span> face contract: signal 'delete' declared in cell 'API' has no handler
-  <span class="dim">&rarr; The face is a contract. Break it, and the compiler tells you.</span></code></pre>
-
-<h3>Auto-repair with <code>soma fix</code></h3>
-<p>The compiler doesn't just report errors &mdash; it <strong>fixes them</strong>. <code>soma fix</code> reads the errors, computes repairs, and writes them back to the source file.</p>
-<pre><code>$ soma fix app.cell
-  <span class="green">&#x2713;</span> removed contradictory property: ephemeral on slot 'items'
-  <span class="green">&#x2713;</span> added handler: on delete(id: String) { ... }
-  <span class="green">&#x2713;</span> added handler: on update(id: String, data: Map) { ... }
-  <span class="green">&#x2713;</span> 3 fix(es) applied, re-checking...
-  <span class="green">&#x2713;</span> All checks passed.</code></pre>
-
-<h3>Lint for anti-patterns</h3>
-<pre><code>$ soma lint app.cell
-  <span class="yellow">&#x26a0;</span> line 7: redundant to_json() &mdash; storage auto-serializes maps
-  <span class="yellow">&#x26a0;</span> line 11: unchecked .get() &mdash; may return ()
-  <span class="dim">&#x2139;</span> line 15: consider using match instead of if-chain (3 branches)</code></pre>
-</section>
-
-<!-- ═══════════════════════════════════ AGENT TOOLING ═══════════════════════════════════ -->
 <section id="agents">
-<h2>Built for AI agents</h2>
+  <h2>Agents</h2>
+  <p><code>cell agent</code> enables agent-oriented declarations. Agents can use <code>think()</code>, <code>set_budget()</code>, tool declarations in <code>face</code>, and regular state machines.</p>
+<pre><code>cell agent Researcher {
+    face {
+        signal research(topic: String) -> Map
+        tool search(q: String) -> String
+    }
 
-<p>Soma is designed around the <strong>generate &rarr; fix &rarr; check &rarr; verify &rarr; serve</strong> loop. Every tool outputs structured JSON (<code>--json</code>). <code>soma fix</code> repairs trivial errors agents commonly produce: missing handlers referenced from <code>face</code>, contradictory property combinations, common builtin typos. Storage auto-serializes maps and lists. The language is intentionally regular so the compiler can give specific repairs.</p>
+    state workflow {
+        initial: idle
+        idle -> researching
+        researching -> done
+        * -> failed
+    }
 
-<div class="grid3">
-<div class="card">
-<h4>soma fix</h4>
-<p>Auto-repairs missing handlers, contradictory properties. One command.</p>
-</div>
-<div class="card">
-<h4>soma lint</h4>
-<p>Catches redundant to_json, unchecked .get(), if-chains that should be match.</p>
-</div>
-<div class="card">
-<h4>soma describe</h4>
-<p>Rich JSON: handler signatures, memory schema, state machines, face contracts.</p>
-</div>
-</div>
+    on search(q: String) {
+        return "result: {q}"
+    }
 
-<h3>Pattern matching that writes itself</h3>
-<p>Map destructuring, string prefix, guard clauses, range patterns, or-patterns &mdash; all composable. Agents generate correct HTTP routing on the first try.</p>
-<pre><code><span class="kw">on</span> request(method: String, path: String, body: String) {
-    <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
-    <span class="kw">match</span> req {
-        {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                     -> home()
-        {method: <span class="str">"GET"</span>, path: <span class="str">"/api/"</span> + resource}      -> list(resource)
-        {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}     -> create(resource, body)
-        {method: <span class="str">"DELETE"</span>, path: <span class="str">"/api/"</span> + resource}   -> delete(resource)
-        {method} <span class="kw">if</span> method == <span class="str">"OPTIONS"</span>              -> cors()
-        _                                            -> <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
+    on research(topic: String) {
+        set_budget(1000)
+        transition("task", "researching")
+        let data = think("Research: {topic}")
+        transition("task", "done")
+        return map("summary", data)
     }
 }</code></pre>
-
-<h3>Auto-serialize storage</h3>
-<p>No more <code>to_json</code> / <code>from_json</code>. Store maps directly. Read them back as maps.</p>
-<pre><code>users.set(<span class="str">"alice"</span>, <span class="fn">map</span>(<span class="str">"name"</span>, <span class="str">"Alice"</span>, <span class="str">"score"</span>, <span class="num">95</span>))
-<span class="kw">let</span> user = users.get(<span class="str">"alice"</span>)
-print(user.name)     <span class="cmt">// "Alice" &mdash; auto-deserialized</span></code></pre>
-
-<h3>Design by contract</h3>
-<pre><code><span class="kw">on</span> withdraw(balance: Int, amount: Int) {
-    <span class="kw">let</span> result = balance - amount
-    <span class="kw">ensure</span> result &gt;= <span class="num">0</span>     <span class="cmt">// postcondition &mdash; fails if violated</span>
-    result                 <span class="cmt">// implicit return</span>
-}
-
-<span class="kw">memory</span> {
-    accounts: Map&lt;String, String&gt; [<span class="fn">persistent</span>]
-    <span class="kw">invariant</span> _slot_len &lt;= <span class="num">10000</span>   <span class="cmt">// checked on every .set()</span>
-}</code></pre>
+  <p>The verifier can check the lifecycle graph and literal transition targets. <code>set_budget</code> tracks token use for real LLM calls. None of this proves the LLM response is correct, safe, or useful.</p>
 </section>
 
-<!-- ═══════════════════════════════════ WHAT IT REPLACES ═══════════════════════════════════ -->
-<section>
-<h2>What one Soma program replaces</h2>
-
-<table>
-<tr><th>Tool</th><th>Role</th><th>In Soma</th></tr>
-<tr><td>Airflow / Cron</td><td>Scheduling</td><td><code>every 30s { ... }</code></td></tr>
-<tr><td>Pandas (in-memory)</td><td>Data pipelines</td><td><code>|> filter() |> map() |> sort_by() |> agg()</code> &mdash; in-memory only; no out-of-core / cluster query engine</td></tr>
-<tr><td>SQLite / DB config</td><td>Persistence</td><td><code>[persistent, consistent]</code> -> SQLite auto-resolved</td></tr>
-<tr><td>In-memory cache</td><td>Fast storage</td><td><code>[ephemeral, local]</code> -> HashMap</td></tr>
-<tr><td>Express / Flask</td><td>API server</td><td><code>on request() { match path { ... } }</code></td></tr>
-<tr><td>React</td><td>Dashboard</td><td><code>html(""" ... """)</code></td></tr>
-<tr><td>Celery</td><td>Background jobs</td><td><code>every 1h { rebalance() }</code></td></tr>
-<tr><td>TLA+ (a CTL fragment)</td><td>Verification</td><td><code>soma verify</code> + <code>soma.toml [verify]</code> &mdash; covers <code>deadlock_free</code>, <code>eventually</code>, <code>never</code>, and conditional <code>after.S.eventually</code>; not the full TLA</td></tr>
-<tr><td>ESLint / Clippy</td><td>Linting</td><td><code>soma lint</code> &mdash; catches anti-patterns</td></tr>
-<tr><td>Copilot fixes</td><td>Auto-repair</td><td><code>soma fix</code> &mdash; writes missing handlers</td></tr>
-</table>
-
-<div class="vs">
-<div class="side">
-<h4>Traditional stack</h4>
-<pre><code>10 tools
-5 languages
-50,000 lines of glue
-Specification: Confluence
-Implementation: somewhere else</code></pre>
-</div>
-<div class="side">
-<h4>Soma</h4>
-<pre><code>1 language
-1 file (or a few)
-1 command: soma serve
-~300 lines
-The spec IS the program</code></pre>
-</div>
-</div>
+<section id="runtime">
+  <h2>Runtime And Backends</h2>
+  <table>
+    <tr><th>Area</th><th>Current behavior</th></tr>
+    <tr><td>Interpreter</td><td><code>soma run file.cell</code> is the default execution path.</td></tr>
+    <tr><td>HTTP</td><td><code>soma serve file.cell</code> starts a threaded HTTP server. A handler named <code>request</code> can return HTML, JSON, redirects, and status codes.</td></tr>
+    <tr><td>Storage</td><td><code>[persistent]</code> currently resolves to SQLite-backed storage. <code>[ephemeral]</code> resolves to memory-backed storage.</td></tr>
+    <tr><td>Signals</td><td>The runtime has a TCP signal bus and peer joining. This is also used by the current cluster replication path.</td></tr>
+    <tr><td>Native handlers</td><td>Handlers annotated with <code>[native]</code> can be compiled to Rust <code>cdylib</code> files for supported numeric workloads. Unsupported constructs should stay in the interpreter.</td></tr>
+    <tr><td>Bytecode/JIT</td><td><code>soma run --jit</code> exists, but the CLI warns that it is deprecated and incomplete.</td></tr>
+    <tr><td>Record/replay</td><td><code>soma run --record</code> writes a <code>.somalog</code>; <code>soma replay</code> re-executes recorded handler calls and reports divergences.</td></tr>
+    <tr><td>Deploy</td><td><code>soma deploy</code> generates deployment scaffolding for targets such as Fly, Cloudflare, and AWS, then shells out to provider CLIs. Cloud credentials and CLIs are still required.</td></tr>
+  </table>
 </section>
 
-<!-- ═══════════════════════════════════ SYNTAX ═══════════════════════════════════ -->
-<section id="syntax">
-<h2>The language</h2>
-
-<p>Soma has one structure: <strong>the cell</strong>. Face (contract), memory (state), state machines (protocol), signal handlers (behavior). Everything is a cell, from a function to a datacenter.</p>
-
-<h3>Match expressions</h3>
-<pre><code><span class="kw">on</span> request(method: String, path: String, body: String) {
-    <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
-    <span class="kw">match</span> req {
-        {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                  &rarr; <span class="fn">html</span>(dashboard())
-        {method: <span class="str">"GET"</span>, path: <span class="str">"/api/"</span> + resource}   &rarr; list(resource)
-        {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}  &rarr; create(resource, body)
-        _                                         &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
-    }
-}
-
-<span class="cmt">// Also: guard clauses, range patterns, or-patterns, if-expressions</span>
-<span class="kw">let</span> grade = <span class="kw">match</span> score {
-    <span class="num">90</span>..<span class="num">100</span>           &rarr; <span class="str">"A"</span>
-    <span class="num">80</span>..<span class="num">89</span>            &rarr; <span class="str">"B"</span>
-    n <span class="kw">if</span> n &gt;= <span class="num">70</span>     &rarr; <span class="str">"C"</span>
-    _                  &rarr; <span class="str">"F"</span>
-}
-<span class="kw">let</span> x = <span class="kw">if</span> cond { a } <span class="kw">else</span> { b }   <span class="cmt">// if/match are expressions</span></code></pre>
-
-<h3>Lambdas + higher-order pipes</h3>
-<pre><code><span class="kw">let</span> portfolio = stocks
-    |&gt; <span class="fn">filter</span>(s =&gt; s.market_cap &gt; <span class="num">1e9</span>)
-    |&gt; <span class="fn">map</span>(s =&gt; score(s))
-    |&gt; <span class="fn">sort_by</span>(<span class="str">"alpha"</span>, <span class="str">"desc"</span>)
-    |&gt; <span class="fn">top</span>(<span class="num">15</span>)
-
-<span class="kw">let</span> names = users |&gt; <span class="fn">map</span>(u =&gt; u.name) |&gt; <span class="fn">join</span>(<span class="str">", "</span>)
-<span class="kw">let</span> active = users |&gt; <span class="fn">filter</span>(u =&gt; u.status == <span class="str">"active"</span>)
-<span class="kw">let</span> found = users |&gt; <span class="fn">find</span>(u =&gt; u.id == target)
-<span class="kw">let</span> valid = orders |&gt; <span class="fn">all</span>(o =&gt; o.total &gt; <span class="num">0</span>)</code></pre>
-
-<h3>Multi-line strings</h3>
-<pre><code><span class="kw">let</span> html = <span class="str">"""
-&lt;div class="card"&gt;
-    &lt;h2&gt;{stock.ticker}&lt;/h2&gt;
-    &lt;p class="price"&gt;${stock.price}&lt;/p&gt;
-    &lt;span class="change {cls}"&gt;{stock.momentum}%&lt;/span&gt;
-&lt;/div&gt;
-"""</span></code></pre>
-
-<h3>State machines</h3>
-<pre><code><span class="kw">state</span> order {
-    <span class="kw">initial</span>: pending
-    pending &rarr; validated { <span class="kw">guard</span> { risk_check_passed } }
-    validated &rarr; sent
-    sent &rarr; filled
-    sent &rarr; rejected
-    filled &rarr; settled
-    * &rarr; cancelled
-}
-
-<span class="cmt">// Runtime enforces: you cannot reach 'sent' without passing 'validated'.</span>
-<span class="cmt">// The auditor reads the .cell file and sees the policy.</span>
-<span class="cmt">// The policy IS the code.</span></code></pre>
-
-<h3>Declarative storage</h3>
-<pre><code><span class="kw">memory</span> {
-    data:     Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>]     <span class="cmt">// &rarr; SQLite</span>
-    cache:    Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">local</span>]          <span class="cmt">// &rarr; in-memory</span>
-    sessions: Map&lt;String, String&gt; [<span class="fn">ephemeral</span>, <span class="fn">ttl</span>(<span class="num">30</span>min)]    <span class="cmt">// &rarr; auto-expire</span>
-}
-
-<span class="cmt">// The compiler verifies: [persistent, ephemeral] &rarr; contradiction.</span>
-<span class="cmt">// Properties are defined in .cell files. The language grows itself.</span></code></pre>
-
-<h3>Types &amp; variables</h3>
-<pre><code><span class="kw">let</span> x = <span class="num">42</span>                             <span class="cmt">// Int (64-bit)</span>
-<span class="cmt">// BigInt — declare in face/handler signatures, e.g. signal compute(n: BigInt)</span>
-<span class="cmt">// Promotion is automatic when an Int operation overflows.</span>
-<span class="kw">let</span> price = <span class="num">3.14</span>                       <span class="cmt">// Float (64-bit)</span>
-<span class="kw">let</span> sci = <span class="num">1.5e3</span>                        <span class="cmt">// Scientific: 1500.0</span>
-<span class="kw">let</span> name = <span class="str">"world"</span>                     <span class="cmt">// String with {interpolation}</span>
-<span class="kw">let</span> user = <span class="fn">User</span> { name: <span class="str">"Alice"</span>, age: <span class="num">30</span> }  <span class="cmt">// Typed record</span>
-<span class="kw">let</span> dur = <span class="num">5</span>s                            <span class="cmt">// Duration &rarr; 5000ms</span>
-<span class="kw">let</span> nothing = ()                       <span class="cmt">// Unit — null equivalent</span>
-
-<span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="num">0</span>, <span class="num">10</span>) { <span class="cmt">/* ... */</span> }   <span class="cmt">// range, break, continue</span>
-<span class="kw">while</span> running { <span class="kw">if</span> done { <span class="kw">break</span> } }   <span class="cmt">// loops</span>
-
-<span class="cmt">// Conversion: to_int("abc") returns () (NOT 0). Always null-check user input.</span>
-<span class="cmt">// Integer division promotes to Float when non-exact: 7 / 2 == 3.5</span>
-<span class="cmt">// Use floor(7 / 2) for truncating division.</span></code></pre>
-
-<h3>Cell kinds</h3>
-<p>The <code>cell</code> keyword takes a kind modifier. Each kind is the same five-section structure (face, memory, state, scale, handlers); the kind tells the compiler what role the cell plays.</p>
-<table>
-<tr><th>Kind</th><th>Purpose</th></tr>
-<tr><td><code>cell Foo { }</code></td><td>Regular cell &mdash; functions, services, web apps</td></tr>
-<tr><td><code>cell agent Foo { }</code></td><td>Agent cell &mdash; unlocks <code>think</code>, <code>set_budget</code>, <code>tool</code> declarations, and the agent verification story</td></tr>
-<tr><td><code>cell property Foo { }</code></td><td>Define a new memory property (see <code>stdlib/durability.cell</code>)</td></tr>
-<tr><td><code>cell backend Foo { }</code></td><td>Define a storage backend implementation</td></tr>
-<tr><td><code>cell type Foo&lt;T&gt; { }</code></td><td>Define a custom type</td></tr>
-<tr><td><code>cell checker Foo { }</code></td><td>A custom validation rule the checker will run</td></tr>
-<tr><td><code>cell builtin Foo { }</code></td><td>FFI bridge to a Rust builtin (stdlib only)</td></tr>
-<tr><td><code>cell test Foo { }</code></td><td>Test cell &mdash; <code>rules { assert &hellip; }</code>, run with <code>soma test</code></td></tr>
-</table>
-
-<h3>Self-growing language</h3>
-<pre><code><span class="cmt">// Properties, checkers, and backends are .cell files, not compiler code.</span>
-
-<span class="kw">cell</span> <span class="kw">property</span> geo_replicated {
-    <span class="kw">rules</span> {
-        <span class="fn">implies</span> [persistent, consistent]
-        <span class="fn">contradicts</span> [ephemeral, local]
-    }
-}
-
-<span class="kw">cell</span> <span class="kw">backend</span> redis {
-    <span class="kw">rules</span> {
-        <span class="fn">matches</span> [ephemeral, ttl]
-        <span class="fn">native</span> <span class="str">"redis"</span>
-    }
-}
-
-<span class="cmt">// Add geo_replicated to your memory &mdash; the compiler now checks it.</span>
-<span class="cmt">// Define a redis backend &mdash; the runtime can resolve [ephemeral, ttl] to it.</span>
-<span class="cmt">// No compiler changes needed. The language grew.</span></code></pre>
-
-<h3>Composition: <code>interior</code> and <code>runtime</code></h3>
-<p>Cells compose by nesting. A parent cell can declare interior children and wire their signals together explicitly.</p>
-<pre><code><span class="kw">cell</span> System {
-    <span class="kw">interior</span> {
-        <span class="kw">cell</span> Worker { <span class="cmt">/* &hellip; */</span> }
-        <span class="kw">cell</span> Cache  { <span class="cmt">/* &hellip; */</span> }
-    }
-    <span class="kw">runtime</span> {
-        <span class="kw">start</span> Worker                              <span class="cmt">// bring up the child</span>
-        <span class="kw">connect</span> Worker.done -&gt; Cache              <span class="cmt">// wire signals</span>
-        <span class="kw">emit</span> initialize()                         <span class="cmt">// fire startup signal</span>
-    }
-}</code></pre>
-<p>This is how a system grows from one cell. <code>soma describe</code> dumps the full interior graph as JSON.</p>
-
-<h3>Three execution backends</h3>
-<table>
-<tr><th>Backend</th><th>How to invoke</th><th>When to use</th></tr>
-<tr><td>Tree-walking interpreter</td><td><code>soma run file.cell</code> (default)</td><td>Development, the reference semantics. All other backends must agree with it.</td></tr>
-<tr><td>Bytecode VM</td><td><code>soma run file.cell --jit</code></td><td>Compiled-once-per-process speedup; better for hot loops without committing to native.</td></tr>
-<tr><td>Native (Rust <code>cdylib</code>)</td><td><code>[native]</code> handler annotation, or <code>soma build</code> for a Rust skeleton</td><td>Tight numeric loops; whole-loop BigInt dispatches to GMP via <code>rug</code>. Single BigInt ops cross FFI and are slower &mdash; the speedup is shaped, not uniform.</td></tr>
-</table>
-</section>
-
-<!-- ═══════════════════════════════════ PIPELINES ═══════════════════════════════════ -->
-<section id="pipeline">
-<h2>Data pipelines</h2>
-
-<p>Soma replaces Pandas for in-memory analytics. Same operations, fraction of the code. Every pipeline is composable via <code>|></code>.</p>
-
-<h3>Pipeline operators</h3>
-<table>
-<tr><th>Operation</th><th>Syntax</th></tr>
-<tr><td>map(list, lambda)</td><td><code>data |> map(s => s.name)</code></td></tr>
-<tr><td>filter(list, lambda)</td><td><code>data |> filter(s => s.score > 50)</code></td></tr>
-<tr><td>find(list, lambda)</td><td><code>data |> find(s => s.id == target)</code></td></tr>
-<tr><td>any / all / count</td><td><code>data |> any(s => s.active)</code></td></tr>
-<tr><td>filter_by(field, op, val)</td><td><code>data |> filter_by("price", ">", 100)</code></td></tr>
-<tr><td>sort_by(field, dir)</td><td><code>data |> sort_by("score", "desc")</code></td></tr>
-<tr><td>top(n) / bottom(n)</td><td><code>data |> top(10)</code></td></tr>
-<tr><td>agg(group, "col:func"...)</td><td><code>data |> agg("sector", "vol:sum", "price:avg")</code></td></tr>
-<tr><td>group_by(field)</td><td><code>data |> group_by("region")</code></td></tr>
-<tr><td>join(left, right, key)</td><td><code>orders |> join(prices, "ticker")</code></td></tr>
-<tr><td>with(key, val)</td><td><code>record |> with("score", 95)</code></td></tr>
-<tr><td>describe(field)</td><td><code>data |> describe("price") &rarr; {sum, avg, min, max, count}</code></td></tr>
-<tr><td>flatten / zip / reverse</td><td><code>nested |> flatten()</code></td></tr>
-</table>
-
-<h3>Real example: portfolio construction</h3>
-<pre><code><span class="kw">let</span> portfolio = universe()
-    |&gt; <span class="fn">filter</span>(s =&gt; s.market_cap &gt; <span class="num">1e9</span>)
-    |&gt; <span class="fn">map</span>(s =&gt; score(s))
-    |&gt; <span class="fn">sort_by</span>(<span class="str">"composite"</span>, <span class="str">"desc"</span>)
-    |&gt; <span class="fn">top</span>(<span class="num">15</span>)
-    |&gt; <span class="fn">map</span>(s =&gt; {
-        <span class="kw">let</span> weight = <span class="fn">clamp</span>(s.composite * exposure / total, <span class="num">0</span>, <span class="num">15</span>)
-        s |&gt; <span class="fn">with</span>(<span class="str">"weight"</span>, weight)
-    })</code></pre>
-</section>
-
-<!-- ═══════════════════════════════════ NATIVE ═══════════════════════════════════ -->
 <section id="native">
-<h2>When one handler is the bottleneck</h2>
-
-<p>You write Soma for the architecture: cells, state machines, persistence, web server. Then one handler does a million iterations and takes seconds. In every other language, you rewrite it in C++ or Rust. In Soma, you add one word: <code>[native]</code>. The compiler emits a Rust <code>cdylib</code>, caches it under <code>.soma_cache/native/</code>, and the handler runs as native code. Same file, same syntax. On a tight integer loop, the speedup over the tree-walking interpreter is in the <strong>100&ndash;300&times;</strong> range; numerically heavy workloads with whole BigInt loops dispatch to GMP via <code>rug</code> and run within a small constant factor of hand-written Rust.</p>
-
-<div class="vs">
-<div class="side">
-<h4>The code &mdash; hot.cell</h4>
-<pre><code><span class="kw">cell</span> P {
-    <span class="kw">on</span> hot(n: Int) [<span class="fn">native</span>] {
-        <span class="kw">let</span> s = <span class="num">0</span>
-        <span class="kw">let</span> i = <span class="num">0</span>
-        <span class="kw">while</span> i &lt; n {
-            s = s + i
-            i += <span class="num">1</span>
+  <h2>Native Numeric Handlers</h2>
+  <p><code>[native]</code> is intended for narrow numeric hot paths. The generated Rust path uses checked fast integer code and a BigInt fallback for overflow-sensitive integer results.</p>
+<pre><code>cell Math {
+    on sum(n: Int) [native] {
+        let total = 0
+        for i in range(0, n) {
+            total = total + i
         }
-        <span class="kw">return</span> s
-    }
-    <span class="kw">on</span> slow(n: Int) {
-        <span class="kw">let</span> s = <span class="num">0</span>
-        <span class="kw">let</span> i = <span class="num">0</span>
-        <span class="kw">while</span> i &lt; n {
-            s = s + i
-            i += <span class="num">1</span>
-        }
-        <span class="kw">return</span> s
+        return total
     }
 }</code></pre>
-</div>
-<div class="side">
-<h4>Same handler, two backends</h4>
-<pre><code>$ soma run hot.cell --signal slow 10000000
-<span class="cmt"># interpreted: ~1,250 ms</span>
-
-$ soma run hot.cell --signal hot 10000000
-[native] compiling 1 handler(s) for cell 'P'...
-[native] compiled &rarr; .soma_cache/native/...
-<span class="cmt"># native:      ~3&ndash;5 ms</span>
-
-<span class="cmt"># Speedup on this loop: ~300&times;.</span>
-<span class="cmt"># Reproduce: bench/compare.sh — Soma vs Python</span>
-<span class="cmt"># side-by-side on 90+ math/CS challenges.</span></code></pre>
-</div>
-</div>
-
-<table>
-<tr><th>Mode</th><th>Sum 0..10<sup>7</sup> (single run)</th><th>vs interpreted</th></tr>
-<tr><td>Tree-walking interpreter</td><td>~1,250 ms</td><td>1&times;</td></tr>
-<tr><td><code>[native]</code> (Rust <code>cdylib</code>, sequential)</td><td>~3&ndash;5 ms</td><td><strong>~300&times;</strong></td></tr>
-</table>
-<p style="font-size:.8125rem;color:var(--dim);margin-top:-.5rem">Measured on an Apple M-series with the bundled <code>[native]</code> codegen. Numbers vary with workload &mdash; this is a tight integer loop, the best case for the JIT path. The reproducible benchmark suite under <code>bench/compare.sh</code> runs 100+ math/CS challenges Soma-vs-Python with both wall-time and inner timings; <code>[compute.parallel]</code> for cross-handler thread fan-out is wired up but the headline parallel numbers are workload-specific &mdash; check the suite for your shape.</p>
-
-<h3 style="margin-top:2rem">vs Numba (the honest comparison)</h3>
-
-<p>&ldquo;100&ndash;300&times; over CPython&rdquo; is a real number, but CPython is the wrong baseline for a compiled language. The honest comparison is against a JIT compiler that targets the same hardware. <a href="https://numba.pydata.org">Numba</a> compiles Python through LLVM and reaches C-level performance on its supported subset, so it's the closest meaningful peer.</p>
-
-<p>The reproducible suite under <code>bench/compare_B.sh</code> runs Soma vs Numba on the same 100 challenges. Across the 27 cells where both sides have a measurable inner-time, the geometric mean over three independent runs is:</p>
-
-<table>
-<tr><th>Soma vs Numba (inner-time geomean)</th><th>~2.6&times; faster</th></tr>
-<tr><td>Cells where Soma is &ge;2&times; faster</td><td>15 / 27</td></tr>
-<tr><td>Cells where Numba is &ge;2&times; faster</td><td>0 / 27</td></tr>
-<tr><td>Cells where they're tied (within &plusmn;10%)</td><td>6 / 27</td></tr>
-</table>
-
-<p>Soma's wins concentrate on cells that exercise:</p>
-<ul>
-<li><strong>BigInt operations</strong> (GMP via <code>rug</code>): <code>truncatable_primes</code> 49&times;, <code>matrix_fib</code> 15&times;, <code>mersenne</code> 14&times;, <code>miller_rabin</code> 11&times;, <code>cf_sqrt</code> 10&times;</li>
-<li><strong>Auto-memoization</strong> (compiler detects recursive shape, adds a cache): <code>levenshtein</code> 11&times;, <code>digit_factorial</code> 10&times;, <code>circular_primes</code> 8&times;</li>
-<li><strong>String-builder peephole</strong>: <code>look_and_say</code> 9&times;</li>
-</ul>
-
-<p>The cells where Numba slightly edges out (1.3&ndash;1.5&times;) are tight i64 loops like <code>collatz</code> &mdash; LLVM's <code>nsw nuw</code> flags let it optimize around the assumption that overflow is undefined behavior, which Soma <strong>refuses to do</strong>. (See below.)</p>
-
-<h3 style="margin-top:2rem">Correctness, not just speed</h3>
-
-<p>Numba's <code>@njit</code> compiles to LLVM IR with <code>nsw</code>/<code>nuw</code> flags &mdash; LLVM treats integer overflow as undefined behavior. <strong>Numba returns wrong answers on integer overflow</strong>, silently, without warning. A <code>fact(25)</code> in <code>@njit</code> produces garbage in microseconds; the user only sees it if they look at the result.</p>
-
-<p>Soma's contract is the opposite. The user writes <code>Int</code>; the compiler picks i64 OR BigInt; the answer is <em>always</em> correct. The dual-mode dispatch wrapper is the foundation: the Direct fast path tries i64 with full overflow checking, panics on overflow, and the dispatch catches the panic and falls back to Rug/GMP for the correct BigInt result. The user sees the right answer either way; the only difference is which path computed it.</p>
-
-<p>Four regression tests in <code>examples/overflow_corpus/</code> exercise this:</p>
-<ul style="font-size:.875rem">
-<li><code>o01_mul_overflow</code>: <code>fact(21) = 51090942171709440000</code> (&gt; i64::MAX)</li>
-<li><code>o02_add_overflow</code>: <code>2^63 = 9223372036854775808</code> (&gt; i64::MAX)</li>
-<li><code>o03_mul3_plus1</code>: <code>c_len(2305843009213693951)</code> doesn't crash, returns correct length via Rug</li>
-<li><code>o04_subtract_overflow</code>: <code>-2^63 - 1 = -9223372036854775809</code></li>
-</ul>
-
-<p>Each runs on every commit. The 100&ndash;300&times; speedup is real, the 2.6&times; over Numba is real, and the answers are <em>also</em> always correct. That last part is what Numba can't claim.</p>
-
-<p style="font-size:.8125rem;color:var(--dim);margin-top:-.5rem">Bench B writeup: <code>bench/results/SUMMARY_bench_B_v9_corrected.md</code>. Reproduce with <code>bench/compare_B.sh</code> after pre-warming the Numba JIT cache.</p>
-
-<h3 style="margin-top:2rem">Refinement: handler bodies cannot lie to the state machine</h3>
-
-<p>Soma's tagline is <em>"the specification is the program."</em> Before V1.3 it was half true: the <code>state</code> block was the spec, the handler bodies were the code, and the compiler treated them as independent documents. They could drift apart silently, and they did, often. V1.3 closes the gap. <code>soma verify</code> now proves three things about every cell with a state machine:</p>
-
-<ol>
-<li><strong>No undeclared transition targets.</strong> Every <code>transition("inst", "X")</code> call in any handler body must name a state <code>X</code> that exists in the cell's <code>state { }</code> block. A typo in a target state name is a compile error, not a runtime surprise.</li>
-<li><strong>No dead transitions in the spec.</strong> Every transition declared in the state block is reached by some handler — warning, not error, since the spec might be aspirational, but the reader is told.</li>
-<li><strong>Per-handler effect summary.</strong> For every handler, the verifier prints the set of target states it can transition to, along with the path condition (the chain of <code>if</code> guards) leading to each call.</li>
-</ol>
-
-<pre><code>$ soma verify examples/refinement/02_payment_undeclared_target.cell
-
-  <span class="cmt">✗ refinement: handler `settle` calls transition(_, "completed") but
-      "completed" is not in state machine `lifecycle`</span></code></pre>
-
-<p>This is the feature that makes "specification is the program" actually mean something. Before V1.3, it was a poster. Now it's a theorem. The check is <strong>sound but syntactic</strong>: it never falsely accuses a correct program, but it misses bugs that hide behind dynamic transition targets or guard arithmetic — both of those are flagged in the verifier output so the reader knows exactly which handlers got the strong check. Full SMT-backed control-flow analysis is V1.4 work. Honest scope notes: <code>docs/SEMANTICS.md §1.5</code>.</p>
-
-<h3 style="margin-top:2rem">Deterministic record / replay</h3>
-
-<p>Production incidents, single-stepped on your laptop. Soma ships a record/replay loop that logs every handler invocation to a JSON-lines file and re-executes it bit-deterministically against a fresh interpreter:</p>
-
-<pre><code><span class="cmt"># 1. Record a run (opt-in flag, off by default, zero overhead)</span>
-$ soma run --record bot.cell
-[record] writing replay log &rarr; bot.somalog
-&hellip;
-
-<span class="cmt"># 2. Replay it on any machine, any time</span>
-$ soma replay bot.cell
-soma replay: 4 entries from bot.somalog
-  #1     bot.tick(100)  ok
-  #2     bot.tick(187)  ok
-  #3     bot.tick(412)  ok
-  #4     bot.run()      ok
-replayed 4 entries: 4 ok, 0 diverged</code></pre>
-
-<p>When a handler calls a nondeterministic builtin (<code>now</code>, <code>now_ms</code>, <code>random</code>, &hellip;) the recorder logs the call site and replay reports each divergence with the cause and a suggested fix:</p>
-
-<pre><code>  divergence at entry #1: bot.tick
-      args:     100
-      recorded: 102
-      replayed: 103
-      cause:    nondeterminism in handler &mdash; calls to now_ms
-      fix:      mark the handler [pure] or pass the clock as an explicit input parameter</code></pre>
-
-<p>This is the only V1 feature that survived an internal value audit. The implementation is small (~330 lines: <code>compiler/src/interpreter/record_log.rs</code> + <code>compiler/src/commands/replay.rs</code>) and the contract is sharp: if recording detected no nondeterministic builtins, replay is bit-equivalent to the original run; if it did, the replay diff names the call. Demo: <code>examples/v1/02_replay_trader.cell</code>.</p>
-
-<p>The code is the same in all three rows. <code>[native]</code> compiles to machine code. Adding <code>[compute.parallel]</code> in <code>soma.toml</code> splits the work across cores automatically. No threads, no mutexes, no <code>async</code>/<code>await</code>, no rewrite. One word in the code, two lines in the config.</p>
-
-<p>This is the fourth axis of the Soma property system:</p>
-<table>
-<tr><th>Axis</th><th>Code</th><th>Configuration</th><th>Resolved to</th></tr>
-<tr><td>Storage</td><td><code>[persistent]</code></td><td><code>soma.toml [storage]</code></td><td>SQLite</td></tr>
-<tr><td>Transport</td><td><code>signal / on</code></td><td><code>soma.toml [peers]</code></td><td>TCP bus</td></tr>
-<tr><td>Verification</td><td><code>state { }</code></td><td><code>soma.toml [verify]</code></td><td>Model checker</td></tr>
-<tr><td>Compute</td><td><code>[native]</code></td><td><code>soma.toml [compute]</code></td><td>LLVM + threads</td></tr>
-</table>
-
-<p>Four axes. Same pattern. The code declares <strong>what</strong>. The configuration declares <strong>how</strong>. The compiler resolves.</p>
-
-<h3>Text processing via Rust builtins</h3>
-
-<pre><code><span class="kw">let</span> files = <span class="fn">read_files</span>(<span class="str">"data"</span>, <span class="num">10000</span>)
-<span class="kw">let</span> counts = files |&gt; <span class="fn">word_count</span>()</code></pre>
-
-<p><code>read_files</code> and <code>word_count</code> are Rust builtins exposed through the interpreter, so the work happens at native speed even without <code>[native]</code>. The same shape applies to other heavy collection operations: the interpreter dispatches to a Rust implementation under the hood, and the pipe just composes them. Numeric hot paths still use <code>[native]</code>; everything else stays in the interpreter where readability and the rest of the cell model live.</p>
-
-<h3>What if I use [native] wrong?</h3>
-<pre><code><span class="kw">on</span> bad(name: String) [<span class="fn">native</span>] {
-    <span class="fn">print</span>(<span class="str">"hello {name}"</span>)
-}
-
-<span class="op">error:</span> handler 'bad' is marked [native] but uses unsupported
-       parameter type 'String' for 'name'
-  <span class="dim">&rarr; [native] handlers can only use Int, Float, Bool</span></code></pre>
-<p>The compiler catches it before any code runs. <code>[native]</code> is for numeric hot paths &mdash; the interpreter handles everything else. Same file, same language: the interpreter orchestrates, <code>[native]</code> computes.</p>
+  <p>Performance depends on workload, machine, cache state, and whether the handler fits the native subset. Benchmark claims should be reproduced with the scripts under <code>bench/</code> before being used for decisions.</p>
 </section>
 
-<!-- ═══════════════════════════════════ WEB ═══════════════════════════════════ -->
-<section id="web">
-<h2>Web applications</h2>
-
-<p><code>soma serve app.cell</code> &mdash; threaded HTTP server, SQLite, CORS, auto-routing, HTML templates. Zero framework. Storage auto-serializes &mdash; no <code>to_json</code>/<code>from_json</code> needed.</p>
-
-<pre><code><span class="kw">cell</span> App {
-    <span class="kw">memory</span> { tasks: Map&lt;String, String&gt; [<span class="fn">persistent</span>, <span class="fn">consistent</span>] }
-
-    <span class="kw">on</span> request(method: String, path: String, body: String) {
-        <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
-        <span class="kw">match</span> req {
-            {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}    &rarr; <span class="fn">html</span>(dashboard())
-            {method: <span class="str">"GET"</span>, path: <span class="str">"/api"</span>}  &rarr; tasks.<span class="fn">values</span>     <span class="cmt">// auto-deserialized</span>
-            {method: <span class="str">"POST"</span>, path: <span class="str">"/api"</span>} &rarr; {
-                <span class="kw">let</span> data = <span class="fn">from_json</span>(body)
-                <span class="kw">let</span> id = <span class="fn">to_string</span>(<span class="fn">next_id</span>())
-                tasks.set(id, data)                <span class="cmt">// auto-serialized</span>
-                <span class="fn">map</span>(<span class="str">"id"</span>, id)
-            }
-            _                           &rarr; <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
-        }
-    }
-
-    <span class="kw">on</span> dashboard() {
-        <span class="kw">let</span> rows = tasks.<span class="fn">values</span>
-            |&gt; <span class="fn">map</span>(t =&gt; <span class="str">"""&lt;tr&gt;&lt;td&gt;{t.name}&lt;/td&gt;&lt;td&gt;{t.status}&lt;/td&gt;&lt;/tr&gt;"""</span>)
-            |&gt; <span class="fn">join</span>(<span class="str">""</span>)
-        <span class="str">"""&lt;html&gt;&lt;body&gt;&lt;h1&gt;Tasks&lt;/h1&gt;&lt;table&gt;{rows}&lt;/table&gt;&lt;/body&gt;&lt;/html&gt;"""</span>
-    }
-}
-
-<span class="cmt">// $ soma serve app.cell</span>
-<span class="cmt">// listening on http://localhost:8080</span></code></pre>
+<section id="reproduce">
+  <h2>Reproduce Basic Checks</h2>
+  <p>After installing, these commands exercise the core CLI paths:</p>
+<pre><code>soma --version
+soma run examples/usecases/001_hello.cell
+soma check examples/pricing/app.cell
+soma verify examples/pricing/app.cell
+soma lint site/examples/093_tests_strings.cell
+soma describe examples/usecases/042_agent.cell
+SOMA_LLM_MOCK=echo soma run examples/usecases/044_budget.cell
+soma run examples/overflow_corpus/o01_mul_overflow.cell
+soma run examples/v1/02_replay_trader.cell --record
+soma replay examples/v1/02_replay_trader.cell</code></pre>
+  <p>To verify the Coq proof files, run:</p>
+<pre><code>cd docs/rigor/coq
+make check</code></pre>
 </section>
 
-<!-- ═══════════════════════════════════ SIGNAL BUS ═══════════════════════════════════ -->
-<section id="bus">
-<h2>Inter-process signals</h2>
-
-<p>Independent Soma programs communicate via <strong>signals</strong>. No WebSocket code. No HTTP polling. No serialization. <code>signal</code> to send, <code>on</code> to receive. Peers declared in <code>soma.toml</code>. Zero transport code in your program.</p>
-
-<div class="vs">
-<div class="side">
-<h4>Exchange &mdash; app.cell</h4>
-<pre><code><span class="kw">cell</span> Exchange {
-    <span class="kw">on</span> order(data: Map) {
-        place_order(data)
-    }
-
-    <span class="kw">every</span> <span class="num">500</span>ms {
-        <span class="kw">let</span> fill = match_orders()
-        <span class="kw">signal</span> trade(fill)
-    }
-}</code></pre>
-</div>
-<div class="side">
-<h4>Trader &mdash; app.cell</h4>
-<pre><code><span class="kw">cell</span> Trader {
-    <span class="kw">every</span> <span class="num">3</span>s {
-        <span class="kw">signal</span> order(data)
-    }
-
-    <span class="kw">on</span> trade(fill: Map) {
-        record_fill(fill)
-    }
-}
-
-<span class="cmt">// soma.toml</span>
-<span class="cmt">// [peers]</span>
-<span class="cmt">// exchange = "localhost:8082"</span></code></pre>
-</div>
-</div>
-
-<p>The exchange emits <code>signal trade(fill)</code>. The trader's <code>on trade(fill)</code> fires automatically. Two independent processes. No shared code. No <code>ws_connect</code>, no <code>http_get</code>, no <code>to_json</code>. <strong>The signal is the transport.</strong></p>
-
-<p>Peers are declared in <code>soma.toml</code>, not in code. Change the address &mdash; zero code changes. Replace TCP with Kafka &mdash; zero code changes. The program contains logic. The configuration contains topology.</p>
-
-<pre><code><span class="cmt">// soma.toml &mdash; topology is configuration, not code</span>
-[package]
-name = <span class="str">"trader"</span>
-
-[peers]
-exchange = <span class="str">"localhost:8082"</span>    <span class="cmt">// auto-connects on soma serve startup</span>
-risk = <span class="str">"localhost:7082"</span>        <span class="cmt">// add more peers &mdash; no code changes</span></code></pre>
-
-<h3>Three transports, one keyword</h3>
-<p><code>signal trade(fill)</code> delivers to all listeners: browsers via SSE, programs via TCP bus, WebSocket clients. Same keyword, runtime resolves the transport.</p>
-
-<pre><code><span class="kw">signal</span> trade(fill)     <span class="cmt">// one emit &rarr; three transports:</span>
-                       <span class="cmt">//   &rarr; SSE: browser EventSource('/stream')</span>
-                       <span class="cmt">//   &rarr; TCP bus: connected peers (soma.toml)</span>
-                       <span class="cmt">//   &rarr; WS: WebSocket clients on :8081</span></code></pre>
+<section id="limits">
+  <h2>Important Limits</h2>
+  <ul>
+    <li>Soma is experimental. Expect rough edges in syntax, tooling, installer behavior, and deployment integrations.</li>
+    <li>State-machine verification is over the declared finite graph. It does not exhaustively model runtime data values, external systems, or LLM outputs.</li>
+    <li>Strong consistency in <code>scale</code> is currently a checked declaration, not a Raft/Paxos-backed runtime guarantee.</li>
+    <li>The current cluster replication path is signal-bus broadcast and should be treated as eventual replication.</li>
+    <li>Native codegen supports a subset of handlers. The general interpreter remains the reference path.</li>
+    <li>Memory-budget proofs depend on the static cost model and declared bounds such as capacities and loop bounds. Calls to unbounded builtins produce advisory output instead of a proof.</li>
+    <li>Agent token budgeting bounds token use; it does not prove semantic correctness or safety of model output.</li>
+    <li>Cloud deployment commands generate scaffolding and invoke external provider CLIs. They do not remove the need for provider configuration, credentials, or review.</li>
+  </ul>
 </section>
 
-<!-- ═══════════════════════════════════ FRACTAL ═══════════════════════════════════ -->
-<section id="fractal">
-<h2>Fractal Distribution</h2>
-<p class="subtitle">Same code. One machine or twenty thousand. The only difference: <code>--join</code>.</p>
-
-<p>A cell declares <strong>what</strong> it needs. The runtime figures out <strong>how</strong>.</p>
-
-<pre><code><span class="kw">cell</span> PricingEngine {
-
-    <span class="kw">memory</span> {
-        trades: Map&lt;String, String&gt; [persistent, consistent]
-        cache:  Map&lt;String, String&gt; [ephemeral, local]
-    }
-
-    <span class="kw">scale</span> {
-        replicas: <span class="num">50</span>
-        shard: trades
-        consistency: strong
-        tolerance: <span class="num">2</span>
-        cpu: <span class="num">4</span>
-        memory: <span class="str">"8Gi"</span>
-    }
-
-    <span class="kw">on</span> book_trade(data: Map) {
-        trades.set(data.id, data)            <span class="cmt">// auto-serialized, replicated to all nodes</span>
-    }
-
-    <span class="kw">on</span> price(data: Map) {
-        <span class="kw">return</span> cache.get(data.symbol)         <span class="cmt">// node-local, microseconds</span>
-    }
-}</code></pre>
-
-<p>Run it alone:</p>
-
-<pre><code>$ soma serve app.cell -p 8080</code></pre>
-
-<p>Scale it to a cluster:</p>
-
-<pre><code>$ soma serve app.cell -p 8080                          <span class="cmt"># node 1 (leader)</span>
-$ soma serve app.cell -p 8081 --join localhost:8082     <span class="cmt"># node 2</span>
-$ soma serve app.cell -p 8083 --join localhost:8082     <span class="cmt"># node 3</span></code></pre>
-
-<p><strong>The code doesn't change.</strong> Not one line. The <code>scale { }</code> section declares the distribution contract. The runtime honors it:</p>
-
-<table>
-<tr><td><code>shard: trades</code></td><td>Slot is the routing key for the consistent hash ring (FNV, 128 vnodes/node). The compiler checks the slot is non-<code>[ephemeral]</code>; the current runtime distributes via signal-bus broadcast rather than true partitioning.</td></tr>
-<tr><td><code>[ephemeral, local]</code></td><td>Memory stays node-local. Fast path. Never touches the network.</td></tr>
-<tr><td><code>consistency: strong</code></td><td>Compile-time contract: linearizable reads/writes, CP under partition. Quorum is computed and CAP contradictions are rejected. Runtime status: <em>best-effort</em> &mdash; the current cluster broadcasts writes over the signal bus and does not yet run a consensus protocol (Raft is on the roadmap).</td></tr>
-<tr><td><code>consistency: eventual</code></td><td>Write locally, propagate in background over the signal bus. Reads may be stale. This is what the runtime actually delivers today, regardless of the declared mode.</td></tr>
-<tr><td><code>tolerance: 2</code></td><td>Declared failure budget. The compiler rejects values larger than <code>N − quorum</code>; the runtime detects peer loss via 15s heartbeat timeout.</td></tr>
-<tr><td><code>cpu: 4, memory: "8Gi"</code></td><td>Resource hints per instance, surfaced to deployment targets (Dockerfile, fly.toml).</td></tr>
-</table>
-
-<blockquote><p><strong>Honesty note.</strong> The <code>scale</code> block is a <em>verified contract</em>, not yet a hardened consensus runtime. <code>soma verify</code> proves your declared distribution is internally consistent (no <code>strong</code> on an <code>[ephemeral]</code> slot, no impossible <code>tolerance</code>, quorum math checks out). What the runtime currently enforces is replication-via-broadcast on the signal bus. Treat <code>strong</code> as a <em>specification</em> the compiler checks you meant, not as a Raft-level guarantee.</p></blockquote>
-
-<h3>Signals are (the current) replication</h3>
-<p>There is no special replication protocol. When <code>trades.set(key, val)</code> executes on node 1, it broadcasts an <code>EVENT</code> on the signal bus. Every connected node receives it and applies it locally. The same bus that carries inter-cell signals carries data replication. The infrastructure <strong>is</strong> the language &mdash; with the trade-off that today this gives you <em>eventual</em> replication regardless of the declared <code>consistency:</code> mode. A real Raft/Paxos backend will plug into the same protocol.</p>
-
-<h3>The verifier knows about distribution</h3>
-<p><code>soma verify</code> proves distributed properties <strong>at compile time</strong>, before deployment:</p>
-
-<pre><code>$ soma verify app.cell
-
-scale 'PricingEngine':
-  <span style="color:#22c55e">&check;</span> replicas: 50 instances declared
-  <span style="color:#22c55e">&check;</span> shard 'trades' is [persistent] &mdash; eligible for distribution
-  <span style="color:#22c55e">&check;</span> consistency: strong &mdash; declared linearizable
-  <span style="color:#22c55e">&check;</span> CAP: CP mode &mdash; consistent + partition-tolerant (declared)
-  <span style="color:#22c55e">&check;</span> quorum: 26/50 nodes needed
-  <span style="color:#22c55e">&check;</span> tolerance: 2 &le; (50 &minus; 26) = 24, accepted
-  <span style="color:#22c55e">&check;</span> memory 'cache' is [ephemeral, local] &mdash; not distributed (fast path)
-  <span class="yellow">&#x26a0;</span> runtime: <code>strong</code> is currently delivered via signal-bus broadcast
-       (no consensus protocol yet) &mdash; treat as a contract, not a guarantee</code></pre>
-
-<p>Contradictions are caught at compile time:</p>
-<pre><code><span class="kw">memory</span> { data: Map [ephemeral, local] }
-<span class="kw">scale</span>  { shard: data, consistency: strong }
-<span class="cmt">// &rarr; error: shard 'data' uses [ephemeral] but scale declares</span>
-<span class="cmt">//          consistency: strong &mdash; contradictory</span></code></pre>
-
-<h3>Why this is different</h3>
-<table>
-<tr><th></th><th>Kubernetes</th><th>Erlang/OTP</th><th>Akka</th><th>Soma</th></tr>
-<tr><td>Distribution model</td><td>External YAML</td><td>In the VM</td><td>In the library</td><td><strong>In the language</strong></td></tr>
-<tr><td>Verified before deploy</td><td>No</td><td>No</td><td>No</td><td><strong>Yes (CTL + CAP)</strong></td></tr>
-<tr><td>Consistency declared</td><td>No</td><td>No</td><td>No</td><td><strong>Per memory slot</strong></td></tr>
-<tr><td>Same code local/cluster</td><td>No</td><td>Almost</td><td>Almost</td><td><strong>Yes, zero changes</strong></td></tr>
-</table>
-
-<p style="margin-top:1.5rem"><strong>Read the paper:</strong> <a href="/paper.html" style="color:var(--accent)">Scale as a Type: Verified Distribution in a Fractal Cell Language</a></p>
+<section id="commands">
+  <h2>CLI Summary</h2>
+  <table>
+    <tr><th>Command</th><th>Purpose</th></tr>
+    <tr><td><code>soma run file.cell [args]</code></td><td>Run a handler in the interpreter.</td></tr>
+    <tr><td><code>soma serve file.cell</code></td><td>Start HTTP and signal-bus services.</td></tr>
+    <tr><td><code>soma check file.cell [--json]</code></td><td>Run contract, property, scale, and budget checks.</td></tr>
+    <tr><td><code>soma verify file.cell [--json]</code></td><td>Run state-machine, temporal, distribution, and refinement checks.</td></tr>
+    <tr><td><code>soma lint file.cell [--json]</code></td><td>Report style and correctness warnings.</td></tr>
+    <tr><td><code>soma fix file.cell</code></td><td>Apply narrow automatic fixes.</td></tr>
+    <tr><td><code>soma describe file.cell</code></td><td>Print structured JSON describing cells, handlers, memory, face declarations, and state machines.</td></tr>
+    <tr><td><code>soma test file.cell</code></td><td>Run <code>cell test</code> assertions.</td></tr>
+    <tr><td><code>soma deploy file.cell --target fly|cloudflare|aws</code></td><td>Generate deployment files and call the target provider CLI.</td></tr>
+  </table>
 </section>
-
-<!-- ═══════════════════════════════════ EXAMPLES ═══════════════════════════════════ -->
-<section>
-<h2>Built with Soma</h2>
-
-<div class="grid3">
-<div class="card">
-<h4>Distributed Pricing Engine</h4>
-<p>50-node trade booking, option pricing, greek reconciliation. Strong consistency, verified quorum. <code>--join</code> to scale.</p>
-</div>
-<div class="card">
-<h4>Distributed Job Queue</h4>
-<p>A mini Celery. Submit jobs, work-stealing scheduler, retry logic. Verified: every job completes or expires. 120 lines.</p>
-</div>
-<div class="card">
-<h4>Distributed Chat</h4>
-<p>Multi-room messaging across nodes. Eventual consistency. Messages replicated via signal bus. 90 lines.</p>
-</div>
-<div class="card">
-<h4>Mini Kubernetes</h4>
-<p>Cells are pods. State machines are lifecycles. The scheduler is a controller loop. Verified deadlock-free. 200 lines.</p>
-</div>
-<div class="card">
-<h4>Exchange + Trader</h4>
-<p>Order book, matching engine, market maker bot. Two programs communicating via signal bus. Real-time fills.</p>
-</div>
-<div class="card">
-<h4>100+ Examples</h4>
-<p>From hello world to HTMX apps to Monte Carlo pricing. Every example parses, checks, and runs.</p>
-</div>
-</div>
-</section>
-
-<!-- ═══════════════════════════════════ REFERENCE ═══════════════════════════════════ -->
-<section id="reference">
-<h2>CLI reference</h2>
-<table>
-<tr><td>soma run file.cell [args]</td><td>Execute the entry handler in the tree-walking interpreter</td></tr>
-<tr><td>soma run file.cell --signal name [args]</td><td>Execute a specific named handler</td></tr>
-<tr><td>soma run file.cell --jit [args]</td><td>Execute via the bytecode VM (faster startup for hot loops)</td></tr>
-<tr><td>soma build file.cell [-o out.rs]</td><td>Generate Rust skeleton from a cell (native codegen frontend)</td></tr>
-<tr><td>soma serve file.cell</td><td>HTTP :8080, WS :8081, Bus :8082</td></tr>
-<tr><td>soma serve file.cell --join host:port</td><td>Join a cluster</td></tr>
-<tr><td>soma serve file.cell --watch</td><td>Hot reload on file change</td></tr>
-<tr><td>soma check file.cell [--json]</td><td>Verify contracts &amp; properties</td></tr>
-<tr><td>soma fix file.cell</td><td><strong>Auto-repair</strong>: adds missing handlers, fixes properties</td></tr>
-<tr><td>soma lint file.cell [--json]</td><td><strong>Anti-patterns</strong>: redundant to_json, unchecked .get(), if-chains</td></tr>
-<tr><td>soma verify file.cell [--json]</td><td>State machine + distribution proofs</td></tr>
-<tr><td>soma describe file.cell</td><td><strong>Rich JSON</strong>: handlers, memory, state machines, face, scheduled</td></tr>
-<tr><td>soma test file.cell</td><td>Run test cells</td></tr>
-<tr><td>soma init [name]</td><td>Create project</td></tr>
-<tr><td>soma add pkg --git url</td><td>Add dependency</td></tr>
-<tr><td>soma install</td><td>Install deps</td></tr>
-<tr><td>soma props</td><td>List registered properties + backends</td></tr>
-<tr><td>soma repl</td><td>Interactive evaluator</td></tr>
-<tr><td>soma ast file.cell</td><td>Dump the parsed AST as JSON</td></tr>
-<tr><td>soma tokens file.cell</td><td>Dump the lexer token stream</td></tr>
-<tr><td>soma env</td><td>Show stdlib path, cache dir, and resolved config</td></tr>
-<tr><td>soma deploy file.cell --target fly|cloudflare|aws</td><td>Generate deployment scaffolding (Dockerfile / fly.toml / etc.) and shell out to the cloud CLI &mdash; you still need <code>flyctl</code>/<code>wrangler</code> auth set up</td></tr>
-</table>
-
-<h2>Architecture</h2>
-<pre><code>Source (.cell)
-    &rarr; Lexer &rarr; Parser &rarr; AST
-        &rarr; Checker (contracts, properties, scale coherence)
-        &rarr; Fixer (auto-repair: missing handlers, bad properties)
-        &rarr; Linter (anti-patterns: redundant to_json, if-chains)
-        &rarr; Verifier (state machines, temporal logic, CAP analysis)
-        &rarr; Describe (rich JSON: handlers, memory, state, face)
-        &rarr; Interpreter (soma run)
-            &rarr; Auto-serialize storage (maps &rarr; JSON &rarr; maps)
-            &rarr; Memory invariants (checked on every .set())
-            &rarr; Ensure postconditions (checked on handler exit)
-        &rarr; Native codegen ([native] &rarr; Rust &rarr; .dylib via cached cdylib build)
-    &rarr; Registry (stdlib/*.cell &mdash; properties, backends, builtins)
-    &rarr; Runtime
-        &rarr; Storage (SQLite | Memory | auto-serialize)
-        &rarr; HTTP server (soma serve)
-        &rarr; Cluster (--join &rarr; hash ring &rarr; signal replication)
-        &rarr; SSE + WebSocket + TCP signal bus</code></pre>
-</section>
-
-<!-- ═══════════════════════════════════ AGENT CHEAT SHEET ═══════════════════════════════════ -->
-<section id="cheatsheet">
-<h2>Agent cheat sheet</h2>
-<p style="color:var(--dim)">Everything an AI agent needs to write Soma. Copy-paste ready. See <a href="/llms.txt">llms.txt</a> for the full machine-readable reference.</p>
-
-<h3>Hello world</h3>
-<pre><code><span class="cmt">// app.cell</span>
-<span class="kw">cell</span> App {
-    <span class="kw">on</span> run() { <span class="fn">print</span>(<span class="str">"hello soma"</span>) }
-}
-<span class="cmt">// $ soma run app.cell</span></code></pre>
-
-<h3>Web app (5 lines)</h3>
-<pre><code><span class="kw">cell</span> App {
-    <span class="kw">memory</span> { items: Map&lt;String, String&gt; [<span class="fn">persistent</span>] }
-    <span class="kw">on</span> request(method: String, path: String, body: String) {
-        <span class="kw">let</span> req = <span class="fn">map</span>(<span class="str">"method"</span>, method, <span class="str">"path"</span>, path)
-        <span class="kw">match</span> req {
-            {method: <span class="str">"GET"</span>, path: <span class="str">"/"</span>}                 -> items.<span class="fn">values</span>
-            {method: <span class="str">"POST"</span>, path: <span class="str">"/api/"</span> + resource}  -> items.<span class="fn">set</span>(resource, <span class="fn">from_json</span>(body))
-            _                                         -> <span class="fn">response</span>(<span class="num">404</span>, <span class="fn">map</span>(<span class="str">"error"</span>, <span class="str">"not found"</span>))
-        }
-    }
-}
-<span class="cmt">// $ soma serve app.cell</span></code></pre>
-
-<h3>Verified agent (10 lines)</h3>
-<pre><code><span class="kw">cell</span> <span class="kw">agent</span> Bot {
-    <span class="kw">face</span> { <span class="kw">tool</span> search(q: String) -> String <span class="str">"Search the web"</span> }
-    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle -> thinking -> done  * -> failed }
-    <span class="kw">on</span> search(q: String) { <span class="str">"Results for: {q}"</span> }
-    <span class="kw">on</span> run(topic: String) {
-        <span class="fn">set_budget</span>(<span class="num">5000</span>)
-        <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"thinking"</span>)
-        <span class="kw">let</span> answer = <span class="fn">think</span>(<span class="str">"Research: {topic}"</span>)
-        <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"done"</span>)
-        answer
-    }
-}
-<span class="cmt">// $ soma verify bot.cell          ← PROVES it terminates</span>
-<span class="cmt">// $ SOMA_LLM_MOCK=echo soma run bot.cell "AI"  ← works offline</span>
-<span class="cmt">// $ SOMA_LLM_KEY=sk-... soma run bot.cell "AI"  ← real LLM</span>
-<span class="cmt">//</span>
-<span class="cmt">// Ollama (local, free):</span>
-<span class="cmt">// $ export SOMA_LLM_KEY=ollama</span>
-<span class="cmt">// $ export SOMA_LLM_URL=http://localhost:11434/v1/chat/completions</span>
-<span class="cmt">// $ export SOMA_LLM_MODEL=gemma3:12b</span>
-<span class="cmt">// $ soma run bot.cell "AI"</span></code></pre>
-
-<h3>Multi-agent coordination</h3>
-<pre><code><span class="kw">cell</span> <span class="kw">agent</span> Researcher {
-    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle -> done  * -> failed }
-    <span class="kw">on</span> research(topic: String) {
-        <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"done"</span>)
-        <span class="kw">let</span> r = <span class="fn">think</span>(<span class="str">"Research: {topic}"</span>)
-        <span class="kw">emit</span> findings(<span class="fn">map</span>(<span class="str">"topic"</span>, topic, <span class="str">"data"</span>, r))  <span class="cmt">// -> Writer receives</span>
-    }
-}
-<span class="kw">cell</span> <span class="kw">agent</span> Writer {
-    <span class="kw">state</span> w { <span class="kw">initial</span>: idle  idle -> done  * -> failed }
-    <span class="kw">on</span> findings(data: Map) {
-        <span class="fn">transition</span>(<span class="str">"t"</span>, <span class="str">"done"</span>)
-        <span class="fn">print</span>(<span class="fn">think</span>(<span class="str">"Write about: {data.topic}"</span>))
-    }
-}
-<span class="cmt">// emit dispatches to all cells with matching handler</span>
-<span class="cmt">// delegate("Writer", "findings", data) for direct calls</span></code></pre>
-
-<h3>Syntax cheat sheet</h3>
-<pre><code><span class="cmt">// Variables</span>
-<span class="kw">let</span> x = <span class="num">42</span>                <span class="cmt">// Int</span>
-x += <span class="num">10</span>                   <span class="cmt">// compound: += -= *= /=</span>
-<span class="kw">let</span> s = <span class="str">"hi {x}"</span>          <span class="cmt">// String interpolation</span>
-<span class="kw">let</span> m = <span class="fn">map</span>(<span class="str">"a"</span>, <span class="num">1</span>)       <span class="cmt">// Map (not {a: 1})</span>
-<span class="kw">let</span> l = <span class="fn">list</span>(<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>)     <span class="cmt">// List (not [1,2,3])</span>
-<span class="kw">let</span> n = ()                <span class="cmt">// null (not null/nil)</span>
-
-<span class="cmt">// Control flow (if/match are expressions)</span>
-<span class="kw">let</span> y = <span class="kw">if</span> x > <span class="num">0</span> { <span class="str">"pos"</span> } <span class="kw">else</span> { <span class="str">"neg"</span> }
-<span class="kw">let</span> z = <span class="kw">match</span> x { <span class="num">0</span>..<span class="num">10</span> -> <span class="str">"small"</span>  _ -> <span class="str">"big"</span> }
-
-<span class="cmt">// Pipes</span>
-data |&gt; <span class="fn">filter</span>(x =&gt; x.score &gt; <span class="num">50</span>) |&gt; <span class="fn">sort_by</span>(<span class="str">"score"</span>) |&gt; <span class="fn">top</span>(<span class="num">10</span>)
-
-<span class="cmt">// Error handling</span>
-<span class="kw">let</span> v = <span class="kw">try</span> { risky() }?       <span class="cmt">// ? propagates error</span>
-<span class="kw">ensure</span> balance &gt;= <span class="num">0</span>            <span class="cmt">// postcondition</span>
-<span class="kw">let</span> val = x ?? <span class="num">0</span>               <span class="cmt">// null coalesce</span>
-
-<span class="cmt">// Storage (auto-serializes)</span>
-data.<span class="fn">set</span>(<span class="str">"k"</span>, <span class="fn">map</span>(<span class="str">"a"</span>, <span class="num">1</span>))  <span class="cmt">// stores map directly</span>
-<span class="kw">let</span> v = data.<span class="fn">get</span>(<span class="str">"k"</span>)         <span class="cmt">// returns map, not string</span>
-
-<span class="cmt">// Agent builtins</span>
-<span class="fn">think</span>(<span class="str">"prompt"</span>)               <span class="cmt">// LLM + tool loop</span>
-<span class="fn">think_json</span>(<span class="str">"prompt"</span>)          <span class="cmt">// returns Map</span>
-<span class="fn">delegate</span>(<span class="str">"Cell"</span>, <span class="str">"sig"</span>, args) <span class="cmt">// cross-agent call</span>
-<span class="fn">set_budget</span>(<span class="num">5000</span>)              <span class="cmt">// token cap</span>
-<span class="fn">trace</span>()                      <span class="cmt">// execution log</span>
-<span class="fn">approve</span>(<span class="str">"action"</span>)            <span class="cmt">// human gate</span></code></pre>
-
-<h3>Match patterns (all composable)</h3>
-<pre><code><span class="kw">match</span> value {
-    <span class="str">"literal"</span>                    -> expr
-    <span class="str">"a"</span> || <span class="str">"b"</span>                   -> expr          <span class="cmt">// or-pattern</span>
-    name                         -> use(name)     <span class="cmt">// variable binding</span>
-    <span class="str">"/api/"</span> + rest               -> api(rest)     <span class="cmt">// string prefix</span>
-    {method: <span class="str">"GET"</span>, path}        -> get(path)     <span class="cmt">// map destructure</span>
-    <span class="num">0</span>..<span class="num">100</span>                       -> <span class="str">"small"</span>       <span class="cmt">// range</span>
-    n <span class="kw">if</span> n &gt; <span class="num">0</span>                   -> <span class="str">"positive"</span>   <span class="cmt">// guard</span>
-    ()                           -> <span class="str">"null"</span>        <span class="cmt">// unit</span>
-    _                            -> <span class="str">"default"</span>     <span class="cmt">// wildcard</span>
-}</code></pre>
-
-<h3>Don't / Do</h3>
-<table>
-<tr><th>Wrong</th><th>Right</th></tr>
-<tr><td><code>function foo() {}</code></td><td><code>on foo() {}</code></td></tr>
-<tr><td><code>null</code></td><td><code>()</code></td></tr>
-<tr><td><code>[1, 2, 3]</code></td><td><code>list(1, 2, 3)</code></td></tr>
-<tr><td><code>{key: val}</code></td><td><code>map("key", val)</code></td></tr>
-<tr><td><code>items.set(k, to_json(m))</code></td><td><code>items.set(k, m)</code></td></tr>
-<tr><td><code>from_json(items.get(k))</code></td><td><code>items.get(k)</code></td></tr>
-<tr><td><code>import x</code></td><td><code>use lib::x</code></td></tr>
-<tr><td><code>console.log(x)</code></td><td><code>print(x)</code></td></tr>
-</table>
-</section>
-
-</div>
 
 <footer>
-Soma is open source. The specification is the program.<br>
-<a href="https://github.com/soma-dev-lang/soma">GitHub</a> &middot; <a href="/llms.txt">llms.txt</a> &middot; MIT License &middot; v2.2.0<br>
-<span style="margin-top:.5rem;display:inline-block">Built on: Actors (Hewitt 1973) &middot; Relational Model (Codd 1970) &middot; TLA+ (Lamport) &middot; Unix Pipes (McIlroy 1978) &middot; Smalltalk (Kay)</span>
+  <p>Project source: <a href="https://github.com/soma-dev-lang/soma">github.com/soma-dev-lang/soma</a>. Machine-readable language reference: <a href="/llms.txt">llms.txt</a>. Paper: <a href="/paper">/paper</a>.</p>
 </footer>
-
+</main>
 </body>
 </html>
