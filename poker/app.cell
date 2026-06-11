@@ -33,77 +33,49 @@
 cell HandEval {
     face { signal eval7(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int) -> Int }
 
-    on cnt(m: Map, k: Int) {
-        let v = m.get(k)
-        if v == () { return 0 }
-        return v
-    }
-
-    on straight_high(rc: Map) {
+    on straight_high(has: List) {
         let best = 0 - 1
         for hi in range(4, 13) {
-            if cnt(rc, hi) > 0 {
-                if cnt(rc, hi - 1) > 0 {
-                    if cnt(rc, hi - 2) > 0 {
-                        if cnt(rc, hi - 3) > 0 {
-                            if cnt(rc, hi - 4) > 0 { best = hi }
-                        }
-                    }
-                }
-            }
+            if has[hi] > 0 && has[hi-1] > 0 && has[hi-2] > 0 && has[hi-3] > 0 && has[hi-4] > 0 { best = hi }
         }
-        if best < 0 {
-            if cnt(rc, 12) > 0 {
-                if cnt(rc, 0) > 0 {
-                    if cnt(rc, 1) > 0 {
-                        if cnt(rc, 2) > 0 {
-                            if cnt(rc, 3) > 0 { best = 3 }
-                        }
-                    }
-                }
-            }
-        }
+        if best < 0 && has[12] > 0 && has[0] > 0 && has[1] > 0 && has[2] > 0 && has[3] > 0 { best = 3 }
         return best
     }
 
     on eval7(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int) {
         let cards = list(a, b, c, d, e, f, g)
-        let rc = map()
-        let sc = map()
+        let rc = list()
+        for i in range(0, 13) { rc = push(rc, 0) }
+        let sc = list()
+        for i in range(0, 4) { sc = push(sc, 0) }
         for card in cards {
-            let r = card % 13
-            let s = idiv(card, 13)
-            rc = with(rc, r, cnt(rc, r) + 1)
-            sc = with(sc, s, cnt(sc, s) + 1)
+            rc[card % 13] = rc[card % 13] + 1
+            sc[idiv(card, 13)] = sc[idiv(card, 13)] + 1
         }
+
         let flush_suit = 0 - 1
-        for s in range(0, 4) {
-            if cnt(sc, s) >= 5 { flush_suit = s }
-        }
-        let str_high = straight_high(rc)
+        for s in range(0, 4) { if sc[s] >= 5 { flush_suit = s } }
+
         let sf_high = 0 - 1
         if flush_suit >= 0 {
-            let frm = map()
-            for card in cards {
-                if idiv(card, 13) == flush_suit { frm = with(frm, card % 13, 1) }
-            }
-            sf_high = straight_high(frm)
+            let fh = list()
+            for i in range(0, 13) { fh = push(fh, 0) }
+            for card in cards { if idiv(card, 13) == flush_suit { fh[card % 13] = 1 } }
+            sf_high = straight_high(fh)
         }
+        let str_high = straight_high(rc)
+
+        // groups + distinct ranks, built high-to-low directly
         let quads = list()
         let trips = list()
         let pairs = list()
         let desc = list()
-        for r in range(0, 13) {
-            let n = cnt(rc, r)
-            if n == 4 { quads = push(quads, r) }
-            if n == 3 { trips = push(trips, r) }
-            if n == 2 { pairs = push(pairs, r) }
-            if n > 0 { desc = push(desc, r) }
+        for r in range(12, 0 - 1, 0 - 1) {
+            if rc[r] == 4 { quads = push(quads, r) }
+            if rc[r] == 3 { trips = push(trips, r) }
+            if rc[r] == 2 { pairs = push(pairs, r) }
+            if rc[r] > 0 { desc = push(desc, r) }
         }
-        quads = reverse(quads)
-        trips = reverse(trips)
-        pairs = reverse(pairs)
-        desc = reverse(desc)
 
         let base = 1048576
         let k4 = 65536
@@ -113,53 +85,40 @@ cell HandEval {
 
         if sf_high >= 0 { return 8 * base + sf_high * k4 }
         if len(quads) >= 1 {
-            let q = nth(quads, 0)
             let kick = 0
-            for r in desc { if r != q { if kick == 0 { kick = r } } }
-            return 7 * base + q * k4 + kick * k3
+            for r in desc { if r != quads[0] && kick == 0 { kick = r } }
+            return 7 * base + quads[0] * k4 + kick * k3
         }
-        if len(trips) >= 1 {
-            if len(pairs) >= 1 || len(trips) >= 2 {
-                let t = nth(trips, 0)
-                let p = 0 - 1
-                if len(pairs) >= 1 { p = nth(pairs, 0) }
-                if len(trips) >= 2 { if nth(trips, 1) > p { p = nth(trips, 1) } }
-                return 6 * base + t * k4 + p * k3
-            }
+        if len(trips) >= 1 && (len(pairs) >= 1 || len(trips) >= 2) {
+            let p = 0 - 1
+            if len(pairs) >= 1 { p = pairs[0] }
+            if len(trips) >= 2 && trips[1] > p { p = trips[1] }
+            return 6 * base + trips[0] * k4 + p * k3
         }
         if flush_suit >= 0 {
             let fr = list()
-            for r in range(0, 13) {
-                let here = 0
-                for card in cards {
-                    if idiv(card, 13) == flush_suit { if card % 13 == r { here = 1 } }
-                }
-                if here == 1 { fr = push(fr, r) }
+            for r in range(12, 0 - 1, 0 - 1) {
+                for card in cards { if idiv(card, 13) == flush_suit && card % 13 == r { fr = push(fr, r) } }
             }
-            fr = reverse(fr)
-            return 5 * base + nth(fr, 0) * k4 + nth(fr, 1) * k3 + nth(fr, 2) * k2 + nth(fr, 3) * k1 + nth(fr, 4)
+            return 5 * base + fr[0] * k4 + fr[1] * k3 + fr[2] * k2 + fr[3] * k1 + fr[4]
         }
         if str_high >= 0 { return 4 * base + str_high * k4 }
         if len(trips) >= 1 {
-            let t = nth(trips, 0)
             let ks = list()
-            for r in desc { if r != t { ks = push(ks, r) } }
-            return 3 * base + t * k4 + nth(ks, 0) * k3 + nth(ks, 1) * k2
+            for r in desc { if r != trips[0] { ks = push(ks, r) } }
+            return 3 * base + trips[0] * k4 + ks[0] * k3 + ks[1] * k2
         }
         if len(pairs) >= 2 {
-            let hp = nth(pairs, 0)
-            let lp = nth(pairs, 1)
             let kick = 0
-            for r in desc { if r != hp { if r != lp { if kick == 0 { kick = r } } } }
-            return 2 * base + hp * k4 + lp * k3 + kick * k2
+            for r in desc { if r != pairs[0] && r != pairs[1] && kick == 0 { kick = r } }
+            return 2 * base + pairs[0] * k4 + pairs[1] * k3 + kick * k2
         }
         if len(pairs) >= 1 {
-            let p = nth(pairs, 0)
             let ks = list()
-            for r in desc { if r != p { ks = push(ks, r) } }
-            return 1 * base + p * k4 + nth(ks, 0) * k3 + nth(ks, 1) * k2 + nth(ks, 2) * k1
+            for r in desc { if r != pairs[0] { ks = push(ks, r) } }
+            return 1 * base + pairs[0] * k4 + ks[0] * k3 + ks[1] * k2 + ks[2] * k1
         }
-        return nth(desc, 0) * k4 + nth(desc, 1) * k3 + nth(desc, 2) * k2 + nth(desc, 3) * k1 + nth(desc, 4)
+        return desc[0] * k4 + desc[1] * k3 + desc[2] * k2 + desc[3] * k1 + desc[4]
     }
 }
 
