@@ -146,8 +146,22 @@ enum Commands {
     // ── Agent ─────────────────────────────────────────────────────
     /// Describe a cell as structured JSON: signals, memory, state machines, scale, routes
     Describe {
-        /// Path to the .cell source file
-        file: PathBuf,
+        /// Path to the .cell source file (not required with --builtins)
+        file: Option<PathBuf>,
+        /// List every builtin: signature + brief, grouped by category (✗ = nondeterministic)
+        #[arg(long)]
+        builtins: bool,
+        /// Print only cell contracts: face signals, tools, memory slots, state machines, sum types
+        #[arg(long)]
+        faces: bool,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Render generated reference docs: soma docs builtins
+    Docs {
+        /// Topic to render (currently: builtins)
+        topic: String,
     },
 
     // ── Project ───────────────────────────────────────────────────
@@ -283,7 +297,21 @@ fn main_inner() {
         Commands::Props => commands::props::cmd_props(&registry),
         Commands::Verify { files, json } => cmd_verify(&files, json),
         Commands::Deploy { file, target, region } => commands::deploy::cmd_deploy(&file, &target, region.as_deref()),
-        Commands::Describe { file } => commands::describe::cmd_describe(&file),
+        Commands::Describe { file, builtins, faces, json } => {
+            if builtins {
+                commands::describe::cmd_describe_builtins(json);
+            } else if let Some(ref file) = file {
+                if faces {
+                    commands::describe::cmd_describe_faces(file, json);
+                } else {
+                    commands::describe::cmd_describe(file);
+                }
+            } else {
+                eprintln!("error: missing file argument.\n  soma describe <file.cell>            full structure as JSON\n  soma describe <file.cell> --faces    contracts only (token-cheap)\n  soma describe --builtins [--json]    builtin signature table");
+                std::process::exit(1);
+            }
+        }
+        Commands::Docs { topic } => commands::docs::cmd_docs(&topic),
     }
 }
 

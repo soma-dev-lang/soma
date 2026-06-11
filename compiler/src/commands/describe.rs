@@ -257,6 +257,293 @@ fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
     result
 }
 
+// ── `soma describe --builtins` ───────────────────────────────────────
+
+/// Print the builtin registry, grouped by category.
+/// Text mode is for humans; --json emits the table as a JSON array.
+pub fn cmd_describe_builtins(json: bool) {
+    use crate::interpreter::builtins::registry;
+
+    if json {
+        let entries: Vec<serde_json::Value> = registry::BUILTINS.iter()
+            .map(|b| serde_json::json!({
+                "name": b.name,
+                "category": b.category,
+                "signature": b.signature,
+                "brief": b.brief,
+                "deterministic": b.deterministic,
+            }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+        return;
+    }
+
+    let nondet_count = registry::BUILTINS.iter().filter(|b| !b.deterministic).count();
+    println!("Soma builtins — {} total, {} nondeterministic (✗ = replay divergence source)",
+        registry::BUILTINS.len(), nondet_count);
+
+    for cat in registry::categories() {
+        println!("\n── {} ─────", cat);
+        for b in registry::BUILTINS.iter().filter(|b| b.category == cat) {
+            let marker = if b.deterministic { " " } else { "✗" };
+            println!("  {} {}", marker, b.signature);
+            println!("      {}", b.brief);
+        }
+    }
+}
+
+// ── `soma describe <file.cell> --faces` ──────────────────────────────
+
+/// Token-cheap contract pack: for each cell, ONLY its contract — face
+/// signals, tools, promises, memory slots, state machines, and sum-type
+/// declarations. No handler bodies. Paste this into an agent's context
+/// before writing a new cell against these contracts.
+pub fn cmd_describe_faces(path: &PathBuf, json: bool) {
+    let source = read_source(path);
+    let file_str = path.display().to_string();
+    let tokens = lex_with_location(&source, Some(&file_str));
+    let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
+    resolve_imports(&mut program, path);
+
+    if json {
+        let mut out = Vec::new();
+        for cell in &program.cells {
+            match cell.node.kind {
+                CellKind::Cell | CellKind::Agent | CellKind::Type => {
+                    out.push(face_json(&cell.node));
+                }
+                _ => {}
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "file": file_str,
+            "cells": out,
+        })).unwrap());
+        return;
+    }
+
+    println!("# {} — contracts only (no handler bodies)", file_str);
+
+    // Sum types first: they are the vocabulary the cells speak.
+    for cell in &program.cells {
+        if cell.node.kind != CellKind::Type { continue; }
+        for section in &cell.node.sections {
+            if let Section::Variants(v) = &section.node {
+                println!("type {} = {}", cell.node.name, format_variants(v));
+            }
+        }
+    }
+
+    for cell in &program.cells {
+        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        print_cell_face(&cell.node);
+    }
+}
+
+fn print_cell_face(cell: &CellDef) {
+    let kind = if cell.kind == CellKind::Agent { "agent" } else { "cell" };
+    println!("\n{} {}", kind, cell.name);
+
+    let mut has_face = false;
+    for section in &cell.sections {
+        match &section.node {
+            Section::Face(face) => {
+                has_face = true;
+                for decl in &face.declarations {
+                    match &decl.node {
+                        FaceDecl::Signal(sig) => {
+                            println!("  signal {}({}){}", sig.name,
+                                format_params(&sig.params),
+                                format_return(&sig.return_type));
+                        }
+                        FaceDecl::Tool(tool) => {
+                            let caps = if tool.capabilities.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" [{}]", tool.capabilities.join(", "))
+                            };
+                            let desc = tool.description.as_deref()
+                                .map(|d| format!(" — {}", d)).unwrap_or_default();
+                            println!("  tool {}({}){}{}{}", tool.name,
+                                format_params(&tool.params),
+                                format_return(&tool.return_type), caps, desc);
+                        }
+                        FaceDecl::Promise(p) => {
+                            println!("  promise {}", format_promise(&p.constraint.node));
+                        }
+                        FaceDecl::Given(_) | FaceDecl::Await(_) => {}
+                    }
+                }
+            }
+            Section::Memory(mem) => {
+                for slot in &mem.slots {
+                    let props: Vec<String> = slot.node.properties.iter()
+                        .map(|p| p.node.name().to_string()).collect();
+                    let props = if props.is_empty() { String::new() }
+                        else { format!(" [{}]", props.join(", ")) };
+                    println!("  memory {}: {}{}", slot.node.name,
+                        format_type(&slot.node.ty.node), props);
+                }
+                for inv in &mem.invariants {
+                    println!("  invariant {}", format_expr(&inv.node));
+                }
+            }
+            Section::State(sm) => {
+                let ty = sm.state_type.as_deref()
+                    .map(|t| format!(": {}", t)).unwrap_or_default();
+                let transitions: Vec<String> = sm.transitions.iter()
+                    .map(|t| format!("{} -> {}{}", t.node.from, t.node.to,
+                        if t.node.guard.is_some() { " (guarded)" } else { "" }))
+                    .collect();
+                println!("  state {}{} (initial {}): {}", sm.name, ty,
+                    sm.initial, transitions.join(", "));
+            }
+            _ => {}
+        }
+    }
+
+    // Cells without a face still have a contract: their public handlers.
+    if !has_face {
+        for section in &cell.sections {
+            if let Section::OnSignal(on) = &section.node {
+                if on.signal_name.starts_with('_') { continue; }
+                println!("  on {}({})", on.signal_name, format_params(&on.params));
+            }
+        }
+    }
+}
+
+fn face_json(cell: &CellDef) -> serde_json::Value {
+    let kind = match cell.kind {
+        CellKind::Agent => "agent",
+        CellKind::Type => "type",
+        _ => "cell",
+    };
+    let mut signals = Vec::new();
+    let mut tools = Vec::new();
+    let mut promises = Vec::new();
+    let mut memory = Vec::new();
+    let mut invariants = Vec::new();
+    let mut states = Vec::new();
+    let mut variants = Vec::new();
+
+    for section in &cell.sections {
+        match &section.node {
+            Section::Face(face) => {
+                for decl in &face.declarations {
+                    match &decl.node {
+                        FaceDecl::Signal(sig) => signals.push(format!(
+                            "{}({}){}", sig.name, format_params(&sig.params),
+                            format_return(&sig.return_type))),
+                        FaceDecl::Tool(tool) => {
+                            let mut t = serde_json::json!({
+                                "signature": format!("{}({}){}", tool.name,
+                                    format_params(&tool.params),
+                                    format_return(&tool.return_type)),
+                            });
+                            if let Some(ref d) = tool.description {
+                                t["description"] = serde_json::json!(d);
+                            }
+                            if !tool.capabilities.is_empty() {
+                                t["capabilities"] = serde_json::json!(tool.capabilities);
+                            }
+                            tools.push(t);
+                        }
+                        FaceDecl::Promise(p) => promises.push(format_promise(&p.constraint.node)),
+                        FaceDecl::Given(_) | FaceDecl::Await(_) => {}
+                    }
+                }
+            }
+            Section::Memory(mem) => {
+                for slot in &mem.slots {
+                    let props: Vec<String> = slot.node.properties.iter()
+                        .map(|p| p.node.name().to_string()).collect();
+                    memory.push(serde_json::json!({
+                        "name": slot.node.name,
+                        "type": format_type(&slot.node.ty.node),
+                        "properties": props,
+                    }));
+                }
+                for inv in &mem.invariants {
+                    invariants.push(format_expr(&inv.node));
+                }
+            }
+            Section::State(sm) => {
+                let transitions: Vec<String> = sm.transitions.iter()
+                    .map(|t| format!("{} -> {}", t.node.from, t.node.to))
+                    .collect();
+                let mut s = serde_json::json!({
+                    "name": sm.name,
+                    "initial": sm.initial,
+                    "transitions": transitions,
+                });
+                if let Some(ref ty) = sm.state_type {
+                    s["type"] = serde_json::json!(ty);
+                }
+                states.push(s);
+            }
+            Section::Variants(v) => {
+                for var in &v.variants {
+                    variants.push(format_variant(&var.node));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut result = serde_json::json!({ "name": cell.name, "kind": kind });
+    if !signals.is_empty() { result["signals"] = serde_json::json!(signals); }
+    if !tools.is_empty() { result["tools"] = serde_json::json!(tools); }
+    if !promises.is_empty() { result["promises"] = serde_json::json!(promises); }
+    if !memory.is_empty() { result["memory"] = serde_json::json!(memory); }
+    if !invariants.is_empty() { result["invariants"] = serde_json::json!(invariants); }
+    if !states.is_empty() { result["states"] = serde_json::json!(states); }
+    if !variants.is_empty() { result["variants"] = serde_json::json!(variants); }
+    result
+}
+
+/// Render a promise the way it was written: `promise all_persistent`
+/// is a zero-arg predicate — print it without the empty parens.
+fn format_promise(c: &Constraint) -> String {
+    if let Constraint::Predicate { name, args } = c {
+        if args.is_empty() {
+            return name.clone();
+        }
+    }
+    format_constraint(c)
+}
+
+fn format_params(params: &[Param]) -> String {
+    params.iter()
+        .map(|p| format!("{}: {}", p.name, format_type(&p.ty.node)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_return(ret: &Option<Spanned<TypeExpr>>) -> String {
+    ret.as_ref().map(|r| format!(" -> {}", format_type(&r.node))).unwrap_or_default()
+}
+
+fn format_variants(v: &VariantsSection) -> String {
+    v.variants.iter()
+        .map(|var| format_variant(&var.node))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn format_variant(var: &VariantDecl) -> String {
+    match &var.fields {
+        VariantFields::Unit => var.name.clone(),
+        VariantFields::Tuple(tys) => format!("{}({})", var.name,
+            tys.iter().map(|t| format_type(&t.node)).collect::<Vec<_>>().join(", ")),
+        VariantFields::Struct(fields) => format!("{} {{ {} }}", var.name,
+            fields.iter()
+                .map(|(n, t)| format!("{}: {}", n, format_type(&t.node)))
+                .collect::<Vec<_>>()
+                .join(", ")),
+    }
+}
+
 /// Convert a byte offset to a 1-based line number.
 fn span_to_line(source: &str, offset: usize) -> usize {
     let (line, _col) = crate::interpreter::span_to_location(source, offset);

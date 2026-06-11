@@ -16,13 +16,19 @@ use super::{Value, soma_int::SomaInt};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 /// Names of builtins whose return value is *not* a function of their
 /// arguments — every call is a potential source of replay divergence.
-pub const NONDET_BUILTINS: &[&str] = &[
-    "now", "now_ms", "timestamp", "today", "date_now",
-    "random", "rand",
-];
+/// Derived from the builtin registry (`deterministic: false` entries):
+/// the registry is the single source of truth.
+pub static NONDET_BUILTINS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    super::builtins::registry::BUILTINS
+        .iter()
+        .filter(|b| !b.deterministic)
+        .map(|b| b.name)
+        .collect()
+});
 
 #[derive(Debug, Clone)]
 pub struct RecordEntry {

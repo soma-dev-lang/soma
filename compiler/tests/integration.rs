@@ -1,7 +1,9 @@
 use std::process::Command;
 
 fn soma(args: &[&str]) -> (String, String, i32) {
-    let output = Command::new("./target/debug/soma")
+    // CARGO_BIN_EXE_soma resolves to the binary for the active profile,
+    // so the suite works under both `cargo test` and `cargo test --release`.
+    let output = Command::new(env!("CARGO_BIN_EXE_soma"))
         .args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()

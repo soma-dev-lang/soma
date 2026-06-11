@@ -4,7 +4,9 @@
 use std::process::Command;
 
 fn soma_with_env(args: &[&str], env: &[(&str, &str)]) -> (String, String, i32) {
-    let mut cmd = Command::new("./target/debug/soma");
+    // CARGO_BIN_EXE_soma resolves to the binary for the active profile,
+    // so the suite works under both `cargo test` and `cargo test --release`.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soma"));
     cmd.args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"));
     for (k, v) in env {

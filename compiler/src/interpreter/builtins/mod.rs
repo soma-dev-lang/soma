@@ -9,6 +9,7 @@ pub mod storage;
 pub mod record;
 pub mod llm;
 pub mod linalg;
+pub mod registry;
 
 use super::{Value, RuntimeError, map_from_pairs};
 use std::collections::HashMap;

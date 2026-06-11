@@ -9,6 +9,7 @@ pub mod props;
 pub mod repl;
 pub mod provider;
 pub mod describe;
+pub mod docs;
 pub mod deploy;
 pub mod lint;
 pub mod replay;
