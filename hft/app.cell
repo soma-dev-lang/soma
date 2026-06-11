@@ -1,0 +1,408 @@
+// ============================================================================
+// VOLT — high-frequency market-making in Soma (Avellaneda–Stoikov)
+// ============================================================================
+//
+// The canonical HFT strategy: continuously quote both sides of the book,
+// earn the spread, and use INVENTORY-AWARE pricing so the book position
+// mean-reverts to flat. Quotes come from the Avellaneda–Stoikov (2008)
+// closed-form solution:
+//
+//   reservation price   r = s − q·γ·σ²·(T−t)
+//   optimal half-spread δ = γ·σ²·(T−t)/2 + ln(1 + γ/k)/γ
+//   bid = r − δ,  ask = r + δ
+//
+// Long inventory pushes the reservation price DOWN (quotes skew to sell),
+// short pushes it UP (quotes skew to buy). As the session end nears
+// (T−t → 0) quotes tighten toward mid to flatten the book.
+//
+// What Soma adds that a Python notebook cannot:
+//   - QuoteDecision is a sum type: the engine MUST handle every quoting
+//     regime (two-sided / bid-only / ask-only / withdraw) — exhaustively.
+//   - The kill switch is a verified state machine: `halted` has no
+//     outgoing transitions, so `soma verify` PROVES a tripped kill
+//     switch can never re-arm. Not a code review hope — a theorem.
+//   - assert_fails pins the negative path: re-engaging after halt is a
+//     tested runtime error.
+//
+// Fills follow the same microstructure model as the paper: market-order
+// flow arrives as a Poisson process whose intensity decays exponentially
+// with distance from mid, P(fill) = A·exp(−k·δ)·dt.
+//
+// Run it:
+//   soma check  hft/app.cell
+//   soma verify hft/app.cell      # proves the kill switch is permanent
+//   soma test   hft/app.cell
+//   soma run    hft/app.cell run_sim 5000
+// ============================================================================
+
+// ── Quoting regimes ─────────────────────────────────────────────────
+
+cell type QuoteDecision {
+    variants {
+        TwoSided { bid: Float, ask: Float }
+        BidOnly { bid: Float }
+        AskOnly { ask: Float }
+        Withdraw
+    }
+}
+
+// ── Quoter: the Avellaneda–Stoikov math (pure, unit-tested) ─────────
+
+cell Quoter {
+    face {
+        signal reservation(mid: Float, q: Int, gamma: Float, sigma: Float, tau: Float) -> Float
+        signal half_spread(gamma: Float, sigma: Float, tau: Float, k: Float) -> Float
+        signal decide_quotes(mid: Float, q: Int, q_max: Int, gamma: Float, sigma: Float, tau: Float, k: Float, tick: Float) -> Map
+    }
+
+    // r = s − q·γ·σ²·(T−t): inventory shifts the price we are
+    // indifferent at, so quoting around r mean-reverts the book.
+    on reservation(mid: Float, q: Int, gamma: Float, sigma: Float, tau: Float) {
+        return mid - q * gamma * sigma * sigma * tau
+    }
+
+    // δ = γσ²τ/2 + ln(1+γ/k)/γ — wider when volatility or risk
+    // aversion is high, tighter as the session runs out.
+    on half_spread(gamma: Float, sigma: Float, tau: Float, k: Float) {
+        return gamma * sigma * sigma * tau / 2.0 + ln(1.0 + gamma / k) / gamma
+    }
+
+    on decide_quotes(mid: Float, q: Int, q_max: Int, gamma: Float, sigma: Float, tau: Float, k: Float, tick: Float) {
+        let r = reservation(mid, q, gamma, sigma, tau)
+        let d = half_spread(gamma, sigma, tau, k)
+        if d < tick { d = tick }
+
+        // Hard inventory limits: at the cap we only quote the side
+        // that reduces the position.
+        if q >= q_max {
+            return AskOnly { ask: r + d }
+        }
+        if q <= 0 - q_max {
+            return BidOnly { bid: r - d }
+        }
+        return TwoSided { bid: r - d, ask: r + d }
+    }
+
+    // Exhaustive by construction — add a QuoteDecision variant and
+    // `soma check` refuses to build until this names it.
+    on decision_kind(d: Map) {
+        return match d {
+            TwoSided { bid, ask } -> "TwoSided"
+            BidOnly { bid }       -> "BidOnly"
+            AskOnly { ask }       -> "AskOnly"
+            Withdraw              -> "Withdraw"
+        }
+    }
+}
+
+// ── Risk: the kill switch the verifier can reason about ─────────────
+
+cell Risk {
+    face {
+        signal engage(session: String) -> String
+        signal stand_down(session: String) -> String
+        signal halt_session(session: String) -> String
+        signal session_state(session: String) -> String
+        signal limits_ok(q: Int, q_max: Int, drawdown: Float, dd_max: Float) -> Bool
+        signal breach_reason(q: Int, q_max: Int, drawdown: Float, dd_max: Float) -> String
+    }
+
+    // `halted` has NO outgoing transition: `soma verify` proves it is
+    // terminal. A tripped kill switch cannot be talked back to life.
+    state kill {
+        initial: armed
+        armed -> trading
+        trading -> armed
+        trading -> halted
+        armed -> halted
+    }
+
+    on engage(session: String) {
+        transition(session, "trading")
+        return "trading"
+    }
+
+    on stand_down(session: String) {
+        transition(session, "armed")
+        return "armed"
+    }
+
+    on halt_session(session: String) {
+        transition(session, "halted")
+        return "halted"
+    }
+
+    on session_state(session: String) {
+        return get_status(session)
+    }
+
+    // Pure pre-trade check — call BEFORE acting, never after
+    // (the composition lint exists because of exactly that mistake).
+    on limits_ok(q: Int, q_max: Int, drawdown: Float, dd_max: Float) {
+        // breathing room above the quoting cap: the kill switch fires
+        // only if fills somehow blow PAST the soft limit
+        return abs(q) <= q_max + 2 && drawdown <= dd_max
+    }
+
+    on breach_reason(q: Int, q_max: Int, drawdown: Float, dd_max: Float) {
+        if abs(q) > q_max + 2 {
+            return "inventory breach: |{q}| > {q_max} + 2"
+        }
+        if drawdown > dd_max {
+            return "drawdown breach: {drawdown} > {dd_max}"
+        }
+        return "no breach"
+    }
+}
+
+// ── Microstructure: the exchange the strategy trades against ────────
+
+cell Microstructure {
+    face {
+        signal gauss() -> Float
+        signal fill_prob(delta: Float, a_flow: Float, k_flow: Float, dt: Float) -> Float
+    }
+
+    // Irwin–Hall: sum of 12 uniforms − 6 ≈ standard normal
+    on gauss() {
+        let acc = 0.0
+        for i in range(0, 12) {
+            acc = acc + random()
+        }
+        return acc - 6.0
+    }
+
+    // Poisson fill intensity decaying with distance from mid:
+    // P(fill in dt) = A·exp(−k·δ)·dt, clamped to a probability.
+    on fill_prob(delta: Float, a_flow: Float, k_flow: Float, dt: Float) {
+        if delta < 0.0 { delta = 0.0 }
+        let p = a_flow * exp(0.0 - k_flow * delta) * dt
+        if p > 1.0 { p = 1.0 }
+        if p < 0.0 { p = 0.0 }
+        return p
+    }
+}
+
+// ── Engine: the trading session ─────────────────────────────────────
+
+cell Engine {
+    face {
+        signal run_sim(steps: Int) -> Map
+        signal run_stress(steps: Int) -> Map
+        promise "session halts permanently on inventory or drawdown breach"
+    }
+
+    // Calm market: zero drift, normal drawdown budget.
+    on run_sim(steps: Int) {
+        return simulate(steps, 0.0, 3.0)
+    }
+
+    // Hostile market: a hard downtrend the market maker must bleed
+    // against, with a tight drawdown budget — demonstrates the kill
+    // switch firing (and staying tripped, as `verify` proves).
+    on run_stress(steps: Int) {
+        return simulate(steps, 0.0 - 0.03, 1.5)
+    }
+
+    on simulate(steps: Int, drift: Float, dd_max: Float) {
+        // ---- session + risk arming ---------------------------------
+        let session = "sess-{now_ms()}"
+        engage(session)
+
+        // ---- strategy parameters (Avellaneda–Stoikov) --------------
+        let gamma = 0.1        // risk aversion
+        let k = 1.5            // book liquidity decay
+        let a_flow = 140.0     // market-order arrival intensity
+        let q_max = 5          // inventory cap (quotes go one-sided here)
+        let tick = 0.01
+        let dt = 1.0 / steps
+
+        // ---- market state ------------------------------------------
+        let mid = 100.0
+        let sigma_step = 0.02  // per-step mid volatility
+        let ewma_var = sigma_step * sigma_step
+        let lambda = 0.97      // EWMA decay for realized vol
+
+        // ---- book state --------------------------------------------
+        let q = 0
+        let cash = 0.0
+        let peak = 0.0
+        let drawdown = 0.0
+        let buys = 0
+        let sells = 0
+        let max_abs_q = 0
+        let withdrawn = 0
+        let halted_at = 0 - 1
+        let halt_note = ""
+
+        for i in range(0, steps) {
+            // -- mid-price random walk + realized vol estimate -------
+            let ret = drift + sigma_step * gauss()
+            mid = mid + ret
+            ewma_var = lambda * ewma_var + (1.0 - lambda) * ret * ret
+            let sigma = sqrt(ewma_var) * sqrt(1.0 * steps)   // session-scaled
+            let tau = 1.0 - 1.0 * i / steps                  // time remaining
+
+            // -- pre-trade risk gate (BEFORE quoting, BEFORE acting) -
+            if !limits_ok(q, q_max, drawdown, dd_max) {
+                halt_note = breach_reason(q, q_max, drawdown, dd_max)
+                halt_session(session)
+                // liquidate at mid, paying half a spread as cost
+                cash = cash + q * (mid - 0.05 * q)
+                q = 0
+                halted_at = i
+                break
+            }
+
+            // -- quote ----------------------------------------------
+            let decision = decide_quotes(mid, q, q_max, gamma, sigma, tau, k, tick)
+            let bid = 0.0
+            let ask = 0.0
+            let quote_bid = false
+            let quote_ask = false
+            match decision {
+                TwoSided { bid: b, ask: a } -> {
+                    bid = b
+                    ask = a
+                    quote_bid = true
+                    quote_ask = true
+                }
+                BidOnly { bid: b } -> {
+                    bid = b
+                    quote_bid = true
+                }
+                AskOnly { ask: a } -> {
+                    ask = a
+                    quote_ask = true
+                }
+                Withdraw -> { withdrawn = withdrawn + 1 }
+            }
+
+            // -- fills: Poisson flow hits quotes by distance ---------
+            if quote_ask {
+                let p_sell = fill_prob(ask - mid, a_flow, k_flow_of(k), dt)
+                if random() < p_sell {
+                    cash = cash + ask
+                    q = q - 1
+                    sells = sells + 1
+                }
+            }
+            if quote_bid {
+                let p_buy = fill_prob(mid - bid, a_flow, k_flow_of(k), dt)
+                if random() < p_buy {
+                    cash = cash - bid
+                    q = q + 1
+                    buys = buys + 1
+                }
+            }
+
+            // -- mark to market, drawdown ----------------------------
+            if abs(q) > max_abs_q { max_abs_q = abs(q) }
+            let equity = cash + q * mid
+            if equity > peak { peak = equity }
+            drawdown = peak - equity
+        }
+
+        // ---- session end: flatten any residual inventory -----------
+        let status = session_state(session)
+        if status == "trading" {
+            cash = cash + q * mid
+            q = 0
+            stand_down(session)
+            status = session_state(session)
+        }
+
+        let pnl = cash
+        let spread_per_fill = 0.0
+        if buys + sells > 0 { spread_per_fill = pnl / (buys + sells) }
+
+        print("VOLT session report")
+        print("  steps:       {steps}")
+        print("  fills:       {buys} buys / {sells} sells")
+        print("  max |q|:     {max_abs_q} (cap {q_max})")
+        print("  final pnl:   {pnl}")
+        print("  pnl/fill:    {spread_per_fill}")
+        print("  session:     {status}{halt_suffix(halted_at, halt_note)}")
+
+        return map(
+            "steps", steps,
+            "buys", buys,
+            "sells", sells,
+            "max_abs_inventory", max_abs_q,
+            "pnl", pnl,
+            "pnl_per_fill", spread_per_fill,
+            "session", status,
+            "halted_at_step", halted_at,
+            "halt_reason", halt_note
+        )
+    }
+
+    // The paper's k appears both in the spread term and the fill
+    // intensity; keep one source for it (price-unit scale).
+    on k_flow_of(k: Float) {
+        return k
+    }
+
+    on halt_suffix(halted_at: Int, halt_note: String) {
+        if halted_at >= 0 {
+            return " (HALTED at step {halted_at}: {halt_note})"
+        }
+        return ""
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+cell test QuoterTests {
+    rules {
+        // flat book: reservation == mid, symmetric quotes
+        assert reservation(100.0, 0, 0.1, 2.0, 1.0) == 100.0
+
+        // long inventory pushes reservation BELOW mid (skew to sell),
+        // short pushes it above
+        assert reservation(100.0, 3, 0.1, 2.0, 1.0) < 100.0
+        assert reservation(100.0, 0 - 3, 0.1, 2.0, 1.0) > 100.0
+
+        // spread is always positive and widens with volatility
+        assert half_spread(0.1, 2.0, 1.0, 1.5) > 0.0
+        assert half_spread(0.1, 4.0, 1.0, 1.5) > half_spread(0.1, 2.0, 1.0, 1.5)
+
+        // spread tightens as the session ends (tau -> 0)
+        assert half_spread(0.1, 2.0, 0.1, 1.5) < half_spread(0.1, 2.0, 1.0, 1.5)
+
+        // at the inventory cap, quoting goes one-sided
+        assert decision_kind(decide_quotes(100.0, 5, 5, 0.1, 2.0, 1.0, 1.5, 0.01)) == "AskOnly"
+        assert decision_kind(decide_quotes(100.0, 0 - 5, 5, 0.1, 2.0, 1.0, 1.5, 0.01)) == "BidOnly"
+        assert decision_kind(decide_quotes(100.0, 0, 5, 0.1, 2.0, 1.0, 1.5, 0.01)) == "TwoSided"
+    }
+}
+
+cell test RiskTests {
+    rules {
+        // limit checks
+        assert limits_ok(3, 5, 1.0, 3.0) == true
+        assert limits_ok(8, 5, 1.0, 3.0) == false
+        assert limits_ok(0, 5, 9.0, 3.0) == false
+
+        // the kill switch lifecycle: arm -> trade -> halt
+        assert engage("t1") == "trading"
+        assert halt_session("t1") == "halted"
+
+        // THE theorem in test form: a halted session cannot re-engage,
+        // cannot stand down, cannot halt twice — halted is terminal.
+        assert_fails engage("t1")
+        assert_fails stand_down("t1")
+        assert_fails halt_session("t1")
+        assert session_state("t1") == "halted"
+    }
+}
+
+cell test MicrostructureTests {
+    rules {
+        // fill probability decays with distance from mid
+        assert fill_prob(0.0, 140.0, 45.0, 0.001) > fill_prob(0.5, 140.0, 45.0, 0.001)
+        // and is a probability
+        assert fill_prob(0.0, 99999.0, 45.0, 1.0) <= 1.0
+        assert fill_prob(5.0, 140.0, 45.0, 0.001) >= 0.0
+    }
+}

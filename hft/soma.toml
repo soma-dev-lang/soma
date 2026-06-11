@@ -1,0 +1,12 @@
+[package]
+name = "volt"
+version = "0.1.0"
+description = "VOLT — Avellaneda-Stoikov market maker with a verified kill switch"
+
+# Scoped to Risk: the kill-switch machine is the verification target.
+# armed <-> trading may cycle legitimately (sessions pause and resume),
+# so no `eventually` goal — the theorem is that `halted` is terminal,
+# which the structural check proves (terminal states: [halted]).
+[verify]
+cells = ["Risk"]
+deadlock_free = true

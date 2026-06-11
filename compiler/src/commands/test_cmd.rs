@@ -54,11 +54,13 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                         slots.insert(slot.node.name.clone(), backend);
                     }
                     interp.set_storage(&cell.node.name, &slots);
-                    interp.ensure_state_machine_storage();
                 }
             }
         }
     }
+    // State machines need their instance storage even when the cell has
+    // no memory section (a kill switch with no slots is still a machine).
+    interp.ensure_state_machine_storage();
 
     let mut total = 0;
     let mut passed = 0;
