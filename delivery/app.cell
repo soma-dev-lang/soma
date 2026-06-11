@@ -1,0 +1,711 @@
+// ============================================================================
+// MESA — a food-delivery platform in Soma
+// ============================================================================
+//
+// A "large app" exercising the whole language surface:
+//
+//   - sum types            PayResult (payments), OrderState (typed machine)
+//   - typed state machine  Orders: Placed → ... → Delivered, proven by `verify`
+//   - cyclic state machine Couriers: idle → assigned → delivering → idle
+//   - cross-cell calls     Mesa (HTTP) → Orders → Payments / Menu / Couriers
+//   - persistent memory    every slot survives restarts (promise all_persistent)
+//   - pipelines            Analytics: filter_by / sum_by / agg over order rows
+//   - try / transition     invalid lifecycle moves become 409s, not crashes
+//   - HTML frontend        one-page dashboard, plain GET forms + links
+//   - declarative tests    cell test MesaTests { rules { assert ... } }
+//
+// Architecture note: `soma serve` routes HTTP to the cell that owns
+// `request` — so Mesa is a thin HTTP edge that delegates every action
+// to the domain cells. Domain logic never touches HTTP except to pick
+// a response shape.
+//
+// Run it:
+//   soma check  delivery/app.cell
+//   soma verify delivery/app.cell        # proves the order lifecycle
+//   soma test   delivery/app.cell
+//   soma serve  delivery/app.cell -p 8080
+//
+// API (besides the dashboard at /):
+//   /place?customer=ana&rest=r1&dishes=margherita,tiramisu&pay=card
+//   /accept/1  /cook/1  /ready/1  /pickup/1?courier=dana  /deliver/1  /cancel/1
+//   /track/1   /board   /roster   /revenue
+// ============================================================================
+
+// ── Domain types ────────────────────────────────────────────────────
+
+cell type OrderState {
+    variants {
+        Placed
+        Accepted
+        Cooking
+        Ready
+        PickedUp
+        Delivered
+        Cancelled
+    }
+}
+
+cell type PayResult {
+    variants {
+        Charged { tx: String, amount: Int }
+        Declined { reason: String }
+        CashOnDelivery
+    }
+}
+
+// ── Payments ────────────────────────────────────────────────────────
+// Pure domain logic: no storage, fully unit-testable.
+
+cell Payments {
+    face {
+        signal charge(method: String, amount: Int) -> Map
+        signal receipt(r: Map) -> String
+        signal payment_ok(r: Map) -> Bool
+        signal delivery_fee(subtotal: Int) -> Int
+        promise all_persistent
+    }
+
+    memory {
+        pay_meta: Map<String, Int> [persistent, consistent]
+    }
+
+    on charge(method: String, amount: Int) {
+        if amount <= 0 {
+            return Declined { reason: "amount must be positive" }
+        }
+        if method == "cash" {
+            return CashOnDelivery
+        }
+        if method == "card" {
+            let prev = pay_meta.get("tx_seq")
+            if prev == () { pay_meta.set("tx_seq", 0) }
+            let seq = pay_meta.get("tx_seq") + 1
+            pay_meta.set("tx_seq", seq)
+            return Charged { tx: "tx-{seq}", amount: amount }
+        }
+        return Declined { reason: "unknown payment method '{method}'" }
+    }
+
+    // Exhaustive — add a PayResult variant and `soma check` refuses
+    // to build until this match handles it.
+    on receipt(r: Map) {
+        return match r {
+            Charged { tx, amount } -> "paid ${amount} ({tx})"
+            Declined { reason }    -> "declined: {reason}"
+            CashOnDelivery         -> "cash on delivery"
+        }
+    }
+
+    on payment_ok(r: Map) {
+        return match r {
+            Charged { tx, amount } -> true
+            Declined { reason }    -> false
+            CashOnDelivery         -> true
+        }
+    }
+
+    // $2 base + 10% of subtotal (integer dollars)
+    on delivery_fee(subtotal: Int) {
+        return 2 + idiv(subtotal, 10)
+    }
+}
+
+// ── Menu ────────────────────────────────────────────────────────────
+// Restaurant + dish catalog. Seeded once, then persistent.
+
+cell Menu {
+    face {
+        signal seed_menu() -> String
+        signal restaurant_name(rest: String) -> String
+        signal dish_price(rest: String, dish: String) -> Int
+        signal menu_of(rest: String) -> String
+        signal restaurant_ids() -> List
+        promise all_persistent
+    }
+
+    memory {
+        restaurants: Map<String, String> [persistent, consistent]
+        dishes: Map<String, Int> [persistent, consistent]
+        menus: Map<String, String> [persistent, consistent]
+    }
+
+    on seed_menu() {
+        if restaurants.len() > 0 { return "already seeded" }
+
+        restaurants.set("r1", "Luna Pizzeria")
+        dishes.set("r1:margherita", 14)
+        dishes.set("r1:diavola", 17)
+        dishes.set("r1:tiramisu", 8)
+        menus.set("r1", "margherita,diavola,tiramisu")
+
+        restaurants.set("r2", "Bahn Mi Bros")
+        dishes.set("r2:classic", 11)
+        dishes.set("r2:tofu", 10)
+        dishes.set("r2:iced coffee", 5)
+        menus.set("r2", "classic,tofu,iced coffee")
+
+        restaurants.set("r3", "Casa Mole")
+        dishes.set("r3:tacos", 12)
+        dishes.set("r3:pozole", 15)
+        dishes.set("r3:churros", 7)
+        menus.set("r3", "tacos,pozole,churros")
+
+        return "seeded"
+    }
+
+    on restaurant_name(rest: String) {
+        return restaurants.get(rest)
+    }
+
+    on dish_price(rest: String, dish: String) {
+        return dishes.get("{rest}:{dish}")
+    }
+
+    on menu_of(rest: String) {
+        return menus.get(rest)
+    }
+
+    on restaurant_ids() {
+        return restaurants.keys()
+    }
+}
+
+// ── Orders ──────────────────────────────────────────────────────────
+// The heart of the app. The lifecycle is a state machine TYPED against
+// OrderState: every transition target is compiler-checked, and
+// `soma verify` proves every order ends Delivered or Cancelled.
+
+cell Orders {
+    face {
+        signal place_order(customer: String, rest: String, dishes: String, pay: String) -> Map
+        signal accept_order(id: String) -> String
+        signal cook_order(id: String) -> String
+        signal ready_order(id: String) -> String
+        signal pickup_order(id: String, courier: String) -> String
+        signal deliver_order(id: String) -> String
+        signal cancel_order(id: String) -> String
+        signal track_order(id: String) -> Map
+        signal order_board() -> List
+        signal order_count() -> Int
+        promise all_persistent
+    }
+
+    memory {
+        customers: Map<String, String> [persistent, consistent]
+        order_rest: Map<String, String> [persistent, consistent]
+        order_dishes: Map<String, String> [persistent, consistent]
+        order_total: Map<String, Int> [persistent, consistent]
+        order_pay: Map<String, String> [persistent, consistent]
+        order_courier: Map<String, String> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    state order: OrderState {
+        initial: Placed
+        Placed   -> Accepted
+        Accepted -> Cooking
+        Cooking  -> Ready
+        Ready    -> PickedUp
+        PickedUp -> Delivered
+        Placed   -> Cancelled
+        Accepted -> Cancelled
+        Cooking  -> Cancelled
+    }
+
+    on place_order(customer: String, rest: String, dishes: String, pay: String) {
+        seed_menu()
+
+        let rname = restaurant_name(rest)
+        if rname == () {
+            return response(404, map("error", "unknown restaurant '{rest}'"))
+        }
+        if customer == "" {
+            return response(400, map("error", "customer name required"))
+        }
+
+        // Price the basket. Unknown dishes are rejected, not ignored.
+        let parts = split(dishes, ",")
+        let subtotal = 0
+        let chosen = ""
+        let bad = ""
+        for raw in parts {
+            let dish = trim(raw)
+            if dish != "" {
+                let price = dish_price(rest, dish)
+                if price == () {
+                    bad = dish
+                } else {
+                    subtotal = subtotal + price
+                    if chosen == "" {
+                        chosen = dish
+                    } else {
+                        chosen = "{chosen}, {dish}"
+                    }
+                }
+            }
+        }
+        if bad != "" {
+            return response(400, map("error", "'{bad}' is not on the menu at {rname}"))
+        }
+        if chosen == "" {
+            return response(400, map("error", "no dishes selected"))
+        }
+
+        let fee = delivery_fee(subtotal)
+        let total = subtotal + fee
+
+        // Sum-type payment: match decides whether the order exists at all.
+        let result = charge(pay, total)
+        if !payment_ok(result) {
+            return response(402, map("error", receipt(result)))
+        }
+
+        let current = meta.get("next_id")
+        if current == () { meta.set("next_id", 1) }
+        let id = meta.get("next_id")
+        meta.set("next_id", id + 1)
+        let id_str = to_string(id)
+
+        customers.set(id_str, customer)
+        order_rest.set(id_str, rest)
+        order_dishes.set(id_str, chosen)
+        order_total.set(id_str, total)
+        order_pay.set(id_str, receipt(result))
+
+        return redirect("/")
+    }
+
+    on accept_order(id: String)  { return advance_order(id, "Accepted") }
+    on cook_order(id: String)    { return advance_order(id, "Cooking") }
+    on ready_order(id: String)   { return advance_order(id, "Ready") }
+    on cancel_order(id: String)  { return advance_order(id, "Cancelled") }
+
+    on pickup_order(id: String, courier: String) {
+        if customers.get(id) == () {
+            return response(404, map("error", "order {id} not found"))
+        }
+        // Check the courier BEFORE moving the order — otherwise the order
+        // ends up PickedUp with nobody actually carrying it.
+        if !is_available(courier) {
+            return response(409, map("error", "courier {courier} is not available"))
+        }
+        let r = try { transition(id, PickedUp) }
+        if r.error != () {
+            return response(409, map("error", "cannot pick up order {id}: {r.error}"))
+        }
+        order_courier.set(id, courier)
+        assign(courier, id)
+        return redirect("/")
+    }
+
+    on deliver_order(id: String) {
+        if customers.get(id) == () {
+            return response(404, map("error", "order {id} not found"))
+        }
+        let r = try { transition(id, Delivered) }
+        if r.error != () {
+            return response(409, map("error", "cannot deliver order {id}: {r.error}"))
+        }
+        let c = order_courier.get(id)
+        if c != () { release(c) }
+        return redirect("/")
+    }
+
+    // Shared guard-and-transition: the machine rejects invalid moves,
+    // we surface that as a 409 instead of a crash.
+    on advance_order(id: String, target: String) {
+        if customers.get(id) == () {
+            return response(404, map("error", "order {id} not found"))
+        }
+        let r = try { transition(id, target) }
+        if r.error != () {
+            return response(409, map("error", "cannot move order {id} to {target}: {r.error}"))
+        }
+        return redirect("/")
+    }
+
+    on track_order(id: String) {
+        let customer = customers.get(id)
+        if customer == () {
+            return response(404, map("error", "order {id} not found"))
+        }
+        return map(
+            "id", id,
+            "customer", customer,
+            "restaurant", restaurant_name(order_rest.get(id)),
+            "dishes", order_dishes.get(id),
+            "total", order_total.get(id),
+            "payment", order_pay.get(id),
+            "courier", order_courier.get(id),
+            "status", get_status(id),
+            "next", valid_transitions(id)
+        )
+    }
+
+    on order_board() {
+        let rows = list()
+        let ids = customers.keys()
+        for id in ids {
+            rows = push(rows, map(
+                "id", to_int(id),
+                "customer", customers.get(id),
+                "restaurant", restaurant_name(order_rest.get(id)),
+                "dishes", order_dishes.get(id),
+                "total", order_total.get(id),
+                "payment", order_pay.get(id),
+                "courier", order_courier.get(id),
+                "status", get_status(id)
+            ))
+        }
+        return sort_by(rows, "id")
+    }
+
+    on order_count() {
+        return customers.len()
+    }
+}
+
+// ── Couriers ────────────────────────────────────────────────────────
+// A deliberately CYCLIC machine: couriers never terminate, they go
+// back on duty. `soma verify` reports this as a reactive system
+// (warning), not a liveness failure.
+
+cell Couriers {
+    face {
+        signal assign(courier: String, order_id: String) -> String
+        signal release(courier: String) -> String
+        signal is_available(courier: String) -> Bool
+        signal courier_roster() -> List
+        promise all_persistent
+    }
+
+    memory {
+        jobs: Map<String, String> [persistent, consistent]
+    }
+
+    state duty {
+        initial: idle
+        idle -> assigned
+        assigned -> delivering
+        delivering -> idle
+    }
+
+    on assign(courier: String, order_id: String) {
+        let r = try { transition(courier, "assigned") }
+        if r.error != () {
+            return response(409, map("error", "{courier} is not available: {r.error}"))
+        }
+        transition(courier, "delivering")
+        jobs.set(courier, order_id)
+        return "assigned"
+    }
+
+    on release(courier: String) {
+        let r = try { transition(courier, "idle") }
+        if r.error != () {
+            return response(409, map("error", "{courier} is not delivering: {r.error}"))
+        }
+        jobs.delete(courier)
+        return "released"
+    }
+
+    on is_available(courier: String) {
+        return get_status(courier) == "idle"
+    }
+
+    on courier_roster() {
+        let names = list("dana", "kai", "remy")
+        let rows = list()
+        for name in names {
+            let job = jobs.get(name)
+            let job_label = "—"
+            if job != () { job_label = "order #{job}" }
+            rows = push(rows, map(
+                "courier", name,
+                "status", get_status(name),
+                "job", job_label
+            ))
+        }
+        return rows
+    }
+}
+
+// ── Analytics ───────────────────────────────────────────────────────
+// Pipeline queries over the order board. No loops — declarative.
+
+cell Analytics {
+    face {
+        signal total_revenue() -> Int
+        signal revenue_by_restaurant() -> List
+        signal status_count(status_name: String) -> Int
+    }
+
+    on total_revenue() {
+        let rows = order_board()
+        let done = filter_by(rows, "status", "Delivered")
+        return sum_by(done, "total")
+    }
+
+    on revenue_by_restaurant() {
+        let rows = order_board()
+        let done = filter_by(rows, "status", "Delivered")
+        return agg(done, "restaurant", "total:sum")
+    }
+
+    on status_count(status_name: String) {
+        let rows = order_board()
+        return count_by(rows, "status", status_name)
+    }
+}
+
+// ── Mesa: the HTTP edge ─────────────────────────────────────────────
+// `soma serve` routes to the cell that owns `request`, so every
+// routable action lives here as a thin wrapper over the domain cells.
+
+cell Mesa {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal place(customer: String, rest: String, dishes: String, pay: String) -> Map
+        signal accept(id: String) -> String
+        signal cook(id: String) -> String
+        signal ready(id: String) -> String
+        signal pickup(id: String, courier: String) -> String
+        signal deliver(id: String) -> String
+        signal cancel(id: String) -> String
+        signal track(id: String) -> Map
+        signal board() -> List
+        signal roster() -> List
+        signal revenue() -> Map
+    }
+
+    // ---- routable actions (delegate to domain cells) ---------------
+    on place(customer: String, rest: String, dishes: String, pay: String) {
+        return place_order(customer, rest, dishes, pay)
+    }
+    on accept(id: String)  { return accept_order(id) }
+    on cook(id: String)    { return cook_order(id) }
+    on ready(id: String)   { return ready_order(id) }
+    on deliver(id: String) { return deliver_order(id) }
+    on cancel(id: String)  { return cancel_order(id) }
+    on pickup(id: String, courier: String) { return pickup_order(id, courier) }
+
+    // ---- JSON API ---------------------------------------------------
+    on track(id: String) { return track_order(id) }
+    on board()           { return order_board() }
+    on roster()          { return courier_roster() }
+    on revenue() {
+        return map(
+            "total", total_revenue(),
+            "by_restaurant", revenue_by_restaurant()
+        )
+    }
+
+    // ---- dashboard --------------------------------------------------
+    on request(method: String, path: String, body: String) {
+        seed_menu()
+
+        // restaurant cards
+        let cards = ""
+        let rids = restaurant_ids()
+        for rid in rids {
+            let rname = restaurant_name(rid)
+            let dish_rows = ""
+            let names = split(menu_of(rid), ",")
+            for dname in names {
+                let price = dish_price(rid, dname)
+                dish_rows = concat(dish_rows,
+                    "<div class='dish'><span>{dname}</span><span class='price'>${price}</span></div>")
+            }
+            cards = concat(cards,
+                "<div class='card'><h3>{rname}</h3><div class='rid'>{rid}</div>{dish_rows}</div>")
+        }
+
+        // orders table
+        let rows = order_board()
+        let order_rows = ""
+        for o in rows {
+            let id = to_string(o.id)
+            let customer = o.customer
+            let restaurant = o.restaurant
+            let basket = o.dishes
+            let total = o.total
+            let payment = o.payment
+            let order_status = o.status
+            let courier_cell = "—"
+            if o.courier != () { courier_cell = o.courier }
+
+            // contextual actions for the order's current state
+            let actions = ""
+            if order_status == "Placed" {
+                actions = "<a href='/accept/{id}'>accept</a> <a class='danger' href='/cancel/{id}'>cancel</a>"
+            }
+            if order_status == "Accepted" {
+                actions = "<a href='/cook/{id}'>start cooking</a> <a class='danger' href='/cancel/{id}'>cancel</a>"
+            }
+            if order_status == "Cooking" {
+                actions = "<a href='/ready/{id}'>ready</a> <a class='danger' href='/cancel/{id}'>cancel</a>"
+            }
+            if order_status == "Ready" {
+                actions = "pickup: <a href='/pickup/{id}?courier=dana'>dana</a> <a href='/pickup/{id}?courier=kai'>kai</a> <a href='/pickup/{id}?courier=remy'>remy</a>"
+            }
+            if order_status == "PickedUp" {
+                actions = "<a href='/deliver/{id}'>delivered</a>"
+            }
+
+            order_rows = concat(order_rows,
+                "<tr>
+                    <td class='dim'>#{id}</td>
+                    <td>{customer}</td>
+                    <td>{restaurant}</td>
+                    <td class='dim'>{basket}</td>
+                    <td>${total}</td>
+                    <td class='dim'>{payment}</td>
+                    <td>{courier_cell}</td>
+                    <td><span class='pill pill-{order_status}'>{order_status}</span></td>
+                    <td class='actions'>{actions}</td>
+                </tr>")
+        }
+        if order_rows == "" {
+            order_rows = "<tr><td colspan='9' class='empty'>no orders yet — place one above</td></tr>"
+        }
+
+        // couriers
+        let courier_rows = ""
+        let cr = courier_roster()
+        for c in cr {
+            let courier = c.courier
+            let duty = c.status
+            let job = c.job
+            courier_rows = concat(courier_rows,
+                "<tr><td>{courier}</td><td><span class='pill pill-{duty}'>{duty}</span></td><td class='dim'>{job}</td></tr>")
+        }
+
+        // analytics
+        let total_orders = order_count()
+        let delivered = status_count("Delivered")
+        let in_flight = total_orders - delivered - status_count("Cancelled")
+        let earned = total_revenue()
+
+        let rev_rows = ""
+        let rev = revenue_by_restaurant()
+        for r in rev {
+            let rest_name = r.restaurant
+            let delivered_n = r.count
+            let earned_r = r.total_sum
+            rev_rows = concat(rev_rows,
+                "<tr><td>{rest_name}</td><td class='dim'>{delivered_n} delivered</td><td class='price'>${earned_r}</td></tr>")
+        }
+        if rev_rows == "" {
+            rev_rows = "<tr><td colspan='3' class='empty'>deliver an order to see revenue</td></tr>"
+        }
+
+        return html(
+"<!DOCTYPE html><html><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Mesa — food delivery</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#0f1117; color:#e6e8ee; padding:32px 24px; max-width:1100px; margin:0 auto; }
+  h1 { font-weight:200; letter-spacing:6px; font-size:34px; }
+  h1 b { color:#ffb454; font-weight:600; }
+  h2 { font-weight:400; font-size:15px; letter-spacing:2px; text-transform:uppercase; color:#8a90a4; margin:36px 0 12px; }
+  .stats { display:flex; gap:14px; margin-top:18px; flex-wrap:wrap; }
+  .stat { background:#181b25; border:1px solid #262b3b; border-radius:10px; padding:14px 20px; min-width:130px; }
+  .stat .n { font-size:26px; font-weight:600; color:#ffb454; }
+  .stat .l { font-size:12px; color:#8a90a4; margin-top:2px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; }
+  .card { background:#181b25; border:1px solid #262b3b; border-radius:10px; padding:16px 18px; }
+  .card h3 { font-weight:500; font-size:16px; }
+  .rid { color:#566; font-size:11px; margin-bottom:10px; }
+  .dish { display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px dashed #262b3b; font-size:14px; color:#aeb4c6; }
+  .price { color:#7fd962; }
+  form.order { background:#181b25; border:1px solid #262b3b; border-radius:10px; padding:18px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input, select { background:#0f1117; color:#e6e8ee; border:1px solid #2c3247; border-radius:7px; padding:9px 12px; font-size:14px; }
+  input[name=dishes] { flex:1; min-width:220px; }
+  button { background:#ffb454; color:#1a1205; border:0; border-radius:7px; padding:10px 22px; font-size:14px; font-weight:600; cursor:pointer; }
+  button:hover { background:#ffc97e; }
+  table { width:100%; border-collapse:collapse; background:#181b25; border:1px solid #262b3b; border-radius:10px; overflow:hidden; font-size:14px; }
+  td { padding:10px 12px; border-bottom:1px solid #20253370; }
+  tr:last-child td { border-bottom:0; }
+  .dim { color:#8a90a4; font-size:13px; }
+  .empty { text-align:center; color:#566; padding:22px; }
+  .actions a { color:#7aa2ff; text-decoration:none; font-size:13px; margin-right:8px; }
+  .actions a:hover { text-decoration:underline; }
+  .actions a.danger { color:#ff6b6b; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:10px; font-size:12px; font-weight:500; }
+  .pill-Placed { background:#3b2f1a; color:#ffb454; }
+  .pill-Accepted { background:#1a2c3b; color:#7aa2ff; }
+  .pill-Cooking { background:#3b1a2c; color:#ff8fab; }
+  .pill-Ready { background:#1a3b2c; color:#7fd962; }
+  .pill-PickedUp { background:#2c1a3b; color:#c792ea; }
+  .pill-Delivered { background:#16321b; color:#5fbf6f; }
+  .pill-Cancelled { background:#262b3b; color:#6a7188; text-decoration:line-through; }
+  .pill-idle { background:#1a3b2c; color:#7fd962; }
+  .pill-assigned { background:#3b2f1a; color:#ffb454; }
+  .pill-delivering { background:#2c1a3b; color:#c792ea; }
+  footer { margin-top:40px; color:#566; font-size:12px; text-align:center; }
+  footer code { color:#8a90a4; }
+</style></head><body>
+
+<h1>M E S A <b>/</b> food delivery</h1>
+<div class='stats'>
+  <div class='stat'><div class='n'>{total_orders}</div><div class='l'>orders</div></div>
+  <div class='stat'><div class='n'>{in_flight}</div><div class='l'>in flight</div></div>
+  <div class='stat'><div class='n'>{delivered}</div><div class='l'>delivered</div></div>
+  <div class='stat'><div class='n'>${earned}</div><div class='l'>revenue</div></div>
+</div>
+
+<h2>Restaurants</h2>
+<div class='grid'>{cards}</div>
+
+<h2>Place an order</h2>
+<form class='order' action='/place' method='get'>
+  <input name='customer' placeholder='your name' required>
+  <select name='rest'>
+    <option value='r1'>Luna Pizzeria</option>
+    <option value='r2'>Bahn Mi Bros</option>
+    <option value='r3'>Casa Mole</option>
+  </select>
+  <input name='dishes' placeholder='dishes, comma-separated: margherita,tiramisu' required>
+  <select name='pay'>
+    <option value='card'>card</option>
+    <option value='cash'>cash on delivery</option>
+    <option value='telepathy'>telepathy (declines)</option>
+  </select>
+  <button>Order</button>
+</form>
+
+<h2>Orders</h2>
+<table>{order_rows}</table>
+
+<h2>Couriers</h2>
+<table>{courier_rows}</table>
+
+<h2>Revenue by restaurant</h2>
+<table>{rev_rows}</table>
+
+<footer>every order provably ends <code>Delivered</code> or <code>Cancelled</code> — run <code>soma verify delivery/app.cell</code></footer>
+</body></html>")
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+cell test MesaTests {
+    rules {
+        // payments: every variant of the sum type
+        assert payment_ok(charge("card", 25)) == true
+        assert payment_ok(charge("cash", 25)) == true
+        assert payment_ok(charge("card", 0)) == false
+        assert payment_ok(charge("telepathy", 25)) == false
+        assert receipt(charge("cash", 9)) == "cash on delivery"
+        assert receipt(charge("card", 0)) == "declined: amount must be positive"
+
+        // fee math: $2 base + 10%, integer division
+        assert delivery_fee(0) == 2
+        assert delivery_fee(9) == 2
+        assert delivery_fee(10) == 3
+        assert delivery_fee(45) == 6
+        assert delivery_fee(100) == 12
+    }
+}

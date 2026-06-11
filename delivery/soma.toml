@@ -1,0 +1,17 @@
+[package]
+name = "mesa"
+version = "0.1.0"
+description = "Mesa — food delivery platform with a verified order lifecycle"
+
+# Temporal properties, scoped to the Orders cell (the Couriers machine is
+# deliberately cyclic and must not be held to "eventually terminal").
+[verify]
+cells = ["Orders"]
+deadlock_free = true
+eventually = ["Delivered", "Cancelled"]
+
+[verify.after.Placed]
+eventually = ["Delivered", "Cancelled"]
+
+[verify.after.PickedUp]
+eventually = ["Delivered"]
