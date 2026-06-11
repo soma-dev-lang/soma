@@ -98,6 +98,20 @@ pub fn generate_native_source_with_config(
         body: h.body.clone(),
         properties: h.properties.clone(),
     }).collect();
+    // ── Implicit tail return ──
+    //
+    // Soma handlers return their last expression; the interpreter honors
+    // that, but the emitters only honor explicit `return`. Normalize a
+    // trailing bare expression into `Return` here so Direct mode, Rug
+    // mode, and the FFI wrappers all see the same shape — otherwise a
+    // handler ending in `acc` silently returns the type's default.
+    for h in &mut handlers_owned {
+        if let Some(last) = h.body.last_mut() {
+            if let Statement::ExprStmt { expr } = &last.node {
+                last.node = Statement::Return { value: expr.clone() };
+            }
+        }
+    }
     for h in &mut handlers_owned {
         if auto_iter_eligible(h) {
             rewrite_tail_call_to_loop(h);
