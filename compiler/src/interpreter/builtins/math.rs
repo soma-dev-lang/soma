@@ -93,6 +93,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Ok(Value::Float(base.powf(exp))))
             } else { Some(Ok(Value::Float(0.0))) }
         }
+        "sum" => Some(numeric_reduce(args, "sum")),
+        "product" => Some(numeric_reduce(args, "product")),
+        "avg" => Some(numeric_reduce(args, "avg")),
+        "min" if args.len() == 1 && matches!(args.first(), Some(Value::List(_))) => {
+            Some(numeric_reduce(args, "min"))
+        }
+        "max" if args.len() == 1 && matches!(args.first(), Some(Value::List(_))) => {
+            Some(numeric_reduce(args, "max"))
+        }
         "min" => {
             if args.len() >= 2 {
                 match (&args[0], &args[1]) {
@@ -328,5 +337,68 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::Int(SomaInt::from_i64(r as i64))))
         }
         _ => None,
+    }
+}
+
+/// Reduce a single list of numbers (or the variadic numeric args) with
+/// sum / product / min / max / avg. Stays Int-exact (BigInt-safe via
+/// SomaInt) when every element is an Int; promotes to Float if any
+/// element is a Float.
+fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
+    // accept either a single List arg or variadic numbers
+    let items: Vec<Value> = match args.first() {
+        Some(Value::List(xs)) if args.len() == 1 => xs.clone(),
+        _ => args.to_vec(),
+    };
+    if items.is_empty() {
+        return match op {
+            "product" => Ok(Value::Int(SomaInt::from_i64(1))),
+            "min" | "max" | "avg" => Ok(Value::Unit),
+            _ => Ok(Value::Int(SomaInt::from_i64(0))),
+        };
+    }
+    let any_float = items.iter().any(|v| matches!(v, Value::Float(_)));
+    let n = items.len() as i64;
+    if any_float {
+        let nums: Vec<f64> = items.iter().map(|v| match v {
+            Value::Float(f) => *f,
+            Value::Int(si) => si.to_f64(),
+            _ => 0.0,
+        }).collect();
+        let r = match op {
+            "sum" => nums.iter().sum(),
+            "product" => nums.iter().product(),
+            "avg" => nums.iter().sum::<f64>() / n as f64,
+            "min" => nums.iter().cloned().fold(f64::INFINITY, f64::min),
+            "max" => nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            _ => 0.0,
+        };
+        Ok(Value::Float(r))
+    } else {
+        let ints: Vec<SomaInt> = items.iter().map(|v| match v {
+            Value::Int(si) => si.clone(),
+            _ => SomaInt::from_i64(val_to_i64(v)),
+        }).collect();
+        match op {
+            "sum" => {
+                let mut acc = SomaInt::from_i64(0);
+                for x in ints { acc = acc.add(x); }
+                Ok(Value::Int(acc))
+            }
+            "product" => {
+                let mut acc = SomaInt::from_i64(1);
+                for x in ints { acc = acc.mul(x); }
+                Ok(Value::Int(acc))
+            }
+            "avg" => {
+                let mut acc = SomaInt::from_i64(0);
+                for x in ints.iter() { acc = acc.add(x.clone()); }
+                // integer average (truncated), matching avg_by
+                Ok(Value::Int(acc.div(SomaInt::from_i64(n))))
+            }
+            "min" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) <= 0 { a } else { b }).unwrap())),
+            "max" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) >= 0 { a } else { b }).unwrap())),
+            _ => Ok(Value::Unit),
+        }
     }
 }
