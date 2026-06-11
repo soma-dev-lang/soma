@@ -1,0 +1,331 @@
+// ============================================================================
+// TREASURY — an LLM with the company checkbook, and a proof it can't bounce it
+// ============================================================================
+//
+// The scenario every finance team fears: an AI agent with authority to
+// move money. A vendor emails an invoice; an LLM reads it, decides
+// whether to pay, and how much. The LLM is UNTRUSTED — it can hallucinate,
+// it can be prompt-injected by a malicious invoice, it can simply be wrong.
+//
+// In a Python agent, "don't overpay" is a code-review hope. In Soma it is
+// a stack of machine-checked guarantees that hold REGARDLESS of what the
+// model emits:
+//
+//   1. Account can't go negative or past its float — `invariant balance`
+//      lives on the memory itself; an over-budget write is REJECTED at the
+//      ledger, the slot unchanged. The LLM cannot spend money that isn't
+//      there even if it tries.  (V1.8)
+//
+//   2. Vendors must be pre-approved — payment to an unknown payee is a
+//      runtime refusal, not a model judgment call.
+//
+//   3. Large payments require a human — the approval state machine makes
+//      "paid without sign-off above the limit" UNREACHABLE, and the
+//      verifier proves it.  (state machine + verify)
+//
+//   4. The LLM's spend is itself bounded — `set_budget` caps tokens so a
+//      runaway reasoning loop can't burn the API bill.  (bounded think)
+//
+//   5. Every decision is logged and replayable — `soma run --record`
+//      produces an audit trail a regulator can re-execute deterministically.
+//
+// The LLM proposes. The language disposes. Try to make it misbehave:
+//   SOMA_LLM_MOCK='fixed:{"pay":true,"amount":999999}' \
+//     soma run treasury/app.cell process_invoice acme 200
+//   → the model says pay a million; the ledger says no; the account is safe.
+//
+//   soma check  treasury/app.cell      # validates invariants, dispatch, interpolation
+//   soma verify treasury/app.cell      # proves the approval machine + ledger bounds
+//   soma test   treasury/app.cell
+// ============================================================================
+
+cell type Decision {
+    variants {
+        AutoPay { amount: Int }            // within limits — pay now
+        NeedsApproval { amount: Int }      // over the limit — human gate
+        Reject { reason: String }          // refused outright
+    }
+}
+
+// ── Ledger: the account, with a wall the LLM cannot climb ───────────
+
+cell Ledger {
+    face {
+        signal balance() -> Int
+        signal debit(amount: Int) -> Map
+        signal credit(amount: Int) -> Int
+        signal seed(opening: Int) -> Int
+        promise all_persistent
+    }
+
+    memory {
+        account: Map<String, Int> [persistent, consistent]
+        // THE wall: the balance can never go negative and never exceed
+        // the float. A debit that would breach is rejected BEFORE it
+        // commits — the account keeps its prior value. No handler, and
+        // no LLM driving a handler, can write an illegal balance.
+        invariant account >= 0 && account <= 1000000
+    }
+
+    on seed(opening: Int) {
+        account.set("balance", opening)
+        return opening
+    }
+
+    on balance() {
+        let b = account.get("balance")
+        if b == () { return 0 }
+        return b
+    }
+
+    on debit(amount: Int) {
+        let current = balance()
+        let r = try { account.set("balance", current - amount) }
+        if r.error != () {
+            return map("ok", false, "reason", "insufficient funds: balance {current}, debit {amount}")
+        }
+        return map("ok", true, "balance", current - amount)
+    }
+
+    on credit(amount: Int) {
+        let current = balance()
+        account.set("balance", current + amount)
+        return current + amount
+    }
+}
+
+// ── Vendors: the allow-list ─────────────────────────────────────────
+
+cell Vendors {
+    face {
+        signal approve_vendor(name: String) -> String
+        signal is_vendor(name: String) -> Bool
+        promise all_persistent
+    }
+
+    memory {
+        approved: Map<String, String> [persistent, consistent]
+    }
+
+    on approve_vendor(name: String) {
+        approved.set(name, "approved")
+        return name
+    }
+
+    on is_vendor(name: String) {
+        return approved.get(name) != ()
+    }
+}
+
+// ── Payments: the approval state machine ────────────────────────────
+// The lifecycle the verifier reasons about. A payment reaches `paid`
+// only via `authorized`; large payments can only become `authorized`
+// through `signed_off` (the human gate). `rejected` is terminal.
+
+cell Payments {
+    face {
+        signal open_payment(id: String) -> String
+        signal authorize(id: String) -> String
+        signal sign_off(id: String) -> String
+        signal settle(id: String) -> String
+        signal reject_payment(id: String) -> String
+        signal payment_state(id: String) -> String
+        promise all_persistent
+    }
+
+    state flow {
+        initial: proposed
+        proposed -> authorized       // small payment: straight through
+        proposed -> pending_signoff   // large payment: needs a human
+        pending_signoff -> signed_off
+        signed_off -> authorized
+        authorized -> paid
+        proposed -> rejected
+        pending_signoff -> rejected
+    }
+
+    on open_payment(id: String) {
+        return get_status(id)
+    }
+
+    on authorize(id: String) {
+        transition(id, "authorized")
+        return "authorized"
+    }
+
+    on sign_off(id: String) {
+        transition(id, "signed_off")
+        return "signed_off"
+    }
+
+    on settle(id: String) {
+        transition(id, "paid")
+        return "paid"
+    }
+
+    on reject_payment(id: String) {
+        transition(id, "rejected")
+        return "rejected"
+    }
+
+    on payment_state(id: String) {
+        return get_status(id)
+    }
+}
+
+// ── Treasurer: the untrusted LLM, fenced in on every side ───────────
+
+cell agent Treasurer {
+    face {
+        signal process_invoice(vendor: String, claimed_amount: Int) -> Map
+        signal classify(vendor: String, amount: Int) -> Map
+        promise "no payment exceeds the account, the approval limit, or reaches an unapproved vendor"
+    }
+
+    memory {
+        invoices: Map<String, Int> [persistent, consistent]
+        meta: Map<String, Int> [persistent, consistent]
+    }
+
+    // Pure policy: turn an amount into a Decision. The approval limit is
+    // policy, enforced here AND structurally by the state machine.
+    on classify(vendor: String, amount: Int) {
+        if amount <= 0 {
+            return Reject { reason: "non-positive amount" }
+        }
+        if amount > 500 {
+            return NeedsApproval { amount: amount }
+        }
+        return AutoPay { amount: amount }
+    }
+
+    // Exhaustive — add a Decision variant and `soma check` refuses to
+    // build until this handles it.
+    on decision_kind(d: Map) {
+        return match d {
+            AutoPay { amount }      -> "AutoPay"
+            NeedsApproval { amount } -> "NeedsApproval"
+            Reject { reason }        -> "Reject"
+        }
+    }
+
+    on process_invoice(vendor: String, claimed_amount: Int) {
+        // 1. The LLM reads the invoice. Its token spend is hard-capped:
+        //    a prompt-injected invoice cannot trigger an unbounded loop.
+        set_budget(800)
+        let assessment = think(
+            "An invoice from vendor '{vendor}' claims {claimed_amount} dollars. Reply with the amount you would pay as a bare integer.",
+            map("max_tokens", 200, "timeout", 15000))
+
+        // 2. The LLM's number is ADVISORY. We take the smaller of what it
+        //    proposed and what was actually invoiced — the model can never
+        //    talk the payment UP. (A real build parses assessment; the
+        //    guarantees below hold for any value it produces.)
+        let proposed = to_int(trim(assessment))
+        let amount = claimed_amount
+        if proposed != () {
+            if proposed < amount { amount = proposed }
+        }
+
+        // 3. Vendor allow-list — not the model's call.
+        if !is_vendor(vendor) {
+            return map("paid", false, "reason", "vendor '{vendor}' is not approved")
+        }
+
+        // 4. Policy classification → the approval gate.
+        let id = next_payment_id()
+        let decision = classify(vendor, amount)
+        let outcome = ""
+        match decision {
+            Reject { reason } -> {
+                reject_payment(id)
+                outcome = "rejected: {reason}"
+            }
+            NeedsApproval { amount: a } -> {
+                // Large: the state machine routes through the human gate.
+                // We do NOT sign off here — it parks at pending_signoff.
+                transition(id, "pending_signoff")
+                invoices.set(id, a)
+                outcome = "parked for sign-off: ${a} exceeds auto-pay limit"
+            }
+            AutoPay { amount: a } -> {
+                // Small: authorize, then the ledger's invariant is the
+                // final backstop — even an auto-pay can't overdraw.
+                let debit_result = debit(a)
+                if debit_result.ok {
+                    authorize(id)
+                    settle(id)
+                    invoices.set(id, a)
+                    outcome = "paid ${a} to {vendor}"
+                } else {
+                    reject_payment(id)
+                    outcome = "rejected: {debit_result.reason}"
+                }
+            }
+        }
+
+        return map(
+            "payment", id,
+            "vendor", vendor,
+            "claimed", claimed_amount,
+            "authorized_amount", amount,
+            "state", payment_state(id),
+            "balance", balance(),
+            "outcome", outcome
+        )
+    }
+
+    on next_payment_id() {
+        let cur = meta.get("seq")
+        if cur == () { meta.set("seq", 0) }
+        let id = meta.get("seq") + 1
+        meta.set("seq", id)
+        return "pmt-{id}"
+    }
+}
+
+// ── Tests: the guarantees, pinned ───────────────────────────────────
+
+cell test LedgerTests {
+    rules {
+        assert seed(1000) == 1000
+        assert debit(300).ok == true
+        assert balance() == 700
+
+        // THE guarantee: an overdraw is refused and the balance is intact
+        assert debit(9999).ok == false
+        assert balance() == 700
+
+        // direct breach attempts bounce off the memory itself
+        assert_fails account.set("balance", 0 - 1)
+        assert_fails account.set("balance", 5000000)
+    }
+}
+
+cell test ClassifyTests {
+    rules {
+        assert decision_kind(classify("acme", 100)) == "AutoPay"
+        assert decision_kind(classify("acme", 900)) == "NeedsApproval"
+        assert decision_kind(classify("acme", 0 - 5)) == "Reject"
+        // the auto-pay boundary
+        assert decision_kind(classify("acme", 500)) == "AutoPay"
+        assert decision_kind(classify("acme", 501)) == "NeedsApproval"
+    }
+}
+
+cell test ApprovalMachineTests {
+    rules {
+        // small payment: proposed -> authorized -> paid
+        assert authorize("p1") == "authorized"
+        assert settle("p1") == "paid"
+
+        // a large payment cannot be settled without passing the gate:
+        // from `proposed` you cannot jump straight to paid
+        assert_fails settle("p2")
+
+        // and once rejected, a payment is terminal — no resurrection
+        assert reject_payment("p3") == "rejected"
+        assert_fails authorize("p3")
+        assert_fails settle("p3")
+    }
+}

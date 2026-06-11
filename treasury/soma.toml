@@ -1,0 +1,17 @@
+[package]
+name = "treasury"
+version = "0.1.0"
+description = "Treasury — an untrusted LLM with the checkbook, and a proof it can't bounce it"
+
+[agent]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+# Real keys come from ANTHROPIC_API_KEY at runtime; the demo and tests
+# run with SOMA_LLM_MOCK so no network is touched.
+
+# The verification target is the payment approval machine: a payment can
+# reach `paid` only through `authorized`, and a large one only through the
+# human sign-off gate. `rejected` is terminal.
+[verify]
+cells = ["Payments"]
+deadlock_free = true
