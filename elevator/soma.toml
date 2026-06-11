@@ -1,0 +1,12 @@
+[package]
+name = "lift"
+version = "0.1.0"
+description = "Lift — a SCAN-scheduled elevator with a proven door/motion interlock"
+
+# The verification target is the motion machine: prove the door/motion
+# interlock is reachable-safe (no state is both moving and doors-open)
+# with no deadlock. The lift is reactive (it cycles), so there is no
+# `eventually` terminal goal.
+[verify]
+cells = ["Lift"]
+deadlock_free = true

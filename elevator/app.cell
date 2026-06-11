@@ -1,0 +1,312 @@
+// ============================================================================
+// LIFT — an elevator where the schedule is smart and the safety is PROVEN
+// ============================================================================
+//
+// An elevator is two problems wearing one cabin:
+//
+//   SCHEDULING  — which floor next? The classic answer is the SCAN
+//                 "elevator algorithm": keep going in one direction,
+//                 serving every request on the way, until there's
+//                 nothing further ahead, then reverse. (Disk I/O
+//                 schedulers are literally named after this.)
+//
+//   SAFETY      — the cabin must NEVER move with the doors open, and the
+//                 doors must NEVER open between floors. A person stepping
+//                 into an open shaft is the failure mode elevators are
+//                 engineered around.
+//
+// Soma lets the scheduler be as clever as you like while the language
+// guarantees the safety property no matter what the scheduler asks for:
+//
+//   - The motion state machine has no state that is both "moving" and
+//     "doors open", and no transition from a moving state to an open-door
+//     state. So "move with doors open" is UNREACHABLE — `soma verify`
+//     confirms it over the whole reachable state set.
+//   - `invariant floor >= 1 && floor <= 10` keeps the car inside the
+//     shaft: a scheduling bug that computed floor 11 is rejected at the
+//     memory, the car unmoved.
+//   - Every motion and every door cycle goes through the machine, so the
+//     interlock is exercised on every step, not just asserted in a test.
+//
+// Run it:
+//   soma check  elevator/app.cell
+//   soma verify elevator/app.cell      # proves the door/motion interlock
+//   soma test   elevator/app.cell
+//   soma run    elevator/app.cell run_sim 8
+// ============================================================================
+
+cell type Direction {
+    variants {
+        Up
+        Down
+        Idle
+    }
+}
+
+cell Lift {
+    face {
+        signal request_floor(f: Int) -> String
+        signal step() -> Map
+        signal run_sim(n: Int) -> Map
+        signal car_state() -> Map
+        promise all_persistent
+    }
+
+    memory {
+        // The cabin position lives in its own slot so the shaft-bounds
+        // invariant guards ONLY the floor, not the counters below.
+        position: Map<String, Int> [persistent, consistent]
+        invariant position >= 1 && position <= 10
+
+        // direction (1 up / -1 down / 0 idle), served count, travel
+        // distance in floors, and the simulation clock.
+        stats: Map<String, Int> [persistent, consistent]
+
+        // floor -> the tick at which a call was registered (for wait time)
+        calls: Map<String, Int> [persistent, consistent]
+    }
+
+    // The interlock. What is ABSENT is the safety proof: there is no
+    // state that is simultaneously moving and doors-open, and no edge
+    // from a moving state into an open-door state. The cabin must come to
+    // `idle` (a full stop) before any door moves, and must close its
+    // doors back to `idle` before it can move again.
+    state motion {
+        initial: idle
+        idle -> moving_up
+        idle -> moving_down
+        moving_up -> idle           // a moving car can ONLY come to a stop
+        moving_down -> idle
+        idle -> doors_opening
+        doors_opening -> doors_open
+        doors_open -> doors_closing // an open door can ONLY close
+        doors_closing -> idle
+    }
+
+    on car_state() {
+        return map(
+            "floor", floor(),
+            "direction", dir_label(direction()),
+            "motion", get_status("car"),
+            "served", stats.get("served"),
+            "travel", stats.get("travel")
+        )
+    }
+
+    on floor() {
+        let f = position.get("floor")
+        if f == () { return 1 }
+        return f
+    }
+
+    on direction() {
+        let d = stats.get("dir")
+        if d == 1 { return Up }
+        if d == 0 - 1 { return Down }
+        return Idle
+    }
+
+    // Exhaustive — add a Direction variant and `soma check` refuses to
+    // build until this names it.
+    on dir_label(d: Map) {
+        return match d {
+            Up   -> "up"
+            Down -> "down"
+            Idle -> "idle"
+        }
+    }
+
+    on request_floor(f: Int) {
+        if f < 1 { return "out of range" }
+        if f > 10 { return "out of range" }
+        let t = stats.get("clock")
+        if t == () { t = 0 }
+        calls.set(to_string(f), t)
+        return "registered floor {f}"
+    }
+
+    // ── the SCAN scheduler + one safe move per tick ─────────────────
+    on step() {
+        let f = floor()
+        let t = stats.get("clock")
+        if t == () { t = 0 }
+
+        // arrived at a requested floor → serve it (a full door cycle)
+        if calls.get(to_string(f)) != () {
+            serve(f, t)
+            stats.set("clock", t + 1)
+            return map("tick", t, "floor", f, "action", "served", "motion", get_status("car"))
+        }
+
+        // keep heading the current way if anything waits ahead;
+        // otherwise reverse toward the nearest pending call.
+        let d = stats.get("dir")
+        if d == () { d = 1 }
+        let go_up = false
+        let go_down = false
+        if d == 1 && calls_above(f) { go_up = true }
+        if d == 0 - 1 && calls_below(f) { go_down = true }
+        if !go_up && !go_down {
+            if calls_above(f) { stats.set("dir", 1) go_up = true }
+            if calls_below(f) { stats.set("dir", 0 - 1) go_down = true }
+        }
+
+        let action = "idle"
+        if go_up { move_to(f + 1) action = "up" }
+        if go_down { move_to(f - 1) action = "down" }
+
+        stats.set("clock", t + 1)
+        return map("tick", t, "floor", floor(), "action", action, "motion", get_status("car"))
+    }
+
+    // Move one floor — ALWAYS through the motion machine, so the
+    // interlock holds. position.set passes the shaft-bounds invariant.
+    on move_to(target: Int) {
+        let f = floor()
+        if target > f { transition("car", "moving_up") }
+        if target < f { transition("car", "moving_down") }
+        position.set("floor", target)
+        stats.set("travel", stats.get("travel") + 1)
+        transition("car", "idle")        // come to a full stop
+    }
+
+    // Serve a floor: a complete door cycle, then clear the call and
+    // record the wait. Doors only ever move from `idle`.
+    on serve(f: Int, now: Int) {
+        transition("car", "doors_opening")
+        transition("car", "doors_open")
+        transition("car", "doors_closing")
+        transition("car", "idle")
+        let requested_at = calls.get(to_string(f))
+        if requested_at != () {
+            stats.set("wait_total", stats.get("wait_total") + (now - requested_at))
+        }
+        calls.delete(to_string(f))
+        stats.set("served", stats.get("served") + 1)
+    }
+
+    on calls_above(f: Int) {
+        let keys = calls.keys()
+        for k in keys {
+            if to_int(k) > f { return true }
+        }
+        return false
+    }
+
+    on calls_below(f: Int) {
+        let keys = calls.keys()
+        for k in keys {
+            if to_int(k) < f { return true }
+        }
+        return false
+    }
+
+    on pending() {
+        return calls.len()
+    }
+
+    // ── the simulation ──────────────────────────────────────────────
+    on run_sim(n: Int) {
+        // reset to a known start
+        position.set("floor", 1)
+        stats.set("dir", 1)
+        stats.set("served", 0)
+        stats.set("travel", 0)
+        stats.set("clock", 0)
+        stats.set("wait_total", 0)
+        let keys = calls.keys()
+        for k in keys { calls.delete(k) }
+
+        // n random hall calls
+        let placed = 0
+        for i in range(0, n) {
+            let f = random(1, 11)
+            if calls.get(to_string(f)) == () {
+                calls.set(to_string(f), 0)
+                placed = placed + 1
+            }
+        }
+
+        // run the SCAN scheduler until every call is served (bounded:
+        // a 10-floor SCAN sweep can't exceed ~40 ticks, 200 is slack).
+        let ticks = 0
+        while pending() > 0 && ticks < 200 {
+            step()
+            ticks = ticks + 1
+        }
+
+        let served = stats.get("served")
+        let travel = stats.get("travel")
+        let wait_total = stats.get("wait_total")
+        let avg_wait = 0
+        if served > 0 { avg_wait = wait_total / served }
+
+        print("LIFT simulation")
+        print("  hall calls:   {placed}")
+        print("  served:       {served}")
+        print("  travel:       {travel} floors")
+        print("  ticks:        {ticks}")
+        let here = floor()
+        let car_motion = get_status("car")
+        print("  avg wait:     {avg_wait} ticks")
+        print("  final floor:  {here}  (motion: {car_motion})")
+
+        return map(
+            "calls", placed,
+            "served", served,
+            "travel", travel,
+            "ticks", ticks,
+            "avg_wait", avg_wait,
+            "final_floor", floor(),
+            "motion", get_status("car")
+        )
+    }
+}
+
+// ── Tests: scheduling correctness AND the safety interlock ──────────
+
+cell test SchedulerTests {
+    rules {
+        // a fresh car starts at floor 1, idle-ish going up
+        assert run_sim(0).served == 0
+
+        // direction labelling via exhaustive match on the sum type
+        assert dir_label(Up) == "up"
+        assert dir_label(Down) == "down"
+        assert dir_label(Idle) == "idle"
+
+        // out-of-range hall calls are refused before they reach memory
+        assert request_floor(0) == "out of range"
+        assert request_floor(11) == "out of range"
+    }
+}
+
+cell test SafetyTests {
+    rules {
+        // drive the car into a doors-open state, then try to MOVE —
+        // the transition does not exist, so it raises. This is the
+        // "no motion with doors open" interlock in executable form.
+        assert transition("c1", "doors_opening").to == "doors_opening"
+        assert transition("c1", "doors_open").to == "doors_open"
+        assert_fails transition("c1", "moving_up")
+        assert_fails transition("c1", "moving_down")
+        assert get_status("c1") == "doors_open"
+
+        // and a moving car cannot fling its doors open mid-shaft
+        assert transition("c2", "moving_up").to == "moving_up"
+        assert_fails transition("c2", "doors_open")
+        assert_fails transition("c2", "doors_opening")
+        assert get_status("c2") == "moving_up"
+    }
+}
+
+cell test ShaftBoundsTests {
+    rules {
+        // the cabin can never be written outside the shaft
+        assert_fails position.set("floor", 0)
+        assert_fails position.set("floor", 11)
+        // legal floors are fine
+        assert position.set("floor", 1) == ()
+        assert position.set("floor", 10) == ()
+    }
+}
