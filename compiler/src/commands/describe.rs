@@ -281,6 +281,8 @@ pub fn cmd_describe_builtins(json: bool) {
     let nondet_count = registry::BUILTINS.iter().filter(|b| !b.deterministic).count();
     println!("Soma builtins — {} total, {} nondeterministic (✗ = replay divergence source)",
         registry::BUILTINS.len(), nondet_count);
+    println!("note: 'deterministic' here means NOT in the replay-divergence set tracked by");
+    println!("`soma replay` — it is not a purity claim (think/http_*/read_* have effects).");
 
     for cat in registry::categories() {
         println!("\n── {} ─────", cat);

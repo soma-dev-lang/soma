@@ -237,7 +237,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Read a file as a string; returns {error: ...} on failure."),
     doc("write_file", "io", "write_file(path: String, content) -> Bool | {error}",
         "Write content (stringified) to a file; true on success."),
-    doc("read_csv", "io", "read_csv(path: String) -> List<Map>",
+    doc("read_csv", "io", "read_csv(path: String) -> List<Map> | {error}",
         "Parse a CSV with header row into maps; cells auto-typed to Int/Float/String."),
     doc("write_csv", "io", "write_csv(path: String, rows: List<Map>) -> Bool | {error}",
         "Write rows as CSV using the first row's keys as the header."),
@@ -302,7 +302,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
 
     // ── state machines ──────────────────────────────────────────────
     doc("next_id", "state", "next_id() -> Int",
-        "Monotonic per-cell counter backed by storage; starts at 1."),
+        "Monotonic per-cell counter; REQUIRES a memory slot — without one it returns 1 on every call."),
     doc("transition", "state", "transition(id, target_state: String) -> String",
         "Move instance `id` to `target_state`; errors with the valid targets on an invalid move."),
     doc("get_status", "state", "get_status(id) -> String",

@@ -5,6 +5,8 @@
 
 160 builtins. ✗ marks the nondeterministic set (random, now, now_ms, today, timestamp, date_now, rand) — calls to these
 are tracked by `soma replay` as potential sources of replay divergence.
+`deterministic` is membership in that replay set, not a purity claim:
+think/http_*/read_*/next_id have effects but are replayed via the log itself.
 
 ## string
 
@@ -132,7 +134,7 @@ are tracked by `soma replay` as potential sources of replay divergence.
 | `print` | `print(args...) -> ()` | Print arguments space-separated, then a newline. |
 | `read_file` | `read_file(path: String) -> String \| {error}` | Read a file as a string; returns {error: ...} on failure. |
 | `write_file` | `write_file(path: String, content) -> Bool \| {error}` | Write content (stringified) to a file; true on success. |
-| `read_csv` | `read_csv(path: String) -> List<Map>` | Parse a CSV with header row into maps; cells auto-typed to Int/Float/String. |
+| `read_csv` | `read_csv(path: String) -> List<Map> \| {error}` | Parse a CSV with header row into maps; cells auto-typed to Int/Float/String. |
 | `write_csv` | `write_csv(path: String, rows: List<Map>) -> Bool \| {error}` | Write rows as CSV using the first row's keys as the header. |
 | `read_files` | `read_files(dir: String, count: Int) -> List<{path, content}>` | Read up to `count` files from a directory. |
 | `par_read_files` | `par_read_files(dir: String, count: Int) -> List<{path, content}>` | Thread-parallel variant of read_files. |
@@ -184,7 +186,7 @@ are tracked by `soma replay` as potential sources of replay divergence.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `next_id` | `next_id() -> Int` | Monotonic per-cell counter backed by storage; starts at 1. |
+| `next_id` | `next_id() -> Int` | Monotonic per-cell counter; REQUIRES a memory slot — without one it returns 1 on every call. |
 | `transition` | `transition(id, target_state: String) -> String` | Move instance `id` to `target_state`; errors with the valid targets on an invalid move. |
 | `get_status` | `get_status(id) -> String` | Current state of instance `id` (initial state if never transitioned). |
 | `valid_transitions` | `valid_transitions(id) -> List<String>` | States reachable from instance `id`'s current state. |

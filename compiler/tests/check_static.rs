@@ -5,7 +5,7 @@
 use std::process::Command;
 
 fn soma(args: &[&str]) -> (String, String, i32) {
-    let output = Command::new("./target/debug/soma")
+    let output = Command::new(env!("CARGO_BIN_EXE_soma"))
         .args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()

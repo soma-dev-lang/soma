@@ -63,7 +63,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                 if bound.contains(&name)
                     || index.variants.contains(&name)
                     || index.slots.contains(&name)
-                    || super::names::BUILTIN_NAMES.contains(&name.as_str())
+                    || super::names::builtin_names().contains(name.as_str())
                 {
                     continue;
                 }
@@ -75,12 +75,16 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                         if index.known.contains(&name) {
                             continue;
                         }
-                        let suggestion = suggest(
-                            &name,
-                            index.known.iter().chain(bound.iter()),
-                        )
-                        .map(|s| format!(" (did you mean '{}'?)", s))
-                        .unwrap_or_default();
+                        // keys/values/entries/… exist only as METHODS on
+                        // maps and memory slots — point at the real form.
+                        let suggestion = if matches!(name.as_str(),
+                            "keys" | "values" | "entries" | "has" | "delete") {
+                            format!(" ('{name}' is a method — write m.{name}())")
+                        } else {
+                            suggest(&name, index.known.iter().chain(bound.iter()))
+                                .map(|s| format!(" (did you mean '{}'?)", s))
+                                .unwrap_or_default()
+                        };
                         errors.push(DispatchFinding {
                             message: format!(
                                 "undefined function '{name}'{suggestion} — no cell defines a \
@@ -209,10 +213,20 @@ pub(super) fn collect_calls_expr(expr: &Expr, out: &mut Vec<String>) {
             }
         }
         Expr::BinaryOp { left, right, .. }
-        | Expr::CmpOp { left, right, .. }
-        | Expr::Pipe { left, right } => {
+        | Expr::CmpOp { left, right, .. } => {
             collect_calls_expr(&left.node, out);
             collect_calls_expr(&right.node, out);
+        }
+        Expr::Pipe { left, right } => {
+            collect_calls_expr(&left.node, out);
+            // The runtime supports `expr |> fn` with a BARE identifier on
+            // the right (interpreter rewrites it to fn(expr)) — that
+            // identifier is a call, not a variable reference.
+            if let Expr::Ident(name) = &right.node {
+                out.push(name.clone());
+            } else {
+                collect_calls_expr(&right.node, out);
+            }
         }
         Expr::Not(inner) | Expr::Try(inner) | Expr::TryPropagate(inner) => {
             collect_calls_expr(&inner.node, out);

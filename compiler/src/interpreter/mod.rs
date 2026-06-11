@@ -1568,34 +1568,27 @@ impl Interpreter {
                         self.call_signal(&target_cell, name, arg_vals)
                             .map_err(ExecError::Runtime)
                     } else {
-                        // Collect known names for "did you mean?" suggestion
+                        // Collect known names for "did you mean?" suggestion.
+                        // Builtins come from the registry (single source of
+                        // truth) so the suggester can never advertise a name
+                        // that is not actually callable.
                         let mut all_names: Vec<String> = self.handler_cache.keys()
                             .map(|(_, sig)| sig.clone())
                             .collect();
-                        let builtins = [
-                            "print", "len", "push", "map", "list", "filter", "sort_by", "filter_by",
-                            "to_string", "to_int", "to_float", "from_json", "to_json", "reverse", "range",
-                            "random", "abs", "round", "floor", "ceil", "min", "max", "clamp", "pow", "sqrt",
-                            "contains", "starts_with", "ends_with", "replace", "split", "trim", "join",
-                            "uppercase", "lowercase", "substring", "index_of", "concat", "type_of",
-                            "now", "now_ms", "http_get", "http_post", "html", "response", "redirect",
-                            "next_id", "transition", "get_status", "valid_transitions", "is_type",
-                            "top", "bottom", "agg", "group_by", "distinct", "describe", "flatten", "zip",
-                            "sum_by", "avg_by", "min_by", "max_by", "count_by", "escape_html",
-                            "find", "any", "all", "count", "sse", "link", "ws_connect", "ws_send",
-                            "subscribe", "keys", "values", "sort", "sleep",
-                            "nth", "read_file", "write_file", "read_csv",
-                        ];
-                        for b in &builtins { all_names.push(b.to_string()); }
+                        for b in builtins::registry::BUILTINS.iter().filter(|b| b.category != "reserved") {
+                            all_names.push(b.name.to_string());
+                        }
 
                         let suggestion = all_names.iter()
+                            .filter(|n| n.as_str() != name)
                             .filter(|n| levenshtein(n, name) <= 3)
                             .min_by_key(|n| levenshtein(n, name))
                             .cloned()
                             .or_else(|| {
                                 // Fallback: prefix match (e.g. "length" starts with "len")
                                 all_names.iter()
-                                    .find(|n| name.starts_with(n.as_str()) || n.starts_with(name))
+                                    .find(|n| n.as_str() != name
+                                        && (name.starts_with(n.as_str()) || n.starts_with(name)))
                                     .cloned()
                             });
 

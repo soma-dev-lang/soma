@@ -279,6 +279,11 @@ impl Parser {
         self.tokens[self.pos].span
     }
 
+    fn peek_at(&self, n: usize) -> &Token {
+        let idx = (self.pos + n).min(self.tokens.len() - 1);
+        &self.tokens[idx].token
+    }
+
     fn is_at_end(&self) -> bool {
         matches!(self.peek(), Token::Eof)
     }
@@ -1292,8 +1297,10 @@ impl Parser {
         let mut transitions = Vec::new();
 
         while !self.check(&Token::RBrace) && !self.is_at_end() {
-            // Check for `initial: state_name`
-            if self.check(&Token::Initial) {
+            // Check for `initial: state_name` — but `initial -> x` is a
+            // transition whose SOURCE state is named "initial" (the word
+            // is accepted as a state name everywhere else).
+            if self.check(&Token::Initial) && !matches!(self.peek_at(1), Token::Arrow) {
                 self.advance();
                 // Fix-it: `initial = draft` is the assignment spelling.
                 if self.check(&Token::Eq) {
@@ -1333,8 +1340,11 @@ impl Parser {
             let (to, _) = self.expect_any_name()?;
 
             // Fix-it: `a -> b when cond { }` — guards live inside the
-            // transition block, not after the target state.
-            if matches!(self.peek(), Token::Ident(s) if s == "when") {
+            // transition block, not after the target state. But `when` is
+            // a legal state name: `when -> c` (next token is '->') must
+            // parse as the next transition, not trip the fix-it.
+            if matches!(self.peek(), Token::Ident(s) if s == "when")
+                && !matches!(self.peek_at(1), Token::Arrow) {
                 return Err(ParseError::FixIt {
                     message: format!(
                         "guards are declared inside the transition block: {} -> {} {{ guard {{ cond }} }}",

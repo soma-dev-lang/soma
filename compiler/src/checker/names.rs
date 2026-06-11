@@ -9,53 +9,29 @@
 use crate::ast::*;
 use std::collections::{HashMap, HashSet};
 
-/// Every builtin callable by bare name at runtime. This mirrors the
-/// dispatch tables in interpreter/builtins/*.rs plus the special-cased
-/// names handled inline in interpreter/mod.rs (ws_connect, link, …).
-/// Extra entries are harmless (they only create false negatives); a
-/// MISSING entry creates false positives, so err on the side of more.
-pub const BUILTIN_NAMES: &[&str] = &[
-    // io / output
-    "print", "echo", "read_file", "write_file", "read_files", "read_csv",
-    "write_csv", "par_read_files", "par_word_count", "word_count", "include",
-    "load_template", "render", "render_each",
-    // string
-    "contains", "starts_with", "ends_with", "replace", "split", "trim",
-    "join", "uppercase", "lowercase", "substring", "index_of", "concat",
-    "len", "to_string", "to_int", "to_float", "from_json", "to_json",
-    "escape_html", "format_date", "type_of", "is_a", "is_type",
-    // math
-    "abs", "round", "floor", "ceil", "min", "max", "clamp", "pow", "sqrt",
-    "random", "rand", "exp", "ln", "log", "log10", "idiv",
-    "band", "bor", "bxor", "bnot", "shl", "shr",
-    "bit_set", "bit_clr", "bit_test", "bit_len", "bit_next",
-    "gcd", "pow_mod", "sqrt_int", "str_at", "str_eq", "str_len",
-    // collections
-    "map", "list", "push", "append", "filter", "find", "any", "all",
-    "count", "reduce", "range", "reverse", "sort", "sort_by", "filter_by",
-    "flatten", "zip", "enumerate", "nth", "merge", "with", "without",
-    "pluck", "select", "distinct", "group_by", "top", "bottom", "agg",
-    "sum", "sum_by", "avg", "avg_by", "min_by", "max_by", "count_by",
-    "keys", "values", "describe", "inner_join", "left_join", "_coalesce",
-    // http / serving
-    "http_get", "http_post", "http_put", "http_delete", "http_patch",
-    "html", "raw", "response", "redirect", "sse", "publish",
-    "ws_connect", "ws_send", "link", "subscribe",
-    // time
-    "now", "now_ms", "today", "timestamp", "date_now", "sleep",
-    // storage / state machines
-    "load", "next_id", "transition", "get_status", "valid_transitions",
-    // llm / agents
-    "think", "think_json", "delegate", "anthropic", "openai", "approve",
-    "remember", "recall", "clear_context", "set_budget", "tokens_used",
-    "tokens_remaining", "trace", "clear_trace",
-    // linalg / quant
-    "mat", "matrix", "rows", "cols", "diag", "eye", "ones", "zeros",
-    "clip", "quantile", "regress_sgd", "svd_lowrank", "clean_covariance",
-    "var_gaussian", "var_historical", "expected_shortfall_historical",
-    "impact_sqrt", "rie", "to_sampled", "drop_sampled", "sample_row",
-    "importance_sample_rows", "indices", "row_indices", "col_indices",
-];
+/// Names dispatched inline by the interpreter rather than through the
+/// builtins tables: `append` only works through the in-place assignment
+/// fast path (`items = append(items, x)`), and `_coalesce` backs `??`.
+const INLINE_BUILTIN_NAMES: &[&str] = &["append", "_coalesce"];
+
+/// Every builtin callable by bare name at runtime, DERIVED from the
+/// builtin registry (interpreter/builtins/registry.rs — the single
+/// source of truth) so this list can never drift from the dispatch
+/// tables again. The registry's 'reserved' category (documented but
+/// never dispatched) is excluded on purpose: calls to those names fail
+/// at runtime and must therefore fail check too.
+pub fn builtin_names() -> &'static HashSet<&'static str> {
+    use std::sync::OnceLock;
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| {
+        crate::interpreter::builtins::registry::BUILTINS
+            .iter()
+            .filter(|b| b.category != "reserved")
+            .map(|b| b.name)
+            .chain(INLINE_BUILTIN_NAMES.iter().copied())
+            .collect()
+    })
+}
 
 /// Program-wide index of every name that can resolve at runtime.
 /// Built once per `soma check` / `soma verify` invocation.
@@ -99,7 +75,7 @@ impl ProgramIndex {
         let mut variants: HashSet<String> = HashSet::new();
         let mut slots: HashSet<String> = HashSet::new();
 
-        for b in BUILTIN_NAMES {
+        for b in builtin_names() {
             known.insert((*b).to_string());
         }
         // [native] handlers have their own builtin vocabulary (sin,
@@ -111,13 +87,22 @@ impl ProgramIndex {
         known.insert("false".to_string());
         known.insert("_".to_string());
 
+        // Only TOP-LEVEL cells' handlers are callable by bare name: the
+        // interpreter's handler cache never registers interior cells
+        // (they communicate via emit), so counting them here made the
+        // checker bless calls that are UndefinedFn at runtime.
+        let top_level: HashSet<&str> = program.cells.iter()
+            .map(|c| c.node.name.as_str())
+            .collect();
+
         for cell in collect_cells(program) {
             known.insert(cell.name.clone());
+            let is_top_level = top_level.contains(cell.name.as_str());
             for section in &cell.sections {
                 match &section.node {
                     Section::OnSignal(on) => {
                         known.insert(on.signal_name.clone());
-                        if matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
+                        if is_top_level && matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
                             let definers = handler_map
                                 .entry(on.signal_name.clone())
                                 .or_default();

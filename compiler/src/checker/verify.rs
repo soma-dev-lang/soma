@@ -779,10 +779,16 @@ pub fn format_results(results: &[VerifyResult]) -> String {
     let mut output = String::new();
 
     for result in results {
-        output.push_str(&format!("\nState machine '{}': {} states, initial '{}'\n",
-            result.machine_name, result.states.len(), result.initial));
-        output.push_str(&format!("  States: [{}]\n", result.states.join(", ")));
-        output.push_str("\n");
+        // Synthetic check groups (composition lint, protocol checks) are
+        // not state machines — print a plain header, not "0 states".
+        if result.states.is_empty() && result.initial.is_empty() {
+            output.push_str(&format!("\n{}:\n\n", result.machine_name));
+        } else {
+            output.push_str(&format!("\nState machine '{}': {} states, initial '{}'\n",
+                result.machine_name, result.states.len(), result.initial));
+            output.push_str(&format!("  States: [{}]\n", result.states.join(", ")));
+            output.push_str("\n");
+        }
 
         for check in &result.checks {
             match check {

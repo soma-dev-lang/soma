@@ -31,11 +31,34 @@ use super::names::{suggest, ProgramIndex};
 pub struct InterpolationIssue {
     pub message: String,
     pub span: Span,
+    /// Inside `try { }` an interpolation error is catchable by design
+    /// (assert_fails blesses error-raising handlers) — demoted to a
+    /// warning so check does not contradict a passing test suite.
+    pub warning: bool,
 }
 
 pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
     let index = ProgramIndex::build(program);
     let mut issues = Vec::new();
+
+    // Handlers a test cell targets with `assert_fails handler(...)` are
+    // EXPECTED to raise — interpolation issues in them demote to
+    // warnings, otherwise check contradicts a passing test suite.
+    let mut blessed_failing: HashSet<String> = HashSet::new();
+    for cell in super::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Test) { continue; }
+        for section in &cell.sections {
+            if let Section::Rules(rules) = &section.node {
+                for rule in &rules.rules {
+                    if let Rule::AssertFails(expr) = &rule.node {
+                        if let Expr::FnCall { name, .. } = &expr.node {
+                            blessed_failing.insert(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     for cell in super::names::collect_cells(program) {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
@@ -45,6 +68,10 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
             match &section.node {
                 Section::OnSignal(on) => {
                     let mut w = Walker::new(&index);
+                    if blessed_failing.contains(&on.signal_name) {
+                        // treat the whole body as recoverable
+                        w.try_depth = 1;
+                    }
                     for p in &on.params {
                         w.scope.insert(p.name.clone());
                     }
@@ -75,11 +102,14 @@ struct Walker<'a> {
     index: &'a ProgramIndex,
     scope: HashSet<String>,
     issues: Vec<InterpolationIssue>,
+    /// > 0 while walking inside a `try { }` — issues found there are
+    /// recoverable by design and demote to warnings.
+    try_depth: usize,
 }
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), issues: Vec::new() }
+        Self { index, scope: HashSet::new(), issues: Vec::new(), try_depth: 0 }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -175,8 +205,13 @@ impl<'a> Walker<'a> {
                 self.walk_expr(left);
                 self.walk_expr(right);
             }
-            Expr::Not(inner) | Expr::Try(inner) | Expr::TryPropagate(inner) => {
+            Expr::Not(inner) => {
                 self.walk_expr(inner);
+            }
+            Expr::Try(inner) | Expr::TryPropagate(inner) => {
+                self.try_depth += 1;
+                self.walk_expr(inner);
+                self.try_depth -= 1;
             }
             Expr::Pipe { left, right } => {
                 self.walk_expr(left);
@@ -274,6 +309,22 @@ impl<'a> Walker<'a> {
             if starts_like_ident && !self.known(expr_str) {
                 self.report_undefined_var(expr_str, span);
             }
+            return true;
+        }
+
+        // The runtime's segment evaluator cannot handle nested string
+        // literals — `{len("xy")}` errors at runtime even though the
+        // outer parser accepts it. (Colon/semicolon segments never get
+        // here: they are skipped as CSS, matching the runtime.)
+        if expr_str.contains('"') {
+            self.issues.push(InterpolationIssue {
+                message: format!(
+                    "string interpolation cannot evaluate a nested string literal in '{{{expr_str}}}' — \
+                     bind the value with a let first, then interpolate the variable"
+                ),
+                span,
+                warning: self.try_depth > 0,
+            });
             return true;
         }
 
@@ -381,6 +432,7 @@ impl<'a> Walker<'a> {
                  define it before this line, or escape literal braces as '{{{{{name}}}}}'"
             ),
             span,
+            warning: self.try_depth > 0,
         });
     }
 
@@ -394,6 +446,7 @@ impl<'a> Walker<'a> {
                  define it before this line, or escape literal braces as '{{{{{name}(...)}}}}'"
             ),
             span,
+            warning: self.try_depth > 0,
         });
     }
 }

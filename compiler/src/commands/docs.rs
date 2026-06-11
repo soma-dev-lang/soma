@@ -33,6 +33,8 @@ fn print_builtins_markdown() {
     println!();
     println!("{} builtins. ✗ marks the nondeterministic set ({}) — calls to these", total, nondet.join(", "));
     println!("are tracked by `soma replay` as potential sources of replay divergence.");
+    println!("`deterministic` is membership in that replay set, not a purity claim:");
+    println!("think/http_*/read_*/next_id have effects but are replayed via the log itself.");
 
     for cat in registry::categories() {
         println!();

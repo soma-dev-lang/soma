@@ -93,9 +93,19 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                             total += 1;
 
                             match eval_test_expr(&mut interp, &expr.node) {
-                                Err(_) => {
+                                // A typo'd signal name is NOT the failure
+                                // under test — a vacuously green assert_fails
+                                // would hide it forever. (UndefinedVar stays a
+                                // passing domain error: it can arise inside
+                                // the handler being asserted on.)
+                                Err(e) if e.contains("UndefinedFn") => {
+                                    failed += 1;
+                                    println!("  ✗ assert_fails {} — FAILED: the expression itself is invalid ({}), not a domain error; fix the test",
+                                             format_expr(&expr.node), e);
+                                }
+                                Err(e) => {
                                     passed += 1;
-                                    println!("  ✓ assert_fails {}", format_expr(&expr.node));
+                                    println!("  ✓ assert_fails {} — raised {}", format_expr(&expr.node), e);
                                 }
                                 Ok(v) => {
                                     failed += 1;

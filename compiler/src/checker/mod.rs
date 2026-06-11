@@ -259,6 +259,12 @@ pub enum CheckWarning {
         message: String,
         span: Span,
     },
+    /// V1.7: an interpolation issue inside `try { }` — the error is
+    /// catchable by design, so it warns instead of failing the gate.
+    InterpolationRecoverable {
+        message: String,
+        span: Span,
+    },
 }
 
 impl CheckWarning {
@@ -314,6 +320,9 @@ impl std::fmt::Display for CheckWarning {
             Self::CostAdvisory { message, .. } => write!(f, "advisory: {message}"),
             Self::CostProven { message, .. } => write!(f, "✓ {message}"),
             Self::DispatchShadow { message, .. } => write!(f, "warning: {message}"),
+            Self::InterpolationRecoverable { message, .. } => {
+                write!(f, "warning: {message} (inside try {{ }} — recoverable, so not an error)")
+            }
         }
     }
 }
@@ -349,11 +358,19 @@ impl<'a> Checker<'a> {
         // V1.7: static interpolation check — every string literal in
         // every handler body, scanned with the runtime's segmentation
         // rules. Catches "hello {customr}" before it 500s at runtime.
+        // Issues inside try { } are recoverable by design → warnings.
         for issue in interpolation_check::check_program(program) {
-            self.errors.push(CheckError::InterpolationUndefined {
-                message: issue.message,
-                span: issue.span,
-            });
+            if issue.warning {
+                self.warnings.push(CheckWarning::InterpolationRecoverable {
+                    message: issue.message,
+                    span: issue.span,
+                });
+            } else {
+                self.errors.push(CheckError::InterpolationUndefined {
+                    message: issue.message,
+                    span: issue.span,
+                });
+            }
         }
         // V1.7: static dispatch resolution — unknown and ambiguous
         // bare-name calls, plus the recursive-shadowing trap.
