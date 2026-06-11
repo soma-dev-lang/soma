@@ -782,13 +782,7 @@ impl VM {
 
 impl Value {
     pub fn is_truthy(&self) -> bool {
-        match self {
-            Value::Bool(b) => *b,
-            Value::Int(si) => si.to_i64() != Some(0),
-            Value::Unit => false,
-            Value::String(s) => !s.is_empty(),
-            _ => true,
-        }
+        crate::interpreter::is_truthy(self)
     }
 }
 

@@ -603,6 +603,13 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
         result.checks.push(VerifyCheck::Pass(
             "liveness: every state can eventually reach a terminal state".to_string()
         ));
+    } else if terminals.is_empty() {
+        // No terminal states at all: a deliberately cyclic/reactive machine
+        // (traffic light, reopenable workflow). Liveness-to-terminal is not
+        // applicable — warn instead of failing the gate.
+        result.checks.push(VerifyCheck::Warning(
+            "liveness: machine has no terminal states (reactive/cyclic system) — liveness-to-terminal not applicable".to_string()
+        ));
     } else {
         // Find a cycle that doesn't lead to termination
         let cycle = find_cycle(&stuck, &adj);

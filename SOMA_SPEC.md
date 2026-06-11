@@ -1,7 +1,7 @@
 # SOMA Language Specification
 
 > Machine-readable specification for AI agents and tooling.
-> Version: 0.1.0
+> Version: 2.2.1
 
 ## Overview
 
@@ -197,7 +197,7 @@ on signal_name(param1: Type, param2: Type) {
 | Function | Description |
 |----------|-------------|
 | `render(template, k1, v1, ...)` | Replace `{key}` with values |
-| `render_each(template, list)` | Render template for each item |
+| `render_each(list, template)` | Render template once per map in list |
 
 ### HTTP/Web Functions
 
@@ -221,16 +221,90 @@ on signal_name(param1: Type, param2: Type) {
 | `slot.has(key)` / `slot.contains(key)` | Check existence |
 | `slot.push(value)` | Append to list storage |
 
+## Sum Types
+
+`cell type` with a `variants` block declares a tagged union. Variants may be struct-shaped, tuple-shaped, or bare (unit).
+
+```
+cell type PaymentResult {
+    variants {
+        Charged { transaction_id: String, amount: Int }   // struct variant
+        Declined(String)                                   // tuple variant
+        Pending                                            // unit variant
+    }
+}
+```
+
+Construction (inside handlers):
+
+```
+return Charged { transaction_id: "tx-1", amount: amount }
+return Declined("non-positive amount")
+return Pending                       // bare variant -- no parentheses
+```
+
+Matching is exhaustive -- `soma check` errors if a `match` misses a variant:
+
+```
+match r {
+    Charged { transaction_id, amount } -> "ok {transaction_id} ${amount}"
+    Declined(reason)                   -> "rejected: {reason}"
+    Pending                            -> "..."
+}
+```
+
+### Typed State Machines
+
+A state machine may be typed against a sum type: every state name must be a variant of that type, and `transition()` takes a variant instead of a string. A typo is a compile error.
+
+```
+cell type TodoStatus {
+    variants { Pending  InProgress  Done  Cancelled }
+}
+
+cell TodoList {
+    state todo: TodoStatus {
+        initial: Pending
+        Pending    -> InProgress
+        InProgress -> Done
+        *          -> Cancelled
+    }
+
+    on start(id: String) {
+        transition(id, InProgress)
+        return get_status(id)
+    }
+}
+```
+
 ## State Machines
 
 ```
 state machine_name {
-    initial = state_name
+    initial: state_name
 
-    state_a -> state_b when guard_expr {
-        // effect statements
+    state_a -> state_b
+    state_a -> state_c {
+        guard { boolean_expr }
     }
-    * -> error_state when error_condition { ... }
+    * -> error_state
+}
+```
+
+- `initial:` declares the starting state (exactly one per machine).
+- `a -> b` declares a legal transition; an optional `{ guard { expr } }` block constrains it.
+- `*` as source means "from any state".
+- In handlers: `transition(instance_id, target)` moves state, `get_status(id)` returns the current state, `valid_transitions(id)` lists legal next states.
+
+Example (verified):
+
+```
+state order {
+    initial: pending
+    pending   -> validated { guard { amount > 0 } }
+    validated -> sent
+    sent      -> filled
+    *         -> cancelled
 }
 ```
 
@@ -283,8 +357,13 @@ Run tests: `soma test file.cell`
 | `soma serve file.cell [-p port]` | HTTP server |
 | `soma serve file.cell --verbose` | Verbose HTTP logging |
 | `soma serve file.cell --watch` | Auto-reload on changes |
-| `soma check file.cell` | Type/property checking |
+| `soma check file.cell` | Check contracts, properties, and scale coherence |
+| `soma lint file.cell` | Lint for anti-patterns and suggest improvements |
 | `soma fix file.cell` | Auto-repair common errors (missing handlers, bad properties) |
+| `soma verify file.cell` | Prove state machines, temporal logic, CAP properties, quorum |
+| `soma describe file.cell` | Describe a cell as JSON: signals, memory, state machines, scale, routes |
+| `soma replay file.cell` | Replay a `.somalog` file deterministically and report divergences |
+| `soma deploy file.cell --target cloudflare` | Deploy to a cloud provider (cloudflare, fly, aws) |
 | `soma build file.cell [-o out.rs]` | Generate Rust skeleton |
 | `soma test file.cell` | Run test cells |
 | `soma init [name]` | Initialize project (creates subdirectory if name given) |

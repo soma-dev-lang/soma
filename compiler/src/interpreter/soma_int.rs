@@ -112,7 +112,11 @@ impl SomaInt {
         match (&self.0, &other.0) {
             (SomaIntInner::Small(a), SomaIntInner::Small(b)) => {
                 if *b == 0 { return SomaInt::from_i64(0); }
-                SomaInt::from_i64(a / b)
+                match a.checked_div(*b) {
+                    Some(r) => SomaInt::from_i64(r),
+                    // i64::MIN / -1 overflows — promote to big
+                    None => SomaInt::from_rug(Integer::from(*a) / *b),
+                }
             }
             _ => {
                 let b = other.to_rug();
@@ -126,7 +130,8 @@ impl SomaInt {
         match (&self.0, &other.0) {
             (SomaIntInner::Small(a), SomaIntInner::Small(b)) => {
                 if *b == 0 { return SomaInt::from_i64(0); }
-                SomaInt::from_i64(a % b)
+                // i64::MIN % -1 overflows in hardware; the result is 0
+                SomaInt::from_i64(a.checked_rem(*b).unwrap_or(0))
             }
             _ => {
                 let b = other.to_rug();

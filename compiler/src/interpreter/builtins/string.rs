@@ -157,6 +157,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::String(s) => {
                     if let Ok(n) = s.parse::<i64>() {
                         Ok(Value::Int(SomaInt::from_i64(n)))
+                    } else if let Ok(big) = s.trim().parse::<rug::Integer>() {
+                        // integers beyond i64 stay exact instead of clamping
+                        Ok(Value::Int(SomaInt::from_rug(big)))
                     } else if let Ok(f) = s.parse::<f64>() {
                         Ok(Value::Int(SomaInt::from_i64(f as i64)))
                     } else {
@@ -182,7 +185,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             })
         }
         "to_json" => {
-            args.first().map(|arg| Ok(Value::String(format!("{}", arg))))
+            args.first().map(|arg| {
+                let mut out = String::new();
+                write_json(arg, &mut out);
+                Ok(Value::String(out))
+            })
         }
         "from_json" => {
             args.first().map(|arg| {
@@ -224,5 +231,43 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         _ => None,
+    }
+}
+
+/// Serialize a Value as valid JSON. Unlike Display formatting, this escapes
+/// strings properly and maps NaN/inf (which JSON cannot represent) to null.
+/// BigInts are written as bare arbitrary-precision numbers.
+fn write_json(v: &Value, out: &mut String) {
+    match v {
+        Value::Unit => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Int(si) => out.push_str(&si.to_string()),
+        Value::Float(f) => {
+            if f.is_finite() {
+                out.push_str(&format!("{:?}", f));
+            } else {
+                out.push_str("null");
+            }
+        }
+        Value::String(s) => out.push_str(&serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())),
+        Value::List(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 { out.push(','); }
+                write_json(item, out);
+            }
+            out.push(']');
+        }
+        Value::Map(entries) => {
+            out.push('{');
+            for (i, (k, val)) in entries.iter().enumerate() {
+                if i > 0 { out.push(','); }
+                out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
+                out.push(':');
+                write_json(val, out);
+            }
+            out.push('}');
+        }
+        other => out.push_str(&serde_json::to_string(&format!("{}", other)).unwrap_or_else(|_| "\"\"".to_string())),
     }
 }

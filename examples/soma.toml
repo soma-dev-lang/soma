@@ -20,6 +20,10 @@ model = "gemma3:12b"
 # ${VAR} expands env vars at runtime — never put raw keys in this file
 
 [verify]
+# Scope these properties to the researcher agent — examples/ holds many
+# unrelated cells, and e.g. order.cell must not be held to Researcher's
+# "eventually done|failed" property.
+cells = ["Researcher"]
 deadlock_free = true
 eventually = ["done", "failed"]
 

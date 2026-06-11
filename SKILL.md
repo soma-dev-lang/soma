@@ -16,7 +16,7 @@ Source-of-truth documents in this repo, in decreasing order of formality:
 - `PAPER.md` — the "Scale as a Type" thesis
 - `VISION.md` — where the language is heading (don't rely on aspirational features)
 - `stdlib/*.cell` — builtin declarations and property definitions
-- `examples/*.cell` — idiomatic usage (83+ cells)
+- `examples/*.cell` — idiomatic usage (138 cells)
 
 If this SKILL.md and those docs disagree, the spec/grammar files win. This file is a distillation, not a replacement.
 
@@ -50,7 +50,7 @@ Cell *kinds* are modifiers on the keyword:
 | `cell Foo { }` | Regular cell |
 | `cell agent Foo { }` | Agent cell — unlocks `think`, `set_budget`, `tool` declarations |
 | `cell property Foo { }` | Define a new memory property (see `stdlib/durability.cell`) |
-| `cell type Foo<T> { }` | Define a custom type |
+| `cell type Foo<T> { }` | Define a custom type; with a `variants { }` block, a sum type (see §5) |
 | `cell checker Foo { }` | Custom validation rule the checker will run |
 | `cell backend Foo { }` | Storage backend definition |
 | `cell builtin Foo { }` | FFI bridge to Rust (stdlib only) |
@@ -85,7 +85,6 @@ Soma looks Rust-ish at a glance but diverges sharply. These are NOT Soma, even t
 function foo() { }              // WRONG — use `on foo() { }`
 def foo(): ...                  // WRONG — same
 null / nil / None               // WRONG — use `()` (unit)
-[1, 2, 3]                       // WRONG — use `list(1, 2, 3)`
 {key: val}                      // WRONG — use `map("key", val)`   (MUST have even number of args)
 import x                        // WRONG — use `use lib::x` / `use std::x` / `use pkg::x`
 console.log(x)                  // WRONG — use `print(x)`
@@ -101,6 +100,7 @@ These ARE Soma:
 on handler(x: Int) { return x + 1 }
 let nothing = ()
 let xs = list(1, 2, 3)
+let ys = [1, 2, 3]                          // square-bracket list literals work too
 let m = map("name", "Alice", "age", 30)    // MUST be even arg count
 "hello {name}"                              // string interpolation with {braces}
 """raw
@@ -120,7 +120,7 @@ let y = if cond { a } else { b }            // if IS an expression (else is requ
 - **Multi-line pipes inside `match` arms don't work.** Put the pipe on one line, or wrap the arm body in `{ ... }` and assign to a `let`.
 - **Don't wrap stored values in `to_json()` when the value is already a map or list.** The storage layer (`slot.set`) auto-serializes `Map`/`List` values. Wrapping them manually works but produces double-encoded strings on read. Use `to_json` only when the caller explicitly wants a string.
 - **`slot.get(key)` returns `()` for missing keys**, not an error. Always check `if raw == ()` before calling `from_json(raw)`.
-- **`.keys`, `.values`, `.len` on a memory slot have NO parentheses.** They are properties, not methods. `items.keys()` is wrong; `items.keys` is right. `slot.get(k)` / `slot.set(k, v)` / `slot.delete(k)` / `slot.has(k)` DO take parentheses.
+- **`.keys`, `.values`, `.len` on a memory slot work with or without parentheses.** `items.keys` and `items.keys()` are equivalent; same for `.values` / `.len` / `.entries` / `.all`. `slot.get(k)` / `slot.set(k, v)` / `slot.delete(k)` / `slot.has(k)` always take parentheses (they need arguments).
 - **Private handlers start with `_`.** `on _helper()` is not exposed as an HTTP route. Use this to keep internal functions off the wire when serving.
 - **`unique()` does not exist. Use `distinct()`.** Same for other "obvious name" mistakes: use `push` not `append_to`, `nth` not `at`, `len` not `length`.
 - **`data.field ?? "default"` is null-coalescing** — the idiomatic guard against missing map fields.
@@ -134,7 +134,7 @@ let y = if cond { a } else { b }            // if IS an expression (else is requ
 | `Float` | `3.14`, `1.5e3` | 64-bit, scientific notation |
 | `String` | `"hi {name}"`, `"""raw"""` | interpolation with `{}`; triple-quote is raw |
 | `Bool` | `true`, `false` | |
-| `List<T>` | `list(1, 2, 3)` | ordered |
+| `List<T>` | `list(1, 2, 3)` or `[1, 2, 3]` | ordered |
 | `Map<K, V>` | `map("k", v, "k2", v2)` | MUST have even args |
 | `Unit` | `()` | null equivalent |
 | `Duration` | `5s`, `1min`, `500ms`, `1h`, `1d`, `2years` | converts to ms internally |
@@ -144,6 +144,44 @@ let y = if cond { a } else { b }            // if IS an expression (else is requ
 Type names are uppercase; value identifiers lowercase. `type_of(x)` returns a runtime string name.
 
 **Conversion:** `to_int("abc")` returns `()`, NOT `0`. This is the single most important type-conversion rule — always null-check the result of `to_int` / `to_float` on user input.
+
+### Sum types (tagged unions)
+
+`cell type` with a `variants` block declares a first-class sum type. Variants may be struct-shaped, tuple-shaped, or bare (unit):
+
+```soma
+cell type PaymentResult {
+    variants {
+        Charged { transaction_id: String, amount: Int }   // struct variant
+        Declined(String)                                   // tuple variant
+        Pending                                            // unit variant
+    }
+}
+```
+
+Construct variants directly in handlers — bare variants take no parentheses:
+
+```soma
+on charge(amount: Int) {
+    if amount > 0 { return Charged { transaction_id: "tx-{amount}", amount: amount } }
+    if amount == 0 { return Pending }
+    return Declined("non-positive amount")
+}
+```
+
+`match` over a sum type is **exhaustive** — drop an arm and `soma check` refuses with `non-exhaustive match on 'PaymentResult': missing variant ...`:
+
+```soma
+on describe(r: Map) {
+    return match r {
+        Charged { transaction_id, amount } -> "ok {transaction_id} ${amount}"
+        Declined(reason)                   -> "rejected: {reason}"
+        Pending                            -> "..."
+    }
+}
+```
+
+Sum types also type state machines (`state todo: TodoStatus { ... }`) — see §10.
 
 ## 6. Memory — the property algebra
 
@@ -199,7 +237,7 @@ memory {
 
 ### 6.4 Slot API (methods vs properties)
 
-Properties (NO parentheses): `slot.keys`, `slot.values`, `slot.len`, `slot.entries`, `slot.all`.
+Properties: `slot.keys`, `slot.values`, `slot.len`, `slot.entries`, `slot.all` — parentheses optional (`slot.keys` and `slot.keys()` are equivalent).
 
 Methods (WITH parentheses): `slot.get(k)`, `slot.set(k, v)`, `slot.delete(k)`, `slot.has(k)`, `slot.contains(k)`, `slot.push(v)` (for list-shaped slots).
 
@@ -226,10 +264,14 @@ Then use it: `counter: Int [rate_limited(100)]`. See `stdlib/lifecycle.cell` and
 Handlers are the only place behavior lives. A handler's return value is the result of the last expression OR an explicit `return`.
 
 ```soma
-on add(a: Int, b: Int) -> Int {
+on add(a: Int, b: Int) {
     return a + b
 }
+```
 
+Handlers do NOT take a return type annotation — `on add(a: Int, b: Int) -> Int` is a parse error. Return types belong on the `signal` declaration in `face` (`signal add(a: Int, b: Int) -> Int`).
+
+```soma
 on _internal(x: Int) {          // underscore prefix → not exposed as HTTP
     x * 2
 }
@@ -361,6 +403,30 @@ Rules:
 
 Multiple machines are independent unless you declare cross-machine constraints in `[verify]`.
 
+### Typed state machines (sum types)
+
+A machine can be typed against a sum type — `state <name>: <Type> { }`. Every state name must be a variant of that type, and `transition()` takes a variant instead of a string; a typo becomes a compile error instead of a runtime surprise:
+
+```soma
+cell type TodoStatus {
+    variants { Pending  InProgress  Done  Cancelled }
+}
+
+cell TodoList {
+    state todo: TodoStatus {
+        initial: Pending
+        Pending    -> InProgress
+        InProgress -> Done
+        *          -> Cancelled
+    }
+
+    on start(id: String) {
+        transition(id, InProgress)      // variant, not string
+        return get_status(id)            // returns "InProgress"
+    }
+}
+```
+
 ## 11. `scale` — distribution as types
 
 ```soma
@@ -465,7 +531,7 @@ Semantics:
 
 - `signal foo(...)` without a matching `on foo` handler → compile error.
 - `await foo(...)` with no sibling `emit foo` → compile error (cell would block).
-- `on foo` with no matching `signal foo` anywhere → warning (dead handler).
+- `on foo` with no matching `signal foo`: no diagnostic for a top-level cell (extra handlers are fine — they just become HTTP routes); for an *interior* cell it's a hard compile error ("unmatched handler ... no sibling emits it").
 - Unmatched `emit` → warning (signal is lost).
 - `promise` forms: structural (`all_persistent`, `exactly_once`, `latency < Xms`) are checked; string form is a doc annotation.
 - Parent `promise` composes downward — if the parent promises `all state encrypted`, every descendant memory slot must be `[encrypted]`.
@@ -774,6 +840,8 @@ Run: `soma test file.cell`. The test harness exposes handlers in the same file. 
 | `soma tokens file.cell` | Dump tokens |
 | `soma describe file.cell` | JSON description (handlers, memory, state, tools) |
 | `soma lint file.cell` | Anti-pattern checks |
+| `soma replay file.cell` | Replay a `.somalog` deterministically, report divergences |
+| `soma deploy file.cell --target cloudflare` | Deploy to a cloud provider (cloudflare, fly, aws) |
 | `soma env` | Environment info |
 | `soma props` | List registered properties |
 
@@ -805,7 +873,7 @@ The workflow prompt from `AGENT.md`: **generate → check → verify → serve**
 
 ## 23. Common mistakes (ranked by frequency)
 
-1. **Using `[1, 2, 3]` instead of `list(1, 2, 3)`** — square brackets are for property annotations only.
+1. **Using `{key: val}` object literals** — use `map("key", val)`. (Square-bracket lists `[1, 2, 3]` ARE valid, equivalent to `list(1, 2, 3)`.)
 2. **Odd-arg `map(...)`** — `map("a", 1, "b")` is wrong.
 3. **`function foo()` / `def foo()`** — use `on foo()`.
 4. **`null` / `None` / `nil`** — use `()`.
@@ -815,7 +883,7 @@ The workflow prompt from `AGENT.md`: **generate → check → verify → serve**
 8. **`return` inside a `for` loop** — exits the handler, not the loop.
 9. **Wrapping a map in `to_json()` before `slot.set()`** — storage auto-serializes.
 10. **Calling `from_json` on a `()` result** — always null-check `slot.get(k)` first.
-11. **`items.keys()` instead of `items.keys`** — no parentheses on slot properties.
+11. **Standalone `sum(...)` / `avg(...)` calls** — they don't exist; use `sum_by(list, field)` / `avg_by(list, field)`, or `"col:sum"` / `"col:avg"` ops inside `agg()`.
 12. **`unique()` instead of `distinct()`.**
 13. **State machine with a cycle but `eventually = ["terminal"]`** — liveness fails.
 14. **Memory `[ephemeral]` + `scale { shard: that_slot }`** — contradiction.
@@ -987,7 +1055,7 @@ Before calling `soma_serve`:
 ## 26. When in doubt
 
 - Read the relevant stdlib cell under `stdlib/` — properties, builtins, backends are all defined there in Soma itself.
-- Look for the pattern in `examples/` (83+ files covering agents, pipelines, CRUD, chat, math, etc.).
+- Look for the pattern in `examples/` (138 files covering agents, pipelines, CRUD, chat, math, etc.).
 - Prefer the interpreter's behavior as the reference when backends disagree.
 - Run `soma describe file.cell` to get a JSON view of what the compiler understood — if it disagrees with your mental model, trust the compiler.
 - If a feature sounds aspirational (intent compilation, repair plans, live re-verification, behavioral reflection), check `VISION.md` — it may not be implemented yet.

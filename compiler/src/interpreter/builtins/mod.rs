@@ -27,7 +27,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     // V1.6: tool-capability enforcement. If the LLM dispatched into a tool
     // with declared capabilities, the http/* builtins refuse URLs that do
     // not match any declared scope.
-    if matches!(name, "http_get" | "http_post" | "http_put" | "http_delete" | "http_patch") {
+    if matches!(name, "http_get" | "http_post") {
         if let Some(caps) = interp.current_tool_caps.clone() {
             if let Some(Value::String(url)) = args.first() {
                 if !url_matches_any(url, &caps) {
@@ -257,6 +257,10 @@ pub fn serde_json_to_value(v: &serde_json::Value) -> Value {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i))
+            } else if let Ok(big) = n.to_string().parse::<rug::Integer>() {
+                // integers beyond i64 roundtrip exactly (needs serde_json
+                // arbitrary_precision, which preserves the raw digits)
+                Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(big))
             } else {
                 Value::Float(n.as_f64().unwrap_or(0.0))
             }

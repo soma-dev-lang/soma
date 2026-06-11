@@ -4,6 +4,8 @@ pub mod cluster;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use indexmap::IndexMap;
+
 use crate::ast::*;
 use crate::interpreter::{self, Value};
 use storage::{StorageBackend, resolve_backend};
@@ -15,14 +17,16 @@ pub struct CellInstance {
     pub def: CellDef,
     /// Memory slots backed by storage
     pub memory: HashMap<String, Arc<dyn StorageBackend>>,
-    /// Child cell instances
-    pub children: HashMap<String, CellInstance>,
+    /// Child cell instances, in declaration order (deterministic dispatch
+    /// and display — HashMap order made `dump_state` and main-cell selection
+    /// vary between runs)
+    pub children: IndexMap<String, CellInstance>,
 }
 
 /// The Soma runtime: instantiates cells, wires signals, executes handlers
 pub struct Runtime {
-    /// Top-level cell instances
-    pub cells: HashMap<String, CellInstance>,
+    /// Top-level cell instances, in declaration order
+    pub cells: IndexMap<String, CellInstance>,
     /// Signal log for debugging
     pub signal_log: Vec<String>,
     /// All cell definitions (for the interpreter)
@@ -32,7 +36,7 @@ pub struct Runtime {
 impl Runtime {
     /// Create a runtime from a parsed program
     pub fn new(program: Program) -> Self {
-        let mut cells = HashMap::new();
+        let mut cells = IndexMap::new();
 
         for cell_spanned in &program.cells {
             let cell = &cell_spanned.node;
@@ -60,7 +64,7 @@ impl Runtime {
         };
 
         let mut memory = HashMap::new();
-        let mut children = HashMap::new();
+        let mut children = IndexMap::new();
 
         for section in &def.sections {
             match &section.node {

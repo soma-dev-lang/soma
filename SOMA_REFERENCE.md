@@ -7,7 +7,7 @@
 - No semicolons. Newlines separate statements.
 - No `function`/`def`. Use `on handler_name(params) { }`.
 - No `null`. Use `()` for null/unit.
-- No `[1,2,3]`. Use `list(1, 2, 3)`.
+- Lists: `[1, 2, 3]` and `list(1, 2, 3)` both work.
 - No `{key: val}`. Use `map("key", val, "key2", val2)`.
 - No `import`. Use `use lib::module`.
 - No `console.log`. Use `print(value)`.
@@ -64,7 +64,7 @@ cell AppName {
 | Float | `3.14`, `1.5e3` | 64-bit, scientific notation |
 | String | `"hello {name}"` | interpolation with `{}` |
 | Bool | `true`, `false` | |
-| List | `list(1, 2, 3)` | ordered |
+| List | `list(1, 2, 3)` or `[1, 2, 3]` | ordered |
 | Map | `map("key", val)` | key-value pairs, MUST have even args |
 | Unit | `()` | null equivalent |
 | Duration | `5s`, `1min`, `500ms`, `1h` | converts to milliseconds |
@@ -191,8 +191,9 @@ let sum = list(1, 2, 3) |> reduce(0, p => p.acc + p.val)
 
 ```soma
 // List
-let items = list(1, 2, 3)
+let items = list(1, 2, 3)           // or: let items = [1, 2, 3]
 let items = push(items, 4)          // append
+let pairs = enumerate(items)        // list of {index, value} maps
 let first = nth(items, 0)           // index access
 let rev = reverse(items)
 let r = range(0, 10)                // [0..9]
@@ -204,9 +205,11 @@ let n = len(items)
 let m = map("name", "Alice", "age", 30)
 let name = m.name                   // field access
 let age = m.get("age")              // method access
-let keys = m.keys                   // no parentheses
+let keys = m.keys                   // parentheses optional: m.keys() also works
 let vals = m.values
 let updated = m |> with("email", "a@b.com")
+let smaller = without(m, "age")     // copy minus one key
+let merged = merge(m, map("x", 1))  // right side wins on conflicts
 ```
 
 ## Pipe operators
@@ -229,6 +232,16 @@ data |> bottom(5)
 data |> group_by("dept")
 data |> distinct("category")              // unique values
 
+// Aggregates
+data |> sum_by("qty")                     // sum of a field
+data |> avg_by("qty")                     // average (Int if whole, else Float)
+data |> min_by("qty")                     // row with smallest field value
+data |> max_by("qty")                     // row with largest field value
+data |> count_by("status", "open")        // count rows where field == value
+data |> pluck("name")                     // list of one field's values
+data |> select("id", "name")              // project each row to listed fields
+data |> agg("dept", "qty:sum", "qty:avg") // group + aggregate; ops: sum avg min max count
+
 // Utilities
 data |> flatten()
 data |> reverse()
@@ -240,6 +253,7 @@ list("a", "b", "c") |> join(", ")        // "a, b, c"
 
 ```soma
 len("hello")                    // 5 (chars, not bytes)
+concat("foo", "bar")            // "foobar"
 contains("hello", "ell")        // true
 starts_with("hello", "he")      // true
 ends_with("hello.txt", ".txt")  // true
@@ -264,6 +278,8 @@ floor(3.7)          // 3
 ceil(3.2)           // 4
 min(3, 7)           // 3
 max(3, 7)           // 7
+idiv(7, 2)          // 3 — integer division, truncates toward zero
+ln(2.718)           // ~1.0 — natural log (alias of log)
 clamp(15, 0, 10)    // 10
 pow(2, 10)          // 1024.0
 sqrt(16.0)          // 4.0
@@ -284,6 +300,7 @@ to_int(3.7)         // 3
 to_float(42)        // 42.0
 to_string(42)       // "42"
 type_of(42)         // "Int"
+is_type(rec, "User") // true if rec's _type field is "User" (alias: is_a)
 ```
 
 ## Error handling
@@ -313,7 +330,10 @@ remember("key", value)                        // persistent agent memory
 let val = recall("key")                       // recall from agent memory
 set_budget(5000)                              // hard token cap
 let t = tokens_used()                         // tokens consumed
+let left = tokens_remaining()                 // budget minus used (-1 = unlimited)
 let log = trace()                             // execution log
+clear_trace()                                 // reset the execution log
+clear_context()                               // reset multi-turn LLM conversation
 approve("publish article")                    // human-in-the-loop gate
 ```
 
@@ -397,6 +417,57 @@ let status = get_status("order_id")    // current state
 let valid = valid_transitions("order_id") // available transitions
 ```
 
+## Sum types
+
+```soma
+// `cell type` + `variants` = tagged union. Struct, tuple, or bare variants.
+cell type PaymentResult {
+    variants {
+        Charged { transaction_id: String, amount: Int }   // struct variant
+        Declined(String)                                   // tuple variant
+        Pending                                            // unit variant
+    }
+}
+
+// Construct directly — bare variants take no parentheses:
+on charge(amount: Int) {
+    if amount > 0 { return Charged { transaction_id: "tx-1", amount: amount } }
+    if amount == 0 { return Pending }
+    return Declined("non-positive amount")
+}
+
+// match is EXHAUSTIVE — missing a variant is a compile error:
+on describe(r: Map) {
+    return match r {
+        Charged { transaction_id, amount } -> "ok {transaction_id} ${amount}"
+        Declined(reason)                   -> "rejected: {reason}"
+        Pending                            -> "..."
+    }
+}
+```
+
+```soma
+// Typed state machine: states must be variants of the sum type,
+// and transition() takes a variant (typo = compile error):
+cell type TodoStatus {
+    variants { Pending  InProgress  Done  Cancelled }
+}
+
+cell TodoList {
+    state todo: TodoStatus {
+        initial: Pending
+        Pending    -> InProgress
+        InProgress -> Done
+        *          -> Cancelled
+    }
+
+    on start(id: String) {
+        transition(id, InProgress)         // variant, not string
+        return get_status(id)              // "InProgress"
+    }
+}
+```
+
 ## HTTP server
 
 ```soma
@@ -419,6 +490,20 @@ response(201, map("id", 1))           // custom status code
 redirect("/other")                     // 302 redirect
 sse("trade", "update")                // SSE event stream
 ```
+
+## HTTP client, WebSocket, signal bus
+
+```soma
+let resp = http_get(url)                  // GET; JSON bodies auto-parse to Map/List
+let resp = http_post(url, body)           // POST as application/json; JSON auto-parsed
+let ws = ws_connect("ws://host:9001")     // open WebSocket (send-only) → {status, url}
+ws_send(message)                          // send text on the open WebSocket
+subscribe("ws://host:9001/stream")        // read-only WS: incoming {"event", "data"} → on event(data)
+link("host:8082")                          // TCP signal-bus link: emits reach peer, peer EVENTs → handlers
+publish("stream-name", data)              // push to SSE subscribers on a runtime-chosen stream
+```
+
+On error, `http_get`/`http_post` return `map("error", message)` instead of throwing — check `resp.error`.
 
 ## Inter-process signals
 
@@ -444,6 +529,20 @@ on trade(data: Map) {
 let content = read_file("data.txt")
 write_file("output.txt", content)
 let rows = read_csv("data.csv")       // list of maps, auto-typed
+write_csv("out.csv", rows)            // list of maps → CSV (headers from first row)
+let tpl = load("page.html")           // read file (aliases: include, load_template)
+let s = load("page.html", "k", v)     // read + replace {k} placeholders with v
+let files = read_files("dir", 100)        // first N files → list of {path, content}
+let files = par_read_files("dir", 100)    // parallel version (threaded)
+let counts = word_count(text)             // map of word → count (lowercased; also takes a list)
+let counts = par_word_count(files)        // parallel version (threaded)
+```
+
+## Templates
+
+```soma
+let s = render(tpl, "name", "Ada")        // replace {name} with "Ada" in template string
+let s = render_each(rows, row_tpl)        // render template once per map in list
 ```
 
 ## Time
@@ -453,6 +552,7 @@ let ts = now()                // unix timestamp (seconds)
 let ms = now_ms()             // milliseconds
 let today = today()           // "2026-03-29"
 let formatted = format_date(ts) // "2026-03-29"
+sleep(100)                    // pause 100 milliseconds
 ```
 
 ## Verification

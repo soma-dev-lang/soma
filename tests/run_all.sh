@@ -1,6 +1,6 @@
 #!/bin/bash
 # Exhaustive Soma v1 test runner
-SOMA="/Users/antoine/paradigm/compiler/target/release/soma"
+SOMA="${SOMA:-$(dirname "$0")/../compiler/target/release/soma}"
 TEST_DIR="/tmp/soma_v1_tests/core"
 PASS=0
 FAIL=0

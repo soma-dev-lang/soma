@@ -254,16 +254,35 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if let Some(Value::List(items)) = args.first() {
                 let mut sorted = items.clone();
                 let desc = args.get(1).map(|a| format!("{}", a) == "desc").unwrap_or(false);
+                let mut incomparable: Option<String> = None;
                 sorted.sort_by(|a, b| {
                     let ordering = match (a, b) {
                         (Value::Int(x), Value::Int(y)) => { let c = x.cmp(y); c.cmp(&0) }
-                        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+                        // mixed Int/Float compare numerically; NaN gets a total
+                        // order (sorts after all finite values) instead of
+                        // silently corrupting the sort
+                        (Value::Float(x), Value::Float(y)) => x.total_cmp(y),
+                        (Value::Int(x), Value::Float(y)) => x.to_f64().total_cmp(y),
+                        (Value::Float(x), Value::Int(y)) => x.total_cmp(&y.to_f64()),
                         (Value::String(x), Value::String(y)) => x.cmp(y),
-                        _ => std::cmp::Ordering::Equal,
+                        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+                        _ => {
+                            if incomparable.is_none() {
+                                incomparable = Some(format!(
+                                    "sort: cannot compare {} and {}",
+                                    crate::interpreter::value_type_name(a),
+                                    crate::interpreter::value_type_name(b)
+                                ));
+                            }
+                            std::cmp::Ordering::Equal
+                        }
                     };
                     if desc { ordering.reverse() } else { ordering }
                 });
-                Some(Ok(Value::List(sorted)))
+                match incomparable {
+                    Some(msg) => Some(Err(RuntimeError::TypeError(msg))),
+                    None => Some(Ok(Value::List(sorted))),
+                }
             } else {
                 Some(Err(RuntimeError::TypeError("sort(list) or sort(list, \"desc\")".to_string())))
             }

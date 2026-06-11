@@ -33,7 +33,7 @@ pub enum RuntimeError {
 }
 
 /// Return a human-readable type name for a Value (e.g. "String", "Int").
-fn value_type_name(v: &Value) -> &'static str {
+pub(crate) fn value_type_name(v: &Value) -> &'static str {
     match v {
         Value::Int(si) => if si.is_small() { "Int" } else { "BigInt" },
         Value::Float(_) => "Float",
@@ -136,13 +136,23 @@ fn levenshtein(a: &str, b: &str) -> usize {
 }
 
 /// Check if a Value is truthy (false for Bool(false), Unit, Int(0); true otherwise)
+/// Result of evaluating one `{...}` interpolation segment.
+enum InterpResult {
+    Value(Value),
+    /// The segment does not parse as an expression — render it as literal text.
+    NotAnExpr,
+    Err(ExecError),
+}
+
 pub fn is_truthy(val: &Value) -> bool {
     match val {
         Value::Bool(b) => *b,
         Value::Unit => false,
         Value::Int(si) => si.to_i64() != Some(0),
+        Value::Float(f) => *f != 0.0 && !f.is_nan(),
         Value::String(s) => !s.is_empty(),
         Value::List(l) => !l.is_empty(),
+        Value::Map(m) => !m.is_empty(),
         _ => true,
     }
 }
@@ -903,7 +913,9 @@ impl Interpreter {
                                         BinOp::Add => current.add(rhs_si),
                                         BinOp::Sub => current.sub(rhs_si),
                                         BinOp::Mul => current.mul(rhs_si),
-                                        BinOp::Div if rhs_si.to_i64() != Some(0) => current.div(rhs_si),
+                                        // exact division only — non-exact promotes to Float via the generic path
+                                        BinOp::Div if rhs_si.to_i64() != Some(0)
+                                            && current.clone().modulo(rhs_si.clone()).to_i64() == Some(0) => current.div(rhs_si),
                                         _ => {
                                             let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
                                             env.insert(name.clone(), val);
@@ -985,6 +997,15 @@ impl Interpreter {
             }
 
             Statement::For { var, iter, body, bound: _ } => {
+                // The loop variable shadows any outer binding of the same name;
+                // restore it (rather than just removing) when the loop ends.
+                let shadowed = env.get(var).cloned();
+                let restore = |env: &mut Env| {
+                    match &shadowed {
+                        Some(old) => { env.insert(var.clone(), old.clone()); }
+                        None => { env.remove(var); }
+                    }
+                };
                 // Fast path: for i in range(start, end) — no allocation
                 if let Expr::FnCall { name: fn_name, args: fn_args } = &iter.node {
                     if fn_name == "range" && fn_args.len() >= 2 {
@@ -1005,11 +1026,11 @@ impl Interpreter {
                                     Ok(val) => last = val,
                                     Err(ExecError::Break) => break,
                                     Err(ExecError::Continue) => { i += 1; continue; }
-                                    Err(e) => { env.remove(var); return Err(e); }
+                                    Err(e) => { restore(env); return Err(e); }
                                 }
                                 i += 1;
                             }
-                            env.remove(var);
+                            restore(env);
                             return Ok(last);
                         }
                     }
@@ -1048,10 +1069,10 @@ impl Interpreter {
                         Ok(val) => last = val,
                         Err(ExecError::Break) => break,
                         Err(ExecError::Continue) => continue,
-                        Err(e) => { env.remove(var); return Err(e); }
+                        Err(e) => { restore(env); return Err(e); }
                     }
                 }
-                env.remove(var);
+                restore(env);
                 Ok(last)
             }
 
@@ -1366,7 +1387,7 @@ impl Interpreter {
                 // Auto-interpolate strings: "Hello {name}" → "Hello Alice"
                 if let Value::String(ref s) = val {
                     if s.contains('{') {
-                        return Ok(Value::String(self.interpolate_string(s, env, cell_name, signal_name)));
+                        return Ok(Value::String(self.interpolate_string(s, env, cell_name, signal_name)?));
                     }
                 }
                 Ok(val)
@@ -1491,6 +1512,16 @@ impl Interpreter {
                     return Err(ExecError::Runtime(RuntimeError::TypeError("subscribe(url)".to_string())));
                 }
 
+                // First-class lambdas: a local variable bound to a lambda is callable
+                if let Some(lam @ (Value::Lambda { .. } | Value::LambdaBlock { .. })) = env.get(name) {
+                    let lam = lam.clone();
+                    if arg_vals.len() != 1 {
+                        return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                            "lambda '{}' takes exactly 1 argument, got {}", name, arg_vals.len()
+                        ))));
+                    }
+                    return self.apply_lambda(&lam, arg_vals.into_iter().next().unwrap(), cell_name);
+                }
                 // Check lambda builtins first (map, filter, find, etc.) — need &mut self
                 if arg_vals.iter().any(|v| matches!(v, Value::Lambda { .. })) {
                     if let Some(val) = builtins::call_lambda_builtin(self, name, &arg_vals, cell_name) {
@@ -1738,7 +1769,14 @@ impl Interpreter {
                         return self.eval_expr(&arm.result.node, env, cell_name, signal_name);
                     }
                 }
-                // No match found
+                // No match found. For sum-type variants this is a hole the
+                // checker also rejects — enforce it at runtime instead of
+                // silently producing Unit.
+                if let Value::Variant { type_name, variant, .. } = &val {
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                        "non-exhaustive match on '{}': variant '{}' not handled", type_name, variant
+                    ))));
+                }
                 Ok(Value::Unit)
             }
 
@@ -2237,11 +2275,23 @@ impl Interpreter {
 
     /// Interpolate {var} in a string from the local scope.
     /// If var is not found in scope, leave {var} as-is (for render() compatibility).
-    fn interpolate_string(&mut self, s: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> String {
+    fn interpolate_string(&mut self, s: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> Result<String, ExecError> {
         let mut result = String::with_capacity(s.len());
         let mut pos = 0;
         while pos < s.len() {
-            if s.as_bytes()[pos] == b'{' {
+            let byte = s.as_bytes()[pos];
+            // {{ and }} escape literal braces
+            if byte == b'{' && s.as_bytes().get(pos + 1) == Some(&b'{') {
+                result.push('{');
+                pos += 2;
+                continue;
+            }
+            if byte == b'}' && s.as_bytes().get(pos + 1) == Some(&b'}') {
+                result.push('}');
+                pos += 2;
+                continue;
+            }
+            if byte == b'{' {
                 if let Some(end) = s[pos + 1..].find('}') {
                     let expr_str = &s[pos + 1..pos + 1 + end];
 
@@ -2252,12 +2302,19 @@ impl Interpreter {
                         continue;
                     }
 
-                    // Try to parse and evaluate the expression
-                    let eval_result = self.eval_interpolation_expr(expr_str, env, cell_name, signal_name);
-                    if let Some(val) = eval_result {
-                        result.push_str(&format!("{}", val));
-                        pos = pos + 1 + end + 1;
-                        continue;
+                    match self.eval_interpolation_expr(expr_str, env, cell_name, signal_name) {
+                        InterpResult::Value(val) => {
+                            result.push_str(&format!("{}", val));
+                            pos = pos + 1 + end + 1;
+                            continue;
+                        }
+                        // Not parseable as an expression — treat the brace as literal text
+                        InterpResult::NotAnExpr => {
+                            result.push('{');
+                            pos += 1;
+                            continue;
+                        }
+                        InterpResult::Err(e) => return Err(e),
                     }
                 }
             }
@@ -2270,73 +2327,62 @@ impl Interpreter {
                 pos += 1;
             }
         }
-        result
+        Ok(result)
     }
 
-    /// Parse and evaluate an expression string from interpolation
-    fn eval_interpolation_expr(&mut self, expr_str: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> Option<Value> {
+    /// Parse and evaluate an expression string from interpolation.
+    /// Evaluation failures propagate as real errors — they must not be
+    /// silently embedded in the output string.
+    fn eval_interpolation_expr(&mut self, expr_str: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> InterpResult {
         // Fast path: simple variable name
         if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return match env.get(expr_str) {
-                Some(val) => Some(val.clone()),
-                None => Some(Value::String(format!("<error: undefined variable: {}>", expr_str))),
+                Some(val) => InterpResult::Value(val.clone()),
+                None => InterpResult::Err(ExecError::Runtime(RuntimeError::UndefinedVar(expr_str.to_string()))),
             };
         }
-        // Fast path: var.field
+        // Fast path: var.field on a map (anything else falls through to the full evaluator)
         if expr_str.contains('.') && !expr_str.contains('(') && !expr_str.contains(' ') {
             let parts: Vec<&str> = expr_str.splitn(2, '.').collect();
             if parts.len() == 2 {
-                if let Some(val) = env.get(parts[0]) {
-                    if let Value::Map(ref entries) = val {
-                        if let Some(field_val) = entries.get(parts[1]) {
-                            return Some(field_val.clone());
-                        }
+                if let Some(Value::Map(ref entries)) = env.get(parts[0]) {
+                    if let Some(field_val) = entries.get(parts[1]) {
+                        return InterpResult::Value(field_val.clone());
                     }
-                    // Try .length etc
-                    match parts[1] {
-                        "length" | "len" => {
-                            if let Value::List(items) = val { return Some(Value::Int(SomaInt::from_i64(items.len() as i64))); }
-                            if let Value::String(s) = val { return Some(Value::Int(SomaInt::from_i64(s.len() as i64))); }
-                        }
-                        _ => {}
-                    }
-                    return Some(Value::String(format!("<error: no field '{}' on {}>", parts[1], parts[0])));
-                } else {
-                    return Some(Value::String(format!("<error: undefined variable: {}>", parts[0])));
                 }
             }
         }
-        // Full expression: parse and eval
+        // Full expression: parse and eval with the regular evaluator
         let wrapped = format!("cell _T {{ on _e() {{ return {} }} }}", expr_str);
         let mut lexer = crate::lexer::Lexer::new(&wrapped);
         let tokens = match lexer.tokenize() {
             Ok(t) => t,
-            Err(e) => return Some(Value::String(format!("<error: parse error in '{{{}}}': {}>", expr_str, e))),
+            Err(_) => return InterpResult::NotAnExpr,
         };
         let mut parser = crate::parser::Parser::new(tokens);
         let program = match parser.parse_program() {
             Ok(p) => p,
-            Err(e) => return Some(Value::String(format!("<error: parse error in '{{{}}}': {}>", expr_str, e))),
+            Err(_) => return InterpResult::NotAnExpr,
         };
         let cell = match program.cells.first() {
             Some(c) => c,
-            None => return Some(Value::String(format!("<error: failed to parse '{{{}}}'>", expr_str))),
+            None => return InterpResult::NotAnExpr,
         };
         let section = match cell.node.sections.first() {
             Some(s) => s,
-            None => return Some(Value::String(format!("<error: failed to parse '{{{}}}'>", expr_str))),
+            None => return InterpResult::NotAnExpr,
         };
         if let crate::ast::Section::OnSignal(ref on) = section.node {
             if let Some(stmt) = on.body.first() {
                 if let crate::ast::Statement::Return { ref value } = stmt.node {
-                    match self.eval_expr(&value.node, env, cell_name, signal_name) {
-                        Ok(val) => return Some(val),
-                        Err(e) => return Some(Value::String(format!("<error: {:?}>", e))),
-                    }
+                    return match self.eval_expr(&value.node, env, cell_name, signal_name) {
+                        Ok(val) => InterpResult::Value(val),
+                        Err(e) => InterpResult::Err(e),
+                    };
                 }
             }
         }
-        Some(Value::String(format!("<error: failed to evaluate '{{{}}}'>", expr_str)))
+        InterpResult::NotAnExpr
     }
 
     fn eval_literal(&self, lit: &Literal) -> Value {
@@ -2762,22 +2808,23 @@ impl Interpreter {
                     if b.to_i64() == Some(0) {
                         Err(RuntimeError::TypeError("division by zero".to_string()))
                     } else if let (Some(ai), Some(bi)) = (a.to_i64(), b.to_i64()) {
-                        if ai % bi == 0 {
-                            Ok(Value::Int(a.clone().div(b.clone())))
-                        } else {
-                            Ok(Value::Float(ai as f64 / bi as f64))
+                        // checked_rem: i64::MIN % -1 overflows; that division is
+                        // exact, so it takes the Int path (which promotes to big)
+                        match ai.checked_rem(bi) {
+                            Some(0) | None => Ok(Value::Int(a.clone().div(b.clone()))),
+                            Some(_) => Ok(Value::Float(ai as f64 / bi as f64)),
                         }
-                    } else {
+                    } else if a.clone().modulo(b.clone()).to_i64() == Some(0) {
+                        // exact big division stays an Int — same rule as small ints
                         Ok(Value::Int(a.clone().div(b.clone())))
+                    } else {
+                        Ok(Value::Float(a.to_f64() / b.to_f64()))
                     }
                 }
                 BinOp::Mod => {
                     if b.to_i64() == Some(0) {
                         Err(RuntimeError::TypeError("modulo by zero".to_string()))
-                    } else if let (Some(ai), Some(bi)) = (a.to_i64(), b.to_i64()) {
-                        Ok(Value::Int(SomaInt::from_i64(ai % bi)))
                     } else {
-                        // For big ints, use BigInt modulo
                         Ok(Value::Int(a.clone().modulo(b.clone())))
                     }
                 }

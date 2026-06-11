@@ -150,6 +150,11 @@ pub struct ParallelConfig {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct VerifyConfig {
+    /// Cells these properties apply to. Empty = all cells in the package.
+    /// Lets one soma.toml serve a directory of unrelated cells without
+    /// imposing one cell's temporal properties on the others.
+    #[serde(default)]
+    pub cells: Vec<String>,
     /// Check for deadlocks
     #[serde(default)]
     pub deadlock_free: bool,

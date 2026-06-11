@@ -140,6 +140,8 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
         }
     }
 
+    let actual_args = coerce_cli_args(&cell.node, &signal_name, actual_args);
+
     match vm.call_signal(&cell_name, &signal_name, actual_args) {
         Ok(val) => println!("{}", val),
         Err(e) => { eprintln!("vm error: {}", e); process::exit(1); }
@@ -301,6 +303,8 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         }
     }
 
+    let actual_args = coerce_cli_args(&cell.node, &signal_name, actual_args);
+
     match interp.call_signal(&cell_name, &signal_name, actual_args) {
         Ok(val) => println!("{}", val),
         Err(e) => {
@@ -313,6 +317,43 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
             process::exit(1);
         }
     }
+}
+
+/// Validate and coerce CLI args against the handler's declared parameter
+/// types, so a String passed where an Int is declared fails at the call
+/// boundary instead of deep inside the handler body.
+fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter::Value>) -> Vec<interpreter::Value> {
+    let params = cell.sections.iter().find_map(|s| {
+        if let ast::Section::OnSignal(ref on) = s.node {
+            if on.signal_name == signal_name { return Some(&on.params); }
+        }
+        None
+    });
+    let Some(params) = params else { return args };
+    args.into_iter().enumerate().map(|(i, arg)| {
+        let Some(param) = params.get(i) else { return arg };
+        let ast::TypeExpr::Simple(ref ty) = param.ty.node else { return arg };
+        let fail = |got: &str| -> interpreter::Value {
+            eprintln!("error: argument '{}' of signal '{}' expects {}, got {}",
+                param.name, signal_name, ty, got);
+            process::exit(1)
+        };
+        match (ty.as_str(), &arg) {
+            ("Int", interpreter::Value::Int(_)) => arg,
+            ("Int", interpreter::Value::Float(f)) if f.fract() == 0.0 =>
+                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
+            ("Int", other) => fail(&format!("'{}'", other)),
+            ("Float", interpreter::Value::Float(_)) => arg,
+            ("Float", interpreter::Value::Int(si)) => interpreter::Value::Float(si.to_f64()),
+            ("Float", other) => fail(&format!("'{}'", other)),
+            ("Bool", interpreter::Value::Bool(_)) => arg,
+            ("Bool", other) => fail(&format!("'{}'", other)),
+            // a numeric/bool-looking CLI token passed to a String param is a string
+            ("String", interpreter::Value::String(_)) => arg,
+            ("String", other) => interpreter::Value::String(format!("{}", other)),
+            _ => arg,
+        }
+    }).collect()
 }
 
 fn run_with_runtime(program: ast::Program, args: &[interpreter::Value]) {

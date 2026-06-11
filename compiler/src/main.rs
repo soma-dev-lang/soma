@@ -336,8 +336,14 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
                     // Auto-derive: deadlock_free
                     props.push(Property::DeadlockFree);
 
-                    // User-defined properties from soma.toml [verify]
-                    if let Some(cfg) = verify_config {
+                    // User-defined properties from soma.toml [verify].
+                    // If [verify] names specific cells, only those cells get
+                    // the user properties — a shared soma.toml must not impose
+                    // one cell's temporal properties on unrelated cells.
+                    let applies = verify_config.map_or(false, |cfg| {
+                        cfg.cells.is_empty() || cfg.cells.contains(&cell.node.name)
+                    });
+                    if let Some(cfg) = verify_config.filter(|_| applies) {
                         if cfg.deadlock_free {
                             // already added above
                         }
