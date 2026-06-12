@@ -2203,6 +2203,14 @@ impl Interpreter {
                     Ok(Value::String(backend.backend_name().to_string()))
                 }
             }
+            // A bare `slot.field` (field access, no args) reads the key —
+            // symmetric with `slot.field = v` and with map field access.
+            _ if args.is_empty() => {
+                match backend.get(method) {
+                    Some(stored) => Ok(auto_deserialize(stored_to_value(stored))),
+                    None => Ok(Value::Unit),
+                }
+            }
             _ => {
                 Err(ExecError::Runtime(RuntimeError::TypeError(
                     format!("unknown method '{}' on memory slot '{}'", method, slot_name),

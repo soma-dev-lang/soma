@@ -2030,7 +2030,24 @@ impl Parser {
                         start.merge(self.prev_span()),
                     ))
                 } else if self.check(&Token::Dot) {
-                    // target.method(args) — parse as full expression to allow pipes
+                    // name.field = value  → desugar to name["field"] = value
+                    // (IndexSet already handles maps, records, and slots).
+                    // Otherwise (method call, field read, chain) reparse as
+                    // a full expression to allow pipes.
+                    if let Token::Ident(field) = self.peek_at(1).clone() {
+                        if matches!(self.peek_at(2), Token::Eq) {
+                            let field_span = self.peek_span();
+                            self.advance(); // '.'
+                            self.advance(); // field ident
+                            self.advance(); // '='
+                            let value = self.parse_expr()?;
+                            let index = Spanned::new(Expr::Literal(Literal::String(field)), field_span);
+                            return Ok(Spanned::new(
+                                Statement::IndexSet { name, index, value },
+                                start.merge(self.prev_span()),
+                            ));
+                        }
+                    }
                     self.pos = save_pos;
                     let expr = self.parse_expr()?;
                     Ok(Spanned::new(

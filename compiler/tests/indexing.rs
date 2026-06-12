@@ -140,3 +140,34 @@ fn coalesce_with_index_access() {
     assert_eq!(c, 0, "{o}");
     assert!(o.contains("5 9"), "{o}");
 }
+
+#[test]
+fn dot_field_assignment_on_map() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let g = map(\"bet\", 0) g.bet = 10 g.bet = g.bet + 5 return \"{g.bet}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("15"), "{o}");
+}
+
+#[test]
+fn dot_field_read_write_on_slot_is_symmetric() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> Int } memory { box: Map<String, Int> [ephemeral, local] } on go() { box.score = 42 return box.score } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("42"), "{o}");
+}
+
+#[test]
+fn dot_method_call_still_parses() {
+    // ensure the field-set lookahead didn't break `slot.set(k, v)`
+    let (o, c) = run(
+        "cell T { face { signal go() -> Int } memory { m: Map<String, Int> [ephemeral, local] } on go() { m.set(\"k\", 7) return m.get(\"k\") } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("7"), "{o}");
+}
