@@ -1,0 +1,90 @@
+// LOCKOUT/TAGOUT — a machine with a personal lock on it cannot start.
+// OSHA calls 1910.147 violations a perennial top-ten killer: maintenance
+// inside a machine, someone hits start, the machine wins. The padlock
+// works because ONLY its owner holds the key. Here `locked_out` has no
+// edge to `running` — re-energizing exists only from `isolated`, and the
+// handler that leaves `locked_out` refuses while any personal lock
+// remains on the hasp. The lock ledger itself rejects a negative count
+// (the classic double-remove bookkeeping bug) and more locks than the
+// 6-hole hasp can hold.
+
+cell LotoControl {
+    face {
+        signal shut_down(id: String) -> String
+        signal apply_lock(id: String, worker: String) -> Map
+        signal remove_lock(id: String, worker: String) -> Map
+        signal energize(id: String) -> Map
+        signal locks_on(id: String) -> Int
+    }
+
+    memory {
+        // personal locks on the hasp — 0..6, enforced by the slot
+        lock_count: Map<String, Int> [persistent, consistent]
+        invariant lock_count >= 0 && lock_count <= 6
+    }
+
+    state energy {
+        initial: running
+        running -> isolated        // stopped, disconnect open, verified dead
+        isolated -> running        // restart allowed: nobody is inside
+        isolated -> locked_out     // first padlock goes on
+        locked_out -> isolated     // ONLY exit — and only at zero locks
+    }
+
+    on shut_down(id: String) { transition(id, "isolated")  return get_status(id) }
+
+    on apply_lock(id: String, worker: String) {
+        if get_status(id) == "running" {
+            return map("ok", false, "reason", "machine still energized — isolate first")
+        }
+        let w = try { lock_count.set(id, locks_on(id) + 1) }
+        if w.error != () { return map("ok", false, "reason", "hasp full (6 locks)") }
+        if get_status(id) == "isolated" { transition(id, "locked_out") }
+        return map("ok", true, "locks", locks_on(id), "state", get_status(id))
+    }
+
+    on remove_lock(id: String, worker: String) {
+        let w = try { lock_count.set(id, locks_on(id) - 1) }
+        if w.error != () { return map("ok", false, "reason", "no lock of {worker} on hasp") }
+        if locks_on(id) == 0 { transition(id, "isolated") }
+        return map("ok", true, "locks", locks_on(id), "state", get_status(id))
+    }
+
+    on energize(id: String) {
+        let r = try { transition(id, "running") }
+        if r.error != () {
+            let n = locks_on(id)
+            return map("ok", false, "reason", "{n} personal lock(s) still on the hasp")
+        }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on locks_on(id: String) { return lock_count.get(id) ?? 0 }
+}
+
+cell test LotoTests {
+    rules {
+        // no lock onto a running machine; isolate first
+        assert apply_lock("m1", "ana").ok == false
+        assert shut_down("m1") == "isolated"
+        assert apply_lock("m1", "ana").ok == true
+        assert apply_lock("m1", "bo").ok == true
+        assert locks_on("m1") == 2
+
+        // THE kill: start button with people inside. The edge is absent.
+        assert energize("m1").ok == false
+        assert_fails transition("m1", "running")
+
+        // one lock off is not enough — bo is still inside
+        assert remove_lock("m1", "ana").ok == true
+        assert energize("m1").ok == false
+
+        // last lock off -> isolated -> restart is lawful
+        assert remove_lock("m1", "bo").ok == true
+        assert energize("m1").ok == true
+
+        // the ledger refuses phantom removals and an overfull hasp
+        assert_fails lock_count.set("m1", -1)
+        assert_fails lock_count.set("m1", 7)
+    }
+}

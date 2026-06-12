@@ -1,0 +1,115 @@
+// ============================================================================
+// LETTER OF CREDIT — the bank pays against verified documents, never trust
+// ============================================================================
+//
+// A documentary letter of credit (UCP 600) exists because exporter and
+// importer don't trust each other across an ocean: the bank promises to
+// pay the seller, but ONLY against documents proving shipment. The classic
+// loss is paying on presented-but-unexamined documents — the Salomon-era
+// trade-finance frauds ran exactly this gap, with bills of lading for
+// cargo that never sailed. Here `honored` is reachable only through
+// `docs_verified`; presenting is not verifying; partial drawings draw down
+// a credit slot that refuses to go below zero, so the beneficiary can
+// never draw more than the credit line. Expired credits are terminal.
+// ============================================================================
+
+cell LetterOfCredit {
+    face {
+        signal issue(id: String, credit: Int) -> Map
+        signal present_docs(id: String) -> Map
+        signal verify_docs(id: String, conforming: Bool) -> Map
+        signal honor_drawing(id: String, amount: Int) -> Map
+        signal expire(id: String) -> Map
+        signal undrawn(id: String) -> Int
+    }
+
+    memory {
+        // the credit line — drawings reduce it, and it cannot go negative:
+        // an over-drawing is a rejected write, not an accounting incident
+        credit: Map<String, Int> [persistent, consistent]
+        invariant credit >= 0
+    }
+
+    // honored and expired are terminal. The fraud edge — issued (or even
+    // docs_presented) straight to honored — does not exist: payment
+    // happens only from docs_verified.
+    state loc {
+        initial: applied
+        applied -> issued
+        issued -> docs_presented
+        issued -> expired
+        docs_presented -> docs_verified
+        docs_presented -> discrepant
+        discrepant -> docs_presented
+        docs_verified -> honored
+    }
+
+    on issue(id: String, credit_amt: Int) {
+        if credit_amt <= 0 { return map("ok", false, "reason", "bad credit") }
+        transition(id, "issued")
+        credit.set(id, credit_amt)
+        return map("ok", true, "credit", credit_amt)
+    }
+
+    on present_docs(id: String) {
+        transition(id, "docs_presented")
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on verify_docs(id: String, conforming: Bool) {
+        if conforming {
+            transition(id, "docs_verified")
+        } else {
+            transition(id, "discrepant")   // seller may cure and re-present
+        }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on honor_drawing(id: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        if get_status(id) != "docs_verified" {
+            return map("ok", false, "reason", "documents not verified")
+        }
+        let line = credit.get(id) ?? 0
+        credit.set(id, line - amount)      // raises if drawing exceeds credit
+        transition(id, "honored")          // now provably valid
+        return map("ok", true, "paid", amount, "undrawn", line - amount)
+    }
+
+    on expire(id: String) {
+        transition(id, "expired")          // only an un-presented credit expires
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on undrawn(id: String) {
+        return credit.get(id) ?? 0
+    }
+}
+
+cell test LocTests {
+    rules {
+        assert issue("loc1", 80000).ok == true
+        // PAY ON TRUST: honored without documents — the edge does not exist
+        assert_fails transition("loc1", "honored")
+        assert present_docs("loc1").ok == true
+        // presented is NOT verified: still no payment edge
+        assert_fails transition("loc1", "honored")
+        // discrepant docs bounce back for cure, then re-present
+        assert verify_docs("loc1", false).state == "discrepant"
+        assert_fails transition("loc1", "honored")
+        assert present_docs("loc1").ok == true
+        assert verify_docs("loc1", true).state == "docs_verified"
+        // OVER-DRAWING: 90k against an 80k credit — the slot refuses
+        assert_fails honor_drawing("loc1", 90000)
+        assert undrawn("loc1") == 80000
+        assert honor_drawing("loc1", 80000).paid == 80000
+        // honored is terminal: documents cannot be "re-presented" for more
+        assert_fails transition("loc1", "docs_presented")
+        assert_fails transition("loc1", "honored")
+        assert_fails credit.set("loc1", -1)
+        // an untouched credit can expire — and stays expired
+        assert issue("loc2", 5000).ok == true
+        assert expire("loc2").ok == true
+        assert_fails transition("loc2", "docs_presented")
+    }
+}

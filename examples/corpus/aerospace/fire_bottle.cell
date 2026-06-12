@@ -1,0 +1,116 @@
+// ============================================================================
+// ENGINE FIRE BOTTLE — one-shot suppression, fuel off FIRST
+// ============================================================================
+//
+// An engine fire bottle is halon under pressure, and it is ONE-SHOT.
+// Twin-engine ETOPS aircraft carry exactly two per engine; when they are
+// gone, the crew's remaining option is to land. Two procedural truths
+// are written in blood across decades of engine-fire accidents:
+//
+//   1. Pull the fire handle (cut fuel and hydraulics) BEFORE firing the
+//      bottle. Halon discharged into a fuel-fed fire is wasted — the
+//      fire relights, and now you have one bottle and a burning wing.
+//   2. Never let the controller believe a discharged bottle can fire
+//      again. A "suppression available" indication backed by an empty
+//      bottle is how crews delay the diversion that would have saved them.
+//
+// Here both rules are the machine's shape: the bottle states are
+// reachable only THROUGH fuel_shutoff, and bottles_exhausted is
+// TERMINAL — soma verify proves no path refills a fired bottle.
+// ============================================================================
+
+cell FireSuppression {
+    face {
+        signal fire_warning_on(id: String) -> Map
+        signal warning_clears(id: String) -> Map
+        signal pull_handle(id: String) -> Map
+        signal discharge_bottle(id: String) -> Map
+        signal suppression_state(id: String) -> String
+    }
+
+    memory {
+        // bottles remaining on this engine: 0, 1, or 2 — never more
+        bottles: Map<String, Int> [persistent, consistent]
+        invariant bottles >= 0 && bottles <= 2
+    }
+
+    // ABSENT: monitoring/fire_warning -> bottle states (no discharge
+    //         into a fuel-fed fire — the handle comes first)
+    // ABSENT: any edge out of bottles_exhausted (empty means empty)
+    state suppression {
+        initial: monitoring
+        monitoring -> fire_warning
+        fire_warning -> monitoring        // false alarm, loop resets
+        fire_warning -> fuel_shutoff      // handle pulled: fuel + hyd cut
+        fuel_shutoff -> bottle_one_fired
+        bottle_one_fired -> bottles_exhausted   // terminal: both gone
+    }
+
+    on fire_warning_on(id: String) {
+        if bottles.get(id) == () { bottles.set(id, 2) }
+        let r = try { transition(id, "fire_warning") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on warning_clears(id: String) {
+        let r = try { transition(id, "monitoring") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on pull_handle(id: String) {
+        let r = try { transition(id, "fuel_shutoff") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id), "fuel", "CUT")
+    }
+
+    on discharge_bottle(id: String) {
+        let left = bottles.get(id) ?? 0
+        let target = "bottle_one_fired"
+        if left == 1 { target = "bottles_exhausted" }
+        let r = try { transition(id, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        bottles.set(id, left - 1)
+        return map("ok", true, "state", get_status(id), "bottles_left", left - 1)
+    }
+
+    on suppression_state(id: String) { return get_status(id) }
+}
+
+cell test BottleTests {
+    rules {
+        // discharging with no fire and no handle: structurally absent
+        assert_fails transition("eng1", "bottle_one_fired")
+
+        // fire! — but the bottle BEFORE the handle is also absent:
+        // halon into a fuel-fed fire is the wasted-bottle accident
+        assert fire_warning_on("eng1").ok == true
+        assert_fails transition("eng1", "bottle_one_fired")
+        assert discharge_bottle("eng1").ok == false
+
+        // handle first (fuel cut), then bottle one
+        assert pull_handle("eng1").ok == true
+        assert discharge_bottle("eng1").bottles_left == 1
+        assert suppression_state("eng1") == "bottle_one_fired"
+
+        // bottle two — and now the engine's suppression is EXHAUSTED
+        assert discharge_bottle("eng1").bottles_left == 0
+        assert suppression_state("eng1") == "bottles_exhausted"
+
+        // terminal: no path makes an empty bottle full again
+        assert_fails transition("eng1", "bottle_one_fired")
+        assert_fails transition("eng1", "monitoring")
+        assert discharge_bottle("eng1").ok == false
+
+        // the inventory itself cannot lie: 3 bottles or -1 bottles
+        // are unrepresentable
+        assert_fails bottles.set("eng1", 3)
+        assert_fails bottles.set("eng1", -1)
+
+        // a false alarm on another engine resets cleanly
+        assert fire_warning_on("eng2").ok == true
+        assert warning_clears("eng2").ok == true
+        assert suppression_state("eng2") == "monitoring"
+    }
+}

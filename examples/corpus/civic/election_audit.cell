@@ -1,0 +1,116 @@
+// ============================================================================
+// ELECTION AUDIT — a risk-limiting audit that cannot count a ballot twice
+// ============================================================================
+// Colorado pioneered statewide risk-limiting audits in 2017: pull a random
+// sample of paper ballots, compare to the machine count, escalate to a full
+// hand recount if the sample disagrees. The integrity of the method dies if
+// the same favorable ballot can be inspected twice (padding agreement) or if
+// a "confirmed" audit can be quietly reopened and re-run until it confirms.
+// Both are structural here: each ballot's inspection count is capped at 1 by
+// a memory invariant, escalation to full recount is a real transition the
+// sample-mismatch forces, and `confirmed` is terminal — soma verify proves
+// there is no second bite at the audit.
+// ============================================================================
+
+cell RiskLimitingAudit {
+    face {
+        signal start_sampling() -> Map
+        signal inspect_ballot(ballot: String, matches: Bool) -> Map
+        signal conclude() -> Map
+        signal finish_recount() -> Map
+        signal inspected_total() -> Int
+        signal mismatch_total() -> Int
+        signal phase() -> String
+    }
+
+    memory {
+        // ballot -> inspections. Counting one ballot twice is unrepresentable.
+        inspected: Map<String, Int> [persistent, consistent]
+        invariant inspected >= 0 && inspected <= 1
+
+        mismatches: Map<String, Int> [persistent, consistent]
+        invariant mismatches >= 0 && mismatches <= 1
+    }
+
+    // confirmed has no exit: an audit that confirmed the outcome is done.
+    // The only other road out of sampling is the FULL recount — there is
+    // no "quietly drop the bad sample" state.
+    state audit {
+        initial: planned
+        planned -> sampling
+        sampling -> confirmed
+        sampling -> full_recount
+        full_recount -> confirmed
+    }
+
+    on phase() { return get_status("audit") }
+
+    on start_sampling() {
+        let r = try { transition("audit", "sampling") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on inspect_ballot(ballot: String, matches: Bool) {
+        if phase() != "sampling" {
+            return map("ok", false, "reason", "audit is {phase()}")
+        }
+        let prior = inspected.get(ballot) ?? 0
+        // THE WALL: the same ballot cannot pad the sample twice.
+        let w = try { inspected.set(ballot, prior + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "ballot {ballot} already inspected")
+        }
+        if !matches { mismatches.set(ballot, 1) }
+        return map("ok", true, "ballot", ballot, "sampled", inspected_total())
+    }
+
+    on conclude() {
+        if phase() != "sampling" {
+            return map("ok", false, "reason", "audit is {phase()}")
+        }
+        if inspected_total() < 5 {
+            return map("ok", false, "reason", "sample too small: {inspected_total()} of 5")
+        }
+        if mismatch_total() == 0 {
+            transition("audit", "confirmed")
+            return map("ok", true, "outcome", "confirmed")
+        }
+        // a disagreeing sample FORCES the full hand recount
+        transition("audit", "full_recount")
+        return map("ok", true, "outcome", "full_recount")
+    }
+
+    on finish_recount() {
+        let r = try { transition("audit", "confirmed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "outcome", "confirmed_by_hand_count")
+    }
+
+    on inspected_total() { return len(inspected.keys()) }
+
+    on mismatch_total() { return len(mismatches.keys()) }
+}
+
+cell test AuditTests {
+    rules {
+        assert inspect_ballot("b1", true).ok == false     // no audit started
+        assert start_sampling().ok == true
+        assert inspect_ballot("b1", true).ok == true
+        assert inspect_ballot("b1", true).ok == false     // no double inspection
+        assert_fails inspected.set("b1", 2)               // unrepresentable
+        assert inspect_ballot("b2", true).ok == true
+        assert inspect_ballot("b3", true).ok == true
+        assert inspect_ballot("b4", true).ok == true
+        assert conclude().ok == false                     // sample below minimum
+        assert inspect_ballot("b5", false).ok == true     // a mismatch!
+        assert inspected_total() == 5
+        assert conclude().outcome == "full_recount"       // escalation is forced
+        assert inspect_ballot("b6", true).ok == false     // sampling is over
+        assert finish_recount().ok == true
+        assert phase() == "confirmed"
+        assert_fails transition("audit", "sampling")      // no re-running the audit
+        assert_fails transition("audit", "full_recount")
+        assert conclude().ok == false                     // and no second verdict
+    }
+}

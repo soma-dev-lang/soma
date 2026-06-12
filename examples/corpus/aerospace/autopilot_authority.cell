@@ -1,0 +1,107 @@
+// ============================================================================
+// AUTOPILOT AUTHORITY — Aeroflot 593: the half-disconnected autopilot
+// ============================================================================
+//
+// On 23 March 1994, Aeroflot Flight 593 (an A310) crashed into a Siberian
+// hillside, killing 75. The captain's children were at the controls; the
+// boy's yoke force partially overrode the autopilot — it silently dropped
+// the AILERON channel while the rest stayed engaged. No light, no horn.
+// The crew flew for crucial seconds believing the autopilot had the
+// aircraft. Nobody had authority, and nobody knew.
+//
+// The defect was authority as PER-AXIS FLAGS that could disagree. Here
+// authority is ONE state. Yoke force past the breakout threshold drives
+// the machine to override_latched — fully, loudly, all axes — and the
+// only exit is an explicit crew acknowledgment. There is no edge from
+// override_latched back to engaged: a fought autopilot can never silently
+// take the aircraft back. A memory invariant caps servo torque so the
+// actuator can never be commanded past its breakout rating.
+// ============================================================================
+
+cell AutopilotAuthority {
+    face {
+        signal engage(id: String) -> Map
+        signal disengage(id: String) -> Map
+        signal yoke_input(id: String, force_n: Int) -> Map
+        signal acknowledge_override(id: String) -> Map
+        signal authority(id: String) -> String
+    }
+
+    memory {
+        // commanded servo torque, N·m — breakout clutch rated at 30
+        servo_nm: Map<String, Int> [persistent, consistent]
+        invariant servo_nm >= 0 && servo_nm <= 30
+    }
+
+    // Authority is one state, never per-axis flags.
+    // ABSENT: override_latched -> engaged (no silent re-engagement)
+    state autopilot {
+        initial: disengaged
+        disengaged -> engaged
+        engaged -> disengaged          // crew button: clean handover
+        engaged -> override_latched    // yoke force: AP surrenders ALL axes
+        override_latched -> disengaged // ONLY via explicit acknowledgment
+    }
+
+    on engage(id: String) {
+        let r = try { transition(id, "engaged") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        servo_nm.set(id, 12)
+        return map("ok", true, "authority", get_status(id))
+    }
+
+    on disengage(id: String) {
+        let r = try { transition(id, "disengaged") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        servo_nm.set(id, 0)
+        return map("ok", true, "authority", get_status(id))
+    }
+
+    on yoke_input(id: String, force_n: Int) {
+        // below breakout force the AP holds; past it, authority transfers
+        // COMPLETELY — the Aeroflot 593 half-state has no representation
+        if get_status(id) == "engaged" && force_n > 15 {
+            transition(id, "override_latched")
+            servo_nm.set(id, 0)
+            return map("ok", true, "authority", "override_latched", "warn", "AP OFF — pilot has ALL axes")
+        }
+        return map("ok", true, "authority", get_status(id))
+    }
+
+    on acknowledge_override(id: String) {
+        let r = try { transition(id, "disengaged") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "authority", get_status(id))
+    }
+
+    on authority(id: String) { return get_status(id) }
+}
+
+cell test AuthorityTests {
+    rules {
+        // engage from cold
+        assert engage("ap1").ok == true
+        assert authority("ap1") == "engaged"
+
+        // light yoke pressure: the AP keeps the aircraft
+        assert yoke_input("ap1", 5).authority == "engaged"
+
+        // force past breakout: AP surrenders EVERYTHING, latched
+        assert yoke_input("ap1", 40).authority == "override_latched"
+
+        // THE Aeroflot 593 hazard: a silent re-engage. The edge is absent.
+        assert_fails transition("ap1", "engaged")
+        assert engage("ap1").ok == false
+
+        // only an explicit acknowledgment clears the latch...
+        assert acknowledge_override("ap1").ok == true
+        assert authority("ap1") == "disengaged"
+        // ...and then a deliberate engage is legal again
+        assert engage("ap1").ok == true
+        assert disengage("ap1").ok == true
+
+        // the servo can never be commanded past its breakout clutch
+        assert_fails servo_nm.set("ap1", 90)
+        assert_fails servo_nm.set("ap1", -1)
+    }
+}

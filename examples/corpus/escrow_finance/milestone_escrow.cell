@@ -1,0 +1,105 @@
+// ============================================================================
+// MILESTONE ESCROW — a contractor is paid per accepted milestone, never ahead
+// ============================================================================
+//
+// Freelance platforms learned this the expensive way: pay a contractor the
+// full project fee up front and disputes become hostage negotiations. The
+// escrow answer is milestones — but then the bug moves: releasing milestone
+// money TWICE, or releasing more than the client funded. Here the funded
+// balance is a slot that releases draw down (`escrowed >= 0`: the
+// over-release is a rejected write), each milestone is released at most
+// once, and a cancelled or completed project is terminal — the leftover
+// balance goes back to the client exactly once.
+// ============================================================================
+
+cell MilestoneEscrow {
+    face {
+        signal fund_project(id: String, amount: Int) -> Map
+        signal accept_milestone(id: String, ms: String, fee: Int) -> Map
+        signal finish_project(id: String) -> Map
+        signal cancel_project(id: String) -> Map
+        signal escrow_left(id: String) -> Int
+    }
+
+    memory {
+        escrowed: Map<String, Int> [persistent, consistent]
+        invariant escrowed >= 0
+        released: Map<String, Int> [persistent, consistent]
+        invariant released >= 0
+    }
+
+    // completed and cancelled are terminal: no release after either.
+    state project {
+        initial: proposed
+        proposed -> funded
+        funded -> completed
+        funded -> cancelled
+    }
+
+    on fund_project(id: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        transition(id, "funded")
+        escrowed.set(id, amount)
+        return map("ok", true, "escrowed", amount)
+    }
+
+    on accept_milestone(id: String, ms: String, fee: Int) {
+        if get_status(id) != "funded" {
+            return map("ok", false, "reason", "project is not active")
+        }
+        if fee <= 0 { return map("ok", false, "reason", "bad fee") }
+        let k = "{id}:{ms}"
+        if (released.get(k) ?? 0) > 0 {
+            return map("ok", false, "reason", "milestone {ms} already released")
+        }
+        let bal = escrowed.get(id) ?? 0
+        escrowed.set(id, bal - fee)        // raises past the funded amount
+        released.set(k, fee)
+        return map("ok", true, "milestone", ms, "left", bal - fee)
+    }
+
+    on finish_project(id: String) {
+        transition(id, "completed")
+        let refund = escrowed.get(id) ?? 0
+        escrowed.set(id, 0)                // unspent escrow back to client
+        return map("ok", true, "refund_to_client", refund)
+    }
+
+    on cancel_project(id: String) {
+        transition(id, "cancelled")
+        let refund = escrowed.get(id) ?? 0
+        escrowed.set(id, 0)
+        return map("ok", true, "refund_to_client", refund)
+    }
+
+    on escrow_left(id: String) {
+        return escrowed.get(id) ?? 0
+    }
+}
+
+cell test MilestoneTests {
+    rules {
+        assert fund_project("site", 5000).ok == true
+        assert accept_milestone("site", "design", 1500).ok == true
+        assert accept_milestone("site", "build", 2500).ok == true
+        assert escrow_left("site") == 1000
+        // THE DOUBLE RELEASE: same milestone, second payment — refused
+        assert accept_milestone("site", "design", 1500).ok == false
+        // THE OVER-RELEASE: 1,800 against 1,000 left — the write raises
+        assert_fails accept_milestone("site", "launch", 1800)
+        assert escrow_left("site") == 1000
+        assert_fails escrowed.set("site", -1)
+        // finishing returns the leftover to the client, once
+        assert finish_project("site").refund_to_client == 1000
+        assert escrow_left("site") == 0
+        // completed is terminal: no milestone, no cancel-refund after
+        assert accept_milestone("site", "extra", 100).ok == false
+        assert_fails transition("site", "cancelled")
+        assert_fails transition("site", "funded")
+        // the cancel path on another project, equally final
+        assert fund_project("logo", 800).ok == true
+        assert accept_milestone("logo", "draft", 300).ok == true
+        assert cancel_project("logo").refund_to_client == 500
+        assert_fails transition("logo", "completed")
+    }
+}

@@ -1,0 +1,89 @@
+// CRANE LOAD MOMENT — the tipping write is refused by the ledger.
+// "Big Blue", Miller Park, 1999: a 567-ton lift in wind put the crawler
+// crane past its load moment and it came down across the stadium —
+// 3 ironworkers dead. Load moment is load x radius against the rated
+// chart; the killer is that each input looks fine alone. Here the
+// computed moment percentage is written to a slot whose invariant tops
+// out at 100: a lift plan that tips the crane is REJECTED AT THE WRITE,
+// so the hoist edge is never taken. The machine adds the second wall —
+// a crane cannot hoist from `parked`, and an out-of-chart plan leaves
+// it safely in `rigged`.
+
+cell LoadMomentIndicator {
+    face {
+        signal rig(id: String) -> String
+        signal plan_lift(id: String, tons: Int, radius_m: Int, rated_tm: Int) -> Map
+        signal set_down(id: String) -> String
+        signal park(id: String) -> String
+        signal moment_now(id: String) -> Int
+    }
+
+    memory {
+        // percent of rated load moment — 100 is the chart edge, not a hint
+        moment_pct: Map<String, Int> [persistent, consistent]
+        invariant moment_pct >= 0 && moment_pct <= 100
+    }
+
+    state crane {
+        initial: parked
+        parked -> rigged           // counterweights on, outriggers set
+        rigged -> parked
+        rigged -> hoisting         // only a chart-checked load gets here
+        hoisting -> rigged
+    }
+
+    on rig(id: String) { transition(id, "rigged")  return get_status(id) }
+
+    on plan_lift(id: String, tons: Int, radius_m: Int, rated_tm: Int) {
+        if rated_tm <= 0 { return map("ok", false, "reason", "no load chart") }
+        let pct = idiv(tons * radius_m * 100, rated_tm)
+        // THE wall: a moment past 100% cannot be written, so the
+        // hoist below it is never reached.
+        let w = try { moment_pct.set(id, pct) }
+        if w.error != () {
+            return map("ok", false, "state", get_status(id),
+                       "reason", "load moment {pct}% of chart — lift refused")
+        }
+        let r = try { transition(id, "hoisting") }
+        if r.error != () {
+            return map("ok", false, "reason", "crane not rigged")
+        }
+        return map("ok", true, "state", get_status(id), "moment_pct", pct)
+    }
+
+    on set_down(id: String) {
+        moment_pct.set(id, 0)
+        transition(id, "rigged")
+        return get_status(id)
+    }
+
+    on park(id: String) { transition(id, "parked")  return get_status(id) }
+    on moment_now(id: String) { return moment_pct.get(id) ?? 0 }
+}
+
+cell test CraneTests {
+    rules {
+        // no hoisting from parked — the edge does not exist
+        assert_fails transition("c1", "hoisting")
+
+        // an in-chart lift proceeds: 400t at 20m on a 10000 t-m chart = 80%
+        assert rig("c1") == "rigged"
+        assert plan_lift("c1", 400, 20, 10000).ok == true
+        assert moment_now("c1") == 80
+
+        // come back down before the next plan
+        assert set_down("c1") == "rigged"
+
+        // THE Big Blue lift: 567t at 26m on the same chart = 147%.
+        // The ledger refuses the write; the crane never leaves `rigged`.
+        assert plan_lift("c1", 567, 26, 10000).ok == false
+        assert moment_now("c1") == 0
+
+        // the wall holds even against a direct write
+        assert_fails moment_pct.set("c1", 147)
+        assert_fails moment_pct.set("c1", -10)
+
+        // a rigged crane that never lifted can stand down
+        assert park("c1") == "parked"
+    }
+}

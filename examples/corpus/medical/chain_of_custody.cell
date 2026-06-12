@@ -1,0 +1,124 @@
+// ============================================================================
+// LAB CHAIN OF CUSTODY — a sample whose custody broke can never be
+// reported, by construction
+// ============================================================================
+//
+// A forensic toxicology or pathology result is only as trustworthy as the
+// unbroken chain of custody behind it. If a sample is left unsealed, or
+// its identity can't be accounted for at any handoff, the result is
+// inadmissible and clinically worthless — but the dangerous version is the
+// lab that reports it anyway, and a treatment (or a conviction) rests on a
+// possibly-swapped tube.
+//
+// Here a specimen walks collected → sealed → in_transit → received →
+// analyzed → reported. The one terminal failure state is `compromised`:
+// any custody break sends the sample there and it can NEVER reach
+// `reported`. `soma verify` proves reported is unreachable from
+// compromised, and that compromised is itself terminal — no "re-seal and
+// pretend" path exists.
+//
+//   soma verify examples/corpus/medical/chain_of_custody.cell
+//   soma test   examples/corpus/medical/chain_of_custody.cell
+//   soma run    examples/corpus/medical/chain_of_custody.cell demo
+// ============================================================================
+
+cell ChainOfCustody {
+    face {
+        signal collect(sample: String) -> Map
+        signal handoff(sample: String, step: String) -> Map
+        signal breach(sample: String) -> Map
+        signal report(sample: String) -> Map
+        signal sample_state(sample: String) -> String
+        signal demo() -> String
+    }
+
+    // `reportable` order: collected -> sealed -> in_transit -> received ->
+    // analyzed -> reported. `compromised` is the TERMINAL trap: every
+    // custody-bearing state can fall into it, none escape. verify proves
+    // reported is unreachable once compromised.
+    state specimen {
+        initial: collected
+        collected  -> sealed
+        sealed     -> in_transit
+        in_transit -> received
+        received   -> analyzed
+        analyzed   -> reported
+        collected  -> compromised
+        sealed     -> compromised
+        in_transit -> compromised
+        received   -> compromised
+        analyzed   -> compromised
+    }
+
+    on collect(sample: String) {
+        return map("ok", true, "state", get_status(sample))
+    }
+
+    // A legitimate handoff is the next step in the chain; the machine
+    // rejects skipping a step (e.g. shipping an unsealed tube).
+    on handoff(sample: String, step: String) {
+        let r = try { transition(sample, step) }
+        if r.error != () {
+            return map("ok", false, "reason", "custody violation: {r.error}")
+        }
+        return map("ok", true, "state", get_status(sample))
+    }
+
+    on breach(sample: String) {
+        let r = try { transition(sample, "compromised") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(sample))
+    }
+
+    // Reporting is only reachable through an unbroken chain. A compromised
+    // sample cannot transition to reported — the proof, not a policy memo.
+    on report(sample: String) {
+        let r = try { transition(sample, "reported") }
+        if r.error != () {
+            return map("ok", false, "reason", "cannot report: {r.error}")
+        }
+        return map("ok", true, "state", get_status(sample))
+    }
+
+    on sample_state(sample: String) {
+        return get_status(sample)
+    }
+
+    on demo() {
+        collect("tube-A")
+        handoff("tube-A", "sealed")
+        handoff("tube-A", "in_transit")
+        breach("tube-A")                       // seal found broken at the dock
+        let r = report("tube-A")               // REFUSED — chain is broken
+        let st = sample_state("tube-A")
+        print("after breach: report = {r}")
+        print("final state:  {st}")
+        return "demo done"
+    }
+}
+
+cell test CustodyTests {
+    rules {
+        // an unbroken chain reaches reported
+        assert collect("s1").ok == true
+        assert handoff("s1", "sealed").ok == true
+        assert handoff("s1", "in_transit").ok == true
+        assert handoff("s1", "received").ok == true
+        assert handoff("s1", "analyzed").ok == true
+        assert report("s1").ok == true
+        assert sample_state("s1") == "reported"
+
+        // you cannot skip sealing — shipping a raw tube is rejected
+        assert collect("s2").ok == true
+        assert_fails transition("s2", "in_transit")
+
+        // a breach is terminal and blocks reporting forever
+        assert collect("s3").ok == true
+        assert handoff("s3", "sealed").ok == true
+        assert breach("s3").ok == true
+        assert sample_state("s3") == "compromised"
+        assert_fails transition("s3", "reported")
+        assert_fails transition("s3", "sealed")
+        assert report("s3").ok == false
+    }
+}

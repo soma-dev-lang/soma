@@ -1,0 +1,100 @@
+// ============================================================================
+// GEM STORE — a purchase receipt credits exactly once
+// ============================================================================
+// The "receipt replay" exploit: capture one valid in-app-purchase receipt
+// and submit it to the game server again and again — each replay credits
+// the gems again. Several mobile studios shipped this exact validation gap
+// before Apple and Google hardened server-side receipt checks; it is real
+// money printed from a single purchase. Here a receipt is a state machine:
+// created -> paid -> credited, and `credited` is TERMINAL — the replayed
+// submit has no transition to take. Conservation rides on top: every gem in
+// circulation traces to exactly one credited receipt (minted == circulating
+// + sunk), and no balance can ever go negative.
+// ============================================================================
+
+cell GemStore {
+    face {
+        signal mark_paid(receipt: String, player: String, gems: Int) -> Map
+        signal redeem(receipt: String) -> Map
+        signal spend_gems(player: String, n: Int) -> Map
+        signal gems_of(player: String) -> Int
+        signal conserved() -> Bool
+    }
+
+    memory {
+        balance: Map<String, Int> [persistent, consistent]
+        invariant balance >= 0
+        minted: Map<String, Int> [persistent, consistent]
+        invariant minted >= 0
+        sunk: Map<String, Int> [persistent, consistent]
+        invariant sunk >= 0
+        rcpt_player: Map<String, String> [persistent, consistent]
+        rcpt_gems: Map<String, Int> [persistent, consistent]
+    }
+
+    state receipt {
+        initial: created
+        created -> paid
+        created -> voided
+        paid -> credited
+    }
+
+    on mark_paid(receipt: String, player: String, gems: Int) {
+        if gems <= 0 { return map("ok", false, "reason", "gems must be positive") }
+        let r = try { transition(receipt, "paid") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        rcpt_player.set(receipt, player)
+        rcpt_gems.set(receipt, gems)
+        return map("ok", true)
+    }
+
+    on redeem(receipt: String) {
+        // THE REPLAY WALL: paid -> credited fires once; credited is terminal
+        let r = try { transition(receipt, "credited") }
+        if r.error != () { return map("ok", false, "reason", "not redeemable: {r.error}") }
+        let p = rcpt_player.get(receipt)
+        let g = rcpt_gems.get(receipt)
+        balance.set(p, (balance.get(p) ?? 0) + g)
+        minted.set("total", (minted.get("total") ?? 0) + g)
+        return map("ok", true, "credited", g)
+    }
+
+    on spend_gems(player: String, n: Int) {
+        if n <= 0 { return map("ok", false, "reason", "spend must be positive") }
+        let w = try { balance.set(player, (balance.get(player) ?? 0) - n) }
+        if w.error != () { return map("ok", false, "reason", "insufficient gems") }
+        sunk.set("total", (sunk.get("total") ?? 0) + n)
+        return map("ok", true)
+    }
+
+    on gems_of(player: String) { return balance.get(player) ?? 0 }
+
+    on conserved() {
+        let circ = 0
+        let players = balance.keys()
+        for p in players { circ = circ + (balance.get(p) ?? 0) }
+        return (minted.get("total") ?? 0) == circ + (sunk.get("total") ?? 0)
+    }
+}
+
+cell test GemTests {
+    rules {
+        assert mark_paid("rc-9", "mia", 500).ok == true
+        assert redeem("rc-9").ok == true
+        assert gems_of("mia") == 500
+        // THE REPLAY: submitting the same receipt again has no transition
+        assert redeem("rc-9").ok == false
+        assert gems_of("mia") == 500
+        assert_fails transition("rc-9", "credited")
+        assert_fails transition("rc-9", "paid")
+        // a receipt that was never paid cannot be redeemed
+        assert redeem("rc-ghost").ok == false
+        // spending flows into the sink; overdraft is refused by the memory
+        assert spend_gems("mia", 200).ok == true
+        assert spend_gems("mia", 999).ok == false
+        assert_fails balance.set("mia", -1)
+        assert gems_of("mia") == 300
+        // the books balance: minted == circulating + sunk
+        assert conserved() == true
+    }
+}

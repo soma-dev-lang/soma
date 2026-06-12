@@ -1,0 +1,109 @@
+// ============================================================================
+// PAGER ESCALATION — no page resolves without a human acknowledging it
+// ============================================================================
+//
+// In the 2013 Target breach, FireEye flagged the malware and fired
+// alerts to the security team — twice. The alerts were reviewed and
+// dismissed without action; 40 million card numbers walked out during
+// the busiest shopping weeks of the year. The killer pattern is the
+// auto-resolve: an alert that nobody acknowledged quietly disappears
+// from the queue, and the system that paged looks healthy again.
+//
+// In this pager, `resolved` is only reachable from `acked` — there is
+// no triggered -> resolved edge for an auto-close to take, and `soma
+// verify` proves it. An unacknowledged page can only ESCALATE: on-call,
+// then secondary, then the manager — a one-way ladder with no edge
+// pointing down. The unanswered-escalation counter is invariant-capped:
+// past three hops the page cannot be re-escalated into the void, it
+// must be acknowledged at the top of the chain.
+// ============================================================================
+
+cell Pager {
+    face {
+        signal page_oncall(p: String) -> Map
+        signal escalate_page(p: String) -> Map
+        signal acknowledge(p: String) -> Map
+        signal resolve(p: String) -> Map
+        signal page_state(p: String) -> String
+    }
+
+    memory {
+        hops: Map<String, Int> [persistent, consistent]
+        invariant hops >= 0 && hops <= 3
+    }
+
+    // `resolved` is terminal and has exactly one parent: `acked`.
+    // No edge de-escalates, no edge auto-closes.
+    state page {
+        initial: queued
+        queued -> oncall_paged
+        oncall_paged -> secondary_paged
+        secondary_paged -> manager_paged
+        oncall_paged -> acked
+        secondary_paged -> acked
+        manager_paged -> acked
+        acked -> resolved
+    }
+
+    on page_oncall(p: String) {
+        let r = try { transition(p, "oncall_paged") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        hops.set(p, 1)
+        return map("ok", true, "state", "oncall_paged")
+    }
+
+    on escalate_page(p: String) {
+        let s = get_status(p)
+        let next = "secondary_paged"
+        if s == "secondary_paged" { next = "manager_paged" }
+        let r = try { transition(p, next) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let n = hops.get(p) ?? 0
+        let w = try { hops.set(p, n + 1) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        return map("ok", true, "state", next, "hop", n + 1)
+    }
+
+    on acknowledge(p: String) {
+        let r = try { transition(p, "acked") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "acked")
+    }
+
+    on resolve(p: String) {
+        let r = try { transition(p, "resolved") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "resolved")
+    }
+
+    on page_state(p: String) {
+        return get_status(p)
+    }
+}
+
+cell test PagerTests {
+    rules {
+        // THE TARGET MOVE: the alert fires and "resolves itself".
+        // There is no path from an unacked page to resolved.
+        assert page_oncall("malware-alert").ok == true
+        assert_fails transition("malware-alert", "resolved")
+
+        // ignored pages climb — and never climb back down
+        assert escalate_page("malware-alert").state == "secondary_paged"
+        assert_fails transition("malware-alert", "oncall_paged")
+        assert escalate_page("malware-alert").state == "manager_paged"
+
+        // at the top of the chain, the only ways out are human
+        assert_fails transition("malware-alert", "resolved")
+        assert acknowledge("malware-alert").ok == true
+        assert resolve("malware-alert").ok == true
+
+        // resolved is history: the page does not reopen for editing
+        assert_fails transition("malware-alert", "acked")
+        assert_fails transition("malware-alert", "queued")
+
+        // the hop ledger cannot escalate into the void
+        assert_fails hops.set("malware-alert", 4)
+        assert_fails hops.set("malware-alert", -1)
+    }
+}

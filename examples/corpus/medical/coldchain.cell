@@ -1,0 +1,125 @@
+// ============================================================================
+// VACCINE COLD-CHAIN — a temperature breach is PERMANENT, not "probably fine"
+// ============================================================================
+//
+// In 2018 a UK pharmacy revaccinated hundreds of patients after a fridge
+// failure: the mRNA/protein vaccines had spent hours out of the 2–8 °C
+// window and nobody could prove they were still potent. The temptation in
+// software is always the same — log the excursion, let a human "assess"
+// it, quietly keep using the vials. That is how spoiled doses reach arms.
+//
+// Here a vial's life is a state machine whose `discarded` state is
+// TERMINAL: once a reading leaves [2,8] °C the vial transitions to
+// discarded and there is NO path back to administrable. `soma verify`
+// proves discarded is a sink — no sequence of "re-inspect" or "override"
+// signals can resurrect it. A second wall: the recorded temperature slot
+// only accepts plausible readings, so a stuck sensor reporting 999 °C
+// can't be silently stored as in-range.
+//
+//   soma verify examples/corpus/medical/coldchain.cell   # discarded is terminal
+//   soma test   examples/corpus/medical/coldchain.cell
+//   soma run    examples/corpus/medical/coldchain.cell demo
+// ============================================================================
+
+cell ColdChain {
+    face {
+        signal receive(vial: String) -> Map
+        signal reading(vial: String, celsius: Int) -> Map
+        signal administer(vial: String) -> Map
+        signal vial_state(vial: String) -> String
+        signal demo() -> String
+    }
+
+    memory {
+        // Last recorded temperature. A medical fridge sensor reports
+        // roughly -40..60; anything outside that is a sensor fault, not a
+        // reading to be trusted. The invariant refuses to store garbage.
+        last_temp: Map<String, Int> [persistent, consistent]
+        invariant last_temp >= -40 && last_temp <= 60
+    }
+
+    // `discarded` is TERMINAL. A breached vial is gone — verify proves no
+    // edge leaves it. The vaccine cannot re-enter the administrable set.
+    state vial {
+        initial: in_transit
+        in_transit -> stored          // arrived, logged into the fridge
+        stored -> stored              // a fresh in-range reading
+        stored -> administered        // given to a patient (also terminal)
+        stored -> discarded           // a breach: 2–8 °C window left
+        in_transit -> discarded       // breach detected on arrival
+    }
+
+    on receive(vial: String) {
+        let r = try { transition(vial, "stored") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        last_temp.set(vial, 5)
+        return map("ok", true, "state", get_status(vial))
+    }
+
+    on reading(vial: String, celsius: Int) {
+        let st = get_status(vial)
+        if st == "discarded" || st == "administered" {
+            return map("ok", false, "reason", "vial is {st} — readings ignored")
+        }
+        // Record the reading first; a sensor fault is rejected by the
+        // invariant and the slot keeps its last trusted value.
+        let w = try { last_temp.set(vial, celsius) }
+        if w.error != () {
+            return map("ok", false, "reason", "implausible reading: {w.error}")
+        }
+        // Out of the 2–8 °C window => irreversible discard.
+        if celsius < 2 || celsius > 8 {
+            transition(vial, "discarded")
+            return map("ok", true, "breach", true, "state", get_status(vial))
+        }
+        return map("ok", true, "breach", false, "state", get_status(vial))
+    }
+
+    on administer(vial: String) {
+        let st = get_status(vial)
+        if st != "stored" {
+            return map("ok", false, "reason", "cannot administer a {st} vial")
+        }
+        transition(vial, "administered")
+        return map("ok", true, "state", get_status(vial))
+    }
+
+    on vial_state(vial: String) {
+        return get_status(vial)
+    }
+
+    on demo() {
+        receive("v-1")
+        let good = reading("v-1", 6)
+        let bad = reading("v-1", 14)            // breach: power cut overnight
+        let resurrect = try { transition("v-1", "stored") }   // refused
+        let give = administer("v-1")            // refused — it's discarded
+        print("good reading: {good}")
+        print("breach:       {bad}")
+        print("resurrect:    error = {resurrect.error}")
+        print("administer:   {give}")
+        return "demo done"
+    }
+}
+
+cell test ColdChainTests {
+    rules {
+        // a vial that stays in-range can be administered
+        assert receive("a").ok == true
+        assert reading("a", 4).breach == false
+        assert administer("a").ok == true
+        assert vial_state("a") == "administered"
+
+        // a breach is terminal: no re-storing, no administering
+        assert receive("b").ok == true
+        assert reading("b", 11).breach == true
+        assert vial_state("b") == "discarded"
+        assert_fails transition("b", "stored")
+        assert_fails transition("b", "administered")
+        assert administer("b").ok == false
+
+        // a stuck sensor reporting 999 °C is rejected at the write
+        assert receive("c").ok == true
+        assert_fails last_temp.set("c", 999)
+    }
+}

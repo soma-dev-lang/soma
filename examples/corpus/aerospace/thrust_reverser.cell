@@ -1,0 +1,99 @@
+// ============================================================================
+// THRUST REVERSER — Lauda Air 004: in-flight deployment, made structural
+// ============================================================================
+//
+// On 26 May 1991, Lauda Air Flight 004 — a Boeing 767 climbing out of
+// Bangkok — lost 223 people when the left engine's thrust reverser
+// deployed IN FLIGHT. Reverse thrust at climb power tore the airflow off
+// the wing; the aircraft broke up in seconds. The reverser system had
+// interlocks, but they were plumbing and relays guarding a hydraulic
+// valve — and a fault sequence got past them.
+//
+// Here flight phase and reverser position are ONE state machine. The
+// state {in flight, reverser deployed} is not guarded against — it is
+// not a state. Deployment is reachable only from on_ground (weight on
+// wheels), and the only exit from reverse thrust is stowing: you cannot
+// rotate back into the air with the buckets out either.
+// ============================================================================
+
+cell ThrustReverser {
+    face {
+        signal touchdown_wow(id: String) -> Map
+        signal deploy_reverse(id: String) -> Map
+        signal stow_reverse(id: String) -> Map
+        signal takeoff_roll(id: String) -> Map
+        signal reverser_state(id: String) -> String
+    }
+
+    memory {
+        // commanded N1, percent — never outside the engine's rated band
+        n1_pct: Map<String, Int> [persistent, consistent]
+        invariant n1_pct >= 0 && n1_pct <= 104
+    }
+
+    // ABSENT: inflight -> reverse_thrust  (the Lauda Air state)
+    // ABSENT: reverse_thrust -> inflight  (lifting off with buckets out)
+    state reverser {
+        initial: inflight
+        inflight -> on_ground          // weight on wheels at touchdown
+        on_ground -> reverse_thrust    // deploy: only with WoW
+        reverse_thrust -> on_ground    // stow is the ONLY exit
+        on_ground -> inflight          // takeoff: only from stowed
+    }
+
+    on guarded(id: String, target: String) {
+        let r = try { transition(id, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on touchdown_wow(id: String) {
+        n1_pct.set(id, 30)                       // idle at touchdown
+        return guarded(id, "on_ground")
+    }
+
+    on deploy_reverse(id: String) {
+        let r = guarded(id, "reverse_thrust")
+        if r.ok { n1_pct.set(id, 85) }           // reverse power, on ground only
+        return r
+    }
+
+    on stow_reverse(id: String) {
+        n1_pct.set(id, 25)
+        return guarded(id, "on_ground")
+    }
+
+    on takeoff_roll(id: String) {
+        let r = guarded(id, "inflight")
+        if r.ok { n1_pct.set(id, 100) }
+        return r
+    }
+
+    on reverser_state(id: String) { return get_status(id) }
+}
+
+cell test ReverserTests {
+    rules {
+        // THE Lauda Air transition: deployment in flight. It does not exist.
+        assert_fails transition("eng1", "reverse_thrust")
+        assert deploy_reverse("eng1").ok == false
+        assert reverser_state("eng1") == "inflight"
+
+        // the legal sequence: touchdown, deploy, stow, depart again
+        assert touchdown_wow("eng1").ok == true
+        assert deploy_reverse("eng1").ok == true
+        assert reverser_state("eng1") == "reverse_thrust"
+
+        // with the buckets out, the only exit is stowing — no takeoff
+        assert_fails transition("eng1", "inflight")
+        assert stow_reverse("eng1").ok == true
+        assert takeoff_roll("eng1").ok == true
+
+        // and airborne again, the interlock holds
+        assert_fails transition("eng1", "reverse_thrust")
+
+        // commanded N1 can never leave the rated band
+        assert_fails n1_pct.set("eng1", 120)
+        assert_fails n1_pct.set("eng1", -5)
+    }
+}

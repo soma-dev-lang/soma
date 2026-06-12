@@ -1,0 +1,67 @@
+// ============================================================================
+// STAMINA — the energy bar that cannot be overfilled or driven negative
+// ============================================================================
+// Mobile-game energy systems are attacked two ways. Clock rollback: set the
+// device clock forward, bank the regen, roll it back, regen again. Spend
+// underflow: spend more than you have and an unsigned wrap leaves you with
+// ~4 billion energy — this shipped in more than one free-to-play title.
+// Both attacks are, at bottom, a write outside [0, 100]. Here the MEMORY
+// refuses them: energy past the cap or below zero is not a bug to catch,
+// it is a value that cannot be stored.
+// ============================================================================
+
+cell Stamina {
+    face {
+        signal spend(player: String, cost: Int) -> Map
+        signal regen(player: String, amount: Int) -> Map
+        signal energy_of(player: String) -> Int
+    }
+
+    memory {
+        energy: Map<String, Int> [persistent, consistent]
+        invariant energy >= 0 && energy <= 100
+    }
+
+    on energy_of(player: String) {
+        let e = energy.get(player)
+        if e == () { return 100 }          // fresh players start full
+        return e
+    }
+
+    on spend(player: String, cost: Int) {
+        if cost <= 0 { return map("ok", false, "reason", "cost must be positive") }
+        let cur = energy_of(player)
+        // the wall: overspending writes a negative — REFUSED by the memory
+        let w = try { energy.set(player, cur - cost) }
+        if w.error != () { return map("ok", false, "reason", "not enough energy: {cur} < {cost}") }
+        return map("ok", true, "left", cur - cost)
+    }
+
+    on regen(player: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "regen must be positive") }
+        let cur = energy_of(player)
+        // regen is clamped to the cap — banked clock time cannot overfill
+        energy.set(player, min(100, cur + amount))
+        return map("ok", true, "energy", energy.get(player))
+    }
+}
+
+cell test StaminaTests {
+    rules {
+        assert energy_of("ana") == 100
+        assert spend("ana", 70).ok == true
+        assert energy_of("ana") == 30
+        // underflow: spending 40 from 30 is a negative write — refused,
+        // and the balance is untouched (no 4-billion-energy wrap)
+        assert spend("ana", 40).ok == false
+        assert energy_of("ana") == 30
+        assert_fails energy.set("ana", -10)
+        // clock-rollback regen: the cap holds however much time was banked
+        assert regen("ana", 9999).ok == true
+        assert energy_of("ana") == 100
+        assert_fails energy.set("ana", 101)
+        // degenerate inputs bounce
+        assert spend("ana", 0).ok == false
+        assert regen("ana", -50).ok == false
+    }
+}

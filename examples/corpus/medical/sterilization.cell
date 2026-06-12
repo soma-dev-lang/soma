@@ -1,0 +1,158 @@
+// ============================================================================
+// AUTOCLAVE STERILIZATION — a failed cycle can never release instruments
+// as sterile
+// ============================================================================
+//
+// Surgical instruments are sterilized in an autoclave: saturated steam at
+// 121–134 °C held long enough to kill spores, verified by a biological
+// indicator. The deadly shortcut is releasing a load as "sterile" when the
+// cycle aborted (a steam fault, a failed indicator) — every patient that
+// tray touches is exposed to surgical-site infection, and outbreaks have
+// been traced to exactly this. The standard is unforgiving: a failed cycle
+// means the whole load is reprocessed, never released.
+//
+// Here a load runs loaded → running → (held params met) → indicator_pass →
+// released. Any parameter fault or a failed biological indicator routes to
+// the TERMINAL `failed` state — there is no edge from `failed` to
+// `released`. A memory invariant also pins the sterilization hold
+// temperature into the validated band, so a probe reading 80 °C cannot be
+// charted as a passing cycle. `soma verify` proves released is unreachable
+// from failed.
+//
+//   soma verify examples/corpus/medical/sterilization.cell
+//   soma test   examples/corpus/medical/sterilization.cell
+//   soma run    examples/corpus/medical/sterilization.cell demo
+// ============================================================================
+
+cell Autoclave {
+    face {
+        signal load_tray(tray: String) -> Map
+        signal run_cycle(tray: String, peak_c: Int) -> Map
+        signal indicator(tray: String, spores_killed: Bool) -> Map
+        signal release(tray: String) -> Map
+        signal tray_state(tray: String) -> String
+        signal demo() -> String
+    }
+
+    memory {
+        // Peak hold temperature recorded for the cycle, °C. The validated
+        // steam-sterilization band tops out around 134; a probe value
+        // outside [0,150] is a sensor fault and is rejected at the write.
+        peak_temp: Map<String, Int> [persistent, consistent]
+        invariant peak_temp >= 0 && peak_temp <= 150
+    }
+
+    // `released` is reachable ONLY through indicator_pass. `failed` is
+    // TERMINAL — a faulted cycle or dead indicator ends the load for good;
+    // it must be reprocessed under a new id. verify proves no failed ->
+    // released path exists.
+    state load_sm {
+        initial: loaded
+        loaded         -> running
+        running        -> params_met        // 121–134 °C held long enough
+        params_met     -> indicator_pass    // biological indicator killed spores
+        indicator_pass -> released          // safe to use — terminal
+        running        -> failed            // steam/temperature fault
+        params_met     -> failed            // indicator failed
+    }
+
+    on load_tray(tray: String) {
+        let r = try { transition(tray, "running") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(tray))
+    }
+
+    // Run the hold phase. The peak temperature is recorded (a sensor fault
+    // is rejected by the invariant). Below 121 °C the cycle fails
+    // terminally; a valid hold advances to params_met.
+    on run_cycle(tray: String, peak_c: Int) {
+        let st = get_status(tray)
+        if st != "running" {
+            return map("ok", false, "reason", "tray is {st}, not running")
+        }
+        let w = try { peak_temp.set(tray, peak_c) }
+        if w.error != () {
+            return map("ok", false, "reason", "implausible probe: {w.error}")
+        }
+        if peak_c < 121 {
+            transition(tray, "failed")
+            return map("ok", false, "reason", "under-temperature {peak_c}°C — cycle FAILED",
+                "state", get_status(tray))
+        }
+        transition(tray, "params_met")
+        return map("ok", true, "peak", peak_c, "state", get_status(tray))
+    }
+
+    // The biological indicator is the final word. Spores not killed =>
+    // terminal failure, never released.
+    on indicator(tray: String, spores_killed: Bool) {
+        let st = get_status(tray)
+        if st != "params_met" {
+            return map("ok", false, "reason", "no completed cycle to verify (state {st})")
+        }
+        if !spores_killed {
+            transition(tray, "failed")
+            return map("ok", false, "reason", "BIOLOGICAL INDICATOR FAILED — reprocess",
+                "state", get_status(tray))
+        }
+        transition(tray, "indicator_pass")
+        return map("ok", true, "state", get_status(tray))
+    }
+
+    on release(tray: String) {
+        let r = try { transition(tray, "released") }
+        if r.error != () {
+            return map("ok", false, "reason", "cannot release: {r.error}")
+        }
+        return map("ok", true, "state", get_status(tray))
+    }
+
+    on tray_state(tray: String) { return get_status(tray) }
+
+    on demo() {
+        load_tray("tray-A")
+        let cold = run_cycle("tray-A", 105)        // under-temp — FAILS terminally
+        let blocked = release("tray-A")            // REFUSED — failed load
+        // a clean load on a new id
+        load_tray("tray-B")
+        run_cycle("tray-B", 132)
+        indicator("tray-B", true)
+        let ok = release("tray-B")
+        print("cold cycle:   {cold}")
+        print("release fail: {blocked}")
+        print("clean release: {ok}")
+        return "demo done"
+    }
+}
+
+cell test AutoclaveTests {
+    rules {
+        // clean cycle reaches released
+        assert load_tray("a").ok == true
+        assert run_cycle("a", 134).ok == true
+        assert indicator("a", true).ok == true
+        assert release("a").ok == true
+        assert tray_state("a") == "released"
+
+        // released is terminal — no re-running a released load
+        assert_fails transition("a", "running")
+
+        // an under-temperature cycle fails terminally and blocks release
+        assert load_tray("b").ok == true
+        assert run_cycle("b", 100).ok == false
+        assert tray_state("b") == "failed"
+        assert_fails transition("b", "released")
+        assert_fails transition("b", "params_met")
+        assert release("b").ok == false
+
+        // a failed biological indicator also blocks release forever
+        assert load_tray("c").ok == true
+        assert run_cycle("c", 130).ok == true
+        assert indicator("c", false).ok == false
+        assert tray_state("c") == "failed"
+        assert_fails transition("c", "released")
+
+        // a probe sensor fault is rejected at the slot
+        assert_fails peak_temp.set("a", 999)
+    }
+}

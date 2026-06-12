@@ -1,0 +1,87 @@
+// CHLORINE DOSING — no chemical feed without proven water flow.
+// The CDC logs hundreds of poolgoers hospitalized in chemical-controller
+// incidents with one recurring shape: the recirculation pump stops, the
+// chlorine feeder keeps running, and the stagnant line accumulates a
+// slug that gasses the first swimmers when flow returns. The fix is a
+// flow interlock: the feeder is DOWNSTREAM of proven flow in the state
+// machine itself — `standby -> feeding` does not exist, and losing flow
+// while feeding forces the feed-stop edge before the pump-stop edge.
+// The residual ledger independently refuses any dose past the 4 ppm
+// EPA maximum residual disinfectant level.
+
+cell ChlorineFeed {
+    face {
+        signal flow_proven(id: String) -> String
+        signal start_feed(id: String, ppm: Int) -> Map
+        signal stop_feed(id: String) -> String
+        signal flow_lost(id: String) -> String
+        signal residual_of(id: String) -> Int
+    }
+
+    memory {
+        // chlorine residual at the sensor, ppm x1 — EPA MRDL is 4
+        residual: Map<String, Int> [persistent, consistent]
+        invariant residual >= 0 && residual <= 4
+    }
+
+    state feeder {
+        initial: standby
+        standby -> circulating      // flow switch made: water is moving
+        circulating -> standby      // pump stopped while not feeding
+        circulating -> feeding      // the ONLY edge into chemical feed
+        feeding -> circulating      // feed stops FIRST, flow continues
+    }
+
+    on flow_proven(id: String) { transition(id, "circulating")  return get_status(id) }
+
+    on start_feed(id: String, ppm: Int) {
+        let r = try { transition(id, "feeding") }
+        if r.error != () {
+            return map("ok", false, "reason", "no proven flow — feeder stays off")
+        }
+        let w = try { residual.set(id, ppm) }
+        if w.error != () {
+            transition(id, "circulating")
+            return map("ok", false, "reason", "{ppm} ppm exceeds the 4 ppm MRDL")
+        }
+        return map("ok", true, "state", get_status(id), "ppm", ppm)
+    }
+
+    on stop_feed(id: String) { transition(id, "circulating")  return get_status(id) }
+
+    on flow_lost(id: String) {
+        // flow failure: kill the feed, THEN the line may go quiet
+        if get_status(id) == "feeding" { transition(id, "circulating") }
+        transition(id, "standby")
+        return get_status(id)
+    }
+
+    on residual_of(id: String) { return residual.get(id) ?? 0 }
+}
+
+cell test FeedTests {
+    rules {
+        // feeding into a dead line: the edge is absent
+        assert_fails transition("pool1", "feeding")
+        assert start_feed("pool1", 2).ok == false
+
+        // proven flow, lawful dose
+        assert flow_proven("pool1") == "circulating"
+        assert start_feed("pool1", 3).ok == true
+        assert residual_of("pool1") == 3
+
+        // a feeding line cannot go straight to standby — feed stops first
+        assert_fails transition("pool1", "standby")
+        assert flow_lost("pool1") == "standby"
+
+        // the residual ledger refuses an overdose, structurally
+        assert flow_proven("pool1") == "circulating"
+        assert start_feed("pool1", 9).ok == false
+        assert_fails residual.set("pool1", 5)
+        assert_fails residual.set("pool1", -1)
+
+        // and the feeder fell back to circulating, not feeding — a
+        // normal pump stop from here is lawful
+        assert flow_lost("pool1") == "standby"
+    }
+}

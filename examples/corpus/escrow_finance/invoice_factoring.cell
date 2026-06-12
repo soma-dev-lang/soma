@@ -1,0 +1,107 @@
+// ============================================================================
+// INVOICE FACTORING — no advance on unverified paper, no double-selling
+// ============================================================================
+//
+// Greensill Capital collapsed in 2021 holding billions in "invoices" that
+// were never verified — some for trade that hadn't happened, some financed
+// twice through different vehicles. The two frauds are structural here:
+// an invoice can only be SOLD from the verified state (the issued -> sold
+// edge does not exist), and sold has no edge back to itself or to verified,
+// so the same invoice cannot be advanced twice. The advance ledger caps
+// the cash at 90% of face value and refuses negative writes.
+// ============================================================================
+
+cell Factoring {
+    face {
+        signal issue_invoice(id: String, face_value: Int) -> Map
+        signal verify_delivery(id: String) -> Map
+        signal sell_invoice(id: String, advance: Int) -> Map
+        signal collect(id: String) -> Map
+        signal write_off(id: String) -> Map
+        signal advance_paid(id: String) -> Int
+    }
+
+    memory {
+        advanced: Map<String, Int> [persistent, consistent]
+        invariant advanced >= 0
+        face_val: Map<String, Int> [persistent, consistent]
+        invariant face_val >= 0
+    }
+
+    // collected and defaulted are terminal. The fraud edges are ABSENT:
+    // no issued -> sold (unverified paper), no sold -> sold (double-sale).
+    state invoice {
+        initial: drafted
+        drafted -> issued
+        issued -> verified
+        verified -> sold
+        sold -> collected
+        sold -> defaulted
+    }
+
+    on issue_invoice(id: String, face_value: Int) {
+        if face_value <= 0 { return map("ok", false, "reason", "bad face value") }
+        transition(id, "issued")
+        face_val.set(id, face_value)
+        advanced.set(id, 0)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on verify_delivery(id: String) {
+        transition(id, "verified")    // raises unless invoice was issued
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on sell_invoice(id: String, advance: Int) {
+        let fv = face_val.get(id) ?? 0
+        if advance <= 0 || advance * 10 > fv * 9 {
+            return map("ok", false, "reason", "advance must be in (0, 90% of {fv}]")
+        }
+        transition(id, "sold")        // raises unless verified — and only once
+        advanced.set(id, advance)
+        return map("ok", true, "advance", advance, "face", fv)
+    }
+
+    on collect(id: String) {
+        transition(id, "collected")
+        let fv = face_val.get(id) ?? 0
+        let adv = advanced.get(id) ?? 0
+        return map("ok", true, "rebate_to_seller", fv - adv)
+    }
+
+    on write_off(id: String) {
+        transition(id, "defaulted")
+        return map("ok", true, "loss", advanced.get(id) ?? 0)
+    }
+
+    on advance_paid(id: String) {
+        return advanced.get(id) ?? 0
+    }
+}
+
+cell test FactoringTests {
+    rules {
+        assert issue_invoice("inv1", 10000).ok == true
+        // GREENSILL MOVE 1: advance cash on unverified paper — edge absent
+        assert_fails transition("inv1", "sold")
+        assert verify_delivery("inv1").ok == true
+        // advance capped at 90% of face
+        assert sell_invoice("inv1", 9500).ok == false
+        assert sell_invoice("inv1", 9000).ok == true
+        assert advance_paid("inv1") == 9000
+        // GREENSILL MOVE 2: sell the same invoice again — no sold -> sold
+        assert_fails transition("inv1", "sold")
+        assert_fails transition("inv1", "verified")
+        // the ledger refuses a negative advance outright
+        assert_fails advanced.set("inv1", -1)
+        // collection is terminal; a collected invoice cannot default too
+        assert collect("inv1").rebate_to_seller == 1000
+        assert_fails transition("inv1", "defaulted")
+        // default path on a second invoice, equally final
+        assert issue_invoice("inv2", 5000).ok == true
+        assert verify_delivery("inv2").ok == true
+        assert sell_invoice("inv2", 4000).ok == true
+        assert write_off("inv2").loss == 4000
+        assert_fails transition("inv2", "collected")
+    }
+}

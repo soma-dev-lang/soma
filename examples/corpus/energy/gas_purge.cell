@@ -1,0 +1,133 @@
+// ============================================================================
+// GAS TURBINE LIGHT-OFF — purge before every ignition attempt, no exceptions
+// ============================================================================
+//
+// February 7, 2010, Middletown, Connecticut: the Kleen Energy power plant,
+// weeks from commissioning, exploded during a natural-gas pipe-cleaning
+// operation. Six workers died. The blast led NFPA 56 to ban flammable-gas
+// blows outright — but the same physics lives inside every gas turbine and
+// HRSG: admit fuel without flame, and the exhaust path fills with a
+// combustible cloud waiting for one spark. That is why NFPA 85 requires a
+// forced-air purge of several full volume changes before EVERY ignition
+// attempt — including the retry after a failed light-off, which is exactly
+// when an impatient operator (or a buggy auto-restart) wants to skip it.
+//
+// Here the purge is unskippable: `firing` is reachable only from
+// `purge_complete`, and the ONLY exit from `failed_light` is back into
+// `purging`. soma verify proves no path admits fuel into an unpurged
+// machine. The purge-volume ledger refuses credit for less than the
+// mandated 5 volume changes.
+// ============================================================================
+
+cell Combustor {
+    face {
+        signal start_purge(id: String) -> Map
+        signal purge_credit(id: String, volumes: Int) -> Map
+        signal ignite(id: String) -> Map
+        signal flame_on(id: String) -> Map
+        signal flame_out(id: String) -> Map
+        signal stop_unit(id: String) -> Map
+        signal unit_state(id: String) -> String
+    }
+
+    memory {
+        // volume changes pushed through since the last fuel admission;
+        // 5 are required, more than 50 in one credit is a sensor fault
+        purged: Map<String, Int> [persistent, consistent]
+        invariant purged >= 0 && purged <= 50
+    }
+
+    state lightoff {
+        initial: shutdown
+        shutdown -> purging          // forced-draft air through the whole path
+        purging -> purge_complete    // >= 5 volume changes verified
+        purge_complete -> firing     // igniters live, fuel admitted
+        firing -> running            // flame proven
+        firing -> failed_light       // no flame — unburned fuel in the exhaust
+        failed_light -> purging      // the ONLY exit: purge it out first
+        running -> shutdown
+    }
+
+    on start_purge(id: String) {
+        let r = try { transition(id, "purging") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        purged.set(id, 0)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on purge_credit(id: String, volumes: Int) {
+        if get_status(id) != "purging" {
+            return map("ok", false, "reason", "no purge running (state: {get_status(id)})")
+        }
+        let w = try { purged.set(id, (purged.get(id) ?? 0) + volumes) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        if (purged.get(id) ?? 0) < 5 {
+            return map("ok", true, "state", "purging", "volumes", purged.get(id))
+        }
+        transition(id, "purge_complete")
+        return map("ok", true, "state", get_status(id), "volumes", purged.get(id))
+    }
+
+    on ignite(id: String) {
+        let r = try { transition(id, "firing") }
+        if r.error != () { return map("ok", false, "reason", "purge interlock: {r.error}") }
+        purged.set(id, 0)        // fuel is in — the purge credit is SPENT
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on flame_on(id: String) {
+        let r = try { transition(id, "running") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on flame_out(id: String) {
+        let r = try { transition(id, "failed_light") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on stop_unit(id: String) {
+        let r = try { transition(id, "shutdown") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on unit_state(id: String) { return get_status(id) }
+}
+
+cell test PurgeTests {
+    rules {
+        // fuel into a cold, unpurged machine: the transition is absent
+        assert_fails transition("u1", "firing")
+        assert ignite("u1").ok == false
+
+        // purge, but 3 volume changes is not 5 — still purging
+        assert start_purge("u1").ok == true
+        assert purge_credit("u1", 3).ok == true
+        assert unit_state("u1") == "purging"
+        assert_fails transition("u1", "firing")
+
+        // full credit, then light-off — and the flame fails
+        assert purge_credit("u1", 2).ok == true
+        assert unit_state("u1") == "purge_complete"
+        assert ignite("u1").ok == true
+        assert flame_out("u1").ok == true
+
+        // THE KLEEN ENERGY MOMENT: retry ignition with raw gas still in
+        // the exhaust path. The only exit from failed_light is a purge.
+        assert_fails transition("u1", "firing")
+        assert ignite("u1").ok == false
+
+        // re-purge, then the retry is legal
+        assert start_purge("u1").ok == true
+        assert purge_credit("u1", 5).ok == true
+        assert ignite("u1").ok == true
+        assert flame_on("u1").ok == true
+        assert unit_state("u1") == "running"
+
+        // the purge ledger rejects nonsense credits
+        assert_fails purged.set("u1", -1)
+        assert_fails purged.set("u1", 99)
+    }
+}

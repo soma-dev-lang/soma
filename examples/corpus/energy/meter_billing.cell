@@ -1,0 +1,114 @@
+// ============================================================================
+// METER BILLING — you are billed exactly what the meter read, once
+// ============================================================================
+//
+// In December 2015 the UK regulator Ofgem fined npower £26 million for
+// billing failures: estimated and duplicated invoices that didn't match
+// what meters had recorded, sent to half a million customers. The root
+// pattern is always the same — billing reads a copy of the meter data
+// that can drift, and nothing structural ties the invoice to the register.
+//
+// Here conservation is by construction. Each billing cycle is a state
+// machine: usage accumulates only while `accumulating`; `locked` snapshots
+// the register; the ONLY write to `billed` copies the metered value at
+// invoice time. You cannot invoice an unlocked register (the transition
+// doesn't exist), cannot invoice twice (invoiced -> invoiced doesn't
+// exist), and a settled cycle is TERMINAL — no retroactive "adjustment".
+// soma verify proves the lifecycle; the audit signal pins billed==metered.
+// ============================================================================
+
+cell Billing {
+    face {
+        signal record_usage(meter: String, kwh: Int) -> Map
+        signal lock_register(meter: String) -> Map
+        signal issue_invoice(meter: String) -> Map
+        signal post_payment(meter: String) -> Map
+        signal audit_gap(meter: String) -> Int
+        signal cycle_state(meter: String) -> String
+    }
+
+    memory {
+        metered: Map<String, Int> [persistent, consistent]
+        invariant metered >= 0
+
+        billed: Map<String, Int> [persistent, consistent]
+        invariant billed >= 0
+    }
+
+    state cycle {
+        initial: accumulating
+        accumulating -> locked     // register snapshot taken
+        locked -> invoiced         // bill issued for EXACTLY the snapshot
+        invoiced -> settled        // payment posted — TERMINAL: history
+    }
+
+    on record_usage(meter: String, kwh: Int) {
+        if kwh <= 0 { return map("ok", false, "reason", "usage must be positive") }
+        if get_status(meter) != "accumulating" {
+            return map("ok", false, "reason",
+                "register is locked (state: {get_status(meter)}) — no backfilled usage")
+        }
+        let total = (metered.get(meter) ?? 0) + kwh
+        metered.set(meter, total)
+        return map("ok", true, "metered", total)
+    }
+
+    on lock_register(meter: String) {
+        let r = try { transition(meter, "locked") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(meter))
+    }
+
+    on issue_invoice(meter: String) {
+        let r = try { transition(meter, "invoiced") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        // conservation by construction: the ONLY write to `billed`
+        // copies the metered register, verbatim
+        billed.set(meter, metered.get(meter) ?? 0)
+        return map("ok", true, "billed", billed.get(meter))
+    }
+
+    on post_payment(meter: String) {
+        let r = try { transition(meter, "settled") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(meter))
+    }
+
+    on audit_gap(meter: String) {
+        return (billed.get(meter) ?? 0) - (metered.get(meter) ?? 0)
+    }
+
+    on cycle_state(meter: String) { return get_status(meter) }
+}
+
+cell test BillingTests {
+    rules {
+        // a normal cycle: meter ticks, register locks, invoice goes out
+        assert record_usage("m1", 300).ok == true
+        assert record_usage("m1", 150).ok == true
+
+        // cannot invoice an unlocked register — the transition is absent
+        assert_fails transition("m1", "invoiced")
+
+        assert lock_register("m1").ok == true
+        // once locked, no backfilled usage sneaks onto the bill
+        assert record_usage("m1", 999).ok == false
+
+        assert issue_invoice("m1").ok == true
+        // CONSERVATION: billed == metered, exactly
+        assert audit_gap("m1") == 0
+
+        // cannot invoice the same cycle twice
+        assert_fails transition("m1", "invoiced")
+
+        assert post_payment("m1").ok == true
+        // settled is TERMINAL: no retroactive adjustment, ever
+        assert_fails transition("m1", "locked")
+        assert_fails transition("m1", "accumulating")
+
+        // negative invoices and registers are rejected by the memory
+        assert_fails billed.set("m1", -50)
+        assert_fails metered.set("m1", -1)
+        assert audit_gap("m1") == 0
+    }
+}

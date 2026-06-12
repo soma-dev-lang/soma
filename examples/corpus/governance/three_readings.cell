@@ -1,0 +1,144 @@
+// ============================================================================
+// THREE READINGS — an ordinance cannot be law the night it is introduced
+// ============================================================================
+//
+// Most municipal charters require an ordinance to be read at three
+// separate council meetings before adoption. The rule is anti-ambush:
+// the public gets two full meeting cycles to notice, organize, and
+// object before anything binds them. The standard evasion is the
+// "emergency clause" — Ohio councils became notorious for passing
+// garden-variety zoning as an "emergency" to skip readings and, not
+// coincidentally, to dodge the citizen referendum that attaches to
+// normal ordinances.
+//
+// In this machine the readings are not a custom the clerk remembers —
+// they are the only path. `adopted` is reachable solely through three
+// reading states, soma verify proves no shortcut edge exists, and each
+// reading can be logged at most once per ordinance stage: stuffing all
+// three readings into one wild night is a write the journal refuses.
+// ============================================================================
+
+cell CouncilJournal {
+    face {
+        signal introduce(ord: String) -> Map
+        signal read_aloud(ord: String, meeting_no: Int) -> Map
+        signal adopt_ordinance(ord: String) -> Map
+        signal withdraw(ord: String) -> Map
+        signal readings_of(ord: String) -> Int
+    }
+
+    memory {
+        // ord:reading_number -> the meeting it happened at. Each of the
+        // three readings is logged once; a duplicate log entry for the
+        // same reading is unrepresentable.
+        journal: Map<String, Int> [persistent, consistent]
+        invariant journal >= 1
+
+        logged: Map<String, Int> [persistent, consistent]
+        invariant logged >= 0 && logged <= 1
+    }
+
+    // introduced -> r1 -> r2 -> r3 -> adopted (TERMINAL).
+    // withdrawn is the other terminal exit. NO edge skips a reading.
+    state ordinance {
+        initial: introduced
+        introduced -> first_reading
+        first_reading -> second_reading
+        second_reading -> third_reading
+        third_reading -> adopted
+        introduced -> withdrawn
+    }
+
+    on introduce(ord: String) {
+        return map("ok", true, "ord", ord, "state", get_status(ord))
+    }
+
+    on read_aloud(ord: String, meeting_no: Int) {
+        let s = get_status(ord)
+        let target = ""
+        let n = 0
+        if s == "introduced" {
+            target = "first_reading"
+            n = 1
+        }
+        if s == "first_reading" {
+            target = "second_reading"
+            n = 2
+        }
+        if s == "second_reading" {
+            target = "third_reading"
+            n = 3
+        }
+        if target == "" {
+            return map("ok", false, "reason", "no reading due from state {s}")
+        }
+        // same meeting cannot host two readings of the same ordinance:
+        // the previous reading's meeting number must differ
+        if n > 1 {
+            let prev = journal.get("{ord}:r{n - 1}")
+            if prev == meeting_no {
+                return map("ok", false, "reason",
+                    "reading {n} must happen at a SEPARATE meeting (got {meeting_no} again)")
+            }
+        }
+        let w = try { logged.set("{ord}:r{n}", (logged.get("{ord}:r{n}") ?? 0) + 1) }
+        if w.error != () { return map("ok", false, "reason", "reading {n} already logged") }
+        journal.set("{ord}:r{n}", meeting_no)
+        transition(ord, target)
+        return map("ok", true, "reading", n, "meeting", meeting_no)
+    }
+
+    on adopt_ordinance(ord: String) {
+        let r = try { transition(ord, "adopted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "adopted", "readings", readings_of(ord))
+    }
+
+    on withdraw(ord: String) {
+        let r = try { transition(ord, "withdrawn") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "withdrawn")
+    }
+
+    on readings_of(ord: String) {
+        let n = 0
+        for k in logged.keys() {
+            if starts_with(k, "{ord}:") { n = n + (logged.get(k) ?? 0) }
+        }
+        return n
+    }
+}
+
+cell test ReadingsTests {
+    rules {
+        // THE EMERGENCY-CLAUSE MOVE: introduced tonight, law tonight. No edge.
+        assert introduce("zoning-44").ok == true
+        assert adopt_ordinance("zoning-44").ok == false
+        assert_fails transition("zoning-44", "adopted")
+        assert_fails transition("zoning-44", "second_reading")
+
+        // reading one, meeting 101
+        assert read_aloud("zoning-44", 101).reading == 1
+        // the same night cannot host reading two
+        assert read_aloud("zoning-44", 101).ok == false
+        assert adopt_ordinance("zoning-44").ok == false
+
+        // two more meeting cycles; the public has had its window
+        assert read_aloud("zoning-44", 102).reading == 2
+        assert read_aloud("zoning-44", 103).reading == 3
+        assert readings_of("zoning-44") == 3
+        assert adopt_ordinance("zoning-44").ok == true
+
+        // adopted is terminal; the journal cannot double-log a reading
+        assert_fails transition("zoning-44", "third_reading")
+        assert_fails transition("zoning-44", "introduced")
+        assert_fails logged.set("zoning-44:r2", 2)
+        assert read_aloud("zoning-44", 104).ok == false
+
+        // withdrawal is terminal too — a dead ordinance stays dead
+        assert introduce("tax-9").ok == true
+        assert withdraw("tax-9").ok == true
+        assert_fails transition("tax-9", "first_reading")
+        assert read_aloud("tax-9", 105).ok == false
+    }
+}

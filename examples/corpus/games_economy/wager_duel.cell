@@ -1,0 +1,121 @@
+// ============================================================================
+// WAGER DUEL — staked gold that exactly one fighter can win
+// ============================================================================
+// Wager duels and "death-match stakes" servers keep reproducing the same
+// scam: both fighters stake gold, the loser disconnects before the result
+// commits, and a support ticket gets the stake refunded — while the winner
+// was ALSO paid. The pot pays out twice. Here the duel is a machine where
+// `paid_out` and `refunded` are both TERMINAL and mutually exclusive: the
+// pot leaves through exactly one door, once. Stakes move wallet -> pot in
+// one handler, gold is conserved across every path, and no wallet can go
+// negative — you cannot stake gold you do not have.
+// ============================================================================
+
+cell WagerDuel {
+    face {
+        signal fund_fighter(player: String, gold: Int) -> Int
+        signal stake(duel: String, a: String, b: String, amount: Int) -> Map
+        signal declare_winner(duel: String, winner: String) -> Map
+        signal refund_draw(duel: String) -> Map
+        signal purse_of(player: String) -> Int
+        signal house_total() -> Int
+    }
+
+    memory {
+        purse: Map<String, Int> [persistent, consistent]
+        invariant purse >= 0
+        pot: Map<String, Int> [persistent, consistent]
+        invariant pot >= 0
+        side_a: Map<String, String> [persistent, consistent]
+        side_b: Map<String, String> [persistent, consistent]
+    }
+
+    // the pot leaves through exactly one terminal door
+    state duel_flow {
+        initial: open
+        open -> staked
+        staked -> paid_out
+        staked -> refunded
+    }
+
+    on fund_fighter(player: String, gold: Int) {
+        purse.set(player, (purse.get(player) ?? 0) + gold)
+        return purse.get(player)
+    }
+
+    on stake(duel: String, a: String, b: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "stake must be positive") }
+        if get_status(duel) != "open" { return map("ok", false, "reason", "duel already staked or settled") }
+        let wa = try { purse.set(a, (purse.get(a) ?? 0) - amount) }
+        if wa.error != () { return map("ok", false, "reason", "{a} cannot cover the stake") }
+        let wb = try { purse.set(b, (purse.get(b) ?? 0) - amount) }
+        if wb.error != () {
+            purse.set(a, (purse.get(a) ?? 0) + amount)   // give a's stake back
+            return map("ok", false, "reason", "{b} cannot cover the stake")
+        }
+        transition(duel, "staked")
+        pot.set(duel, amount * 2)
+        side_a.set(duel, a)
+        side_b.set(duel, b)
+        return map("ok", true, "pot", amount * 2)
+    }
+
+    on declare_winner(duel: String, winner: String) {
+        if winner != side_a.get(duel) && winner != side_b.get(duel) {
+            return map("ok", false, "reason", "{winner} is not in this duel")
+        }
+        let r = try { transition(duel, "paid_out") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        purse.set(winner, (purse.get(winner) ?? 0) + (pot.get(duel) ?? 0))
+        pot.set(duel, 0)
+        return map("ok", true, "winner", winner)
+    }
+
+    on refund_draw(duel: String) {
+        let r = try { transition(duel, "refunded") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let half = idiv(pot.get(duel) ?? 0, 2)
+        purse.set(side_a.get(duel), (purse.get(side_a.get(duel)) ?? 0) + half)
+        purse.set(side_b.get(duel), (purse.get(side_b.get(duel)) ?? 0) + half)
+        pot.set(duel, 0)
+        return map("ok", true, "refunded_each", half)
+    }
+
+    on purse_of(player: String) { return purse.get(player) ?? 0 }
+
+    on house_total() {
+        let t = 0
+        let ps = purse.keys()
+        for p in ps { t = t + (purse.get(p) ?? 0) }
+        let ds = pot.keys()
+        for d in ds { t = t + (pot.get(d) ?? 0) }
+        return t
+    }
+}
+
+cell test DuelTests {
+    rules {
+        assert fund_fighter("rok", 100) == 100
+        assert fund_fighter("ysa", 100) == 100
+        assert stake("d1", "rok", "ysa", 60).ok == true
+        assert purse_of("rok") == 40
+        assert purse_of("ysa") == 40
+        assert house_total() == 200
+        // ysa wins the pot — through the ONE pay-out door
+        assert declare_winner("d1", "ysa").ok == true
+        assert purse_of("ysa") == 160
+        assert house_total() == 200
+        // THE SCAM: refund after pay-out — the door does not exist
+        assert refund_draw("d1").ok == false
+        assert_fails transition("d1", "refunded")
+        assert declare_winner("d1", "rok").ok == false
+        assert house_total() == 200
+        // you cannot stake gold you do not have; nobody goes negative
+        assert stake("d2", "rok", "ysa", 9999).ok == false
+        assert_fails purse.set("rok", -1)
+        // an outsider cannot be declared winner of someone else's duel
+        assert fund_fighter("eve", 50) == 50
+        assert stake("d3", "rok", "ysa", 10).ok == true
+        assert declare_winner("d3", "eve").ok == false
+    }
+}

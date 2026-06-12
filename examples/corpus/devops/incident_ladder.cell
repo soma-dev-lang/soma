@@ -1,0 +1,117 @@
+// ============================================================================
+// INCIDENT LADDER — severity only climbs, and closure needs a postmortem
+// ============================================================================
+//
+// Two ways incident processes rot. First, "sev gaming": an on-call
+// quietly downgrades a Sev1 to Sev3 so the SLA clock stops and the VP
+// page never fires — the 2013 Target breach unfolded exactly this way,
+// with FireEye alerts dismissed for weeks while card data walked out.
+// Second, closing without learning: the incident is marked resolved,
+// no postmortem happens, and the same outage returns in six months.
+//
+// Both rots are unrepresentable here. Severity is a one-way ladder —
+// there is no de-escalation edge, only mitigation. And `closed` is
+// reachable ONLY through `postmortem_done`: the machine has no edge
+// from mitigated to closed, so "we'll write it up later" cannot
+// compile. `soma verify` proves closed is terminal and that every
+// state can still reach it — no incident is ever stuck open forever.
+// ============================================================================
+
+cell IncidentDesk {
+    face {
+        signal raise_sev3(inc: String) -> Map
+        signal escalate_sev(inc: String) -> Map
+        signal mitigate(inc: String) -> Map
+        signal file_postmortem(inc: String) -> Map
+        signal close_incident(inc: String) -> Map
+        signal incident_state(inc: String) -> String
+    }
+
+    memory {
+        // 1, 2 or 3. There is no severity 0 ("not really an incident")
+        // and no severity 4 ("look how bad!") — the ledger refuses both.
+        severity: Map<String, Int> [persistent, consistent]
+        invariant severity >= 1 && severity <= 3
+    }
+
+    // No edge points DOWN the ladder, and `closed` only follows
+    // `postmortem_done`. Absence is the policy.
+    state incident {
+        initial: detected
+        detected -> sev3
+        sev3 -> sev2
+        sev2 -> sev1
+        sev3 -> mitigated
+        sev2 -> mitigated
+        sev1 -> mitigated
+        mitigated -> postmortem_done
+        postmortem_done -> closed
+    }
+
+    on raise_sev3(inc: String) {
+        let r = try { transition(inc, "sev3") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        severity.set(inc, 3)
+        return map("ok", true, "state", "sev3")
+    }
+
+    on escalate_sev(inc: String) {
+        let s = get_status(inc)
+        let next = "sev2"
+        if s == "sev2" { next = "sev1" }
+        let r = try { transition(inc, next) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let lvl = 2
+        if next == "sev1" { lvl = 1 }
+        severity.set(inc, lvl)
+        return map("ok", true, "state", next)
+    }
+
+    on mitigate(inc: String) {
+        let r = try { transition(inc, "mitigated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "mitigated")
+    }
+
+    on file_postmortem(inc: String) {
+        let r = try { transition(inc, "postmortem_done") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "postmortem_done")
+    }
+
+    on close_incident(inc: String) {
+        let r = try { transition(inc, "closed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "closed")
+    }
+
+    on incident_state(inc: String) {
+        return get_status(inc)
+    }
+}
+
+cell test LadderTests {
+    rules {
+        assert raise_sev3("inc-401").ok == true
+        assert escalate_sev("inc-401").state == "sev2"
+        assert escalate_sev("inc-401").state == "sev1"
+
+        // THE TARGET MOVE: quietly downgrade. No edge points down.
+        assert_fails transition("inc-401", "sev2")
+        assert_fails transition("inc-401", "sev3")
+
+        // closing without a postmortem cannot compile into a path
+        assert mitigate("inc-401").ok == true
+        assert_fails transition("inc-401", "closed")
+        assert file_postmortem("inc-401").ok == true
+        assert close_incident("inc-401").ok == true
+
+        // closed is terminal: history does not reopen for editing
+        assert_fails transition("inc-401", "mitigated")
+        assert_fails transition("inc-401", "sev1")
+
+        // the severity ledger admits only 1..3
+        assert_fails severity.set("inc-999", 0)
+        assert_fails severity.set("inc-999", 4)
+    }
+}

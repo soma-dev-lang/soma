@@ -1,0 +1,98 @@
+// ============================================================================
+// FOIA — the statutory clock cannot be silently ignored
+// ============================================================================
+// 5 U.S.C. § 552 gives an agency 20 working days to answer a FOIA request.
+// In practice requests sit for years — agencies just keep them "processing"
+// and courts call the silence a constructive denial (journalists sued the
+// FBI over requests pending for a decade). The dodge works because nothing
+// FORCES the escalation. Here the day counter has a hard ceiling: day 21
+// cannot be written for a request still in processing — the refused write
+// trips the escalation transition instead. Overdue requests land on the
+// commissioner's desk structurally, and `fulfilled` is terminal: an answered
+// request cannot be quietly re-opened to dodge reporting.
+// ============================================================================
+
+cell Foia {
+    face {
+        signal assign_officer(id: String) -> Map
+        signal log_day(id: String) -> Map
+        signal simulate_days(id: String, n: Int) -> String
+        signal fulfill(id: String) -> Map
+        signal days_open(id: String) -> Int
+        signal request_state(id: String) -> String
+    }
+
+    memory {
+        // request -> working days in processing. Day 21 is unrepresentable:
+        // the write refuses, and the refusal IS the escalation trigger.
+        days: Map<String, Int> [persistent, consistent]
+        invariant days >= 0 && days <= 20
+    }
+
+    // fulfilled is terminal: an answered request is answered forever.
+    state request {
+        initial: received
+        received -> processing
+        processing -> fulfilled
+        processing -> overdue
+        overdue -> fulfilled
+    }
+
+    on request_state(id: String) { return get_status(id) }
+
+    on assign_officer(id: String) {
+        let r = try { transition(id, "processing") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        days.set(id, 0)
+        return map("ok", true, "request", id)
+    }
+
+    on log_day(id: String) {
+        if request_state(id) != "processing" {
+            return map("ok", false, "reason", "request is {request_state(id)}")
+        }
+        let d = days.get(id) ?? 0
+        let w = try { days.set(id, d + 1) }
+        if w.error != () {
+            // The statute, enforced by the memory: day 21 does not exist
+            // for an unanswered request. Escalate instead.
+            transition(id, "overdue")
+            return map("ok", true, "escalated", true, "day", d)
+        }
+        return map("ok", true, "escalated", false, "day", d + 1)
+    }
+
+    on simulate_days(id: String, n: Int) {
+        for i in range(0, n) { log_day(id) }
+        return request_state(id)
+    }
+
+    on fulfill(id: String) {
+        let r = try { transition(id, "fulfilled") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "after_days", days_open(id))
+    }
+
+    on days_open(id: String) { return days.get(id) ?? 0 }
+}
+
+cell test FoiaTests {
+    rules {
+        assert fulfill("r1").ok == false                  // can't answer the unassigned
+        assert assign_officer("r1").ok == true
+        assert simulate_days("r1", 20) == "processing"    // 20 days: still lawful
+        assert days_open("r1") == 20
+        assert_fails days.set("r1", 21)                   // day 21: unrepresentable
+        assert simulate_days("r1", 1) == "overdue"        // the clock escalates
+        assert log_day("r1").ok == false                  // overdue clock is stopped
+        assert fulfill("r1").ok == true                   // commissioner closes it
+        assert_fails transition("r1", "processing")       // no quiet re-opening
+        assert_fails transition("r1", "overdue")
+
+        // a fast request never touches escalation
+        assert assign_officer("r2").ok == true
+        assert simulate_days("r2", 5) == "processing"
+        assert fulfill("r2").ok == true
+        assert request_state("r2") == "fulfilled"
+    }
+}

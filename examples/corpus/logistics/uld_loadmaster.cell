@@ -1,0 +1,110 @@
+// ============================================================================
+// ULD LOADMASTER — National Airlines 102, refused at the manifest
+// ============================================================================
+//
+// On 29 April 2013, National Airlines Flight 102 lifted off from Bagram
+// with five armored vehicles strapped to its main deck. At rotation, at
+// least one 12-tonne MRAP broke loose, slid aft, smashed the jackscrew
+// of the horizontal stabilizer — and the 747 stalled onto the runway,
+// killing all seven crew. The NTSB found the cargo was restrained by a
+// scheme the operator had invented, far below the required tie-down
+// strength, and the load was never properly verified.
+//
+// This loadmaster makes both failures structural: a unit load device's
+// weight ledger refuses any write past the position's certified limit,
+// and the pallet lifecycle has no path onto the aircraft that skips
+// `restraints_verified`. An unverified pallet cannot board — the edge
+// does not exist.
+// ============================================================================
+
+cell UldLoadmaster {
+    face {
+        signal add_cargo(uld: String, kg: Int) -> Map
+        signal verify_restraints(uld: String) -> Map
+        signal board_aircraft(uld: String) -> Map
+        signal uld_weight(uld: String) -> Int
+    }
+
+    memory {
+        // PMC pallet on a 747 main-deck position: 6,804 kg max gross
+        weight_kg: Map<String, Int> [persistent, consistent]
+        invariant weight_kg >= 0 && weight_kg <= 6804
+    }
+
+    // building -> restraints_verified -> aboard. No shortcut to aboard;
+    // touching the load voids the verification (back to building).
+    state pallet {
+        initial: building
+        building            -> restraints_verified
+        restraints_verified -> building
+        restraints_verified -> aboard
+    }
+
+    on add_cargo(uld: String, kg: Int) {
+        if kg <= 0 { return map("ok", false, "reason", "cargo weight must be positive") }
+        if get_status(uld) == "aboard" {
+            return map("ok", false, "reason", "ULD is aboard — load is closed")
+        }
+        // adding cargo to a verified pallet voids the verification
+        if get_status(uld) == "restraints_verified" { transition(uld, "building") }
+        let cur = weight_kg.get(uld) ?? 0
+        let w = try { weight_kg.set(uld, cur + kg) }
+        if w.error != () {
+            return map("ok", false, "reason", "REFUSED: {cur} + {kg} kg exceeds 6804 kg position limit")
+        }
+        return map("ok", true, "uld", uld, "weight_kg", cur + kg)
+    }
+
+    on verify_restraints(uld: String) {
+        if (weight_kg.get(uld) ?? 0) == 0 {
+            return map("ok", false, "reason", "empty ULD — nothing to verify")
+        }
+        let r = try { transition(uld, "restraints_verified") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "restraints_verified")
+    }
+
+    on board_aircraft(uld: String) {
+        let r = try { transition(uld, "aboard") }
+        if r.error != () {
+            return map("ok", false, "reason", "restraints not verified: {r.error}")
+        }
+        return map("ok", true, "state", "aboard", "weight_kg", weight_kg.get(uld))
+    }
+
+    on uld_weight(uld: String) { return weight_kg.get(uld) ?? 0 }
+}
+
+cell test Bagram102 {
+    rules {
+        // legal build-up
+        assert add_cargo("PMC-1", 4000).ok == true
+        assert add_cargo("PMC-1", 2500).ok == true
+        assert uld_weight("PMC-1") == 6500
+
+        // overweight for the position: the ledger refuses
+        assert add_cargo("PMC-1", 1000).ok == false
+        assert uld_weight("PMC-1") == 6500
+        assert_fails weight_kg.set("PMC-1", 12000)
+
+        // THE BAGRAM PATH: boarding without restraint verification.
+        // building -> aboard does not exist.
+        assert board_aircraft("PMC-1").ok == false
+        assert_fails transition("PMC-1", "aboard")
+
+        // verified, it boards — and the load is then closed
+        assert verify_restraints("PMC-1").ok == true
+        assert board_aircraft("PMC-1").ok == true
+        assert add_cargo("PMC-1", 10).ok == false
+        assert_fails transition("PMC-1", "building")
+
+        // touching the load AFTER verification voids it
+        assert add_cargo("PMC-2", 3000).ok == true
+        assert verify_restraints("PMC-2").ok == true
+        assert add_cargo("PMC-2", 500).ok == true
+        assert board_aircraft("PMC-2").ok == false
+
+        // an empty pallet cannot be "verified" pro forma
+        assert verify_restraints("PMC-3").ok == false
+    }
+}

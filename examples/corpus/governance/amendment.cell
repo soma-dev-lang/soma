@@ -1,0 +1,128 @@
+// ============================================================================
+// AMENDMENT — supermajority ratification, and a "yes" that cannot be unsaid
+// ============================================================================
+//
+// In 1868, Ohio and New Jersey ratified the Fourteenth Amendment — then,
+// as politics shifted, voted to RESCIND their ratifications. Congress
+// and the Secretary of State counted them anyway: under Article V
+// practice, ratification is a one-way act. The same fight resurfaced
+// with the ERA in the 1970s. The constitutional answer became doctrine:
+// a state's "yes" enters the permanent record; there is no take-back.
+//
+// This module makes both halves structural. A ratification slot can hold
+// exactly the value 1 — the rescission (writing it back to 0) is refused
+// by the MEMORY, not by a clerk's ruling. And the amendment cannot reach
+// `ratified` (terminal, proven by soma verify) until a supermajority of
+// 7 of the 10 member states is actually on the books.
+// ============================================================================
+
+cell ArticleFive {
+    face {
+        signal propose(amendment: String) -> Map
+        signal ratify(amendment: String, state_name: String) -> Map
+        signal rescind(amendment: String, state_name: String) -> Map
+        signal proclaim(amendment: String) -> Map
+        signal yes_count(amendment: String) -> Int
+    }
+
+    memory {
+        // amendment:state -> 1. The ONLY value the slot can hold.
+        // Rescission writes 0; absence-by-overwrite is unrepresentable.
+        record_of: Map<String, Int> [persistent, consistent]
+        invariant record_of >= 1 && record_of <= 1
+    }
+
+    // ratified is TERMINAL — there is no edge out. A ratified amendment
+    // is the constitution now; the machine has no way to un-make it.
+    state amendment {
+        initial: drafted
+        drafted -> proposed
+        proposed -> ratified
+        proposed -> expired
+    }
+
+    on propose(amendment: String) {
+        let r = try { transition(amendment, "proposed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "proposed")
+    }
+
+    on ratify(amendment: String, state_name: String) {
+        if get_status(amendment) != "proposed" {
+            let s = get_status(amendment)
+            return map("ok", false, "reason", "nothing to ratify: amendment is {s}")
+        }
+        let k = "{amendment}:{state_name}"
+        if record_of.get(k) != () {
+            return map("ok", false, "reason", "{state_name} already ratified — once")
+        }
+        record_of.set(k, 1)
+        return map("ok", true, "state_name", state_name, "yes", yes_count(amendment))
+    }
+
+    // Ohio, 1868: "we take it back." The memory says no: removing the
+    // yes means writing record_of down to 0, a value the slot cannot hold.
+    on rescind(amendment: String, state_name: String) {
+        let k = "{amendment}:{state_name}"
+        let cur = record_of.get(k)
+        if cur == () { return map("ok", false, "reason", "{state_name} never ratified") }
+        let w = try { record_of.set(k, cur - 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "ratification is a one-way act: {w.error}")
+        }
+        return map("ok", true)
+    }
+
+    // supermajority: 7 of 10 states, checked against the permanent record
+    on proclaim(amendment: String) {
+        let yes = yes_count(amendment)
+        if yes < 7 {
+            return map("ok", false, "reason", "supermajority not reached: {yes} of 10, need 7")
+        }
+        let r = try { transition(amendment, "ratified") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "ratified", "yes", yes)
+    }
+
+    on yes_count(amendment: String) {
+        let n = 0
+        for k in record_of.keys() {
+            if starts_with(k, "{amendment}:") { n = n + 1 }
+        }
+        return n
+    }
+}
+
+cell test AmendmentTests {
+    rules {
+        // no ratifying a draft that was never proposed
+        assert ratify("A28", "ohio").ok == false
+        assert propose("A28").ok == true
+
+        // six states say yes — one short of the 7/10 supermajority
+        assert ratify("A28", "s1").ok == true
+        assert ratify("A28", "s2").ok == true
+        assert ratify("A28", "s3").ok == true
+        assert ratify("A28", "s4").ok == true
+        assert ratify("A28", "s5").ok == true
+        assert ratify("A28", "s6").ok == true
+        assert ratify("A28", "s6").ok == false           // double-ratify: no
+        assert proclaim("A28").ok == false               // 6 < 7
+
+        // THE RESCISSION: s3 tries to take its yes back. The slot can
+        // only hold 1 — writing 0 is refused by the memory itself.
+        assert rescind("A28", "s3").ok == false
+        assert_fails record_of.set("A28:s3", 0)
+        assert yes_count("A28") == 6
+
+        // the seventh state arrives; the supermajority is real
+        assert ratify("A28", "s7").ok == true
+        assert proclaim("A28").ok == true
+
+        // ratified is forever: no edge out, no late rescission
+        assert_fails transition("A28", "proposed")
+        assert_fails transition("A28", "expired")
+        assert rescind("A28", "s7").ok == false
+        assert yes_count("A28") == 7
+    }
+}

@@ -1,0 +1,117 @@
+// ============================================================================
+// OPEN MEETINGS — no public decision without public notice, structurally
+// ============================================================================
+//
+// Every U.S. state has a Sunshine law because councils kept doing the
+// same thing: decide in private, ratify in public. Texas's Open Meetings
+// Act requires 72 hours of posted notice before a governmental body may
+// act; actions taken in an unnoticed meeting are voidable, and courts
+// have voided them — bond issues, firings, rezonings. The dodge du jour
+// is the "walking quorum": a chain of small private chats that adds up
+// to a deliberating majority no citizen ever saw.
+//
+// Here the Act is the machine. A meeting reaches `in_session` ONLY
+// through `noticed`, and the notice ledger physically cannot record a
+// posting shorter than 72 hours — `invariant notice_hours >= 72` makes
+// the midnight 2-hour notice a write the memory refuses. Votes happen
+// only in session; `adjourned` is terminal, so nothing can be slipped
+// into a meeting after the gavel falls.
+// ============================================================================
+
+cell SunshineLaw {
+    face {
+        signal post_notice(meeting: String, hours_ahead: Int) -> Map
+        signal convene(meeting: String) -> Map
+        signal vote_item(meeting: String, item: String, ayes: Int, nays: Int) -> Map
+        signal adjourn(meeting: String) -> Map
+        signal outcome(meeting: String, item: String) -> String
+    }
+
+    memory {
+        // hours of advance public notice. The statute's floor IS the
+        // type: 71 hours is a value this ledger cannot hold.
+        notice_hours: Map<String, Int> [persistent, consistent]
+        invariant notice_hours >= 72
+
+        decisions: Map<String, String> [persistent, consistent]
+    }
+
+    // called -> noticed -> in_session -> adjourned. No edge skips the
+    // notice; no edge leaves adjourned. soma verify proves both.
+    state meeting {
+        initial: called
+        called -> noticed
+        noticed -> in_session
+        in_session -> adjourned
+    }
+
+    on post_notice(meeting: String, hours_ahead: Int) {
+        if get_status(meeting) != "called" {
+            let s = get_status(meeting)
+            return map("ok", false, "reason", "notice must precede everything ({s})")
+        }
+        // THE WALL: a 2-hour midnight posting is refused by the memory
+        let w = try { notice_hours.set(meeting, hours_ahead) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "{hours_ahead}h notice is below the 72h statutory floor")
+        }
+        transition(meeting, "noticed")
+        return map("ok", true, "meeting", meeting, "hours", hours_ahead)
+    }
+
+    on convene(meeting: String) {
+        let r = try { transition(meeting, "in_session") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "in_session")
+    }
+
+    on vote_item(meeting: String, item: String, ayes: Int, nays: Int) {
+        if get_status(meeting) != "in_session" {
+            let s = get_status(meeting)
+            return map("ok", false, "reason", "no vote outside an open session ({s})")
+        }
+        let verdict = "failed"
+        if ayes > nays { verdict = "passed" }
+        decisions.set("{meeting}:{item}", verdict)
+        return map("ok", true, "item", item, "verdict", verdict)
+    }
+
+    on adjourn(meeting: String) {
+        let r = try { transition(meeting, "adjourned") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "adjourned")
+    }
+
+    on outcome(meeting: String, item: String) {
+        return decisions.get("{meeting}:{item}") ?? "no action"
+    }
+}
+
+cell test SunshineTests {
+    rules {
+        // the walking quorum's dream: vote with no meeting noticed at all
+        assert vote_item("oct-7", "rezone", 4, 1).ok == false
+        assert_fails transition("oct-7", "in_session")     // notice is not skippable
+
+        // the midnight special: 2 hours of "notice" — unrepresentable
+        assert post_notice("oct-7", 2).ok == false
+        assert_fails notice_hours.set("oct-7", 71)
+        assert get_status("oct-7") == "called"
+
+        // lawful notice, lawful session, lawful vote
+        assert post_notice("oct-7", 96).ok == true
+        assert vote_item("oct-7", "rezone", 4, 1).ok == false   // noticed != in session
+        assert convene("oct-7").ok == true
+        assert vote_item("oct-7", "rezone", 4, 1).verdict == "passed"
+        assert vote_item("oct-7", "bond", 2, 3).verdict == "failed"
+
+        // gavel falls: adjourned is terminal, the record is closed
+        assert adjourn("oct-7").ok == true
+        assert vote_item("oct-7", "sneaky-item", 5, 0).ok == false
+        assert_fails transition("oct-7", "in_session")
+        assert_fails transition("oct-7", "called")
+        assert outcome("oct-7", "rezone") == "passed"
+        assert outcome("oct-7", "sneaky-item") == "no action"
+    }
+}

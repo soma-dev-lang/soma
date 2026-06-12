@@ -1,0 +1,145 @@
+// ============================================================================
+// SURGICAL SAFETY CHECKLIST — no incision before time-out, and the count
+// must reconcile before you close
+// ============================================================================
+//
+// The WHO Surgical Safety Checklist exists because of two recurring
+// disasters: wrong-site surgery (operating on the wrong knee, the wrong
+// patient) and retained foreign objects (a sponge or instrument left
+// inside, requiring a second operation, sometimes fatal sepsis). The
+// defenses are a pre-incision "time-out" (confirm patient, site,
+// procedure) and a final instrument/sponge COUNT that must match before
+// the surgeon closes.
+//
+// Here the operation is a state machine: you physically cannot reach
+// `incision` without passing through `timeout_done`, and you cannot reach
+// `closed` without `count_correct`. A memory invariant makes the count a
+// conserved equation — sponges out must equal sponges in — so "close with
+// one still inside" is a rejected write, not a postoperative X-ray
+// surprise.
+//
+//   soma verify examples/corpus/medical/surgical_checklist.cell
+//   soma test   examples/corpus/medical/surgical_checklist.cell
+//   soma run    examples/corpus/medical/surgical_checklist.cell demo
+// ============================================================================
+
+cell Surgery {
+    face {
+        signal book(op: String, sponges: Int) -> Map
+        signal timeout(op: String) -> Map
+        signal incise(op: String) -> Map
+        signal recover_sponge(op: String) -> Map
+        signal close(op: String) -> Map
+        signal op_state(op: String) -> String
+        signal sponges_out(op: String) -> Int
+        signal demo() -> String
+    }
+
+    memory {
+        // Sponges placed in the field, and sponges recovered. The closing
+        // count must reconcile: out == in. Both are bounded and never
+        // negative — a count of -1 or 9999 is a rejected write.
+        placed: Map<String, Int> [persistent, consistent]
+        invariant placed >= 0 && placed <= 200
+
+        recovered: Map<String, Int> [persistent, consistent]
+        invariant recovered >= 0 && recovered <= 200
+    }
+
+    // The checklist as structure. `incision` is unreachable without
+    // `timeout_done`; `closed` is unreachable without `count_correct`.
+    // verify proves these are the only paths.
+    state operation {
+        initial: booked
+        booked        -> timeout_done    // WHO time-out completed
+        timeout_done  -> incision        // ONLY now may the scalpel cut
+        incision      -> count_correct   // sponge/instrument count reconciled
+        count_correct -> closed          // safe to close — terminal
+    }
+
+    on book(op: String, sponges: Int) {
+        let w = try { placed.set(op, sponges) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        recovered.set(op, 0)
+        return map("ok", true, "state", get_status(op), "sponges", sponges)
+    }
+
+    on timeout(op: String) {
+        let r = try { transition(op, "timeout_done") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(op))
+    }
+
+    // Cutting is gated by the machine: from `booked` (no time-out) this
+    // transition raises. Wrong-site surgery's defense, made structural.
+    on incise(op: String) {
+        let r = try { transition(op, "incision") }
+        if r.error != () {
+            return map("ok", false, "reason", "NO time-out — incision blocked: {r.error}")
+        }
+        return map("ok", true, "state", get_status(op))
+    }
+
+    on recover_sponge(op: String) {
+        let cur = recovered.get(op) ?? 0
+        recovered.set(op, cur + 1)
+        return map("ok", true, "recovered", cur + 1)
+    }
+
+    // Close ONLY if the count reconciles. The retained-object defense:
+    // sponges out must equal sponges in, or the count_correct transition
+    // is never attempted and closing is impossible.
+    on close(op: String) {
+        let inn = placed.get(op) ?? 0
+        let out = recovered.get(op) ?? 0
+        if out != inn {
+            return map("ok", false, "reason",
+                "COUNT MISMATCH: {out} recovered of {inn} — object retained")
+        }
+        let c = try { transition(op, "count_correct") }
+        if c.error != () { return map("ok", false, "reason", "{c.error}") }
+        transition(op, "closed")
+        return map("ok", true, "state", get_status(op))
+    }
+
+    on op_state(op: String) { return get_status(op) }
+    on sponges_out(op: String) { return recovered.get(op) ?? 0 }
+
+    on demo() {
+        book("knee-L", 2)
+        let early = incise("knee-L")           // REFUSED — no time-out yet
+        timeout("knee-L")
+        incise("knee-L")
+        recover_sponge("knee-L")
+        let short = close("knee-L")            // REFUSED — 1 of 2 recovered
+        recover_sponge("knee-L")
+        let done = close("knee-L")             // count reconciles — close
+        print("incise early: {early}")
+        print("close short:  {short}")
+        print("close done:   {done}")
+        return "demo done"
+    }
+}
+
+cell test SurgeryTests {
+    rules {
+        // the happy path: book -> timeout -> incise -> count -> close
+        assert book("a", 1).ok == true
+        assert_fails transition("a", "incision")       // no cutting before time-out
+        assert timeout("a").ok == true
+        assert incise("a").ok == true
+        assert close("a").ok == false                  // 0 of 1 recovered
+        assert recover_sponge("a").ok == true
+        assert close("a").ok == true
+        assert op_state("a") == "closed"
+
+        // closed is terminal — no re-opening, no second incision
+        assert_fails transition("a", "incision")
+        assert_fails transition("a", "timeout_done")
+
+        // the count slot itself refuses an impossible value
+        assert book("b", 3).ok == true
+        assert_fails placed.set("b", -1)
+        assert_fails recovered.set("b", 9999)
+    }
+}

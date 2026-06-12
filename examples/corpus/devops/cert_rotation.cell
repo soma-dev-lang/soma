@@ -1,0 +1,107 @@
+// ============================================================================
+// CERT ROTATION — expiry is an escalation ladder, not a surprise
+// ============================================================================
+//
+// On December 6, 2018, an expired certificate inside Ericsson's SGSN
+// software took mobile data down for 32 million O2 users in the UK and
+// millions more on SoftBank in Japan. In February 2020, Microsoft Teams
+// went down worldwide because an auth certificate simply lapsed. Nobody
+// "decided" to let them expire — the deadline just never escalated.
+//
+// This controller makes expiry a one-way ladder the verifier checks:
+// valid -> renewal_due -> critical -> expired, with rotation available
+// at every rung BEFORE the fall. Both endings are TERMINAL — an expired
+// cert can never quietly become valid again, and a superseded cert is
+// retired for good. The lifetime ledger enforces the CA/Browser-forum
+// ceiling: no handler can mint a certificate longer than 398 days.
+// ============================================================================
+
+cell CertManager {
+    face {
+        signal issue(cert: String, lifetime_days: Int) -> Map
+        signal escalate(cert: String) -> Map
+        signal rotate(cert: String) -> Map
+        signal can_serve(cert: String) -> Bool
+        signal cert_state(cert: String) -> String
+    }
+
+    memory {
+        lifetime: Map<String, Int> [persistent, consistent]
+        invariant lifetime >= 1 && lifetime <= 398
+    }
+
+    // The ladder only climbs. `expired` and `superseded` are terminal:
+    // the outage state cannot be un-happened, and a rotated-out cert
+    // never returns to service.
+    state cert {
+        initial: valid
+        valid -> renewal_due
+        renewal_due -> critical
+        critical -> expired
+        valid -> superseded
+        renewal_due -> superseded
+        critical -> superseded
+    }
+
+    on issue(cert: String, lifetime_days: Int) {
+        let w = try { lifetime.set(cert, lifetime_days) }
+        if w.error != () {
+            return map("ok", false, "reason", "lifetime outside CA/B limits: {w.error}")
+        }
+        return map("ok", true, "cert", cert, "state", get_status(cert))
+    }
+
+    on escalate(cert: String) {
+        let s = get_status(cert)
+        let next = "renewal_due"
+        if s == "renewal_due" { next = "critical" }
+        if s == "critical" { next = "expired" }
+        let r = try { transition(cert, next) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(cert))
+    }
+
+    on rotate(cert: String) {
+        let r = try { transition(cert, "superseded") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "superseded")
+    }
+
+    on can_serve(cert: String) {
+        let s = get_status(cert)
+        return s == "valid" || s == "renewal_due" || s == "critical"
+    }
+
+    on cert_state(cert: String) {
+        return get_status(cert)
+    }
+}
+
+cell test CertTests {
+    rules {
+        // the CA/B forum wall: no 10-year certs, ever
+        assert issue("api.example", 90).ok == true
+        assert_fails lifetime.set("api.example", 3650)
+        assert_fails lifetime.set("api.example", 0)
+
+        // the ladder climbs one rung at a time — no skipping to expired
+        assert_fails transition("api.example", "expired")
+        assert escalate("api.example").state == "renewal_due"
+        assert escalate("api.example").state == "critical"
+
+        // rotation at the last rung still saves the day
+        assert rotate("api.example").ok == true
+        assert can_serve("api.example") == false
+        // and a superseded cert never returns to service
+        assert_fails transition("api.example", "valid")
+
+        // THE ERICSSON ENDING: nobody rotates. Expired is forever —
+        // there is no quiet path back to valid.
+        assert escalate("sgsn.core").state == "renewal_due"
+        assert escalate("sgsn.core").state == "critical"
+        assert escalate("sgsn.core").state == "expired"
+        assert can_serve("sgsn.core") == false
+        assert_fails transition("sgsn.core", "valid")
+        assert_fails transition("sgsn.core", "superseded")
+    }
+}

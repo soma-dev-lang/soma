@@ -1,0 +1,113 @@
+// ============================================================================
+// STATE LOCK — two concurrent applies can never both hold the lock
+// ============================================================================
+//
+// Terraform's docs put it bluntly: two `apply` runs against the same
+// state file at once will corrupt it. Teams learn this the hard way —
+// CI kicks off a plan while an engineer applies from a laptop, the
+// state JSON is half-written by both, and suddenly Terraform wants to
+// destroy and recreate half of production. HashiCorp added state
+// locking for exactly this; here the lock's mutual exclusion is a
+// proof, not a DynamoDB conditional write you hope is configured.
+//
+// The lock is a state machine: `unlocked -> held -> unlocked`, with a
+// `stale` branch for the crashed-runner case — force-unlock exists,
+// but ONLY from `stale`, never as a shortcut around a live holder.
+// The holder-count ledger is invariant-walled at 0..1: a second holder
+// is a write the memory refuses, independent of the machine.
+// ============================================================================
+
+cell StateLock {
+    face {
+        signal acquire(ws: String, runner: String) -> Map
+        signal release_lock(ws: String) -> Map
+        signal mark_stale(ws: String) -> Map
+        signal force_unlock(ws: String) -> Map
+        signal lock_state(ws: String) -> Map
+    }
+
+    memory {
+        holders: Map<String, Int> [persistent, consistent]
+        invariant holders >= 0 && holders <= 1
+
+        owner: Map<String, String> [persistent, consistent]
+    }
+
+    // force_unlock is only reachable through `stale` — there is no
+    // held -> unlocked side door that skips the release protocol.
+    state tflock {
+        initial: unlocked
+        unlocked -> held
+        held -> unlocked
+        held -> stale
+        stale -> unlocked
+    }
+
+    on acquire(ws: String, runner: String) {
+        let r = try { transition(ws, "held") }
+        if r.error != () {
+            let who = owner.get(ws) ?? "unknown"
+            return map("ok", false, "reason", "lock held by {who}")
+        }
+        let n = holders.get(ws) ?? 0
+        let w = try { holders.set(ws, n + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "second holder refused: {w.error}")
+        }
+        owner.set(ws, runner)
+        return map("ok", true, "holder", runner)
+    }
+
+    on release_lock(ws: String) {
+        let r = try { transition(ws, "unlocked") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        holders.set(ws, 0)
+        owner.set(ws, "")
+        return map("ok", true, "state", "unlocked")
+    }
+
+    on mark_stale(ws: String) {
+        let r = try { transition(ws, "stale") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "stale")
+    }
+
+    on force_unlock(ws: String) {
+        if get_status(ws) != "stale" {
+            return map("ok", false, "reason", "force-unlock only from stale — a live holder is never bulldozed")
+        }
+        transition(ws, "unlocked")
+        holders.set(ws, 0)
+        owner.set(ws, "")
+        return map("ok", true, "state", "unlocked")
+    }
+
+    on lock_state(ws: String) {
+        return map("state", get_status(ws), "owner", owner.get(ws) ?? "")
+    }
+}
+
+cell test MutexTests {
+    rules {
+        // CI takes the lock; the laptop apply is refused
+        assert acquire("prod", "ci-runner-7").ok == true
+        assert acquire("prod", "laptop-jane").ok == false
+        assert lock_state("prod").owner == "ci-runner-7"
+
+        // the second-holder write itself is impossible
+        assert_fails holders.set("prod", 2)
+
+        // a live holder cannot be bulldozed — force path needs `stale`
+        assert force_unlock("prod").ok == false
+        assert_fails transition("prod", "force_released")
+
+        // crashed runner: stale, THEN force-unlock, then life goes on
+        assert mark_stale("prod").ok == true
+        assert force_unlock("prod").ok == true
+        assert acquire("prod", "laptop-jane").ok == true
+        assert release_lock("prod").ok == true
+
+        // an unlocked lock cannot be double-released
+        assert release_lock("prod").ok == false
+    }
+}

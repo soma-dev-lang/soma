@@ -1,0 +1,154 @@
+// ============================================================================
+// BOARD MOTION — Robert's Rules where "no quorum, no vote" is structural
+// ============================================================================
+//
+// Quorum is the oldest anti-capture device in deliberative bodies: a
+// minority that shows up early cannot bind the whole board. It matters
+// enough that in 2011 fourteen Wisconsin state senators fled to Illinois
+// for three weeks SOLELY to deny the chamber a quorum — denying quorum
+// was the only brake left. Corporate law is harsher: board action taken
+// without quorum is void, not voidable. Courts unwind the merger.
+//
+// Here the brake is not a clerk remembering to count the room. The
+// motion lifecycle (Robert's Rules: moved -> seconded -> voted) is a
+// state machine soma verify proves, `passed`/`failed` are terminal so a
+// resolved motion can never be re-voted, and one-director-one-ballot is
+// a MEMORY invariant — the second ballot is refused at the write.
+// ============================================================================
+
+cell Boardroom {
+    face {
+        signal check_in(director: String) -> Map
+        signal present_count() -> Int
+        signal move_motion(id: String, mover: String) -> Map
+        signal second_motion(id: String, seconder: String) -> Map
+        signal call_vote(id: String) -> Map
+        signal cast_ballot(id: String, director: String, aye: Bool) -> Map
+        signal resolve(id: String) -> Map
+    }
+
+    memory {
+        // in the room: 0 or 1 — a director cannot be "present twice"
+        attendance: Map<String, Int> [persistent, consistent]
+        invariant attendance >= 0 && attendance <= 1
+
+        // one director, one ballot per motion — enforced by the MEMORY
+        ballots: Map<String, Int> [persistent, consistent]
+        invariant ballots >= 0 && ballots <= 1
+
+        movers: Map<String, String> [persistent, consistent]
+        ayes: Map<String, Int> [persistent, consistent]
+        invariant ayes >= 0
+        nays: Map<String, Int> [persistent, consistent]
+        invariant nays >= 0
+    }
+
+    // Robert's Rules: nothing is debated or voted until moved AND
+    // seconded. passed/failed are TERMINAL: a resolved motion is history.
+    state motion {
+        initial: drafted
+        drafted -> moved
+        moved -> seconded
+        seconded -> voting
+        voting -> passed
+        voting -> failed
+    }
+
+    on check_in(director: String) {
+        attendance.set(director, 1)
+        return map("ok", true, "present", present_count())
+    }
+
+    on present_count() {
+        let n = 0
+        for d in attendance.keys() { n = n + (attendance.get(d) ?? 0) }
+        return n
+    }
+
+    on move_motion(id: String, mover: String) {
+        let r = try { transition(id, "moved") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        movers.set(id, mover)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on second_motion(id: String, seconder: String) {
+        if movers.get(id) == seconder {
+            return map("ok", false, "reason", "a motion cannot second itself: {seconder} moved it")
+        }
+        let r = try { transition(id, "seconded") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    // THE QUORUM GUARD: a 5-seat board needs 3 in the room to open a vote
+    on call_vote(id: String) {
+        if present_count() < 3 {
+            let p = present_count()
+            return map("ok", false, "reason", "no quorum: {p} of 5 present, need 3")
+        }
+        let r = try { transition(id, "voting") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "voting")
+    }
+
+    on cast_ballot(id: String, director: String, aye: Bool) {
+        if get_status(id) != "voting" {
+            let s = get_status(id)
+            return map("ok", false, "reason", "motion {id} is not open for voting ({s})")
+        }
+        if (attendance.get(director) ?? 0) != 1 {
+            return map("ok", false, "reason", "{director} is not in the room")
+        }
+        // THE WALL: a second ballot writes 2 and the memory refuses it
+        let k = "{id}:{director}"
+        let w = try { ballots.set(k, (ballots.get(k) ?? 0) + 1) }
+        if w.error != () { return map("ok", false, "reason", "{director} already voted on {id}") }
+        if aye { ayes.set(id, (ayes.get(id) ?? 0) + 1) }
+        if !aye { nays.set(id, (nays.get(id) ?? 0) + 1) }
+        return map("ok", true, "director", director)
+    }
+
+    on resolve(id: String) {
+        if get_status(id) != "voting" { return map("ok", false, "reason", "not in voting") }
+        let a = ayes.get(id) ?? 0
+        let n = nays.get(id) ?? 0
+        if a > n { transition(id, "passed") }
+        if a <= n { transition(id, "failed") }
+        return map("ok", true, "state", get_status(id), "ayes", a, "nays", n)
+    }
+}
+
+cell test MotionTests {
+    rules {
+        // moved -> seconded, and a mover cannot second their own motion
+        assert move_motion("m1", "ada").ok == true
+        assert second_motion("m1", "ada").ok == false
+        assert second_motion("m1", "bob").ok == true
+
+        // the vote cannot open without quorum (0 of 5 present)
+        assert call_vote("m1").ok == false
+        assert check_in("ada").ok == true
+        assert check_in("bob").ok == true
+        assert call_vote("m1").ok == false          // 2 of 5: still short
+        assert check_in("cyd").ok == true
+        assert call_vote("m1").ok == true           // 3 of 5: quorum
+
+        // a drafted motion cannot jump straight to voting — no edge exists
+        assert_fails transition("m2", "voting")
+        assert_fails transition("m2", "passed")
+
+        // one director, one ballot: the memory wall
+        assert cast_ballot("m1", "ada", true).ok == true
+        assert cast_ballot("m1", "ada", false).ok == false
+        assert_fails ballots.set("m1:ada", 2)
+        assert cast_ballot("m1", "bob", true).ok == true
+        assert cast_ballot("m1", "zed", true).ok == false   // not in the room
+
+        // resolution is terminal: a passed motion can never be re-voted
+        assert resolve("m1").state == "passed"
+        assert_fails transition("m1", "voting")
+        assert_fails transition("m1", "failed")
+        assert cast_ballot("m1", "cyd", true).ok == false
+    }
+}

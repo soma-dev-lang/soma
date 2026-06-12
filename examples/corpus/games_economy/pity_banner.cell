@@ -1,0 +1,72 @@
+// ============================================================================
+// PITY BANNER — the 90-pull guarantee that cannot be skipped
+// ============================================================================
+// Gacha games promise a "pity timer": a guaranteed top-rarity drop by pull
+// 90. When the counter resets wrongly — and players HAVE caught smaller
+// gachas dropping pity across banner switches, via crowd-sourced drop
+// statistics — it is a consumer-protection violation: people paid for odds
+// they did not get. Here the promise is not in the drop code. The counter
+// lives behind `invariant pity <= 89`: a 90th consecutive miss CANNOT BE
+// STORED. The only write that survives at 89 misses is the reset that
+// arrives together with the guaranteed legendary.
+// ============================================================================
+
+cell Banner {
+    face {
+        signal pull_once(player: String, rolled_legendary: Bool) -> Map
+        signal dry_pulls(player: String, n: Int) -> Int
+        signal pity_of(player: String) -> Int
+        signal legendaries_of(player: String) -> Int
+    }
+
+    memory {
+        pity: Map<String, Int> [persistent, consistent]
+        invariant pity >= 0 && pity <= 89
+        legendary: Map<String, Int> [persistent, consistent]
+        invariant legendary >= 0
+    }
+
+    on pull_once(player: String, rolled_legendary: Bool) {
+        let misses = pity.get(player) ?? 0
+        if rolled_legendary || misses == 89 {
+            // the guarantee: at 89 prior misses the drop is FORCED, because
+            // storing miss number 90 is impossible
+            pity.set(player, 0)
+            legendary.set(player, (legendary.get(player) ?? 0) + 1)
+            return map("ok", true, "rarity", "legendary", "forced", misses == 89)
+        }
+        pity.set(player, misses + 1)
+        return map("ok", true, "rarity", "common", "pity", misses + 1)
+    }
+
+    // n unlucky pulls in a row (rng said no every time); returns the counter
+    on dry_pulls(player: String, n: Int) {
+        for i in range(0, n) { pull_once(player, false) }
+        return pity_of(player)
+    }
+
+    on pity_of(player: String) { return pity.get(player) ?? 0 }
+    on legendaries_of(player: String) { return legendary.get(player) ?? 0 }
+}
+
+cell test BannerTests {
+    rules {
+        // 89 dry pulls: the counter climbs to its ceiling
+        assert dry_pulls("kei", 89) == 89
+        assert legendaries_of("kei") == 0
+        // miss #90 is UNREPRESENTABLE — the ledger refuses the write
+        assert_fails pity.set("kei", 90)
+        // ...so the 90th pull MUST produce the legendary, and reset
+        assert pull_once("kei", false).rarity == "legendary"
+        assert pity_of("kei") == 0
+        // the counter starts climbing again from zero
+        assert pull_once("kei", false).rarity == "common"
+        assert pity_of("kei") == 1
+        assert legendaries_of("kei") == 1
+        // a lucky early roll also resets the counter
+        assert pull_once("kei", true).rarity == "legendary"
+        assert pity_of("kei") == 0
+        assert legendaries_of("kei") == 2
+        assert_fails pity.set("kei", -1)
+    }
+}

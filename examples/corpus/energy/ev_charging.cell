@@ -1,0 +1,123 @@
+// ============================================================================
+// EV CHARGING — no current before the handshake, no session past the cap
+// ============================================================================
+//
+// Two real failure modes, one charging post.
+//
+// 1. Current before negotiation. The J1772/CCS pilot handshake exists so
+//    the cable, the car, and the post agree on a current the weakest link
+//    can carry. Skip it — a bent pin, a counterfeit adapter — and a 16 A
+//    cable carries 48 A until the insulation melts. Garage fires from
+//    uncertified EVSE gear are a documented pattern.
+// 2. Charging past the cell limit. GM's 2021 recall of every Chevy Bolt
+//    came down to defective cells that became dangerous near full charge;
+//    the interim fix was SOFTWARE: cap the session. A cap that lives in
+//    an if-statement is a cap a firmware update can delete.
+//
+// Both are structural here: `charging` is reachable ONLY through
+// `authorized` (the handshake state — soma verify proves it), and the
+// session energy ledger refuses any write past 60 kWh at the memory.
+// ============================================================================
+
+cell ChargePost {
+    face {
+        signal plug_in(session: String) -> Map
+        signal handshake_done(session: String) -> Map
+        signal start_charge(session: String) -> Map
+        signal add_energy(session: String, kwh: Int) -> Map
+        signal stop_charge(session: String) -> Map
+        signal unplug(session: String) -> Map
+        signal session_state(session: String) -> String
+        signal delivered_kwh(session: String) -> Int
+    }
+
+    memory {
+        // kWh delivered this session — the cap is the wall
+        delivered: Map<String, Int> [persistent, consistent]
+        invariant delivered >= 0 && delivered <= 60
+    }
+
+    state session_fsm {
+        initial: idle
+        idle -> plugged            // cable seated, pilot signal present
+        plugged -> authorized      // handshake: current limit + payment agreed
+        authorized -> charging     // contactor closes
+        charging -> finished       // target reached or user stop
+        finished -> idle           // unplug
+    }
+
+    on plug_in(session: String) {
+        let r = try { transition(session, "plugged") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(session))
+    }
+
+    on handshake_done(session: String) {
+        let r = try { transition(session, "authorized") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(session))
+    }
+
+    on start_charge(session: String) {
+        let r = try { transition(session, "charging") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(session))
+    }
+
+    on add_energy(session: String, kwh: Int) {
+        if kwh <= 0 { return map("ok", false, "reason", "energy must be positive") }
+        if get_status(session) != "charging" {
+            return map("ok", false, "reason", "contactor open (state: {get_status(session)})")
+        }
+        let total = delivered_kwh(session) + kwh
+        let w = try { delivered.set(session, total) }
+        if w.error != () {
+            return map("ok", false, "reason", "session cap: {w.error}")
+        }
+        return map("ok", true, "delivered", total)
+    }
+
+    on stop_charge(session: String) {
+        let r = try { transition(session, "finished") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(session))
+    }
+
+    on unplug(session: String) {
+        let r = try { transition(session, "idle") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(session))
+    }
+
+    on session_state(session: String) { return get_status(session) }
+    on delivered_kwh(session: String) { return delivered.get(session) ?? 0 }
+}
+
+cell test ChargeTests {
+    rules {
+        // plug in — but current BEFORE the handshake does not exist
+        assert plug_in("s1").ok == true
+        assert_fails transition("s1", "charging")
+        assert add_energy("s1", 5).ok == false       // contactor stays open
+
+        // handshake, then charge
+        assert handshake_done("s1").ok == true
+        assert start_charge("s1").ok == true
+        assert add_energy("s1", 30).ok == true
+        assert add_energy("s1", 25).ok == true       // 55 kWh
+
+        // the interval that would cross the cap is refused; ledger intact
+        assert add_energy("s1", 10).ok == false      // 55 + 10 > 60
+        assert delivered_kwh("s1") == 55
+
+        // THE WALL itself, with every handler check deleted
+        assert_fails delivered.set("s1", 90)
+        assert_fails delivered.set("s1", -2)
+
+        // orderly finish
+        assert stop_charge("s1").ok == true
+        assert add_energy("s1", 1).ok == false       // no energy after stop
+        assert unplug("s1").ok == true
+        assert session_state("s1") == "idle"
+    }
+}

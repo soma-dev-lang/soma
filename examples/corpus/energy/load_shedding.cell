@@ -1,0 +1,111 @@
+// ============================================================================
+// LOAD SHEDDING — the transformer's nameplate is a wall, hospitals shed last
+// ============================================================================
+//
+// When demand outruns supply, somebody's lights go off — the only question
+// is whose, and whether the choice is made by a priority plan or by a
+// melting transformer. In February 2021, winter storm Uri forced ERCOT to
+// shed 20,000 MW; where rotation plans failed, circuits feeding hospitals
+// and water plants went dark alongside empty offices, and people died of
+// cold. The two properties a shedding controller must keep:
+//
+//   1. The transformer NEVER carries more than nameplate. Here that is a
+//      memory invariant — connecting a feeder that would overload the bank
+//      is rejected at the write, not by an if-statement upstream.
+//   2. Shedding follows priority: interruptible contracts (3) drop before
+//      commercial (2); critical loads (1 — hospitals, water) are never
+//      auto-shed. The shed handler structurally cannot pick a priority-1
+//      feeder.
+// ============================================================================
+
+cell Shedder {
+    face {
+        signal connect_feeder(xf: String, feeder: String, mw: Int, priority: Int) -> Map
+        signal shed_next(xf: String) -> Map
+        signal bank_load(xf: String) -> Int
+    }
+
+    memory {
+        // total MW on each transformer bank — nameplate 100 MVA
+        bank_mw: Map<String, Int> [persistent, consistent]
+        invariant bank_mw >= 0 && bank_mw <= 100
+
+        // "<xf>/<feeder>" -> MW carried
+        feeder_mw: Map<String, Int> [persistent, consistent]
+        invariant feeder_mw >= 0
+
+        // "<xf>/<feeder>" -> 1 critical, 2 commercial, 3 interruptible
+        feeder_pri: Map<String, Int> [persistent, consistent]
+        invariant feeder_pri >= 1 && feeder_pri <= 3
+    }
+
+    on bank_load(xf: String) { return bank_mw.get(xf) ?? 0 }
+
+    on connect_feeder(xf: String, feeder: String, mw: Int, priority: Int) {
+        if mw <= 0 { return map("ok", false, "reason", "feeder load must be positive") }
+        let p = try { feeder_pri.set("{xf}/{feeder}", priority) }
+        if p.error != () { return map("ok", false, "reason", "priority must be 1..3") }
+        let w = try { bank_mw.set(xf, bank_load(xf) + mw) }
+        if w.error != () {
+            feeder_pri.delete("{xf}/{feeder}")
+            return map("ok", false, "reason", "nameplate wall: {w.error}")
+        }
+        feeder_mw.set("{xf}/{feeder}", mw)
+        return map("ok", true, "bank_load", bank_load(xf))
+    }
+
+    on shed_next(xf: String) {
+        // pick the LOWEST-priority connected feeder (highest number).
+        // Priority 1 is structurally unpickable: the filter requires >= 2.
+        let pick = ""
+        let pick_pri = 1
+        for k in feeder_mw.keys() {
+            if starts_with(k, "{xf}/") {
+                let pri = feeder_pri.get(k) ?? 1
+                if pri > pick_pri { pick = k  pick_pri = pri }
+            }
+        }
+        if pick == "" {
+            return map("ok", false, "reason",
+                "only critical load remains on {xf} — automatic shedding stops")
+        }
+        let mw = feeder_mw.get(pick) ?? 0
+        bank_mw.set(xf, bank_load(xf) - mw)
+        feeder_mw.delete(pick)
+        feeder_pri.delete(pick)
+        return map("ok", true, "shed", pick, "mw", mw, "bank_load", bank_load(xf))
+    }
+}
+
+cell test ShedTests {
+    rules {
+        // build the bank: hospital, mall, interruptible smelter contract
+        assert connect_feeder("t1", "hospital", 40, 1).ok == true
+        assert connect_feeder("t1", "mall", 30, 2).ok == true
+        assert connect_feeder("t1", "smelter", 25, 3).ok == true
+        assert bank_load("t1") == 95
+
+        // one more feeder would overload the bank — refused at the write
+        assert connect_feeder("t1", "suburb", 10, 2).ok == false
+        assert bank_load("t1") == 95
+
+        // THE WALL itself: no handler, no overload
+        assert_fails bank_mw.set("t1", 150)
+        assert_fails bank_mw.set("t1", -5)
+
+        // emergency: shed in priority order — interruptible first
+        assert shed_next("t1").shed == "t1/smelter"
+        assert bank_load("t1") == 70
+        // commercial second
+        assert shed_next("t1").shed == "t1/mall"
+        assert bank_load("t1") == 40
+
+        // the hospital is never auto-shed: the picker cannot choose pri 1
+        assert shed_next("t1").ok == false
+        assert bank_load("t1") == 40
+
+        // garbage priorities are rejected by the memory
+        assert_fails feeder_pri.set("t1/x", 0)
+        assert_fails feeder_pri.set("t1/x", 9)
+    }
+}

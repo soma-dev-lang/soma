@@ -1,0 +1,104 @@
+// ============================================================================
+// PARACHUTE SEQUENCE — Genesis: the drogue that never fired
+// ============================================================================
+//
+// On 8 September 2004 the Genesis sample-return capsule hit the Utah
+// desert at 311 km/h. The G-switch that should have sensed deceleration
+// and started the parachute sequence had been installed BACKWARDS — a
+// drawing error that sailed through review. No drogue, no main, just a
+// crater and three years of solar-wind samples shattered. (Its sister
+// design on Stardust, wired correctly, landed perfectly.)
+//
+// The deeper defect: the deploy sequence lived in event timers keyed off
+// one sensor, with nothing structural forcing the order. Here descent is
+// a LINEAR machine — drogue, then main, then touchdown, terminal. Main
+// deployment from entry (a chute shredded at Mach 1.4) does not exist as
+// a transition, touchdown without chutes does not exist as a transition,
+// and the deploy-altitude ledger refuses values outside the corridor.
+// ============================================================================
+
+cell ParachuteSequence {
+    face {
+        signal fire_drogue(id: String, alt_m: Int) -> Map
+        signal fire_main(id: String, alt_m: Int) -> Map
+        signal confirm_touchdown(id: String) -> Map
+        signal descent_phase(id: String) -> String
+    }
+
+    memory {
+        // recorded deploy altitude, meters above ground — the corridor
+        deploy_alt_m: Map<String, Int> [persistent, consistent]
+        invariant deploy_alt_m >= 0 && deploy_alt_m <= 35000
+    }
+
+    // ABSENT: entry_interface -> main_deployed  (main at Mach 1.4 shreds)
+    // ABSENT: entry_interface -> touchdown      (the Genesis crater)
+    state descent {
+        initial: entry_interface
+        entry_interface -> drogue_deployed
+        drogue_deployed -> main_deployed
+        main_deployed -> touchdown        // terminal
+    }
+
+    on fire_drogue(id: String, alt_m: Int) {
+        // drogue corridor: high, supersonic-capable
+        if alt_m < 20000 {
+            return map("ok", false, "reason", "drogue window missed: {alt_m} m is below 20000")
+        }
+        let w = try { deploy_alt_m.set("{id}:drogue", alt_m) }
+        if w.error != () { return map("ok", false, "reason", "altitude outside corridor") }
+        let r = try { transition(id, "drogue_deployed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", get_status(id), "alt", alt_m)
+    }
+
+    on fire_main(id: String, alt_m: Int) {
+        // main corridor: low and slow, under a drogue
+        if alt_m > 8000 {
+            return map("ok", false, "reason", "too fast/high for main: {alt_m} m")
+        }
+        let w = try { deploy_alt_m.set("{id}:main", alt_m) }
+        if w.error != () { return map("ok", false, "reason", "altitude outside corridor") }
+        let r = try { transition(id, "main_deployed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", get_status(id), "alt", alt_m)
+    }
+
+    on confirm_touchdown(id: String) {
+        let r = try { transition(id, "touchdown") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", "touchdown")
+    }
+
+    on descent_phase(id: String) { return get_status(id) }
+}
+
+cell test SequenceTests {
+    rules {
+        // main without drogue: the transition does not exist
+        assert_fails transition("cap1", "main_deployed")
+        assert fire_main("cap1", 6000).ok == false
+
+        // the Genesis impact — touchdown straight from entry — is
+        // equally unrepresentable
+        assert_fails transition("cap1", "touchdown")
+
+        // the correct sequence: drogue high, main low, touchdown
+        assert fire_drogue("cap1", 33000).ok == true
+        assert descent_phase("cap1") == "drogue_deployed"
+        assert fire_main("cap1", 6000).ok == true
+        assert confirm_touchdown("cap1").ok == true
+
+        // touchdown is terminal — no re-entry into the sequence
+        assert_fails transition("cap1", "entry_interface")
+        assert_fails transition("cap1", "drogue_deployed")
+
+        // window gates: a drogue call at main altitude is refused
+        assert fire_drogue("cap2", 5000).ok == false
+        assert descent_phase("cap2") == "entry_interface"
+
+        // the altitude ledger refuses values outside the corridor
+        assert_fails deploy_alt_m.set("cap2:drogue", -50)
+        assert_fails deploy_alt_m.set("cap2:drogue", 90000)
+    }
+}

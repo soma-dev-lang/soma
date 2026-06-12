@@ -1,0 +1,85 @@
+// ============================================================================
+// DOCK DOOR INTERLOCK — the trailer that drives off with the forklift
+// ============================================================================
+//
+// OSHA logs several deaths a year from one warehouse scenario: a driver,
+// thinking loading is done, pulls the trailer away from the dock while a
+// forklift is still crossing the dock plate. The forklift drops through
+// the gap — operators have been crushed under their own machines. The
+// industry fix is a vehicle restraint (a hook that grabs the trailer's
+// rear bar) interlocked with the dock door.
+//
+// In ladder logic that interlock is wiring you hope is right. Here it is
+// a theorem: the door can only be open in the `loading` state, and
+// `loading` is only reachable with the restraint LOCKED. The trailer can
+// only depart from `trailer_at_door` — restraint off, door closed. The
+// state "door open, trailer free to move" does not exist to race into.
+// ============================================================================
+
+cell DockDoor {
+    face {
+        signal trailer_arrives(door: String) -> Map
+        signal lock_restraint(door: String) -> Map
+        signal open_door(door: String) -> Map
+        signal close_door(door: String) -> Map
+        signal release_restraint(door: String) -> Map
+        signal trailer_departs(door: String) -> Map
+        signal door_state(door: String) -> String
+    }
+
+    //   vacant           no trailer, door closed
+    //   trailer_at_door  trailer present, restraint OFF, door closed
+    //   restrained       hook engaged on the rear-impact bar, door closed
+    //   loading          door open — ONLY reachable while restrained
+    state dock {
+        initial: vacant
+        vacant          -> trailer_at_door
+        trailer_at_door -> restrained
+        restrained      -> loading
+        loading         -> restrained        // door closed before unhooking
+        restrained      -> trailer_at_door   // unhook only with door shut
+        trailer_at_door -> vacant            // departure: door shut, hook off
+    }
+
+    on trailer_arrives(door: String) { return move_dock(door, "trailer_at_door") }
+    on lock_restraint(door: String) { return move_dock(door, "restrained") }
+    on open_door(door: String) { return move_dock(door, "loading") }
+    on close_door(door: String) { return move_dock(door, "restrained") }
+    on release_restraint(door: String) { return move_dock(door, "trailer_at_door") }
+    on trailer_departs(door: String) { return move_dock(door, "vacant") }
+
+    on move_dock(door: String, to: String) {
+        let r = try { transition(door, to) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "door", door, "state", to)
+    }
+
+    on door_state(door: String) { return get_status(door) }
+}
+
+cell test RestraintInterlock {
+    rules {
+        // the legal cycle
+        assert trailer_arrives("D4").ok == true
+        assert lock_restraint("D4").ok == true
+        assert open_door("D4").ok == true
+        assert door_state("D4") == "loading"
+
+        // THE KILLER: trailer departs while the door is open and a
+        // forklift is on the plate. From `loading` the only exit closes
+        // the door first — departure raises.
+        assert_fails transition("D4", "vacant")
+        assert_fails transition("D4", "trailer_at_door")
+
+        // you also cannot unhook the restraint with the door open
+        assert close_door("D4").ok == true
+        assert release_restraint("D4").ok == true
+        assert trailer_departs("D4").ok == true
+        assert door_state("D4") == "vacant"
+
+        // and you cannot open the door before the restraint is locked
+        assert trailer_arrives("D7").ok == true
+        assert_fails transition("D7", "loading")
+        assert open_door("D7").ok == false
+    }
+}

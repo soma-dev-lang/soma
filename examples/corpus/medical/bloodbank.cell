@@ -1,0 +1,128 @@
+// ============================================================================
+// BLOOD BANK — an ABO-incompatible transfusion is unrepresentable, and
+// you cannot issue a unit you do not have
+// ============================================================================
+//
+// Acute hemolytic transfusion reaction — giving group A blood to a group
+// O patient — is one of the few transfusion errors that kills within
+// minutes. It is almost always a clerical/lookup error: the wrong unit
+// pulled, a label misread. Every blood bank runs a compatibility check;
+// the failure mode is that it is advisory, a screen a tired tech can
+// click past.
+//
+// Here `issue` REFUSES an incompatible match outright (compatible() is
+// the real ABO/Rh donor→recipient lattice), AND the inventory is a
+// conserved quantity: a unit count can never go negative and you cannot
+// issue from an empty shelf. The stock invariant makes "issued more units
+// than exist" a rejected write, not a reconciliation headache.
+//
+//   soma check examples/corpus/medical/bloodbank.cell
+//   soma test  examples/corpus/medical/bloodbank.cell
+//   soma run   examples/corpus/medical/bloodbank.cell demo
+// ============================================================================
+
+cell BloodBank {
+    face {
+        signal stock(group: String, units: Int) -> Map
+        signal compatible(donor: String, recipient: String) -> Bool
+        signal issue(donor: String, recipient: String) -> Map
+        signal on_hand(group: String) -> Int
+        signal demo() -> String
+    }
+
+    memory {
+        // Units on hand per ABO/Rh group. A conserved quantity: never
+        // negative, capped at a sane shelf size. "Issued a unit we don't
+        // have" becomes a rejected write, not a silent -1.
+        inventory: Map<String, Int> [persistent, consistent]
+        invariant inventory >= 0 && inventory <= 500
+    }
+
+    on stock(group: String, units: Int) {
+        let cur = inventory.get(group) ?? 0
+        let w = try { inventory.set(group, cur + units) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        return map("ok", true, "group", group, "on_hand", cur + units)
+    }
+
+    // The ABO/Rh donor → recipient compatibility lattice. O- is the
+    // universal donor; AB+ the universal recipient. This is the rule a
+    // hemolytic reaction violates — encoded once, checked at issue.
+    on compatible(donor: String, recipient: String) {
+        let table = map(
+            "O-",  list("O-", "O+", "A-", "A+", "B-", "B+", "AB-", "AB+"),
+            "O+",  list("O+", "A+", "B+", "AB+"),
+            "A-",  list("A-", "A+", "AB-", "AB+"),
+            "A+",  list("A+", "AB+"),
+            "B-",  list("B-", "B+", "AB-", "AB+"),
+            "B+",  list("B+", "AB+"),
+            "AB-", list("AB-", "AB+"),
+            "AB+", list("AB+")
+        )
+        let recips = table[donor] ?? list()
+        return any(recips, r => r == recipient)
+    }
+
+    // Issue a unit ONLY if it is ABO-compatible AND in stock. Both walls
+    // must hold; the inventory decrement passes through the conservation
+    // invariant.
+    on issue(donor: String, recipient: String) {
+        let ok = compatible(donor, recipient)
+        if !ok {
+            return map("ok", false, "reason",
+                "INCOMPATIBLE: {donor} -> {recipient} would hemolyze")
+        }
+        let have = inventory.get(donor) ?? 0
+        if have <= 0 {
+            return map("ok", false, "reason", "no {donor} units on hand")
+        }
+        inventory.set(donor, have - 1)
+        return map("ok", true, "donor", donor, "recipient", recipient,
+                   "remaining", have - 1)
+    }
+
+    on on_hand(group: String) {
+        return inventory.get(group) ?? 0
+    }
+
+    on demo() {
+        stock("O-", 3)
+        stock("A+", 2)
+        let safe = issue("O-", "B+")          // universal donor — fine
+        let kill = issue("A+", "O-")          // A into O — REFUSED
+        let compat = compatible("O-", "B+")
+        let left = on_hand("O-")
+        print("compatible O- -> B+: {compat}")
+        print("issue safe:  {safe}")
+        print("issue fatal: {kill}")
+        print("O- on hand:  {left}")
+        return "demo done"
+    }
+}
+
+cell test BloodBankTests {
+    rules {
+        assert stock("O-", 2).ok == true
+        assert stock("A+", 1).ok == true
+
+        // the lattice: universal donor compatible, A->O lethal
+        assert compatible("O-", "AB+") == true
+        assert compatible("A+", "O-") == false
+        assert compatible("B+", "A+") == false
+
+        // a compatible, in-stock issue succeeds and decrements
+        assert issue("O-", "A+").ok == true
+        assert on_hand("O-") == 1
+
+        // the incompatible transfusion is REFUSED
+        assert issue("A+", "O-").ok == false
+
+        // conservation: cannot issue past empty
+        assert issue("O-", "O-").ok == true        // drains last O-
+        assert on_hand("O-") == 0
+        assert issue("O-", "O-").ok == false       // shelf empty
+
+        // the slot itself refuses an impossible negative count
+        assert_fails inventory.set("A+", -1)
+    }
+}

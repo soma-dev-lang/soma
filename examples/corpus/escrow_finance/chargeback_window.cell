@@ -1,0 +1,108 @@
+// ============================================================================
+// CHARGEBACK WINDOW — disputes die at day 120, reversals happen exactly once
+// ============================================================================
+//
+// Card networks give cardholders ~120 days to dispute a charge. Two ways
+// processors lose money here: accepting a dispute after the window (the
+// merchant's funds were already swept as final), and reversing the same
+// charge twice when a manual agent and an automated rule both fire. Both
+// are structural below: `finalized` is terminal so a late dispute has no
+// edge to take, and `reversed`/`upheld` are terminal so a second reversal
+// raises. The merchant ledger refuses negative balances.
+// ============================================================================
+
+cell Chargeback {
+    face {
+        signal capture(id: String, amount: Int) -> Map
+        signal close_window(id: String, day: Int) -> Map
+        signal open_dispute(id: String, day: Int) -> Map
+        signal resolve(id: String, outcome: String) -> Map
+        signal merchant_balance() -> Int
+    }
+
+    memory {
+        merchant: Map<String, Int> [persistent, consistent]
+        invariant merchant >= 0
+        amounts: Map<String, Int> [persistent, consistent]
+        invariant amounts >= 0
+    }
+
+    // finalized, reversed, upheld: all terminal. A finalized charge can
+    // never become disputed; a reversed charge can never reverse again.
+    state charge {
+        initial: authorized
+        authorized -> settled
+        settled -> finalized
+        settled -> disputed
+        disputed -> reversed
+        disputed -> upheld
+    }
+
+    on capture(id: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        if merchant.get("acct") == () { merchant.set("acct", 0) }
+        transition(id, "settled")
+        amounts.set(id, amount)
+        merchant.set("acct", (merchant.get("acct") ?? 0) + amount)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on close_window(id: String, day: Int) {
+        if day <= 120 {
+            return map("ok", false, "reason", "window still open until day 120")
+        }
+        transition(id, "finalized")
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on open_dispute(id: String, day: Int) {
+        if day > 120 {
+            return map("ok", false, "reason", "day {day} is past the 120-day window")
+        }
+        transition(id, "disputed")     // raises if charge already finalized
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on resolve(id: String, outcome: String) {
+        if outcome == "merchant_wins" {
+            transition(id, "upheld")
+            return map("ok", true, "state", "upheld")
+        }
+        transition(id, "reversed")     // money goes back exactly once
+        let amt = amounts.get(id) ?? 0
+        merchant.set("acct", (merchant.get("acct") ?? 0) - amt)
+        return map("ok", true, "state", "reversed", "clawed_back", amt)
+    }
+
+    on merchant_balance() {
+        return merchant.get("acct") ?? 0
+    }
+}
+
+cell test ChargebackTests {
+    rules {
+        assert capture("c1", 300).ok == true
+        assert capture("c2", 200).ok == true
+        assert merchant_balance() == 500
+        // in-window dispute on c1, cardholder wins: money moves back ONCE
+        assert open_dispute("c1", 45).ok == true
+        assert resolve("c1", "cardholder_wins").clawed_back == 300
+        assert merchant_balance() == 200
+        // THE DOUBLE REVERSAL: terminal state, second clawback has no edge
+        assert_fails transition("c1", "reversed")
+        assert_fails transition("c1", "disputed")
+        // c2 survives the window and is finalized
+        assert close_window("c2", 100).ok == false
+        assert close_window("c2", 121).ok == true
+        // THE LATE DISPUTE: day 130 — refused by guard AND by the machine
+        assert open_dispute("c2", 130).ok == false
+        assert_fails transition("c2", "disputed")
+        // the merchant account cannot be driven below zero
+        assert_fails merchant.set("acct", -1)
+        // merchant-wins path is just as final
+        assert capture("c3", 50).ok == true
+        assert open_dispute("c3", 10).ok == true
+        assert resolve("c3", "merchant_wins").ok == true
+        assert_fails transition("c3", "reversed")
+    }
+}

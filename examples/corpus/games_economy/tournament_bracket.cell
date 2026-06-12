@@ -1,0 +1,72 @@
+// ============================================================================
+// TOURNAMENT BRACKET — eliminated means eliminated
+// ============================================================================
+// Online tournament platforms keep having bracket-integrity incidents: an
+// admin "fixes" a reported result and a knocked-out player reappears in the
+// semifinals, or a player skips a round entirely. Fighting-game brackets on
+// early smash.gg/Challonge saw enough of this that audit logs were added.
+// The integrity rule is structural here: ELIMINATION IS PERMANENT, CHAMPION
+// IS FINAL, and the only way into a round is winning the previous one.
+// soma verify proves it: `eliminated` and `champion` have no outgoing edges,
+// and no edge skips a round.
+// ============================================================================
+
+cell Bracket {
+    face {
+        signal record_win(player: String) -> Map
+        signal record_loss(player: String) -> Map
+        signal standing(player: String) -> String
+    }
+
+    state progress {
+        initial: quarterfinal
+        quarterfinal -> semifinal
+        semifinal -> final
+        final -> champion
+        quarterfinal -> eliminated
+        semifinal -> eliminated
+        final -> eliminated
+    }
+
+    on record_win(player: String) {
+        let here = get_status(player)
+        let next = ""
+        if here == "quarterfinal" { next = "semifinal" }
+        if here == "semifinal" { next = "final" }
+        if here == "final" { next = "champion" }
+        if next == "" { return map("ok", false, "reason", "{player} is {here}: no match to win") }
+        transition(player, next)
+        return map("ok", true, "advanced_to", next)
+    }
+
+    on record_loss(player: String) {
+        let r = try { transition(player, "eliminated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on standing(player: String) { return get_status(player) }
+}
+
+cell test BracketTests {
+    rules {
+        // ada wins through every round to the title
+        assert record_win("ada").ok == true
+        assert standing("ada") == "semifinal"
+        assert record_win("ada").ok == true
+        assert record_win("ada").ok == true
+        assert standing("ada") == "champion"
+        // CHAMPION IS TERMINAL — no further matches, no retroactive demotion
+        assert record_win("ada").ok == false
+        assert record_loss("ada").ok == false
+        assert_fails transition("ada", "eliminated")
+        // bob loses in the quarters — elimination is permanent
+        assert record_loss("bob").ok == true
+        assert standing("bob") == "eliminated"
+        assert_fails transition("bob", "semifinal")
+        assert record_win("bob").ok == false
+        // rounds cannot be skipped, even by an admin "fixing" the bracket
+        assert_fails transition("cleo", "final")
+        assert_fails transition("cleo", "champion")
+    }
+}

@@ -1,0 +1,147 @@
+// ============================================================================
+// GRANT MILESTONES — money moves only behind verified work, and only once
+// ============================================================================
+//
+// Milestone-based disbursement is how funders stop the oldest grant
+// fraud there is: draw the full award up front, deliver a report nobody
+// reads, dissolve the entity. GAO audits of federal grant programs keep
+// finding the same two failure modes — funds released ahead of the work,
+// and the same milestone paid twice under slightly different paperwork.
+// Clawing money back after the fact almost never works; the only cheap
+// control is at the moment of disbursement.
+//
+// So that moment is where the walls are. The grant walks a machine —
+// each milestone must be verified before the next opens, soma verify
+// proves there is no path around the order. The escrow balance carries
+// `invariant >= 0` (you cannot disburse money that is not there) and
+// each milestone pays AT MOST ONCE: the duplicate-invoice write is
+// refused by the ledger itself.
+// ============================================================================
+
+cell GrantEscrow {
+    face {
+        signal fund(grant: String, amount: Int) -> Map
+        signal verify_milestone(grant: String) -> Map
+        signal disburse(grant: String, milestone: Int, amount: Int) -> Map
+        signal escrow_left(grant: String) -> Int
+        signal paid_for(grant: String, milestone: Int) -> Int
+    }
+
+    memory {
+        // what remains in escrow — can never go below zero
+        escrow: Map<String, Int> [persistent, consistent]
+        invariant escrow >= 0
+
+        // grant:milestone -> payments made. ONE. The duplicate invoice
+        // for already-paid work is unrepresentable.
+        payouts: Map<String, Int> [persistent, consistent]
+        invariant payouts >= 0 && payouts <= 1
+
+        amounts: Map<String, Int> [persistent, consistent]
+        invariant amounts >= 1
+    }
+
+    // funded -> m1_verified -> m2_verified -> closed (TERMINAL).
+    // Verification is the only way forward; closed grants pay nobody.
+    state grant {
+        initial: awarded
+        awarded -> funded
+        funded -> m1_verified
+        m1_verified -> m2_verified
+        m2_verified -> closed
+    }
+
+    on fund(grant: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "funding must be positive") }
+        let r = try { transition(grant, "funded") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        escrow.set(grant, amount)
+        return map("ok", true, "grant", grant, "escrow", amount)
+    }
+
+    on verify_milestone(grant: String) {
+        let s = get_status(grant)
+        let target = ""
+        if s == "funded" { target = "m1_verified" }
+        if s == "m1_verified" { target = "m2_verified" }
+        if s == "m2_verified" { target = "closed" }
+        if target == "" {
+            return map("ok", false, "reason", "nothing verifiable from state {s}")
+        }
+        transition(grant, target)
+        return map("ok", true, "state", target)
+    }
+
+    on disburse(grant: String, milestone: Int, amount: Int) {
+        let s = get_status(grant)
+        // money follows verified work: milestone N pays only once the
+        // machine has actually passed mN_verified (and the grant is open)
+        let earned = false
+        if milestone == 1 && (s == "m1_verified" || s == "m2_verified") { earned = true }
+        if milestone == 2 && s == "m2_verified" { earned = true }
+        if !earned {
+            return map("ok", false, "reason",
+                "milestone {milestone} is not verified-and-payable from state {s}")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "disbursements are positive") }
+        let left = escrow.get(grant) ?? 0
+        if left < amount {
+            return map("ok", false, "reason", "escrow has {left}; {amount} refused")
+        }
+        // WALL 1: pay each milestone once
+        let k = "{grant}:m{milestone}"
+        let w = try { payouts.set(k, (payouts.get(k) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "milestone {milestone} was already paid")
+        }
+        // WALL 2: even if the check above were deleted, the escrow slot
+        // refuses to go negative
+        let e = try { escrow.set(grant, left - amount) }
+        if e.error != () {
+            return map("ok", false, "reason", "escrow write refused: {e.error}")
+        }
+        amounts.set(k, amount)
+        return map("ok", true, "milestone", milestone, "paid", amount, "left", left - amount)
+    }
+
+    on escrow_left(grant: String) {
+        return escrow.get(grant) ?? 0
+    }
+
+    on paid_for(grant: String, milestone: Int) {
+        return amounts.get("{grant}:m{milestone}") ?? 0
+    }
+}
+
+cell test EscrowTests {
+    rules {
+        // the classic fraud: draw everything before any work is verified
+        assert fund("G-77", 1000).ok == true
+        assert disburse("G-77", 1, 500).ok == false
+        assert disburse("G-77", 2, 500).ok == false
+        assert_fails transition("G-77", "m2_verified")    // no skipping milestone 1
+        assert_fails transition("G-77", "closed")
+
+        // milestone 1 verified — milestone 1 money flows, milestone 2 stays shut
+        assert verify_milestone("G-77").state == "m1_verified"
+        assert disburse("G-77", 2, 500).ok == false
+        assert disburse("G-77", 1, 400).left == 600
+
+        // the duplicate invoice: a second payment for m1 is refused
+        assert disburse("G-77", 1, 400).ok == false
+        assert_fails payouts.set("G-77:m1", 2)
+        assert paid_for("G-77", 1) == 400
+
+        // milestone 2: cannot draw more than the escrow holds
+        assert verify_milestone("G-77").state == "m2_verified"
+        assert disburse("G-77", 2, 900).ok == false       // 900 > 600
+        assert_fails escrow.set("G-77", -300)
+        assert disburse("G-77", 2, 600).left == 0
+
+        // closed is terminal — a finished grant pays nothing, ever again
+        assert verify_milestone("G-77").state == "closed"
+        assert_fails transition("G-77", "funded")
+        assert disburse("G-77", 1, 1).ok == false
+        assert escrow_left("G-77") == 0
+    }
+}

@@ -1,0 +1,78 @@
+// ============================================================================
+// HARVEST NODE — one vein, one yield per respawn cycle
+// ============================================================================
+// "Node duping" in MMO gathering: hit the same ore vein twice inside the
+// lag window before the server marks it empty. Classic WoW's launch had
+// mining nodes yielding to two players at once, and every gathering economy
+// since has fought the same race. Here the race has nowhere to live: the
+// yield IS the transition `ripe -> harvested`, so the second strike in the
+// lag window has no edge to take. Nodes also wear out — `depleted` is
+// terminal (soma verify proves it), killing infinite-respawn farm spots —
+// and the ore ledger can never go negative.
+// ============================================================================
+
+cell Mine {
+    face {
+        signal harvest(node: String, player: String) -> Map
+        signal respawn_node(node: String) -> Map
+        signal retire_node(node: String) -> Map
+        signal ore_of(player: String) -> Int
+        signal node_phase(node: String) -> String
+    }
+
+    memory {
+        ore: Map<String, Int> [persistent, consistent]
+        invariant ore >= 0
+    }
+
+    state node_cycle {
+        initial: ripe
+        ripe -> harvested
+        harvested -> ripe
+        harvested -> depleted
+    }
+
+    on harvest(node: String, player: String) {
+        // the yield is the transition — two harvests need two ripenings
+        let r = try { transition(node, "harvested") }
+        if r.error != () { return map("ok", false, "reason", "node is not ripe") }
+        ore.set(player, (ore.get(player) ?? 0) + 3)
+        return map("ok", true, "ore", ore.get(player))
+    }
+
+    on respawn_node(node: String) {
+        let r = try { transition(node, "ripe") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on retire_node(node: String) {
+        let r = try { transition(node, "depleted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on ore_of(player: String) { return ore.get(player) ?? 0 }
+    on node_phase(node: String) { return get_status(node) }
+}
+
+cell test MineTests {
+    rules {
+        assert harvest("vein-1", "jo").ok == true
+        assert ore_of("jo") == 3
+        // THE LAG-WINDOW DOUBLE-TAP: the second strike has no edge to take
+        assert harvest("vein-1", "kim").ok == false
+        assert ore_of("kim") == 0
+        assert_fails transition("vein-1", "harvested")
+        // after a respawn the vein yields again — exactly once
+        assert respawn_node("vein-1").ok == true
+        assert harvest("vein-1", "kim").ok == true
+        assert ore_of("kim") == 3
+        // a depleted vein is gone forever — no infinite farm spot
+        assert retire_node("vein-1").ok == true
+        assert_fails transition("vein-1", "ripe")
+        assert harvest("vein-1", "jo").ok == false
+        assert respawn_node("vein-1").ok == false
+        assert_fails ore.set("jo", -1)
+    }
+}

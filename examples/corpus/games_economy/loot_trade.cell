@@ -1,0 +1,100 @@
+// ============================================================================
+// LOOT TRADE — an item exists in exactly one inventory, ever
+// ============================================================================
+// Item duplication broke Diablo II's economy so completely that duped
+// Stones of Jordan became the server currency. Most dupes had one shape:
+// a trade that crashed or desynced mid-swap left the item in BOTH
+// inventories. Here that shape is unrepresentable. Ownership is a single
+// registry entry (one item -> one owner), the copy counter is walled at
+// <= 1 by the memory itself — a second copy of an item id CANNOT BE
+// STORED — and a trade is a machine soma verify proves: `executed` and
+// `withdrawn` are terminal, so a completed swap can never replay.
+// ============================================================================
+
+cell TradePost {
+    face {
+        signal mint(item: String, player: String) -> Map
+        signal offer_trade(trade: String, item: String, to_player: String) -> Map
+        signal seal_trade(trade: String) -> Map
+        signal swap(trade: String) -> Map
+        signal owner_of(item: String) -> String
+        signal copies_of(item: String) -> Int
+    }
+
+    memory {
+        copies: Map<String, Int> [persistent, consistent]
+        invariant copies >= 0 && copies <= 1
+        owner: Map<String, String> [persistent, consistent]
+        offer_item: Map<String, String> [persistent, consistent]
+        offer_to: Map<String, String> [persistent, consistent]
+    }
+
+    // proposed -> sealed locks the offer; only a sealed trade executes
+    state trade_flow {
+        initial: proposed
+        proposed -> sealed
+        proposed -> withdrawn
+        sealed -> executed
+    }
+
+    on mint(item: String, player: String) {
+        // THE WALL: a second copy of an existing item id is refused
+        let w = try { copies.set(item, (copies.get(item) ?? 0) + 1) }
+        if w.error != () { return map("ok", false, "reason", "{item} already exists") }
+        owner.set(item, player)
+        return map("ok", true, "item", item, "owner", player)
+    }
+
+    on offer_trade(trade: String, item: String, to_player: String) {
+        if offer_item.get(trade) != () { return map("ok", false, "reason", "trade id in use") }
+        if owner.get(item) == () { return map("ok", false, "reason", "{item} does not exist") }
+        offer_item.set(trade, item)
+        offer_to.set(trade, to_player)
+        return map("ok", true, "trade", trade)
+    }
+
+    on seal_trade(trade: String) {
+        if offer_item.get(trade) == () { return map("ok", false, "reason", "no such offer") }
+        let r = try { transition(trade, "sealed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on swap(trade: String) {
+        let r = try { transition(trade, "executed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let item = offer_item.get(trade)
+        // ONE registry write: the old owner loses the item by the same
+        // assignment that gives it to the new owner. Two inventories holding
+        // it is not a bug to catch — it has no representation.
+        owner.set(item, offer_to.get(trade))
+        return map("ok", true, "item", item, "now_owned_by", owner.get(item))
+    }
+
+    on owner_of(item: String) { return owner.get(item) ?? "" }
+    on copies_of(item: String) { return copies.get(item) ?? 0 }
+}
+
+cell test TradeTests {
+    rules {
+        assert mint("soj", "ada").ok == true
+        assert copies_of("soj") == 1
+        // THE DUPE, attempted head-on: a second copy is unrepresentable
+        assert mint("soj", "eve").ok == false
+        assert_fails copies.set("soj", 2)
+        assert owner_of("soj") == "ada"
+        // a normal trade: offer, seal, swap
+        assert offer_trade("t1", "soj", "bob").ok == true
+        assert seal_trade("t1").ok == true
+        assert_fails transition("t1", "withdrawn")     // sealed offers can't vanish
+        assert swap("t1").ok == true
+        assert owner_of("soj") == "bob"
+        assert copies_of("soj") == 1
+        // EXECUTED IS TERMINAL — a desync cannot re-run the swap
+        assert swap("t1").ok == false
+        assert_fails transition("t1", "sealed")
+        // you cannot seal a trade for an item that does not exist
+        assert offer_trade("t2", "ghost-blade", "eve").ok == false
+        assert swap("t2").ok == false
+    }
+}

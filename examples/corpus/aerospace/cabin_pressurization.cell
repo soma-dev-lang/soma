@@ -1,0 +1,105 @@
+// ============================================================================
+// CABIN PRESSURIZATION — Helios 522: the manual-mode takeoff, unrepresentable
+// ============================================================================
+//
+// On 14 August 2005, Helios Airways Flight 522 took off from Larnaca with
+// the pressurization mode selector still in MANUAL — left there after an
+// overnight maintenance leak check. The cabin never pressurized. As the
+// 737 climbed, the cabin altitude climbed with it; the warning horn was
+// mistaken for the takeoff-config horn; the crew lost consciousness from
+// hypoxia, and 121 people died when the aircraft ran out of fuel.
+//
+// The failure was a MODE that survived a phase change: maintenance state
+// leaked into flight state. Here those phases are one machine. The only
+// path to airborne goes THROUGH auto_verified — the checklist step where
+// the selector is confirmed in AUTO. From manual_maint there is no edge
+// to airborne at all. And the cabin-altitude ledger refuses to record a
+// hypoxic cabin: the controller's setpoint cannot leave the safe band.
+// ============================================================================
+
+cell CabinPressure {
+    face {
+        signal enter_maintenance(id: String) -> Map
+        signal restore_auto(id: String) -> Map
+        signal confirm_auto(id: String) -> Map
+        signal takeoff(id: String) -> Map
+        signal set_cabin_alt(id: String, ft: Int) -> Map
+        signal press_phase(id: String) -> String
+    }
+
+    memory {
+        // cabin altitude setpoint, feet — 8000 is the certification
+        // ceiling for a pressurized cabin; the hypoxic cabin Helios flew
+        // with is not a value this slot can hold
+        cabin_alt_ft: Map<String, Int> [persistent, consistent]
+        invariant cabin_alt_ft >= 0 && cabin_alt_ft <= 8000
+    }
+
+    // ABSENT: manual_maint -> airborne   (the Helios takeoff)
+    // ABSENT: preflight -> airborne      (no takeoff without the check)
+    state pressurization {
+        initial: preflight
+        preflight -> manual_maint     // ground leak check, selector MANUAL
+        manual_maint -> preflight     // selector restored — back to start,
+                                      // the verification must be REDONE
+        preflight -> auto_verified    // checklist: selector confirmed AUTO
+        auto_verified -> airborne
+        airborne -> preflight         // landed: next flight re-verifies
+    }
+
+    on guarded_step(id: String, target: String) {
+        let r = try { transition(id, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", get_status(id))
+    }
+
+    on enter_maintenance(id: String) { return guarded_step(id, "manual_maint") }
+    on restore_auto(id: String)      { return guarded_step(id, "preflight") }
+    on confirm_auto(id: String)      { return guarded_step(id, "auto_verified") }
+
+    on takeoff(id: String) {
+        let r = guarded_step(id, "airborne")
+        if r.ok { cabin_alt_ft.set(id, 8000) }   // cruise cabin altitude
+        return r
+    }
+
+    on set_cabin_alt(id: String, ft: Int) {
+        let w = try { cabin_alt_ft.set(id, ft) }
+        if w.error != () {
+            return map("ok", false, "reason", "cabin altitude {ft} ft is outside the safe band")
+        }
+        return map("ok", true, "cabin_alt", ft)
+    }
+
+    on press_phase(id: String) { return get_status(id) }
+}
+
+cell test PressurizationTests {
+    rules {
+        // THE Helios takeoff: airborne straight out of maintenance mode.
+        // The edge does not exist.
+        assert enter_maintenance("ac1").ok == true
+        assert_fails transition("ac1", "airborne")
+        assert takeoff("ac1").ok == false
+
+        // restoring the selector is NOT enough — verification must rerun
+        assert restore_auto("ac1").ok == true
+        assert_fails transition("ac1", "airborne")
+
+        // only the verified path reaches the air
+        assert confirm_auto("ac1").ok == true
+        assert takeoff("ac1").ok == true
+        assert press_phase("ac1") == "airborne"
+
+        // the hypoxic cabin cannot be recorded as a setpoint:
+        // Helios 522's cabin passed 30000 ft — this slot never will
+        assert_fails cabin_alt_ft.set("ac1", 30000)
+        assert_fails cabin_alt_ft.set("ac1", -100)
+        assert set_cabin_alt("ac1", 14000).ok == false
+        assert set_cabin_alt("ac1", 7500).ok == true
+
+        // after landing, the next departure re-verifies from scratch
+        assert restore_auto("ac1").ok == true
+        assert takeoff("ac1").ok == false
+    }
+}

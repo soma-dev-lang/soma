@@ -1,0 +1,141 @@
+// ============================================================================
+// PRESCRIPTION INTERACTION LOCKOUT — a lethal drug combination is refused
+// at the point of order, not flagged for later
+// ============================================================================
+//
+// Serotonin syndrome (an MAOI plus an SSRI), fatal bleeds (warfarin plus
+// an NSAID), torsade from stacked QT-prolongers — co-prescribing certain
+// drugs can kill. Every CPOE system has an interaction checker; the
+// recurring tragedy is alert fatigue, where the warning is one more
+// dismissible pop-up and the order goes through anyway.
+//
+// Here the active medication list is the source of truth, and `prescribe`
+// REFUSES to add a drug that interacts with anything already on the list —
+// there is no "override" path in the data model, so the dangerous pair
+// never coexists. A bounded count invariant also caps polypharmacy, the
+// independent risk multiplier behind most interaction harm.
+//
+//   soma check examples/corpus/medical/prescription_lockout.cell
+//   soma test  examples/corpus/medical/prescription_lockout.cell
+//   soma run   examples/corpus/medical/prescription_lockout.cell demo
+// ============================================================================
+
+cell Pharmacy {
+    face {
+        signal prescribe(patient: String, drug: String) -> Map
+        signal discontinue(patient: String, drug: String) -> Map
+        signal interacts(a: String, b: String) -> Bool
+        signal active_count(patient: String) -> Int
+        signal demo() -> String
+    }
+
+    memory {
+        // Number of active drugs per patient. Polypharmacy is itself a
+        // hazard; the cap is a hard wall on how many concurrent orders
+        // exist, independent of the pairwise checker.
+        drug_count: Map<String, Int> [persistent, consistent]
+        invariant drug_count >= 0 && drug_count <= 12
+
+        // Active medication list per patient, stored as a joined string.
+        active: Map<String, String> [persistent]
+    }
+
+    // The contraindication table — known dangerous pairs. Symmetric by
+    // construction (we check both orderings at the call site).
+    on interacts(a: String, b: String) {
+        let bad = map(
+            "warfarin",   list("aspirin", "ibuprofen", "naproxen"),
+            "phenelzine", list("fluoxetine", "sertraline", "tramadol"),
+            "fluoxetine", list("phenelzine", "tramadol"),
+            "simvastatin", list("clarithromycin", "itraconazole"),
+            "sildenafil", list("nitroglycerin")
+        )
+        let fwd = bad[a] ?? list()
+        let rev = bad[b] ?? list()
+        let hit_fwd = any(fwd, x => x == b)
+        let hit_rev = any(rev, x => x == a)
+        return hit_fwd || hit_rev
+    }
+
+    on list_for(patient: String) {
+        let s = active.get(patient) ?? ""
+        if s == "" { return list() }
+        return split(s, ",")
+    }
+
+    // Add a drug ONLY if it interacts with nothing currently active. The
+    // refusal is the lockout — no parameter, no flag, lets it through.
+    on prescribe(patient: String, drug: String) {
+        let current = list_for(patient)
+        for d in current {
+            if interacts(d, drug) {
+                return map("ok", false, "reason",
+                    "INTERACTION: {drug} with active {d} — order blocked")
+            }
+        }
+        let n = drug_count.get(patient) ?? 0
+        let w = try { drug_count.set(patient, n + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "polypharmacy cap: {w.error}")
+        }
+        let joined = join(push(current, drug), ",")
+        active.set(patient, joined)
+        return map("ok", true, "drug", drug, "active", n + 1)
+    }
+
+    on discontinue(patient: String, drug: String) {
+        let current = list_for(patient)
+        let kept = filter(current, d => d != drug)
+        if len(kept) == len(current) {
+            return map("ok", false, "reason", "{drug} not on the list")
+        }
+        active.set(patient, join(kept, ","))
+        let n = drug_count.get(patient) ?? 0
+        drug_count.set(patient, n - 1)
+        return map("ok", true, "remaining", len(kept))
+    }
+
+    on active_count(patient: String) {
+        return drug_count.get(patient) ?? 0
+    }
+
+    on demo() {
+        prescribe("pt-1", "warfarin")
+        let danger = prescribe("pt-1", "ibuprofen")   // bleed risk — REFUSED
+        prescribe("pt-1", "metoprolol")               // unrelated — fine
+        discontinue("pt-1", "warfarin")
+        let now_ok = prescribe("pt-1", "ibuprofen")   // safe once warfarin gone
+        let n = active_count("pt-1")
+        print("ibuprofen w/ warfarin: {danger}")
+        print("ibuprofen after stop:  {now_ok}")
+        print("active drugs:          {n}")
+        return "demo done"
+    }
+}
+
+cell test PharmacyTests {
+    rules {
+        // the table is symmetric
+        assert interacts("warfarin", "aspirin") == true
+        assert interacts("aspirin", "warfarin") == true
+        assert interacts("phenelzine", "sertraline") == true
+        assert interacts("metoprolol", "aspirin") == false
+
+        // first order is always fine; the interacting second is REFUSED
+        assert prescribe("p", "warfarin").ok == true
+        assert prescribe("p", "ibuprofen").ok == false   // lockout
+        assert active_count("p") == 1                    // ibuprofen never added
+
+        // a non-interacting drug goes on
+        assert prescribe("p", "lisinopril").ok == true
+        assert active_count("p") == 2
+
+        // discontinue clears the conflict, then the order succeeds
+        assert discontinue("p", "warfarin").ok == true
+        assert prescribe("p", "ibuprofen").ok == true
+
+        // the polypharmacy count can never go out of bounds
+        assert_fails drug_count.set("p", -1)
+        assert_fails drug_count.set("p", 13)
+    }
+}

@@ -1,0 +1,117 @@
+// ============================================================================
+// JURY — strikes are counted by the bench, not by the honor system
+// ============================================================================
+// Curtis Flowers was tried six times; the prosecutor's pattern of striking
+// Black jurors finally reached the Supreme Court (Flowers v. Mississippi,
+// 2019). Peremptory strikes are abusable partly because nothing mechanical
+// stops a side from burning more than its allotment — the count lives in a
+// clerk's margin notes. Here 28 U.S.C. § 1870's three peremptory challenges
+// per side is a memory invariant: the fourth strike is refused at the write.
+// A juror can be seated at most once, and a sworn panel is terminal — soma
+// verify proves no one reshuffles the box after jeopardy attaches.
+// ============================================================================
+
+cell JurySelection {
+    face {
+        signal seat_juror(juror: String) -> Map
+        signal peremptory_strike(side: String, juror: String) -> Map
+        signal swear_panel() -> Map
+        signal seated_count() -> Int
+        signal strikes_used(side: String) -> Int
+        signal phase() -> String
+    }
+
+    memory {
+        // juror -> times seated. Seating someone twice is unrepresentable.
+        seated: Map<String, Int> [persistent, consistent]
+        invariant seated >= 0 && seated <= 1
+
+        // side -> peremptory strikes burned. The fourth does not exist.
+        strikes: Map<String, Int> [persistent, consistent]
+        invariant strikes >= 0 && strikes <= 3
+    }
+
+    // sworn has no exit: once the panel is sworn, jeopardy attaches.
+    state panel {
+        initial: voir_dire
+        voir_dire -> sworn
+    }
+
+    on phase() { return get_status("panel") }
+
+    on seat_juror(juror: String) {
+        if phase() != "voir_dire" {
+            return map("ok", false, "reason", "panel is {phase()}")
+        }
+        let prior = seated.get(juror) ?? 0
+        let w = try { seated.set(juror, prior + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{juror} already in the box")
+        }
+        return map("ok", true, "juror", juror, "seated", seated_count())
+    }
+
+    on peremptory_strike(side: String, juror: String) {
+        if phase() != "voir_dire" {
+            return map("ok", false, "reason", "panel is {phase()}")
+        }
+        if (seated.get(juror) ?? 0) == 0 {
+            return map("ok", false, "reason", "{juror} is not in the box")
+        }
+        let used = strikes.get(side) ?? 0
+        // THE WALL: strike four refuses, whatever the lawyer argues.
+        let w = try { strikes.set(side, used + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{side} has no peremptories left")
+        }
+        seated.set(juror, 0)
+        return map("ok", true, "struck", juror, "used", used + 1)
+    }
+
+    on swear_panel() {
+        if seated_count() < 6 {
+            return map("ok", false, "reason", "panel short: {seated_count()} of 6")
+        }
+        let r = try { transition("panel", "sworn") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "jurors", seated_count())
+    }
+
+    on seated_count() {
+        let names = seated.keys()
+        let n = 0
+        for j in names { n = n + (seated.get(j) ?? 0) }
+        return n
+    }
+
+    on strikes_used(side: String) { return strikes.get(side) ?? 0 }
+}
+
+cell test JuryTests {
+    rules {
+        assert seat_juror("j1").ok == true
+        assert seat_juror("j1").ok == false               // one seat per juror
+        assert_fails seated.set("j1", 2)                  // unrepresentable
+        assert seat_juror("j2").ok == true
+        assert seat_juror("j3").ok == true
+        assert seat_juror("j4").ok == true
+        // the defense burns its three peremptories...
+        assert peremptory_strike("defense", "j2").ok == true
+        assert peremptory_strike("defense", "j3").ok == true
+        assert peremptory_strike("defense", "j4").ok == true
+        // ...and the fourth strike does not exist
+        assert peremptory_strike("defense", "j1").ok == false
+        assert_fails strikes.set("defense", 4)
+        assert seated_count() == 1                        // j1 survived
+        assert swear_panel().ok == false                  // panel short of six
+        assert seat_juror("j5").ok == true
+        assert seat_juror("j6").ok == true
+        assert seat_juror("j7").ok == true
+        assert seat_juror("j8").ok == true
+        assert seat_juror("j9").ok == true
+        assert swear_panel().ok == true
+        assert seat_juror("j10").ok == false              // box is sealed
+        assert peremptory_strike("state", "j1").ok == false
+        assert_fails transition("panel", "voir_dire")     // jeopardy attached
+    }
+}

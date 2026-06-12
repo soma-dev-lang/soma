@@ -1,0 +1,147 @@
+// ============================================================================
+// DIALYSIS — fluid removal is capped, and a session always ends with the
+// patient reconnected to their own blood
+// ============================================================================
+//
+// In hemodialysis the machine pulls a patient's blood through a filter and
+// returns it, removing excess fluid (ultrafiltration) along the way. Two
+// ways it harms: removing too much fluid too fast crashes blood pressure
+// (intradialytic hypotension — nausea, cramps, cardiac arrest in the
+// frail); and a session ABORTED without rinse-back strands the patient's
+// blood in the extracorporeal circuit — a real loss of ~200+ mL.
+//
+// Here the ultrafiltration total is a bounded ledger: it can never exceed
+// the prescribed fluid removal goal, enforced by the memory invariant —
+// the pump cannot pull more than the body can spare. And the session
+// machine has NO path from `running` straight to `complete`: it must pass
+// through `rinse_back`, so the blood is always returned. `soma verify`
+// proves that path is the only way to finish.
+//
+//   soma verify examples/corpus/medical/dialysis.cell
+//   soma test   examples/corpus/medical/dialysis.cell
+//   soma run    examples/corpus/medical/dialysis.cell demo
+// ============================================================================
+
+cell Dialysis {
+    face {
+        signal begin(session: String, goal_ml: Int) -> Map
+        signal ultrafiltrate(session: String, ml: Int) -> Map
+        signal rinse_back(session: String) -> Map
+        signal finish(session: String) -> Map
+        signal removed(session: String) -> Int
+        signal session_state(session: String) -> String
+        signal demo() -> String
+    }
+
+    memory {
+        // Cumulative fluid removed, in mL. The hard ceiling is the safe
+        // ultrafiltration envelope; the pump physically cannot be told to
+        // exceed it because the ledger refuses the write.
+        uf_total: Map<String, Int> [persistent, consistent]
+        invariant uf_total >= 0 && uf_total <= 5000
+
+        // Per-session prescribed goal.
+        uf_goal: Map<String, Int> [persistent, consistent]
+        invariant uf_goal >= 0 && uf_goal <= 5000
+    }
+
+    // A session must end through `rinse_back` — there is no running ->
+    // complete edge. The blood is always returned. `complete` is terminal.
+    state session {
+        initial: prepped
+        prepped    -> running
+        running    -> running          // each UF increment
+        running    -> rinse_back       // returning the patient's blood
+        rinse_back -> complete         // safe end — terminal
+    }
+
+    on begin(session: String, goal_ml: Int) {
+        let w = try { uf_goal.set(session, goal_ml) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        uf_total.set(session, 0)
+        let r = try { transition(session, "running") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "goal", goal_ml, "state", get_status(session))
+    }
+
+    // Remove fluid in increments. Refused past the prescribed goal AND, as
+    // an independent wall, refused by the ledger past the 5 L safety cap.
+    on ultrafiltrate(session: String, ml: Int) {
+        let st = get_status(session)
+        if st != "running" {
+            return map("ok", false, "reason", "session is {st}, not running")
+        }
+        if ml <= 0 { return map("ok", false, "reason", "removal must be positive") }
+        let sofar = uf_total.get(session) ?? 0
+        let goal = uf_goal.get(session) ?? 0
+        if sofar + ml > goal {
+            return map("ok", false, "reason",
+                "would exceed UF goal: {sofar} + {ml} > {goal} mL")
+        }
+        let w = try { uf_total.set(session, sofar + ml) }
+        if w.error != () { return map("ok", false, "reason", "ledger refused: {w.error}") }
+        transition(session, "running")
+        return map("ok", true, "removed", sofar + ml, "goal", goal)
+    }
+
+    on rinse_back(session: String) {
+        let r = try { transition(session, "rinse_back") }
+        if r.error != () {
+            return map("ok", false, "reason", "cannot rinse back: {r.error}")
+        }
+        return map("ok", true, "state", get_status(session))
+    }
+
+    // Finishing requires having rinsed back — the machine refuses to
+    // complete a session whose blood is still in the circuit.
+    on finish(session: String) {
+        let r = try { transition(session, "complete") }
+        if r.error != () {
+            return map("ok", false, "reason", "blood not returned: {r.error}")
+        }
+        return map("ok", true, "state", get_status(session))
+    }
+
+    on removed(session: String) { return uf_total.get(session) ?? 0 }
+    on session_state(session: String) { return get_status(session) }
+
+    on demo() {
+        begin("s-1", 2000)
+        ultrafiltrate("s-1", 1500)
+        let over = ultrafiltrate("s-1", 800)   // 1500+800 > 2000 — REFUSED
+        let early = finish("s-1")              // blood not rinsed — REFUSED
+        rinse_back("s-1")
+        let done = finish("s-1")
+        let total = removed("s-1")
+        print("over-pull:  {over}")
+        print("early end:  {early}")
+        print("clean end:  {done}")
+        print("removed mL: {total}")
+        return "demo done"
+    }
+}
+
+cell test DialysisTests {
+    rules {
+        assert begin("a", 1000).ok == true
+        assert ultrafiltrate("a", 600).ok == true
+        assert ultrafiltrate("a", 600).ok == false     // 600+600 > 1000
+        assert removed("a") == 600
+
+        // cannot finish without rinse-back — blood would be stranded
+        assert_fails transition("a", "complete")
+        assert finish("a").ok == false
+        assert rinse_back("a").ok == true
+        assert finish("a").ok == true
+        assert session_state("a") == "complete"
+
+        // complete is terminal — no second run on the same circuit
+        assert_fails transition("a", "running")
+        assert_fails transition("a", "rinse_back")
+
+        // the UF ledger refuses an impossible total even bypassing logic
+        assert begin("b", 3000).ok == true
+        assert_fails uf_total.set("b", 5001)
+        assert_fails uf_total.set("b", -1)
+    }
+}

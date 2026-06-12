@@ -1,0 +1,115 @@
+// ============================================================================
+// DOCKING APPROACH — Progress / Mir 1997: abort means ABORT
+// ============================================================================
+//
+// On 25 June 1997 the uncrewed Progress M-34 freighter, under manual
+// TORU control, came in on Mir too fast and off-axis. The crew saw it
+// late, the braking command came late, and Progress struck the Spektr
+// module — puncturing the station and depressurizing a wing of it. The
+// crew survived by sealing the hatch. The lesson every rendezvous system
+// learned: a bad approach is not "salvaged", it is killed, and the
+// vehicle retreats. You re-plan from scratch.
+//
+// Here the approach is a state machine where ABORTED IS TERMINAL: once
+// an abort fires, there is no edge back to any approach state — a new
+// rendezvous is a new machine instance, with new ground review. The
+// final-approach gate is also a memory invariant: a closing rate above
+// the structural capture limit cannot even be recorded as commanded.
+// ============================================================================
+
+cell DockingApproach {
+    face {
+        signal begin_approach(id: String) -> Map
+        signal go_final(id: String, closing_cm_s: Int) -> Map
+        signal soft_capture(id: String) -> Map
+        signal hard_dock(id: String) -> Map
+        signal abort_approach(id: String) -> Map
+        signal approach_phase(id: String) -> String
+    }
+
+    memory {
+        // commanded closing rate, cm/s — the docking mechanism is rated
+        // to absorb 30; a faster command is refused at the write
+        closing_cm_s: Map<String, Int> [persistent, consistent]
+        invariant closing_cm_s >= 0 && closing_cm_s <= 30
+    }
+
+    // ABSENT: aborted -> anything (abort is terminal)
+    // ABSENT: station_keeping -> soft_capture (no skipping the corridor)
+    state approach {
+        initial: station_keeping
+        station_keeping -> corridor      // enter the approach corridor
+        corridor -> final_approach
+        final_approach -> captured       // soft capture: latches engaged
+        captured -> hard_dock_complete   // terminal: mated, hooks closed
+        corridor -> aborted              // terminal
+        final_approach -> aborted        // terminal
+    }
+
+    on begin_approach(id: String) {
+        let r = try { transition(id, "corridor") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", get_status(id))
+    }
+
+    on go_final(id: String, closing_cm_s_v: Int) {
+        // the rate wall: even a confused operator cannot command a
+        // closing rate the mechanism cannot absorb
+        let w = try { closing_cm_s.set(id, closing_cm_s_v) }
+        if w.error != () {
+            return map("ok", false, "reason", "closing rate {closing_cm_s_v} cm/s exceeds capture rating")
+        }
+        let r = try { transition(id, "final_approach") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", get_status(id), "rate", closing_cm_s_v)
+    }
+
+    on soft_capture(id: String) {
+        let r = try { transition(id, "captured") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", get_status(id))
+    }
+
+    on hard_dock(id: String) {
+        let r = try { transition(id, "hard_dock_complete") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", get_status(id))
+    }
+
+    on abort_approach(id: String) {
+        let r = try { transition(id, "aborted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", "aborted")
+    }
+
+    on approach_phase(id: String) { return get_status(id) }
+}
+
+cell test DockingTests {
+    rules {
+        // no skipping the corridor: capture from station keeping is absent
+        assert_fails transition("p1", "captured")
+
+        // a Progress-M-34-speed approach cannot even be COMMANDED:
+        // the closing-rate write refuses anything past the rating
+        assert begin_approach("p1").ok == true
+        assert go_final("p1", 120).ok == false
+        assert_fails closing_cm_s.set("p1", 120)
+        assert approach_phase("p1") == "corridor"
+
+        // a sane rate proceeds to capture and hard dock
+        assert go_final("p1", 8).ok == true
+        assert soft_capture("p1").ok == true
+        assert hard_dock("p1").ok == true
+        assert_fails transition("p1", "corridor")      // mated is terminal
+
+        // ABORT IS TERMINAL: a killed approach never creeps back in
+        assert begin_approach("p2").ok == true
+        assert go_final("p2", 12).ok == true
+        assert abort_approach("p2").ok == true
+        assert_fails transition("p2", "final_approach")
+        assert_fails transition("p2", "corridor")
+        assert_fails transition("p2", "captured")
+        assert soft_capture("p2").ok == false
+    }
+}

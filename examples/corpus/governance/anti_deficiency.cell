@@ -1,0 +1,125 @@
+// ============================================================================
+// ANTI-DEFICIENCY — no obligation of funds Congress never appropriated
+// ============================================================================
+//
+// The Anti-Deficiency Act (31 U.S.C. §1341, roots in 1870) exists
+// because 19th-century agencies routinely spent money first and dared
+// Congress to cover the bill — "coercive deficiencies." The Act makes it
+// a federal crime to obligate a dollar in excess of, or in advance of,
+// an appropriation. It is the reason the U.S. government literally shuts
+// down when appropriations lapse: with no enacted appropriation there is
+// no legal way to spend.
+//
+// Both halves are structural here. "In advance of": spending handlers
+// gate on the appropriation's lifecycle, and a LAPSED appropriation is
+// terminal — soma verify proves money cannot flow from it again. "In
+// excess of": the account balance carries `invariant remaining >= 0`,
+// so the overdraft is not an error code — it is a write the memory
+// refuses, and the balance keeps its last lawful value.
+// ============================================================================
+
+cell Treasury {
+    face {
+        signal pass_bill(account: String) -> Map
+        signal enact(account: String, amount: Int) -> Map
+        signal obligate(account: String, purpose: String, amount: Int) -> Map
+        signal lapse(account: String) -> Map
+        signal balance(account: String) -> Int
+    }
+
+    memory {
+        // dollars left in each account. NEVER negative: an obligation
+        // that would overdraw is rejected at the write.
+        remaining: Map<String, Int> [persistent, consistent]
+        invariant remaining >= 0
+
+        obligations: Map<String, Int> [persistent, consistent]
+        invariant obligations >= 1
+    }
+
+    // An appropriation's life. `lapsed` is terminal: fiscal year over,
+    // the authority to spend is gone and cannot be revived in place —
+    // Congress must enact a NEW appropriation (a new account id).
+    state appropriation {
+        initial: drafted
+        drafted -> passed
+        passed -> enacted
+        enacted -> lapsed
+    }
+
+    on pass_bill(account: String) {
+        let r = try { transition(account, "passed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "passed")
+    }
+
+    on enact(account: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "an appropriation is positive") }
+        let r = try { transition(account, "enacted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        remaining.set(account, amount)
+        return map("ok", true, "account", account, "amount", amount)
+    }
+
+    on obligate(account: String, purpose: String, amount: Int) {
+        // "in advance of an appropriation": only an ENACTED account spends
+        if get_status(account) != "enacted" {
+            let s = get_status(account)
+            return map("ok", false, "reason", "no enacted appropriation for {account} ({s})")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "obligations are positive") }
+        // "in excess of an appropriation": THE WALL — a negative balance
+        // is unrepresentable, so the overdraft never happens
+        let left = remaining.get(account) ?? 0
+        let w = try { remaining.set(account, left - amount) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "ADA violation refused: {amount} exceeds remaining {left}")
+        }
+        obligations.set("{account}:{purpose}", amount)
+        return map("ok", true, "purpose", purpose, "remaining", left - amount)
+    }
+
+    on lapse(account: String) {
+        let r = try { transition(account, "lapsed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "lapsed")
+    }
+
+    on balance(account: String) {
+        return remaining.get(account) ?? 0
+    }
+}
+
+cell test AntiDeficiencyTests {
+    rules {
+        // spending in ADVANCE of the appropriation: refused at every stage
+        assert obligate("FY27-OPS", "printers", 100).ok == false
+        assert pass_bill("FY27-OPS").ok == true
+        assert obligate("FY27-OPS", "printers", 100).ok == false  // passed != enacted
+        assert_fails transition("FY27-OPS", "lapsed")             // can't lapse the unenacted
+
+        // enact 1000; lawful obligations draw it down
+        assert enact("FY27-OPS", 1000).ok == true
+        assert obligate("FY27-OPS", "printers", 400).remaining == 600
+        assert obligate("FY27-OPS", "travel", 600).remaining == 0
+
+        // spending in EXCESS: the overdraft is a write the memory refuses
+        assert obligate("FY27-OPS", "party", 1).ok == false
+        assert_fails remaining.set("FY27-OPS", -50)
+        assert balance("FY27-OPS") == 0
+
+        // a phantom $0 obligation cannot even be recorded
+        assert_fails obligations.set("FY27-OPS:ghost", 0)
+
+        // fiscal year ends: lapsed is terminal, the authority is dead
+        assert enact("FY27-RND", 0).ok == false
+        assert pass_bill("FY27-RND").ok == true
+        assert enact("FY27-RND", 500).ok == true
+        assert lapse("FY27-RND").ok == true
+        assert obligate("FY27-RND", "lab", 10).ok == false
+        assert_fails transition("FY27-RND", "enacted")
+        assert_fails transition("FY27-RND", "drafted")
+        assert balance("FY27-RND") == 500                  // unspent, unspendable
+    }
+}

@@ -1,0 +1,112 @@
+// ============================================================================
+// INFUSION PUMP — the programmed rate can never exceed the drug's hard
+// limit ("guardrails")
+// ============================================================================
+//
+// A nurse programming an IV pump types the rate by hand. A misplaced
+// decimal — 250 mL/h instead of 25, or a 10x insulin/heparin overdose —
+// has killed patients; the infamous cases turn on a keypad slip that the
+// pump dutifully obeyed. The fix the industry settled on is a "drug
+// library" with hard maximums (Guardrails): the pump simply REFUSES to run
+// faster than the ceiling for that drug, no override.
+//
+// Here the programmed rate lives in a memory slot whose invariant is the
+// hard guardrail — a write above the maximum (or a negative rate) is
+// rejected and the pump keeps its last safe setting. The cumulative volume
+// infused is a second bounded ledger, so a runaway pump cannot silently
+// deliver more than the bag holds.
+//
+//   soma check examples/corpus/medical/infusion_pump.cell
+//   soma test  examples/corpus/medical/infusion_pump.cell
+//   soma run   examples/corpus/medical/infusion_pump.cell demo
+// ============================================================================
+
+cell InfusionPump {
+    face {
+        signal program(line: String, rate: Int) -> Map
+        signal infuse(line: String, minutes: Int) -> Map
+        signal rate_of(line: String) -> Int
+        signal volume_of(line: String) -> Int
+        signal demo() -> String
+    }
+
+    memory {
+        // Programmed rate in mL/h. The invariant IS the drug-library
+        // guardrail: a keypad slip to 999 mL/h is rejected at the write,
+        // the pump never accepts it. (Demo ceiling: 200 mL/h.)
+        rate: Map<String, Int> [persistent, consistent]
+        invariant rate >= 0 && rate <= 200
+
+        // Cumulative volume infused, mL. Bounded by the bag size — a
+        // runaway total is a rejected write.
+        volume: Map<String, Int> [persistent, consistent]
+        invariant volume >= 0 && volume <= 1000
+    }
+
+    // Program a rate. The guardrail is the invariant; a slip above the
+    // ceiling raises and the previous safe rate stands.
+    on program(line: String, rate_ml_h: Int) {
+        let w = try { rate.set(line, rate_ml_h) }
+        if w.error != () {
+            let cur = rate.get(line) ?? 0
+            return map("ok", false,
+                "reason", "rate {rate_ml_h} mL/h exceeds guardrail — refused",
+                "rate", cur)
+        }
+        return map("ok", true, "rate", rate_ml_h)
+    }
+
+    // Run for some minutes at the programmed rate, adding to the volume
+    // ledger. The ledger refuses to overflow the bag.
+    on infuse(line: String, minutes: Int) {
+        let r = rate.get(line) ?? 0
+        if r == 0 { return map("ok", false, "reason", "no rate programmed") }
+        let added = idiv(r * minutes, 60)
+        let cur = volume.get(line) ?? 0
+        let w = try { volume.set(line, cur + added) }
+        if w.error != () {
+            return map("ok", false, "reason", "bag exhausted — infusion halted: {w.error}",
+                "volume", cur)
+        }
+        return map("ok", true, "added", added, "volume", cur + added)
+    }
+
+    on rate_of(line: String) { return rate.get(line) ?? 0 }
+    on volume_of(line: String) { return volume.get(line) ?? 0 }
+
+    on demo() {
+        program("line-1", 25)                  // intended rate
+        let slip = program("line-1", 250)      // decimal slip — REFUSED
+        infuse("line-1", 60)                   // 25 mL/h for 1h => 25 mL
+        let r = rate_of("line-1")
+        let v = volume_of("line-1")
+        print("decimal slip: {slip}")
+        print("held rate:    {r}")             // still 25, not 250
+        print("infused mL:   {v}")
+        return "demo done"
+    }
+}
+
+cell test InfusionTests {
+    rules {
+        // a safe rate programs and runs
+        assert program("a", 50).ok == true
+        assert rate_of("a") == 50
+        assert infuse("a", 60).ok == true       // 50 mL in an hour
+        assert volume_of("a") == 50
+
+        // the guardrail refuses an over-ceiling rate; the safe rate stands
+        assert program("a", 999).ok == false
+        assert rate_of("a") == 50               // unchanged
+        assert_fails rate.set("a", 201)
+        assert_fails rate.set("a", -10)
+
+        // the volume ledger refuses to overflow the bag
+        assert program("b", 200).ok == true
+        assert_fails volume.set("b", 1001)
+        assert_fails volume.set("b", -1)
+
+        // no rate, no infusion
+        assert infuse("c", 30).ok == false
+    }
+}

@@ -1,0 +1,131 @@
+// ============================================================================
+// PEER REVIEW — double-blind where the blind cannot be lifted early
+// ============================================================================
+//
+// Double-blind review exists because the data says it must: when
+// reviewers see author names, papers from famous labs are accepted at
+// measurably higher rates (the NeurIPS 2014 and 2021 consistency
+// experiments put numbers on how noisy and biased single-blind judging
+// is). The whole mechanism collapses on two failure modes: an author
+// reviewing their own paper under a conflict, and the author's identity
+// leaking to the reviewer BEFORE the decision is locked.
+//
+// Both are structural here. A reviewer/author pair can hold at most one
+// role on a paper — self-review is a write the memory refuses. And
+// `unmasked` is reachable ONLY from `decided`: there is no edge from any
+// pre-decision state to the unmasked world. soma verify proves it.
+// ============================================================================
+
+cell ReviewDesk {
+    face {
+        signal submit_paper(paper: String, author: String) -> Map
+        signal assign_reviewer(paper: String, reviewer: String) -> Map
+        signal decide(paper: String, accept: Bool) -> Map
+        signal lift_blind(paper: String) -> Map
+        signal author_of(paper: String) -> String
+        signal verdict_of(paper: String) -> String
+    }
+
+    memory {
+        // paper:person -> roles held (author or reviewer). A 2 — the
+        // same person on both sides of the blind — is unrepresentable.
+        blind_roles: Map<String, Int> [persistent, consistent]
+        invariant blind_roles >= 0 && blind_roles <= 1
+
+        authors: Map<String, String> [persistent, consistent]
+        verdicts: Map<String, String> [persistent, consistent]
+    }
+
+    // The blind is a place in the machine, not a flag. There is NO edge
+    // from sealed/in_review to unmasked: identity stays behind the
+    // decision. unmasked is terminal — once lifted, the record is final.
+    state blind {
+        initial: sealed
+        sealed -> in_review
+        in_review -> decided
+        decided -> unmasked
+    }
+
+    on submit_paper(paper: String, author: String) {
+        if authors.get(paper) != () {
+            return map("ok", false, "reason", "paper {paper} already submitted")
+        }
+        authors.set(paper, author)
+        blind_roles.set("{paper}:{author}", 1)
+        return map("ok", true, "paper", paper)
+    }
+
+    on assign_reviewer(paper: String, reviewer: String) {
+        if get_status(paper) != "sealed" {
+            let s = get_status(paper)
+            return map("ok", false, "reason", "cannot assign in state {s}")
+        }
+        // THE WALL: if the reviewer wrote the paper, this write is a 2
+        let k = "{paper}:{reviewer}"
+        let w = try { blind_roles.set(k, (blind_roles.get(k) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "conflict: {reviewer} cannot review their own paper")
+        }
+        transition(paper, "in_review")
+        return map("ok", true, "reviewer", reviewer)
+    }
+
+    on decide(paper: String, accept: Bool) {
+        let r = try { transition(paper, "decided") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        if accept { verdicts.set(paper, "accept") }
+        if !accept { verdicts.set(paper, "reject") }
+        return map("ok", true, "verdict", verdicts.get(paper))
+    }
+
+    on lift_blind(paper: String) {
+        let r = try { transition(paper, "unmasked") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "author", authors.get(paper))
+    }
+
+    // identity is served ONLY past the decision — the machine is the gate
+    on author_of(paper: String) {
+        if get_status(paper) != "unmasked" {
+            return "[REDACTED]"
+        }
+        return authors.get(paper) ?? "[unknown]"
+    }
+
+    on verdict_of(paper: String) {
+        return verdicts.get(paper) ?? "pending"
+    }
+}
+
+cell test BlindTests {
+    rules {
+        assert submit_paper("P7", "prof_x").ok == true
+        assert submit_paper("P7", "prof_x").ok == false       // no resubmission
+
+        // self-review: the role ledger cannot hold the 2
+        assert assign_reviewer("P7", "prof_x").ok == false
+        assert_fails blind_roles.set("P7:prof_x", 2)
+        assert get_status("P7") == "sealed"
+
+        // the blind cannot be lifted before a decision — no such edge
+        assert_fails transition("P7", "unmasked")
+        assert author_of("P7") == "[REDACTED]"
+
+        // an honest reviewer goes through; identity still sealed
+        assert assign_reviewer("P7", "dr_y").ok == true
+        assert_fails transition("P7", "unmasked")             // mid-review leak: no edge
+        assert author_of("P7") == "[REDACTED]"
+        assert lift_blind("P7").ok == false
+
+        // decision locks the verdict; only THEN may the blind lift
+        assert decide("P7", true).verdict == "accept"
+        assert author_of("P7") == "[REDACTED]"                // decided != unmasked yet
+        assert lift_blind("P7").ok == true
+        assert author_of("P7") == "prof_x"
+
+        // unmasked is terminal: the record cannot re-enter review
+        assert_fails transition("P7", "in_review")
+        assert_fails transition("P7", "sealed")
+        assert verdict_of("P7") == "accept"
+    }
+}

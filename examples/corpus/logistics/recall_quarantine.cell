@@ -1,0 +1,109 @@
+// ============================================================================
+// RECALL QUARANTINE — the recalled lot that ships anyway
+// ============================================================================
+//
+// The 2008-09 Peanut Corporation of America scandal: lots that TESTED
+// POSITIVE for salmonella were re-tested until a lab said yes, then
+// shipped. Nine people died, 714 fell ill, and the CEO went to prison
+// for 28 years. The enabling failure was procedural: "on hold" was a
+// status field someone could flip back.
+//
+// Here a lot's lifecycle is a verified machine. A recall moves the lot
+// to `quarantined`, and from quarantine the ONLY exits are `destroyed`
+// or `returned_to_supplier` — both TERMINAL. There is no edge back to
+// `sellable`, so no re-test, no override, and no commercial pressure can
+// put a recalled lot back on a truck. soma verify proves the absence.
+// ============================================================================
+
+cell RecallControl {
+    face {
+        signal receive_lot(lot: String, units: Int) -> Map
+        signal release_lot(lot: String) -> Map
+        signal recall_lot(lot: String) -> Map
+        signal destroy_lot(lot: String) -> Map
+        signal return_lot(lot: String) -> Map
+        signal ship_from_lot(lot: String, units: Int) -> Map
+        signal lot_status(lot: String) -> String
+    }
+
+    memory {
+        units_left: Map<String, Int> [persistent, consistent]
+        invariant units_left >= 0
+    }
+
+    // quarantined exits ONLY downward; destroyed/returned are terminal.
+    state lot_flow {
+        initial: received
+        received    -> sellable
+        received    -> quarantined
+        sellable    -> quarantined
+        quarantined -> destroyed
+        quarantined -> returned_to_supplier
+    }
+
+    on receive_lot(lot: String, units: Int) {
+        if units <= 0 { return map("ok", false, "reason", "units must be positive") }
+        units_left.set(lot, units)
+        return map("ok", true, "lot", lot, "units", units)
+    }
+
+    on release_lot(lot: String) { return move_lot(lot, "sellable") }
+    on recall_lot(lot: String) { return move_lot(lot, "quarantined") }
+    on destroy_lot(lot: String) {
+        let r = move_lot(lot, "destroyed")
+        if r.ok { units_left.set(lot, 0) }
+        return r
+    }
+    on return_lot(lot: String) { return move_lot(lot, "returned_to_supplier") }
+
+    on move_lot(lot: String, to: String) {
+        let r = try { transition(lot, to) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "lot", lot, "state", to)
+    }
+
+    on ship_from_lot(lot: String, units: Int) {
+        // the ONLY state that ships is sellable — quarantine is a wall
+        if get_status(lot) != "sellable" {
+            let s = get_status(lot)
+            return map("ok", false, "reason", "lot {lot} is {s}, not sellable")
+        }
+        if units <= 0 { return map("ok", false, "reason", "units must be positive") }
+        let w = try { units_left.set(lot, (units_left.get(lot) ?? 0) - units) }
+        if w.error != () { return map("ok", false, "reason", "insufficient units in lot") }
+        return map("ok", true, "shipped", units, "left", units_left.get(lot))
+    }
+
+    on lot_status(lot: String) { return get_status(lot) }
+}
+
+cell test PcaCannotHappen {
+    rules {
+        // a lot is received, released, and ships normally
+        assert receive_lot("LOT-A", 500).ok == true
+        assert release_lot("LOT-A").ok == true
+        assert ship_from_lot("LOT-A", 100).ok == true
+
+        // salmonella positive: RECALL
+        assert recall_lot("LOT-A").ok == true
+        assert lot_status("LOT-A") == "quarantined"
+
+        // THE PCA MOVE: re-test until friendly, flip back to sellable,
+        // ship. The edge quarantined->sellable does not exist.
+        assert_fails transition("LOT-A", "sellable")
+        assert ship_from_lot("LOT-A", 50).ok == false
+        assert lot_status("LOT-A") == "quarantined"
+
+        // destruction is terminal — a destroyed lot never resurfaces
+        assert destroy_lot("LOT-A").ok == true
+        assert_fails transition("LOT-A", "sellable")
+        assert_fails transition("LOT-A", "quarantined")
+        assert ship_from_lot("LOT-A", 1).ok == false
+
+        // over-shipping a healthy lot is refused by the units ledger
+        assert receive_lot("LOT-B", 10).ok == true
+        assert release_lot("LOT-B").ok == true
+        assert ship_from_lot("LOT-B", 11).ok == false
+        assert_fails units_left.set("LOT-B", -1)
+    }
+}

@@ -1,0 +1,135 @@
+// ============================================================================
+// EMERGENCY SUNSET — extraordinary powers that cannot become ordinary
+// ============================================================================
+//
+// Egypt declared a state of emergency in 1981 after Sadat's
+// assassination. It was "temporarily" renewed, again and again, for
+// THIRTY-ONE YEARS — a whole generation governed under exception. The
+// pattern is universal enough that modern emergency statutes (and the
+// post-2020 reform wave in U.S. states) all converge on the same two
+// teeth: an emergency expires BY ITSELF unless the legislature acts,
+// and the executive cannot renew it indefinitely on its own signature.
+//
+// Both teeth are structural here. A declaration must be confirmed by
+// the legislature before any power is exercised; `expired` is terminal
+// — soma verify proves a lapsed emergency has no path back to life
+// (you must declare a NEW one, in public, with a new confirmation).
+// And the renewal counter carries `invariant <= 2`: the third renewal
+// of the same declaration is a write the statute book refuses.
+// ============================================================================
+
+cell EmergencyAct {
+    face {
+        signal declare(em: String) -> Map
+        signal confirm(em: String, ayes: Int, nays: Int) -> Map
+        signal exercise_power(em: String, order: String) -> Map
+        signal renew(em: String) -> Map
+        signal expire(em: String) -> Map
+        signal renewals_of(em: String) -> Int
+    }
+
+    memory {
+        // declaration -> times renewed. Two renewals, then the machine
+        // forces a fresh public declaration. Egypt-1981 is a 31 the
+        // statute book cannot hold.
+        renewals: Map<String, Int> [persistent, consistent]
+        invariant renewals >= 0 && renewals <= 2
+
+        orders: Map<String, String> [persistent, consistent]
+    }
+
+    // declared -> confirmed -> active; expired is TERMINAL.
+    // No edge runs from expired anywhere: resurrection is impossible.
+    state emergency {
+        initial: declared
+        declared -> confirmed
+        confirmed -> active
+        active -> expired
+        declared -> expired
+    }
+
+    on declare(em: String) {
+        return map("ok", true, "em", em, "state", get_status(em))
+    }
+
+    // the legislature, not the palace, turns the key — simple majority
+    on confirm(em: String, ayes: Int, nays: Int) {
+        if ayes <= nays {
+            let r = try { transition(em, "expired") }
+            if r.error != () { return map("ok", false, "reason", "{r.error}") }
+            return map("ok", false, "reason", "legislature refused: {ayes}-{nays}; declaration dies")
+        }
+        let c = try { transition(em, "confirmed") }
+        if c.error != () { return map("ok", false, "reason", "{c.error}") }
+        transition(em, "active")
+        return map("ok", true, "state", "active")
+    }
+
+    on exercise_power(em: String, order: String) {
+        if get_status(em) != "active" {
+            let s = get_status(em)
+            return map("ok", false, "reason", "no emergency power without an ACTIVE emergency ({s})")
+        }
+        orders.set("{em}:{order}", order)
+        return map("ok", true, "order", order)
+    }
+
+    on renew(em: String) {
+        if get_status(em) != "active" {
+            let s = get_status(em)
+            return map("ok", false, "reason", "only an active emergency renews ({s})")
+        }
+        // THE WALL: renewal number three does not exist
+        let w = try { renewals.set(em, (renewals.get(em) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "{em} has been renewed twice; declare a NEW emergency or stand down")
+        }
+        return map("ok", true, "renewals", renewals.get(em))
+    }
+
+    on expire(em: String) {
+        let r = try { transition(em, "expired") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "expired")
+    }
+
+    on renewals_of(em: String) {
+        return renewals.get(em) ?? 0
+    }
+}
+
+cell test SunsetTests {
+    rules {
+        // a bare declaration confers NOTHING — the legislature must act
+        assert declare("em-1981").ok == true
+        assert exercise_power("em-1981", "curfew").ok == false
+        assert renew("em-1981").ok == false
+        assert_fails transition("em-1981", "active")       // no skipping confirmation
+
+        // confirmed by the chamber: powers flow
+        assert confirm("em-1981", 310, 90).ok == true
+        assert exercise_power("em-1981", "curfew").ok == true
+
+        // two renewals pass; the third is a value the book cannot hold
+        assert renew("em-1981").renewals == 1
+        assert renew("em-1981").renewals == 2
+        assert renew("em-1981").ok == false
+        assert_fails renewals.set("em-1981", 3)
+        assert renewals_of("em-1981") == 2
+
+        // sunset: expired is terminal — no path back, powers go dark
+        assert expire("em-1981").ok == true
+        assert exercise_power("em-1981", "censorship").ok == false
+        assert renew("em-1981").ok == false
+        assert_fails transition("em-1981", "active")
+        assert_fails transition("em-1981", "confirmed")
+        assert_fails transition("em-1981", "declared")
+
+        // a declaration the chamber votes DOWN dies on the spot
+        assert declare("em-2").ok == true
+        assert confirm("em-2", 100, 200).ok == false
+        assert get_status("em-2") == "expired"
+        assert exercise_power("em-2", "anything").ok == false
+    }
+}

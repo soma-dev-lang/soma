@@ -1,0 +1,85 @@
+// MINE HOIST — no motion with the gate open, and a trip is forever.
+// Markham Colliery, 1973: the hoist brake failed and the cage carrying
+// 29 miners ran away down the shaft — 18 dead. Overwind and overspeed
+// arrestors exist because a winder must be STOPPED by hardware, not
+// promised to stop by software. Two structural walls here: the cage can
+// only wind with its gates sealed (`gates_open -> winding` does not
+// exist, and a moving cage cannot open its gates mid-shaft), and the
+// overspeed trip is TERMINAL — soma verify proves `tripped` has no
+// exit, so no command sequence ever winds a tripped hoist again.
+// The speed ledger refuses any value past the 12 m/s arrestor setting.
+
+cell HoistControl {
+    face {
+        signal seal_gates(id: String) -> String
+        signal open_gates(id: String) -> String
+        signal wind(id: String, mps: Int) -> Map
+        signal arrive(id: String) -> String
+        signal overspeed_trip(id: String) -> String
+    }
+
+    memory {
+        // cage speed, m/s — the arrestor setting is the wall
+        cage_mps: Map<String, Int> [persistent, consistent]
+        invariant cage_mps >= 0 && cage_mps <= 12
+    }
+
+    state winder {
+        initial: parked_gates_open
+        parked_gates_open -> parked_sealed
+        parked_sealed -> parked_gates_open
+        parked_sealed -> winding            // motion ONLY behind sealed gates
+        winding -> parked_sealed            // stop first, then unlock
+        winding -> tripped                  // overspeed/overwind: terminal
+    }
+
+    on seal_gates(id: String) { transition(id, "parked_sealed")  return get_status(id) }
+    on open_gates(id: String) { transition(id, "parked_gates_open")  return get_status(id) }
+
+    on wind(id: String, mps: Int) {
+        let r = try { transition(id, "winding") }
+        if r.error != () {
+            return map("ok", false, "reason", "gates not proven sealed")
+        }
+        let w = try { cage_mps.set(id, mps) }
+        if w.error != () {
+            transition(id, "tripped")       // demanding > 12 m/s IS the trip
+            return map("ok", false, "state", get_status(id), "reason", "overspeed demand {mps} m/s")
+        }
+        return map("ok", true, "state", get_status(id), "mps", mps)
+    }
+
+    on arrive(id: String) {
+        cage_mps.set(id, 0)
+        transition(id, "parked_sealed")
+        return get_status(id)
+    }
+
+    on overspeed_trip(id: String) { transition(id, "tripped")  return get_status(id) }
+}
+
+cell test HoistTests {
+    rules {
+        // motion with the gate open: the edge does not exist
+        assert_fails transition("h1", "winding")
+
+        // the legitimate cycle: seal, wind, arrive, unlock
+        assert seal_gates("h1") == "parked_sealed"
+        assert wind("h1", 10).ok == true
+        // a moving cage cannot open its gates mid-shaft
+        assert_fails transition("h1", "parked_gates_open")
+        assert arrive("h1") == "parked_sealed"
+        assert open_gates("h1") == "parked_gates_open"
+
+        // the speed ledger refuses anything past the arrestor
+        assert_fails cage_mps.set("h1", 13)
+        assert_fails cage_mps.set("h1", -1)
+
+        // an overspeed demand trips the winder — PERMANENTLY
+        assert seal_gates("h2") == "parked_sealed"
+        assert wind("h2", 40).ok == false
+        assert_fails transition("h2", "parked_sealed")
+        assert_fails transition("h2", "winding")
+        assert wind("h2", 5).ok == false
+    }
+}

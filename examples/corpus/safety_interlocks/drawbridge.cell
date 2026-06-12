@@ -1,0 +1,84 @@
+// DRAWBRIDGE — the span never moves while the deck is open to traffic.
+// Bascule bridges have killed pedestrians and drivers who were still on
+// the span when it began to rise — tenders raising on a green gate, cars
+// driving around half-lowered barriers. The opening sequence is law:
+// signals stop NEW traffic, gates physically close the deck, and only
+// then may the span move. Here that order is the state machine itself —
+// `traffic_flowing -> span_raised` does not exist, and a raised span has
+// no edge back to traffic without first seating and re-gating. The span
+// angle ledger refuses any value beyond the 75-degree mechanical stop.
+
+cell BridgeControl {
+    face {
+        signal stop_traffic(id: String) -> String
+        signal lower_gates(id: String) -> String
+        signal raise_span(id: String) -> Map
+        signal seat_span(id: String) -> String
+        signal lift_gates(id: String) -> String
+        signal reopen_road(id: String) -> String
+    }
+
+    memory {
+        // span angle in degrees; the rack runs out at 75
+        span_deg: Map<String, Int> [persistent, consistent]
+        invariant span_deg >= 0 && span_deg <= 75
+    }
+
+    state span {
+        initial: traffic_flowing
+        traffic_flowing -> signals_on     // bells + red flashers
+        signals_on -> traffic_flowing     // abort: no vessel after all
+        signals_on -> gates_down          // barriers seal the deck
+        gates_down -> signals_on          // abort before the span moved
+        gates_down -> span_raised         // ONLY now may the leaf move
+        span_raised -> gates_down         // seat + lock before gates lift
+    }
+
+    on stop_traffic(id: String) { transition(id, "signals_on")  return get_status(id) }
+    on lower_gates(id: String)  { transition(id, "gates_down")  return get_status(id) }
+
+    on raise_span(id: String) {
+        let r = try { transition(id, "span_raised") }
+        if r.error != () {
+            return map("ok", false, "reason", "deck not proven closed to traffic")
+        }
+        span_deg.set(id, 72)
+        return map("ok", true, "state", get_status(id), "deg", span_deg.get(id))
+    }
+
+    on seat_span(id: String) {
+        span_deg.set(id, 0)               // leaf seated and locked FIRST
+        transition(id, "gates_down")
+        return get_status(id)
+    }
+
+    on lift_gates(id: String)  { transition(id, "signals_on")  return get_status(id) }
+    on reopen_road(id: String) { transition(id, "traffic_flowing")  return get_status(id) }
+}
+
+cell test BridgeTests {
+    rules {
+        // raising the span onto live traffic: no such edge, twice over
+        assert_fails transition("br1", "span_raised")
+        assert raise_span("br1").ok == false
+
+        // the lawful sequence, in order, no skips
+        assert stop_traffic("br1") == "signals_on"
+        assert_fails transition("br1", "span_raised")   // gates still up
+        assert lower_gates("br1") == "gates_down"
+        assert raise_span("br1").ok == true
+
+        // a raised span cannot jump back to open road
+        assert_fails transition("br1", "traffic_flowing")
+        assert_fails transition("br1", "signals_on")
+
+        // come down the same ladder
+        assert seat_span("br1") == "gates_down"
+        assert lift_gates("br1") == "signals_on"
+        assert reopen_road("br1") == "traffic_flowing"
+
+        // the rack ledger refuses an over-travel or a negative angle
+        assert_fails span_deg.set("br1", 90)
+        assert_fails span_deg.set("br1", -3)
+    }
+}

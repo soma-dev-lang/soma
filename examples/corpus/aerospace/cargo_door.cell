@@ -1,0 +1,115 @@
+// ============================================================================
+// CARGO DOOR — Turkish Airlines 981: "indicated locked" is not LOCKED
+// ============================================================================
+//
+// On 3 March 1974, Turkish Airlines Flight 981 — a DC-10 climbing out of
+// Paris — lost its aft cargo door at 11,500 feet. The latch cams had
+// never gone over-center; a baggage handler had forced the handle and
+// the indicator showed LOCKED anyway. The door blew, the cabin floor
+// collapsed into the cargo hold, and the control cables running through
+// it were severed. All 346 aboard died. Two years earlier the SAME
+// failure over Windsor, Ontario had been survivable — and the fix was
+// made optional.
+//
+// The defect: "locked" was an INDICATION derived from handle position,
+// not a verified state. Here lock verification is a state you can only
+// REACH by actually doing it — the vent-door visual check is the only
+// edge into locked_verified, and pressurization is only reachable FROM
+// locked_verified. A latched-but-unverified door cannot be pressurized:
+// the edge does not exist. Differential pressure is bounded in memory.
+// ============================================================================
+
+cell CargoDoor {
+    face {
+        signal close_door(id: String) -> Map
+        signal latch_door(id: String) -> Map
+        signal verify_lockpins(id: String) -> Map
+        signal pressurize(id: String, psi_diff: Int) -> Map
+        signal reopen(id: String) -> Map
+        signal door_state(id: String) -> String
+    }
+
+    memory {
+        // cabin differential pressure, psi — structural limit 9
+        psi_diff: Map<String, Int> [persistent, consistent]
+        invariant psi_diff >= 0 && psi_diff <= 9
+    }
+
+    // ABSENT: latched -> pressurized_flight  (the THY 981 departure:
+    //         handle stowed, indicator green, cams NOT over-center)
+    // ABSENT: door_closed -> pressurized_flight
+    state door {
+        initial: door_open
+        door_open -> door_closed
+        door_closed -> door_open
+        door_closed -> latched              // handle stowed
+        latched -> door_closed              // unlatch
+        latched -> locked_verified          // vent-door VISUAL check passed
+        locked_verified -> pressurized_flight
+        pressurized_flight -> locked_verified   // descent: diff back to zero
+        locked_verified -> latched              // ground: ready to unlatch
+    }
+
+    on door_step(id: String, target: String) {
+        let r = try { transition(id, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "door", get_status(id))
+    }
+
+    on close_door(id: String)       { return door_step(id, "door_closed") }
+    on latch_door(id: String)       { return door_step(id, "latched") }
+    on verify_lockpins(id: String)  { return door_step(id, "locked_verified") }
+
+    on pressurize(id: String, psi_diff_v: Int) {
+        let w = try { psi_diff.set(id, psi_diff_v) }
+        if w.error != () {
+            return map("ok", false, "reason", "{psi_diff_v} psi exceeds the structural limit")
+        }
+        let r = try { transition(id, "pressurized_flight") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "door", get_status(id), "diff_psi", psi_diff_v)
+    }
+
+    on reopen(id: String) {
+        // only a depressurized, unlatch-ready door can open — each step
+        // back is its own edge; there is no shortcut from flight to open
+        return door_step(id, "door_open")
+    }
+
+    on door_state(id: String) { return get_status(id) }
+}
+
+cell test DoorTests {
+    rules {
+        // THE THY 981 departure: door latched, indicator green, but the
+        // lock pins never verified. Pressurization does not exist here.
+        assert close_door("aft1").ok == true
+        assert latch_door("aft1").ok == true
+        assert_fails transition("aft1", "pressurized_flight")
+        assert pressurize("aft1", 8).ok == false
+        assert door_state("aft1") == "latched"
+
+        // the verified path: visual check, then climb and pressurize
+        assert verify_lockpins("aft1").ok == true
+        assert pressurize("aft1", 8).ok == true
+        assert door_state("aft1") == "pressurized_flight"
+
+        // no opening a pressurized door — the shortcut edges are absent
+        assert_fails transition("aft1", "door_open")
+        assert_fails transition("aft1", "door_closed")
+        assert reopen("aft1").ok == false
+
+        // descend, depressurize, walk back down to open — each step real
+        assert door_step("aft1", "locked_verified").ok == true
+        assert door_step("aft1", "latched").ok == true
+        assert door_step("aft1", "door_closed").ok == true
+        assert reopen("aft1").ok == true
+
+        // an open or merely-closed door can never be pressurized
+        assert_fails transition("aft1", "pressurized_flight")
+
+        // the hull never sees a differential beyond its rating
+        assert_fails psi_diff.set("aft1", 15)
+        assert_fails psi_diff.set("aft1", -2)
+    }
+}

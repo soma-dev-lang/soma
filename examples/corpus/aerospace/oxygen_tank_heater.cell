@@ -1,0 +1,109 @@
+// ============================================================================
+// CRYO TANK HEATER — Apollo 13: the thermostat that welded shut
+// ============================================================================
+//
+// Apollo 13's oxygen tank 2 exploded 200,000 miles from Earth because of
+// a heater interlock that failed YEARS earlier, on the ground. The tank
+// heaters had thermostatic switches rated for 28 volts; a pre-flight
+// detanking test ran them at 65 volts. The contacts welded closed. With
+// the cutoff fused shut, a heater cycle that should have stopped at 80°F
+// ran the tank interior to an estimated 1000°F, baking the Teflon off
+// the fan wiring. In flight, a routine cryo stir sparked the bare wires
+// and the tank blew — "Houston, we've had a problem."
+//
+// The defect was a LIMIT that lived in a relay that could fail welded.
+// Here the limit lives in memory itself: the tank-temperature ledger
+// refuses any write above the thermostat ceiling, so the 1000°F state
+// is unrepresentable no matter what the heater controller commands. An
+// overtemp ATTEMPT trips the heater machine to thermal_lockout — a
+// terminal state that only maintenance (a new instance) escapes.
+// ============================================================================
+
+cell CryoHeater {
+    face {
+        signal heater_on(id: String) -> Map
+        signal heater_off(id: String) -> Map
+        signal drive_temp(id: String, target_f: Int) -> Map
+        signal heater_state(id: String) -> String
+        signal tank_temp(id: String) -> Int
+    }
+
+    memory {
+        // tank internal temperature, °F — the thermostat ceiling is 80;
+        // cryo O2 sits near -340. The welded-contact runaway cannot be
+        // RECORDED, let alone reached.
+        temp_f: Map<String, Int> [persistent, consistent]
+        invariant temp_f >= -340 && temp_f <= 80
+    }
+
+    // ABSENT: any edge out of thermal_lockout — a tripped heater stays
+    // dead until maintenance replaces it (a new machine instance)
+    state heater {
+        initial: heater_off_state
+        heater_off_state -> heating
+        heating -> heater_off_state
+        heating -> thermal_lockout       // terminal
+    }
+
+    on heater_on(id: String) {
+        if temp_f.get(id) == () { temp_f.set(id, -340) }
+        let r = try { transition(id, "heating") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "heater", get_status(id))
+    }
+
+    on heater_off(id: String) {
+        let r = try { transition(id, "heater_off_state") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "heater", get_status(id))
+    }
+
+    on drive_temp(id: String, target_f: Int) {
+        if get_status(id) != "heating" {
+            return map("ok", false, "reason", "heater is not on (state: {get_status(id)})")
+        }
+        // THE WALL: the ledger enforces the thermostat ceiling. Even a
+        // controller with welded relay logic cannot push the tank past
+        // 80°F — the write refuses, and the heater trips to lockout.
+        let w = try { temp_f.set(id, target_f) }
+        if w.error != () {
+            transition(id, "thermal_lockout")
+            return map("ok", false, "reason", "overtemp commanded ({target_f} F) — heater locked out", "heater", get_status(id))
+        }
+        return map("ok", true, "temp_f", target_f, "heater", get_status(id))
+    }
+
+    on heater_state(id: String) { return get_status(id) }
+    on tank_temp(id: String) { return temp_f.get(id) ?? -340 }
+}
+
+cell test HeaterTests {
+    rules {
+        // normal cryo warm-up cycle: -340 toward the working band
+        assert heater_on("o2_tank1").ok == true
+        assert drive_temp("o2_tank1", -100).ok == true
+        assert drive_temp("o2_tank1", 60).ok == true
+        assert heater_off("o2_tank1").ok == true
+
+        // a heater that is off cannot drive temperature at all
+        assert drive_temp("o2_tank1", 70).ok == false
+
+        // THE Apollo 13 ground test: heaters commanded past the
+        // thermostat ceiling. The ledger refuses the write...
+        assert heater_on("o2_tank2").ok == true
+        assert drive_temp("o2_tank2", 1000).ok == false
+        assert tank_temp("o2_tank2") <= 80
+
+        // ...and the heater is now LOCKED OUT, terminally
+        assert heater_state("o2_tank2") == "thermal_lockout"
+        assert_fails transition("o2_tank2", "heating")
+        assert_fails transition("o2_tank2", "heater_off_state")
+        assert heater_on("o2_tank2").ok == false
+
+        // the 1000°F tank is unrepresentable even by direct write,
+        // as is a temperature below liquid-oxygen physics
+        assert_fails temp_f.set("o2_tank2", 1000)
+        assert_fails temp_f.set("o2_tank2", 81)
+        assert_fails temp_f.set("o2_tank2", -500)
+    }
+}

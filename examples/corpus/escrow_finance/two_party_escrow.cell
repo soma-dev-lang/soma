@@ -1,0 +1,116 @@
+// ============================================================================
+// TWO-PARTY ESCROW — funds move only when BOTH sides say so, and never leak
+// ============================================================================
+//
+// Classified-ad escrow fraud works one way: the "escrow agent" releases the
+// buyer's money before the seller delivers, or refunds after releasing —
+// paying the same dollars out twice. The FBI's IC3 logs thousands of these
+// a year. The fix is structural: release/refund are TERMINAL states of one
+// machine (no path back, proven by `soma verify`), release requires both
+// confirmations, and the held ledger refuses negative balances so the same
+// cent cannot leave twice. Conservation (held + paid == funded) is checked
+// on every read.
+// ============================================================================
+
+cell Escrow {
+    face {
+        signal open_escrow(id: String, amount: Int) -> Map
+        signal confirm(id: String, party: String) -> Map
+        signal release_funds(id: String) -> Map
+        signal refund_buyer(id: String) -> Map
+        signal balances(id: String) -> Map
+    }
+
+    memory {
+        // money still in the vault — can never go negative
+        held: Map<String, Int> [persistent, consistent]
+        invariant held >= 0
+        // money that has left (to seller OR back to buyer)
+        paid: Map<String, Int> [persistent, consistent]
+        invariant paid >= 0
+        funded: Map<String, Int> [persistent, consistent]
+        invariant funded >= 0
+        oks: Map<String, Int> [persistent, consistent]
+    }
+
+    // released and refunded are TERMINAL: once money moves, there is no
+    // state that lets it move again. The double-payout has no path.
+    state deal {
+        initial: created
+        created -> funded_state
+        funded_state -> released
+        funded_state -> refunded
+    }
+
+    on open_escrow(id: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "amount must be positive") }
+        transition(id, "funded_state")
+        funded.set(id, amount)
+        held.set(id, amount)
+        paid.set(id, 0)
+        return map("ok", true, "state", get_status(id), "held", amount)
+    }
+
+    on confirm(id: String, party: String) {
+        if party != "buyer" && party != "seller" {
+            return map("ok", false, "reason", "unknown party")
+        }
+        let k = "{id}:{party}"
+        oks.set(k, 1)
+        return map("ok", true, "party", party)
+    }
+
+    on release_funds(id: String) {
+        let b = oks.get("{id}:buyer") ?? 0
+        let s = oks.get("{id}:seller") ?? 0
+        if b != 1 || s != 1 {
+            return map("ok", false, "reason", "need BOTH confirmations (buyer={b} seller={s})")
+        }
+        transition(id, "released")           // raises unless currently funded
+        let amt = held.get(id) ?? 0
+        held.set(id, 0)
+        paid.set(id, amt)
+        return map("ok", true, "state", get_status(id), "paid_to_seller", amt)
+    }
+
+    on refund_buyer(id: String) {
+        transition(id, "refunded")           // raises if already released
+        let amt = held.get(id) ?? 0
+        held.set(id, 0)
+        paid.set(id, amt)
+        return map("ok", true, "state", get_status(id), "refunded", amt)
+    }
+
+    on balances(id: String) {
+        let h = held.get(id) ?? 0
+        let p = paid.get(id) ?? 0
+        let f = funded.get(id) ?? 0
+        return map("held", h, "paid", p, "funded", f, "conserved", h + p == f)
+    }
+}
+
+cell test EscrowTests {
+    rules {
+        assert open_escrow("e1", 500).ok == true
+        // one confirmation is NOT enough to move money
+        assert confirm("e1", "buyer").ok == true
+        assert release_funds("e1").ok == false
+        assert balances("e1").held == 500
+        // the vault cannot be driven negative, even by buggy code
+        assert_fails held.set("e1", -1)
+        // both sides agree -> money moves exactly once
+        assert confirm("e1", "seller").ok == true
+        assert release_funds("e1").ok == true
+        assert balances("e1").held == 0
+        assert balances("e1").paid == 500
+        assert balances("e1").conserved == true
+        // THE FRAUD: refund after release — terminal state, no path
+        assert_fails transition("e1", "refunded")
+        assert_fails transition("e1", "funded_state")
+        // a separate deal can still refund (and then never release)
+        assert open_escrow("e2", 300).ok == true
+        assert refund_buyer("e2").ok == true
+        assert_fails transition("e2", "released")
+        assert balances("e2").conserved == true
+    }
+}

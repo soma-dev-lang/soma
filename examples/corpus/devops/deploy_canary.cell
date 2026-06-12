@@ -1,0 +1,101 @@
+// ============================================================================
+// DEPLOY CANARY — the staged rollout you cannot skip
+// ============================================================================
+//
+// On July 19, 2024, CrowdStrike pushed a content update to every Windows
+// sensor on Earth at once. No canary ring, no staged expansion — 8.5
+// million machines blue-screened, grounding airlines and closing
+// hospitals. The fix that day would have been boring: ship to 1% first.
+//
+// Here "ship to 1% first" is not a policy document. The release machine
+// has NO edge from `built` to `expanding` or `complete` — global blast
+// radius without a canary is unrepresentable, and `soma verify` proves
+// it. A rolled-back release is TERMINAL: you cut a new build, you never
+// re-push the one that burned. The canary slice itself is walled by a
+// memory invariant: a "canary" taking more than 5% of traffic is
+// rejected at the write.
+// ============================================================================
+
+cell DeployPipeline {
+    face {
+        signal start_canary(id: String) -> Map
+        signal promote(id: String) -> Map
+        signal finish(id: String) -> Map
+        signal abort_release(id: String) -> Map
+        signal release_state(id: String) -> String
+    }
+
+    memory {
+        // Percent of traffic a canary may take. >5% is not a canary —
+        // the slot refuses the write no matter what a handler computes.
+        canary_traffic: Map<String, Int> [persistent, consistent]
+        invariant canary_traffic >= 0 && canary_traffic <= 5
+    }
+
+    // No path skips the canary ring. `complete` and `rolled_back` are
+    // terminal: shipped is history, burned is buried.
+    state release {
+        initial: built
+        built -> canary
+        canary -> expanding
+        expanding -> complete
+        canary -> rolled_back
+        expanding -> rolled_back
+    }
+
+    on start_canary(id: String) {
+        let r = try { transition(id, "canary") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        canary_traffic.set(id, 1)
+        return map("ok", true, "stage", get_status(id), "traffic_pct", 1)
+    }
+
+    on promote(id: String) {
+        let r = try { transition(id, "expanding") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "stage", get_status(id))
+    }
+
+    on finish(id: String) {
+        let r = try { transition(id, "complete") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "stage", get_status(id))
+    }
+
+    on abort_release(id: String) {
+        let r = try { transition(id, "rolled_back") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "stage", get_status(id))
+    }
+
+    on release_state(id: String) {
+        return get_status(id)
+    }
+}
+
+cell test PipelineTests {
+    rules {
+        // THE CrowdStrike move: built -> global. The edge does not exist.
+        assert_fails transition("r1", "expanding")
+        assert_fails transition("r1", "complete")
+
+        // the only way forward is through the canary ring
+        assert start_canary("r1").ok == true
+        assert promote("r1").ok == true
+        assert finish("r1").ok == true
+
+        // complete is terminal — a shipped release is history
+        assert_fails transition("r1", "canary")
+        assert_fails transition("r1", "rolled_back")
+
+        // a burned release is buried: rolled_back has no exit
+        assert start_canary("r2").ok == true
+        assert abort_release("r2").ok == true
+        assert_fails transition("r2", "canary")
+        assert_fails transition("r2", "expanding")
+
+        // a "canary" at 40% of traffic is not a canary — memory refuses
+        assert_fails canary_traffic.set("r3", 40)
+        assert canary_traffic.set("r3", 5) == ()
+    }
+}

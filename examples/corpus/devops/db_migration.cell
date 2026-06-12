@@ -1,0 +1,103 @@
+// ============================================================================
+// DB MIGRATION — applied migrations are immutable history
+// ============================================================================
+//
+// Every schema-drift horror story starts the same way: someone edits a
+// migration that already ran in production. Staging replays the edited
+// file, prod keeps the old shape, and three weeks later a column that
+// "must exist" doesn't. Flyway and Liquibase bolt on checksum errors;
+// here immutability is the machine itself: `applied` is a TERMINAL
+// state `soma verify` proves you cannot leave. Undoing means writing a
+// NEW down-migration, never rewriting the past.
+//
+// The second wall is the migrator lock — the GitLab-style disaster of
+// two operators running migrations concurrently is refused by a memory
+// invariant that admits at most one lock holder.
+// ============================================================================
+
+cell Migrator {
+    face {
+        signal start_apply(mig: String) -> Map
+        signal confirm_applied(mig: String) -> Map
+        signal mark_failed(mig: String) -> Map
+        signal retry(mig: String) -> Map
+        signal migration_state(mig: String) -> String
+    }
+
+    memory {
+        // 0 = unlocked, 1 = locked. A second concurrent migrator would
+        // write 2 — the memory refuses it before any DDL runs.
+        lock_holders: Map<String, Int> [persistent, consistent]
+        invariant lock_holders >= 0 && lock_holders <= 1
+    }
+
+    // `applied` has no exit: production history cannot be rewritten.
+    state migration {
+        initial: pending
+        pending -> applying
+        applying -> applied
+        applying -> failed
+        failed -> applying
+    }
+
+    on start_apply(mig: String) {
+        let held = lock_holders.get("schema") ?? 0
+        let w = try { lock_holders.set("schema", held + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "migrator lock is held — refusing concurrent DDL")
+        }
+        let r = try { transition(mig, "applying") }
+        if r.error != () {
+            lock_holders.set("schema", held)
+            return map("ok", false, "reason", "{r.error}")
+        }
+        return map("ok", true, "state", "applying")
+    }
+
+    on confirm_applied(mig: String) {
+        let r = try { transition(mig, "applied") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        lock_holders.set("schema", 0)
+        return map("ok", true, "state", "applied")
+    }
+
+    on mark_failed(mig: String) {
+        let r = try { transition(mig, "failed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        lock_holders.set("schema", 0)
+        return map("ok", true, "state", "failed")
+    }
+
+    on retry(mig: String) {
+        return start_apply(mig)
+    }
+
+    on migration_state(mig: String) {
+        return get_status(mig)
+    }
+}
+
+cell test MigrationTests {
+    rules {
+        // happy path: pending -> applying -> applied
+        assert start_apply("0042_add_orders").ok == true
+
+        // concurrency wall: a second migrator cannot take the lock
+        assert start_apply("0043_add_index").ok == false
+        assert_fails lock_holders.set("schema", 2)
+
+        assert confirm_applied("0042_add_orders").ok == true
+
+        // THE DRIFT MOVE: re-run or rewrite an applied migration.
+        // `applied` is terminal — no edge exists, verify proves it.
+        assert_fails transition("0042_add_orders", "applying")
+        assert_fails transition("0042_add_orders", "pending")
+        assert_fails transition("0042_add_orders", "failed")
+
+        // a failed migration may retry — failure is not terminal
+        assert start_apply("0043_add_index").ok == true
+        assert mark_failed("0043_add_index").ok == true
+        assert retry("0043_add_index").ok == true
+        assert confirm_applied("0043_add_index").ok == true
+    }
+}

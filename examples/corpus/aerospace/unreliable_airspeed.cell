@@ -1,0 +1,104 @@
+// ============================================================================
+// UNRELIABLE AIRSPEED — AF447: the autopilot never flies on bad data
+// ============================================================================
+//
+// On 1 June 2009, Air France 447's pitot tubes iced over in a storm over
+// the Atlantic. The three airspeed channels disagreed; the autopilot
+// dropped out and the flight control law degraded to alternate — with
+// stall protection gone. In the confusion of the handover the crew held
+// the A330 in a stall from 38,000 feet to the ocean. 228 people died.
+//
+// Two structural properties matter, and this controller makes both
+// machine-shaped rather than flag-shaped:
+//
+//   1. There is NO state with the autopilot engaged and degraded data.
+//      The instant the channels split, AP-off and alternate law arrive
+//      as ONE transition — never a half-handover.
+//   2. Alternate law is LATCHED for the remainder of the flight (as on
+//      the real A330): when the pitots thaw and the speeds agree again,
+//      the law does NOT spring back. soma verify proves the latch — the
+//      state is terminal.
+// ============================================================================
+
+cell AirDataLaw {
+    face {
+        signal engage_ap(id: String) -> Map
+        signal ap_off(id: String) -> Map
+        signal airspeed_vote(id: String, a_kt: Int, b_kt: Int, c_kt: Int) -> Map
+        signal law_state(id: String) -> String
+    }
+
+    memory {
+        // last agreed airspeed, knots — the airframe envelope
+        agreed_kt: Map<String, Int> [persistent, consistent]
+        invariant agreed_kt >= 0 && agreed_kt <= 400
+    }
+
+    // ABSENT: any state pairing "engaged" with degraded air data
+    // ABSENT: any edge out of alternate_law_manual (the latch)
+    state control_law {
+        initial: normal_manual
+        normal_manual -> normal_ap
+        normal_ap -> normal_manual          // crew disengages, data still good
+        normal_ap -> alternate_law_manual   // disagree: AP drop + law degrade, ONE step
+        normal_manual -> alternate_law_manual
+    }
+
+    on engage_ap(id: String) {
+        let r = try { transition(id, "normal_ap") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "law", get_status(id))
+    }
+
+    on ap_off(id: String) {
+        let r = try { transition(id, "normal_manual") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "law", get_status(id))
+    }
+
+    on airspeed_vote(id: String, a_kt: Int, b_kt: Int, c_kt: Int) {
+        let hi = max(a_kt, max(b_kt, c_kt))
+        let lo = min(a_kt, min(b_kt, c_kt))
+        if hi - lo > 20 {
+            // channels split: one transition hands over AND degrades.
+            // If already latched, it simply stays latched.
+            if get_status(id) != "alternate_law_manual" {
+                transition(id, "alternate_law_manual")
+            }
+            return map("ok", true, "law", get_status(id), "disagree_kt", hi - lo)
+        }
+        let w = try { agreed_kt.set(id, idiv(a_kt + b_kt + c_kt, 3)) }
+        if w.error != () { return map("ok", false, "reason", "voted speed outside envelope") }
+        return map("ok", true, "law", get_status(id), "agreed_kt", agreed_kt.get(id))
+    }
+
+    on law_state(id: String) { return get_status(id) }
+}
+
+cell test LawTests {
+    rules {
+        // normal cruise: AP engaged, channels agree
+        assert engage_ap("f1").ok == true
+        assert airspeed_vote("f1", 272, 274, 273).law == "normal_ap"
+
+        // THE AF447 moment: pitots ice, channels split by 80 kt —
+        // AP-off and alternate law arrive as ONE transition
+        assert airspeed_vote("f1", 272, 190, 268).law == "alternate_law_manual"
+
+        // the latch: speeds agree again minutes later, but the law
+        // does NOT spring back and the AP CANNOT re-engage
+        assert airspeed_vote("f1", 270, 271, 270).law == "alternate_law_manual"
+        assert_fails transition("f1", "normal_ap")
+        assert_fails transition("f1", "normal_manual")
+        assert engage_ap("f1").ok == false
+
+        // a clean handover on good data is still a normal thing
+        assert engage_ap("f2").ok == true
+        assert ap_off("f2").ok == true
+        assert law_state("f2") == "normal_manual"
+
+        // the envelope ledger: an impossible voted speed is unwritable
+        assert_fails agreed_kt.set("f2", 999)
+        assert_fails agreed_kt.set("f2", -40)
+    }
+}

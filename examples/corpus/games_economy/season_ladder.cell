@@ -1,0 +1,97 @@
+// ============================================================================
+// SEASONAL LADDER — decay you cannot dodge, ratings that cannot underflow
+// ============================================================================
+// Two real ladder failures. One: integer underflow on rating loss minted
+// players with astronomical "unsigned" MMR on early third-party CS ladders.
+// Two: operators quietly editing ARCHIVED seasons, retroactively changing
+// who earned rewards. Here the rating lives behind a 0..3000 memory
+// invariant — no underflow, no injected over-cap — and the season is a
+// machine soma verify proves: gains only while `active`, decay only inside
+// the `decaying` window, and `archived` is terminal. History cannot be
+// edited.
+// ============================================================================
+
+cell Ladder {
+    face {
+        signal open_season() -> Map
+        signal start_decay() -> Map
+        signal archive_season() -> Map
+        signal award_points(player: String, pts: Int) -> Map
+        signal decay_tick(player: String) -> Map
+        signal rating_of(player: String) -> Int
+        signal season_phase() -> String
+    }
+
+    memory {
+        rating: Map<String, Int> [persistent, consistent]
+        invariant rating >= 0 && rating <= 3000
+    }
+
+    state season {
+        initial: preseason
+        preseason -> active
+        active -> decaying
+        decaying -> archived
+    }
+
+    on season_phase() { return get_status("season") }
+
+    on open_season() {
+        let r = try { transition("season", "active") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on award_points(player: String, pts: Int) {
+        if season_phase() != "active" { return map("ok", false, "reason", "season not active") }
+        let w = try { rating.set(player, (rating.get(player) ?? 0) + pts) }
+        if w.error != () { return map("ok", false, "reason", "rating must stay in 0..3000") }
+        return map("ok", true, "rating", rating.get(player))
+    }
+
+    on start_decay() {
+        let r = try { transition("season", "decaying") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on decay_tick(player: String) {
+        if season_phase() != "decaying" { return map("ok", false, "reason", "no decay outside the window") }
+        let cur = rating.get(player) ?? 0
+        rating.set(player, max(0, cur - 100))   // floors at 0 — the invariant agrees
+        return map("ok", true, "rating", rating.get(player))
+    }
+
+    on archive_season() {
+        let r = try { transition("season", "archived") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on rating_of(player: String) { return rating.get(player) ?? 0 }
+}
+
+cell test LadderTests {
+    rules {
+        // no points before the season opens
+        assert award_points("kay", 100).ok == false
+        assert open_season().ok == true
+        assert award_points("kay", 2950).ok == true
+        // over-cap and underflow are unrepresentable
+        assert award_points("kay", 100).ok == false
+        assert rating_of("kay") == 2950
+        assert_fails rating.set("kay", 3001)
+        assert_fails rating.set("kay", -1)
+        // decay runs only inside the decay window, and floors at zero
+        assert decay_tick("kay").ok == false
+        assert start_decay().ok == true
+        assert award_points("kay", 10).ok == false
+        assert decay_tick("kay").ok == true
+        assert rating_of("kay") == 2850
+        // ARCHIVED IS FOREVER — no retroactive season edits
+        assert archive_season().ok == true
+        assert_fails transition("season", "active")
+        assert_fails transition("season", "decaying")
+        assert decay_tick("kay").ok == false
+    }
+}

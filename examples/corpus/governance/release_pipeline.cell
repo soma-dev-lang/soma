@@ -1,0 +1,132 @@
+// ============================================================================
+// RELEASE PIPELINE — "tests pass before deploy" as a theorem, not a habit
+// ============================================================================
+//
+// On August 1, 2012, Knight Capital deployed new trading code to seven
+// of eight production servers. The eighth still ran a dead code path
+// that the new deploy re-activated by reusing its feature flag. In 45
+// minutes Knight bought and sold $7 billion of stock it didn't want and
+// lost $440 million — the firm was sold within the year. The SEC's
+// post-mortem: no enforced deployment process. A human checklist, partly
+// followed.
+//
+// Below, the pipeline is a state machine: production is reachable ONLY
+// through green tests and a human approval, soma verify proves no other
+// path exists, and the deploy ledger lets each build artifact reach
+// production AT MOST ONCE — re-pushing a rolled-back artifact (Knight's
+// exact sin: stale code reactivated) is a write the memory refuses.
+// ============================================================================
+
+cell Pipeline {
+    face {
+        signal record_build(rel: String) -> Map
+        signal report_tests(rel: String, failures: Int) -> Map
+        signal sign_off(rel: String, approver: String) -> Map
+        signal deploy(rel: String) -> Map
+        signal roll_back(rel: String) -> Map
+        signal deploys_of(rel: String) -> Int
+    }
+
+    memory {
+        // artifact -> times deployed to production. AT MOST ONCE:
+        // a rolled-back build cannot crawl back into prod.
+        prod_pushes: Map<String, Int> [persistent, consistent]
+        invariant prod_pushes >= 0 && prod_pushes <= 1
+
+        test_failures: Map<String, Int> [persistent, consistent]
+        invariant test_failures >= 0
+    }
+
+    // rolled_back is TERMINAL: a bad artifact is dead. You cut a new
+    // release; you do not resurrect the old one. soma verify proves
+    // `live` is reachable only through `tested` and `approved`.
+    state release {
+        initial: committed
+        committed -> built
+        built -> tested
+        built -> red
+        tested -> approved
+        approved -> live
+        live -> rolled_back
+        red -> committed
+    }
+
+    on record_build(rel: String) {
+        let r = try { transition(rel, "built") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "built")
+    }
+
+    on report_tests(rel: String, failures: Int) {
+        if get_status(rel) != "built" {
+            let s = get_status(rel)
+            return map("ok", false, "reason", "no build to test (state: {s})")
+        }
+        test_failures.set(rel, failures)
+        if failures == 0 { transition(rel, "tested") }
+        if failures > 0 { transition(rel, "red") }
+        return map("ok", true, "state", get_status(rel), "failures", failures)
+    }
+
+    on sign_off(rel: String, approver: String) {
+        let r = try { transition(rel, "approved") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "approver", approver)
+    }
+
+    on deploy(rel: String) {
+        if get_status(rel) != "approved" {
+            let s = get_status(rel)
+            return map("ok", false, "reason", "deploy from {s} is not a thing")
+        }
+        // THE WALL: one production push per artifact, ever
+        let w = try { prod_pushes.set(rel, (prod_pushes.get(rel) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{rel} already reached prod once; cut a new release")
+        }
+        transition(rel, "live")
+        return map("ok", true, "state", "live")
+    }
+
+    on roll_back(rel: String) {
+        let r = try { transition(rel, "rolled_back") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "rolled_back")
+    }
+
+    on deploys_of(rel: String) {
+        return prod_pushes.get(rel) ?? 0
+    }
+}
+
+cell test PipelineTests {
+    rules {
+        // a fresh commit cannot leap to production — the edges don't exist
+        assert_fails transition("r1", "live")
+        assert_fails transition("r1", "approved")
+        assert deploy("r1").ok == false
+
+        // red tests bounce the release back to committed
+        assert record_build("r1").ok == true
+        assert report_tests("r1", 3).state == "red"
+        assert sign_off("r1", "dana").ok == false        // red -> approved: no edge
+        assert_fails transition("r1", "tested")          // can't relabel red as green
+
+        // fix, rebuild, go green, approve, ship
+        assert transition("r1", "committed").to == "committed"
+        assert record_build("r1").ok == true
+        assert report_tests("r1", 0).state == "tested"
+        assert deploy("r1").ok == false                  // green but unapproved
+        assert sign_off("r1", "dana").ok == true
+        assert deploy("r1").ok == true
+        assert deploys_of("r1") == 1
+
+        // Knight Capital's sin: re-activating a dead artifact.
+        // rolled_back is terminal AND the push ledger refuses a second 1.
+        assert roll_back("r1").ok == true
+        assert_fails transition("r1", "live")
+        assert_fails transition("r1", "committed")
+        assert_fails prod_pushes.set("r1", 2)
+        assert deploy("r1").ok == false
+    }
+}

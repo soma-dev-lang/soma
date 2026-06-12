@@ -1,0 +1,95 @@
+// ============================================================================
+// DIVIDEND DISTRIBUTION — payments can never exceed the declared pool
+// ============================================================================
+//
+// When a board declares a dividend, that number is legally binding — and
+// transfer agents have paid out MORE than the declaration through duplicate
+// shareholder records or a re-run batch job (the same disease as the 2021
+// "accidental" duplicate ACH dividend runs brokers had to claw back).
+// Structure: the declared pool is a slot every payment decrements, with
+// `pool >= 0` as the invariant — the payment that would overspend the
+// declaration is a rejected write. A shareholder can be paid once per
+// declaration, and a closed distribution is terminal.
+// ============================================================================
+
+cell Dividend {
+    face {
+        signal declare(id: String, total: Int) -> Map
+        signal pay_holder(id: String, holder: String, amount: Int) -> Map
+        signal close_books(id: String) -> Map
+        signal pool_left(id: String) -> Int
+    }
+
+    memory {
+        // the declared pool — strictly drawn down, never overdrawn
+        pool: Map<String, Int> [persistent, consistent]
+        invariant pool >= 0
+        paid: Map<String, Int> [persistent, consistent]
+        invariant paid >= 0
+    }
+
+    // distribution lifecycle; closed is terminal — the batch job that
+    // re-runs against a closed declaration finds no state to act in.
+    state distribution {
+        initial: proposed
+        proposed -> declared
+        declared -> paying
+        paying -> closed
+    }
+
+    on declare(id: String, total: Int) {
+        if total <= 0 { return map("ok", false, "reason", "bad total") }
+        transition(id, "declared")
+        transition(id, "paying")
+        pool.set(id, total)
+        return map("ok", true, "declared", total)
+    }
+
+    on pay_holder(id: String, holder: String, amount: Int) {
+        if get_status(id) != "paying" {
+            return map("ok", false, "reason", "distribution is not paying")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        let k = "{id}:{holder}"
+        if (paid.get(k) ?? 0) > 0 {
+            // THE DUPLICATE RECORD: same holder, same declaration — once
+            return map("ok", false, "reason", "{holder} already paid")
+        }
+        let left = pool.get(id) ?? 0
+        pool.set(id, left - amount)        // raises past the declaration
+        paid.set(k, amount)
+        return map("ok", true, "holder", holder, "left", left - amount)
+    }
+
+    on close_books(id: String) {
+        transition(id, "closed")
+        return map("ok", true, "unclaimed", pool.get(id) ?? 0)
+    }
+
+    on pool_left(id: String) {
+        return pool.get(id) ?? 0
+    }
+}
+
+cell test DividendTests {
+    rules {
+        assert declare("q2", 10000).ok == true
+        assert pay_holder("q2", "fund-a", 6000).ok == true
+        assert pay_holder("q2", "fund-b", 3000).ok == true
+        // THE RE-RUN BATCH: fund-a appears again — refused
+        assert pay_holder("q2", "fund-a", 6000).ok == false
+        // THE OVERSPEND: 1,500 against the 1,000 left — the write raises
+        assert_fails pay_holder("q2", "fund-c", 1500)
+        assert pool_left("q2") == 1000
+        assert pay_holder("q2", "fund-c", 1000).ok == true
+        assert pool_left("q2") == 0
+        // nothing left: even one more cent is an impossible write
+        assert_fails pay_holder("q2", "fund-d", 1)
+        assert_fails pool.set("q2", -1)
+        assert close_books("q2").unclaimed == 0
+        // closed is terminal — the distribution cannot re-open and re-pay
+        assert pay_holder("q2", "fund-e", 1).ok == false
+        assert_fails transition("q2", "paying")
+        assert_fails transition("q2", "declared")
+    }
+}

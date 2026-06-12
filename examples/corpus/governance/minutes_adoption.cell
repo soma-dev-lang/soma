@@ -1,0 +1,114 @@
+// ============================================================================
+// MINUTES ADOPTION — the corporate record cannot be edited after the fact
+// ============================================================================
+//
+// The stock-option backdating scandals of 2006 (over 130 companies under
+// SEC investigation, CEOs of Brocade and Comverse criminally charged)
+// ran on one quiet mechanic: board paperwork written or "fixed" AFTER
+// the fact, dressed up as the record of an earlier date. Minutes are
+// evidence — Delaware courts treat adopted minutes as the authoritative
+// memory of what a board decided. Their value collapses the moment they
+// can be revised after adoption.
+//
+// So adoption here is a one-way door. Amendments append to a numbered
+// revision trail only while the draft circulates; `adopted` is a
+// terminal state soma verify proves, and the adoption ledger holds at
+// most one adoption per document — a second "corrected" adoption of the
+// same minutes is a write the memory refuses.
+// ============================================================================
+
+cell MinuteBook {
+    face {
+        signal circulate(doc: String) -> Map
+        signal amend(doc: String, change: String) -> Map
+        signal adopt(doc: String) -> Map
+        signal revision_count(doc: String) -> Int
+        signal adopted_once(doc: String) -> Bool
+    }
+
+    memory {
+        // doc -> adoptions. AT MOST ONE: "re-adopting corrected minutes"
+        // over the originals is unrepresentable.
+        adoptions: Map<String, Int> [persistent, consistent]
+        invariant adoptions >= 0 && adoptions <= 1
+
+        revisions: Map<String, Int> [persistent, consistent]
+        invariant revisions >= 0
+
+        edit_log: Map<String, String> [persistent, consistent]
+    }
+
+    // drafted -> circulated (amendable, may loop) -> adopted (TERMINAL).
+    state minutes {
+        initial: drafted
+        drafted -> circulated
+        circulated -> adopted
+    }
+
+    on circulate(doc: String) {
+        let r = try { transition(doc, "circulated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "circulated")
+    }
+
+    // amendments are welcome — while the board is still looking at a draft
+    on amend(doc: String, change: String) {
+        if get_status(doc) != "circulated" {
+            let s = get_status(doc)
+            return map("ok", false, "reason", "minutes are {s}; the record does not bend")
+        }
+        let n = (revisions.get(doc) ?? 0) + 1
+        revisions.set(doc, n)
+        edit_log.set("{doc}:r{n}", change)
+        return map("ok", true, "doc", doc, "revision", n)
+    }
+
+    on adopt(doc: String) {
+        if get_status(doc) != "circulated" {
+            let s = get_status(doc)
+            return map("ok", false, "reason", "cannot adopt from {s}")
+        }
+        // THE WALL: one adoption, ever
+        let w = try { adoptions.set(doc, (adoptions.get(doc) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{doc} was already adopted; the record stands")
+        }
+        transition(doc, "adopted")
+        return map("ok", true, "state", "adopted", "revisions", revisions.get(doc) ?? 0)
+    }
+
+    on revision_count(doc: String) {
+        return revisions.get(doc) ?? 0
+    }
+
+    on adopted_once(doc: String) {
+        return (adoptions.get(doc) ?? 0) == 1
+    }
+}
+
+cell test MinuteBookTests {
+    rules {
+        // nothing is amendable before circulation, nothing adoptable from draft
+        assert amend("jan-meeting", "fix attendee list").ok == false
+        assert adopt("jan-meeting").ok == false
+        assert_fails transition("jan-meeting", "adopted")
+
+        // circulate; the board marks up the draft freely
+        assert circulate("jan-meeting").ok == true
+        assert amend("jan-meeting", "fix attendee list").revision == 1
+        assert amend("jan-meeting", "correct vote tally on item 4").revision == 2
+        assert revision_count("jan-meeting") == 2
+
+        // adoption closes the book
+        assert adopt("jan-meeting").ok == true
+        assert adopted_once("jan-meeting") == true
+
+        // THE BACKDATER'S MOVE: edit after adoption. No state to do it in,
+        // no path back, and a second adoption is a write the memory refuses.
+        assert amend("jan-meeting", "option grant was 'always' dated June 1").ok == false
+        assert_fails transition("jan-meeting", "circulated")
+        assert_fails transition("jan-meeting", "drafted")
+        assert_fails adoptions.set("jan-meeting", 2)
+        assert revision_count("jan-meeting") == 2          // the trail is intact
+    }
+}

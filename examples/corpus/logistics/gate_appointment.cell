@@ -1,0 +1,100 @@
+// ============================================================================
+// GATE APPOINTMENTS — a dock door cannot be double-booked
+// ============================================================================
+//
+// When the ports of LA and Long Beach gridlocked in 2021, a big share of
+// the chaos was appointment churn: terminal systems double-booking gate
+// slots, two trucks arriving for one window, one of them idling for
+// hours and missing its next pickup. Inland, the same bug at a grocery
+// DC means a reefer truck of frozen food waits in the yard burning
+// diesel — detention fees run $50-100 an hour and the cold chain ticks.
+//
+// The scheduling rule here is not a uniqueness check in application code
+// someone can bypass with a second code path. It is a memory invariant:
+// each door-hour slot holds AT MOST ONE booking, and the second write to
+// the same slot is refused by the memory itself.
+// ============================================================================
+
+cell GateSchedule {
+    face {
+        signal book_window(door: String, hour: Int, carrier: String) -> Map
+        signal cancel_window(door: String, hour: Int) -> Map
+        signal window_holder(door: String, hour: Int) -> String
+        signal bookings_at(door: String, hour: Int) -> Int
+    }
+
+    memory {
+        // door-hour -> number of bookings. THE wall: never more than 1.
+        booked: Map<String, Int> [persistent, consistent]
+        invariant booked >= 0 && booked <= 1
+
+        holder: Map<String, String> [persistent, consistent]
+    }
+
+    on slot_key(door: String, hour: Int) {
+        return "{door}@{hour}"
+    }
+
+    on book_window(door: String, hour: Int, carrier: String) {
+        if hour < 0 || hour > 23 { return map("ok", false, "reason", "hour must be 0-23") }
+        let key = slot_key(door, hour)
+        let n = booked.get(key) ?? 0
+        // the second booking writes 2 into a <=1 slot: REFUSED by memory
+        let w = try { booked.set(key, n + 1) }
+        if w.error != () {
+            let who = holder.get(key) ?? "?"
+            return map("ok", false, "reason", "door {door} hour {hour} already booked by {who}")
+        }
+        holder.set(key, carrier)
+        return map("ok", true, "door", door, "hour", hour, "carrier", carrier)
+    }
+
+    on cancel_window(door: String, hour: Int) {
+        let key = slot_key(door, hour)
+        if (booked.get(key) ?? 0) == 0 {
+            return map("ok", false, "reason", "no booking at door {door} hour {hour}")
+        }
+        booked.set(key, 0)
+        holder.delete(key)
+        return map("ok", true, "freed", key)
+    }
+
+    on window_holder(door: String, hour: Int) {
+        let key = slot_key(door, hour)
+        return holder.get(key) ?? "free"
+    }
+
+    on bookings_at(door: String, hour: Int) {
+        let key = slot_key(door, hour)
+        return booked.get(key) ?? 0
+    }
+}
+
+cell test OneTruckPerWindow {
+    rules {
+        // first carrier takes door 12 at 09:00
+        assert book_window("12", 9, "Knight-Swift").ok == true
+        assert window_holder("12", 9) == "Knight-Swift"
+
+        // THE DOUBLE-BOOK: a second carrier, same door, same hour.
+        // The memory holds at most one booking — the write is refused.
+        assert book_window("12", 9, "Schneider").ok == false
+        assert window_holder("12", 9) == "Knight-Swift"
+        assert bookings_at("12", 9) == 1
+        assert_fails booked.set("12@9", 2)
+        assert_fails booked.set("12@9", -1)
+
+        // adjacent windows are independent
+        assert book_window("12", 10, "Schneider").ok == true
+        assert book_window("13", 9, "Werner").ok == true
+
+        // a cancellation frees exactly that window
+        assert cancel_window("12", 9).ok == true
+        assert window_holder("12", 9) == "free"
+        assert book_window("12", 9, "Schneider").ok == true
+
+        // garbage hours never reach the ledger
+        assert book_window("12", 24, "Ghost").ok == false
+        assert cancel_window("12", 23).ok == false
+    }
+}

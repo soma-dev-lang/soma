@@ -1,0 +1,99 @@
+// ============================================================================
+// LOAN AMORTIZATION — principal never goes negative, never grows back
+// ============================================================================
+//
+// Two amortization bugs with real victims: servicers who kept drafting
+// payments after payoff (principal goes negative = the borrower is owed
+// money and usually never told), and the pre-2008 "option ARM" negative
+// amortization, where a payment smaller than the accrued interest silently
+// GREW the principal until the loan ballooned past the house's value.
+// Here `principal >= 0` is a memory invariant — the overdraft write raises
+// — and a payment must at least cover the month's interest, so the balance
+// is monotonically non-increasing. paid_off is terminal and proven.
+// ============================================================================
+
+cell Loan {
+    face {
+        signal originate(id: String, principal: Int, rate_bps: Int) -> Map
+        signal monthly_interest(id: String) -> Int
+        signal make_payment(id: String, amount: Int) -> Map
+        signal balance(id: String) -> Int
+    }
+
+    memory {
+        // the wall: principal cannot be overdrafted below zero
+        principal: Map<String, Int> [persistent, consistent]
+        invariant principal >= 0
+        rate: Map<String, Int> [persistent, consistent]
+        invariant rate >= 0 && rate <= 2500
+    }
+
+    // paid_off is terminal: a settled loan cannot resume billing.
+    state loan {
+        initial: applied
+        applied -> active
+        active -> paid_off
+    }
+
+    on originate(id: String, principal_amt: Int, rate_bps: Int) {
+        if principal_amt <= 0 { return map("ok", false, "reason", "bad principal") }
+        transition(id, "active")
+        rate.set(id, rate_bps)          // raises if rate is usurious (> 25%)
+        principal.set(id, principal_amt)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on monthly_interest(id: String) {
+        let p = principal.get(id) ?? 0
+        let r = rate.get(id) ?? 0
+        return idiv(p * r, 120000)      // bps annual -> one month, truncated
+    }
+
+    on make_payment(id: String, amount: Int) {
+        if get_status(id) != "active" {
+            return map("ok", false, "reason", "loan is not active")
+        }
+        let interest = monthly_interest(id)
+        if amount < interest {
+            // NEGATIVE AMORTIZATION refused: a payment below interest
+            // would grow the principal — that loan shape does not exist
+            return map("ok", false, "reason",
+                "payment {amount} below interest {interest}: would grow principal")
+        }
+        let p = principal.get(id) ?? 0
+        let toward_principal = amount - interest
+        principal.set(id, p - toward_principal)   // raises on overpayment
+        if p - toward_principal == 0 { transition(id, "paid_off") }
+        return map("ok", true, "interest", interest,
+                   "principal_reduced", toward_principal, "remaining", p - toward_principal)
+    }
+
+    on balance(id: String) {
+        return principal.get(id) ?? 0
+    }
+}
+
+cell test LoanTests {
+    rules {
+        // 120,000 at 6.00% (600 bps): first month's interest is 600
+        assert originate("L1", 120000, 600).ok == true
+        assert monthly_interest("L1") == 600
+        // NEGATIVE AMORTIZATION: paying less than interest is refused
+        assert make_payment("L1", 599).ok == false
+        assert balance("L1") == 120000
+        // a real payment: 600 interest + 19400 principal
+        assert make_payment("L1", 20000).remaining == 100600
+        // OVERDRAFT: paying past payoff would drive principal negative —
+        // the ledger write itself raises (100600 + 503 interest < 999999)
+        assert_fails make_payment("L1", 999999)
+        assert balance("L1") == 100600
+        assert_fails principal.set("L1", -1)
+        // exact payoff: balance + this month's interest, to the cent
+        assert make_payment("L1", 100600 + 503).remaining == 0
+        // paid_off is terminal: the servicer cannot keep drafting
+        assert make_payment("L1", 100).ok == false
+        assert_fails transition("L1", "active")
+        // usurious rates are rejected at origination by the rate invariant
+        assert_fails originate("L2", 5000, 9900)
+    }
+}

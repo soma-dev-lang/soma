@@ -1,0 +1,118 @@
+// ============================================================================
+// RATE LIMITER — admission control with a quota the memory enforces
+// ============================================================================
+//
+// On September 20, 2015, DynamoDB's storage servers all renewed their
+// metadata leases at once after a network blip. The metadata service had
+// no effective admission control; the retry storm starved it, which
+// caused more timeouts, which caused more retries. The brownout took
+// down large parts of us-east-1 for five hours and dragged twenty other
+// AWS services with it. Cascading retry storms are what rate limiters
+// exist to stop — IF the limiter itself cannot be talked out of its quota.
+//
+// This limiter's token bucket lives behind a memory invariant: tokens
+// can never go below zero (no overdraft "just this once") and never
+// above the burst ceiling (no refill bug minting infinite capacity).
+// The breaker is a state machine with a one-way path through `shedding`
+// and `recovering` — there is no edge from shedding straight back to
+// closed-and-full-traffic, so the thundering herd cannot re-arrive at once.
+// ============================================================================
+
+cell RateLimiter {
+    face {
+        signal admit(svc: String) -> Map
+        signal refill(svc: String, n: Int) -> Map
+        signal trip_breaker(svc: String) -> Map
+        signal start_recovery(svc: String) -> Map
+        signal breaker_close(svc: String) -> Map
+        signal tokens_left(svc: String) -> Int
+    }
+
+    memory {
+        // burst ceiling 10, floor 0. The overdraft and the infinite-
+        // refill bug are both rejected at the write.
+        tokens: Map<String, Int> [persistent, consistent]
+        invariant tokens >= 0 && tokens <= 10
+    }
+
+    // No shedding -> serving edge: recovery is mandatory, traffic
+    // returns gradually or not at all.
+    state breaker {
+        initial: serving
+        serving -> shedding
+        shedding -> recovering
+        recovering -> serving
+        recovering -> shedding
+    }
+
+    on admit(svc: String) {
+        if get_status(svc) == "shedding" {
+            return map("ok", false, "reason", "load shedding — request dropped at the door")
+        }
+        let t = tokens.get(svc) ?? 0
+        let w = try { tokens.set(svc, t - 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "quota exhausted ({t} tokens)")
+        }
+        return map("ok", true, "tokens_left", t - 1)
+    }
+
+    on refill(svc: String, n: Int) {
+        let t = tokens.get(svc) ?? 0
+        let w = try { tokens.set(svc, t + n) }
+        if w.error != () {
+            return map("ok", false, "reason", "refill past burst ceiling refused")
+        }
+        return map("ok", true, "tokens_left", t + n)
+    }
+
+    on trip_breaker(svc: String) {
+        let r = try { transition(svc, "shedding") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "shedding")
+    }
+
+    on start_recovery(svc: String) {
+        let r = try { transition(svc, "recovering") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "recovering")
+    }
+
+    on breaker_close(svc: String) {
+        let r = try { transition(svc, "serving") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "serving")
+    }
+
+    on tokens_left(svc: String) {
+        return tokens.get(svc) ?? 0
+    }
+}
+
+cell test LimiterTests {
+    rules {
+        // a full bucket admits, then runs dry — and the dry bucket
+        // cannot be overdrawn: the -1 write is refused by memory
+        assert refill("meta", 3).ok == true
+        assert admit("meta").ok == true
+        assert admit("meta").ok == true
+        assert admit("meta").ok == true
+        assert admit("meta").ok == false
+        assert tokens_left("meta") == 0
+        assert_fails tokens.set("meta", -1)
+
+        // the infinite-refill bug: minting past the burst ceiling
+        assert refill("meta", 10).ok == true
+        assert refill("meta", 5).ok == false
+        assert_fails tokens.set("meta", 999)
+
+        // THE DYNAMODB MOVE: storm hits, breaker trips, and there is
+        // no edge that snaps full traffic back on in one step
+        assert trip_breaker("meta").ok == true
+        assert admit("meta").ok == false
+        assert_fails transition("meta", "serving")
+        assert start_recovery("meta").ok == true
+        assert breaker_close("meta").ok == true
+        assert admit("meta").ok == true
+    }
+}

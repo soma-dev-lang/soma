@@ -249,3 +249,19 @@ It can't be a parameter name or a map field read as `.on`. Use `enabled`,
     b = 2
 }
 ```
+
+## 16. `given` is reserved (like `on`)
+
+It's a face-declaration keyword — can't be a state name, param, or
+identifier. `error: expected name, found Given`. Use `granted`, `input`, etc.
+
+## 17. `rules { }` blocks take only assertions — no bare statements
+
+```soma
+rules { setup()  assert x() == 1 }     // error: expected ... assert ...
+```
+```soma
+rules { assert setup() != ()  assert x() == 1 }   // wrap setup in an assert
+```
+Valid rule forms: `assert`, `assert_fails`, `property`, plus meta-cell
+rules (`contradicts`, `implies`, `requires`, ...).

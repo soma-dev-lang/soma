@@ -1,0 +1,123 @@
+// ============================================================================
+// AUCTION HOUSE — escrowed bids, gold that cannot be printed
+// ============================================================================
+// In 2013 Blizzard took the Diablo III auction house offline after patch
+// 1.0.8: cancelling a bid refunded the gold WITHOUT releasing the escrow,
+// and billions of duplicated gold crashed the economy within hours. The bug
+// was an accounting gap — wallet and escrow updated by paths that disagreed.
+// Here the accounting is structural: a bid MOVES gold wallet->escrow in one
+// handler, an outbid refunds exactly the escrowed amount, and total_gold()
+// is conserved by construction. Balances cannot go negative (the memory
+// refuses the write), and `sold` is a TERMINAL state soma verify proves:
+// a settled auction can never reopen for a second refund.
+// ============================================================================
+
+cell AuctionHouse {
+    face {
+        signal fund(player: String, gold: Int) -> Int
+        signal place_bid(auction: String, player: String, amount: Int) -> Map
+        signal settle(auction: String, seller: String) -> Map
+        signal balance_of(player: String) -> Int
+        signal escrow_of(player: String) -> Int
+        signal total_gold() -> Int
+    }
+
+    memory {
+        wallet: Map<String, Int> [persistent, consistent]
+        invariant wallet >= 0
+        escrow: Map<String, Int> [persistent, consistent]
+        invariant escrow >= 0
+        high_bid: Map<String, Int> [persistent, consistent]
+        high_bidder: Map<String, String> [persistent, consistent]
+    }
+
+    // sold and withdrawn are terminal: no post-sale cancel, no double refund.
+    // An auction with a live bid (bidding) can no longer be withdrawn.
+    state auction {
+        initial: listed
+        listed -> bidding
+        listed -> withdrawn
+        bidding -> sold
+    }
+
+    on fund(player: String, gold: Int) {
+        wallet.set(player, (wallet.get(player) ?? 0) + gold)
+        return wallet.get(player)
+    }
+
+    on place_bid(auction: String, player: String, amount: Int) {
+        let phase = get_status(auction)
+        if phase != "listed" && phase != "bidding" {
+            return map("ok", false, "reason", "auction is {phase}")
+        }
+        let lead = high_bid.get(auction) ?? 0
+        if amount <= lead { return map("ok", false, "reason", "{amount} does not beat {lead}") }
+        // the wall: an over-wallet bid drives the balance negative — REFUSED
+        let w = try { wallet.set(player, (wallet.get(player) ?? 0) - amount) }
+        if w.error != () { return map("ok", false, "reason", "insufficient gold") }
+        escrow.set(player, (escrow.get(player) ?? 0) + amount)
+        let prev = high_bidder.get(auction)
+        if prev != () {
+            // refund the old leader EXACTLY the escrowed amount — conservation
+            escrow.set(prev, (escrow.get(prev) ?? 0) - lead)
+            wallet.set(prev, (wallet.get(prev) ?? 0) + lead)
+        }
+        high_bid.set(auction, amount)
+        high_bidder.set(auction, player)
+        if phase == "listed" { transition(auction, "bidding") }
+        return map("ok", true, "lead", amount)
+    }
+
+    on settle(auction: String, seller: String) {
+        let r = try { transition(auction, "sold") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let winner = high_bidder.get(auction)
+        let amount = high_bid.get(auction)
+        escrow.set(winner, (escrow.get(winner) ?? 0) - amount)
+        wallet.set(seller, (wallet.get(seller) ?? 0) + amount)
+        return map("ok", true, "winner", winner, "paid", amount)
+    }
+
+    on balance_of(player: String) { return wallet.get(player) ?? 0 }
+    on escrow_of(player: String) { return escrow.get(player) ?? 0 }
+
+    on total_gold() {
+        let t = 0
+        let ws = wallet.keys()
+        for p in ws { t = t + (wallet.get(p) ?? 0) }
+        let es = escrow.keys()
+        for p in es { t = t + (escrow.get(p) ?? 0) }
+        return t
+    }
+}
+
+cell test AuctionTests {
+    rules {
+        assert fund("alice", 100) == 100
+        assert fund("bob", 100) == 100
+        // a bid escrows gold: it leaves the wallet, the total is conserved
+        assert place_bid("ax", "alice", 60).ok == true
+        assert balance_of("alice") == 40
+        assert escrow_of("alice") == 60
+        assert total_gold() == 200
+        // an outbid refunds the old leader exactly what was escrowed
+        assert place_bid("ax", "bob", 80).ok == true
+        assert balance_of("alice") == 100
+        assert escrow_of("alice") == 0
+        assert total_gold() == 200
+        // you cannot bid gold you do not have — the wallet refuses negatives
+        assert place_bid("ax", "alice", 999).ok == false
+        assert_fails wallet.set("alice", -1)
+        // settlement pays the seller from escrow; still conserved
+        assert settle("ax", "seller").ok == true
+        assert balance_of("seller") == 80
+        assert total_gold() == 200
+        // SOLD IS TERMINAL — the Diablo III double-refund has no state to reach
+        assert_fails transition("ax", "bidding")
+        assert_fails transition("ax", "listed")
+        assert place_bid("ax", "alice", 90).ok == false
+        // an auction with a live bid cannot be quietly withdrawn
+        assert place_bid("ay", "bob", 10).ok == true
+        assert_fails transition("ay", "withdrawn")
+    }
+}

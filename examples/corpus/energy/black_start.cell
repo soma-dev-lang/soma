@@ -1,0 +1,117 @@
+// ============================================================================
+// BLACK START — you cannot boot a power plant from a dead grid out of order
+// ============================================================================
+//
+// August 14, 2003: the Northeast blackout dropped 61,800 MW and 50 million
+// people. Restoration took days, because a big thermal plant cannot start
+// itself — its boiler feed pumps, fans, and lube-oil systems need tens of
+// megawatts of "station service" power that normally comes FROM the grid.
+// In February 2021, winter storm Uri brought ERCOT within minutes of a
+// total collapse that engineers estimated would have taken weeks to
+// black-start. The restoration sequence is rigid for physical reasons:
+// a small self-starting unit (hydro, diesel) cranks first; it feeds the
+// big plant's auxiliaries; only then can the big unit roll; the unit then
+// carries a small stable island; and the island is synchronized to its
+// neighbors LAST. Skip a step and you trip everything back to black.
+//
+// The sequence below is the state machine. Every skip is a transition
+// that does not exist; collapse paths return to `blackout`; and
+// `reconnected` is terminal for the event — the restoration log of a
+// finished black start is history. soma verify proves all of it.
+// ============================================================================
+
+cell BlackStart {
+    face {
+        signal advance_restore(ev: String, step: String) -> Map
+        signal island_collapse(ev: String) -> Map
+        signal restore_state(ev: String) -> String
+        signal record_island_mw(ev: String, mw: Int) -> Map
+    }
+
+    memory {
+        // load carried by the restoration island — a fledgling island
+        // above 200 MW is being grown too fast and will collapse
+        island_mw: Map<String, Int> [persistent, consistent]
+        invariant island_mw >= 0 && island_mw <= 200
+    }
+
+    state restoration {
+        initial: blackout
+        blackout -> cranking         // hydro/diesel black-start unit self-starts
+        cranking -> aux_live         // station service reaches the big plant
+        aux_live -> unit_online      // main unit rolls, auxiliaries fed
+        unit_online -> island_stable // unit carries a small local island
+        island_stable -> reconnected // synced to neighbors — TERMINAL: done
+        cranking -> blackout         // collapse paths: start over
+        aux_live -> blackout
+        unit_online -> blackout
+        island_stable -> blackout
+    }
+
+    on advance_restore(ev: String, step: String) {
+        let r = try { transition(ev, step) }
+        if r.error != () {
+            return map("ok", false, "state", get_status(ev),
+                "reason", "sequence violation: {r.error}")
+        }
+        return map("ok", true, "state", get_status(ev))
+    }
+
+    on island_collapse(ev: String) {
+        let r = try { transition(ev, "blackout") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        island_mw.set(ev, 0)
+        return map("ok", true, "state", get_status(ev))
+    }
+
+    on record_island_mw(ev: String, mw: Int) {
+        if get_status(ev) != "island_stable" {
+            return map("ok", false, "reason", "no island yet (state: {get_status(ev)})")
+        }
+        let w = try { island_mw.set(ev, mw) }
+        if w.error != () {
+            return map("ok", false, "reason", "island growth limit: {w.error}")
+        }
+        return map("ok", true, "island_mw", mw)
+    }
+
+    on restore_state(ev: String) { return get_status(ev) }
+}
+
+cell test BlackStartTests {
+    rules {
+        // THE IMPATIENT DISPATCHER: roll the big unit straight from black.
+        // Its feed pumps have no power; the transition does not exist.
+        assert_fails transition("r1", "unit_online")
+        assert_fails transition("r1", "aux_live")
+        assert advance_restore("r1", "unit_online").ok == false
+
+        // the real sequence, step by step
+        assert advance_restore("r1", "cranking").ok == true
+        assert advance_restore("r1", "aux_live").ok == true
+        // still cannot skip to the island
+        assert_fails transition("r1", "island_stable")
+        assert advance_restore("r1", "unit_online").ok == true
+        // and cannot declare victory before the island is proven stable
+        assert_fails transition("r1", "reconnected")
+        assert advance_restore("r1", "island_stable").ok == true
+
+        // grow the island within limits; overfeeding is refused
+        assert record_island_mw("r1", 150).ok == true
+        assert record_island_mw("r1", 250).ok == false
+        assert_fails island_mw.set("r1", 999)
+
+        // a frequency excursion collapses the island — back to black
+        assert island_collapse("r1").ok == true
+        assert restore_state("r1") == "blackout"
+
+        // second attempt succeeds and finishes — reconnected is TERMINAL
+        assert advance_restore("r1", "cranking").ok == true
+        assert advance_restore("r1", "aux_live").ok == true
+        assert advance_restore("r1", "unit_online").ok == true
+        assert advance_restore("r1", "island_stable").ok == true
+        assert advance_restore("r1", "reconnected").ok == true
+        assert_fails transition("r1", "blackout")
+        assert_fails transition("r1", "cranking")
+    }
+}

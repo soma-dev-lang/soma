@@ -1,0 +1,91 @@
+// ============================================================================
+// BATTLE PASS — every tier reward claimed exactly once
+// ============================================================================
+// Battle-pass duplication exploits reduce to two writes: a claim counter
+// going past 1 (claim, crash the client mid-grant, claim again — the
+// "crash-and-reclaim" farmed in several seasons of big battle royales), or
+// tier progress jumping the track via a modified client. Here each
+// (player, tier) claim is walled at <= 1 BY THE MEMORY, tier progress is
+// capped at 50 by an invariant, and the season itself is a machine whose
+// `closed` state is terminal — soma verify proves that when a season ends,
+// the books are shut for good.
+// ============================================================================
+
+cell BattlePass {
+    face {
+        signal open_pass() -> Map
+        signal close_pass() -> Map
+        signal advance_tier(player: String) -> Map
+        signal claim_tier(player: String, tier_n: Int) -> Map
+        signal tier_of(player: String) -> Int
+    }
+
+    memory {
+        tier: Map<String, Int> [persistent, consistent]
+        invariant tier >= 0 && tier <= 50
+        claims: Map<String, Int> [persistent, consistent]
+        invariant claims >= 0 && claims <= 1
+    }
+
+    state pass {
+        initial: dormant
+        dormant -> live
+        live -> closed
+    }
+
+    on open_pass() {
+        let r = try { transition("pass", "live") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on close_pass() {
+        let r = try { transition("pass", "closed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on advance_tier(player: String) {
+        if get_status("pass") != "live" { return map("ok", false, "reason", "pass is not live") }
+        let w = try { tier.set(player, (tier.get(player) ?? 0) + 1) }
+        if w.error != () { return map("ok", false, "reason", "already at tier 50") }
+        return map("ok", true, "tier", tier.get(player))
+    }
+
+    on claim_tier(player: String, tier_n: Int) {
+        if get_status("pass") != "live" { return map("ok", false, "reason", "pass is not live") }
+        if (tier.get(player) ?? 0) < tier_n { return map("ok", false, "reason", "tier {tier_n} not reached") }
+        let key = "{player}#{tier_n}"
+        // THE WALL: a second claim writes 2 into a <= 1 slot — refused
+        let w = try { claims.set(key, (claims.get(key) ?? 0) + 1) }
+        if w.error != () { return map("ok", false, "reason", "tier {tier_n} already claimed") }
+        return map("ok", true, "claimed", tier_n)
+    }
+
+    on tier_of(player: String) { return tier.get(player) ?? 0 }
+}
+
+cell test PassTests {
+    rules {
+        // nothing moves before the season opens
+        assert advance_tier("vic").ok == false
+        assert open_pass().ok == true
+        assert advance_tier("vic").ok == true
+        assert advance_tier("vic").ok == true
+        assert tier_of("vic") == 2
+        // cannot claim a tier you have not reached
+        assert claim_tier("vic", 3).ok == false
+        assert claim_tier("vic", 2).ok == true
+        // THE CRASH-AND-RECLAIM: the second claim is an unstorable write
+        assert claim_tier("vic", 2).ok == false
+        assert_fails claims.set("vic#2", 2)
+        // tier progress cannot be injected past the cap
+        assert_fails tier.set("vic", 51)
+        // a closed season is closed forever
+        assert close_pass().ok == true
+        assert claim_tier("vic", 1).ok == false
+        assert advance_tier("vic").ok == false
+        assert_fails transition("pass", "live")
+        assert_fails transition("pass", "dormant")
+    }
+}

@@ -1,0 +1,113 @@
+// ============================================================================
+// RANGE SAFETY — the flight termination system's three one-way doors
+// ============================================================================
+//
+// A flight termination system (FTS) is the explosive last resort that
+// destroys a rocket veering toward people. Its safety logic cuts both
+// ways. In 1996 a Long March 3B went off course two seconds after
+// liftoff and flew into a village near Xichang; an off-course vehicle
+// that is NOT terminated kills on the ground. But the inverse hazard is
+// just as real: a destruct system that can fire while technicians are
+// torquing bolts on a "safed" pad vehicle, or that can be re-armed after
+// a nominal flight ends, is itself the accident.
+//
+// Here the FTS has exactly three one-way doors. SAFED cannot terminate —
+// the edge is absent, so no stray command, test signal, or RF hit can
+// blow a pad vehicle. ARMED can either fire (terminated, terminal) or
+// stand down after orbit (safed_orbital, terminal). Nothing exits the
+// terminal states: a fired FTS is gone, a flown-out FTS can never be
+// re-armed. The deviation ledger that justifies a destruct is bounded.
+// ============================================================================
+
+cell RangeSafety {
+    face {
+        signal arm_at_liftoff(id: String) -> Map
+        signal track_deviation(id: String, deg: Int) -> Map
+        signal send_terminate(id: String) -> Map
+        signal safe_after_orbit(id: String) -> Map
+        signal fts_state(id: String) -> String
+    }
+
+    memory {
+        // tracked deviation from nominal azimuth, degrees [0, 180]
+        deviation_deg: Map<String, Int> [persistent, consistent]
+        invariant deviation_deg >= 0 && deviation_deg <= 180
+    }
+
+    // ABSENT: safed -> terminated        (no destruct on the pad crew)
+    // ABSENT: terminated -> anything     (a fired FTS is gone)
+    // ABSENT: safed_orbital -> anything  (no re-arming a finished flight)
+    state fts {
+        initial: safed
+        safed -> armed              // at liftoff, by the range officer
+        armed -> terminated         // terminal
+        armed -> safed_orbital      // terminal: nominal flight complete
+    }
+
+    on arm_at_liftoff(id: String) {
+        let r = try { transition(id, "armed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        deviation_deg.set(id, 0)
+        return map("ok", true, "fts", get_status(id))
+    }
+
+    on track_deviation(id: String, deg: Int) {
+        let w = try { deviation_deg.set(id, deg) }
+        if w.error != () { return map("ok", false, "reason", "deviation must be 0..180 deg") }
+        return map("ok", true, "deviation", deg, "destruct_line", deg >= 15)
+    }
+
+    on send_terminate(id: String) {
+        // only an ARMED system can fire — and only past the destruct line
+        let dev = deviation_deg.get(id) ?? 0
+        if dev < 15 {
+            return map("ok", false, "reason", "vehicle inside corridor ({dev} deg) — no termination")
+        }
+        let r = try { transition(id, "terminated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "fts", "terminated")
+    }
+
+    on safe_after_orbit(id: String) {
+        let r = try { transition(id, "safed_orbital") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "fts", get_status(id))
+    }
+
+    on fts_state(id: String) { return get_status(id) }
+}
+
+cell test FtsTests {
+    rules {
+        // a SAFED vehicle cannot be destroyed — protecting the pad crew:
+        // even with a huge tracked deviation the edge does not exist
+        assert track_deviation("v1", 90).ok == true
+        assert_fails transition("v1", "terminated")
+        assert send_terminate("v1").ok == false
+        assert fts_state("v1") == "safed"
+
+        // armed but inside the corridor: still no termination
+        assert arm_at_liftoff("v1").ok == true
+        assert track_deviation("v1", 5).ok == true
+        assert send_terminate("v1").ok == false
+
+        // the Long March case: off-course AND armed — terminate fires
+        assert track_deviation("v1", 40).ok == true
+        assert send_terminate("v1").ok == true
+        assert fts_state("v1") == "terminated"
+
+        // a fired FTS is gone forever
+        assert_fails transition("v1", "armed")
+        assert_fails transition("v1", "safed")
+
+        // nominal flight: arm, fly out, safe — then NOTHING re-arms it
+        assert arm_at_liftoff("v2").ok == true
+        assert safe_after_orbit("v2").ok == true
+        assert_fails transition("v2", "armed")
+        assert_fails transition("v2", "terminated")
+
+        // the deviation ledger is bounded — no 720-degree nonsense
+        assert_fails deviation_deg.set("v2", 720)
+        assert_fails deviation_deg.set("v2", -10)
+    }
+}

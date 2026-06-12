@@ -1,0 +1,108 @@
+// ============================================================================
+// MULTISIG TREASURY — 2-of-3 distinct approvals, proven before a cent moves
+// ============================================================================
+//
+// In July 2017 the Parity multisig wallet lost $30M because a code path let
+// a single caller re-initialize ownership and drain funds alone — the
+// "multi" in multisig was a convention, not a structure. Here the quorum IS
+// the structure: disbursed is reachable ONLY through the quorum state,
+// which requires two approvals from DISTINCT owners (a repeat approval
+// does not advance the machine). `soma verify` proves the only path to
+// disbursed passes through quorum; the vault refuses negative balances.
+// ============================================================================
+
+cell Multisig {
+    face {
+        signal propose(id: String, amount: Int) -> Map
+        signal approve_txn(id: String, owner: String) -> Map
+        signal disburse(id: String) -> Map
+        signal vault_balance() -> Int
+    }
+
+    memory {
+        vault: Map<String, Int> [persistent, consistent]
+        invariant vault >= 0
+        votes: Map<String, Int> [persistent, consistent]
+        amounts: Map<String, Int> [persistent, consistent]
+        invariant amounts >= 0
+    }
+
+    // disbursed is terminal, and its ONLY parent is quorum.
+    // There is no proposed -> disbursed, no one_approval -> disbursed.
+    state txn {
+        initial: drafted
+        drafted -> proposed
+        proposed -> one_approval
+        one_approval -> quorum
+        quorum -> disbursed
+    }
+
+    on propose(id: String, amount: Int) {
+        if vault.get("treasury") == () { vault.set("treasury", 100000) }
+        let bal = vault.get("treasury") ?? 0
+        if amount <= 0 || amount > bal {
+            return map("ok", false, "reason", "amount must be in (0, {bal}]")
+        }
+        transition(id, "proposed")
+        amounts.set(id, amount)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on approve_txn(id: String, owner: String) {
+        if owner != "alice" && owner != "bob" && owner != "carol" {
+            return map("ok", false, "reason", "not an owner")
+        }
+        let k = "{id}:{owner}"
+        if (votes.get(k) ?? 0) == 1 {
+            // a repeat vote by the same owner does NOT advance the machine
+            return map("ok", false, "reason", "{owner} already approved")
+        }
+        let st = get_status(id)
+        if st == "proposed" { transition(id, "one_approval") }
+        if st == "one_approval" { transition(id, "quorum") }
+        if st != "proposed" && st != "one_approval" {
+            return map("ok", false, "reason", "no approval needed in state {st}")
+        }
+        votes.set(k, 1)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on disburse(id: String) {
+        transition(id, "disbursed")          // raises unless at quorum
+        let amt = amounts.get(id) ?? 0
+        let bal = vault.get("treasury") ?? 0
+        vault.set("treasury", bal - amt)     // and the vault refuses overdraw
+        return map("ok", true, "paid", amt, "vault", bal - amt)
+    }
+
+    on vault_balance() {
+        return vault.get("treasury") ?? 0
+    }
+}
+
+cell test MultisigTests {
+    rules {
+        assert propose("t1", 40000).ok == true
+        // PARITY MOVE: disburse with zero approvals — the edge does not exist
+        assert_fails transition("t1", "disbursed")
+        assert approve_txn("t1", "alice").ok == true
+        // one signature is not quorum
+        assert_fails transition("t1", "disbursed")
+        // the SAME owner approving twice does not fake a quorum
+        assert approve_txn("t1", "alice").ok == false
+        assert_fails transition("t1", "disbursed")
+        // a stranger cannot vote
+        assert approve_txn("t1", "mallory").ok == false
+        // a second DISTINCT owner completes the quorum
+        assert approve_txn("t1", "bob").ok == true
+        assert disburse("t1").paid == 40000
+        assert vault_balance() == 60000
+        // disbursed is terminal: the same txn cannot pay twice
+        assert_fails transition("t1", "quorum")
+        assert_fails transition("t1", "disbursed")
+        // the vault itself cannot go negative
+        assert_fails vault.set("treasury", -1)
+        // a proposal larger than the vault is refused up front
+        assert propose("t2", 999999).ok == false
+    }
+}

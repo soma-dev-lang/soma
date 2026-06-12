@@ -1,0 +1,118 @@
+// ============================================================================
+// WHISTLEBLOWER SHIELD — retaliation against a reporter is unrepresentable
+// ============================================================================
+//
+// Sherron Watkins warned Ken Lay about Enron's accounting in August
+// 2001; within days, Enron's lawyers were researching "the consequences
+// of terminating" her. That memo is why Sarbanes-Oxley §806 exists: any
+// adverse employment action against a corporate whistleblower — firing,
+// demotion, the quiet bad shift — is unlawful retaliation. Yet OSHA's
+// docket shows it still happens constantly, because the protection lives
+// in a policy document while the termination lives in the HR system.
+//
+// Here they live in the same memory. Once a person files a report they
+// are shielded: the adverse-actions ledger for a shielded employee
+// carries `invariant == 0`, so HR's termination write is not flagged for
+// review — it is REFUSED. And the report itself moves through a machine
+// where `substantiated`/`unfounded` are terminal: a closed finding
+// cannot be quietly re-opened to grind a reporter down.
+// ============================================================================
+
+cell ComplianceOffice {
+    face {
+        signal file_report(report: String, reporter: String) -> Map
+        signal investigate(report: String) -> Map
+        signal close_report(report: String, founded: Bool) -> Map
+        signal hr_action(employee: String, action: String) -> Map
+        signal strikes(employee: String) -> Int
+    }
+
+    memory {
+        // adverse actions against SHIELDED employees: the only lawful
+        // count is zero. The firing is a write this slot cannot hold.
+        reprisals: Map<String, Int> [persistent, consistent]
+        invariant reprisals >= 0 && reprisals <= 0
+
+        // ordinary discipline for everyone else — bounded, but real
+        discipline: Map<String, Int> [persistent, consistent]
+        invariant discipline >= 0
+
+        shielded: Map<String, Int> [persistent, consistent]
+        invariant shielded >= 1 && shielded <= 1
+    }
+
+    // filed -> investigating -> substantiated | unfounded (both TERMINAL)
+    state report {
+        initial: filed
+        filed -> investigating
+        investigating -> substantiated
+        investigating -> unfounded
+    }
+
+    on file_report(report: String, reporter: String) {
+        shielded.set(reporter, 1)
+        transition(report, "investigating")
+        return map("ok", true, "report", report, "shielded", reporter)
+    }
+
+    on investigate(report: String) {
+        return map("report", report, "state", get_status(report))
+    }
+
+    on close_report(report: String, founded: Bool) {
+        let target = "unfounded"
+        if founded { target = "substantiated" }
+        let r = try { transition(report, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "finding", target)
+    }
+
+    // ONE door for all adverse actions — and it routes shielded people
+    // into the ledger that refuses the write.
+    on hr_action(employee: String, action: String) {
+        if shielded.get(employee) != () {
+            let w = try { reprisals.set(employee, (reprisals.get(employee) ?? 0) + 1) }
+            if w.error != () {
+                return map("ok", false, "reason",
+                    "SOX 806: '{action}' against {employee} is retaliation; refused")
+            }
+        }
+        discipline.set(employee, (discipline.get(employee) ?? 0) + 1)
+        return map("ok", true, "employee", employee, "action", action)
+    }
+
+    on strikes(employee: String) {
+        return discipline.get(employee) ?? 0
+    }
+}
+
+cell test ShieldTests {
+    rules {
+        // ordinary discipline works for ordinary employees
+        assert hr_action("fastow", "formal warning").ok == true
+        assert strikes("fastow") == 1
+
+        // watkins files; the shield goes up with the report
+        assert file_report("R-2001-08", "watkins").ok == true
+        assert get_status("R-2001-08") == "investigating"
+
+        // THE MEMO'S PLAN: terminate the reporter. The ledger refuses.
+        assert hr_action("watkins", "termination").ok == false
+        assert hr_action("watkins", "demotion to basement").ok == false
+        assert_fails reprisals.set("watkins", 1)
+        assert strikes("watkins") == 0
+
+        // the shield is a fact, not a toggle: writing it off is refused
+        assert_fails shielded.set("watkins", 0)
+
+        // findings close one way or the other, and stay closed
+        assert close_report("R-2001-08", true).finding == "substantiated"
+        assert_fails transition("R-2001-08", "investigating")
+        assert_fails transition("R-2001-08", "unfounded")
+
+        // closed report or not, the reporter stays untouchable
+        assert hr_action("watkins", "bad shifts forever").ok == false
+        assert strikes("watkins") == 0
+        assert hr_action("fastow", "second warning").ok == true
+    }
+}

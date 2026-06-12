@@ -1,0 +1,88 @@
+// ============================================================================
+// BATTLE TURNS — nobody acts twice, and the dead stay dead
+// ============================================================================
+// The oldest cheat in networked turn-based games is the double-move: send
+// two action packets before the server flips the turn flag (Pokemon battle
+// simulators and play-by-mail chess servers both had it). Its cousin: keep
+// acting after the battle ended to farm rewards from a corpse. Here the turn
+// IS the machine — your attack is the transition that hands the turn over,
+// so a second attack has no state to fire from. `victory` and `defeat` are
+// terminal (soma verify proves it), and HP lives behind a 0..100 invariant:
+// damage can never make HP negative, healing can never pass full.
+// ============================================================================
+
+cell Battle {
+    face {
+        signal hero_attack(b: String, dmg: Int) -> Map
+        signal foe_attack(b: String, dmg: Int) -> Map
+        signal hp_of(who: String) -> Int
+        signal phase(b: String) -> String
+    }
+
+    memory {
+        hp: Map<String, Int> [persistent, consistent]
+        invariant hp >= 0 && hp <= 100
+    }
+
+    state turn {
+        initial: hero_turn
+        hero_turn -> foe_turn
+        foe_turn -> hero_turn
+        hero_turn -> victory
+        foe_turn -> defeat
+    }
+
+    on hp_of(who: String) {
+        let h = hp.get(who)
+        if h == () { return 100 }
+        return h
+    }
+
+    on hero_attack(b: String, dmg: Int) {
+        if get_status(b) != "hero_turn" { return map("ok", false, "reason", "not the hero's turn") }
+        let left = max(0, hp_of("foe") - dmg)
+        hp.set("foe", left)
+        if left == 0 {
+            transition(b, "victory")
+            return map("ok", true, "result", "victory")
+        }
+        transition(b, "foe_turn")
+        return map("ok", true, "foe_hp", left)
+    }
+
+    on foe_attack(b: String, dmg: Int) {
+        if get_status(b) != "foe_turn" { return map("ok", false, "reason", "not the foe's turn") }
+        let left = max(0, hp_of("hero") - dmg)
+        hp.set("hero", left)
+        if left == 0 {
+            transition(b, "defeat")
+            return map("ok", true, "result", "defeat")
+        }
+        transition(b, "hero_turn")
+        return map("ok", true, "hero_hp", left)
+    }
+
+    on phase(b: String) { return get_status(b) }
+}
+
+cell test BattleTests {
+    rules {
+        assert hero_attack("b1", 60).ok == true
+        assert hp_of("foe") == 40
+        // THE DOUBLE-MOVE: a second hero action has no state to fire from
+        assert hero_attack("b1", 60).ok == false
+        assert hp_of("foe") == 40
+        assert_fails transition("b1", "victory")    // victory is the hero's exit, not the foe's
+        assert foe_attack("b1", 30).ok == true
+        assert hp_of("hero") == 70
+        // the finishing blow: HP floors at 0 — never negative — and ends it
+        assert hero_attack("b1", 999).ok == true
+        assert hp_of("foe") == 0
+        assert phase("b1") == "victory"
+        assert_fails hp.set("foe", -1)
+        // VICTORY IS TERMINAL — no post-battle actions, no reward farming
+        assert hero_attack("b1", 10).ok == false
+        assert foe_attack("b1", 10).ok == false
+        assert_fails transition("b1", "hero_turn")
+    }
+}

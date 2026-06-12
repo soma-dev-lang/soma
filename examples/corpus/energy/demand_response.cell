@@ -1,0 +1,123 @@
+// ============================================================================
+// DEMAND RESPONSE — no payment before measurement, and settlement is final
+// ============================================================================
+//
+// Demand-response programs pay customers for NOT consuming during a grid
+// emergency — which makes the payout an invitation to invent curtailment.
+// In 2013 FERC penalized Rumford Paper Co. for gaming its DR baseline:
+// the mill ran flat-out during the baseline window, then "curtailed" to
+// its normal level and collected for megawatts it never actually shed.
+// The money leaks wherever settlement can run before measurement, or run
+// twice.
+//
+// Here the event lifecycle is the control: payout can only be posted from
+// `measured` (verified meter data in hand), `settled` is TERMINAL — no
+// re-settlement, no retroactive sweetener — and a cancelled event is
+// terminal too, payable by no path. soma verify proves both. The payout
+// ledger refuses negative or program-cap-busting amounts at the memory.
+// ============================================================================
+
+cell DrEvent {
+    face {
+        signal notify_participants(ev: String) -> Map
+        signal begin_curtailment(ev: String) -> Map
+        signal meter_data_in(ev: String, verified_mw: Int) -> Map
+        signal post_payout(ev: String, dollars: Int) -> Map
+        signal cancel_event(ev: String) -> Map
+        signal event_state(ev: String) -> String
+        signal payout_of(ev: String) -> Int
+    }
+
+    memory {
+        // verified curtailment per event, MW
+        curtailed: Map<String, Int> [persistent, consistent]
+        invariant curtailed >= 0
+
+        // dollars paid per event — program cap $1M per event
+        payout: Map<String, Int> [persistent, consistent]
+        invariant payout >= 0 && payout <= 1000000
+    }
+
+    state dr_lifecycle {
+        initial: scheduled
+        scheduled -> notified      // day-ahead notice to participants
+        notified -> active         // curtailment window begins
+        active -> measured         // meter data verified against baseline
+        measured -> settled        // payment posted — TERMINAL
+        scheduled -> cancelled     // called off — TERMINAL, nothing payable
+    }
+
+    on notify_participants(ev: String) {
+        let r = try { transition(ev, "notified") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(ev))
+    }
+
+    on begin_curtailment(ev: String) {
+        let r = try { transition(ev, "active") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(ev))
+    }
+
+    on meter_data_in(ev: String, verified_mw: Int) {
+        let r = try { transition(ev, "measured") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        curtailed.set(ev, verified_mw)
+        return map("ok", true, "verified_mw", verified_mw)
+    }
+
+    on post_payout(ev: String, dollars: Int) {
+        // payment is only legal from `measured`, and settling consumes it
+        if get_status(ev) != "measured" {
+            return map("ok", false, "reason",
+                "no verified measurement (state: {get_status(ev)})")
+        }
+        let w = try { payout.set(ev, dollars) }
+        if w.error != () { return map("ok", false, "reason", "payout wall: {w.error}") }
+        transition(ev, "settled")
+        return map("ok", true, "paid", dollars, "state", get_status(ev))
+    }
+
+    on cancel_event(ev: String) {
+        let r = try { transition(ev, "cancelled") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(ev))
+    }
+
+    on event_state(ev: String) { return get_status(ev) }
+    on payout_of(ev: String) { return payout.get(ev) ?? 0 }
+}
+
+cell test DrTests {
+    rules {
+        // THE RUMFORD MOVE: collect before anything is measured
+        assert post_payout("e1", 50000).ok == false
+        assert_fails transition("e1", "settled")
+
+        // run the event properly
+        assert notify_participants("e1").ok == true
+        assert begin_curtailment("e1").ok == true
+        // still no money mid-event — measurement isn't in
+        assert post_payout("e1", 50000).ok == false
+
+        assert meter_data_in("e1", 12).ok == true
+        assert post_payout("e1", 50000).ok == true
+        assert payout_of("e1") == 50000
+
+        // settled is TERMINAL: no second settlement, no re-opening
+        assert post_payout("e1", 50000).ok == false
+        assert_fails transition("e1", "measured")
+        assert_fails transition("e1", "active")
+
+        // a cancelled event is terminal and payable by no path
+        assert cancel_event("e2").ok == true
+        assert post_payout("e2", 10).ok == false
+        assert_fails transition("e2", "notified")
+
+        // the ledger walls: no negative clawbacks, no cap-busting checks
+        assert_fails payout.set("e1", -1)
+        assert_fails payout.set("e1", 2000000)
+        assert_fails curtailed.set("e1", -3)
+        assert payout_of("e1") == 50000
+    }
+}

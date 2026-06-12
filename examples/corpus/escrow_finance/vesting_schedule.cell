@@ -1,0 +1,117 @@
+// ============================================================================
+// VESTING SCHEDULE — cliff then linear, and over-vesting is unwritable
+// ============================================================================
+//
+// Equity vesting disputes are a startup classic: a payroll script with an
+// off-by-one releases shares before the 12-month cliff, or rounds the
+// linear schedule up until the employee has claimed MORE than the grant.
+// Clawing shares back after the fact means lawyers. Here the award pool is
+// a memory slot that only decrements: `remaining >= 0` makes claiming past
+// the total grant a rejected write, the cliff is enforced in the vested
+// math, and a forfeited grant is a TERMINAL state — verified, no path back.
+// ============================================================================
+
+cell Vesting {
+    face {
+        signal grant_award(id: String, total: Int, cliff: Int, duration: Int) -> Map
+        signal vested_at(id: String, month: Int) -> Int
+        signal claim_shares(id: String, month: Int, amount: Int) -> Map
+        signal forfeit(id: String) -> Map
+        signal claimed_so_far(id: String) -> Int
+    }
+
+    memory {
+        // shares not yet claimed — the wall: it can never go below zero,
+        // so the sum of claims can never exceed the grant
+        remaining: Map<String, Int> [persistent, consistent]
+        invariant remaining >= 0
+        terms: Map<String, Int> [persistent, consistent]
+    }
+
+    // forfeited and exhausted are terminal: a fired employee's unvested
+    // shares cannot quietly re-vest, a fully-claimed grant cannot refill.
+    state award {
+        initial: drafted
+        drafted -> active
+        active -> forfeited
+        active -> exhausted
+    }
+
+    on grant_award(id: String, total: Int, cliff: Int, duration: Int) {
+        if total <= 0 || cliff < 0 || duration < cliff {
+            return map("ok", false, "reason", "bad terms")
+        }
+        transition(id, "active")
+        remaining.set(id, total)
+        terms.set("{id}:total", total)
+        terms.set("{id}:cliff", cliff)
+        terms.set("{id}:duration", duration)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on vested_at(id: String, month: Int) {
+        let total = terms.get("{id}:total") ?? 0
+        let cliff = terms.get("{id}:cliff") ?? 0
+        let duration = terms.get("{id}:duration") ?? 1
+        if month < cliff { return 0 }                 // before the cliff: zero
+        if month >= duration { return total }         // never more than granted
+        return idiv(total * month, duration)          // linear in between
+    }
+
+    on claim_shares(id: String, month: Int, amount: Int) {
+        if get_status(id) != "active" {
+            return map("ok", false, "reason", "grant not active")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "amount must be positive") }
+        let vested = vested_at(id, month)
+        let already = claimed_so_far(id)
+        if already + amount > vested {
+            return map("ok", false, "reason", "only {vested} vested by month {month}")
+        }
+        let rem = remaining.get(id) ?? 0
+        remaining.set(id, rem - amount)               // raises if it would over-claim
+        if rem - amount == 0 { transition(id, "exhausted") }
+        return map("ok", true, "claimed", amount, "remaining", rem - amount)
+    }
+
+    on forfeit(id: String) {
+        transition(id, "forfeited")
+        let lost = remaining.get(id) ?? 0
+        remaining.set(id, 0)
+        return map("ok", true, "forfeited_shares", lost)
+    }
+
+    on claimed_so_far(id: String) {
+        let total = terms.get("{id}:total") ?? 0
+        let rem = remaining.get(id) ?? total
+        return total - rem
+    }
+}
+
+cell test VestingTests {
+    rules {
+        // 4800 shares, 12-month cliff, 48-month duration
+        assert grant_award("g1", 4800, 12, 48).ok == true
+        // before the cliff: nothing vests, claims refused
+        assert vested_at("g1", 11) == 0
+        assert claim_shares("g1", 11, 1).ok == false
+        // at the cliff: 12/48 = 1200 shares
+        assert vested_at("g1", 12) == 1200
+        assert claim_shares("g1", 12, 1200).ok == true
+        // OVER-VEST: month 24 vests 2400 total; claiming 1300 more = 2500
+        assert claim_shares("g1", 24, 1300).ok == false
+        assert claimed_so_far("g1") == 1200
+        // the pool itself refuses to go negative — even if the math broke
+        assert_fails remaining.set("g1", -1)
+        // never beyond the grant, no matter the month
+        assert vested_at("g1", 999) == 4800
+        // forfeiture is forever: no transition out, no re-vest
+        assert forfeit("g1").forfeited_shares == 3600
+        assert_fails transition("g1", "active")
+        assert claim_shares("g1", 48, 1).ok == false
+        // full life on a second grant: claim everything -> terminal
+        assert grant_award("g2", 100, 0, 10).ok == true
+        assert claim_shares("g2", 10, 100).ok == true
+        assert_fails transition("g2", "active")
+    }
+}

@@ -1,0 +1,107 @@
+// ============================================================================
+// CONTAINER SEAL — a broken seal cannot be quietly replaced
+// ============================================================================
+//
+// Europol calls it "rip-on / rip-off": corrupted port workers crack a
+// container's bolt seal, pull out a duffel of cocaine stashed among the
+// bananas, and fit a cloned seal before the box hits the gate. The whole
+// scheme depends on the custody record showing an unbroken seal chain —
+// on a mismatch being something an insider can paper over. Antwerp and
+// Rotterdam seize 100+ tonnes a year that DIDN'T get papered over.
+//
+// Here every checkpoint verifies the seal number against the manifest.
+// A match is a recorded hop; a MISMATCH moves the box to `tampered` —
+// a TERMINAL state. There is no transition out: no re-verification, no
+// supervisor override, no quiet reseal. The box ends at inspection,
+// every time, and soma verify proves no path leads back.
+// ============================================================================
+
+cell SealCustody {
+    face {
+        signal affix_seal(box: String, seal_no: String) -> Map
+        signal checkpoint_scan(box: String, seal_seen: String) -> Map
+        signal release_clean(box: String) -> Map
+        signal box_state(box: String) -> String
+        signal hops_recorded(box: String) -> Int
+    }
+
+    memory {
+        manifest_seal: Map<String, String> [persistent, consistent]
+
+        hops: Map<String, Int> [persistent, consistent]
+        invariant hops >= 0
+    }
+
+    // tampered has no exits. released_clean requires a verified chain.
+    state seal_chain {
+        initial: unsealed
+        unsealed -> sealed
+        sealed   -> verified_in_chain
+        verified_in_chain -> verified_in_chain   // each further checkpoint
+        verified_in_chain -> released_clean
+        sealed   -> tampered
+        verified_in_chain -> tampered
+    }
+
+    on affix_seal(box: String, seal_no: String) {
+        if len(seal_no) == 0 { return map("ok", false, "reason", "seal number required") }
+        let r = try { transition(box, "sealed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        manifest_seal.set(box, seal_no)
+        return map("ok", true, "box", box, "seal", seal_no)
+    }
+
+    on checkpoint_scan(box: String, seal_seen: String) {
+        let expected = manifest_seal.get(box)
+        if expected == () { return map("ok", false, "reason", "box was never sealed") }
+        if seal_seen != expected {
+            // the cloned seal: mismatch is terminal, not negotiable
+            transition(box, "tampered")
+            return map("ok", true, "verdict", "TAMPERED",
+                       "expected", expected, "seen", seal_seen)
+        }
+        let r = try { transition(box, "verified_in_chain") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        hops.set(box, (hops.get(box) ?? 0) + 1)
+        return map("ok", true, "verdict", "intact", "hops", hops.get(box))
+    }
+
+    on release_clean(box: String) {
+        let r = try { transition(box, "released_clean") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "released_clean")
+    }
+
+    on box_state(box: String) { return get_status(box) }
+    on hops_recorded(box: String) { return hops.get(box) ?? 0 }
+}
+
+cell test NoQuietReseal {
+    rules {
+        // sealed at origin, verified at two checkpoints, released
+        assert affix_seal("MSKU77", "SL-90412").ok == true
+        assert checkpoint_scan("MSKU77", "SL-90412").verdict == "intact"
+        assert checkpoint_scan("MSKU77", "SL-90412").verdict == "intact"
+        assert hops_recorded("MSKU77") == 2
+        assert release_clean("MSKU77").ok == true
+        assert_fails transition("MSKU77", "verified_in_chain")
+
+        // THE RIP-OFF: cloned seal SL-90413 at the terminal gate
+        assert affix_seal("MSKU88", "SL-55001").ok == true
+        assert checkpoint_scan("MSKU88", "SL-55001").verdict == "intact"
+        assert checkpoint_scan("MSKU88", "SL-55002").verdict == "TAMPERED"
+        assert box_state("MSKU88") == "tampered"
+
+        // the paper-over: re-verify, release, or "re-seal". No exit.
+        assert_fails transition("MSKU88", "verified_in_chain")
+        assert_fails transition("MSKU88", "released_clean")
+        assert_fails transition("MSKU88", "sealed")
+        assert release_clean("MSKU88").ok == false
+        assert checkpoint_scan("MSKU88", "SL-55001").ok == false
+        assert box_state("MSKU88") == "tampered"
+
+        // an unsealed box has no chain to verify
+        assert checkpoint_scan("GHOST", "SL-1").ok == false
+        assert release_clean("GHOST").ok == false
+    }
+}

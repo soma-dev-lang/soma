@@ -1,0 +1,82 @@
+// BLAST FURNACE TOP — never open a door against live CO gas.
+// Blast furnace top gas is roughly a quarter carbon monoxide at positive
+// pressure; opening an access door on a live furnace has gassed entire
+// maintenance crews. The kill chain is isolation -> venting -> gas test,
+// and every fatality is a skipped link. Here the door has no edge from
+// any pressurized state: `live -> door_open` and `isolated -> door_open`
+// do not exist, only `vented` reaches the door. The gas-test ledger is
+// the final wall — entry is logged with the measured CO ppm, and the
+// memory itself refuses a reading above the 30 ppm entry limit.
+
+cell FurnaceTop {
+    face {
+        signal isolate(id: String) -> String
+        signal resume_blast(id: String) -> String
+        signal vent_and_flare(id: String) -> String
+        signal open_door(id: String, co_ppm: Int) -> Map
+        signal close_door(id: String) -> String
+    }
+
+    memory {
+        // CO at the door on entry, ppm — 30 is the ceiling, structurally
+        entry_co: Map<String, Int> [persistent, consistent]
+        invariant entry_co >= 0 && entry_co <= 30
+    }
+
+    state furnace {
+        initial: live
+        live -> isolated          // blast off, goggle valves shut
+        isolated -> live          // resume without ever opening
+        isolated -> vented        // bleeders open, top gas flared off
+        vented -> door_open       // the ONLY edge to an open door
+        door_open -> vented
+        vented -> live            // reseal, purge, resume blast
+    }
+
+    on isolate(id: String)       { transition(id, "isolated")  return get_status(id) }
+    on resume_blast(id: String)  { transition(id, "live")  return get_status(id) }
+    on vent_and_flare(id: String) { transition(id, "vented")  return get_status(id) }
+
+    on open_door(id: String, co_ppm: Int) {
+        // gas test FIRST: a hot reading is refused by the ledger itself
+        let w = try { entry_co.set(id, co_ppm) }
+        if w.error != () {
+            return map("ok", false, "state", get_status(id),
+                       "reason", "gas test failed: {co_ppm} ppm CO (limit 30)")
+        }
+        let r = try { transition(id, "door_open") }
+        if r.error != () {
+            return map("ok", false, "reason", "furnace not vented — door stays shut")
+        }
+        return map("ok", true, "state", get_status(id), "co_ppm", co_ppm)
+    }
+
+    on close_door(id: String) { transition(id, "vented")  return get_status(id) }
+}
+
+cell test FurnaceTests {
+    rules {
+        // a live furnace's door does not open — no such edge
+        assert_fails transition("f1", "door_open")
+        assert open_door("f1", 5).ok == false
+
+        // isolated is NOT vented: still pressurized, still no door
+        assert isolate("f1") == "isolated"
+        assert_fails transition("f1", "door_open")
+
+        // vented + clean gas test: entry granted
+        assert vent_and_flare("f1") == "vented"
+        assert open_door("f1", 8).ok == true
+
+        // an open door cannot coexist with a live furnace
+        assert_fails transition("f1", "live")
+        assert close_door("f1") == "vented"
+
+        // a hot gas test is refused BY THE MEMORY, door stays shut
+        assert open_door("f1", 250).ok == false
+        assert_fails entry_co.set("f1", 31)
+
+        // reseal and resume
+        assert resume_blast("f1") == "live"
+    }
+}

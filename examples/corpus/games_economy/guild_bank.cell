@@ -1,0 +1,101 @@
+// ============================================================================
+// GUILD BANK — the heist needs a key an expelled member cannot hold
+// ============================================================================
+// EVE Online's Guiding Hand Social Club heist and a thousand WoW guild-bank
+// ninja-loots share one mechanic: ACCESS OUTLIVES STANDING. A member is
+// expelled but a cached session, a stale permission row, or a race lets one
+// last withdrawal through. Here membership is a machine — `expelled` is
+// TERMINAL (soma verify proves there is no readmission edge) and every
+// withdrawal checks live standing. Two memory walls hold even if all that
+// logic were deleted: the vault can never go negative, and no member's
+// daily withdrawals can exceed 500 gold, because larger values cannot be
+// written into the ledger at all.
+// ============================================================================
+
+cell GuildBank {
+    face {
+        signal admit(player: String) -> Map
+        signal expel(player: String) -> Map
+        signal deposit(player: String, amt: Int) -> Map
+        signal withdraw(player: String, amt: Int) -> Map
+        signal vault_total() -> Int
+        signal standing_of(player: String) -> String
+    }
+
+    memory {
+        vault: Map<String, Int> [persistent, consistent]
+        invariant vault >= 0
+        drawn_today: Map<String, Int> [persistent, consistent]
+        invariant drawn_today >= 0 && drawn_today <= 500
+    }
+
+    state membership {
+        initial: applicant
+        applicant -> member
+        applicant -> rejected
+        member -> expelled
+    }
+
+    on admit(player: String) {
+        let r = try { transition(player, "member") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on expel(player: String) {
+        let r = try { transition(player, "expelled") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on deposit(player: String, amt: Int) {
+        if amt <= 0 { return map("ok", false, "reason", "amount must be positive") }
+        if standing_of(player) != "member" { return map("ok", false, "reason", "not a member") }
+        vault.set("gold", (vault.get("gold") ?? 0) + amt)
+        return map("ok", true)
+    }
+
+    on withdraw(player: String, amt: Int) {
+        if amt <= 0 { return map("ok", false, "reason", "amount must be positive") }
+        if standing_of(player) != "member" {
+            return map("ok", false, "reason", "no standing to withdraw")
+        }
+        // wall 1: the daily cap is a memory invariant, not an if-statement
+        let w1 = try { drawn_today.set(player, (drawn_today.get(player) ?? 0) + amt) }
+        if w1.error != () { return map("ok", false, "reason", "daily cap of 500 reached") }
+        // wall 2: the vault refuses to go negative
+        let w2 = try { vault.set("gold", (vault.get("gold") ?? 0) - amt) }
+        if w2.error != () {
+            drawn_today.set(player, (drawn_today.get(player) ?? 0) - amt)
+            return map("ok", false, "reason", "vault has insufficient gold")
+        }
+        return map("ok", true, "drawn", amt)
+    }
+
+    on vault_total() { return vault.get("gold") ?? 0 }
+    on standing_of(player: String) { return get_status(player) }
+}
+
+cell test BankTests {
+    rules {
+        assert admit("ren").ok == true
+        assert deposit("ren", 1000).ok == true
+        assert withdraw("ren", 300).ok == true
+        // the daily cap: 300 + 300 would write 600 into a <= 500 slot
+        assert withdraw("ren", 300).ok == false
+        assert withdraw("ren", 200).ok == true
+        assert_fails drawn_today.set("ren", 501)
+        assert vault_total() == 500
+        // THE HEIST: expelled, then withdraw on the cached session
+        assert expel("ren").ok == true
+        assert withdraw("ren", 100).ok == false
+        assert vault_total() == 500
+        // expelled is terminal: no quiet readmission, ever
+        assert_fails transition("ren", "member")
+        assert_fails transition("ren", "applicant")
+        // a fresh member still cannot beat the cap or overdraw
+        assert admit("kit").ok == true
+        assert withdraw("kit", 501).ok == false
+        assert_fails vault.set("gold", -1)
+    }
+}

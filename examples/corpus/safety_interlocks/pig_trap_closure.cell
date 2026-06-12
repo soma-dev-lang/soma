@@ -1,0 +1,98 @@
+// PIPELINE PIG TRAP — the closure never opens against trapped pressure.
+// Pig launcher/receiver closures keep killing pipeliners the same way:
+// the trap is valved off from the line, the gauge "reads zero" (or
+// nobody looks), the yoke is swung — and residual gas behind the pig
+// fires the closure door like a cannon breech. Industry recommended
+// practice is a hard sequence: isolate, blow down, PROVE zero, then
+// open. Here that sequence is the only path that exists: `in_service`
+// and `isolated` have no edge to `door_open`; only `blown_down` does,
+// and the blowdown edge zeroes the trap before the door edge appears.
+// The trap gauge ledger refuses any write past the 6000 kPa rating.
+
+cell PigTrap {
+    face {
+        signal isolate_trap(id: String) -> String
+        signal return_to_service(id: String, kpa: Int) -> Map
+        signal blow_down(id: String) -> String
+        signal open_closure(id: String) -> Map
+        signal shut_closure(id: String) -> String
+        signal trap_kpa(id: String) -> Int
+    }
+
+    memory {
+        // trap pressure, kPa gauge; the barrel is rated to 6000
+        trap_gauge: Map<String, Int> [persistent, consistent]
+        invariant trap_gauge >= 0 && trap_gauge <= 6000
+    }
+
+    state trap {
+        initial: in_service
+        in_service -> isolated      // kicker and isolation valves closed
+        isolated -> in_service      // back into the line, never opened
+        isolated -> blown_down      // vented to flare, gauge proven zero
+        blown_down -> door_open     // the ONLY edge to an open closure
+        door_open -> blown_down     // door shut and yoked
+        blown_down -> isolated      // re-pressurization starts from sealed
+    }
+
+    on isolate_trap(id: String) { transition(id, "isolated")  return get_status(id) }
+
+    on return_to_service(id: String, kpa: Int) {
+        let r = try { transition(id, "in_service") }
+        if r.error != () {
+            return map("ok", false, "reason", "closure not proven shut and sealed")
+        }
+        let w = try { trap_gauge.set(id, kpa) }
+        if w.error != () {
+            transition(id, "isolated")
+            return map("ok", false, "reason", "{kpa} kPa exceeds the 6000 kPa rating")
+        }
+        return map("ok", true, "state", get_status(id), "kpa", kpa)
+    }
+
+    on blow_down(id: String) {
+        trap_gauge.set(id, 0)           // proven zero BEFORE the door can exist
+        transition(id, "blown_down")
+        return get_status(id)
+    }
+
+    on open_closure(id: String) {
+        let r = try { transition(id, "door_open") }
+        if r.error != () {
+            let p = trap_kpa(id)
+            return map("ok", false, "reason", "trap not blown down ({p} kPa) — yoke stays locked")
+        }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on shut_closure(id: String) { transition(id, "blown_down")  return get_status(id) }
+    on trap_kpa(id: String) { return trap_gauge.get(id) ?? 0 }
+}
+
+cell test PigTrapTests {
+    rules {
+        // opening a live trap: no edge, refused
+        assert open_closure("t1").ok == false
+        assert_fails transition("t1", "door_open")
+
+        // isolated is NOT zero — the breech stays locked
+        assert isolate_trap("t1") == "isolated"
+        assert open_closure("t1").ok == false
+
+        // blow down, prove zero, and the door exists
+        assert blow_down("t1") == "blown_down"
+        assert trap_kpa("t1") == 0
+        assert open_closure("t1").ok == true
+
+        // an open trap cannot rejoin the line
+        assert_fails transition("t1", "in_service")
+        assert shut_closure("t1") == "blown_down"
+
+        // back to service through the sealed ladder; the gauge is a wall
+        assert isolate_trap("t1") == "isolated"
+        assert return_to_service("t1", 9000).ok == false
+        assert_fails trap_gauge.set("t1", 6001)
+        assert return_to_service("t1", 4800).ok == true
+        assert trap_kpa("t1") == 4800
+    }
+}

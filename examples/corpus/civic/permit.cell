@@ -1,0 +1,117 @@
+// ============================================================================
+// PERMIT — a building permit that cannot skip a review
+// ============================================================================
+// New York's self-certification program let architects stamp their own
+// permits "to speed things up" — DOB audits later found buildings approved
+// with zoning and structural reviews simply skipped, and the city spent a
+// decade revoking permits for occupied buildings. The skip is possible when
+// "reviewed" is a checkbox. Here the approval chain is the state machine
+// itself: `issued` is only reachable THROUGH zoning, structural, and fire
+// review, soma verify proves it, and `denied` and `issued` are terminal.
+// The fee ledger is a second wall: a permit cannot be charged twice.
+// ============================================================================
+
+cell BuildingPermit {
+    face {
+        signal pay_fee(id: String) -> Map
+        signal pass_zoning(id: String) -> Map
+        signal pass_structural(id: String) -> Map
+        signal pass_fire(id: String) -> Map
+        signal issue(id: String) -> Map
+        signal deny(id: String) -> Map
+        signal permit_state(id: String) -> String
+    }
+
+    memory {
+        // permit -> fee payments. Double-billing is unrepresentable.
+        fees: Map<String, Int> [persistent, consistent]
+        invariant fees >= 0 && fees <= 1
+    }
+
+    // The chain. There is NO edge from filed to issued: every issued
+    // permit passed all three reviews, by construction.
+    state permit {
+        initial: filed
+        filed -> zoning_ok
+        zoning_ok -> structural_ok
+        structural_ok -> fire_ok
+        fire_ok -> issued
+        filed -> denied
+        zoning_ok -> denied
+        structural_ok -> denied
+        fire_ok -> denied
+    }
+
+    on permit_state(id: String) { return get_status(id) }
+
+    on pay_fee(id: String) {
+        let prior = fees.get(id) ?? 0
+        let w = try { fees.set(id, prior + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "fee already collected for {id}")
+        }
+        return map("ok", true, "permit", id)
+    }
+
+    on pass_zoning(id: String) {
+        let r = try { transition(id, "zoning_ok") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "stage", permit_state(id))
+    }
+
+    on pass_structural(id: String) {
+        let r = try { transition(id, "structural_ok") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "stage", permit_state(id))
+    }
+
+    on pass_fire(id: String) {
+        let r = try { transition(id, "fire_ok") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "stage", permit_state(id))
+    }
+
+    on issue(id: String) {
+        if (fees.get(id) ?? 0) == 0 {
+            return map("ok", false, "reason", "fee unpaid for {id}")
+        }
+        let r = try { transition(id, "issued") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "permit", id)
+    }
+
+    on deny(id: String) {
+        let r = try { transition(id, "denied") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "permit", id)
+    }
+}
+
+cell test PermitTests {
+    rules {
+        // the self-certification shortcut does not exist
+        assert pay_fee("p1").ok == true
+        assert issue("p1").ok == false                    // filed -> issued: no edge
+        assert_fails transition("p1", "issued")
+        assert_fails transition("p1", "fire_ok")          // and no skipping ahead
+
+        // the only road is through every review
+        assert pass_zoning("p1").ok == true
+        assert pass_structural("p1").ok == true
+        assert pass_fire("p1").ok == true
+        assert issue("p1").ok == true
+        assert permit_state("p1") == "issued"
+        assert_fails transition("p1", "filed")            // issued is forever
+        assert_fails fees.set("p1", 2)                    // no double-billing
+
+        // an unpaid permit stalls at the cashier even after reviews
+        assert pass_zoning("p2").ok == true
+        assert pass_structural("p2").ok == true
+        assert pass_fire("p2").ok == true
+        assert issue("p2").ok == false                    // fee unpaid
+
+        // a denial is terminal too
+        assert deny("p3").ok == true
+        assert_fails transition("p3", "zoning_ok")
+    }
+}

@@ -1,0 +1,83 @@
+// ============================================================================
+// LOOT ROLL — one roll per raider, one award per drop
+// ============================================================================
+// Raid loot drama is as old as raids: a player spam-clicks "Need" and gets
+// two entries in the roll, or a master looter awards the same drop to two
+// friends ("it bugged, I swear"). Both killed guilds; the second was a real
+// duping vector when award and mail-out raced. Here each (raider, drop)
+// roll is walled at <= 1 entry by the memory, and the drop itself is a
+// machine: rolling -> awarded is the ONLY award edge and `awarded` is
+// terminal — soma verify proves a drop cannot be handed out twice.
+// ============================================================================
+
+cell LootRoll {
+    face {
+        signal enter_roll(drop: String, raider: String, roll_value: Int) -> Map
+        signal award(drop: String) -> Map
+        signal holder_of(drop: String) -> String
+        signal best_roll(drop: String) -> Int
+    }
+
+    memory {
+        entries: Map<String, Int> [persistent, consistent]
+        invariant entries >= 0 && entries <= 1
+        lead_roll: Map<String, Int> [persistent, consistent]
+        lead_raider: Map<String, String> [persistent, consistent]
+        holder: Map<String, String> [persistent, consistent]
+    }
+
+    state drop_flow {
+        initial: rolling
+        rolling -> awarded
+        rolling -> disenchanted
+    }
+
+    on enter_roll(drop: String, raider: String, roll_value: Int) {
+        if get_status(drop) != "rolling" { return map("ok", false, "reason", "rolls are closed") }
+        if roll_value < 1 || roll_value > 100 { return map("ok", false, "reason", "roll must be 1..100") }
+        let key = "{drop}/{raider}"
+        // THE WALL: a second entry from the same raider cannot be stored
+        let w = try { entries.set(key, (entries.get(key) ?? 0) + 1) }
+        if w.error != () { return map("ok", false, "reason", "{raider} already rolled") }
+        if roll_value > (lead_roll.get(drop) ?? 0) {
+            lead_roll.set(drop, roll_value)
+            lead_raider.set(drop, raider)
+        }
+        return map("ok", true, "rolled", roll_value)
+    }
+
+    on award(drop: String) {
+        if lead_raider.get(drop) == () { return map("ok", false, "reason", "nobody rolled") }
+        // the ONLY award edge — and awarded is terminal
+        let r = try { transition(drop, "awarded") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        holder.set(drop, lead_raider.get(drop))
+        return map("ok", true, "winner", holder.get(drop))
+    }
+
+    on holder_of(drop: String) { return holder.get(drop) ?? "" }
+    on best_roll(drop: String) { return lead_roll.get(drop) ?? 0 }
+}
+
+cell test RollTests {
+    rules {
+        assert enter_roll("axe", "thorin", 42).ok == true
+        // THE SPAM-CLICK: a second entry is an unstorable write
+        assert enter_roll("axe", "thorin", 99).ok == false
+        assert best_roll("axe") == 42
+        assert_fails entries.set("axe/thorin", 2)
+        assert enter_roll("axe", "gimli", 77).ok == true
+        assert best_roll("axe") == 77
+        // out-of-range rolls from modified clients bounce
+        assert enter_roll("axe", "loki", 999).ok == false
+        assert award("axe").ok == true
+        assert holder_of("axe") == "gimli"
+        // AWARDED IS TERMINAL: no second hand-out, no late entries
+        assert award("axe").ok == false
+        assert_fails transition("axe", "rolling")
+        assert_fails transition("axe", "disenchanted")
+        assert enter_roll("axe", "loki", 50).ok == false
+        // a drop nobody rolled on cannot be "awarded" to a friend
+        assert award("shield").ok == false
+    }
+}

@@ -1,0 +1,101 @@
+// ============================================================================
+// BACKUP RETENTION — the floor you cannot prune through
+// ============================================================================
+//
+// On January 31, 2017, a GitLab engineer cleaning up replication lag ran
+// `rm -rf` on what turned out to be the PRIMARY database directory. That
+// was survivable — until all five backup mechanisms turned out to be
+// broken: pg_dump silently producing empty files, S3 uploads failing,
+// snapshots disabled. Six hours of production data were gone forever.
+//
+// Two structural fixes here. First, a backup is only trusted after a
+// restore drill: the lifecycle forces created -> verifying -> verified,
+// and a backup that fails its drill lands in `corrupt`, a TERMINAL
+// state that can never be counted or restored from. Second, the count
+// of verified copies lives behind a memory invariant with a floor of 3:
+// the prune that would leave you with two copies is refused by the
+// MEMORY, not by a retention script somebody edits at 2 a.m.
+// ============================================================================
+
+cell BackupVault {
+    face {
+        signal record_backup(b: String) -> Map
+        signal drill_pass(b: String) -> Map
+        signal drill_fail(b: String) -> Map
+        signal prune_one(dataset: String) -> Map
+        signal restorable(b: String) -> Bool
+    }
+
+    memory {
+        // verified copies per dataset. The floor: never below 3.
+        copies: Map<String, Int> [persistent, consistent]
+        invariant copies >= 3 && copies <= 30
+    }
+
+    // `corrupt` is terminal: a backup that failed its restore drill is
+    // dead evidence, never a candidate for "maybe it's fine actually".
+    state backup {
+        initial: created
+        created -> verifying
+        verifying -> verified
+        verifying -> corrupt
+    }
+
+    on record_backup(b: String) {
+        let r = try { transition(b, "verifying") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "verifying")
+    }
+
+    on drill_pass(b: String) {
+        let r = try { transition(b, "verified") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "verified")
+    }
+
+    on drill_fail(b: String) {
+        let r = try { transition(b, "corrupt") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "corrupt")
+    }
+
+    on prune_one(dataset: String) {
+        let n = copies.get(dataset) ?? 0
+        let w = try { copies.set(dataset, n - 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "retention floor: pruning to {n - 1} copies refused")
+        }
+        return map("ok", true, "copies", n - 1)
+    }
+
+    on restorable(b: String) {
+        return get_status(b) == "verified"
+    }
+}
+
+cell test RetentionTests {
+    rules {
+        // a backup is not a backup until the restore drill passes
+        assert record_backup("db-0131").ok == true
+        assert restorable("db-0131") == false
+        // GITLAB'S DISCOVERY: you cannot restore from an unverified file
+        assert_fails transition("db-0131", "restored")
+        assert drill_pass("db-0131").ok == true
+        assert restorable("db-0131") == true
+
+        // a failed drill is terminal — no second opinion revives it
+        assert record_backup("db-0201").ok == true
+        assert drill_fail("db-0201").ok == true
+        assert_fails transition("db-0201", "verified")
+        assert_fails transition("db-0201", "verifying")
+        assert restorable("db-0201") == false
+
+        // the retention floor: 5 -> 4 -> 3 is fine, 3 -> 2 is refused
+        assert copies.set("prod-pg", 5) == ()
+        assert prune_one("prod-pg").copies == 4
+        assert prune_one("prod-pg").copies == 3
+        assert prune_one("prod-pg").ok == false
+        assert_fails copies.set("prod-pg", 2)
+        assert_fails copies.set("prod-pg", 0)
+    }
+}

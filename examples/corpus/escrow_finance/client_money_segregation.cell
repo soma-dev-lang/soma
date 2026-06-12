@@ -1,0 +1,99 @@
+// ============================================================================
+// CLIENT MONEY SEGREGATION — the firm can only ever touch its own excess
+// ============================================================================
+//
+// MF Global, October 2011: as the firm's own liquidity died, roughly $1.6B
+// of SEGREGATED customer funds were wired out to cover house obligations.
+// The rule (CFTC 1.20) was clear; the enforcement was a spreadsheet. The
+// structural version: the seg account tracks an `excess` slot — firm money
+// deposited as a buffer — and EVERY house withdrawal draws ONLY on excess,
+// with `excess >= 0` as the invariant. The wire that dips into customer
+// money is a rejected write, even at 2am on the last day. Client claims
+// are themselves a slot that cannot go negative (no over-withdrawal).
+// ============================================================================
+
+cell SegAccount {
+    face {
+        signal client_deposit(client: String, amount: Int) -> Map
+        signal client_withdraw(client: String, amount: Int) -> Map
+        signal firm_buffer_in(amount: Int) -> Map
+        signal firm_draw(amount: Int) -> Map
+        signal seg_status() -> Map
+    }
+
+    memory {
+        // each client's claim on the seg account — never negative
+        claims: Map<String, Int> [persistent, consistent]
+        invariant claims >= 0
+        // firm money sitting in seg as a buffer: the ONLY pool the firm
+        // may draw on. The MF Global wire dies on `excess >= 0`.
+        excess: Map<String, Int> [persistent, consistent]
+        invariant excess >= 0
+        totals: Map<String, Int> [persistent, consistent]
+        invariant totals >= 0
+    }
+
+    on client_deposit(client: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        claims.set(client, (claims.get(client) ?? 0) + amount)
+        totals.set("client", (totals.get("client") ?? 0) + amount)
+        return map("ok", true, "claim", claims.get(client))
+    }
+
+    on client_withdraw(client: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        let c = claims.get(client) ?? 0
+        claims.set(client, c - amount)     // raises past the client's claim
+        totals.set("client", (totals.get("client") ?? 0) - amount)
+        return map("ok", true, "claim", c - amount)
+    }
+
+    on firm_buffer_in(amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        excess.set("buffer", (excess.get("buffer") ?? 0) + amount)
+        return map("ok", true, "excess", excess.get("buffer"))
+    }
+
+    on firm_draw(amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        let e = excess.get("buffer") ?? 0
+        // THE WALL: the firm draws on excess and ONLY excess. There is no
+        // code path from here to `claims` or to the client total.
+        excess.set("buffer", e - amount)   // raises if it touches client money
+        return map("ok", true, "excess", e - amount)
+    }
+
+    on seg_status() {
+        let client_total = totals.get("client") ?? 0
+        let buffer = excess.get("buffer") ?? 0
+        return map("client_funds", client_total, "firm_excess", buffer,
+                   "seg_account", client_total + buffer)
+    }
+}
+
+cell test SegTests {
+    rules {
+        assert client_deposit("acct-101", 50000).ok == true
+        assert client_deposit("acct-202", 30000).ok == true
+        assert firm_buffer_in(5000).ok == true
+        assert seg_status().seg_account == 85000
+        // the firm draws within its excess: fine
+        assert firm_draw(4000).excess == 1000
+        // THE MF GLOBAL WIRE: 10,000 against 1,000 of excess. The other
+        // 9,000 would be customer money. The write itself is rejected.
+        assert_fails firm_draw(10000)
+        assert seg_status().firm_excess == 1000
+        assert seg_status().client_funds == 80000
+        // and there is no handler that can touch claims for the firm —
+        // even a direct rogue write below zero is refused by the slot
+        assert_fails excess.set("buffer", -1)
+        assert_fails claims.set("acct-101", -1)
+        // clients withdraw their own money freely, up to their claim
+        assert client_withdraw("acct-202", 30000).claim == 0
+        assert_fails client_withdraw("acct-202", 1)
+        assert client_withdraw("acct-101", 20000).claim == 30000
+        // conservation across the whole story
+        assert seg_status().client_funds == 30000
+        assert seg_status().seg_account == 31000
+    }
+}

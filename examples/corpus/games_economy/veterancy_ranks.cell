@@ -1,0 +1,91 @@
+// ============================================================================
+// VETERANCY RANKS — promotion is earned and can never be rolled back
+// ============================================================================
+// Competitive games have shipped both halves of this bug: rank-rollback
+// (disconnect during the promotion screen and log back in demoted — Halo
+// and several ladder games paid out compensation waves for it) and
+// rank-injection (a modified client reports Grandmaster and the server
+// believes it). Both are writes the server should never accept. Here XP is
+// walled into 0..100000 — no death-penalty underflow, no injected overflow —
+// and rank is a FORWARD-ONLY machine: novice -> adept -> master ->
+// grandmaster. soma verify proves there are no demotion edges and that
+// grandmaster is terminal: a rank, once earned, is permanent.
+// ============================================================================
+
+cell Veterancy {
+    face {
+        signal earn_xp(player: String, xp_amt: Int) -> Map
+        signal claim_promotion(player: String) -> Map
+        signal xp_of(player: String) -> Int
+        signal rank_of(player: String) -> String
+    }
+
+    memory {
+        xp: Map<String, Int> [persistent, consistent]
+        invariant xp >= 0 && xp <= 100000
+    }
+
+    state rank {
+        initial: novice
+        novice -> adept
+        adept -> master
+        master -> grandmaster
+    }
+
+    on earn_xp(player: String, xp_amt: Int) {
+        if xp_amt <= 0 { return map("ok", false, "reason", "xp must be positive") }
+        let w = try { xp.set(player, (xp.get(player) ?? 0) + xp_amt) }
+        if w.error != () { return map("ok", false, "reason", "xp out of range") }
+        return map("ok", true, "xp", xp.get(player))
+    }
+
+    on claim_promotion(player: String) {
+        let cur = rank_of(player)
+        let have = xp_of(player)
+        let next = ""
+        let need = 0
+        if cur == "novice" {
+            next = "adept"
+            need = 1000
+        }
+        if cur == "adept" {
+            next = "master"
+            need = 10000
+        }
+        if cur == "master" {
+            next = "grandmaster"
+            need = 50000
+        }
+        if next == "" { return map("ok", false, "reason", "{player} is already grandmaster") }
+        if have < need { return map("ok", false, "reason", "need {need} xp, have {have}") }
+        transition(player, next)
+        return map("ok", true, "rank", next)
+    }
+
+    on xp_of(player: String) { return xp.get(player) ?? 0 }
+    on rank_of(player: String) { return get_status(player) }
+}
+
+cell test RankTests {
+    rules {
+        assert earn_xp("li", 1200).ok == true
+        assert claim_promotion("li").ok == true
+        assert rank_of("li") == "adept"
+        // not enough XP for master — and a client cannot inject a rank skip
+        assert claim_promotion("li").ok == false
+        assert_fails transition("li", "grandmaster")
+        // NO DEMOTION EDGE EXISTS — the rollback bug is unrepresentable
+        assert_fails transition("li", "novice")
+        assert earn_xp("li", 50000).ok == true
+        assert claim_promotion("li").ok == true
+        assert claim_promotion("li").ok == true
+        assert rank_of("li") == "grandmaster"
+        // grandmaster is terminal: nothing left to claim, nothing to lose
+        assert claim_promotion("li").ok == false
+        assert_fails transition("li", "master")
+        // XP cannot underflow on death penalties or overflow on injection
+        assert earn_xp("li", -500).ok == false
+        assert_fails xp.set("li", -1)
+        assert_fails xp.set("li", 100001)
+    }
+}

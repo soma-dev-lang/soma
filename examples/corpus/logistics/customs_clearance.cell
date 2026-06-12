@@ -1,0 +1,111 @@
+// ============================================================================
+// CUSTOMS CLEARANCE — no release without an examination verdict
+// ============================================================================
+//
+// The 2019 Philadelphia seizure of 17.5 tonnes of cocaine aboard the MSC
+// Gayane worked because the containers were HELD at the port until CBP
+// finished examining them. The failure mode customs agencies fear is the
+// opposite: a "port runner" — cargo that leaves the terminal while its
+// entry is still under review, or after a seizure order. Once goods are
+// on a truck, the border has already failed.
+//
+// This lifecycle makes the run impossible in the record system: `released`
+// is reachable ONLY from `cleared`, an exam hold must return a verdict
+// before anything moves, and `seized` is TERMINAL — a seizure order can
+// never be walked back to circulation. soma verify proves all three.
+// ============================================================================
+
+cell Customs {
+    face {
+        signal file_entry(entry: String, duty_cents: Int) -> Map
+        signal flag_for_exam(entry: String) -> Map
+        signal exam_verdict(entry: String, verdict: String) -> Map
+        signal clear_entry(entry: String) -> Map
+        signal release_cargo(entry: String) -> Map
+        signal entry_status(entry: String) -> String
+    }
+
+    memory {
+        // assessed duty per entry, in cents — never negative
+        duty: Map<String, Int> [persistent, consistent]
+        invariant duty >= 0
+    }
+
+    // released and seized are terminal: gone is gone, seized is seized.
+    state entry_flow {
+        initial: filed
+        filed        -> under_review
+        under_review -> cleared
+        under_review -> exam_hold
+        exam_hold    -> cleared
+        exam_hold    -> seized
+        cleared      -> released
+    }
+
+    on file_entry(entry: String, duty_cents: Int) {
+        let w = try { duty.set(entry, duty_cents) }
+        if w.error != () { return map("ok", false, "reason", "duty cannot be negative") }
+        let r = try { transition(entry, "under_review") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "entry", entry, "duty_cents", duty_cents)
+    }
+
+    on flag_for_exam(entry: String) {
+        let r = try { transition(entry, "exam_hold") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "exam_hold")
+    }
+
+    on exam_verdict(entry: String, verdict: String) {
+        if verdict != "cleared" && verdict != "seized" {
+            return map("ok", false, "reason", "verdict must be cleared or seized")
+        }
+        let r = try { transition(entry, verdict) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", verdict)
+    }
+
+    on clear_entry(entry: String) {
+        let r = try { transition(entry, "cleared") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "cleared")
+    }
+
+    on release_cargo(entry: String) {
+        let r = try { transition(entry, "released") }
+        if r.error != () { return map("ok", false, "reason", "not cleared: {r.error}") }
+        return map("ok", true, "state", "released")
+    }
+
+    on entry_status(entry: String) { return get_status(entry) }
+}
+
+cell test NoPortRunners {
+    rules {
+        // THE PORT RUN: release straight from review. No such edge.
+        assert file_entry("E-100", 250000).ok == true
+        assert release_cargo("E-100").ok == false
+        assert_fails transition("E-100", "released")
+
+        // a clean entry clears, then releases
+        assert clear_entry("E-100").ok == true
+        assert release_cargo("E-100").ok == true
+        assert entry_status("E-100") == "released"
+
+        // the Gayane: flagged, examined, SEIZED — terminal forever
+        assert file_entry("E-666", 90000).ok == true
+        assert flag_for_exam("E-666").ok == true
+        assert exam_verdict("E-666", "seized").ok == true
+        assert_fails transition("E-666", "cleared")
+        assert_fails transition("E-666", "released")
+        assert entry_status("E-666") == "seized"
+
+        // an exam hold cannot be released without a verdict
+        assert file_entry("E-7", 100).ok == true
+        assert flag_for_exam("E-7").ok == true
+        assert_fails transition("E-7", "released")
+
+        // negative duty assessments are refused by the memory
+        assert_fails duty.set("E-7", -500)
+    }
+}

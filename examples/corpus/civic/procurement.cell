@@ -1,0 +1,111 @@
+// ============================================================================
+// PROCUREMENT — sealed bids stay sealed, and the unsealing ends the auction
+// ============================================================================
+// Classic bid-rigging (a DOJ antitrust staple): a procurement officer leaks
+// the standing low bid to a favored vendor, who then "submits" a bid one
+// dollar under it — possible because the system can read bids before close
+// and accept bids after. Both capabilities are removed here, structurally:
+// bid amounts are unreadable until the tender leaves `accepting`, the
+// unsealing transition is the same event that closes submissions forever,
+// and one bid per vendor is a memory invariant — there is no "revised bid"
+// after a peek. `awarded` is terminal: the contract cannot be quietly
+// re-tendered for a do-over.
+// ============================================================================
+
+cell SealedTender {
+    face {
+        signal submit_bid(vendor: String, amount: Int) -> Map
+        signal peek_bids() -> Map
+        signal unseal() -> Map
+        signal award_contract() -> Map
+        signal phase() -> String
+    }
+
+    memory {
+        // vendor -> bids submitted. A second (revised) bid is unrepresentable.
+        bid_count: Map<String, Int> [persistent, consistent]
+        invariant bid_count >= 0 && bid_count <= 1
+
+        // amounts must be positive — a $0 placeholder bid is refused.
+        sealed: Map<String, Int> [persistent, consistent]
+        invariant sealed >= 1
+    }
+
+    // One arrow forward only: unsealing closes submissions, awarding
+    // closes the tender. No state re-opens the box.
+    state tender {
+        initial: accepting
+        accepting -> unsealed
+        unsealed -> awarded
+    }
+
+    on phase() { return get_status("tender") }
+
+    on submit_bid(vendor: String, amount: Int) {
+        if phase() != "accepting" {
+            return map("ok", false, "reason", "tender is {phase()}")
+        }
+        let prior = bid_count.get(vendor) ?? 0
+        let c = try { bid_count.set(vendor, prior + 1) }
+        if c.error != () {
+            return map("ok", false, "reason", "{vendor} already bid — no revisions")
+        }
+        let w = try { sealed.set(vendor, amount) }
+        if w.error != () {
+            return map("ok", false, "reason", "bid must be at least 1")
+        }
+        return map("ok", true, "vendor", vendor)
+    }
+
+    // The leak, refused: while accepting, amounts are not readable.
+    on peek_bids() {
+        if phase() == "accepting" {
+            return map("ok", false, "reason", "bids are sealed until opening")
+        }
+        let names = sealed.keys()
+        let out = map()
+        for v in names { out[v] = sealed.get(v) ?? 0 }
+        return map("ok", true, "bids", out)
+    }
+
+    on unseal() {
+        let r = try { transition("tender", "unsealed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "bidders", len(sealed.keys()))
+    }
+
+    on award_contract() {
+        let r = try { transition("tender", "awarded") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let names = sealed.keys()
+        let best = ""
+        let low = 0
+        for v in names {
+            let amt = sealed.get(v) ?? 0
+            if best == "" || amt < low {
+                best = v
+                low = amt
+            }
+        }
+        return map("ok", true, "winner", best, "amount", low)
+    }
+}
+
+cell test TenderTests {
+    rules {
+        assert submit_bid("acme", 100).ok == true
+        assert submit_bid("rival", 90).ok == true
+        assert peek_bids().ok == false                    // sealed means sealed
+        assert submit_bid("acme", 89).ok == false         // no revised bid
+        assert_fails bid_count.set("acme", 2)             // unrepresentable
+        assert_fails sealed.set("ghost", 0)               // no placeholder bids
+        assert award_contract().ok == false               // can't award sealed bids
+        assert unseal().ok == true
+        assert submit_bid("late", 1).ok == false          // unsealing closed the door
+        assert peek_bids().ok == true
+        assert award_contract().winner == "rival"
+        assert phase() == "awarded"
+        assert_fails transition("tender", "accepting")    // no re-tender
+        assert_fails transition("tender", "unsealed")
+    }
+}

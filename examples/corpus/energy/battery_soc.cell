@@ -1,0 +1,82 @@
+// ============================================================================
+// BATTERY DISPATCH — the charge window is a wall, not a setpoint
+// ============================================================================
+//
+// April 19, 2019, Surprise, Arizona: a rack at the APS McMicken battery
+// facility went into thermal runaway; when firefighters opened the door
+// the accumulated gases exploded and put four of them in the hospital.
+// Lithium cells driven outside their charge window — overcharged at the
+// top, or dragged below empty by an aggressive arbitrage optimizer —
+// plate lithium, grow dendrites, and eventually burn.
+//
+// Dispatch software optimizes revenue and will happily command one more
+// charging interval at the top of the window unless something refuses.
+// Here the refusal is the memory itself: state-of-charge lives in a slot
+// whose invariant is 0..100. The write that would cross the bound is
+// rejected BY THE SLOT, even if every guard in the handler is deleted.
+// A 20%-per-interval ramp limit rides on top in the handler.
+// ============================================================================
+
+cell Battery {
+    face {
+        signal charge_step(id: String, pct: Int) -> Map
+        signal discharge_step(id: String, pct: Int) -> Map
+        signal soc_of(id: String) -> Int
+    }
+
+    memory {
+        // % state of charge per battery — THE wall
+        soc: Map<String, Int> [persistent, consistent]
+        invariant soc >= 0 && soc <= 100
+    }
+
+    on soc_of(id: String) {
+        return soc.get(id) ?? 50          // units ship at 50%
+    }
+
+    on charge_step(id: String, pct: Int) {
+        if pct <= 0 || pct > 20 {
+            return map("ok", false, "reason", "ramp limit is 1..20% per interval")
+        }
+        let cur = soc_of(id)
+        let w = try { soc.set(id, cur + pct) }
+        if w.error != () {
+            return map("ok", false, "reason", "SoC wall refused: {w.error}")
+        }
+        return map("ok", true, "soc", cur + pct)
+    }
+
+    on discharge_step(id: String, pct: Int) {
+        if pct <= 0 || pct > 20 {
+            return map("ok", false, "reason", "ramp limit is 1..20% per interval")
+        }
+        let cur = soc_of(id)
+        let w = try { soc.set(id, cur - pct) }
+        if w.error != () {
+            return map("ok", false, "reason", "SoC wall refused: {w.error}")
+        }
+        return map("ok", true, "soc", cur - pct)
+    }
+}
+
+cell test SocTests {
+    rules {
+        // normal arbitrage cycling proceeds
+        assert charge_step("b1", 20).ok == true        // 50 -> 70
+        assert charge_step("b1", 20).ok == true        // 70 -> 90
+        // the interval that would overcharge is refused; SoC unchanged
+        assert charge_step("b1", 20).ok == false       // 90 + 20 > 100
+        assert soc_of("b1") == 90
+        // ramp limit holds
+        assert charge_step("b1", 30).ok == false
+        // drain toward the floor, then one step too far — refused
+        assert discharge_step("b2", 20).ok == true     // 50 -> 30
+        assert discharge_step("b2", 20).ok == true     // 30 -> 10
+        assert discharge_step("b2", 20).ok == false    // 10 - 20 < 0
+        assert soc_of("b2") == 10
+        // THE WALL: a raw out-of-window write raises at the memory
+        assert_fails soc.set("b1", 130)
+        assert_fails soc.set("b1", -5)
+        assert soc_of("b1") == 90
+    }
+}

@@ -1,0 +1,126 @@
+// ============================================================================
+// LAUNCH COMMIT CRITERIA — Challenger: no waiver path to ignition
+// ============================================================================
+//
+// On 28 January 1986, Challenger launched at 36°F — far below the SRB
+// O-ring qualification temperature. Engineers argued against the launch
+// the night before; the criterion was effectively waived under schedule
+// pressure. 73 seconds later the right SRB field joint failed and seven
+// astronauts died. The Rogers Commission's finding was procedural: the
+// system ALLOWED a red criterion to be argued green.
+//
+// Here the launch commit criteria are a ledger, and ignition is a
+// transition whose handler refuses unless EVERY criterion reads green.
+// There is no waiver argument to have: a red board cannot ignite because
+// the committed state is only entered through the all-green gate, and
+// once SRBs light, liftoff is TERMINAL — solids cannot be shut down,
+// and the machine says so: there is no edge out.
+// ============================================================================
+
+cell LaunchCommit {
+    face {
+        signal report_criterion(name: String, green: Int) -> Map
+        signal call_hold() -> Map
+        signal resume_count() -> Map
+        signal ignition() -> Map
+        signal board() -> Map
+    }
+
+    memory {
+        // each criterion is 0 (red) or 1 (green) — nothing else exists
+        criteria: Map<String, Int> [persistent, consistent]
+        invariant criteria >= 0 && criteria <= 1
+    }
+
+    // ABSENT: committed -> counting (solids cannot be un-lit)
+    state countdown {
+        initial: counting
+        counting -> holding
+        holding -> counting
+        counting -> committed     // only through the all-green gate
+        committed -> liftoff      // terminal
+    }
+
+    on lcc_names() {
+        return list("oring_temp", "range_clear", "upper_winds", "ice_team")
+    }
+
+    on report_criterion(name: String, green: Int) {
+        let w = try { criteria.set(name, green) }
+        if w.error != () { return map("ok", false, "reason", "criterion must be 0 or 1") }
+        return map("ok", true, "criterion", name, "green", green)
+    }
+
+    on greens_count() {
+        let names = lcc_names()
+        let g = 0
+        for n in names { g = g + (criteria.get(n) ?? 0) }
+        return g
+    }
+
+    on board() {
+        let total = len(lcc_names())
+        let g = greens_count()
+        return map("green", g, "of", total, "go", g == total)
+    }
+
+    on call_hold() {
+        let r = try { transition("count", "holding") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status("count"))
+    }
+
+    on resume_count() {
+        let r = try { transition("count", "counting") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status("count"))
+    }
+
+    on ignition() {
+        let b = board()
+        // THE GATE. A red criterion is not arguable, not waivable —
+        // ignition simply does not happen.
+        if b.go != true {
+            return map("ok", false, "reason", "LCC red: {b.green} of {b.of} green — no waiver path exists")
+        }
+        let r = try { transition("count", "committed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        transition("count", "liftoff")
+        return map("ok", true, "state", get_status("count"))
+    }
+}
+
+cell test CommitTests {
+    rules {
+        // three greens and one red — the Challenger morning
+        assert report_criterion("range_clear", 1).ok == true
+        assert report_criterion("upper_winds", 1).ok == true
+        assert report_criterion("ice_team", 1).ok == true
+        assert report_criterion("oring_temp", 0).ok == true
+        assert board().go == false
+
+        // ignition with a red board: REFUSED — there is no waiver
+        assert ignition().ok == false
+        assert get_status("count") == "counting"
+
+        // a criterion can only ever be red or green — "0.5, we argued
+        // about it" is unrepresentable
+        assert_fails criteria.set("oring_temp", 2)
+        assert_fails criteria.set("oring_temp", -1)
+
+        // holds work both ways while counting
+        assert call_hold().ok == true
+        assert resume_count().ok == true
+
+        // all green: ignition commits and lifts off
+        assert report_criterion("oring_temp", 1).ok == true
+        assert board().go == true
+        assert ignition().ok == true
+        assert get_status("count") == "liftoff"
+
+        // liftoff is TERMINAL: solids cannot be shut down or recounted
+        assert_fails transition("count", "counting")
+        assert_fails transition("count", "holding")
+        assert ignition().ok == false
+    }
+}

@@ -1,0 +1,99 @@
+// ============================================================================
+// PAYROLL RUN — the payslips must sum EXACTLY to the approved total
+// ============================================================================
+//
+// Payroll overpayments are a quiet epidemic: a duplicated payslip or a
+// fat-fingered salary slips into a run, the bank file goes out, and the
+// company spends months clawing money back from employees (legally messy,
+// morale-destroying). The wall here: the approved budget is a slot that
+// each payslip DECREMENTS, with `budget >= 0` as an invariant — a payslip
+// that would overspend the approval RAISES at the write. And the run can
+// only commit when the budget hits exactly zero: paid == approved, proven
+// by arithmetic, not by hope. Committed runs are terminal.
+// ============================================================================
+
+cell Payroll {
+    face {
+        signal approve_run(run: String, total: Int) -> Map
+        signal add_payslip(run: String, employee: String, amount: Int) -> Map
+        signal commit_run(run: String) -> Map
+        signal unspent(run: String) -> Int
+    }
+
+    memory {
+        // what's left of the approved total — every payslip draws it down,
+        // and the invariant makes overspending a rejected write
+        budget: Map<String, Int> [persistent, consistent]
+        invariant budget >= 0
+        slips: Map<String, Int> [persistent, consistent]
+        invariant slips >= 0
+    }
+
+    // committed is terminal: a run that hit the bank cannot be re-opened
+    // and quietly padded with one more payslip.
+    state run {
+        initial: open_run
+        open_run -> approved
+        approved -> committed
+        approved -> voided
+    }
+
+    on approve_run(run: String, total: Int) {
+        if total <= 0 { return map("ok", false, "reason", "bad total") }
+        transition(run, "approved")
+        budget.set(run, total)
+        return map("ok", true, "approved", total)
+    }
+
+    on add_payslip(run: String, employee: String, amount: Int) {
+        if get_status(run) != "approved" {
+            return map("ok", false, "reason", "run is not open for payslips")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        let k = "{run}:{employee}"
+        if (slips.get(k) ?? 0) > 0 {
+            return map("ok", false, "reason", "{employee} already has a payslip")
+        }
+        let left = budget.get(run) ?? 0
+        budget.set(run, left - amount)   // RAISES if the payslip overspends
+        slips.set(k, amount)
+        return map("ok", true, "employee", employee, "left", left - amount)
+    }
+
+    on commit_run(run: String) {
+        let left = budget.get(run) ?? -1
+        if left != 0 {
+            return map("ok", false, "reason", "paid != approved: {left} unallocated")
+        }
+        transition(run, "committed")
+        return map("ok", true, "state", get_status(run))
+    }
+
+    on unspent(run: String) {
+        return budget.get(run) ?? 0
+    }
+}
+
+cell test PayrollTests {
+    rules {
+        assert approve_run("jan", 9000).ok == true
+        assert add_payslip("jan", "ada", 4000).ok == true
+        assert add_payslip("jan", "bob", 3000).ok == true
+        // THE DUPLICATE PAYSLIP: ada cannot be paid twice in one run
+        assert add_payslip("jan", "ada", 4000).ok == false
+        // THE OVERPAYMENT: 2001 > the 2000 left — the write itself raises
+        assert_fails add_payslip("jan", "cy", 2001)
+        assert unspent("jan") == 2000
+        // cannot commit while money is unallocated (paid != approved)
+        assert commit_run("jan").ok == false
+        assert add_payslip("jan", "cy", 2000).ok == true
+        assert unspent("jan") == 0
+        assert commit_run("jan").ok == true
+        // committed is terminal: no sneaking in one more payslip
+        assert add_payslip("jan", "eve", 1).ok == false
+        assert_fails transition("jan", "approved")
+        assert_fails transition("jan", "voided")
+        // the budget slot itself rejects a negative balance
+        assert_fails budget.set("jan", -5)
+    }
+}

@@ -1,0 +1,106 @@
+// ============================================================================
+// ANTI-ISLANDING — a solar inverter must never energize a "dead" line
+// ============================================================================
+//
+// When a feeder breaker opens, every lineworker on that circuit treats the
+// wire as dead. But a neighborhood of rooftop solar can keep the islanded
+// segment energized — backfeeding lethal voltage into a line the crew has
+// every reason to believe is isolated. This is why IEEE 1547 mandates that
+// a grid-tied inverter CEASE energizing within 2 seconds of grid loss and
+// stay off until the grid has been stable for a full hold-off window
+// (classically 5 minutes) — not "until the voltage flickers back".
+//
+// The lethal shortcut is `ceased -> exporting`: the grid blinks, the
+// inverter jumps straight back to full output while a recloser is mid-
+// sequence or a crew is mid-repair. Below, that transition DOES NOT EXIST.
+// The only exit from `ceased` is `monitoring`, where the hold-off clock
+// restarts. soma verify proves the reachable graph; the export-watts slot
+// is a second wall — output is zeroed on cessation and capped at nameplate.
+// ============================================================================
+
+cell Inverter {
+    face {
+        signal grid_detected(id: String) -> Map
+        signal hold_off_elapsed(id: String) -> Map
+        signal grid_lost(id: String) -> Map
+        signal set_export(id: String, watts: Int) -> Map
+        signal inverter_state(id: String) -> String
+        signal export_of(id: String) -> Int
+    }
+
+    memory {
+        // watts being pushed onto the feeder; nameplate is 10 kW
+        export_w: Map<String, Int> [persistent, consistent]
+        invariant export_w >= 0 && export_w <= 10000
+    }
+
+    state island_guard {
+        initial: offline
+        offline -> monitoring        // grid voltage/frequency detected
+        monitoring -> exporting      // stable for the FULL hold-off window
+        exporting -> ceased          // grid loss: cease within 2 s, mandatory
+        ceased -> monitoring         // grid back — restart the clock at zero
+        monitoring -> offline        // operator shutdown
+    }
+
+    on grid_detected(id: String) {
+        let r = try { transition(id, "monitoring") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on hold_off_elapsed(id: String) {
+        let r = try { transition(id, "exporting") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on grid_lost(id: String) {
+        let r = try { transition(id, "ceased") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        export_w.set(id, 0)              // output to zero, within 2 s
+        return map("ok", true, "state", get_status(id), "watts", 0)
+    }
+
+    on set_export(id: String, watts: Int) {
+        if get_status(id) != "exporting" {
+            return map("ok", false, "reason", "not exporting (state: {get_status(id)})")
+        }
+        let w = try { export_w.set(id, watts) }
+        if w.error != () { return map("ok", false, "reason", "nameplate wall: {w.error}") }
+        return map("ok", true, "watts", watts)
+    }
+
+    on inverter_state(id: String) { return get_status(id) }
+    on export_of(id: String) { return export_w.get(id) ?? 0 }
+}
+
+cell test IslandTests {
+    rules {
+        // normal commissioning: detect grid, wait out the hold-off, export
+        assert grid_detected("i1").ok == true
+        assert hold_off_elapsed("i1").ok == true
+        assert set_export("i1", 8000).ok == true
+
+        // the feeder breaker opens — the inverter MUST cease
+        assert grid_lost("i1").ok == true
+        assert export_of("i1") == 0
+
+        // THE KILLER: grid blinks back, firmware jumps straight to export.
+        // The transition does not exist — the lineworker stays alive.
+        assert_fails transition("i1", "exporting")
+
+        // pushing watts while ceased is refused by the state gate
+        assert set_export("i1", 5000).ok == false
+        assert export_of("i1") == 0
+
+        // the only way back is a fresh hold-off window
+        assert grid_detected("i1").ok == true
+        assert hold_off_elapsed("i1").ok == true
+        assert set_export("i1", 8000).ok == true
+
+        // the nameplate wall holds regardless of state
+        assert_fails export_w.set("i1", 20000)
+        assert_fails export_w.set("i1", -100)
+    }
+}

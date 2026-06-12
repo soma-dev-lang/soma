@@ -1,0 +1,124 @@
+// ============================================================================
+// BONDED WAREHOUSE — no duty, no exit
+// ============================================================================
+//
+// A customs bonded warehouse holds imported goods on which duty has NOT
+// yet been paid. The whole institution rests on one rule: bonded goods
+// leave for the domestic market only after duty is settled, or leave the
+// country entirely (re-export, duty never owed). "Bond leakage" — goods
+// slipping into commerce duty-unpaid — is a perennial fraud; the UK lost
+// hundreds of millions of pounds a year to bonded alcohol diversion in
+// the 1990s "London City Bond" scandal, where paperwork showed exports
+// that never left the island.
+//
+// Structurally: `domestic_market` is reachable ONLY through `duty_paid`,
+// `re_exported` is terminal, and the duty ledger refuses a release whose
+// payment doesn't cover the assessment. The diversion has no path.
+// ============================================================================
+
+cell BondedWarehouse {
+    face {
+        signal admit_goods(consignment: String, duty_owed_cents: Int) -> Map
+        signal pay_duty(consignment: String, cents: Int) -> Map
+        signal release_domestic(consignment: String) -> Map
+        signal re_export(consignment: String) -> Map
+        signal bond_status(consignment: String) -> Map
+    }
+
+    memory {
+        owed: Map<String, Int> [persistent, consistent]
+        invariant owed >= 0
+
+        paid: Map<String, Int> [persistent, consistent]
+        invariant paid >= 0
+    }
+
+    // No edge in_bond -> domestic_market. Duty first, always.
+    // Both exits are terminal: goods leave the bond exactly once.
+    state bond {
+        initial: in_bond
+        in_bond   -> duty_paid
+        in_bond   -> re_exported
+        duty_paid -> domestic_market
+    }
+
+    on admit_goods(consignment: String, duty_owed_cents: Int) {
+        if duty_owed_cents <= 0 { return map("ok", false, "reason", "assessment must be positive") }
+        owed.set(consignment, duty_owed_cents)
+        paid.set(consignment, 0)
+        return map("ok", true, "consignment", consignment, "owed_cents", duty_owed_cents)
+    }
+
+    on pay_duty(consignment: String, cents: Int) {
+        if cents <= 0 { return map("ok", false, "reason", "payment must be positive") }
+        let assessment = owed.get(consignment)
+        if assessment == () { return map("ok", false, "reason", "unknown consignment") }
+        let total = (paid.get(consignment) ?? 0) + cents
+        paid.set(consignment, total)
+        if total < assessment {
+            let short = assessment - total
+            return map("ok", true, "settled", false, "short_cents", short)
+        }
+        // settled in full — NOW the gate opens
+        let r = try { transition(consignment, "duty_paid") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "settled", true, "state", "duty_paid")
+    }
+
+    on release_domestic(consignment: String) {
+        let r = try { transition(consignment, "domestic_market") }
+        if r.error != () {
+            return map("ok", false, "reason", "duty not settled: {r.error}")
+        }
+        return map("ok", true, "state", "domestic_market")
+    }
+
+    on re_export(consignment: String) {
+        let r = try { transition(consignment, "re_exported") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "re_exported")
+    }
+
+    on bond_status(consignment: String) {
+        return map("consignment", consignment, "state", get_status(consignment),
+                   "owed_cents", owed.get(consignment) ?? 0,
+                   "paid_cents", paid.get(consignment) ?? 0)
+    }
+}
+
+cell test NoBondLeakage {
+    rules {
+        // 40 cases of whisky enter the bond owing 120,000 cents of duty
+        assert admit_goods("WX-40", 120000).ok == true
+
+        // THE DIVERSION: straight to the domestic market, duty unpaid.
+        // The edge does not exist.
+        assert release_domestic("WX-40").ok == false
+        assert_fails transition("WX-40", "domestic_market")
+
+        // partial payment does not open the gate
+        assert pay_duty("WX-40", 50000).settled == false
+        assert release_domestic("WX-40").ok == false
+
+        // full settlement does
+        assert pay_duty("WX-40", 70000).settled == true
+        assert release_domestic("WX-40").ok == true
+        assert bond_status("WX-40").state == "domestic_market"
+
+        // released goods cannot re-enter the bond or "re-export"
+        assert_fails transition("WX-40", "in_bond")
+        assert_fails transition("WX-40", "re_exported")
+
+        // re-export is legal duty-free — and terminal (the LCB fraud was
+        // "exported" goods reappearing; here they cannot re-enter)
+        assert admit_goods("WX-41", 99000).ok == true
+        assert re_export("WX-41").ok == true
+        assert_fails transition("WX-41", "in_bond")
+        assert_fails transition("WX-41", "duty_paid")
+        assert release_domestic("WX-41").ok == false
+
+        // ledgers refuse negative money
+        assert_fails owed.set("WX-41", -1)
+        assert_fails paid.set("WX-41", -1)
+    }
+}

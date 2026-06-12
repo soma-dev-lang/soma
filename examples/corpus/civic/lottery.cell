@@ -1,0 +1,95 @@
+// ============================================================================
+// LOTTERY — committed entries, a published seed, and a draw that closes forever
+// ============================================================================
+// Public lotteries get rigged in two ways: officials slip entries in after
+// seeing the pool (charter-school placement scandals), or they quietly
+// "re-draw" until a favored name comes up — the 2017 HUD housing-voucher
+// re-draws drew exactly this complaint. Both attacks die structurally here:
+// an applicant's entry count cannot exceed 1 (memory wall), entries lock
+// BEFORE the draw, the winner is a pure function of the locked pool and a
+// pre-published seed, and `drawn` is a terminal state soma verify proves
+// has no exit — there is no second draw.
+// ============================================================================
+
+cell HousingLottery {
+    face {
+        signal enter_pool(applicant: String) -> Map
+        signal lock_entries() -> Map
+        signal draw(seed: Int) -> Map
+        signal pool_size() -> Int
+        signal winner_name() -> String
+        signal phase() -> String
+    }
+
+    memory {
+        // applicant -> entries. A second entry is unrepresentable.
+        entries: Map<String, Int> [persistent, consistent]
+        invariant entries >= 0 && entries <= 1
+
+        result: Map<String, String> [persistent, consistent]
+    }
+
+    // drawn has no outgoing edges: there is no re-draw.
+    state lottery {
+        initial: accepting
+        accepting -> entries_locked
+        entries_locked -> drawn
+    }
+
+    on phase() { return get_status("lottery") }
+
+    on enter_pool(applicant: String) {
+        if phase() != "accepting" {
+            return map("ok", false, "reason", "pool is {phase()}")
+        }
+        let prior = entries.get(applicant) ?? 0
+        let w = try { entries.set(applicant, prior + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{applicant} already entered")
+        }
+        return map("ok", true, "pool", pool_size())
+    }
+
+    on pool_size() {
+        let names = entries.keys()
+        return len(names)
+    }
+
+    on lock_entries() {
+        let r = try { transition("lottery", "entries_locked") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "pool", pool_size())
+    }
+
+    // Deterministic: anyone can recompute the winner from the locked pool
+    // and the seed the commission published before entries opened.
+    on draw(seed: Int) {
+        let r = try { transition("lottery", "drawn") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let pool = sort(entries.keys())
+        let idx = seed - idiv(seed, len(pool)) * len(pool)
+        result.set("winner", pool[idx])
+        return map("ok", true, "winner", pool[idx], "pool", len(pool))
+    }
+
+    on winner_name() { return result.get("winner") ?? "none" }
+}
+
+cell test LotteryTests {
+    rules {
+        assert enter_pool("ada").ok == true
+        assert enter_pool("bob").ok == true
+        assert enter_pool("eve").ok == true
+        assert enter_pool("bob").ok == false            // double entry bounces
+        assert_fails entries.set("bob", 2)              // unrepresentable
+        assert draw(7).ok == false                      // no draw before lock
+        assert lock_entries().ok == true
+        assert enter_pool("late").ok == false           // pool locked
+        assert pool_size() == 3
+        assert draw(7).ok == true                       // 7 mod 3 = 1 -> "bob"
+        assert winner_name() == "bob"
+        assert draw(8).ok == false                      // NO re-draw, ever
+        assert_fails transition("lottery", "entries_locked")
+        assert_fails transition("lottery", "accepting")
+    }
+}

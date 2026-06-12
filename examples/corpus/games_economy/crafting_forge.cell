@@ -1,0 +1,97 @@
+// ============================================================================
+// CRAFTING FORGE — ingredients consumed exactly once
+// ============================================================================
+// The classic MMO "craft-cancel dupe": start a craft, let the server consume
+// the ingredients, then cancel at the exact tick that refunds them — keeping
+// both the refund and (on a desynced shard) the output. Ultima Online and
+// early WoW economies were both warped by variants of this bug.
+// Here the craft job is a machine soma verify proves: `cancelled` is
+// reachable ONLY from `pending` — before anything was consumed. Once the
+// ingredients are gone the only path is `finished`, which is terminal (no
+// re-finishing for a second free sword). And the pantry refuses to go
+// negative, so a craft can never consume ingredients that are not there.
+// ============================================================================
+
+cell Forge {
+    face {
+        signal stock(item: String, n: Int) -> Int
+        signal begin_craft(job: String) -> Map
+        signal cancel_craft(job: String) -> Map
+        signal finish_craft(job: String) -> Map
+        signal pantry_count(item: String) -> Int
+        signal owned(item: String) -> Int
+    }
+
+    memory {
+        pantry: Map<String, Int> [persistent, consistent]
+        invariant pantry >= 0
+        items: Map<String, Int> [persistent, consistent]
+        invariant items >= 0
+    }
+
+    // the refund path exists only BEFORE the consume; both ends are terminal
+    state craft_job {
+        initial: pending
+        pending -> consumed
+        pending -> cancelled
+        consumed -> finished
+    }
+
+    on stock(item: String, n: Int) {
+        pantry.set(item, (pantry.get(item) ?? 0) + n)
+        return pantry.get(item)
+    }
+
+    // recipe: 1 sword = 2 iron + 1 wood, consumed atomically before output
+    on begin_craft(job: String) {
+        if get_status(job) != "pending" { return map("ok", false, "reason", "job already started") }
+        let iron = pantry.get("iron") ?? 0
+        let wood = pantry.get("wood") ?? 0
+        let a = try { pantry.set("iron", iron - 2) }
+        if a.error != () { return map("ok", false, "reason", "not enough iron") }
+        let b = try { pantry.set("wood", wood - 1) }
+        if b.error != () {
+            pantry.set("iron", iron)        // undo before anything escaped
+            return map("ok", false, "reason", "not enough wood")
+        }
+        transition(job, "consumed")
+        return map("ok", true, "job", job)
+    }
+
+    on cancel_craft(job: String) {
+        let r = try { transition(job, "cancelled") }
+        if r.error != () { return map("ok", false, "reason", "too late: ingredients consumed") }
+        return map("ok", true)
+    }
+
+    on finish_craft(job: String) {
+        let r = try { transition(job, "finished") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        items.set("sword", (items.get("sword") ?? 0) + 1)
+        return map("ok", true, "made", "sword")
+    }
+
+    on pantry_count(item: String) { return pantry.get(item) ?? 0 }
+    on owned(item: String) { return items.get(item) ?? 0 }
+}
+
+cell test ForgeTests {
+    rules {
+        assert stock("iron", 2) == 2
+        assert stock("wood", 1) == 1
+        assert begin_craft("j1").ok == true
+        assert pantry_count("iron") == 0
+        // THE DUPE: cancel after consume — the refund path does not exist
+        assert cancel_craft("j1").ok == false
+        assert_fails transition("j1", "cancelled")
+        assert finish_craft("j1").ok == true
+        assert owned("sword") == 1
+        // finished is terminal: no re-finish for a second free sword
+        assert finish_craft("j1").ok == false
+        assert_fails transition("j1", "consumed")
+        // a craft cannot consume ingredients that are not there
+        assert begin_craft("j2").ok == false
+        assert_fails pantry.set("iron", -2)
+        assert owned("sword") == 1
+    }
+}

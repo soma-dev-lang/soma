@@ -1,0 +1,114 @@
+// ============================================================================
+// FOUR-EYES APPROVAL — the maker cannot be the checker, by construction
+// ============================================================================
+//
+// Wirecard collapsed in 2020 with €1.9 billion that never existed; for
+// years the same small circle that originated transactions also signed
+// off on them. Every controls framework since (SOX, Basel, ISO 27001)
+// demands "segregation of duties": the person who drafts a document may
+// not be the person who approves it. Usually that is a checkbox in a
+// workflow tool — deletable, bypassable.
+//
+// Here it is arithmetic the memory enforces. Each document/person pair
+// holds AT MOST ONE role. Authoring writes 1. Approving adds 1. If the
+// author tries to approve their own document the write becomes 2 — and
+// the invariant rejects it. The self-approval is not caught by a check;
+// it is a value the ledger cannot hold.
+// ============================================================================
+
+cell ApprovalChain {
+    face {
+        signal draft_doc(doc: String, author: String) -> Map
+        signal submit_doc(doc: String) -> Map
+        signal approve_doc(doc: String, approver: String) -> Map
+        signal send_back(doc: String) -> Map
+        signal role_count(doc: String, person: String) -> Int
+    }
+
+    memory {
+        // doc:person -> number of roles held. 1 = authored OR approved.
+        // 2 (authored AND approved the same doc) is unrepresentable.
+        roles: Map<String, Int> [persistent, consistent]
+        invariant roles >= 0 && roles <= 1
+    }
+
+    // approved is TERMINAL: a signed document cannot quietly re-enter
+    // drafting to be edited after the signature.
+    state doc {
+        initial: blank
+        blank -> drafted
+        drafted -> submitted
+        submitted -> approved
+        submitted -> drafted
+    }
+
+    on draft_doc(doc: String, author: String) {
+        let r = try { transition(doc, "drafted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        roles.set("{doc}:{author}", 1)
+        return map("ok", true, "doc", doc, "author", author)
+    }
+
+    on submit_doc(doc: String) {
+        let r = try { transition(doc, "submitted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "submitted")
+    }
+
+    on send_back(doc: String) {
+        let r = try { transition(doc, "drafted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "drafted")
+    }
+
+    on approve_doc(doc: String, approver: String) {
+        if get_status(doc) != "submitted" {
+            let s = get_status(doc)
+            return map("ok", false, "reason", "cannot approve from state {s}")
+        }
+        // THE WALL: author already holds 1 role on this doc; this write
+        // would make 2 — the memory refuses, no matter who deleted which
+        // if-statement upstream.
+        let k = "{doc}:{approver}"
+        let w = try { roles.set(k, (roles.get(k) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "four-eyes violation: {approver} authored {doc}")
+        }
+        transition(doc, "approved")
+        return map("ok", true, "doc", doc, "approver", approver)
+    }
+
+    on role_count(doc: String, person: String) {
+        return roles.get("{doc}:{person}") ?? 0
+    }
+}
+
+cell test FourEyesTests {
+    rules {
+        // normal flow: alice drafts, bob approves
+        assert draft_doc("D1", "alice").ok == true
+        assert approve_doc("D1", "bob").ok == false      // not submitted yet
+        assert submit_doc("D1").ok == true
+
+        // THE FORBIDDEN ACT: alice approving her own document.
+        // The role ledger cannot hold 2 — the write is refused.
+        assert approve_doc("D1", "alice").ok == false
+        assert_fails roles.set("D1:alice", 2)
+        assert role_count("D1", "alice") == 1
+        assert get_status("D1") == "submitted"           // unharmed
+
+        // a different pair of eyes goes through
+        assert approve_doc("D1", "bob").ok == true
+        assert get_status("D1") == "approved"
+
+        // approved is terminal: no quiet re-edit after signature
+        assert_fails transition("D1", "drafted")
+        assert_fails transition("D1", "submitted")
+        assert send_back("D1").ok == false
+
+        // alice may still approve a DIFFERENT author's document
+        assert draft_doc("D2", "bob").ok == true
+        assert submit_doc("D2").ok == true
+        assert approve_doc("D2", "alice").ok == true
+    }
+}

@@ -1,0 +1,117 @@
+// ============================================================================
+// FUEL CROSSFEED — Air Transat 236: never feed a leak from the good tank
+// ============================================================================
+//
+// On 24 August 2001, Air Transat Flight 236 (an A330 over the Atlantic)
+// developed a fuel leak in the right engine's feed line. Following the
+// imbalance checklist, the crew opened the crossfeed valve — and pumped
+// the LEFT tank's fuel into the leak too. Both engines flamed out; the
+// aircraft glided 75 miles, dead-stick, to a runway in the Azores. 306
+// people survived on the captain's gliding skill, not on the system.
+//
+// The procedure trap: crossfeed is the correct response to an imbalance
+// and the catastrophic response to a leak — and the two look identical
+// on the gauges unless you check totals. Here that check is structural:
+// opening crossfeed REQUIRES a fuel-total reconciliation, a detected
+// leak drives the machine to leak_isolated — a TERMINAL state with no
+// edge to crossfeed_open, ever — and the tank ledger refuses negative
+// or overfull quantities outright.
+// ============================================================================
+
+cell FuelCrossfeed {
+    face {
+        signal load_tanks(id: String, left_kg: Int, right_kg: Int) -> Map
+        signal burn(id: String, side: String, kg: Int) -> Map
+        signal open_crossfeed(id: String, expected_total_kg: Int) -> Map
+        signal shut_crossfeed(id: String) -> Map
+        signal feed_mode(id: String) -> String
+        signal tank_total(id: String) -> Int
+    }
+
+    memory {
+        // per-tank quantity, kg — capacity 7000; a negative tank or an
+        // overfill is rejected at the write
+        tank_kg: Map<String, Int> [persistent, consistent]
+        invariant tank_kg >= 0 && tank_kg <= 7000
+    }
+
+    // ABSENT: leak_isolated -> crossfeed_open (the Air Transat valve)
+    state feed {
+        initial: isolated_feed         // each tank feeds its own engine
+        isolated_feed -> crossfeed_open
+        crossfeed_open -> isolated_feed
+        isolated_feed -> leak_isolated   // terminal
+        crossfeed_open -> leak_isolated  // terminal
+    }
+
+    on load_tanks(id: String, left_kg_v: Int, right_kg_v: Int) {
+        let l = try { tank_kg.set("{id}:L", left_kg_v) }
+        if l.error != () { return map("ok", false, "reason", "left tank load refused") }
+        let r = try { tank_kg.set("{id}:R", right_kg_v) }
+        if r.error != () { return map("ok", false, "reason", "right tank load refused") }
+        return map("ok", true, "total", tank_total(id))
+    }
+
+    on burn(id: String, side: String, kg: Int) {
+        let cur = tank_kg.get("{id}:{side}") ?? 0
+        let w = try { tank_kg.set("{id}:{side}", cur - kg) }
+        if w.error != () { return map("ok", false, "reason", "tank cannot go negative") }
+        return map("ok", true, "remaining", cur - kg)
+    }
+
+    on tank_total(id: String) {
+        return (tank_kg.get("{id}:L") ?? 0) + (tank_kg.get("{id}:R") ?? 0)
+    }
+
+    // Crossfeed opens ONLY after the totals reconcile. Fuel that left the
+    // tanks faster than the engines burned it is a LEAK — and the machine
+    // goes to leak_isolated instead, permanently.
+    on open_crossfeed(id: String, expected_total_kg: Int) {
+        let actual = tank_total(id)
+        if expected_total_kg - actual > 200 {
+            transition(id, "leak_isolated")
+            let missing = expected_total_kg - actual
+            return map("ok", false, "reason", "LEAK: {missing} kg unaccounted — crossfeed isolated for the flight")
+        }
+        let r = try { transition(id, "crossfeed_open") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "mode", get_status(id))
+    }
+
+    on shut_crossfeed(id: String) {
+        let r = try { transition(id, "isolated_feed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "mode", get_status(id))
+    }
+
+    on feed_mode(id: String) { return get_status(id) }
+}
+
+cell test CrossfeedTests {
+    rules {
+        // a plain imbalance: totals reconcile, crossfeed is the right call
+        assert load_tanks("f1", 5000, 5000).ok == true
+        assert burn("f1", "R", 1500).ok == true        // right engine ran the APU leg
+        assert burn("f1", "L", 500).ok == true
+        assert open_crossfeed("f1", 8000).ok == true   // 10000 loaded - 2000 burned
+        assert feed_mode("f1") == "crossfeed_open"
+        assert shut_crossfeed("f1").ok == true
+
+        // THE Air Transat case: 1800 kg simply GONE overboard
+        assert load_tanks("f2", 5000, 5000).ok == true
+        assert burn("f2", "R", 2300).ok == true        // 500 burned + 1800 leaked
+        assert burn("f2", "L", 500).ok == true
+        assert open_crossfeed("f2", 9000).ok == false  // books say 9000, tanks hold 7200
+        assert feed_mode("f2") == "leak_isolated"
+
+        // leak_isolated is TERMINAL: the valve can never open this flight
+        assert_fails transition("f2", "crossfeed_open")
+        assert_fails transition("f2", "isolated_feed")
+        assert open_crossfeed("f2", 7200).ok == false
+
+        // the ledger itself: no negative tanks, no overfills
+        assert_fails tank_kg.set("f1:L", -10)
+        assert_fails tank_kg.set("f1:L", 9000)
+        assert burn("f1", "L", 99999).ok == false
+    }
+}

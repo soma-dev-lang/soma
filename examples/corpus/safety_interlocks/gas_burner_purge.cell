@@ -1,0 +1,81 @@
+// GAS BURNER IGNITION — purge before spark, lockout is forever.
+// NFPA 86 exists because furnaces that spark into a fuel-laden chamber
+// detonate: the prepurge (4+ air changes) is the single step operators
+// skip when restarts are slow, and skipped purges are a recurring CSB
+// explosion class. Here `off -> pilot_spark` simply does not exist: the
+// only road to a spark runs through `purging` and `purge_done`. A failed
+// ignition or flame loss lands in `lockout` — a TERMINAL state soma
+// verify proves has no exit. Re-light means a human walks to the burner;
+// software cannot talk its way out. The retry ledger caps trial-for-
+// ignition attempts at 3 in memory itself.
+
+cell BurnerControl {
+    face {
+        signal start_purge(id: String) -> String
+        signal purge_complete(id: String) -> String
+        signal try_ignition(id: String, flame_proved: Bool) -> Map
+        signal flame_failure(id: String) -> String
+        signal shut_off(id: String) -> String
+    }
+
+    memory {
+        ignition_tries: Map<String, Int> [persistent, consistent]
+        invariant ignition_tries >= 0 && ignition_tries <= 3
+    }
+
+    state burner {
+        initial: off
+        off -> purging
+        purging -> purge_done
+        purge_done -> pilot_spark
+        pilot_spark -> burning      // flame proved within trial time
+        pilot_spark -> lockout      // no flame: fuel valve slams shut
+        pilot_spark -> purge_done   // retry, chamber still proven clear
+        burning -> off              // controlled shutdown
+        burning -> lockout          // flame failure mid-run
+    }
+
+    on start_purge(id: String)    { transition(id, "purging")  return get_status(id) }
+    on purge_complete(id: String) { transition(id, "purge_done")  return get_status(id) }
+    on shut_off(id: String)       { transition(id, "off")  return get_status(id) }
+    on flame_failure(id: String)  { transition(id, "lockout")  return get_status(id) }
+
+    on try_ignition(id: String, flame_proved: Bool) {
+        let tries = (ignition_tries.get(id) ?? 0) + 1
+        let w = try { ignition_tries.set(id, tries) }
+        if w.error != () {
+            transition(id, "lockout")   // 4th try is refused by the ledger
+            return map("ok", false, "state", get_status(id), "reason", "retry budget spent")
+        }
+        transition(id, "pilot_spark")
+        if flame_proved {
+            transition(id, "burning")
+            ignition_tries.set(id, 0)
+            return map("ok", true, "state", get_status(id), "tries", tries)
+        }
+        transition(id, "purge_done")
+        return map("ok", false, "state", get_status(id), "tries", tries)
+    }
+}
+
+cell test BurnerTests {
+    rules {
+        // THE explosion: spark with no purge. The transition is absent.
+        assert_fails transition("b1", "pilot_spark")
+        assert_fails transition("b1", "burning")
+
+        // the only road: purge, prove it, then spark
+        assert start_purge("b1") == "purging"
+        assert_fails transition("b1", "pilot_spark")    // purge not done yet
+        assert purge_complete("b1") == "purge_done"
+        assert try_ignition("b1", true).state == "burning"
+
+        // flame failure mid-run -> lockout, and lockout is TERMINAL
+        assert flame_failure("b1") == "lockout"
+        assert_fails transition("b1", "off")
+        assert_fails transition("b1", "purging")
+
+        // the retry ledger refuses a 4th trial-for-ignition
+        assert_fails ignition_tries.set("b2", 4)
+    }
+}

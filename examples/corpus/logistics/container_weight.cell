@@ -1,0 +1,96 @@
+// ============================================================================
+// CONTAINER WEIGHT — the misdeclared box that breaks the ship
+// ============================================================================
+//
+// When the MSC Napoli was beached off Devon in 2007, investigators weighed
+// the containers coming off her deck: 137 of 660 were more than 3 tonnes
+// heavier than their declared weight — one was 20 tonnes over. Misdeclared
+// container weights overload stacks, snap lashings, and capsize feeder
+// ships. The IMO's answer was SOLAS VGM (2016): no verified gross mass,
+// no loading. Period.
+//
+// Here the rule is structural. A container's gross mass lives behind a
+// memory invariant capped at the ISO max for a 40-foot box (30,480 kg):
+// the write that would overload it is REFUSED by the memory itself, and
+// a container only reaches the `laden_aboard` state through `vgm_certified`
+// — there is no path from packing straight onto the ship.
+// ============================================================================
+
+cell ContainerYard {
+    face {
+        signal stuff_cargo(box_id: String, kg: Int) -> Map
+        signal certify_vgm(box_id: String) -> Map
+        signal load_aboard(box_id: String) -> Map
+        signal gross_kg(box_id: String) -> Int
+    }
+
+    memory {
+        // tare (3,800 kg) + cargo. ISO 40ft max gross: 30,480 kg.
+        gross: Map<String, Int> [persistent, consistent]
+        invariant gross >= 0 && gross <= 30480
+    }
+
+    // No edge from `packing` to `laden_aboard`: VGM first, always.
+    state container {
+        initial: packing
+        packing       -> vgm_certified
+        vgm_certified -> packing          // re-opened: certificate void
+        vgm_certified -> laden_aboard
+    }
+
+    on stuff_cargo(box_id: String, kg: Int) {
+        if get_status(box_id) != "packing" {
+            return map("ok", false, "reason", "container is sealed for VGM")
+        }
+        if kg <= 0 { return map("ok", false, "reason", "cargo weight must be positive") }
+        let current = gross.get(box_id) ?? 3800     // empty box = tare weight
+        let w = try { gross.set(box_id, current + kg) }
+        if w.error != () {
+            return map("ok", false, "reason", "REFUSED: {current} + {kg} kg exceeds 30480 kg max gross")
+        }
+        return map("ok", true, "gross_kg", current + kg)
+    }
+
+    on certify_vgm(box_id: String) {
+        if gross.get(box_id) == () {
+            return map("ok", false, "reason", "nothing stuffed — no mass to verify")
+        }
+        let r = try { transition(box_id, "vgm_certified") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "vgm_kg", gross.get(box_id))
+    }
+
+    on load_aboard(box_id: String) {
+        let r = try { transition(box_id, "laden_aboard") }
+        if r.error != () { return map("ok", false, "reason", "no VGM on file: {r.error}") }
+        return map("ok", true, "state", get_status(box_id))
+    }
+
+    on gross_kg(box_id: String) { return gross.get(box_id) ?? 0 }
+}
+
+cell test SolasVgm {
+    rules {
+        // legal stuffing accumulates from tare weight
+        assert stuff_cargo("MSCU100", 20000).ok == true
+        assert gross_kg("MSCU100") == 23800
+
+        // the Napoli box: 20 tonnes over — memory refuses the write
+        assert stuff_cargo("MSCU100", 20000).ok == false
+        assert gross_kg("MSCU100") == 23800
+        assert_fails gross.set("MSCU100", 43800)
+        assert_fails gross.set("MSCU100", -1)
+
+        // NO VGM, NO LOAD: packing -> laden_aboard does not exist
+        assert_fails transition("MSCU100", "laden_aboard")
+        assert certify_vgm("MSCU100").ok == true
+        assert load_aboard("MSCU100").ok == true
+
+        // aboard, the box is sealed: no more cargo, no re-certification
+        assert stuff_cargo("MSCU100", 100).ok == false
+        assert_fails transition("MSCU100", "packing")
+
+        // an empty box cannot be VGM-certified
+        assert certify_vgm("GHOST01").ok == false
+    }
+}

@@ -1,0 +1,104 @@
+// ============================================================================
+// IMAGE PROMOTION — nothing unscanned, unsigned, or vulnerable ships
+// ============================================================================
+//
+// The SolarWinds breach (disclosed December 2020) worked because the
+// build pipeline itself was the attack surface: malicious code was
+// injected during the build, then SIGNED and shipped to ~18,000
+// organizations as a legitimate update. Defense afterward converged on
+// one idea — provenance gates: an artifact reaches production only by
+// passing every gate, in order, with no side door.
+//
+// This registry encodes the gates as topology: built -> scanned ->
+// signed -> promoted, and `soma verify` proves there is no edge that
+// skips a gate. An image whose scan finds critical CVEs lands in
+// `quarantined` — TERMINAL, because you rebuild from a patched base,
+// you never "un-quarantine". The promoted registry's CVE ledger has a
+// memory invariant pinned at zero: recording a critical vulnerability
+// against a production image is a write the memory itself refuses.
+// ============================================================================
+
+cell ImageRegistry {
+    face {
+        signal scan_pass(img: String) -> Map
+        signal scan_quarantine(img: String) -> Map
+        signal sign_image(img: String) -> Map
+        signal promote_to_prod(img: String) -> Map
+        signal image_state(img: String) -> String
+    }
+
+    memory {
+        // critical CVEs recorded against PROMOTED images. The only
+        // value this ledger accepts is 0 — by invariant.
+        prod_critical_cves: Map<String, Int> [persistent, consistent]
+        invariant prod_critical_cves >= 0 && prod_critical_cves <= 0
+    }
+
+    // Every path to `promoted` crosses `scanned` and `signed`.
+    // `quarantined` and `promoted` are both terminal: tainted images
+    // never return, shipped digests never mutate.
+    state image {
+        initial: built
+        built -> scanned
+        scanned -> signed
+        signed -> promoted
+        built -> quarantined
+        scanned -> quarantined
+    }
+
+    on scan_pass(img: String) {
+        let r = try { transition(img, "scanned") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "scanned")
+    }
+
+    on scan_quarantine(img: String) {
+        let r = try { transition(img, "quarantined") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "quarantined")
+    }
+
+    on sign_image(img: String) {
+        let r = try { transition(img, "signed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "signed")
+    }
+
+    on promote_to_prod(img: String) {
+        let r = try { transition(img, "promoted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        prod_critical_cves.set(img, 0)
+        return map("ok", true, "state", "promoted")
+    }
+
+    on image_state(img: String) {
+        return get_status(img)
+    }
+}
+
+cell test ProvenanceTests {
+    rules {
+        // THE SIDE DOOR: sign or ship an unscanned build. Not an edge.
+        assert_fails transition("app:9f3c", "signed")
+        assert_fails transition("app:9f3c", "promoted")
+
+        // the only road runs through every gate, in order
+        assert scan_pass("app:9f3c").ok == true
+        assert_fails transition("app:9f3c", "promoted")   // unsigned: no
+        assert sign_image("app:9f3c").ok == true
+        assert promote_to_prod("app:9f3c").ok == true
+
+        // a shipped digest is immutable history
+        assert_fails transition("app:9f3c", "built")
+        assert_fails transition("app:9f3c", "scanned")
+
+        // a tainted image is buried, not paroled
+        assert scan_quarantine("app:bad1").ok == true
+        assert_fails transition("app:bad1", "scanned")
+        assert_fails transition("app:bad1", "signed")
+
+        // the prod CVE ledger accepts exactly one number: zero
+        assert prod_critical_cves.set("app:9f3c", 0) == ()
+        assert_fails prod_critical_cves.set("app:9f3c", 1)
+    }
+}

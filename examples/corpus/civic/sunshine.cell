@@ -1,0 +1,134 @@
+// ============================================================================
+// SUNSHINE — a council cannot vote on what the public never got to discuss
+// ============================================================================
+// California's Brown Act and its fifty state cousins exist because councils
+// kept adopting ordinances at 11pm on items never noticed on any agenda —
+// courts void such votes, but only years later, after the garage is built.
+// Here the sunshine sequence IS the state machine: `adopted` is reachable
+// only through public notice and an open comment hearing, and soma verify
+// proves it. Each councilmember votes at most once (memory wall), adoption
+// requires a majority of the five-member body, and an adopted ordinance is
+// terminal — no midnight amendment un-adopts it off the record.
+// ============================================================================
+
+cell Ordinance {
+    face {
+        signal post_notice() -> Map
+        signal open_hearing() -> Map
+        signal public_comment(resident: String) -> Map
+        signal close_hearing() -> Map
+        signal council_vote(member: String, yes: Bool) -> Map
+        signal adopt() -> Map
+        signal yes_votes() -> Int
+        signal phase() -> String
+    }
+
+    memory {
+        // member -> ballots on this ordinance. A second vote is unrepresentable.
+        voted: Map<String, Int> [persistent, consistent]
+        invariant voted >= 0 && voted <= 1
+
+        ayes: Map<String, Int> [persistent, consistent]
+        invariant ayes >= 0 && ayes <= 1
+
+        comments: Map<String, Int> [persistent, consistent]
+        invariant comments >= 0
+    }
+
+    // The only path to adopted runs through the public.
+    state ordinance {
+        initial: introduced
+        introduced -> noticed
+        noticed -> hearing_open
+        hearing_open -> hearing_closed
+        hearing_closed -> adopted
+        hearing_closed -> tabled
+        tabled -> noticed
+    }
+
+    on phase() { return get_status("ordinance") }
+
+    on post_notice() {
+        let r = try { transition("ordinance", "noticed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on open_hearing() {
+        let r = try { transition("ordinance", "hearing_open") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on public_comment(resident: String) {
+        if phase() != "hearing_open" {
+            return map("ok", false, "reason", "hearing is {phase()}")
+        }
+        let n = comments.get(resident) ?? 0
+        comments.set(resident, n + 1)
+        return map("ok", true, "resident", resident)
+    }
+
+    on close_hearing() {
+        let r = try { transition("ordinance", "hearing_closed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on council_vote(member: String, yes: Bool) {
+        if phase() != "hearing_closed" {
+            return map("ok", false, "reason", "no vote while {phase()}")
+        }
+        let prior = voted.get(member) ?? 0
+        let w = try { voted.set(member, prior + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{member} already voted")
+        }
+        if yes { ayes.set(member, 1) }
+        return map("ok", true, "member", member)
+    }
+
+    on adopt() {
+        if yes_votes() < 3 {
+            return map("ok", false, "reason", "majority needed: {yes_votes()} of 5")
+        }
+        let r = try { transition("ordinance", "adopted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "ayes", yes_votes())
+    }
+
+    on yes_votes() {
+        let names = ayes.keys()
+        let n = 0
+        for m in names { n = n + (ayes.get(m) ?? 0) }
+        return n
+    }
+}
+
+cell test SunshineTests {
+    rules {
+        // the midnight shortcut does not exist: introduced -> adopted has no edge
+        assert_fails transition("ordinance", "adopted")
+        assert_fails transition("ordinance", "hearing_closed")
+        assert council_vote("cm1", true).ok == false      // no vote before hearing
+
+        assert post_notice().ok == true
+        assert open_hearing().ok == true
+        assert public_comment("resident-9").ok == true
+        assert council_vote("cm1", true).ok == false      // hearing still open
+        assert close_hearing().ok == true
+        assert public_comment("late").ok == false         // comment window closed
+
+        assert council_vote("cm1", true).ok == true
+        assert council_vote("cm1", true).ok == false      // one vote per member
+        assert_fails voted.set("cm1", 2)                  // unrepresentable
+        assert council_vote("cm2", true).ok == true
+        assert adopt().ok == false                        // 2 ayes is no majority
+        assert council_vote("cm3", false).ok == true
+        assert council_vote("cm4", true).ok == true
+        assert adopt().ok == true                         // 3 of 5
+        assert phase() == "adopted"
+        assert_fails transition("ordinance", "tabled")    // adopted is forever
+        assert_fails transition("ordinance", "noticed")
+    }
+}

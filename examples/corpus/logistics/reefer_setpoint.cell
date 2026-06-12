@@ -1,0 +1,110 @@
+// ============================================================================
+// REEFER SETPOINT — the typo that thaws forty tonnes of tuna
+// ============================================================================
+//
+// Refrigerated containers are programmed by hand at the terminal: a tech
+// keys the setpoint from the booking sheet. The classic, expensive typo
+// is sign and unit confusion — +18 instead of -18 (cargo claims files are
+// full of them), or a Fahrenheit value keyed into a Celsius controller.
+// Frozen tuna, ice cream, plasma: one transposed character and the claim
+// runs to hundreds of thousands of dollars, discovered three weeks later
+// at the destination port.
+//
+// This controller's setpoint memory carries the frozen-cargo envelope as
+// an invariant: nothing outside [-30, -10] C can ever BE the setpoint.
+// The +18 typo isn't caught by a validator someone forgot to call on one
+// code path — the memory itself refuses, and the reefer keeps its last
+// safe value. Power state is a verified machine: you cannot program a
+// unit that isn't on, and a tripped unit must be inspected before reuse.
+// ============================================================================
+
+cell ReeferController {
+    face {
+        signal power_on(unit: String) -> Map
+        signal program_setpoint(unit: String, celsius: Int) -> Map
+        signal trip_alarm(unit: String) -> Map
+        signal inspect_unit(unit: String) -> Map
+        signal setpoint_of(unit: String) -> Int
+        signal unit_state(unit: String) -> String
+    }
+
+    memory {
+        // frozen-cargo envelope, deg C. The +18 typo cannot exist here.
+        setpoint_c: Map<String, Int> [persistent, consistent]
+        invariant setpoint_c >= -30 && setpoint_c <= -10
+    }
+
+    state reefer {
+        initial: unpowered
+        unpowered  -> running
+        running    -> unpowered
+        running    -> tripped
+        tripped    -> under_inspection
+        under_inspection -> unpowered
+    }
+
+    on power_on(unit: String) {
+        let r = try { transition(unit, "running") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "unit", unit, "state", "running")
+    }
+
+    on program_setpoint(unit: String, celsius: Int) {
+        if get_status(unit) != "running" {
+            let s = get_status(unit)
+            return map("ok", false, "reason", "unit {unit} is {s} — cannot program")
+        }
+        let w = try { setpoint_c.set(unit, celsius) }
+        if w.error != () {
+            return map("ok", false,
+                "reason", "REFUSED: {celsius} C is outside the frozen envelope [-30, -10]")
+        }
+        return map("ok", true, "unit", unit, "setpoint_c", celsius)
+    }
+
+    on trip_alarm(unit: String) {
+        let r = try { transition(unit, "tripped") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "unit", unit, "state", "tripped")
+    }
+
+    on inspect_unit(unit: String) {
+        let r = try { transition(unit, "under_inspection") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        transition(unit, "unpowered")
+        return map("ok", true, "unit", unit, "state", "unpowered")
+    }
+
+    on setpoint_of(unit: String) { return setpoint_c.get(unit) ?? -18 }
+    on unit_state(unit: String) { return get_status(unit) }
+}
+
+cell test FrozenEnvelope {
+    rules {
+        // programmed correctly for frozen tuna
+        assert power_on("RF-201").ok == true
+        assert program_setpoint("RF-201", -18).ok == true
+        assert setpoint_of("RF-201") == -18
+
+        // THE TYPO: +18. The memory refuses; last safe value survives.
+        assert program_setpoint("RF-201", 18).ok == false
+        assert setpoint_of("RF-201") == -18
+        assert_fails setpoint_c.set("RF-201", 18)
+        assert_fails setpoint_c.set("RF-201", -45)
+
+        // boundary values of the envelope are legal
+        assert program_setpoint("RF-201", -30).ok == true
+        assert program_setpoint("RF-201", -10).ok == true
+        assert program_setpoint("RF-201", -9).ok == false
+
+        // you cannot program a unit that is not running
+        assert program_setpoint("RF-999", -18).ok == false
+
+        // a tripped unit must pass inspection before it runs again
+        assert trip_alarm("RF-201").ok == true
+        assert program_setpoint("RF-201", -20).ok == false
+        assert_fails transition("RF-201", "running")
+        assert inspect_unit("RF-201").ok == true
+        assert power_on("RF-201").ok == true
+    }
+}

@@ -1,0 +1,113 @@
+// ============================================================================
+// BLUE/GREEN CUTOVER — there is no state where nobody serves traffic
+// ============================================================================
+//
+// Blue/green deployment's nightmare is the gap: blue is drained, green
+// isn't ready, and for ninety seconds production serves nothing. It is
+// the load-balancer cousin of the airlock problem — two doors that must
+// never both be shut. Salesforce's May 2021 outage had this shape: a
+// DNS change rolled out in a way that briefly left no servers
+// answering, and the tooling needed those very servers to roll back.
+//
+// In this controller the gap is not a state. Every state names exactly
+// which pool is live: blue_live, shifting_to_green (BOTH serve),
+// green_live, shifting_to_blue (BOTH serve). A "both dark" state does
+// not exist in the machine, and `soma verify` proves the reachable set
+// is exactly these four. The traffic split is invariant-walled to
+// 0..100 percent, so no weight calculation can send 130% or -30% of
+// traffic anywhere.
+// ============================================================================
+
+cell BlueGreen {
+    face {
+        signal start_shift(lb: String) -> Map
+        signal complete_shift(lb: String) -> Map
+        signal cancel_shift(lb: String) -> Map
+        signal serving_pools(lb: String) -> String
+        signal set_green_weight(lb: String, pct: Int) -> Map
+    }
+
+    memory {
+        // percent of traffic on the green pool; blue gets the rest.
+        green_pct: Map<String, Int> [persistent, consistent]
+        invariant green_pct >= 0 && green_pct <= 100
+    }
+
+    // Note what is ABSENT: any state with zero live pools. A shift can
+    // complete or cancel, but the lights never go out.
+    state cutover {
+        initial: blue_live
+        blue_live -> shifting_to_green
+        shifting_to_green -> green_live
+        shifting_to_green -> blue_live
+        green_live -> shifting_to_blue
+        shifting_to_blue -> blue_live
+        shifting_to_blue -> green_live
+    }
+
+    on start_shift(lb: String) {
+        let s = get_status(lb)
+        let next = "shifting_to_green"
+        if s == "green_live" { next = "shifting_to_blue" }
+        let r = try { transition(lb, next) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", next, "pools", serving_pools(lb))
+    }
+
+    on complete_shift(lb: String) {
+        let s = get_status(lb)
+        let target = "green_live"
+        if s == "shifting_to_blue" { target = "blue_live" }
+        let r = try { transition(lb, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let pct = 100
+        if target == "blue_live" { pct = 0 }
+        green_pct.set(lb, pct)
+        return map("ok", true, "state", target)
+    }
+
+    on cancel_shift(lb: String) {
+        let s = get_status(lb)
+        let back = "blue_live"
+        if s == "shifting_to_blue" { back = "green_live" }
+        let r = try { transition(lb, back) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", back)
+    }
+
+    // every state answers with at least one live pool — by construction
+    on serving_pools(lb: String) {
+        let s = get_status(lb)
+        if s == "blue_live" { return "blue" }
+        if s == "green_live" { return "green" }
+        return "blue+green"
+    }
+
+    on set_green_weight(lb: String, pct: Int) {
+        let w = try { green_pct.set(lb, pct) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        return map("ok", true, "green_pct", pct)
+    }
+}
+
+cell test CutoverTests {
+    rules {
+        // a full cutover: blue -> both -> green. Always somebody serving.
+        assert serving_pools("lb1") == "blue"
+        assert start_shift("lb1").pools == "blue+green"
+        assert complete_shift("lb1").state == "green_live"
+        assert serving_pools("lb1") == "green"
+
+        // THE GAP: jump pools without the overlap window. Not an edge.
+        assert_fails transition("lb1", "blue_live")
+
+        // a shift can be cancelled — back to the pool that never dropped
+        assert start_shift("lb1").ok == true
+        assert cancel_shift("lb1").state == "green_live"
+
+        // traffic weights live inside [0, 100], enforced by memory
+        assert set_green_weight("lb1", 50).ok == true
+        assert_fails green_pct.set("lb1", 130)
+        assert_fails green_pct.set("lb1", -30)
+    }
+}

@@ -1,0 +1,127 @@
+// ============================================================================
+// TERM LIMITS — the third term is not forbidden, it is unrepresentable
+// ============================================================================
+//
+// In 2008, New York's City Council — at Mayor Bloomberg's urging —
+// voted 29-22 to extend its own term limits so the sitting mayor could
+// run again, overriding two public referenda in which New Yorkers had
+// twice voted for a two-term cap. It was legal precisely because the
+// limit lived in an ordinary statute the limited officials themselves
+// could amend. The U.S. answer to FDR's four terms was different: the
+// 22nd Amendment put the cap somewhere no incumbent can reach.
+//
+// This module is the 22nd-Amendment version. The terms ledger carries
+// `invariant terms <= 2` — certifying a third term for the same person
+// is a WRITE THE MEMORY REFUSES, and there is no handler anywhere that
+// can loosen an invariant at runtime. Each term also walks a machine
+// whose `vacated` state is terminal: an ended term cannot be revived
+// as a sneaky continuation of itself.
+// ============================================================================
+
+cell TermRegistry {
+    face {
+        signal nominate(person: String, term_id: String) -> Map
+        signal certify_win(person: String, term_id: String) -> Map
+        signal inaugurate(term_id: String) -> Map
+        signal vacate(term_id: String) -> Map
+        signal terms_served(person: String) -> Int
+    }
+
+    memory {
+        // person -> terms certified, lifetime. 3 does not exist.
+        terms: Map<String, Int> [persistent, consistent]
+        invariant terms >= 0 && terms <= 2
+
+        winners: Map<String, String> [persistent, consistent]
+    }
+
+    // nominated -> won -> sworn_in -> vacated (TERMINAL).
+    // The office is re-filled only through a NEW term id — a new
+    // nomination, a new election, a fresh certification against the cap.
+    state term {
+        initial: open_seat
+        open_seat -> nominated
+        nominated -> won
+        won -> sworn_in
+        sworn_in -> vacated
+        nominated -> lost
+    }
+
+    on nominate(person: String, term_id: String) {
+        // the ballot gate: someone already at the cap cannot even run
+        if (terms.get(person) ?? 0) >= 2 {
+            return map("ok", false, "reason", "{person} has served 2 terms; the ballot is closed")
+        }
+        let r = try { transition(term_id, "nominated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "candidate", person)
+    }
+
+    on certify_win(person: String, term_id: String) {
+        if get_status(term_id) != "nominated" {
+            let s = get_status(term_id)
+            return map("ok", false, "reason", "nothing to certify from {s}")
+        }
+        // THE WALL: even if the ballot gate above were repealed by a
+        // friendly council, the third certification is a write of 3 —
+        // and the ledger refuses it.
+        let w = try { terms.set(person, (terms.get(person) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "22nd Amendment: no third term for {person}")
+        }
+        transition(term_id, "won")
+        winners.set(term_id, person)
+        return map("ok", true, "person", person, "terms", terms.get(person))
+    }
+
+    on inaugurate(term_id: String) {
+        let r = try { transition(term_id, "sworn_in") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "holder", winners.get(term_id))
+    }
+
+    on vacate(term_id: String) {
+        let r = try { transition(term_id, "vacated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "vacated")
+    }
+
+    on terms_served(person: String) {
+        return terms.get(person) ?? 0
+    }
+}
+
+cell test TermLimitTests {
+    rules {
+        // term one: nominate, win, swear in, and eventually vacate
+        assert nominate("bloomberg", "t2002").ok == true
+        assert certify_win("bloomberg", "t2002").terms == 1
+        assert inaugurate("t2002").holder == "bloomberg"
+        assert vacate("t2002").ok == true
+
+        // a vacated term is dead — no continuation-in-place
+        assert_fails transition("t2002", "sworn_in")
+        assert_fails transition("t2002", "won")
+
+        // term two, through a brand-new term id
+        assert nominate("bloomberg", "t2005").ok == true
+        assert certify_win("bloomberg", "t2005").terms == 2
+        assert inaugurate("t2005").ok == true
+        assert vacate("t2005").ok == true
+
+        // THE 2008 MOVE: the third run. The ballot gate refuses —
+        // and even a "council override" of that gate hits the memory.
+        assert nominate("bloomberg", "t2009").ok == false
+        assert_fails terms.set("bloomberg", 3)
+        assert terms_served("bloomberg") == 2
+
+        // a rigged certification with no election behind it also dies:
+        // t2009 was never nominated, so there is nothing to certify
+        assert certify_win("bloomberg", "t2009").ok == false
+        assert_fails transition("t2009", "won")
+
+        // the office itself stays alive — for somebody else
+        assert nominate("thompson", "t2009").ok == true
+        assert certify_win("thompson", "t2009").terms == 1
+    }
+}

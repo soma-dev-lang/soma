@@ -1,0 +1,104 @@
+// ============================================================================
+// KILL SWITCH — a dead flag stays dead
+// ============================================================================
+//
+// On August 1, 2012, Knight Capital repurposed an old feature flag —
+// "Power Peg", dead code from 2003 — for a new router. One of eight
+// servers still ran the old code. When the recycled flag flipped on,
+// the zombie code woke up and bought $7 billion of stock in 45 minutes.
+// Knight lost $440M and the company. The root cause was not the bug;
+// it was that a KILLED flag could come back to life.
+//
+// Here `killed` is a TERMINAL state — `soma verify` proves no path out.
+// Re-enabling a killed feature means minting a NEW flag through a new
+// review, never resurrecting the old one. The rollout percentage rides
+// a memory invariant so no handler can write an out-of-range exposure.
+// ============================================================================
+
+cell FeatureFlags {
+    face {
+        signal launch(flag: String) -> Map
+        signal pause(flag: String) -> Map
+        signal resume(flag: String) -> Map
+        signal kill(flag: String) -> Map
+        signal set_rollout(flag: String, pct: Int) -> Map
+        signal flag_state(flag: String) -> String
+    }
+
+    memory {
+        rollout: Map<String, Int> [persistent, consistent]
+        invariant rollout >= 0 && rollout <= 100
+    }
+
+    // `killed` has no outgoing edge. Power Peg stays in its grave.
+    state flag {
+        initial: draft
+        draft -> live
+        live -> paused
+        paused -> live
+        live -> killed
+        paused -> killed
+    }
+
+    on launch(flag: String) {
+        let r = try { transition(flag, "live") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        rollout.set(flag, 1)
+        return map("ok", true, "state", get_status(flag))
+    }
+
+    on pause(flag: String) {
+        let r = try { transition(flag, "paused") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(flag))
+    }
+
+    on resume(flag: String) {
+        let r = try { transition(flag, "live") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(flag))
+    }
+
+    on kill(flag: String) {
+        let r = try { transition(flag, "killed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        rollout.set(flag, 0)
+        return map("ok", true, "state", "killed")
+    }
+
+    on set_rollout(flag: String, pct: Int) {
+        if flag_state(flag) != "live" {
+            return map("ok", false, "reason", "flag is not live")
+        }
+        let w = try { rollout.set(flag, pct) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        return map("ok", true, "pct", pct)
+    }
+
+    on flag_state(flag: String) {
+        return get_status(flag)
+    }
+}
+
+cell test KillSwitchTests {
+    rules {
+        // normal life: launch, widen, pause, resume
+        assert launch("router-v2").ok == true
+        assert set_rollout("router-v2", 50).ok == true
+        assert pause("router-v2").ok == true
+        assert resume("router-v2").ok == true
+
+        // the kill switch fires
+        assert kill("router-v2").ok == true
+
+        // THE KNIGHT CAPITAL MOVE: resurrect the dead flag. No edge exists.
+        assert_fails transition("router-v2", "live")
+        assert_fails transition("router-v2", "paused")
+        assert_fails transition("router-v2", "draft")
+
+        // exposure can never leave [0, 100] — memory refuses, not an if
+        assert launch("checkout-v3").ok == true
+        assert_fails rollout.set("checkout-v3", 150)
+        assert_fails rollout.set("checkout-v3", -1)
+    }
+}

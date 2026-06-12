@@ -1,0 +1,106 @@
+// ============================================================================
+// VITAL RECORDS — a person dies at most once, and benefits know it instantly
+// ============================================================================
+// SSA's Inspector General found tens of millions paid to beneficiaries who
+// were dead — and, in the mirror failure, thousands of LIVING people marked
+// dead in the Death Master File (sometimes twice, by different counties),
+// freezing their bank accounts. Both failures come from death being a row
+// any clerk can insert again. Here a person's death count is a memory
+// invariant capped at 1: the second certificate is refused at the write.
+// A registered certificate is terminal — soma verify proves no resurrection
+// edit — and the benefits handler refuses payment the moment the count is 1.
+// ============================================================================
+
+cell VitalRecords {
+    face {
+        signal file_certificate(person: String) -> Map
+        signal register_death(person: String) -> Map
+        signal pay_benefit(person: String, amount: Int) -> Map
+        signal is_deceased(person: String) -> Bool
+        signal paid_total(person: String) -> Int
+        signal cert_state(person: String) -> String
+    }
+
+    memory {
+        // person -> registered deaths. A second death is unrepresentable.
+        deaths: Map<String, Int> [persistent, consistent]
+        invariant deaths >= 0 && deaths <= 1
+
+        paid: Map<String, Int> [persistent, consistent]
+        invariant paid >= 0
+    }
+
+    // Per-person certificate lifecycle. registered has no exit:
+    // there is no un-dying in the record, only court-ordered new records.
+    state certificate {
+        initial: no_record
+        no_record -> filed
+        filed -> registered
+    }
+
+    on cert_state(person: String) { return get_status(person) }
+
+    on file_certificate(person: String) {
+        let r = try { transition(person, "filed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "person", person)
+    }
+
+    on register_death(person: String) {
+        if cert_state(person) != "filed" {
+            return map("ok", false, "reason", "no filed certificate for {person}")
+        }
+        let prior = deaths.get(person) ?? 0
+        // THE WALL: county B registering what county A already registered
+        // is refused by the ledger itself.
+        let w = try { deaths.set(person, prior + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{person} already registered deceased")
+        }
+        transition(person, "registered")
+        return map("ok", true, "person", person)
+    }
+
+    on pay_benefit(person: String, amount: Int) {
+        if is_deceased(person) {
+            return map("ok", false, "reason", "{person} is deceased — payment stopped")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "amount must be positive") }
+        let sofar = paid.get(person) ?? 0
+        paid.set(person, sofar + amount)
+        return map("ok", true, "person", person, "total", sofar + amount)
+    }
+
+    on is_deceased(person: String) { return (deaths.get(person) ?? 0) == 1 }
+
+    on paid_total(person: String) { return paid.get(person) ?? 0 }
+}
+
+cell test VitalRecordsTests {
+    rules {
+        // benefits flow while the person is alive
+        assert pay_benefit("ada", 1200).ok == true
+        assert pay_benefit("ada", 1200).ok == true
+        assert paid_total("ada") == 2400
+
+        // death is registered exactly once
+        assert register_death("ada").ok == false          // no certificate filed
+        assert file_certificate("ada").ok == true
+        assert register_death("ada").ok == true
+        assert register_death("ada").ok == false          // county B, refused
+        assert_fails deaths.set("ada", 2)                 // unrepresentable
+        assert_fails transition("ada", "filed")           // no resurrection edit
+        assert_fails transition("ada", "no_record")
+
+        // the moment the count is 1, the checks stop
+        assert pay_benefit("ada", 1200).ok == false
+        assert paid_total("ada") == 2400                  // not a cent more
+
+        // a living person is untouched by ada's record
+        assert is_deceased("bob") == false
+        assert pay_benefit("bob", 800).ok == true
+        // and a clerk cannot mark bob dead without a filed certificate
+        assert register_death("bob").ok == false
+        assert is_deceased("bob") == false
+    }
+}

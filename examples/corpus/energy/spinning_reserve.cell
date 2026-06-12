@@ -1,0 +1,108 @@
+// ============================================================================
+// SPINNING RESERVE — every megawatt you sell must claim real iron
+// ============================================================================
+//
+// Spinning reserve is capacity a generator is PAID to hold back, ready to
+// inject within minutes when a unit elsewhere trips. The market failure:
+// energy and reserve are sold in separate transactions, so a 500 MW unit
+// can dispatch 450 MW of energy AND sell 100 MW of reserve — 550 MW of
+// promises against 500 MW of iron. During winter storm Uri in February
+// 2021, ERCOT discovered how much of its purchased reserve was paper:
+// units that had sold readiness tripped offline or never ramped, and the
+// shortfall became rolling blackouts in single-digit cold.
+//
+// The fix here is one slot: `claimed` holds energy dispatch PLUS reserve
+// commitments per unit, and its invariant is the nameplate. Both markets
+// write through the same wall, so the double-sell is rejected at the
+// memory — there is no code path on which promises exceed iron.
+// ============================================================================
+
+cell ReserveDesk {
+    face {
+        signal dispatch_energy(unit: String, mw: Int) -> Map
+        signal sell_reserve(unit: String, mw: Int) -> Map
+        signal release_reserve(unit: String, mw: Int) -> Map
+        signal claimed_of(unit: String) -> Int
+        signal reserve_of(unit: String) -> Int
+    }
+
+    memory {
+        // energy dispatch + reserve commitments, MW — nameplate is 500.
+        // THE wall: promises live in the same slot as the iron they claim.
+        claimed: Map<String, Int> [persistent, consistent]
+        invariant claimed >= 0 && claimed <= 500
+
+        // reserve component, for settlement reporting
+        reserve_mw: Map<String, Int> [persistent, consistent]
+        invariant reserve_mw >= 0 && reserve_mw <= 500
+    }
+
+    on claimed_of(unit: String) { return claimed.get(unit) ?? 0 }
+    on reserve_of(unit: String) { return reserve_mw.get(unit) ?? 0 }
+
+    on dispatch_energy(unit: String, mw: Int) {
+        if mw <= 0 { return map("ok", false, "reason", "dispatch must be positive") }
+        let w = try { claimed.set(unit, claimed_of(unit) + mw) }
+        if w.error != () {
+            return map("ok", false, "reason", "nameplate wall: {w.error}")
+        }
+        return map("ok", true, "claimed", claimed_of(unit))
+    }
+
+    on sell_reserve(unit: String, mw: Int) {
+        if mw <= 0 { return map("ok", false, "reason", "reserve must be positive") }
+        // the reserve sale claims the same iron as an energy dispatch —
+        // if the headroom isn't physically there, this write refuses
+        let w = try { claimed.set(unit, claimed_of(unit) + mw) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "reserve exceeds physical headroom: {w.error}")
+        }
+        reserve_mw.set(unit, reserve_of(unit) + mw)
+        return map("ok", true, "reserve", reserve_of(unit), "claimed", claimed_of(unit))
+    }
+
+    on release_reserve(unit: String, mw: Int) {
+        if mw <= 0 || mw > reserve_of(unit) {
+            return map("ok", false, "reason",
+                "cannot release {mw} MW — only {reserve_of(unit)} MW committed")
+        }
+        reserve_mw.set(unit, reserve_of(unit) - mw)
+        claimed.set(unit, claimed_of(unit) - mw)
+        return map("ok", true, "reserve", reserve_of(unit), "claimed", claimed_of(unit))
+    }
+}
+
+cell test ReserveTests {
+    rules {
+        // a 500 MW unit dispatches 450 MW of energy
+        assert dispatch_energy("u1", 450).ok == true
+        assert claimed_of("u1") == 450
+
+        // THE DOUBLE-SELL: 100 MW of reserve against 50 MW of headroom.
+        // Refused — the promise has no iron behind it.
+        assert sell_reserve("u1", 100).ok == false
+        assert reserve_of("u1") == 0
+
+        // 50 MW of reserve fits exactly
+        assert sell_reserve("u1", 50).ok == true
+        assert claimed_of("u1") == 500
+
+        // now the unit is fully claimed: no more energy, no more reserve
+        assert dispatch_energy("u1", 1).ok == false
+        assert sell_reserve("u1", 1).ok == false
+
+        // releasing the reserve frees real headroom again
+        assert release_reserve("u1", 30).ok == true
+        assert claimed_of("u1") == 470
+        assert dispatch_energy("u1", 30).ok == true
+
+        // you cannot release reserve you never sold
+        assert release_reserve("u1", 999).ok == false
+
+        // THE WALL itself: over-claim and negative-claim writes raise
+        assert_fails claimed.set("u1", 501)
+        assert_fails claimed.set("u1", -1)
+        assert_fails reserve_mw.set("u1", 600)
+    }
+}

@@ -1,0 +1,146 @@
+// ============================================================================
+// SEPSIS BUNDLE — antibiotics never go in before the blood cultures are
+// drawn, and the 1-hour clock is real
+// ============================================================================
+//
+// The Surviving Sepsis "hour-1 bundle" saves lives by ordering: measure
+// lactate, DRAW BLOOD CULTURES, then give broad-spectrum antibiotics, then
+// start fluids — all within an hour of recognition. The ordering is not
+// bureaucratic: give antibiotics before the cultures are drawn and you
+// sterilize the sample, losing the chance to identify the organism and
+// target therapy. The other failure is the clock: every minute of delay to
+// antibiotics raises mortality.
+//
+// Here the bundle is a state machine where `antibiotics` is reachable ONLY
+// after `cultures_drawn` — there is no edge that lets the drug precede the
+// draw. A memory invariant pins elapsed minutes into [0,60]: a bundle
+// charted as completed past the hour is a rejected write, so "we'll call it
+// on-time" cannot be recorded. `completed` is terminal.
+//
+//   soma verify examples/corpus/medical/sepsis_bundle.cell
+//   soma test   examples/corpus/medical/sepsis_bundle.cell
+//   soma run    examples/corpus/medical/sepsis_bundle.cell demo
+// ============================================================================
+
+cell SepsisBundle {
+    face {
+        signal recognize(case_id: String) -> Map
+        signal lactate(case_id: String) -> Map
+        signal cultures(case_id: String) -> Map
+        signal antibiotics(case_id: String, minute: Int) -> Map
+        signal fluids(case_id: String) -> Map
+        signal complete(case_id: String) -> Map
+        signal bundle_state(case_id: String) -> String
+        signal demo() -> String
+    }
+
+    memory {
+        // Minute (0..60) at which antibiotics were given, relative to
+        // recognition. The hour-1 target is the wall: charting a time past
+        // 60 is a rejected write — you cannot record a late dose as if it
+        // counted.
+        abx_minute: Map<String, Int> [persistent, consistent]
+        invariant abx_minute >= 0 && abx_minute <= 60
+    }
+
+    // The bundle order, made structural. `antibiotics` is unreachable
+    // until `cultures_drawn` — the draw always precedes the drug.
+    // `completed` is terminal.
+    state bundle {
+        initial: recognized
+        recognized      -> lactate_measured
+        lactate_measured -> cultures_drawn
+        cultures_drawn  -> abx_given          // ONLY after the draw
+        abx_given       -> fluids_started
+        fluids_started  -> completed          // terminal
+    }
+
+    on recognize(case_id: String) {
+        return map("ok", true, "state", get_status(case_id))
+    }
+
+    on lactate(case_id: String) {
+        let r = try { transition(case_id, "lactate_measured") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(case_id))
+    }
+
+    on cultures(case_id: String) {
+        let r = try { transition(case_id, "cultures_drawn") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(case_id))
+    }
+
+    // Antibiotics — refused before cultures are drawn (the machine raises),
+    // and the time is pinned inside the hour by the invariant.
+    on antibiotics(case_id: String, minute: Int) {
+        let st = get_status(case_id)
+        if st != "cultures_drawn" {
+            return map("ok", false, "reason",
+                "antibiotics before cultures would sterilize the sample (state {st})")
+        }
+        let w = try { abx_minute.set(case_id, minute) }
+        if w.error != () {
+            return map("ok", false, "reason", "past the hour-1 window: {w.error}")
+        }
+        transition(case_id, "abx_given")
+        return map("ok", true, "minute", minute, "state", get_status(case_id))
+    }
+
+    on fluids(case_id: String) {
+        let r = try { transition(case_id, "fluids_started") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(case_id))
+    }
+
+    on complete(case_id: String) {
+        let r = try { transition(case_id, "completed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(case_id))
+    }
+
+    on bundle_state(case_id: String) { return get_status(case_id) }
+
+    on demo() {
+        recognize("c-1")
+        lactate("c-1")
+        // the slip: try antibiotics before drawing cultures — REFUSED
+        let early = antibiotics("c-1", 20)
+        cultures("c-1")
+        antibiotics("c-1", 35)
+        fluids("c-1")
+        complete("c-1")
+        let st = bundle_state("c-1")
+        print("abx before cultures: {early}")
+        print("final state:         {st}")
+        return "demo done"
+    }
+}
+
+cell test SepsisTests {
+    rules {
+        assert recognize("a").ok == true
+        assert lactate("a").ok == true
+
+        // antibiotics cannot precede the culture draw
+        assert antibiotics("a", 10).ok == false
+        assert_fails transition("a", "abx_given")
+
+        // correct order: draw, then give within the hour
+        assert cultures("a").ok == true
+        assert antibiotics("a", 40).ok == true
+        assert fluids("a").ok == true
+        assert complete("a").ok == true
+        assert bundle_state("a") == "completed"
+
+        // completed is terminal
+        assert_fails transition("a", "abx_given")
+
+        // the clock invariant refuses a dose charted past the hour
+        assert recognize("b").ok == true
+        assert lactate("b").ok == true
+        assert cultures("b").ok == true
+        assert antibiotics("b", 90).ok == false    // 90 > 60 — refused
+        assert_fails abx_minute.set("b", 61)
+    }
+}

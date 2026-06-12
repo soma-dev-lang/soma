@@ -1,21 +1,35 @@
 # Soma corpus — verified example programs
 
-168 complete Soma programs across 10 domains, **every one passing `soma check` and `soma test`**
-on the current binary. Generated as LLM training data: idiomatic, diverse,
-self-verifying (each carries a `cell test` block).
+**316 complete Soma programs across 20 domains — every one passing
+`soma check` and `soma test`** (and `soma verify` where a state machine
+exists) on the current binary, independently re-verified before commit.
+Generated as LLM training data: idiomatic, diverse, self-verifying, and
+(wave 2) story-driven — each safety program names the real-world failure
+it makes unrepresentable (Therac-25, Lauda Air 004, Helios 522,
+Überlingen, Apollo 13, Ladbroke Grove, ...).
 
-| Domain | Programs | What's inside |
-|--------|----------|---------------|
-| algorithms | 18 | sorts, searches, BFS/DFS, DP (knapsack, LIS, edit distance), stacks/queues |
-| web | 16 | request-routing CRUD, URL shortener, sessions, leaderboards, feature flags |
-| agents | 15 | cell agent + bounded think() + tools + budgets + verified lifecycles |
-| state_machines | 14 | order/ticket/document lifecycles, interlocks, billing — proven by verify |
-| finance | 17 | ledgers with memory invariants, P&L, position limits, payoffs |
-| games | 19 | tic-tac-toe, dice, RPS, Conway, card decks |
-| data | 17 | filter_by/group_by/agg/pluck pipelines over record lists |
-| text | 18 | tokenizers, ciphers, templating, slugify, RLE, number-to-words |
-| math | 17 | vectors, matrices, statistics, root finding, primes |
-| records | 17 | record literals, dot/nested mutation, entities in slots |
+| Domain | Programs |
+|--------|----------|
+| aerospace | 15 |
+| agents | 15 |
+| algorithms | 18 |
+| civic | 14 |
+| data | 17 |
+| devops | 14 |
+| energy | 15 |
+| escrow_finance | 15 |
+| finance | 17 |
+| games | 19 |
+| games_economy | 16 |
+| governance | 16 |
+| logistics | 15 |
+| math | 17 |
+| medical | 14 |
+| records | 17 |
+| safety_interlocks | 14 |
+| state_machines | 14 |
+| text | 18 |
+| web | 16 |
 
 Verify the whole corpus:
 

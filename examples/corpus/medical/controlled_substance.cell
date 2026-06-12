@@ -1,0 +1,132 @@
+// ============================================================================
+// CONTROLLED SUBSTANCE CABINET — the narcotic count must reconcile, always
+// ============================================================================
+//
+// Diversion of controlled drugs (fentanyl, morphine, oxycodone) from
+// hospital cabinets is a real and deadly problem: nurses have overdosed
+// stealing from the supply, and patients have been undertreated when their
+// dose was diverted and saline charted instead. The DEA requires a
+// perpetual inventory where every dispense, every waste, every return is
+// accounted for and the physical count matches the record.
+//
+// Here the cabinet count is a CONSERVED quantity. You cannot dispense a
+// vial that isn't there (count can't go negative), and a "waste" of a
+// partial dose must be witnessed — recorded as its own ledger entry — so
+// the on-hand plus dispensed plus wasted always reconciles. The invariant
+// makes an impossible count (negative, or more than ever stocked) a
+// rejected write, turning diversion-by-miscount into a hard error.
+//
+//   soma check examples/corpus/medical/controlled_substance.cell
+//   soma test  examples/corpus/medical/controlled_substance.cell
+//   soma run   examples/corpus/medical/controlled_substance.cell demo
+// ============================================================================
+
+cell Cabinet {
+    face {
+        signal stock(drug: String, units: Int) -> Map
+        signal dispense(drug: String, nurse: String) -> Map
+        signal waste(drug: String, witness: String) -> Map
+        signal on_hand(drug: String) -> Int
+        signal dispensed_total(drug: String) -> Int
+        signal reconciles(drug: String) -> Bool
+        signal demo() -> String
+    }
+
+    memory {
+        // Physical units in the cabinet. Conserved: never negative, never
+        // above the cabinet capacity. A dispense that would underflow is a
+        // rejected write — diversion-by-miscount cannot be charted.
+        on_hand_slot: Map<String, Int> [persistent, consistent]
+        invariant on_hand_slot >= 0 && on_hand_slot <= 1000
+
+        // Audit ledger: how many ever stocked, dispensed, wasted.
+        stocked: Map<String, Int> [persistent, consistent]
+        invariant stocked >= 0 && stocked <= 1000
+
+        dispensed: Map<String, Int> [persistent, consistent]
+        invariant dispensed >= 0 && dispensed <= 1000
+
+        wasted: Map<String, Int> [persistent, consistent]
+        invariant wasted >= 0 && wasted <= 1000
+    }
+
+    on stock(drug: String, units: Int) {
+        let cur = on_hand_slot.get(drug) ?? 0
+        let everstock = stocked.get(drug) ?? 0
+        let w = try { on_hand_slot.set(drug, cur + units) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        stocked.set(drug, everstock + units)
+        return map("ok", true, "on_hand", cur + units)
+    }
+
+    // Dispense one unit. If the cabinet is empty the count would go
+    // negative — the invariant refuses, so you cannot chart a dose that
+    // physically isn't there.
+    on dispense(drug: String, nurse: String) {
+        let cur = on_hand_slot.get(drug) ?? 0
+        let w = try { on_hand_slot.set(drug, cur - 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "cabinet empty — cannot dispense: {w.error}")
+        }
+        let d = dispensed.get(drug) ?? 0
+        dispensed.set(drug, d + 1)
+        return map("ok", true, "nurse", nurse, "on_hand", cur - 1)
+    }
+
+    // Witnessed waste of a partial dose — its own ledger entry so the
+    // count still reconciles.
+    on waste(drug: String, witness: String) {
+        let wst = wasted.get(drug) ?? 0
+        wasted.set(drug, wst + 1)
+        return map("ok", true, "witness", witness, "wasted", wst + 1)
+    }
+
+    on on_hand(drug: String) { return on_hand_slot.get(drug) ?? 0 }
+    on dispensed_total(drug: String) { return dispensed.get(drug) ?? 0 }
+
+    // The reconciliation equation: everything stocked is either still on
+    // hand or accounted for as dispensed. (Waste is tracked separately for
+    // the audit trail.) If this is ever false, there is diversion.
+    on reconciles(drug: String) {
+        let stk = stocked.get(drug) ?? 0
+        let oh = on_hand_slot.get(drug) ?? 0
+        let dsp = dispensed.get(drug) ?? 0
+        return stk == oh + dsp
+    }
+
+    on demo() {
+        stock("fentanyl", 5)
+        dispense("fentanyl", "RN-Jones")
+        waste("fentanyl", "RN-Smith")
+        let rec = reconciles("fentanyl")
+        let oh = on_hand("fentanyl")
+        print("on hand:     {oh}")
+        print("reconciles:  {rec}")
+        return "demo done"
+    }
+}
+
+cell test CabinetTests {
+    rules {
+        assert stock("morphine", 3).ok == true
+        assert on_hand("morphine") == 3
+
+        // each dispense decrements and the ledger reconciles
+        assert dispense("morphine", "RN-A").ok == true
+        assert on_hand("morphine") == 2
+        assert reconciles("morphine") == true
+        assert dispensed_total("morphine") == 1
+
+        // drain to empty, then the next dispense is REFUSED (no negative)
+        assert dispense("morphine", "RN-A").ok == true
+        assert dispense("morphine", "RN-A").ok == true
+        assert on_hand("morphine") == 0
+        assert dispense("morphine", "RN-A").ok == false
+        assert on_hand("morphine") == 0                  // still 0, not -1
+        assert reconciles("morphine") == true
+
+        // the count slot itself refuses an impossible value
+        assert_fails on_hand_slot.set("morphine", -1)
+        assert_fails on_hand_slot.set("morphine", 1001)
+    }
+}

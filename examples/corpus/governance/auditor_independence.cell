@@ -1,0 +1,116 @@
+// ============================================================================
+// AUDITOR INDEPENDENCE — one firm, one client, ONE role
+// ============================================================================
+//
+// In 2000, Arthur Andersen billed Enron $25 million for the audit — and
+// $27 million for consulting. The firm certifying the books had a bigger
+// business interest in pleasing management than in challenging it. When
+// Enron collapsed, Andersen's partners were found shredding audit
+// workpapers; the firm itself dissolved, taking 85,000 jobs with it.
+// Sarbanes-Oxley §201 answered by making the dual role itself illegal:
+// a registered public accounting firm may not provide most consulting
+// services to an audit client. Not "disclose it" — may not hold both.
+//
+// Here the prohibition is arithmetic. A firm/client pair can hold at
+// most ONE engagement. Signing the audit writes 1; selling consulting
+// to the same client tries to write 2 — and the engagement ledger
+// refuses. The conflict isn't reviewed by an ethics board after the
+// fact; it is a value the books cannot hold. The audit itself runs a
+// machine where `opinion_issued` is terminal: once signed, an opinion
+// cannot be quietly recalled and re-negotiated.
+// ============================================================================
+
+cell EngagementLedger {
+    face {
+        signal sign_audit(firm: String, client: String) -> Map
+        signal sell_consulting(firm: String, client: String) -> Map
+        signal do_fieldwork(firm: String, client: String) -> Map
+        signal issue_opinion(firm: String, client: String) -> Map
+        signal engagement_load(firm: String, client: String) -> Int
+    }
+
+    memory {
+        // firm:client -> engagements held. The Andersen position
+        // (audit + consulting, same client) is the unrepresentable 2.
+        engagements: Map<String, Int> [persistent, consistent]
+        invariant engagements >= 0 && engagements <= 1
+    }
+
+    // an audit engagement's life; opinion_issued is TERMINAL
+    state audit {
+        initial: proposed
+        proposed -> engaged
+        engaged -> fieldwork
+        fieldwork -> opinion_issued
+    }
+
+    on sign_audit(firm: String, client: String) {
+        let k = "{firm}:{client}"
+        let w = try { engagements.set(k, (engagements.get(k) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "SOX 201: {firm} already holds an engagement at {client}")
+        }
+        let r = try { transition(k, "engaged") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "audit", k)
+    }
+
+    on sell_consulting(firm: String, client: String) {
+        // SAME ledger, SAME invariant: the second hat does not fit
+        let k = "{firm}:{client}"
+        let w = try { engagements.set(k, (engagements.get(k) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "SOX 201: {firm} cannot consult for an audit client ({client})")
+        }
+        return map("ok", true, "consulting", k)
+    }
+
+    on do_fieldwork(firm: String, client: String) {
+        let r = try { transition("{firm}:{client}", "fieldwork") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "fieldwork")
+    }
+
+    on issue_opinion(firm: String, client: String) {
+        let r = try { transition("{firm}:{client}", "opinion_issued") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "opinion_issued")
+    }
+
+    on engagement_load(firm: String, client: String) {
+        return engagements.get("{firm}:{client}") ?? 0
+    }
+}
+
+cell test IndependenceTests {
+    rules {
+        // Andersen signs the Enron audit — one engagement, lawful
+        assert sign_audit("andersen", "enron").ok == true
+        assert engagement_load("andersen", "enron") == 1
+
+        // THE $27M TEMPTATION: consulting for the same client. The
+        // ledger cannot hold the 2 — refused at the write.
+        assert sell_consulting("andersen", "enron").ok == false
+        assert_fails engagements.set("andersen:enron", 2)
+        assert engagement_load("andersen", "enron") == 1
+
+        // and symmetrically: a consulting-first firm cannot take the audit
+        assert sell_consulting("mckinsey", "enron").ok == true
+        assert sign_audit("mckinsey", "enron").ok == false
+
+        // different client, no conflict — independence is per-pair
+        assert sell_consulting("andersen", "dynegy").ok == true
+
+        // the audit machine: no opinion without fieldwork
+        assert issue_opinion("andersen", "enron").ok == false
+        assert_fails transition("andersen:enron", "opinion_issued")
+        assert do_fieldwork("andersen", "enron").ok == true
+        assert issue_opinion("andersen", "enron").ok == true
+
+        // a signed opinion is history — no recall, no re-negotiation
+        assert_fails transition("andersen:enron", "fieldwork")
+        assert_fails transition("andersen:enron", "proposed")
+    }
+}

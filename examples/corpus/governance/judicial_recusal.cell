@@ -1,0 +1,120 @@
+// ============================================================================
+// JUDICIAL RECUSAL — a conflicted judge cannot sit, and cases aren't shopped
+// ============================================================================
+//
+// Caperton v. A.T. Massey Coal (2009): while a $50M verdict against
+// Massey was heading to West Virginia's Supreme Court, Massey's CEO
+// spent $3M electing Justice Brent Benjamin to that court. Benjamin
+// refused to recuse himself — twice — and cast the deciding vote to
+// overturn the verdict. The U.S. Supreme Court held the Due Process
+// Clause itself required recusal. The lesson: recusal cannot be left to
+// the conflicted judge's own discretion.
+//
+// Here the conflicts register is consulted by the assignment machinery,
+// not by the judge's conscience. And the second classic abuse — judge
+// shopping, reassigning a case until a friendly bench appears — is a
+// memory invariant: one case, one assignment, ever. The second
+// assignment is a write the docket refuses.
+// ============================================================================
+
+cell Docket {
+    face {
+        signal declare_conflict(judge: String, party: String) -> Map
+        signal assign_case(case_id: String, judge: String, party_a: String, party_b: String) -> Map
+        signal hear(case_id: String) -> Map
+        signal rule(case_id: String) -> Map
+        signal bench_of(case_id: String) -> String
+    }
+
+    memory {
+        // case -> assignments made. ONE. Re-rolling the wheel until a
+        // friendly judge appears is unrepresentable.
+        seatings: Map<String, Int> [persistent, consistent]
+        invariant seatings >= 0 && seatings <= 1
+
+        conflicts: Map<String, Int> [persistent, consistent]
+        invariant conflicts >= 1 && conflicts <= 1
+
+        bench: Map<String, String> [persistent, consistent]
+    }
+
+    // filed -> assigned -> heard -> decided (TERMINAL: the ruling stands;
+    // relief comes from appeal in a HIGHER court, not from re-running this one)
+    state court_case {
+        initial: filed
+        filed -> assigned
+        assigned -> heard
+        heard -> decided
+    }
+
+    on declare_conflict(judge: String, party: String) {
+        conflicts.set("{judge}:{party}", 1)
+        return map("ok", true, "judge", judge, "party", party)
+    }
+
+    on assign_case(case_id: String, judge: String, party_a: String, party_b: String) {
+        // the register, not the judge's discretion, decides
+        if conflicts.get("{judge}:{party_a}") != () || conflicts.get("{judge}:{party_b}") != () {
+            return map("ok", false, "reason",
+                "due process: {judge} has a registered conflict in {case_id}")
+        }
+        // THE WALL: one seating per case — no judge shopping
+        let w = try { seatings.set(case_id, (seatings.get(case_id) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{case_id} already has its judge; no reshuffling")
+        }
+        transition(case_id, "assigned")
+        bench.set(case_id, judge)
+        return map("ok", true, "case", case_id, "judge", judge)
+    }
+
+    on hear(case_id: String) {
+        let r = try { transition(case_id, "heard") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "heard")
+    }
+
+    on rule(case_id: String) {
+        let r = try { transition(case_id, "decided") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "decided", "judge", bench.get(case_id))
+    }
+
+    on bench_of(case_id: String) {
+        return bench.get(case_id) ?? "[unassigned]"
+    }
+}
+
+cell test RecusalTests {
+    rules {
+        // Massey's CEO funds Benjamin's seat; the register knows
+        assert declare_conflict("benjamin", "massey").ok == true
+
+        // the Caperton assignment: structurally refused
+        assert assign_case("caperton-v-massey", "benjamin", "caperton", "massey").ok == false
+        assert get_status("caperton-v-massey") == "filed"
+        assert bench_of("caperton-v-massey") == "[unassigned]"
+
+        // an unconflicted judge sits; the case proceeds
+        assert assign_case("caperton-v-massey", "starcher", "caperton", "massey").ok == true
+
+        // judge shopping: the docket can hold only one seating
+        assert assign_case("caperton-v-massey", "benjamin", "caperton", "massey").ok == false
+        assert assign_case("caperton-v-massey", "maynard", "caperton", "massey").ok == false
+        assert_fails seatings.set("caperton-v-massey", 2)
+        assert bench_of("caperton-v-massey") == "starcher"
+
+        // no hearing before assignment, no ruling before hearing
+        assert_fails transition("fresh-case", "heard")
+        assert_fails transition("fresh-case", "decided")
+
+        // the case runs to judgment; decided is terminal
+        assert hear("caperton-v-massey").ok == true
+        assert rule("caperton-v-massey").judge == "starcher"
+        assert_fails transition("caperton-v-massey", "heard")
+        assert_fails transition("caperton-v-massey", "filed")
+
+        // a conflict entry is a fact, not a dial: only 1 is representable
+        assert_fails conflicts.set("benjamin:massey", 0)
+    }
+}

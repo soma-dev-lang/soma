@@ -1,0 +1,115 @@
+// ============================================================================
+// DISASTER AID — one emergency grant per household, however many times asked
+// ============================================================================
+// After Katrina, GAO estimated roughly $1 billion of FEMA individual
+// assistance was improper — much of it duplicate registrations: the same
+// household applying through different names, addresses, or call centers,
+// each application paid because the dedup ran AFTER the checks went out.
+// Here the duplicate is unrepresentable: a household's grant count is a
+// memory invariant capped at 1, so the second disbursement is refused at the
+// write, whichever intake channel it arrived through. The aid program also
+// has a one-way lifecycle — once the program is audited, soma verify proves
+// it never re-opens for "supplemental" off-book payments.
+// ============================================================================
+
+cell DisasterAid {
+    face {
+        signal declare_disaster() -> Map
+        signal disburse(household: String, amount: Int) -> Map
+        signal close_registration() -> Map
+        signal complete_audit() -> Map
+        signal grants_to(household: String) -> Int
+        signal outlay_total() -> Int
+        signal phase() -> String
+    }
+
+    memory {
+        // household -> emergency grants. A second grant is unrepresentable.
+        granted: Map<String, Int> [persistent, consistent]
+        invariant granted >= 0 && granted <= 1
+
+        outlay: Map<String, Int> [persistent, consistent]
+        invariant outlay >= 0 && outlay <= 5000
+    }
+
+    // audited is terminal: a closed program pays no one, ever again.
+    state program {
+        initial: declared
+        declared -> registration_open
+        registration_open -> registration_closed
+        registration_closed -> audited
+    }
+
+    on phase() { return get_status("program") }
+
+    on declare_disaster() {
+        let r = try { transition("program", "registration_open") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on disburse(household: String, amount: Int) {
+        if phase() != "registration_open" {
+            return map("ok", false, "reason", "program is {phase()}")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "amount must be positive") }
+        let prior = granted.get(household) ?? 0
+        // WALL 1: the duplicate registration, refused at the write —
+        // a different call center is still the same household key.
+        let g = try { granted.set(household, prior + 1) }
+        if g.error != () {
+            return map("ok", false, "reason", "{household} already assisted")
+        }
+        // WALL 2: the per-household statutory cap on the check itself.
+        let w = try { outlay.set(household, amount) }
+        if w.error != () {
+            granted.set(household, prior)                 // roll the grant back
+            return map("ok", false, "reason", "amount {amount} exceeds the 5000 cap")
+        }
+        return map("ok", true, "household", household, "amount", amount)
+    }
+
+    on close_registration() {
+        let r = try { transition("program", "registration_closed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "outlay", outlay_total())
+    }
+
+    on complete_audit() {
+        let r = try { transition("program", "audited") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "outlay", outlay_total())
+    }
+
+    on grants_to(household: String) { return granted.get(household) ?? 0 }
+
+    on outlay_total() {
+        let names = outlay.keys()
+        let n = 0
+        for h in names { n = n + (outlay.get(h) ?? 0) }
+        return n
+    }
+}
+
+cell test DisasterAidTests {
+    rules {
+        assert disburse("hh-12", 3000).ok == false        // no declaration yet
+        assert declare_disaster().ok == true
+        assert disburse("hh-12", 3000).ok == true
+        // the duplicate registration, through a "different" call center
+        assert disburse("hh-12", 3000).ok == false
+        assert_fails granted.set("hh-12", 2)              // unrepresentable
+        assert grants_to("hh-12") == 1
+        // the oversized check bounces and leaves no phantom grant behind
+        assert disburse("hh-77", 9000).ok == false
+        assert grants_to("hh-77") == 0
+        assert_fails outlay.set("hh-77", 9000)
+        assert disburse("hh-77", 5000).ok == true         // the cap itself is fine
+        assert outlay_total() == 8000
+        assert close_registration().ok == true
+        assert disburse("hh-99", 100).ok == false         // registration closed
+        assert complete_audit().ok == true
+        assert_fails transition("program", "registration_open")  // audited forever
+        assert_fails transition("program", "registration_closed")
+    }
+}

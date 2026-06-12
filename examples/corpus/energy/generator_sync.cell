@@ -1,0 +1,136 @@
+// ============================================================================
+// GENERATOR PARALLELING — sync-check before the breaker, always
+// ============================================================================
+//
+// Closing a generator breaker onto a live grid while the machine is out of
+// phase is one of the most violent things you can do to rotating iron.
+// At 120 degrees out, the instantaneous torque on the shaft is several
+// times rated — enough to twist couplings, crack stator end-windings, and
+// scrap a turbine-generator worth more than the plant's annual revenue.
+// This is why every utility interconnection requires a sync-check relay
+// (ANSI device 25): slip, phase angle, and voltage must all be inside the
+// window BEFORE the close command can reach the breaker.
+//
+// Here the relay is the state machine: `online` is reachable ONLY from
+// `synchronized`. From `at_speed` (machine at rated speed and voltage,
+// breaker open) there is no close path — the transition does not exist,
+// so no operator shortcut, race, or script can close out of phase.
+// soma verify proves it. The MW slot is the second wall: load only flows
+// when online, and never beyond the 500 MW nameplate.
+// ============================================================================
+
+cell Genset {
+    face {
+        signal roll_up(id: String) -> Map
+        signal at_rated(id: String) -> Map
+        signal sync_window_met(id: String) -> Map
+        signal close_breaker(id: String) -> Map
+        signal sync_window_lost(id: String) -> Map
+        signal set_load(id: String, mw: Int) -> Map
+        signal shut_down(id: String) -> Map
+        signal genset_state(id: String) -> String
+    }
+
+    memory {
+        output_mw: Map<String, Int> [persistent, consistent]
+        invariant output_mw >= 0 && output_mw <= 500
+    }
+
+    state paralleling {
+        initial: offline
+        offline -> rolling           // fuel on, accelerating off turning gear
+        rolling -> at_speed          // rated speed + voltage, breaker OPEN
+        at_speed -> synchronized     // device 25: slip/angle/voltage in window
+        synchronized -> online       // breaker closes into a MATCHED system
+        synchronized -> at_speed     // window drifted — re-verify
+        online -> offline            // trip or normal shutdown
+        rolling -> offline
+        at_speed -> offline
+    }
+
+    on roll_up(id: String) {
+        let r = try { transition(id, "rolling") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on at_rated(id: String) {
+        let r = try { transition(id, "at_speed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on sync_window_met(id: String) {
+        let r = try { transition(id, "synchronized") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on close_breaker(id: String) {
+        let r = try { transition(id, "online") }
+        if r.error != () { return map("ok", false, "reason", "sync-check blocked close: {r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on sync_window_lost(id: String) {
+        let r = try { transition(id, "at_speed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on set_load(id: String, mw: Int) {
+        if get_status(id) != "online" {
+            return map("ok", false, "reason", "breaker open (state: {get_status(id)})")
+        }
+        let w = try { output_mw.set(id, mw) }
+        if w.error != () { return map("ok", false, "reason", "nameplate wall: {w.error}") }
+        return map("ok", true, "mw", mw)
+    }
+
+    on shut_down(id: String) {
+        let r = try { transition(id, "offline") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        output_mw.set(id, 0)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on genset_state(id: String) { return get_status(id) }
+}
+
+cell test SyncTests {
+    rules {
+        // roll the machine and bring it to rated speed, breaker open
+        assert roll_up("g1").ok == true
+        assert at_rated("g1").ok == true
+
+        // THE SHAFT-BREAKER: close the breaker straight from at_speed.
+        // The transition does not exist — out-of-phase close is impossible.
+        assert_fails transition("g1", "online")
+        assert close_breaker("g1").ok == false
+
+        // and no load flows while the breaker is open
+        assert set_load("g1", 100).ok == false
+
+        // sync-check window met, THEN the close goes through
+        assert sync_window_met("g1").ok == true
+        assert close_breaker("g1").ok == true
+        assert set_load("g1", 350).ok == true
+
+        // the window can drift away before the close — back to at_speed
+        assert roll_up("g2").ok == true
+        assert at_rated("g2").ok == true
+        assert sync_window_met("g2").ok == true
+        assert sync_window_lost("g2").ok == true
+        assert genset_state("g2") == "at_speed"
+        assert_fails transition("g2", "online")
+
+        // nameplate is a wall, not a suggestion
+        assert set_load("g1", 600).ok == false
+        assert_fails output_mw.set("g1", 501)
+        assert_fails output_mw.set("g1", -10)
+
+        // shutdown zeroes the dispatch
+        assert shut_down("g1").ok == true
+        assert set_load("g1", 50).ok == false
+    }
+}

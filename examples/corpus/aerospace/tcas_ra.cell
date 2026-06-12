@@ -1,0 +1,120 @@
+// ============================================================================
+// TCAS RESOLUTION ADVISORY — Überlingen: the opposite maneuver is no state
+// ============================================================================
+//
+// On 1 July 2002, over Überlingen, a Tu-154 and a DHL 757 were converging
+// at the same level. TCAS told the Tupolev crew CLIMB and the 757 crew
+// DESCEND — a coordinated, deconflicted pair. Then the ground controller,
+// working two stations alone, told the Tupolev to descend. The crew
+// followed the human voice instead of the RA. Both aircraft descended
+// into each other. 71 people died, most of them children.
+//
+// The rule written after that night: once a resolution advisory is
+// active, the RA has authority — an ATC instruction in the opposite
+// sense must not be flown. Here that rule is the machine's shape: from
+// ra_climb the ONLY pilot response state is complying_climb. Flying a
+// descend against a climb RA is not a violation to detect — it is a
+// transition that does not exist. Altitude commands are bounded by the
+// envelope ledger.
+// ============================================================================
+
+cell TcasAdvisory {
+    face {
+        signal traffic(id: String) -> Map
+        signal traffic_resolved(id: String) -> Map
+        signal issue_ra(id: String, sense: String) -> Map
+        signal fly_response(id: String, sense: String) -> Map
+        signal conflict_clear(id: String) -> Map
+        signal ra_state(id: String) -> String
+    }
+
+    memory {
+        // commanded vertical speed, ft/min (magnitude) — RA strength caps
+        vs_fpm: Map<String, Int> [persistent, consistent]
+        invariant vs_fpm >= 0 && vs_fpm <= 4400
+    }
+
+    // ABSENT: ra_climb -> complying_descend (the Überlingen maneuver)
+    // ABSENT: ra_descend -> complying_climb
+    state tcas {
+        initial: monitoring
+        monitoring -> advisory             // TA: traffic, traffic
+        advisory -> monitoring             // threat fades
+        advisory -> ra_climb
+        advisory -> ra_descend
+        ra_climb -> complying_climb        // the ONLY response to a climb RA
+        ra_descend -> complying_descend
+        complying_climb -> clear_of_conflict
+        complying_descend -> clear_of_conflict
+        clear_of_conflict -> monitoring    // resume normal flight
+    }
+
+    on guarded_ra(id: String, target: String) {
+        let r = try { transition(id, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on traffic(id: String)          { return guarded_ra(id, "advisory") }
+    on traffic_resolved(id: String) { return guarded_ra(id, "monitoring") }
+
+    on issue_ra(id: String, sense: String) {
+        if sense != "climb" && sense != "descend" {
+            return map("ok", false, "reason", "RA sense must be climb or descend")
+        }
+        return guarded_ra(id, "ra_{sense}")
+    }
+
+    // The pilot flies a sense. Against the RA, the state does not exist —
+    // the controller's voice has no transition to offer it.
+    on fly_response(id: String, sense: String) {
+        let r = guarded_ra(id, "complying_{sense}")
+        if r.ok { vs_fpm.set(id, 1500) }       // initial RA strength
+        return r
+    }
+
+    on conflict_clear(id: String) {
+        let r = guarded_ra(id, "clear_of_conflict")
+        if r.ok { vs_fpm.set(id, 0) }
+        return r
+    }
+
+    on ra_state(id: String) { return get_status(id) }
+}
+
+cell test RaTests {
+    rules {
+        // traffic advisory, then a CLIMB RA
+        assert traffic("tu154").ok == true
+        assert issue_ra("tu154", "climb").ok == true
+        assert ra_state("tu154") == "ra_climb"
+
+        // THE Überlingen maneuver: ATC says descend, against the RA.
+        // There is no such transition; the only response is the RA's.
+        assert_fails transition("tu154", "complying_descend")
+        assert fly_response("tu154", "descend").ok == false
+        assert ra_state("tu154") == "ra_climb"
+
+        // complying with the RA proceeds to clear of conflict, then
+        // back to normal monitoring — and never a shortcut before that
+        assert fly_response("tu154", "climb").ok == true
+        assert_fails transition("tu154", "monitoring")   // still maneuvering
+        assert conflict_clear("tu154").ok == true
+        assert ra_state("tu154") == "clear_of_conflict"
+        assert traffic_resolved("tu154").ok == true
+        assert ra_state("tu154") == "monitoring"
+
+        // symmetric: a descend RA admits no climb response
+        assert traffic("dhl611").ok == true
+        assert issue_ra("dhl611", "descend").ok == true
+        assert_fails transition("dhl611", "complying_climb")
+        assert fly_response("dhl611", "descend").ok == true
+
+        // no RA out of thin air: monitoring cannot jump to compliance
+        assert_fails transition("af3", "complying_climb")
+
+        // commanded vertical speed never exceeds RA envelope strength
+        assert_fails vs_fpm.set("tu154", 9000)
+        assert_fails vs_fpm.set("tu154", -100)
+    }
+}

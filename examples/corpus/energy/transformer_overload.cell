@@ -1,0 +1,133 @@
+// ============================================================================
+// TRANSFORMER EMERGENCY LOADING — overload only with every fan running
+// ============================================================================
+//
+// A large power transformer dies slowly and then suddenly: every hour
+// spent above its thermal rating cooks the paper insulation (IEEE C57.91
+// calls it loss-of-life), until one hot afternoon the winding faults and
+// forty tons of mineral oil have an ignition source. Grid operators DO
+// run transformers past nameplate during emergencies — that is what the
+// ONAF cooling stages are for: first fan bank buys you 115%, second bank
+// 125%, but only while the fans are actually spinning. The classic
+// failure is the quiet one: a fan contactor died months ago, the SCADA
+// point was never wired, and the bank takes emergency load with cooling
+// it does not have.
+//
+// Here the cooling stage is a state machine and the loading ceiling is
+// derived FROM the state: `emergency_load` is a state reachable only from
+// `fans_full` — soma verify proves overload cannot be entered with idle
+// fans. The MVA slot's invariant is the absolute thermal wall at 125.
+// ============================================================================
+
+cell Transformer {
+    face {
+        signal start_fan_stage(xf: String) -> Map
+        signal enter_emergency(xf: String) -> Map
+        signal end_emergency(xf: String) -> Map
+        signal apply_mva(xf: String, mva: Int) -> Map
+        signal cooling_state(xf: String) -> String
+        signal mva_of(xf: String) -> Int
+    }
+
+    memory {
+        // loading in MVA on a 100 MVA bank; 125 is the absolute thermal wall
+        bank_mva: Map<String, Int> [persistent, consistent]
+        invariant bank_mva >= 0 && bank_mva <= 125
+    }
+
+    state cooling {
+        initial: onan                 // natural circulation only
+        onan -> fans_stage1           // first fan bank proven spinning
+        fans_stage1 -> fans_full      // second fan bank proven spinning
+        fans_full -> emergency_load   // ONLY here may load exceed 100 MVA
+        emergency_load -> fans_full   // emergency over — back below 100 first
+        fans_full -> fans_stage1      // a fan bank lost: shed to its ceiling
+        fans_stage1 -> onan
+    }
+
+    // ceiling follows the PROVEN cooling, never an assumed one
+    on stage_ceiling(st: String) {
+        if st == "emergency_load" { return 125 }
+        if st == "fans_full" { return 100 }
+        if st == "fans_stage1" { return 85 }
+        return 70                      // onan: natural circulation
+    }
+
+    on start_fan_stage(xf: String) {
+        let st = get_status(xf)
+        let target = "fans_stage1"
+        if st == "fans_stage1" { target = "fans_full" }
+        let r = try { transition(xf, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(xf))
+    }
+
+    on enter_emergency(xf: String) {
+        let r = try { transition(xf, "emergency_load") }
+        if r.error != () {
+            return map("ok", false, "reason", "cooling interlock: {r.error}")
+        }
+        return map("ok", true, "state", get_status(xf))
+    }
+
+    on end_emergency(xf: String) {
+        if mva_of(xf) > 100 {
+            return map("ok", false, "reason",
+                "shed below 100 MVA before leaving emergency cooling")
+        }
+        let r = try { transition(xf, "fans_full") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(xf))
+    }
+
+    on apply_mva(xf: String, mva: Int) {
+        if mva < 0 { return map("ok", false, "reason", "load cannot be negative") }
+        let ceiling = stage_ceiling(get_status(xf))
+        if mva > ceiling {
+            return map("ok", false, "reason",
+                "{mva} MVA exceeds the {ceiling} MVA ceiling for state {get_status(xf)}")
+        }
+        let w = try { bank_mva.set(xf, mva) }
+        if w.error != () { return map("ok", false, "reason", "thermal wall: {w.error}") }
+        return map("ok", true, "mva", mva, "ceiling", ceiling)
+    }
+
+    on cooling_state(xf: String) { return get_status(xf) }
+    on mva_of(xf: String) { return bank_mva.get(xf) ?? 0 }
+}
+
+cell test OverloadTests {
+    rules {
+        // natural circulation: 70 MVA is the line
+        assert apply_mva("x1", 65).ok == true
+        assert apply_mva("x1", 80).ok == false
+
+        // THE DEAD-FAN OVERLOAD: emergency loading with no fans proven.
+        // emergency_load is not reachable from onan — the transition raises.
+        assert_fails transition("x1", "emergency_load")
+        assert enter_emergency("x1").ok == false
+
+        // prove the fans, stage by stage; ceilings follow
+        assert start_fan_stage("x1").ok == true       // -> fans_stage1
+        assert apply_mva("x1", 85).ok == true
+        assert apply_mva("x1", 95).ok == false
+        assert start_fan_stage("x1").ok == true       // -> fans_full
+        assert apply_mva("x1", 100).ok == true
+
+        // still no overload outside the declared emergency state
+        assert apply_mva("x1", 110).ok == false
+        assert enter_emergency("x1").ok == true
+        assert apply_mva("x1", 120).ok == true
+
+        // the ABSOLUTE thermal wall: 125 MVA, in any state, ever
+        assert apply_mva("x1", 130).ok == false
+        assert_fails bank_mva.set("x1", 126)
+        assert_fails bank_mva.set("x1", -1)
+
+        // leaving emergency requires shedding below nameplate first
+        assert end_emergency("x1").ok == false
+        assert apply_mva("x1", 95).ok == true
+        assert end_emergency("x1").ok == true
+        assert cooling_state("x1") == "fans_full"
+    }
+}

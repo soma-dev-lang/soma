@@ -1,0 +1,104 @@
+// ============================================================================
+// PROOF OF DELIVERY — no signature, no "delivered"
+// ============================================================================
+//
+// Last-mile drivers paid per stop, racing a routing app's countdown, have
+// a known shortcut: scan "delivered" from the van and toss the parcel —
+// or never deliver it at all. Carrier audits call these "phantom
+// deliveries"; for high-value freight (pharma, electronics) the missing
+// proof-of-delivery turns straight into chargebacks and theft claims that
+// the shipper, not the courier, eats.
+//
+// The fix is sequencing made structural: `delivered` is reachable ONLY
+// from `pod_captured`, and capturing a POD requires being physically at
+// the stop (`at_door`). A driver still in `en_route` has no transition —
+// not a forbidden one, a NONEXISTENT one — that marks the box delivered.
+// `delivered` and `returned_undeliverable` are terminal; verify proves it.
+// ============================================================================
+
+cell LastMile {
+    face {
+        signal depart_depot(stop: String) -> Map
+        signal arrive_at_door(stop: String) -> Map
+        signal capture_pod(stop: String, signer: String) -> Map
+        signal confirm_delivered(stop: String) -> Map
+        signal return_undeliverable(stop: String) -> Map
+        signal stop_state(stop: String) -> String
+        signal pod_signer(stop: String) -> String
+    }
+
+    memory {
+        signers: Map<String, String> [persistent, consistent]
+    }
+
+    state delivery {
+        initial: assigned
+        assigned     -> en_route
+        en_route     -> at_door
+        at_door      -> pod_captured
+        pod_captured -> delivered
+        at_door      -> en_route                  // nobody home, keep routing
+        en_route     -> returned_undeliverable
+    }
+
+    on depart_depot(stop: String) { return move_stop(stop, "en_route") }
+    on arrive_at_door(stop: String) { return move_stop(stop, "at_door") }
+
+    on capture_pod(stop: String, signer: String) {
+        if len(signer) == 0 { return map("ok", false, "reason", "signature required") }
+        let r = try { transition(stop, "pod_captured") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        signers.set(stop, signer)
+        return map("ok", true, "stop", stop, "signed_by", signer)
+    }
+
+    on confirm_delivered(stop: String) {
+        let r = try { transition(stop, "delivered") }
+        if r.error != () { return map("ok", false, "reason", "no POD on file: {r.error}") }
+        return map("ok", true, "stop", stop, "state", "delivered")
+    }
+
+    on return_undeliverable(stop: String) { return move_stop(stop, "returned_undeliverable") }
+
+    on move_stop(stop: String, to: String) {
+        let r = try { transition(stop, to) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "stop", stop, "state", to)
+    }
+
+    on stop_state(stop: String) { return get_status(stop) }
+    on pod_signer(stop: String) { return signers.get(stop) ?? "" }
+}
+
+cell test NoPhantomDeliveries {
+    rules {
+        // THE VAN SCAN: driver marks delivered while still en_route.
+        // Neither delivered nor pod_captured is reachable from there.
+        assert depart_depot("S-9").ok == true
+        assert confirm_delivered("S-9").ok == false
+        assert_fails transition("S-9", "delivered")
+        assert_fails transition("S-9", "pod_captured")
+
+        // the honest path: at the door, signature, delivered
+        assert arrive_at_door("S-9").ok == true
+        assert capture_pod("S-9", "M. Okafor").ok == true
+        assert confirm_delivered("S-9").ok == true
+        assert pod_signer("S-9") == "M. Okafor"
+
+        // delivered is forever — no un-delivering, no re-routing
+        assert_fails transition("S-9", "en_route")
+        assert_fails transition("S-9", "at_door")
+
+        // at the door but nobody signs: no delivered without POD
+        assert depart_depot("S-10").ok == true
+        assert arrive_at_door("S-10").ok == true
+        assert capture_pod("S-10", "").ok == false
+        assert confirm_delivered("S-10").ok == false
+        assert_fails transition("S-10", "delivered")
+
+        // legal retreat, and the undeliverable terminal
+        assert depart_depot("S-10x").ok == true
+        assert return_undeliverable("S-10x").ok == true
+        assert_fails transition("S-10x", "en_route")
+    }
+}

@@ -1,0 +1,89 @@
+// ============================================================================
+// STAGE SEPARATION — the ascent sequence as a proven order
+// ============================================================================
+//
+// Launch vehicle staging has exactly one correct order: first-stage
+// cutoff, THEN separation, THEN second-stage ignition. Every permutation
+// is a lost vehicle. Igniting stage 2 while still bolted to stage 1
+// fires an engine into a full propellant tank. Separating under thrust
+// drives the stages into each other (recontact has ended real flights).
+// Lighting stage 2 before separation completes burns the interstage.
+//
+// In flight software these are timer-sequenced events that a dropped
+// packet or a stuck sensor can reorder. Here the sequence is a LINEAR
+// state machine: each event is reachable only from its predecessor, and
+// orbit_insertion is terminal — soma verify proves there is no path that
+// skips, repeats, or reverses a staging event.
+// ============================================================================
+
+cell StageSequencer {
+    face {
+        signal main_engine_cutoff(id: String) -> Map
+        signal separate_stage(id: String) -> Map
+        signal ignite_stage2(id: String) -> Map
+        signal confirm_orbit(id: String) -> Map
+        signal phase(id: String) -> String
+    }
+
+    memory {
+        // mission elapsed time of each event, seconds — strictly ordered
+        // bookkeeping that can never record a negative or absurd time
+        met_s: Map<String, Int> [persistent, consistent]
+        invariant met_s >= 0 && met_s <= 3600
+    }
+
+    // A straight line. ABSENT: every shortcut.
+    //   stage1_burn -/-> stage2_burn        (ignition while mated)
+    //   stage1_burn -/-> separated          (separation under thrust)
+    //   separated   -/-> orbit_insertion    (orbit without a burn)
+    state ascent {
+        initial: stage1_burn
+        stage1_burn -> stage1_cutoff     // MECO: thrust at zero
+        stage1_cutoff -> separated       // pyros fire only after cutoff
+        separated -> stage2_burn         // ignition only with clear gap
+        stage2_burn -> orbit_insertion   // terminal: the mission is up
+    }
+
+    on step_event(id: String, target: String, t: Int) {
+        let r = try { transition(id, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        met_s.set("{id}:{target}", t)
+        return map("ok", true, "phase", get_status(id), "met", t)
+    }
+
+    on main_engine_cutoff(id: String) { return step_event(id, "stage1_cutoff", 162) }
+    on separate_stage(id: String)     { return step_event(id, "separated", 165) }
+    on ignite_stage2(id: String)      { return step_event(id, "stage2_burn", 171) }
+    on confirm_orbit(id: String)      { return step_event(id, "orbit_insertion", 540) }
+
+    on phase(id: String) { return get_status(id) }
+}
+
+cell test SequenceTests {
+    rules {
+        // every shortcut is unrepresentable from the pad
+        assert_fails transition("v1", "stage2_burn")      // ignite while mated
+        assert_fails transition("v1", "separated")        // separate under thrust
+        assert_fails transition("v1", "orbit_insertion")
+
+        // the one legal order works, step by step
+        assert main_engine_cutoff("v1").ok == true
+        assert_fails transition("v1", "stage2_burn")      // still mated
+        assert separate_stage("v1").ok == true
+        assert ignite_stage2("v1").ok == true
+        assert confirm_orbit("v1").phase == "orbit_insertion"
+
+        // orbit_insertion is TERMINAL: no event can rewind the mission
+        assert_fails transition("v1", "stage1_burn")
+        assert_fails transition("v1", "separated")
+
+        // a second vehicle cannot replay an event out of order either
+        assert main_engine_cutoff("v2").ok == true
+        assert ignite_stage2("v2").ok == false            // not yet separated
+        assert phase("v2") == "stage1_cutoff"
+
+        // event times can never be recorded outside the mission window
+        assert_fails met_s.set("v1:bogus", -3)
+        assert_fails met_s.set("v1:bogus", 90000)
+    }
+}

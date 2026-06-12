@@ -1,0 +1,93 @@
+// ============================================================================
+// RECLOSER — a trip is permanent until a human walks the line
+// ============================================================================
+//
+// A distribution recloser that trips on a fault will, by default, try to
+// re-energize the line a few seconds later — most faults are a branch
+// brushing a phase and clear themselves. But a conductor lying on the
+// ground is the OTHER kind of fault: every reclose attempt pumps thousands
+// of amps into whatever the wire is touching — a dry field, a car, a
+// person. Reclosing into downed lines has electrocuted bystanders and
+// started wildfires; after 2020, utilities in California fire country
+// (PG&E's "fast trip" program) disabled automatic reclosing outright.
+//
+// Here the rule is structural, not procedural: from `tripped` the ONLY
+// exit is `patrolling` — a crew dispatched to walk the span. `closed` is
+// reachable from `tripped` by no path that skips the patrol, and a line
+// the patrol condemns can never be energized again: `condemned` is
+// terminal, and `soma verify` proves it.
+// ============================================================================
+
+cell Recloser {
+    face {
+        signal operate(id: String, cmd: String) -> Map
+        signal breaker_state(id: String) -> String
+        signal trip_count(id: String) -> Int
+    }
+
+    memory {
+        // lifetime fault interruptions — duty accumulates, never reverses
+        trips: Map<String, Int> [persistent, consistent]
+        invariant trips >= 0
+    }
+
+    state recloser {
+        initial: closed
+        closed -> tripped          // protection operates — always allowed
+        tripped -> patrolling      // crew dispatched to walk the line
+        patrolling -> cleared      // span confirmed intact
+        cleared -> closed          // only NOW may the breaker close
+        patrolling -> condemned    // conductor down — terminal, forever
+    }
+
+    on operate(id: String, cmd: String) {
+        let r = try { transition(id, cmd) }
+        if r.error != () {
+            return map("ok", false, "state", get_status(id), "reason", "{r.error}")
+        }
+        if cmd == "tripped" {
+            trips.set(id, trip_count(id) + 1)
+        }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on breaker_state(id: String) {
+        return get_status(id)
+    }
+
+    on trip_count(id: String) {
+        return trips.get(id) ?? 0
+    }
+}
+
+cell test RecloseTests {
+    rules {
+        // a fault trips the breaker
+        assert operate("r1", "tripped").ok == true
+        assert trip_count("r1") == 1
+
+        // THE KILLER: auto-reclose straight back into the fault.
+        // The transition does not exist — it raises.
+        assert_fails transition("r1", "closed")
+
+        // the only path back is through a patrol
+        assert operate("r1", "patrolling").ok == true
+        assert operate("r1", "cleared").ok == true
+        assert operate("r1", "closed").ok == true
+        assert breaker_state("r1") == "closed"
+
+        // a second fault, and this time the patrol finds wire on the ground
+        assert operate("r1", "tripped").ok == true
+        assert operate("r1", "patrolling").ok == true
+        assert operate("r1", "condemned").ok == true
+
+        // condemned is TERMINAL: no command ever re-energizes this line
+        assert_fails transition("r1", "closed")
+        assert_fails transition("r1", "cleared")
+        assert_fails transition("r1", "tripped")
+
+        // the duty ledger cannot be rolled back
+        assert_fails trips.set("r1", -1)
+        assert trip_count("r1") == 2
+    }
+}

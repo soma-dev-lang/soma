@@ -1,0 +1,101 @@
+// ============================================================================
+// DNS CHANGE CONTROL — no record goes live without passing validation
+// ============================================================================
+//
+// On October 4, 2021, a routine maintenance command at Facebook withdrew
+// every BGP route to its DNS servers. An audit tool existed precisely to
+// block commands like that — but a bug let the command bypass it. With
+// DNS gone, facebook.com vanished for six hours, internal tools died,
+// and engineers couldn't badge into the datacenter to fix it.
+//
+// The lesson is not "audit harder", it is: the bypass must not be a
+// path. In this change pipeline `live` is only reachable through
+// `validated` and `staged` — there is no drafted -> live edge for a
+// buggy tool to take, and `soma verify` proves it. A reverted change is
+// TERMINAL: you draft a new change with a new review, you never re-push
+// the one that broke the internet. TTLs sit behind a memory invariant
+// so no change can ship a record the resolvers would cache for a year.
+// ============================================================================
+
+cell DnsChanges {
+    face {
+        signal validate_change(chg: String, ttl: Int) -> Map
+        signal stage_change(chg: String) -> Map
+        signal push_live(chg: String) -> Map
+        signal revert(chg: String) -> Map
+        signal change_state(chg: String) -> String
+    }
+
+    memory {
+        // seconds. 30 is the emergency floor, 86400 the cache ceiling.
+        ttl: Map<String, Int> [persistent, consistent]
+        invariant ttl >= 30 && ttl <= 86400
+    }
+
+    // The audit gate is the topology: every path to `live` passes
+    // through `validated`. `reverted` has no exit.
+    state change {
+        initial: drafted
+        drafted -> validated
+        validated -> staged
+        staged -> live
+        live -> reverted
+        staged -> reverted
+    }
+
+    on validate_change(chg: String, ttl_secs: Int) {
+        let w = try { ttl.set(chg, ttl_secs) }
+        if w.error != () {
+            return map("ok", false, "reason", "TTL out of bounds: {w.error}")
+        }
+        let r = try { transition(chg, "validated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "validated")
+    }
+
+    on stage_change(chg: String) {
+        let r = try { transition(chg, "staged") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "staged")
+    }
+
+    on push_live(chg: String) {
+        let r = try { transition(chg, "live") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "live")
+    }
+
+    on revert(chg: String) {
+        let r = try { transition(chg, "reverted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "reverted")
+    }
+
+    on change_state(chg: String) {
+        return get_status(chg)
+    }
+}
+
+cell test ChangeGateTests {
+    rules {
+        // THE FACEBOOK MOVE: push a drafted change straight to prod.
+        // The bypass is not an edge. It cannot be taken, buggy tool or not.
+        assert_fails transition("chg-bgp-77", "live")
+        assert_fails transition("chg-bgp-77", "staged")
+
+        // the only road: validate, stage, then live
+        assert validate_change("chg-bgp-77", 300).ok == true
+        assert stage_change("chg-bgp-77").ok == true
+        assert push_live("chg-bgp-77").ok == true
+
+        // the change that broke things is reverted — and stays dead
+        assert revert("chg-bgp-77").ok == true
+        assert_fails transition("chg-bgp-77", "live")
+        assert_fails transition("chg-bgp-77", "drafted")
+
+        // a poisonous TTL never validates: memory refuses the record
+        assert validate_change("chg-ttl-1yr", 31536000).ok == false
+        assert change_state("chg-ttl-1yr") == "drafted"
+        assert_fails ttl.set("chg-ttl-1yr", 5)
+    }
+}

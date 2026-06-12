@@ -1,0 +1,119 @@
+// ============================================================================
+// ALL-OR-NOTHING CROWDFUNDING — miss the goal, every backer gets refunded
+// ============================================================================
+//
+// The all-or-nothing pledge model only works if "nothing" is enforced.
+// Platforms have been burned both ways: creators paid out on campaigns
+// that quietly missed their goal, and failed campaigns where refunds ran
+// twice (or never). Here the payout edge exists ONLY from `succeeded`,
+// a campaign can reach `succeeded` only via close_campaign checking
+// pledged >= goal, and the failed branch must drain the pledge pool to
+// zero through refunds — the pool slot refuses negative writes, so a
+// double refund of the same backer raises in memory.
+// ============================================================================
+
+cell Crowdfund {
+    face {
+        signal launch(id: String, goal: Int) -> Map
+        signal pledge(id: String, backer: String, amount: Int) -> Map
+        signal close_campaign(id: String) -> Map
+        signal payout_creator(id: String) -> Map
+        signal refund_backer(id: String, backer: String) -> Map
+    }
+
+    memory {
+        pool: Map<String, Int> [persistent, consistent]
+        invariant pool >= 0
+        goals: Map<String, Int> [persistent, consistent]
+        backers: Map<String, Int> [persistent, consistent]
+        invariant backers >= 0
+    }
+
+    // paid_out is terminal and reachable ONLY from succeeded;
+    // open -> paid_out does not exist. failed never reaches paid_out.
+    state campaign {
+        initial: drafted
+        drafted -> open_for_pledges
+        open_for_pledges -> succeeded
+        open_for_pledges -> failed
+        succeeded -> paid_out
+    }
+
+    on launch(id: String, goal: Int) {
+        if goal <= 0 { return map("ok", false, "reason", "bad goal") }
+        transition(id, "open_for_pledges")
+        goals.set(id, goal)
+        pool.set(id, 0)
+        return map("ok", true, "goal", goal)
+    }
+
+    on pledge(id: String, backer: String, amount: Int) {
+        if get_status(id) != "open_for_pledges" {
+            return map("ok", false, "reason", "campaign is not open")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        let k = "{id}:{backer}"
+        backers.set(k, (backers.get(k) ?? 0) + amount)
+        pool.set(id, (pool.get(id) ?? 0) + amount)
+        return map("ok", true, "pool", pool.get(id))
+    }
+
+    on close_campaign(id: String) {
+        let raised = pool.get(id) ?? 0
+        let goal = goals.get(id) ?? 0
+        if raised >= goal {
+            transition(id, "succeeded")
+        } else {
+            transition(id, "failed")
+        }
+        return map("ok", true, "state", get_status(id), "raised", raised)
+    }
+
+    on payout_creator(id: String) {
+        transition(id, "paid_out")       // raises unless goal was met
+        let amt = pool.get(id) ?? 0
+        pool.set(id, 0)
+        return map("ok", true, "paid", amt)
+    }
+
+    on refund_backer(id: String, backer: String) {
+        if get_status(id) != "failed" {
+            return map("ok", false, "reason", "refunds only on failed campaigns")
+        }
+        let k = "{id}:{backer}"
+        let owed = backers.get(k) ?? 0
+        if owed == 0 { return map("ok", false, "reason", "nothing owed to {backer}") }
+        pool.set(id, (pool.get(id) ?? 0) - owed)   // double refund raises here
+        backers.set(k, 0)
+        return map("ok", true, "refunded", owed)
+    }
+}
+
+cell test CrowdfundTests {
+    rules {
+        // a campaign that MISSES its goal
+        assert launch("c1", 1000).ok == true
+        assert pledge("c1", "amy", 400).ok == true
+        assert pledge("c1", "ben", 300).ok == true
+        // creator cannot grab the pool mid-campaign or after failure
+        assert_fails transition("c1", "paid_out")
+        assert close_campaign("c1").state == "failed"
+        assert_fails transition("c1", "paid_out")
+        assert_fails payout_creator("c1")
+        // every backer made whole, exactly once
+        assert refund_backer("c1", "amy").refunded == 400
+        assert refund_backer("c1", "amy").ok == false
+        assert refund_backer("c1", "ben").refunded == 300
+        assert_fails pool.set("c1", -1)
+        // a campaign that MAKES its goal
+        assert launch("c2", 500).ok == true
+        assert pledge("c2", "cal", 600).ok == true
+        assert close_campaign("c2").state == "succeeded"
+        // no refunds on a successful campaign — the money goes to the work
+        assert refund_backer("c2", "cal").ok == false
+        assert payout_creator("c2").paid == 600
+        // paid_out is terminal: no second payout, no late refund path
+        assert_fails transition("c2", "succeeded")
+        assert_fails transition("c2", "failed")
+    }
+}

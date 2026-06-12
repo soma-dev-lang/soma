@@ -1,0 +1,104 @@
+// ============================================================================
+// COLD-CHAIN CUSTODY — a warm vaccine never gets cold again
+// ============================================================================
+//
+// In 2022 the WHO estimated half of all vaccines are wasted globally, much
+// of it to cold-chain failure — and the dangerous half of that is the
+// failure NOBODY LOGS: a pallet of mRNA doses sits on a hot tarmac during
+// a handoff, the temperature recorder is reset, and the shipment continues
+// as if nothing happened. The doses are inert; the syringes still go in.
+//
+// Two structural fixes. Every custody handoff is a recorded transition —
+// no anonymous gaps. And `breached` is a TERMINAL state: the moment any
+// custodian logs an excursion, there is no transition that puts the pallet
+// back on the cold chain. You cannot "re-chill" the record. soma verify
+// proves both: every path is named, and breached has no exit.
+// ============================================================================
+
+cell ColdChain {
+    face {
+        signal handoff(pallet: String, to: String) -> Map
+        signal log_excursion(pallet: String, celsius: Int) -> Map
+        signal custody_of(pallet: String) -> String
+        signal handoff_total(pallet: String) -> Int
+    }
+
+    memory {
+        // recorded handoffs per pallet — the custody ledger never shrinks
+        handoffs: Map<String, Int> [persistent, consistent]
+        invariant handoffs >= 0
+
+        // last recorded excursion temperature, for the audit
+        excursion_c: Map<String, Int> [persistent, consistent]
+    }
+
+    // breached has no outgoing edges. delivered_cold is the good terminal.
+    state custody {
+        initial: at_origin_depot
+        at_origin_depot -> with_carrier
+        with_carrier    -> at_transit_hub
+        at_transit_hub  -> with_courier
+        with_courier    -> delivered_cold
+        at_origin_depot -> breached
+        with_carrier    -> breached
+        at_transit_hub  -> breached
+        with_courier    -> breached
+    }
+
+    on handoff(pallet: String, to: String) {
+        if to == "breached" {
+            return map("ok", false, "reason", "use log_excursion to declare a breach")
+        }
+        let r = try { transition(pallet, to) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let n = handoffs.get(pallet) ?? 0
+        handoffs.set(pallet, n + 1)
+        return map("ok", true, "custody", to, "handoffs_recorded", n + 1)
+    }
+
+    on log_excursion(pallet: String, celsius: Int) {
+        // pharma cold chain is 2–8 C; outside that, the pallet is dead
+        if celsius >= 2 && celsius <= 8 {
+            return map("ok", true, "note", "within range, chain intact")
+        }
+        let r = try { transition(pallet, "breached") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        excursion_c.set(pallet, celsius)
+        return map("ok", true, "custody", "breached", "recorded_c", celsius)
+    }
+
+    on custody_of(pallet: String) { return get_status(pallet) }
+
+    on handoff_total(pallet: String) { return handoffs.get(pallet) ?? 0 }
+}
+
+cell test NoRechilledRecords {
+    rules {
+        // a clean run: every handoff lands in the ledger
+        assert handoff("PAL-1", "with_carrier").ok == true
+        assert handoff("PAL-1", "at_transit_hub").ok == true
+        assert handoff("PAL-1", "with_courier").ok == true
+        assert handoff("PAL-1", "delivered_cold").ok == true
+        assert handoff_total("PAL-1") == 4
+
+        // no skipping custodians: origin straight to courier doesn't exist
+        assert handoff("PAL-2", "with_courier").ok == false
+        assert_fails transition("PAL-2", "with_courier")
+
+        // the tarmac incident: 19 C at the hub — chain dead
+        assert handoff("PAL-2", "with_carrier").ok == true
+        assert handoff("PAL-2", "at_transit_hub").ok == true
+        assert log_excursion("PAL-2", 19).ok == true
+        assert custody_of("PAL-2") == "breached"
+
+        // THE COVER-UP: put the breached pallet back with a courier.
+        // The transition does not exist; neither does re-delivery.
+        assert_fails transition("PAL-2", "with_courier")
+        assert_fails transition("PAL-2", "delivered_cold")
+        assert custody_of("PAL-2") == "breached"
+
+        // an in-range reading breaches nothing
+        assert log_excursion("PAL-1x", 5).ok == true
+        assert custody_of("PAL-1x") == "at_origin_depot"
+    }
+}

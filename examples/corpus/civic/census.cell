@@ -1,0 +1,105 @@
+// ============================================================================
+// CENSUS — after certification, the count is history, not a database row
+// ============================================================================
+// The decennial census count, once certified and delivered for apportionment
+// (13 U.S.C. § 141), decides House seats and a decade of federal funding.
+// The 2020 cycle showed why post-hoc edits are radioactive: any quiet change
+// to a certified tract count would shift money and seats with no audit trail.
+// Here certification is a terminal state — soma verify proves no transition
+// leaves it — so amendment handlers go dead at that instant, and the count
+// itself refuses impossible values (a negative population cannot be written,
+// whatever a buggy import believes).
+// ============================================================================
+
+cell Census {
+    face {
+        signal record_count(tract: String, people: Int) -> Map
+        signal start_review() -> Map
+        signal amend(tract: String, people: Int) -> Map
+        signal certify() -> Map
+        signal tract_count(tract: String) -> Int
+        signal total_population() -> Int
+        signal phase() -> String
+    }
+
+    memory {
+        // tract -> persons. A negative count is unrepresentable.
+        pop: Map<String, Int> [persistent, consistent]
+        invariant pop >= 0
+    }
+
+    // certified has no exit: the count delivered to the President
+    // is the count, forever.
+    state count {
+        initial: collecting
+        collecting -> reviewing
+        reviewing -> certified
+    }
+
+    on phase() { return get_status("count") }
+
+    on record_count(tract: String, people: Int) {
+        if phase() != "collecting" {
+            return map("ok", false, "reason", "enumeration is {phase()}")
+        }
+        let w = try { pop.set(tract, people) }
+        if w.error != () {
+            return map("ok", false, "reason", "impossible count for {tract}")
+        }
+        return map("ok", true, "tract", tract, "people", people)
+    }
+
+    on start_review() {
+        let r = try { transition("count", "reviewing") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    // Amendments exist — but ONLY in review, between collection and seal.
+    on amend(tract: String, people: Int) {
+        if phase() != "reviewing" {
+            return map("ok", false, "reason", "no amendments while {phase()}")
+        }
+        let w = try { pop.set(tract, people) }
+        if w.error != () {
+            return map("ok", false, "reason", "impossible count for {tract}")
+        }
+        return map("ok", true, "tract", tract, "people", people)
+    }
+
+    on certify() {
+        let r = try { transition("count", "certified") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "population", total_population())
+    }
+
+    on tract_count(tract: String) { return pop.get(tract) ?? 0 }
+
+    on total_population() {
+        let tracts = pop.keys()
+        let n = 0
+        for t in tracts { n = n + (pop.get(t) ?? 0) }
+        return n
+    }
+}
+
+cell test CensusTests {
+    rules {
+        assert record_count("t1", 4200).ok == true
+        assert record_count("t2", 1800).ok == true
+        assert record_count("t3", -50).ok == false        // negative people: refused
+        assert_fails pop.set("t3", -50)                   // by the memory itself
+        assert amend("t1", 4300).ok == false              // no amending mid-collection
+        assert start_review().ok == true
+        assert record_count("t4", 99).ok == false         // collection is over
+        assert amend("t1", 4250).ok == true               // review may correct
+        assert tract_count("t1") == 4250
+        assert certify().ok == true
+        assert total_population() == 6050
+        assert amend("t1", 9999).ok == false              // certified: handlers go dead
+        assert record_count("t9", 1).ok == false
+        assert tract_count("t1") == 4250                  // the number did not move
+        assert_fails transition("count", "reviewing")     // and never will
+        assert_fails transition("count", "collecting")
+    }
+}

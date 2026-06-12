@@ -1,0 +1,136 @@
+// ============================================================================
+// LOCKOUT-TAGOUT — test before touch, and nobody re-energizes over a lock
+// ============================================================================
+//
+// Electrical workers are killed every year by circuits that were "locked
+// out": a breaker opened but the bus still live through a backfeed, an
+// induced voltage from the parallel line nobody tested for, or a dispatcher
+// closing remotely while a crew is on the conductors. OSHA's hazardous-
+// energy rules (1910.147 / 1910.269) exist because each of these has a
+// body count. The two rules that do the saving:
+//
+//   TEST BEFORE TOUCH — isolation is not proof. You meter every phase
+//   before grounds go on. Here, `grounded` is unreachable from `isolated`
+//   without passing `proven_dead`; soma verify proves it.
+//
+//   ONE LOCK, ONE LIFE — every worker hangs a personal lock; the line
+//   cannot be declared clear while ANY lock remains. The lock ledger
+//   refuses to go negative (you cannot remove a lock that isn't yours to
+//   remove), and re-energizing from `grounded` is not a transition at all.
+// ============================================================================
+
+cell Loto {
+    face {
+        signal open_and_lock(bay: String) -> Map
+        signal meter_all_phases(bay: String) -> Map
+        signal apply_grounds(bay: String) -> Map
+        signal hang_lock(bay: String, worker: String) -> Map
+        signal pull_lock(bay: String, worker: String) -> Map
+        signal declare_clear(bay: String) -> Map
+        signal energize(bay: String) -> Map
+        signal bay_state(bay: String) -> String
+        signal lock_total(bay: String) -> Int
+    }
+
+    memory {
+        // personal locks hanging on the bay — one per worker, max crew 20
+        locks: Map<String, Int> [persistent, consistent]
+        invariant locks >= 0 && locks <= 20
+    }
+
+    state clearance {
+        initial: energized
+        energized -> isolated      // breaker open, switch racked, tag hung
+        isolated -> proven_dead    // TEST BEFORE TOUCH: metered every phase
+        proven_dead -> grounded    // ground clusters on — work may begin
+        grounded -> clear          // work done, grounds OFF, all locks pulled
+        clear -> energized
+    }
+
+    on open_and_lock(bay: String) {
+        let r = try { transition(bay, "isolated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(bay))
+    }
+
+    on meter_all_phases(bay: String) {
+        let r = try { transition(bay, "proven_dead") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(bay))
+    }
+
+    on apply_grounds(bay: String) {
+        let r = try { transition(bay, "grounded") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(bay))
+    }
+
+    on hang_lock(bay: String, worker: String) {
+        let w = try { locks.set(bay, lock_total(bay) + 1) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        return map("ok", true, "worker", worker, "locks", lock_total(bay))
+    }
+
+    on pull_lock(bay: String, worker: String) {
+        let w = try { locks.set(bay, lock_total(bay) - 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "no lock to pull — the ledger refuses")
+        }
+        return map("ok", true, "worker", worker, "locks", lock_total(bay))
+    }
+
+    on declare_clear(bay: String) {
+        if lock_total(bay) > 0 {
+            return map("ok", false, "reason",
+                "{lock_total(bay)} personal lock(s) still hanging — someone is on the line")
+        }
+        let r = try { transition(bay, "clear") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(bay))
+    }
+
+    on energize(bay: String) {
+        let r = try { transition(bay, "energized") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(bay))
+    }
+
+    on bay_state(bay: String) { return get_status(bay) }
+    on lock_total(bay: String) { return locks.get(bay) ?? 0 }
+}
+
+cell test LotoTests {
+    rules {
+        // isolate the bay; two workers hang their locks
+        assert open_and_lock("bay7").ok == true
+        assert hang_lock("bay7", "ana").ok == true
+        assert hang_lock("bay7", "raj").ok == true
+        assert lock_total("bay7") == 2
+
+        // SKIPPING THE DEAD TEST: grounds straight onto an untested bus.
+        // The transition does not exist.
+        assert_fails transition("bay7", "grounded")
+
+        assert meter_all_phases("bay7").ok == true
+        assert apply_grounds("bay7").ok == true
+
+        // RE-ENERGIZING OVER THE CREW: not a transition from grounded
+        assert_fails transition("bay7", "energized")
+        assert energize("bay7").ok == false
+
+        // clear is blocked while ANY personal lock remains
+        assert declare_clear("bay7").ok == false
+        assert pull_lock("bay7", "ana").ok == true
+        assert declare_clear("bay7").ok == false      // raj is still on the line
+        assert pull_lock("bay7", "raj").ok == true
+
+        // a third pull has no lock behind it — the ledger raises
+        assert_fails locks.set("bay7", -1)
+        assert pull_lock("bay7", "ghost").ok == false
+
+        // now, and only now, the bay comes back
+        assert declare_clear("bay7").ok == true
+        assert energize("bay7").ok == true
+        assert bay_state("bay7") == "energized"
+    }
+}

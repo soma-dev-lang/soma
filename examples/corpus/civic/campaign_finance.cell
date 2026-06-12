@@ -1,0 +1,105 @@
+// ============================================================================
+// CAMPAIGN FINANCE — the contribution limit lives in the ledger, not the law
+// ============================================================================
+// In 2014 Dinesh D'Souza was convicted for funneling money past the federal
+// per-donor limit through straw donors he reimbursed. Straw schemes work
+// because the limit is checked at filing time, months after the money moved.
+// Here the per-donor cap ($2,900, the 2022-cycle federal limit) is a memory
+// invariant: the cumulative-total write for any donor name above the cap is
+// refused at the instant of donation. The reporting lifecycle is one-way —
+// once the committee files, `reported` is terminal: soma verify proves the
+// books cannot be re-opened to massage totals.
+// ============================================================================
+
+cell Committee {
+    face {
+        signal open_books() -> Map
+        signal contribute(donor: String, amount: Int) -> Map
+        signal close_books() -> Map
+        signal file_report() -> Map
+        signal donor_total(donor: String) -> Int
+        signal raised_total() -> Int
+        signal phase() -> String
+    }
+
+    memory {
+        // donor -> cumulative dollars this cycle. $2,901 is unrepresentable.
+        donated: Map<String, Int> [persistent, consistent]
+        invariant donated >= 0 && donated <= 2900
+    }
+
+    // reported is terminal: filed books are filed forever.
+    state cycle {
+        initial: registered
+        registered -> raising
+        raising -> closed
+        closed -> reported
+    }
+
+    on phase() { return get_status("cycle") }
+
+    on open_books() {
+        let r = try { transition("cycle", "raising") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on contribute(donor: String, amount: Int) {
+        if phase() != "raising" {
+            return map("ok", false, "reason", "books are {phase()}")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "amount must be positive") }
+        let sofar = donated.get(donor) ?? 0
+        // THE WALL: past $2,900 the ledger refuses, at donation time,
+        // not at filing time.
+        let w = try { donated.set(donor, sofar + amount) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "limit: {donor} at {sofar}, +{amount} exceeds 2900")
+        }
+        return map("ok", true, "donor", donor, "total", sofar + amount)
+    }
+
+    on close_books() {
+        let r = try { transition("cycle", "closed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "raised", raised_total())
+    }
+
+    on file_report() {
+        let r = try { transition("cycle", "reported") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "raised", raised_total())
+    }
+
+    on donor_total(donor: String) { return donated.get(donor) ?? 0 }
+
+    on raised_total() {
+        let names = donated.keys()
+        let n = 0
+        for d in names { n = n + (donated.get(d) ?? 0) }
+        return n
+    }
+}
+
+cell test CommitteeTests {
+    rules {
+        assert contribute("ada", 100).ok == false         // books not open yet
+        assert open_books().ok == true
+        assert contribute("ada", 2000).ok == true
+        assert contribute("ada", 1000).ok == false        // 3000 > 2900: refused
+        assert donor_total("ada") == 2000                 // ledger untouched
+        assert contribute("ada", 900).ok == true          // exactly the cap: fine
+        assert donor_total("ada") == 2900
+        assert contribute("ada", 1).ok == false           // one dollar over: never
+        assert_fails donated.set("ada", 2901)               // unrepresentable
+        assert_fails donated.set("bob", -10)                // no laundering negatives
+        assert contribute("bob", 500).ok == true
+        assert raised_total() == 3400
+        assert close_books().ok == true
+        assert contribute("late", 5).ok == false          // books are closed
+        assert file_report().ok == true
+        assert_fails transition("cycle", "raising")       // filed is forever
+        assert_fails transition("cycle", "closed")
+    }
+}

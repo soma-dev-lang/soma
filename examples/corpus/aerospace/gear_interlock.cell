@@ -1,0 +1,98 @@
+// ============================================================================
+// LANDING GEAR — weight-on-wheels interlock, made unrepresentable
+// ============================================================================
+//
+// Gear-retraction-on-the-ground is an old, recurring accident: a crew or
+// mechanic commands "gear up" while the aircraft is sitting on its wheels,
+// the squat-switch wiring is faulted or bypassed, and the airframe drops
+// onto its belly — people under the wings die. The classic fix is a
+// weight-on-wheels (WoW) microswitch that an interlock relay reads. The
+// classic failure is that the switch and the gear lever are TWO separate
+// signals that can disagree.
+//
+// Here ground contact and gear position are ONE state. There is no edge
+// from ground_down to airborne_up: retraction on the ground is not a
+// guarded command, it is a transition that does not exist. The symmetric
+// hazard — calling a gear-up arrival a normal touchdown — is equally
+// absent. A memory invariant keeps the hydraulic system inside its burst
+// rating no matter what the pump controller writes.
+// ============================================================================
+
+cell GearInterlock {
+    face {
+        signal lift_off(id: String) -> Map
+        signal retract(id: String) -> Map
+        signal extend(id: String) -> Map
+        signal touch_down(id: String) -> Map
+        signal gear_report(id: String) -> Map
+    }
+
+    memory {
+        // gear hydraulic pressure, psi — rated 3000, burst margin 3200
+        hyd_psi: Map<String, Int> [persistent, consistent]
+        invariant hyd_psi >= 0 && hyd_psi <= 3200
+    }
+
+    // Gear position and weight-on-wheels are ONE state, never two flags.
+    // ABSENT: ground_down -> airborne_up (retraction on the ground)
+    // ABSENT: airborne_up -> ground_down (gear-up arrival called "normal")
+    state gear {
+        initial: ground_down
+        ground_down -> airborne_down     // rotation: weight leaves the wheels
+        airborne_down -> airborne_up     // retract: only with weight OFF
+        airborne_up -> airborne_down     // extend before any landing
+        airborne_down -> ground_down     // touchdown: gear down, locked
+    }
+
+    on attempt_move(id: String, target: String) {
+        let r = try { transition(id, target) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on lift_off(id: String) { return attempt_move(id, "airborne_down") }
+
+    on retract(id: String) {
+        hyd_psi.set(id, 3000)                  // pump up to actuate
+        return attempt_move(id, "airborne_up")
+    }
+
+    on extend(id: String) {
+        hyd_psi.set(id, 3000)
+        return attempt_move(id, "airborne_down")
+    }
+
+    on touch_down(id: String) { return attempt_move(id, "ground_down") }
+
+    on gear_report(id: String) {
+        return map("id", id, "state", get_status(id), "psi", hyd_psi.get(id) ?? 0)
+    }
+}
+
+cell test GearTests {
+    rules {
+        // THE accident: gear-up commanded on the ground. The transition
+        // does not exist, so it raises — and the signal reports refusal.
+        assert_fails transition("g1", "airborne_up")
+        assert retract("g1").ok == false
+        assert gear_report("g1").state == "ground_down"
+
+        // a normal flight cycle proceeds
+        assert lift_off("g1").ok == true
+        assert retract("g1").ok == true
+        assert extend("g1").ok == true
+        assert touch_down("g1").ok == true
+
+        // back on the ground the interlock holds again
+        assert_fails transition("g1", "airborne_up")
+
+        // a gear-up touchdown is equally unrepresentable
+        assert lift_off("g2").ok == true
+        assert retract("g2").ok == true
+        assert_fails transition("g2", "ground_down")
+
+        // hydraulics never see a pressure outside the burst rating
+        assert_fails hyd_psi.set("g1", 5000)
+        assert_fails hyd_psi.set("g1", -1)
+    }
+}

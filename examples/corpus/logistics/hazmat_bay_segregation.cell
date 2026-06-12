@@ -1,0 +1,119 @@
+// ============================================================================
+// HAZMAT BAY SEGREGATION — Beirut, as a state that cannot exist
+// ============================================================================
+//
+// On 4 August 2020, 2,750 tonnes of ammonium nitrate stored for six years
+// in Beirut's Hangar 12 — alongside a cache of FIREWORKS — detonated and
+// killed more than 200 people. Tianjin 2015 was the same story: oxidizers
+// warehoused next to fuels, 173 dead. Every dangerous-goods code on earth
+// (IMDG, NFPA 400) says the same thing: oxidizers and flammables never
+// share a bay. And in both cities, the paperwork said they did anyway.
+//
+// Here the bay is a state machine with NO mixed state: a bay holds
+// oxidizer, or flammables, or nothing. The state "both" is not refused —
+// it is unrepresentable, and soma verify proves the reachable set.
+// A tonnage invariant caps any single bay at 25 t of oxidizer: a
+// 2,750-tonne Hangar 12 cannot be written into this ledger at all.
+// ============================================================================
+
+cell HazmatBay {
+    face {
+        signal stow_oxidizer(bay: String, tonnes: Int) -> Map
+        signal stow_flammable(bay: String, tonnes: Int) -> Map
+        signal clear_bay(bay: String) -> Map
+        signal bay_contents(bay: String) -> Map
+    }
+
+    memory {
+        // tonnes of oxidizer per bay — NFPA-style cap per storage bay
+        oxidizer_t: Map<String, Int> [persistent, consistent]
+        invariant oxidizer_t >= 0 && oxidizer_t <= 25
+
+        flammable_t: Map<String, Int> [persistent, consistent]
+        invariant flammable_t >= 0 && flammable_t <= 25
+    }
+
+    // There is no holds_both. That absence is the whole point.
+    state bay_class {
+        initial: empty
+        empty           -> holds_oxidizer
+        empty           -> holds_flammable
+        holds_oxidizer  -> empty
+        holds_flammable -> empty
+    }
+
+    on stow_oxidizer(bay: String, tonnes: Int) {
+        if tonnes <= 0 { return map("ok", false, "reason", "tonnage must be positive") }
+        if get_status(bay) != "holds_oxidizer" {
+            let r = try { transition(bay, "holds_oxidizer") }
+            if r.error != () {
+                return map("ok", false, "reason", "SEGREGATION: bay {bay} holds flammables")
+            }
+        }
+        let cur = oxidizer_t.get(bay) ?? 0
+        let w = try { oxidizer_t.set(bay, cur + tonnes) }
+        if w.error != () {
+            if cur == 0 { transition(bay, "empty") }
+            return map("ok", false, "reason", "bay cap is 25 t of oxidizer")
+        }
+        return map("ok", true, "bay", bay, "oxidizer_t", cur + tonnes)
+    }
+
+    on stow_flammable(bay: String, tonnes: Int) {
+        if tonnes <= 0 { return map("ok", false, "reason", "tonnage must be positive") }
+        if get_status(bay) != "holds_flammable" {
+            let r = try { transition(bay, "holds_flammable") }
+            if r.error != () {
+                return map("ok", false, "reason", "SEGREGATION: bay {bay} holds an oxidizer")
+            }
+        }
+        let cur = flammable_t.get(bay) ?? 0
+        let w = try { flammable_t.set(bay, cur + tonnes) }
+        if w.error != () {
+            if cur == 0 { transition(bay, "empty") }
+            return map("ok", false, "reason", "bay cap is 25 t of flammables")
+        }
+        return map("ok", true, "bay", bay, "flammable_t", cur + tonnes)
+    }
+
+    on clear_bay(bay: String) {
+        oxidizer_t.set(bay, 0)
+        flammable_t.set(bay, 0)
+        let r = try { transition(bay, "empty") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "bay", bay)
+    }
+
+    on bay_contents(bay: String) {
+        return map("bay", bay, "class", get_status(bay),
+                   "oxidizer_t", oxidizer_t.get(bay) ?? 0,
+                   "flammable_t", flammable_t.get(bay) ?? 0)
+    }
+}
+
+cell test Hangar12CannotHappen {
+    rules {
+        // ammonium nitrate goes into bay H12 — top-ups of the SAME class are fine
+        assert stow_oxidizer("H12", 15).ok == true
+        assert stow_oxidizer("H12", 5).ok == true
+        assert bay_contents("H12").oxidizer_t == 20
+        assert bay_contents("H12").class == "holds_oxidizer"
+
+        // THE BEIRUT WRITE: fireworks into the same bay. The machine has
+        // no oxidizer->flammable path; the request is refused.
+        assert stow_flammable("H12", 3).ok == false
+        assert_fails transition("H12", "holds_flammable")
+        assert bay_contents("H12").flammable_t == 0
+
+        // and 2,750 tonnes can never be booked into one bay
+        assert stow_oxidizer("H12", 2750).ok == false
+        assert_fails oxidizer_t.set("H12", 2750)
+        assert bay_contents("H12").oxidizer_t == 20
+
+        // emptied and re-inspected, the bay may change class
+        assert clear_bay("H12").ok == true
+        assert stow_flammable("H12", 5).ok == true
+        assert bay_contents("H12").class == "holds_flammable"
+        assert stow_oxidizer("H12", 1).ok == false
+    }
+}

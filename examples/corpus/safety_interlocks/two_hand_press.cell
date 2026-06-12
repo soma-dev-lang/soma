@@ -1,0 +1,77 @@
+// TWO-HAND PRESS CONTROL — anti-tie-down, anti-repeat, structural.
+// Mechanical power presses amputated thousands of hands a year before
+// OSHA 1910.217. The classic defeat: tape one palm button down, feed the
+// die with the free hand. Here the machine has NO path from `one_held`
+// to `armed` — concurrent actuation (both buttons inside the 500 ms
+// window) is the ONLY arming edge, so a tied-down button is a dead end
+// that must be fully released. Anti-repeat is the same trick: `stroking`
+// exits only to `released`, so holding both buttons cannot recycle the
+// ram. The stroke ledger refuses a ram position outside the die set.
+
+cell PressControl {
+    face {
+        signal press_both(id: String) -> String      // within the sync window
+        signal press_one(id: String) -> String       // single / tied-down actuator
+        signal let_go(id: String) -> String
+        signal cycle_ram(id: String) -> Map
+        signal ram_home(id: String) -> String
+    }
+
+    memory {
+        // ram travel in mm; 0 = top dead center, 180 = full stroke
+        ram_mm: Map<String, Int> [persistent, consistent]
+        invariant ram_mm >= 0 && ram_mm <= 180
+    }
+
+    state actuators {
+        initial: released
+        released -> armed       // BOTH buttons within 500 ms — the only way
+        released -> one_held    // a lone (possibly taped) button
+        one_held -> released    // full release; never one_held -> armed
+        armed -> released       // a hand came off before the stroke
+        armed -> stroking
+        stroking -> released    // anti-repeat: full release before re-arm
+    }
+
+    on press_both(id: String) { transition(id, "armed")  return get_status(id) }
+    on press_one(id: String)  { transition(id, "one_held")  return get_status(id) }
+    on let_go(id: String)     { transition(id, "released")  return get_status(id) }
+
+    on cycle_ram(id: String) {
+        let r = try { transition(id, "stroking") }
+        if r.error != () {
+            return map("ok", false, "reason", "stroke refused: hands not proven clear")
+        }
+        ram_mm.set(id, 180)
+        return map("ok", true, "state", get_status(id), "ram_mm", ram_mm.get(id))
+    }
+
+    on ram_home(id: String) {
+        transition(id, "released")
+        ram_mm.set(id, 0)
+        return get_status(id)
+    }
+}
+
+cell test PressTests {
+    rules {
+        // tie-down: one button held forever NEVER arms the press
+        assert press_one("p1") == "one_held"
+        assert_fails transition("p1", "armed")
+        assert_fails transition("p1", "stroking")
+        assert cycle_ram("p1").ok == false
+        assert let_go("p1") == "released"
+
+        // the legitimate cycle: both buttons, stroke, full release
+        assert press_both("p1") == "armed"
+        assert cycle_ram("p1").ok == true
+        assert ram_home("p1") == "released"
+
+        // anti-repeat: a finished stroke cannot re-stroke without re-arm
+        assert_fails transition("p1", "stroking")
+
+        // the ram ledger refuses travel outside the die set
+        assert_fails ram_mm.set("p1", 181)
+        assert_fails ram_mm.set("p1", -5)
+    }
+}

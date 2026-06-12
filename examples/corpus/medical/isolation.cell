@@ -1,0 +1,154 @@
+// ============================================================================
+// ISOLATION PRECAUTIONS — a contagious patient cannot be discharged to a
+// shared bay, and clearance requires two negative tests
+// ============================================================================
+//
+// Hospital-acquired infection spreads when an isolation breach goes
+// unnoticed: a patient colonized with a multidrug-resistant organism (MRSA,
+// C. diff, or a novel respiratory virus) is moved out of contact/airborne
+// precautions before they are cleared, seeding the next ward. The control
+// is a strict status: isolated patients stay isolated until an infection-
+// prevention clearance — typically TWO negative tests — is documented.
+//
+// Here the patient's infection-control status is a state machine. A patient
+// under `isolated` can only reach `cleared` through `pending_clearance`
+// after the required negatives — there is no isolated -> cleared shortcut,
+// and `cleared` is the only state from which a normal-ward transfer is
+// allowed. A bounded counter records consecutive negatives; one positive
+// resets it, so "two negatives" can't be faked by a single lucky swab.
+//
+//   soma verify examples/corpus/medical/isolation.cell
+//   soma test   examples/corpus/medical/isolation.cell
+//   soma run    examples/corpus/medical/isolation.cell demo
+// ============================================================================
+
+cell Isolation {
+    face {
+        signal admit_isolated(patient: String) -> Map
+        signal test_result(patient: String, negative: Bool) -> Map
+        signal request_clearance(patient: String) -> Map
+        signal clear(patient: String) -> Map
+        signal transfer_to_ward(patient: String) -> Map
+        signal negatives(patient: String) -> Int
+        signal iso_state(patient: String) -> String
+        signal demo() -> String
+    }
+
+    memory {
+        // Consecutive negative tests. Two are required to clear; a single
+        // positive resets to 0. Bounded — you cannot fabricate a tally.
+        neg_streak: Map<String, Int> [persistent, consistent]
+        invariant neg_streak >= 0 && neg_streak <= 2
+    }
+
+    // A patient cannot jump from `isolated` to `cleared`. Clearance goes
+    // through `pending_clearance`, and only `cleared` allows a normal-ward
+    // transfer. `discharged_safe` is terminal.
+    state precautions {
+        initial: isolated
+        isolated          -> pending_clearance   // two negatives documented
+        pending_clearance -> cleared             // infection prevention sign-off
+        pending_clearance -> isolated            // a positive reset
+        cleared           -> on_ward             // safe to move to a shared bay
+        on_ward           -> discharged_safe     // terminal
+    }
+
+    on admit_isolated(patient: String) {
+        neg_streak.set(patient, 0)
+        return map("ok", true, "state", get_status(patient))
+    }
+
+    // Record a test. Two consecutive negatives qualify for clearance; any
+    // positive resets the streak and (if pending) sends the patient back to
+    // isolation.
+    on test_result(patient: String, negative: Bool) {
+        let cur = neg_streak.get(patient) ?? 0
+        if negative {
+            let next = min(cur + 1, 2)
+            neg_streak.set(patient, next)
+            return map("ok", true, "negatives", next)
+        }
+        neg_streak.set(patient, 0)
+        let st = get_status(patient)
+        if st == "pending_clearance" { transition(patient, "isolated") }
+        return map("ok", true, "negatives", 0, "reset", true)
+    }
+
+    // Move toward clearance — only with the two negatives on record.
+    on request_clearance(patient: String) {
+        let streak = neg_streak.get(patient) ?? 0
+        if streak < 2 {
+            return map("ok", false, "reason",
+                "needs 2 negatives, has {streak} — clearance blocked")
+        }
+        let r = try { transition(patient, "pending_clearance") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(patient))
+    }
+
+    on clear(patient: String) {
+        let r = try { transition(patient, "cleared") }
+        if r.error != () {
+            return map("ok", false, "reason", "cannot clear: {r.error}")
+        }
+        return map("ok", true, "state", get_status(patient))
+    }
+
+    // Transfer to a shared ward is allowed ONLY from cleared — a still-
+    // isolated patient cannot reach a normal bay.
+    on transfer_to_ward(patient: String) {
+        let r = try { transition(patient, "on_ward") }
+        if r.error != () {
+            return map("ok", false, "reason", "isolation breach blocked: {r.error}")
+        }
+        return map("ok", true, "state", get_status(patient))
+    }
+
+    on negatives(patient: String) { return neg_streak.get(patient) ?? 0 }
+    on iso_state(patient: String) { return get_status(patient) }
+
+    on demo() {
+        admit_isolated("pt-1")
+        let breach = transfer_to_ward("pt-1")   // still isolated — REFUSED
+        test_result("pt-1", true)
+        test_result("pt-1", false)              // positive resets the streak
+        test_result("pt-1", true)
+        test_result("pt-1", true)               // two in a row now
+        request_clearance("pt-1")
+        clear("pt-1")
+        let ok = transfer_to_ward("pt-1")
+        print("early transfer: {breach}")
+        print("after clearance: {ok}")
+        return "demo done"
+    }
+}
+
+cell test IsolationTests {
+    rules {
+        assert admit_isolated("a").ok == true
+
+        // a still-isolated patient cannot be moved to a shared ward
+        assert transfer_to_ward("a").ok == false
+        assert_fails transition("a", "on_ward")
+        assert_fails transition("a", "cleared")
+
+        // one negative is not enough
+        assert test_result("a", true).negatives == 1
+        assert request_clearance("a").ok == false
+
+        // a positive resets the streak — no faking two with one swab
+        assert test_result("a", false).negatives == 0
+        assert test_result("a", true).negatives == 1
+        assert test_result("a", true).negatives == 2
+
+        // now clearance, sign-off, and a safe transfer
+        assert request_clearance("a").ok == true
+        assert clear("a").ok == true
+        assert transfer_to_ward("a").ok == true
+        assert iso_state("a") == "on_ward"
+
+        // the streak counter cannot be inflated past the requirement
+        assert_fails neg_streak.set("a", 3)
+        assert_fails neg_streak.set("a", -1)
+    }
+}

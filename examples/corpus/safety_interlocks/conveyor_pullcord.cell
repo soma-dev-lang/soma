@@ -1,0 +1,87 @@
+// GRAIN CONVEYOR PULL-CORD — a latched trip, and a broken safety
+// circuit that stays broken. Grain handling kills dozens every year;
+// engulfment victims are often pulled in by a conveyor a coworker
+// restarted while they were still in the boot pit. Two properties are
+// structural here. Anti-restart: a pull-cord trip latches, and `tripped`
+// has NO edge to `running` — the only exit is `reset_walked`, a state a
+// human reaches by walking the belt line. Fail-safe wiring: the pull-
+// cord loop is supervised, and a severed wire lands in `circuit_fault`,
+// a TERMINAL state soma verify proves has no exit — a conveyor whose
+// safety circuit is cut can never be software-restarted.
+
+cell ConveyorGuard {
+    face {
+        signal start_belt(id: String) -> Map
+        signal stop_belt(id: String) -> String
+        signal pull_cord(id: String) -> String
+        signal walk_the_line(id: String) -> String
+        signal wire_severed(id: String) -> String
+    }
+
+    memory {
+        // completed walkdowns since the last trip — the reset evidence
+        walkdowns: Map<String, Int> [persistent, consistent]
+        invariant walkdowns >= 0 && walkdowns <= 1000
+    }
+
+    state belt {
+        initial: stopped
+        stopped -> running
+        running -> stopped          // normal stop
+        running -> tripped          // pull-cord: LATCHED
+        tripped -> reset_walked     // a person walked the full belt line
+        reset_walked -> stopped     // re-arm; start is a separate command
+        running -> circuit_fault    // supervision saw the loop go open
+        stopped -> circuit_fault
+        tripped -> circuit_fault
+    }
+
+    on start_belt(id: String) {
+        let r = try { transition(id, "running") }
+        if r.error != () {
+            return map("ok", false, "state", get_status(id),
+                       "reason", "belt is latched out — no restart from here")
+        }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on stop_belt(id: String) { transition(id, "stopped")  return get_status(id) }
+    on pull_cord(id: String) { transition(id, "tripped")  return get_status(id) }
+
+    on walk_the_line(id: String) {
+        transition(id, "reset_walked")
+        walkdowns.set(id, (walkdowns.get(id) ?? 0) + 1)
+        transition(id, "stopped")
+        return get_status(id)
+    }
+
+    on wire_severed(id: String) { transition(id, "circuit_fault")  return get_status(id) }
+}
+
+cell test ConveyorTests {
+    rules {
+        // normal run and stop
+        assert start_belt("c1").ok == true
+        assert stop_belt("c1") == "stopped"
+
+        // pull-cord trip LATCHES: no restart, the edge is absent
+        assert start_belt("c1").ok == true
+        assert pull_cord("c1") == "tripped"
+        assert start_belt("c1").ok == false
+        assert_fails transition("c1", "running")
+
+        // only a walked line releases the latch, then a fresh start
+        assert walk_the_line("c1") == "stopped"
+        assert start_belt("c1").ok == true
+        assert stop_belt("c1") == "stopped"
+
+        // a severed pull-cord wire is TERMINAL — proven, and pinned here
+        assert wire_severed("c1") == "circuit_fault"
+        assert start_belt("c1").ok == false
+        assert_fails transition("c1", "stopped")
+        assert_fails transition("c1", "reset_walked")
+
+        // the walkdown ledger never goes negative
+        assert_fails walkdowns.set("c1", -1)
+    }
+}

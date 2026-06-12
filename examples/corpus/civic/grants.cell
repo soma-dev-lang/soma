@@ -1,0 +1,106 @@
+// ============================================================================
+// GRANTS — budget conservation: the fund cannot award money it does not have
+// ============================================================================
+// COVID-era relief programs paid out past their appropriations because the
+// "remaining budget" lived in a spreadsheet beside the disbursement system —
+// GAO flagged billions in over- and duplicate disbursements. The bug class is
+// always the same: the balance check and the payment are two systems. Here
+// they are one write: an award debits the fund slot, and a negative balance
+// is unrepresentable — the memory refuses the overdraft. Conservation
+// (awards + remaining == appropriation) holds by construction, and a closed
+// fund is terminal: soma verify proves no path re-opens it.
+// ============================================================================
+
+cell GrantFund {
+    face {
+        signal appropriate(amount: Int) -> Map
+        signal award_grant(grantee: String, amount: Int) -> Map
+        signal close_fund() -> Map
+        signal remaining_balance() -> Int
+        signal total_awarded() -> Int
+        signal conserved() -> Bool
+        signal phase() -> String
+    }
+
+    memory {
+        // The wall: a balance below zero is rejected at the write,
+        // no matter what arithmetic a handler believed.
+        remaining: Map<String, Int> [persistent, consistent]
+        invariant remaining >= 0
+
+        awarded: Map<String, Int> [persistent, consistent]
+        invariant awarded >= 0
+    }
+
+    // closed is terminal: a spent fund never disburses again.
+    state fund {
+        initial: proposed
+        proposed -> disbursing
+        disbursing -> closed
+    }
+
+    on phase() { return get_status("fund") }
+
+    on appropriate(amount: Int) {
+        let r = try { transition("fund", "disbursing") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        remaining.set("fund", amount)
+        remaining.set("appropriation", amount)
+        return map("ok", true, "fund", amount)
+    }
+
+    on award_grant(grantee: String, amount: Int) {
+        if phase() != "disbursing" {
+            return map("ok", false, "reason", "fund is {phase()}")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "award must be positive") }
+        let bal = remaining.get("fund") ?? 0
+        // THE WALL: if amount > bal this write is an overdraft and refuses.
+        let w = try { remaining.set("fund", bal - amount) }
+        if w.error != () {
+            return map("ok", false, "reason", "insufficient fund: {bal} < {amount}")
+        }
+        let prior = awarded.get(grantee) ?? 0
+        awarded.set(grantee, prior + amount)
+        return map("ok", true, "grantee", grantee, "remaining", bal - amount)
+    }
+
+    on close_fund() {
+        let r = try { transition("fund", "closed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "unspent", remaining_balance())
+    }
+
+    on remaining_balance() { return remaining.get("fund") ?? 0 }
+
+    on total_awarded() {
+        let names = awarded.keys()
+        let n = 0
+        for g in names { n = n + (awarded.get(g) ?? 0) }
+        return n
+    }
+
+    on conserved() {
+        let appropriation = remaining.get("appropriation") ?? 0
+        return total_awarded() + remaining_balance() == appropriation
+    }
+}
+
+cell test GrantFundTests {
+    rules {
+        assert award_grant("arts-coop", 100).ok == false   // nothing appropriated
+        assert appropriate(1000).ok == true
+        assert award_grant("arts-coop", 600).ok == true
+        assert award_grant("food-bank", 600).ok == false   // would overdraft
+        assert remaining_balance() == 400
+        assert award_grant("food-bank", 400).ok == true
+        assert award_grant("library", 1).ok == false       // fund is empty
+        assert_fails remaining.set("fund", -1)             // overdraft unrepresentable
+        assert_fails awarded.set("ghost", -50)             // no negative awards
+        assert total_awarded() == 1000
+        assert conserved() == true
+        assert close_fund().ok == true
+        assert award_grant("late", 1).ok == false          // closed fund pays nobody
+        assert_fails transition("fund", "disbursing")      // and stays closed
+    }
+}

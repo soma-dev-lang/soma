@@ -1,0 +1,91 @@
+// ============================================================================
+// INVENTORY CONSERVATION — stock never teleports, never goes negative
+// ============================================================================
+//
+// "Phantom inventory" costs retail roughly a quarter of a trillion dollars
+// a year: the system says 12 units, the shelf has none, and replenishment
+// never triggers because the ghost stock looks fine. The classic cause is
+// an unbalanced transfer — a warehouse decrements, the receiving store's
+// increment is lost (crash, double-click, integration retry), and the
+// books drift from the world one transaction at a time.
+//
+// Here a transfer is one handler that does BOTH sides or NEITHER, and the
+// memory refuses any write that would drive a site negative — the units
+// for an oversized transfer simply do not exist to send. Conservation
+// (total units constant across any transfer) is pinned by the tests.
+// ============================================================================
+
+cell StockLedger {
+    face {
+        signal receive_units(site: String, qty: Int) -> Map
+        signal transfer_units(from_site: String, to_site: String, qty: Int) -> Map
+        signal on_hand(site: String) -> Int
+        signal network_total(sites: List) -> Int
+    }
+
+    memory {
+        // units on hand per site. The invariant IS the conservation
+        // floor: no write may record stock that does not exist.
+        stock: Map<String, Int> [persistent, consistent]
+        invariant stock >= 0
+    }
+
+    on receive_units(site: String, qty: Int) {
+        if qty <= 0 { return map("ok", false, "reason", "receipt must be positive") }
+        stock.set(site, on_hand(site) + qty)
+        return map("ok", true, "site", site, "on_hand", on_hand(site))
+    }
+
+    on transfer_units(from_site: String, to_site: String, qty: Int) {
+        if qty <= 0 { return map("ok", false, "reason", "transfer must be positive") }
+        if from_site == to_site { return map("ok", false, "reason", "source equals destination") }
+        let src = on_hand(from_site)
+        // the decrement: if qty > src this write violates `stock >= 0`
+        // and the slot REFUSES — nothing has moved, both sides intact
+        let w = try { stock.set(from_site, src - qty) }
+        if w.error != () {
+            return map("ok", false,
+                "reason", "only {src} on hand at {from_site}; {qty} would create phantom stock")
+        }
+        // the increment, in the same handler: both sides or neither
+        stock.set(to_site, on_hand(to_site) + qty)
+        return map("ok", true, "moved", qty, "from", from_site, "to", to_site)
+    }
+
+    on on_hand(site: String) { return stock.get(site) ?? 0 }
+
+    on network_total(sites: List) {
+        let counts = sites |> map(s => on_hand(s))
+        return sum(counts)
+    }
+}
+
+cell test NothingTeleports {
+    rules {
+        // seed the network: 100 units exist, total
+        assert receive_units("DC-EAST", 80).ok == true
+        assert receive_units("STORE-12", 20).ok == true
+        assert network_total(list("DC-EAST", "STORE-12")) == 100
+
+        // a legal transfer conserves the total exactly
+        assert transfer_units("DC-EAST", "STORE-12", 30).ok == true
+        assert on_hand("DC-EAST") == 50
+        assert on_hand("STORE-12") == 50
+        assert network_total(list("DC-EAST", "STORE-12")) == 100
+
+        // THE PHANTOM: send 70 from a site holding 50. The memory
+        // refuses the negative write; neither side changes.
+        assert transfer_units("DC-EAST", "STORE-12", 70).ok == false
+        assert on_hand("DC-EAST") == 50
+        assert on_hand("STORE-12") == 50
+        assert network_total(list("DC-EAST", "STORE-12")) == 100
+
+        // direct corruption is refused at the slot itself
+        assert_fails stock.set("DC-EAST", -10)
+
+        // degenerate moves are rejected before any write
+        assert transfer_units("DC-EAST", "DC-EAST", 5).ok == false
+        assert transfer_units("DC-EAST", "STORE-12", 0).ok == false
+        assert receive_units("DC-EAST", -3).ok == false
+    }
+}

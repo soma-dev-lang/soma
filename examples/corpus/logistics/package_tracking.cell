@@ -1,0 +1,83 @@
+// ============================================================================
+// PACKAGE TRACKING — delivered is FOREVER
+// ============================================================================
+//
+// Couriers under per-stop quotas have been caught marking parcels
+// "delivered" early, then quietly reverting the scan and dropping the box
+// a day later — or never. Amazon, FedEx and UPS all field thousands of
+// "marked delivered, never arrived" claims a year, and every fraudulent
+// rewrite depends on one thing: the tracking record being MUTABLE.
+//
+// Here the journey is a verified state machine and `delivered` is a
+// TERMINAL state: no outgoing transitions exist, so no handler — and no
+// "corrected" rescan — can ever pull a delivered parcel back into
+// transit. A failed doorstep attempt legally loops back to the depot;
+// history rewriting does not. `soma verify` proves it.
+// ============================================================================
+
+cell PackageTracker {
+    face {
+        signal scan_event(pkg: String, to: String) -> Map
+        signal locate(pkg: String) -> String
+        signal attempt_count(pkg: String) -> Int
+    }
+
+    memory {
+        // doorstep attempts per parcel — carriers cap redelivery at 3
+        attempts: Map<String, Int> [persistent, consistent]
+        invariant attempts >= 0 && attempts <= 3
+    }
+
+    // delivered and returned_to_sender have NO exits — terminal, proven.
+    state journey {
+        initial: label_created
+        label_created    -> picked_up
+        picked_up        -> in_transit
+        in_transit       -> out_for_delivery
+        out_for_delivery -> delivered
+        out_for_delivery -> in_transit       // failed attempt: back to depot
+        in_transit       -> returned_to_sender
+    }
+
+    on scan_event(pkg: String, to: String) {
+        if to == "out_for_delivery" {
+            let n = attempts.get(pkg) ?? 0
+            let w = try { attempts.set(pkg, n + 1) }
+            if w.error != () {
+                return map("ok", false, "reason", "max delivery attempts reached")
+            }
+        }
+        let r = try { transition(pkg, to) }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "pkg", pkg, "state", get_status(pkg))
+    }
+
+    on locate(pkg: String) { return get_status(pkg) }
+
+    on attempt_count(pkg: String) { return attempts.get(pkg) ?? 0 }
+}
+
+cell test DeliveredIsForever {
+    rules {
+        // normal journey
+        assert scan_event("p1", "picked_up").ok == true
+        assert scan_event("p1", "in_transit").ok == true
+        assert scan_event("p1", "out_for_delivery").ok == true
+        assert scan_event("p1", "delivered").ok == true
+        assert locate("p1") == "delivered"
+
+        // THE FRAUD: revert a delivered parcel back into transit. The
+        // transition does not exist — it raises.
+        assert_fails transition("p1", "in_transit")
+        assert_fails transition("p1", "out_for_delivery")
+        assert locate("p1") == "delivered"
+
+        // a failed attempt loops legally; a 4th attempt is refused by memory
+        assert scan_event("p2", "picked_up").ok == true
+        assert scan_event("p2", "in_transit").ok == true
+        assert scan_event("p2", "out_for_delivery").ok == true
+        assert scan_event("p2", "in_transit").ok == true
+        assert attempt_count("p2") == 1
+        assert_fails attempts.set("p2", 9)
+    }
+}

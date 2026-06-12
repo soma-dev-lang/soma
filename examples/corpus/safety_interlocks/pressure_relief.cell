@@ -1,0 +1,87 @@
+// PRESSURE RELIEF VALVE — a live vessel can never lose its relief path.
+// Williams Olefins, Geismar 2013: a reboiler was isolated from its
+// relief valve, heat crept in, and the blocked-in vessel ruptured —
+// 2 dead, 167 injured. The century-old version is the gagged boiler
+// safety valve. Here the joint state (vessel pressure x relief path) is
+// one machine, and the state {in service, relief blocked} does not
+// exist: you can only block the relief valve for maintenance from the
+// cold, offline state, and a blocked-relief vessel has no edge into
+// service. The gauge ledger independently refuses pressure above MAWP.
+
+cell ReliefInterlock {
+    face {
+        signal commission(id: String, psi: Int) -> Map
+        signal take_offline(id: String) -> String
+        signal block_relief_for_test(id: String) -> String
+        signal restore_relief(id: String) -> String
+        signal gauge(id: String) -> Int
+    }
+
+    memory {
+        // vessel pressure, psi; MAWP is 150 — the wall the gauge enforces
+        psi_now: Map<String, Int> [persistent, consistent]
+        invariant psi_now >= 0 && psi_now <= 150
+    }
+
+    // What is ABSENT is the proof: no state pairs pressure with a
+    // blocked relief path.
+    state vessel {
+        initial: offline_relief_open
+        offline_relief_open -> in_service          // pressurize: relief armed
+        in_service -> offline_relief_open          // depressurize first, always
+        offline_relief_open -> relief_blocked_cold // valve test: vessel cold only
+        relief_blocked_cold -> offline_relief_open
+    }
+
+    on commission(id: String, psi: Int) {
+        let r = try { transition(id, "in_service") }
+        if r.error != () {
+            return map("ok", false, "reason", "relief path not proven open")
+        }
+        let w = try { psi_now.set(id, psi) }
+        if w.error != () {
+            transition(id, "offline_relief_open")
+            return map("ok", false, "reason", "gauge refused {psi} psi (MAWP 150)")
+        }
+        return map("ok", true, "state", get_status(id), "psi", psi)
+    }
+
+    on take_offline(id: String) {
+        psi_now.set(id, 0)                      // vent BEFORE the state moves
+        transition(id, "offline_relief_open")
+        return get_status(id)
+    }
+
+    on block_relief_for_test(id: String) { transition(id, "relief_blocked_cold")  return get_status(id) }
+    on restore_relief(id: String)        { transition(id, "offline_relief_open")  return get_status(id) }
+    on gauge(id: String)                 { return psi_now.get(id) ?? 0 }
+}
+
+cell test ReliefTests {
+    rules {
+        // a commissioned vessel runs at pressure with relief armed
+        assert commission("v1", 120).ok == true
+
+        // THE Geismar move: blocking the relief on a LIVE vessel.
+        // The edge does not exist — it raises.
+        assert_fails transition("v1", "relief_blocked_cold")
+
+        // the gauge itself refuses pressure past MAWP, and a vacuum
+        assert_fails psi_now.set("v1", 200)
+        assert_fails psi_now.set("v1", -10)
+
+        // legal maintenance: vent, go offline, THEN block the relief
+        assert take_offline("v1") == "offline_relief_open"
+        assert gauge("v1") == 0
+        assert block_relief_for_test("v1") == "relief_blocked_cold"
+
+        // a blocked-relief vessel has no road into service
+        assert_fails transition("v1", "in_service")
+        assert commission("v1", 100).ok == false
+        assert restore_relief("v1") == "offline_relief_open"
+
+        // overpressure commissioning is refused and the vessel stays safe
+        assert commission("v2", 151).ok == false
+        assert gauge("v2") == 0
+    }
+}

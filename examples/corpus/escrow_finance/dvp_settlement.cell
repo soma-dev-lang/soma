@@ -1,0 +1,110 @@
+// ============================================================================
+// DELIVERY-VERSUS-PAYMENT — no securities leave before the cash arrives
+// ============================================================================
+//
+// On 26 June 1974, Bankhaus Herstatt was shut down by regulators AFTER its
+// counterparties had irrevocably paid the Deutschmark leg of their FX
+// trades but BEFORE Herstatt paid out the dollar leg. The money was simply
+// gone — "Herstatt risk" got its name and CLS Bank got founded. The cure
+// is delivery-versus-payment: the two legs are ONE state machine, and the
+// deliver edge exists only after cash is confirmed. A trade abandoned
+// after cash arrives must pass through `refunded` — cash can never be
+// stranded — and `soma verify` proves every path ends settled or made-whole.
+// ============================================================================
+
+cell DvP {
+    face {
+        signal match_trade(id: String, cash: Int, units: Int) -> Map
+        signal confirm_cash(id: String) -> Map
+        signal deliver(id: String) -> Map
+        signal abort_trade(id: String) -> Map
+        signal legs(id: String) -> Map
+    }
+
+    memory {
+        cash_held: Map<String, Int> [persistent, consistent]
+        invariant cash_held >= 0
+        units_due: Map<String, Int> [persistent, consistent]
+        invariant units_due >= 0
+    }
+
+    // settled, cancelled, refunded: terminal. The Herstatt edge —
+    // instructed -> delivered with no cash — does not exist. And once
+    // cash is in, the ONLY exits are delivery or refund: no path
+    // strands the counterparty's money.
+    state trade {
+        initial: matched
+        matched -> instructed
+        instructed -> cash_in
+        instructed -> cancelled
+        cash_in -> delivered
+        cash_in -> refunded
+        delivered -> settled
+    }
+
+    on match_trade(id: String, cash: Int, units: Int) {
+        if cash <= 0 || units <= 0 { return map("ok", false, "reason", "bad legs") }
+        transition(id, "instructed")
+        cash_held.set(id, 0)
+        units_due.set(id, units)
+        return map("ok", true, "state", get_status(id), "cash_leg", cash)
+    }
+
+    on confirm_cash(id: String) {
+        transition(id, "cash_in")
+        cash_held.set(id, 1)            // marker: the cash leg is irrevocable
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on deliver(id: String) {
+        transition(id, "delivered")     // raises unless cash is in
+        units_due.set(id, 0)
+        transition(id, "settled")
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on abort_trade(id: String) {
+        let st = get_status(id)
+        if st == "cash_in" {
+            transition(id, "refunded")  // cash already paid? it MUST go back
+            cash_held.set(id, 0)
+            return map("ok", true, "state", "refunded")
+        }
+        transition(id, "cancelled")     // raises once delivery has begun
+        return map("ok", true, "state", "cancelled")
+    }
+
+    on legs(id: String) {
+        let c = cash_held.get(id) ?? 0
+        let u = units_due.get(id) ?? 0
+        return map("cash_in", c == 1, "units_due", u, "state", get_status(id))
+    }
+}
+
+cell test DvPTests {
+    rules {
+        assert match_trade("fx1", 1000000, 500).ok == true
+        // THE HERSTATT EDGE: deliver before the cash leg — does not exist
+        assert_fails transition("fx1", "delivered")
+        assert_fails deliver("fx1")
+        assert confirm_cash("fx1").ok == true
+        // once cash is in, plain cancellation is impossible: only refund
+        assert_fails transition("fx1", "cancelled")
+        assert deliver("fx1").state == "settled"
+        assert legs("fx1").units_due == 0
+        // settled is terminal — no unwinding a finished trade
+        assert_fails transition("fx1", "refunded")
+        assert_fails transition("fx1", "cash_in")
+        // abort AFTER cash: the counterparty is made whole, then it's final
+        assert match_trade("fx2", 5000, 10).ok == true
+        assert confirm_cash("fx2").ok == true
+        assert abort_trade("fx2").state == "refunded"
+        assert legs("fx2").cash_in == false
+        assert_fails transition("fx2", "delivered")
+        // abort BEFORE cash: a clean cancel, equally terminal
+        assert match_trade("fx3", 5000, 10).ok == true
+        assert abort_trade("fx3").state == "cancelled"
+        assert_fails transition("fx3", "cash_in")
+        assert_fails units_due.set("fx1", -1)
+    }
+}

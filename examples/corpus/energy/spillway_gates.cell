@@ -1,0 +1,120 @@
+// ============================================================================
+// SPILLWAY GATES — a dam may never lose its last release path
+// ============================================================================
+//
+// February 2017, Oroville, California: the tallest dam in the US lost its
+// main spillway to erosion mid-flood, the emergency spillway began to fail
+// within hours of first use, and 188,000 people downstream were evacuated.
+// The lesson generalized by every dam-safety review since: release
+// capacity is life-safety equipment, and maintenance scheduling is where
+// it silently disappears — gate 3 is down for seal replacement, gate 5's
+// hoist motor is out, a contractor asks to isolate gate 7 "just for the
+// afternoon", and suddenly the dam cannot pass the inflow it was built for.
+//
+// Two structural walls below. The fleet ledger `gates_avail` carries an
+// invariant floor of ONE: the write that would take the last operable gate
+// out of service is rejected by the memory, whatever the work order says.
+// And each gate's overhaul is a state machine: an overhauled gate returns
+// to service only through `wet_tested` — an untested gate back on the
+// flood roster is a transition that does not exist. soma verify proves it.
+// ============================================================================
+
+cell Spillway {
+    face {
+        signal isolate_gate(dam: String, gate: String) -> Map
+        signal begin_overhaul(gate: String) -> Map
+        signal finish_overhaul(gate: String) -> Map
+        signal wet_test_passed(dam: String, gate: String) -> Map
+        signal gates_in_service(dam: String) -> Int
+        signal gate_state(gate: String) -> String
+    }
+
+    memory {
+        // operable gates per dam — the floor of 1 is the life-safety wall
+        gates_avail: Map<String, Int> [persistent, consistent]
+        invariant gates_avail >= 1 && gates_avail <= 8
+    }
+
+    state overhaul {
+        initial: in_service
+        in_service -> isolated     // dewatered, stop-logs in, hoist locked
+        isolated -> stripped       // seals/hoist under overhaul
+        stripped -> reassembled
+        reassembled -> wet_tested  // full-travel test UNDER HEAD
+        wet_tested -> in_service   // only a tested gate rejoins the roster
+    }
+
+    on gates_in_service(dam: String) { return gates_avail.get(dam) ?? 8 }
+
+    on isolate_gate(dam: String, gate: String) {
+        // the fleet wall first: taking this gate may not strand the dam
+        let w = try { gates_avail.set(dam, gates_in_service(dam) - 1) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "refused: would leave {dam} without an operable release path")
+        }
+        let r = try { transition(gate, "isolated") }
+        if r.error != () {
+            gates_avail.set(dam, gates_in_service(dam) + 1)   // roll back
+            return map("ok", false, "reason", "{r.error}")
+        }
+        return map("ok", true, "gates_in_service", gates_in_service(dam))
+    }
+
+    on begin_overhaul(gate: String) {
+        let r = try { transition(gate, "stripped") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(gate))
+    }
+
+    on finish_overhaul(gate: String) {
+        let r = try { transition(gate, "reassembled") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(gate))
+    }
+
+    on wet_test_passed(dam: String, gate: String) {
+        let r = try { transition(gate, "wet_tested") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        transition(gate, "in_service")
+        gates_avail.set(dam, gates_in_service(dam) + 1)
+        return map("ok", true, "state", get_status(gate),
+                   "gates_in_service", gates_in_service(dam))
+    }
+
+    on gate_state(gate: String) { return get_status(gate) }
+}
+
+cell test SpillwayTests {
+    rules {
+        // the dam starts with 8 operable gates; isolate seven of them
+        assert isolate_gate("oro", "g1").ok == true
+        assert isolate_gate("oro", "g2").ok == true
+        assert isolate_gate("oro", "g3").ok == true
+        assert isolate_gate("oro", "g4").ok == true
+        assert isolate_gate("oro", "g5").ok == true
+        assert isolate_gate("oro", "g6").ok == true
+        assert isolate_gate("oro", "g7").ok == true
+        assert gates_in_service("oro") == 1
+
+        // THE LAST GATE: the work order that strands the dam is refused
+        assert isolate_gate("oro", "g8").ok == false
+        assert gates_in_service("oro") == 1
+        assert gate_state("g8") == "in_service"
+        assert_fails gates_avail.set("oro", 0)
+
+        // an overhauled gate cannot rejoin the roster untested:
+        // reassembled -> in_service is not a transition
+        assert begin_overhaul("g1").ok == true
+        assert finish_overhaul("g1").ok == true
+        assert_fails transition("g1", "in_service")
+
+        // tested under head, it returns — and frees the next work order
+        assert wet_test_passed("oro", "g1").ok == true
+        assert gates_in_service("oro") == 2
+        assert isolate_gate("oro", "g8").ok == true
+
+        // a gate in service cannot be "stripped" without isolation
+        assert_fails transition("g1", "stripped")
+    }
+}

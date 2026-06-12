@@ -1,0 +1,122 @@
+// ============================================================================
+// EMERGENCY TRIAGE — the sickest patient is seen first, by construction
+// ============================================================================
+//
+// ED overcrowding kills by inversion: a walk-in with a sprain gets a bed
+// while a silent MI in the waiting room arrests. The Manchester / ESI
+// triage standard fixes an ordering — level 1 (resuscitation) before
+// level 5 (non-urgent) — but a queue implemented as plain FIFO quietly
+// violates it the moment load spikes.
+//
+// Here "the next patient is always the most acute waiting one" is not a
+// sort we hope ran; it is what `next_to_see` computes directly over the
+// waiting set, and a patient's acuity is pinned to the ESI scale by a
+// memory invariant (1..5). A bug that wrote acuity 0 or 9 — which would
+// jump or sink someone in the order — is rejected at the slot.
+//
+//   soma check examples/corpus/medical/triage.cell
+//   soma test  examples/corpus/medical/triage.cell
+//   soma run   examples/corpus/medical/triage.cell demo
+// ============================================================================
+
+cell Triage {
+    face {
+        signal arrive(patient: String, esi: Int) -> Map
+        signal next_to_see() -> Map
+        signal see(patient: String) -> Map
+        signal waiting_count() -> Int
+        signal demo() -> String
+    }
+
+    memory {
+        // ESI acuity per still-waiting patient. The scale is 1..5 and
+        // nothing else — the ordering only means something if every value
+        // is a real triage level. 0 ("more urgent than resuscitation") and
+        // 6 are rejected at the write.
+        acuity: Map<String, Int> [persistent, consistent]
+        invariant acuity >= 1 && acuity <= 5
+
+        seen: Map<String, Int> [persistent, consistent]
+        invariant seen >= 0 && seen <= 1
+    }
+
+    on arrive(patient: String, esi: Int) {
+        let w = try { acuity.set(patient, esi) }
+        if w.error != () {
+            return map("ok", false, "reason", "invalid ESI level: {w.error}")
+        }
+        return map("ok", true, "patient", patient, "esi", esi)
+    }
+
+    // The most acute waiting patient: lowest ESI number wins; ties break
+    // by who has been waiting (we just take the first encountered). This
+    // IS the ordering — there is no separate FIFO that could disagree.
+    on next_to_see() {
+        let pick = ""
+        let pick_esi = 99
+        for p in acuity.keys() {
+            let already = seen.get(p) ?? 0
+            if already == 0 {
+                let e = acuity.get(p) ?? 99
+                if e < pick_esi {
+                    pick_esi = e
+                    pick = p
+                }
+            }
+        }
+        if pick == "" { return map("ok", false, "reason", "no one waiting") }
+        return map("ok", true, "patient", pick, "esi", pick_esi)
+    }
+
+    on see(patient: String) {
+        let e = acuity.get(patient)
+        if e == () { return map("ok", false, "reason", "unknown patient") }
+        seen.set(patient, 1)
+        return map("ok", true, "patient", patient)
+    }
+
+    on waiting_count() {
+        let n = 0
+        for p in acuity.keys() {
+            if (seen.get(p) ?? 0) == 0 { n = n + 1 }
+        }
+        return n
+    }
+
+    on demo() {
+        arrive("sprain-guy", 5)
+        arrive("chest-pain", 2)
+        arrive("cardiac-arrest", 1)
+        arrive("headache", 4)
+        let first = next_to_see()
+        see(first.patient)
+        let second = next_to_see()
+        print("first to see:  {first}")     // cardiac-arrest, ESI 1
+        print("after seeing:  {second}")    // chest-pain, ESI 2
+        print("still waiting: {waiting_count()}")
+        return "demo done"
+    }
+}
+
+cell test TriageTests {
+    rules {
+        assert arrive("sprain", 5).ok == true
+        assert arrive("mi", 1).ok == true
+        assert arrive("fever", 3).ok == true
+
+        // the order is acuity, never arrival: the MI is seen before the
+        // sprain that arrived first
+        assert next_to_see().patient == "mi"
+        assert see("mi").ok == true
+        assert next_to_see().patient == "fever"
+        assert see("fever").ok == true
+        assert next_to_see().patient == "sprain"
+
+        assert waiting_count() == 1
+
+        // an out-of-scale acuity that would corrupt the order is refused
+        assert_fails acuity.set("ghost", 0)
+        assert_fails acuity.set("ghost", 6)
+        assert arrive("ghost", 9).ok == false
+    }
+}

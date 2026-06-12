@@ -1,0 +1,79 @@
+// RAILWAY BLOCK SIGNALING — two trains never share a block.
+// Ladbroke Grove (1999, 31 dead) and a century of telescoped carriages
+// before it happen when a second train enters an occupied block. Here the
+// collision state is unrepresentable: a block is a state machine with
+// exactly `clear` and `occupied`, and `occupied -> occupied` does not
+// exist — the second grant RAISES instead of being a flag you forgot to
+// check. A train-count ledger is the independent second wall: the write
+// of a 2 is refused by the memory itself.
+
+cell BlockSignal {
+    face {
+        signal request_entry(block: String, train: String) -> Map
+        signal exit_block(block: String, train: String) -> Map
+        signal occupant_of(block: String) -> String
+    }
+
+    memory {
+        // trains physically inside each block — never 0..1 violated
+        train_count: Map<String, Int> [persistent, consistent]
+        invariant train_count >= 0 && train_count <= 1
+
+        holder: Map<String, String> [persistent, consistent]
+    }
+
+    state block {
+        initial: clear
+        clear -> occupied
+        occupied -> clear
+    }
+
+    on request_entry(block: String, train: String) {
+        // the interlock IS the transition: a held block raises here
+        let r = try { transition(block, "occupied") }
+        if r.error != () {
+            let who = occupant_of(block)
+            return map("granted", false, "reason", "block {block} held by {who}")
+        }
+        train_count.set(block, (train_count.get(block) ?? 0) + 1)
+        holder.set(block, train)
+        return map("granted", true, "block", block, "train", train)
+    }
+
+    on exit_block(block: String, train: String) {
+        if occupant_of(block) != train {
+            return map("ok", false, "reason", "{train} does not hold {block}")
+        }
+        transition(block, "clear")
+        train_count.set(block, train_count.get(block) - 1)
+        holder.delete(block)
+        return map("ok", true, "block", block, "state", get_status(block))
+    }
+
+    on occupant_of(block: String) {
+        return holder.get(block) ?? "nobody"
+    }
+}
+
+cell test BlockTests {
+    rules {
+        // first train is granted the block
+        assert request_entry("b7", "IC-100").granted == true
+        assert occupant_of("b7") == "IC-100"
+
+        // THE collision: a second train into the same block. The signal
+        // logic refuses it, and the raw transition itself does not exist.
+        assert request_entry("b7", "EXP-9").granted == false
+        assert_fails transition("b7", "occupied")
+
+        // the ledger is the second wall: writing 2 trains is refused
+        // even if every signaling check above were deleted
+        assert_fails train_count.set("b7", 2)
+        assert_fails train_count.set("b7", -1)
+
+        // only the holder can release; then the block cycles normally
+        assert exit_block("b7", "EXP-9").ok == false
+        assert exit_block("b7", "IC-100").ok == true
+        assert request_entry("b7", "EXP-9").granted == true
+    }
+}

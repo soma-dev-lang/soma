@@ -1,0 +1,130 @@
+// ============================================================================
+// SEALED BIDS — the envelope opens once, for everyone, after the deadline
+// ============================================================================
+//
+// Public procurement runs on sealed bidding because the alternative is
+// what the DOJ Antitrust Division prosecutes every year: a contracting
+// insider leaks competitor numbers to a favored vendor, who underbids by
+// a dollar. Whole construction markets have been rigged this way. The
+// integrity property is precise: NO bid is readable while the window is
+// open, late bids do not exist, and once the envelopes open the window
+// can never quietly re-open to slip a friend's bid in afterward.
+//
+// Here the envelope is the state machine: bids land only in `accepting`,
+// numbers are served only past `opened`, and the opening is IRREVERSIBLE
+// — soma verify proves no edge leads back. One vendor, one bid, is a
+// memory invariant: the amended-after-peeking second bid is refused at
+// the write.
+// ============================================================================
+
+cell BidRoom {
+    face {
+        signal submit_bid(tender: String, vendor: String, amount: Int) -> Map
+        signal open_envelopes(tender: String) -> Map
+        signal peek_bid(tender: String, vendor: String) -> Map
+        signal award(tender: String, vendor: String) -> Map
+        signal bid_total(tender: String) -> Int
+    }
+
+    memory {
+        // tender:vendor -> sealed amount (must be a real, positive bid)
+        envelopes: Map<String, Int> [persistent, consistent]
+        invariant envelopes >= 1
+
+        // tender:vendor -> bids submitted. ONE. The "revised" second
+        // envelope after a leak is a 2 the memory cannot hold.
+        bid_count: Map<String, Int> [persistent, consistent]
+        invariant bid_count >= 0 && bid_count <= 1
+    }
+
+    // accepting -> opened is one-way; awarded is terminal.
+    state tender {
+        initial: accepting
+        accepting -> opened
+        opened -> awarded
+    }
+
+    on submit_bid(tender: String, vendor: String, amount: Int) {
+        if get_status(tender) != "accepting" {
+            let s = get_status(tender)
+            return map("ok", false, "reason", "window is {s}; late bids do not exist")
+        }
+        let k = "{tender}:{vendor}"
+        let w = try { bid_count.set(k, (bid_count.get(k) ?? 0) + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{vendor} already has a sealed bid on {tender}")
+        }
+        let e = try { envelopes.set(k, amount) }
+        if e.error != () {
+            return map("ok", false, "reason", "a bid must be a positive amount")
+        }
+        return map("ok", true, "tender", tender, "vendor", vendor)
+    }
+
+    on open_envelopes(tender: String) {
+        let r = try { transition(tender, "opened") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "opened")
+    }
+
+    // numbers exist for readers only AFTER the deadline opening
+    on peek_bid(tender: String, vendor: String) {
+        let s = get_status(tender)
+        if s == "accepting" {
+            return map("ok", false, "reason", "sealed: bids are unreadable until opening")
+        }
+        let amt = envelopes.get("{tender}:{vendor}")
+        if amt == () { return map("ok", false, "reason", "no bid from {vendor}") }
+        return map("ok", true, "vendor", vendor, "amount", amt)
+    }
+
+    on award(tender: String, vendor: String) {
+        if envelopes.get("{tender}:{vendor}") == () {
+            return map("ok", false, "reason", "{vendor} never bid on {tender}")
+        }
+        let r = try { transition(tender, "awarded") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "winner", vendor)
+    }
+
+    on bid_total(tender: String) {
+        let n = 0
+        for k in bid_count.keys() {
+            if starts_with(k, "{tender}:") { n = n + (bid_count.get(k) ?? 0) }
+        }
+        return n
+    }
+}
+
+cell test SealedBidTests {
+    rules {
+        // two vendors bid; nothing is readable while the window is open
+        assert submit_bid("T1", "acme", 90000).ok == true
+        assert submit_bid("T1", "bolt", 84000).ok == true
+        assert peek_bid("T1", "acme").ok == false
+
+        // one vendor, one bid: the revised envelope is refused
+        assert submit_bid("T1", "acme", 83999).ok == false
+        assert_fails bid_count.set("T1:acme", 2)
+        assert bid_total("T1") == 2
+
+        // a zero/negative "placeholder bid" is unrepresentable
+        assert submit_bid("T1", "ghost", 0).ok == false
+        assert_fails envelopes.set("T1:ghost", -5)
+
+        // open the envelopes — now, and only now, numbers exist
+        assert open_envelopes("T1").ok == true
+        assert peek_bid("T1", "bolt").amount == 84000
+        assert peek_bid("T1", "acme").amount == 90000
+
+        // THE IRREVERSIBLE PART: the window never re-opens, no edge back
+        assert_fails transition("T1", "accepting")
+        assert submit_bid("T1", "crony", 83000).ok == false
+
+        // award and freeze: awarded is terminal
+        assert award("T1", "nobody").ok == false
+        assert award("T1", "bolt").ok == true
+        assert_fails transition("T1", "opened")
+        assert_fails transition("T1", "accepting")
+    }
+}

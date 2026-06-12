@@ -1,0 +1,95 @@
+// AUTOCLAVE DOOR — a quick-opening door never unlocks under pressure.
+// Quick-opening pressure vessel doors (autoclaves, sterilizers, curing
+// vessels) have killed operators for a century the same way: residual
+// pressure behind a door someone believed was vented, and the door
+// becomes a projectile. ASME PCC interlocks demand the door cannot
+// unlock until pressure is verifiably zero. Here {pressurized, door
+// open} is not a state: steam is only admitted behind a locked door,
+// and the lock releases only from `sealed_cold` — the exhaust edge
+// zeroes the chamber BEFORE the unlock edge exists. The chamber ledger
+// refuses any pressure beyond the 300 kPa nameplate.
+
+cell AutoclaveControl {
+    face {
+        signal lock_door(id: String) -> String
+        signal admit_steam(id: String, kpa: Int) -> Map
+        signal exhaust(id: String) -> String
+        signal unlock_door(id: String) -> Map
+        signal chamber_kpa(id: String) -> Int
+    }
+
+    memory {
+        // chamber pressure, kPa gauge; nameplate is 300
+        chamber: Map<String, Int> [persistent, consistent]
+        invariant chamber >= 0 && chamber <= 300
+    }
+
+    state door {
+        initial: open_cold
+        open_cold -> sealed_cold        // door shut, lugs engaged
+        sealed_cold -> open_cold        // unlock: only ever from cold
+        sealed_cold -> pressurized      // steam ONLY behind a locked door
+        pressurized -> sealed_cold      // exhaust to zero, then the lock frees
+    }
+
+    on lock_door(id: String) { transition(id, "sealed_cold")  return get_status(id) }
+
+    on admit_steam(id: String, kpa: Int) {
+        let r = try { transition(id, "pressurized") }
+        if r.error != () {
+            return map("ok", false, "reason", "door not proven locked")
+        }
+        let w = try { chamber.set(id, kpa) }
+        if w.error != () {
+            transition(id, "sealed_cold")
+            return map("ok", false, "reason", "{kpa} kPa exceeds the 300 kPa nameplate")
+        }
+        return map("ok", true, "state", get_status(id), "kpa", kpa)
+    }
+
+    on exhaust(id: String) {
+        chamber.set(id, 0)              // verified zero BEFORE the state moves
+        transition(id, "sealed_cold")
+        return get_status(id)
+    }
+
+    on unlock_door(id: String) {
+        let r = try { transition(id, "open_cold") }
+        if r.error != () {
+            let p = chamber_kpa(id)
+            return map("ok", false, "reason", "chamber at {p} kPa — door stays locked")
+        }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on chamber_kpa(id: String) { return chamber.get(id) ?? 0 }
+}
+
+cell test AutoclaveTests {
+    rules {
+        // steam into an open chamber: the edge does not exist
+        assert_fails transition("a1", "pressurized")
+        assert admit_steam("a1", 200).ok == false
+
+        // lawful cycle: lock, pressurize
+        assert lock_door("a1") == "sealed_cold"
+        assert admit_steam("a1", 210).ok == true
+        assert chamber_kpa("a1") == 210
+
+        // THE killer: unlocking under pressure. Refused — no such edge.
+        assert unlock_door("a1").ok == false
+        assert_fails transition("a1", "open_cold")
+
+        // exhaust zeroes the chamber, and only then the lock frees
+        assert exhaust("a1") == "sealed_cold"
+        assert chamber_kpa("a1") == 0
+        assert unlock_door("a1").ok == true
+
+        // the nameplate is a wall, not a warning
+        assert_fails chamber.set("a1", 301)
+        assert_fails chamber.set("a1", -5)
+        assert lock_door("a1") == "sealed_cold"
+        assert admit_steam("a1", 999).ok == false
+        assert chamber_kpa("a1") == 0
+    }
+}

@@ -1,0 +1,144 @@
+// ============================================================================
+// ORGAN ALLOCATION — one organ, one recipient, and no taking it back once
+// it is in
+// ============================================================================
+//
+// A donor organ is the scarcest thing in medicine and the lifecycle is
+// unforgiving: an offer is made to one candidate, accepted, the organ is
+// recovered and transplanted. The catastrophic bug is double-allocation —
+// the same kidney "offered" to two centers, both accept, one patient is
+// opened up for an organ that has already been sewn into someone else.
+// UNOS allocation incidents have turned on exactly this kind of race.
+//
+// Here each organ is a state machine. From `offered` it can be accepted
+// by exactly one recipient (recorded once); `transplanted` is TERMINAL —
+// once the organ is in a body there is no offer, no re-allocation, no
+// path back to the pool. `soma verify` proves transplanted is a sink and
+// that the declined/expired dead-ends can't masquerade as available.
+//
+//   soma verify examples/corpus/medical/transplant.cell  # no resurrection
+//   soma test   examples/corpus/medical/transplant.cell
+//   soma run    examples/corpus/medical/transplant.cell demo
+// ============================================================================
+
+cell Transplant {
+    face {
+        signal recover(organ: String) -> Map
+        signal offer(organ: String, candidate: String) -> Map
+        signal accept(organ: String) -> Map
+        signal decline(organ: String) -> Map
+        signal transplant(organ: String) -> Map
+        signal recipient_of(organ: String) -> String
+        signal organ_state(organ: String) -> String
+        signal demo() -> String
+    }
+
+    memory {
+        // The single recipient an organ is committed to. Written exactly
+        // once, at accept. recipient_of stays stable forever after.
+        committed: Map<String, String> [persistent]
+    }
+
+    // `transplanted` and `expired` are TERMINAL — verify proves no edge
+    // leaves them. An organ in a patient cannot be re-offered; a discarded
+    // organ cannot be resurrected.
+    state organ {
+        initial: recovered
+        recovered -> offered
+        offered -> accepted          // exactly one candidate commits
+        offered -> recovered         // declined: returns to the pool
+        accepted -> transplanted     // in the patient — terminal
+        recovered -> expired         // cold ischemia time exceeded
+        offered -> expired
+    }
+
+    on recover(organ: String) {
+        return map("ok", true, "state", get_status(organ))
+    }
+
+    on offer(organ: String, candidate: String) {
+        let r = try { transition(organ, "offered") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "candidate", candidate, "state", get_status(organ))
+    }
+
+    // Accept binds the organ to exactly one recipient. If it is already
+    // committed (someone accepted), this raises on the transition — the
+    // double-allocation is structurally impossible.
+    on accept(organ: String) {
+        let r = try { transition(organ, "accepted") }
+        if r.error != () {
+            return map("ok", false, "reason", "cannot accept: {r.error}")
+        }
+        return map("ok", true, "state", get_status(organ))
+    }
+
+    on commit_recipient(organ: String, recipient: String) {
+        committed.set(organ, recipient)
+        return recipient
+    }
+
+    on decline(organ: String) {
+        let r = try { transition(organ, "recovered") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(organ))
+    }
+
+    on transplant(organ: String) {
+        let st = get_status(organ)
+        if st != "accepted" {
+            return map("ok", false, "reason", "organ must be accepted first (is {st})")
+        }
+        transition(organ, "transplanted")
+        return map("ok", true, "state", get_status(organ))
+    }
+
+    on recipient_of(organ: String) {
+        return committed.get(organ) ?? ""
+    }
+
+    on organ_state(organ: String) {
+        return get_status(organ)
+    }
+
+    on demo() {
+        recover("kidney-7")
+        offer("kidney-7", "center-A")
+        accept("kidney-7")
+        commit_recipient("kidney-7", "patient-Alice")
+        transplant("kidney-7")
+        // The race: a second center tries to claim the same kidney AFTER
+        // it is transplanted. There is no edge out of transplanted.
+        let steal = try { transition("kidney-7", "offered") }
+        let r = recipient_of("kidney-7")
+        let st = organ_state("kidney-7")
+        print("recipient: {r}")
+        print("re-offer:  error = {steal.error}")
+        print("state:     {st}")
+        return "demo done"
+    }
+}
+
+cell test TransplantTests {
+    rules {
+        // a clean lifecycle: recover -> offer -> accept -> transplant
+        assert recover("liver-1").ok == true
+        assert offer("liver-1", "center-X").ok == true
+        assert accept("liver-1").ok == true
+        assert commit_recipient("liver-1", "patient-Bob") == "patient-Bob"
+        assert transplant("liver-1").ok == true
+        assert organ_state("liver-1") == "transplanted"
+        assert recipient_of("liver-1") == "patient-Bob"
+
+        // NO DOUBLE ALLOCATION: a transplanted organ is terminal
+        assert_fails transition("liver-1", "offered")
+        assert_fails transition("liver-1", "accepted")
+        assert transplant("liver-1").ok == false   // already in a patient
+
+        // cannot transplant an organ that was never accepted
+        assert recover("heart-9").ok == true
+        assert transplant("heart-9").ok == false
+        // and an unoffered organ cannot jump straight to accepted
+        assert_fails transition("heart-9", "accepted")
+    }
+}

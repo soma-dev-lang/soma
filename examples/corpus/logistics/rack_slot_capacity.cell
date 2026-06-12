@@ -1,0 +1,84 @@
+// ============================================================================
+// RACK SLOT CAPACITY — the pallet that brings down the aisle
+// ============================================================================
+//
+// Warehouse racking collapses kill. When a beam rated for 1,000 kg takes
+// a 1,400 kg pallet, it doesn't fail politely — it buckles, sheds its
+// load into the next bay, and entire aisles domino (the 2018 collapse at
+// an English cold store buried a worker under hundreds of pallets; SEMA
+// logs dozens of such collapses a year). The root cause is almost always
+// the same: the WMS happily recorded a put-away the steel could not hold.
+//
+// Here the beam rating is a memory invariant. The put-away that would
+// overload bay steel is not logged-and-regretted; the write itself is
+// REFUSED, so the WMS record can never describe an overloaded beam.
+// ============================================================================
+
+cell RackBay {
+    face {
+        signal put_away(bay: String, pallet_kg: Int) -> Map
+        signal pick_out(bay: String, pallet_kg: Int) -> Map
+        signal bay_load(bay: String) -> Int
+        signal headroom(bay: String) -> Int
+    }
+
+    memory {
+        // kg currently resting on the bay's beam pair, rated 1,000 kg
+        beam_kg: Map<String, Int> [persistent, consistent]
+        invariant beam_kg >= 0 && beam_kg <= 1000
+    }
+
+    on put_away(bay: String, pallet_kg: Int) {
+        if pallet_kg <= 0 { return map("ok", false, "reason", "pallet weight must be positive") }
+        let current = bay_load(bay)
+        let w = try { beam_kg.set(bay, current + pallet_kg) }
+        if w.error != () {
+            let free = 1000 - current
+            return map("ok", false,
+                "reason", "REFUSED: bay {bay} holds {current} kg, only {free} kg of beam rating left")
+        }
+        return map("ok", true, "bay", bay, "beam_kg", current + pallet_kg)
+    }
+
+    on pick_out(bay: String, pallet_kg: Int) {
+        if pallet_kg <= 0 { return map("ok", false, "reason", "pick weight must be positive") }
+        let current = bay_load(bay)
+        // picking more than is there would record negative load — refused
+        let w = try { beam_kg.set(bay, current - pallet_kg) }
+        if w.error != () {
+            return map("ok", false, "reason", "bay {bay} only holds {current} kg")
+        }
+        return map("ok", true, "bay", bay, "beam_kg", current - pallet_kg)
+    }
+
+    on bay_load(bay: String) { return beam_kg.get(bay) ?? 0 }
+
+    on headroom(bay: String) { return 1000 - bay_load(bay) }
+}
+
+cell test BeamRatingIsLaw {
+    rules {
+        // two pallets fit under the rating
+        assert put_away("A-03-2", 400).ok == true
+        assert put_away("A-03-2", 550).ok == true
+        assert bay_load("A-03-2") == 950
+        assert headroom("A-03-2") == 50
+
+        // THE COLLAPSE PALLET: 400 kg onto a beam with 50 kg of headroom.
+        // The write is refused — the record never shows overloaded steel.
+        assert put_away("A-03-2", 400).ok == false
+        assert bay_load("A-03-2") == 950
+        assert_fails beam_kg.set("A-03-2", 1350)
+
+        // boundary: exactly the rating is legal
+        assert put_away("A-03-2", 50).ok == true
+        assert bay_load("A-03-2") == 1000
+        assert put_away("A-03-2", 1).ok == false
+
+        // picks free headroom again; over-picking is refused too
+        assert pick_out("A-03-2", 550).ok == true
+        assert bay_load("A-03-2") == 450
+        assert pick_out("A-03-2", 500).ok == false
+        assert_fails beam_kg.set("A-03-2", -50)
+    }
+}

@@ -1,0 +1,99 @@
+// ============================================================================
+// FLEET SYNC — no activation until every node runs the same code
+// ============================================================================
+//
+// The other half of the Knight Capital disaster: a technician deployed
+// the new router to only 7 of 8 servers. The fleet was split-brained —
+// one machine interpreted the activation flag as 2003-era "Power Peg"
+// logic. Activating a half-deployed fleet is what turned a deploy slip
+// into $440M of runaway orders.
+//
+// This controller makes the split-brain activation unrepresentable.
+// `activated` is only reachable from `synced`, and the handler that
+// enters `synced` requires the pending-node ledger to read zero. The
+// ledger itself is invariant-walled: it can never go negative (no
+// double-counting a node) and never exceed the fleet size.
+// ============================================================================
+
+cell FleetSync {
+    face {
+        signal begin_rollout(deploy: String, fleet_size: Int) -> Map
+        signal node_updated(deploy: String) -> Map
+        signal activate(deploy: String) -> Map
+        signal deploy_state(deploy: String) -> Map
+    }
+
+    memory {
+        // nodes still running OLD code. The wall: 0..8 — a phantom
+        // ninth node or a negative count is rejected at the write.
+        pending: Map<String, Int> [persistent, consistent]
+        invariant pending >= 0 && pending <= 8
+    }
+
+    // `activated` has exactly one inbound edge — from `synced`.
+    // There is no rolling -> activated: a split fleet cannot go live.
+    state rollout_phase {
+        initial: idle
+        idle -> rolling
+        rolling -> synced
+        synced -> activated
+        rolling -> abandoned
+    }
+
+    on begin_rollout(deploy: String, fleet_size: Int) {
+        let r = try { transition(deploy, "rolling") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let w = try { pending.set(deploy, fleet_size) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        return map("ok", true, "pending", fleet_size)
+    }
+
+    on node_updated(deploy: String) {
+        if get_status(deploy) != "rolling" {
+            return map("ok", false, "reason", "no rollout in progress")
+        }
+        let left = pending.get(deploy) ?? 0
+        // a node reporting twice would drive this to -1: memory refuses
+        let w = try { pending.set(deploy, left - 1) }
+        if w.error != () { return map("ok", false, "reason", "{w.error}") }
+        if left - 1 == 0 { transition(deploy, "synced") }
+        return map("ok", true, "pending", left - 1, "phase", get_status(deploy))
+    }
+
+    on activate(deploy: String) {
+        let r = try { transition(deploy, "activated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "phase", "activated")
+    }
+
+    on deploy_state(deploy: String) {
+        return map("phase", get_status(deploy), "pending", pending.get(deploy) ?? 0)
+    }
+}
+
+cell test FleetTests {
+    rules {
+        assert begin_rollout("d1", 8).ok == true
+
+        // THE KNIGHT MOVE: 7 of 8 nodes updated, then flip the switch.
+        assert node_updated("d1").ok == true
+        assert node_updated("d1").ok == true
+        assert node_updated("d1").ok == true
+        assert node_updated("d1").ok == true
+        assert node_updated("d1").ok == true
+        assert node_updated("d1").ok == true
+        assert node_updated("d1").ok == true
+        assert deploy_state("d1").pending == 1
+        assert_fails transition("d1", "activated")   // split fleet: no edge
+
+        // the eighth node lands; only NOW does activation exist
+        assert node_updated("d1").ok == true
+        assert deploy_state("d1").phase == "synced"
+        assert activate("d1").ok == true
+
+        // the pending ledger never lies: no negatives, no phantom fleet
+        assert node_updated("d1").ok == false        // rollout is over
+        assert_fails pending.set("d2", 9)
+        assert_fails pending.set("d2", -1)
+    }
+}

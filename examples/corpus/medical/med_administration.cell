@@ -1,0 +1,134 @@
+// ============================================================================
+// MEDICATION ADMINISTRATION — the "five rights" enforced by barcode, no
+// scan no dose
+// ============================================================================
+//
+// Wrong-patient and wrong-drug medication errors are among the most common
+// causes of inpatient harm. The defense that actually moved the numbers is
+// Barcode Medication Administration (BCMA): the nurse scans their badge,
+// the patient's wristband, and the drug — and the system confirms the five
+// rights (right patient, drug, dose, route, time) BEFORE the dose is
+// recorded as administered_done. Workarounds (charting without scanning) are exactly
+// how the errors slip back in.
+//
+// Here an administration is a state machine that physically cannot reach
+// `administered_done` without passing through `patient_verified` and `drug_verified`.
+// A mismatch at either scan sends it to the TERMINAL `aborted` state — the
+// dose is never administered_done and the attempt can't be silently retried into
+// success. `soma verify` proves `administered_done` is unreachable from `aborted`.
+//
+//   soma verify examples/corpus/medical/med_administration.cell
+//   soma test   examples/corpus/medical/med_administration.cell
+//   soma run    examples/corpus/medical/med_administration.cell demo
+// ============================================================================
+
+cell BCMA {
+    face {
+        signal start(admin: String) -> Map
+        signal scan_patient(admin: String, scanned: String, ordered: String) -> Map
+        signal scan_drug(admin: String, scanned: String, ordered: String) -> Map
+        signal administer(admin: String) -> Map
+        signal admin_state(admin: String) -> String
+        signal demo() -> String
+    }
+
+    // `administered_done` is reachable ONLY through both verifications. `aborted` is
+    // TERMINAL — a mismatched scan ends the attempt for good. verify
+    // proves there is no aborted -> administered_done path.
+    state administration {
+        initial: opened
+        opened           -> patient_verified
+        patient_verified -> drug_verified
+        drug_verified    -> administered_done             // terminal: dose charted
+        opened           -> aborted           // bad patient scan
+        patient_verified -> aborted           // bad drug scan
+    }
+
+    on start(admin: String) {
+        return map("ok", true, "state", get_status(admin))
+    }
+
+    // Right patient: the scanned wristband must match the order. A
+    // mismatch aborts — terminally.
+    on scan_patient(admin: String, scanned: String, ordered: String) {
+        if scanned != ordered {
+            transition(admin, "aborted")
+            return map("ok", false, "reason",
+                "WRONG PATIENT: scanned {scanned}, order for {ordered}",
+                "state", get_status(admin))
+        }
+        let r = try { transition(admin, "patient_verified") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(admin))
+    }
+
+    // Right drug: scanned barcode must match the ordered drug.
+    on scan_drug(admin: String, scanned: String, ordered: String) {
+        let st = get_status(admin)
+        if st != "patient_verified" {
+            return map("ok", false, "reason", "scan patient first (state {st})")
+        }
+        if scanned != ordered {
+            transition(admin, "aborted")
+            return map("ok", false, "reason",
+                "WRONG DRUG: scanned {scanned}, ordered {ordered}",
+                "state", get_status(admin))
+        }
+        transition(admin, "drug_verified")
+        return map("ok", true, "state", get_status(admin))
+    }
+
+    // Charting a dose as administered_done is possible ONLY from drug_verified.
+    on administer(admin: String) {
+        let r = try { transition(admin, "administered_done") }
+        if r.error != () {
+            return map("ok", false, "reason", "not verified — dose blocked: {r.error}")
+        }
+        return map("ok", true, "state", get_status(admin))
+    }
+
+    on admin_state(admin: String) { return get_status(admin) }
+
+    on demo() {
+        start("a1")
+        scan_patient("a1", "band-123", "band-123")
+        scan_drug("a1", "ndc-warfarin", "ndc-warfarin")
+        let ok = administer("a1")
+
+        // a wrong-patient scan: aborts, and the dose can never be administered_done
+        start("a2")
+        let bad = scan_patient("a2", "band-999", "band-123")
+        let blocked = administer("a2")
+        print("clean dose:   {ok}")
+        print("wrong patient: {bad}")
+        print("blocked dose:  {blocked}")
+        return "demo done"
+    }
+}
+
+cell test BCMATests {
+    rules {
+        // clean path: scan patient, scan drug, administer
+        assert start("x").ok == true
+        assert scan_patient("x", "b1", "b1").ok == true
+        assert scan_drug("x", "d1", "d1").ok == true
+        assert administer("x").ok == true
+        assert admin_state("x") == "administered_done"
+
+        // administered_done is terminal — no double-charting the same dose
+        assert_fails transition("x", "drug_verified")
+
+        // cannot administer without scanning — no scan, no dose
+        assert start("y").ok == true
+        assert_fails transition("y", "administered_done")
+        assert administer("y").ok == false
+
+        // wrong patient aborts terminally; the dose is unreachable
+        assert start("z").ok == true
+        assert scan_patient("z", "wrong", "right").ok == false
+        assert admin_state("z") == "aborted"
+        assert_fails transition("z", "patient_verified")
+        assert_fails transition("z", "administered_done")
+        assert administer("z").ok == false
+    }
+}

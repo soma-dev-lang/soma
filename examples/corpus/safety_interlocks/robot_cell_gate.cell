@@ -1,0 +1,83 @@
+// ROBOT CELL GATE — full-speed automation only behind a closed gate.
+// A 21-year-old contractor died inside a robot cell at a German auto
+// plant in 2015, struck by an arm that should never have been live with
+// a person inside the fence. ISO 10218 guard interlocking says the gate
+// and the robot mode are ONE state: here `auto_run` exists only behind a
+// closed gate, opening the gate from auto requires the safety-stop edge
+// FIRST, and there is no {gate open, full speed} state to race into.
+// Inside the fence the robot may move only in teach mode, and the speed
+// ledger structurally caps teach motion at the 250 mm/s collaborative
+// limit — a faster write is refused by the memory.
+
+cell RobotCell {
+    face {
+        signal close_gate(id: String) -> String
+        signal start_auto(id: String) -> String
+        signal safety_stop(id: String) -> String
+        signal unlock_gate(id: String) -> Map
+        signal teach_move(id: String, mm_s: Int) -> Map
+    }
+
+    memory {
+        // tool speed with the gate open, mm/s — ISO/TS 15066 limit
+        teach_mm_s: Map<String, Int> [persistent, consistent]
+        invariant teach_mm_s >= 0 && teach_mm_s <= 250
+    }
+
+    state guard {
+        initial: gate_open_teach       // person may be inside; reduced speed
+        gate_open_teach -> gate_closed_standstill
+        gate_closed_standstill -> gate_open_teach
+        gate_closed_standstill -> auto_run     // full speed ONLY from here
+        auto_run -> gate_closed_standstill     // safety stop BEFORE unlock
+    }
+
+    on close_gate(id: String) { transition(id, "gate_closed_standstill")  return get_status(id) }
+    on start_auto(id: String) { transition(id, "auto_run")  return get_status(id) }
+    on safety_stop(id: String) { transition(id, "gate_closed_standstill")  return get_status(id) }
+
+    on unlock_gate(id: String) {
+        // guard locking: the gate only releases from standstill
+        let r = try { transition(id, "gate_open_teach") }
+        if r.error != () {
+            return map("ok", false, "reason", "robot not at standstill — gate stays locked")
+        }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on teach_move(id: String, mm_s: Int) {
+        if get_status(id) != "gate_open_teach" {
+            return map("ok", false, "reason", "teach motion only in teach mode")
+        }
+        let w = try { teach_mm_s.set(id, mm_s) }
+        if w.error != () {
+            return map("ok", false, "reason", "{mm_s} mm/s exceeds the 250 mm/s teach limit")
+        }
+        return map("ok", true, "mm_s", mm_s)
+    }
+}
+
+cell test RobotCellTests {
+    rules {
+        // full speed with the gate open: the state does not exist
+        assert_fails transition("r1", "auto_run")
+
+        // teach motion is capped by the memory itself
+        assert teach_move("r1", 200).ok == true
+        assert teach_move("r1", 900).ok == false
+        assert_fails teach_mm_s.set("r1", 251)
+
+        // lawful start: close the gate, then auto
+        assert close_gate("r1") == "gate_closed_standstill"
+        assert start_auto("r1") == "auto_run"
+
+        // the gate will not unlock around a moving robot
+        assert unlock_gate("r1").ok == false
+        assert_fails transition("r1", "gate_open_teach")
+
+        // stop first, then the gate releases — and teach speed still capped
+        assert safety_stop("r1") == "gate_closed_standstill"
+        assert unlock_gate("r1").ok == true
+        assert teach_move("r1", 250).ok == true
+    }
+}

@@ -1,0 +1,99 @@
+// ============================================================================
+// PETITION — one signature per citizen, a wall in memory, not a clerk's eye
+// ============================================================================
+// In 2022 five Michigan governor candidates were struck from the ballot after
+// an estimated 68,000 forged or duplicate petition lines; in 2004 the Nader
+// petition in Pennsylvania collapsed the same way. Paid circulators duplicate
+// names because the dedup is a spreadsheet applied weeks later. Here it is
+// structural: a citizen's line count CANNOT exceed 1 — the memory refuses the
+// write — and the clerk's certify/reject ruling is a terminal state that
+// soma verify proves has no exit.
+// ============================================================================
+
+cell Petition {
+    face {
+        signal start_collection() -> Map
+        signal sign(citizen: String) -> Map
+        signal submit_to_clerk() -> Map
+        signal clerk_ruling(threshold: Int) -> Map
+        signal signature_total() -> Int
+        signal phase() -> String
+    }
+
+    memory {
+        // citizen -> petition lines. Two lines is unrepresentable.
+        signed: Map<String, Int> [persistent, consistent]
+        invariant signed >= 0 && signed <= 1
+    }
+
+    // certified and rejected have no outgoing edges: the ruling is forever.
+    state drive {
+        initial: drafting
+        drafting -> collecting
+        collecting -> submitted
+        submitted -> certified
+        submitted -> rejected
+    }
+
+    on phase() { return get_status("drive") }
+
+    on start_collection() {
+        let r = try { transition("drive", "collecting") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true)
+    }
+
+    on sign(citizen: String) {
+        if phase() != "collecting" {
+            return map("ok", false, "reason", "window is {phase()}, not collecting")
+        }
+        let prior = signed.get(citizen) ?? 0
+        let w = try { signed.set(citizen, prior + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{citizen} already signed")
+        }
+        return map("ok", true, "total", signature_total())
+    }
+
+    on signature_total() {
+        let names = signed.keys()
+        let n = 0
+        for c in names { n = n + (signed.get(c) ?? 0) }
+        return n
+    }
+
+    on submit_to_clerk() {
+        let r = try { transition("drive", "submitted") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "signatures", signature_total())
+    }
+
+    on clerk_ruling(threshold: Int) {
+        if phase() != "submitted" {
+            return map("ok", false, "reason", "nothing submitted to rule on")
+        }
+        if signature_total() >= threshold { transition("drive", "certified") }
+        if phase() == "submitted" { transition("drive", "rejected") }
+        return map("ok", true, "ruling", phase())
+    }
+}
+
+cell test PetitionTests {
+    rules {
+        assert sign("ada").ok == false                  // window not open yet
+        assert start_collection().ok == true
+        assert sign("ada").ok == true
+        assert sign("bob").ok == true
+        assert sign("ada").ok == false                  // duplicate bounces
+        assert_fails signed.set("ada", 2)               // 2 lines: unrepresentable
+        assert_fails signed.set("bob", -1)
+        assert signature_total() == 2
+        assert sign("eve").ok == true
+        assert submit_to_clerk().ok == true
+        assert sign("late").ok == false                 // window closed
+        assert clerk_ruling(3).ok == true
+        assert phase() == "certified"
+        assert_fails transition("drive", "collecting")  // ruling is forever
+        assert_fails transition("drive", "rejected")
+    }
+}

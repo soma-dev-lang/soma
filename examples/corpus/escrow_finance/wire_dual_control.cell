@@ -1,0 +1,97 @@
+// ============================================================================
+// WIRE DUAL CONTROL — the maker can never be the checker
+// ============================================================================
+//
+// In August 2020 Citibank meant to send $7.8M of interest on a Revlon loan
+// and instead wired the full $893M principal. Three humans approved it —
+// but all three were looking at the same misleading screen, and a court
+// initially let the creditors KEEP it. Dual control only works when the
+// checker is structurally distinct and the amount has a hard ceiling.
+// Here a wire cannot reach `sent` except through `checked` (the drafted ->
+// sent edge does not exist), the maker's own approval is refused, and the
+// per-wire amount slot rejects anything over the desk's $10M limit at the
+// write — the $893M fat-finger dies in memory, not in a code review.
+// ============================================================================
+
+cell WireDesk {
+    face {
+        signal draft_wire(id: String, maker: String, amount: Int) -> Map
+        signal check_wire(id: String, checker: String) -> Map
+        signal send_wire(id: String) -> Map
+        signal cancel_wire(id: String) -> Map
+    }
+
+    memory {
+        // hard desk limit: a single wire over $10M is an impossible write
+        amount: Map<String, Int> [persistent, consistent]
+        invariant amount >= 0 && amount <= 10000000
+        makers: Map<String, String> [persistent, consistent]
+    }
+
+    // sent and cancelled are terminal. The only road to sent runs
+    // through checked — there is no drafted -> sent shortcut.
+    state wire {
+        initial: blank
+        blank -> drafted
+        drafted -> checked
+        drafted -> cancelled
+        checked -> sent
+        checked -> cancelled
+    }
+
+    on draft_wire(id: String, maker: String, amount_usd: Int) {
+        if amount_usd <= 0 { return map("ok", false, "reason", "bad amount") }
+        transition(id, "drafted")
+        amount.set(id, amount_usd)      // raises above the $10M desk limit
+        makers.set(id, maker)
+        return map("ok", true, "state", get_status(id), "maker", maker)
+    }
+
+    on check_wire(id: String, checker: String) {
+        let maker = makers.get(id) ?? ""
+        if checker == maker {
+            // DUAL CONTROL: the person who typed it cannot bless it
+            return map("ok", false, "reason", "{checker} drafted this wire — second person required")
+        }
+        transition(id, "checked")
+        return map("ok", true, "state", get_status(id), "checker", checker)
+    }
+
+    on send_wire(id: String) {
+        transition(id, "sent")          // raises unless independently checked
+        let amt = amount.get(id) ?? 0
+        return map("ok", true, "sent_usd", amt)
+    }
+
+    on cancel_wire(id: String) {
+        transition(id, "cancelled")
+        return map("ok", true, "state", get_status(id))
+    }
+}
+
+cell test WireTests {
+    rules {
+        // THE CITIBANK NUMBER: $893M cannot even be drafted — the slot
+        // refuses the write, the wire never exists
+        assert_fails draft_wire("w0", "raj", 893000000)
+        // a sane wire: $7.8M interest payment
+        assert draft_wire("w1", "raj", 7800000).ok == true
+        // UNCHECKED SEND: the drafted -> sent edge does not exist
+        assert_fails transition("w1", "sent")
+        assert_fails send_wire("w1")
+        // SELF-APPROVAL: the maker is refused as checker
+        assert check_wire("w1", "raj").ok == false
+        assert_fails transition("w1", "sent")
+        // a distinct checker unlocks the send — once
+        assert check_wire("w1", "priya").ok == true
+        assert send_wire("w1").sent_usd == 7800000
+        // sent is terminal: no re-send, no post-hoc cancel
+        assert_fails transition("w1", "sent")
+        assert_fails transition("w1", "cancelled")
+        // cancellation path is just as final
+        assert draft_wire("w2", "raj", 500000).ok == true
+        assert cancel_wire("w2").ok == true
+        assert_fails transition("w2", "checked")
+        assert_fails amount.set("w2", -1)
+    }
+}

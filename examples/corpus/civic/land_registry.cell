@@ -1,0 +1,109 @@
+// ============================================================================
+// LAND REGISTRY — a parcel cannot be sold to two buyers at once
+// ============================================================================
+// Deed-theft rings in Brooklyn and Detroit ran the same con for years: file
+// a sale of the same house to two different buyers in the gap before the
+// recorder's index catches up, collect both down payments, vanish. The con
+// needs a registry that will hold two open sales on one parcel. This one
+// will not: open escrows per parcel is a memory invariant capped at 1 — the
+// second contract is refused at the write. Sales also only move title when
+// the seller IS the recorded owner, and an escheated parcel (abandoned to
+// the state) is terminal: soma verify proves it never re-enters commerce.
+// ============================================================================
+
+cell LandRegistry {
+    face {
+        signal record_deed(parcel: String, owner: String) -> Map
+        signal open_escrow(parcel: String, seller: String, buyer: String) -> Map
+        signal close_escrow(parcel: String) -> Map
+        signal escheat(parcel: String) -> Map
+        signal owner_of(parcel: String) -> String
+    }
+
+    memory {
+        // parcel -> open sales. TWO open escrows on one parcel — the
+        // double-sale — is unrepresentable.
+        pending: Map<String, Int> [persistent, consistent]
+        invariant pending >= 0 && pending <= 1
+
+        owners: Map<String, String> [persistent, consistent]
+        buyers: Map<String, String> [persistent, consistent]
+    }
+
+    // Per-parcel lifecycle. escheated has no exit.
+    state parcel {
+        initial: unrecorded
+        unrecorded -> titled
+        titled -> in_escrow
+        in_escrow -> titled
+        titled -> escheated
+    }
+
+    on record_deed(parcel: String, owner: String) {
+        let r = try { transition(parcel, "titled") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        owners.set(parcel, owner)
+        return map("ok", true, "parcel", parcel, "owner", owner)
+    }
+
+    on open_escrow(parcel: String, seller: String, buyer: String) {
+        if owner_of(parcel) != seller {
+            return map("ok", false, "reason", "{seller} does not hold title to {parcel}")
+        }
+        let open_sales = pending.get(parcel) ?? 0
+        // THE WALL: a second simultaneous sale refuses at the write.
+        let w = try { pending.set(parcel, open_sales + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{parcel} already under contract")
+        }
+        let r = try { transition(parcel, "in_escrow") }
+        if r.error != () {
+            pending.set(parcel, open_sales)               // roll the contract back
+            return map("ok", false, "reason", "{r.error}")
+        }
+        buyers.set(parcel, buyer)
+        return map("ok", true, "parcel", parcel, "buyer", buyer)
+    }
+
+    on close_escrow(parcel: String) {
+        let r = try { transition(parcel, "titled") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        let buyer = buyers.get(parcel)
+        owners.set(parcel, buyer)
+        pending.set(parcel, 0)
+        return map("ok", true, "parcel", parcel, "new_owner", buyer)
+    }
+
+    on escheat(parcel: String) {
+        let r = try { transition(parcel, "escheated") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        owners.set(parcel, "STATE")
+        return map("ok", true, "parcel", parcel)
+    }
+
+    on owner_of(parcel: String) { return owners.get(parcel) ?? "none" }
+}
+
+cell test RegistryTests {
+    rules {
+        assert record_deed("lot-7", "ada").ok == true
+        assert open_escrow("lot-7", "eve", "bob").ok == false   // eve holds no title
+        assert open_escrow("lot-7", "ada", "bob").ok == true
+        // THE DOUBLE SALE: same parcel, second buyer, while escrow is open
+        assert open_escrow("lot-7", "ada", "mallory").ok == false
+        assert_fails pending.set("lot-7", 2)                    // unrepresentable
+        assert close_escrow("lot-7").ok == true
+        assert owner_of("lot-7") == "bob"
+        // bob can sell; ada no longer can
+        assert open_escrow("lot-7", "ada", "eve").ok == false
+        assert open_escrow("lot-7", "bob", "eve").ok == true
+        assert close_escrow("lot-7").ok == true
+        assert owner_of("lot-7") == "eve"
+        // an abandoned parcel leaves commerce forever
+        assert record_deed("lot-9", "ada").ok == true
+        assert escheat("lot-9").ok == true
+        assert_fails transition("lot-9", "titled")
+        assert_fails transition("lot-9", "in_escrow")
+        assert open_escrow("lot-9", "STATE", "bob").ok == false
+    }
+}

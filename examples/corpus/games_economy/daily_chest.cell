@@ -1,0 +1,56 @@
+// ============================================================================
+// DAILY CHEST — one claim per day, clock tricks be damned
+// ============================================================================
+// Daily-reward double claims — via device-clock manipulation or plain
+// request replay — are the most farmed exploit in free-to-play games, and
+// "fixes" that compare timestamps keep losing to timezone math. The fix is
+// not a better clock check. It is that each (player, day) claim is a
+// one-way machine: unclaimed -> claimed, with `claimed` TERMINAL. The
+// replayed request has no transition to fire — soma verify proves it. The
+// coin ledger's >= 0 invariant keeps the wallet honest on the way through.
+// ============================================================================
+
+cell DailyChest {
+    face {
+        signal claim_chest(player: String, day: String) -> Map
+        signal coins_of(player: String) -> Int
+    }
+
+    memory {
+        coins: Map<String, Int> [persistent, consistent]
+        invariant coins >= 0
+    }
+
+    // one instance per (player, day) — the smallest possible ratchet
+    state chest_claim {
+        initial: unclaimed
+        unclaimed -> claimed
+    }
+
+    on claim_chest(player: String, day: String) {
+        let key = "{player}@{day}"
+        let r = try { transition(key, "claimed") }
+        if r.error != () { return map("ok", false, "reason", "already claimed on {day}") }
+        coins.set(player, (coins.get(player) ?? 0) + 50)
+        return map("ok", true, "coins", coins.get(player))
+    }
+
+    on coins_of(player: String) { return coins.get(player) ?? 0 }
+}
+
+cell test ChestTests {
+    rules {
+        assert claim_chest("zoe", "2026-06-11").ok == true
+        assert coins_of("zoe") == 50
+        // THE REPLAY: same player, same day — the transition does not exist
+        assert claim_chest("zoe", "2026-06-11").ok == false
+        assert coins_of("zoe") == 50
+        assert_fails transition("zoe@2026-06-11", "claimed")
+        // a new day is a fresh machine instance, claimable exactly once
+        assert claim_chest("zoe", "2026-06-12").ok == true
+        assert coins_of("zoe") == 100
+        assert claim_chest("zoe", "2026-06-12").ok == false
+        // the wallet itself refuses corruption
+        assert_fails coins.set("zoe", -5)
+    }
+}

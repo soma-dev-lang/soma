@@ -1,0 +1,135 @@
+// ============================================================================
+// WIND TURBINE OVERSPEED — after an emergency brake, inspection or nothing
+// ============================================================================
+//
+// February 22, 2008, Hornslet, Denmark: a 600 kW turbine's brakes failed
+// during a storm and the machine spun until it tore itself apart — blades
+// and nacelle thrown hundreds of meters, the disintegration caught on a
+// video that every wind technician has since been shown. A rotor past its
+// design speed stores energy in exactly the form that kills: blade root
+// fatigue you cannot see from the ground.
+//
+// That is why an overspeed event is never "reset and resume". Here the
+// rule is the machine: from `storm_brake` the ONLY exit is `inspection` —
+// there is no path back to `running` that skips a human at the blade
+// roots. A turbine the inspection condemns is `condemned`, terminal,
+// forever; soma verify proves both. The rotor-speed slot is the inner
+// wall: no write can record an rpm past the 25-rpm design limit, so the
+// telemetry layer cannot even pretend an overspeed was normal.
+// ============================================================================
+
+cell Turbine {
+    face {
+        signal start_rotor(id: String) -> Map
+        signal normal_stop(id: String) -> Map
+        signal emergency_brake(id: String) -> Map
+        signal begin_inspection(id: String) -> Map
+        signal inspection_passed(id: String) -> Map
+        signal condemn_turbine(id: String) -> Map
+        signal log_rpm(id: String, rpm: Int) -> Map
+        signal turbine_state(id: String) -> String
+    }
+
+    memory {
+        // last commanded/recorded rotor speed; design limit 25 rpm
+        rotor_rpm: Map<String, Int> [persistent, consistent]
+        invariant rotor_rpm >= 0 && rotor_rpm <= 25
+    }
+
+    state rotor {
+        initial: parked
+        parked -> running
+        running -> parked          // normal feathered stop
+        running -> storm_brake     // overspeed / storm emergency stop
+        storm_brake -> inspection  // the ONLY exit: a human at the blade roots
+        inspection -> parked       // structure passed — may run again
+        inspection -> condemned    // cracks found — TERMINAL, forever
+    }
+
+    on start_rotor(id: String) {
+        let r = try { transition(id, "running") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on normal_stop(id: String) {
+        let r = try { transition(id, "parked") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        rotor_rpm.set(id, 0)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on emergency_brake(id: String) {
+        let r = try { transition(id, "storm_brake") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        rotor_rpm.set(id, 0)
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on begin_inspection(id: String) {
+        let r = try { transition(id, "inspection") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on inspection_passed(id: String) {
+        let r = try { transition(id, "parked") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on condemn_turbine(id: String) {
+        let r = try { transition(id, "condemned") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on log_rpm(id: String, rpm: Int) {
+        if get_status(id) != "running" {
+            return map("ok", false, "reason", "rotor not running (state: {get_status(id)})")
+        }
+        let w = try { rotor_rpm.set(id, rpm) }
+        if w.error != () {
+            return map("ok", false, "reason", "design-speed wall: {w.error}")
+        }
+        return map("ok", true, "rpm", rpm)
+    }
+
+    on turbine_state(id: String) { return get_status(id) }
+}
+
+cell test OverspeedTests {
+    rules {
+        // normal operation
+        assert start_rotor("t1").ok == true
+        assert log_rpm("t1", 18).ok == true
+
+        // telemetry cannot even RECORD a past-limit rpm as routine
+        assert_fails rotor_rpm.set("t1", 40)
+        assert log_rpm("t1", 40).ok == false
+
+        // storm: emergency brake fires
+        assert emergency_brake("t1").ok == true
+
+        // THE HORNSLET MOVE: reset the brake and spin back up.
+        // No such transition exists.
+        assert_fails transition("t1", "running")
+        assert start_rotor("t1").ok == false
+        assert_fails transition("t1", "parked")
+
+        // inspection passes — only then does the turbine run again
+        assert begin_inspection("t1").ok == true
+        assert inspection_passed("t1").ok == true
+        assert start_rotor("t1").ok == true
+
+        // a second event, and this time the blade roots are cracked
+        assert emergency_brake("t1").ok == true
+        assert begin_inspection("t1").ok == true
+        assert condemn_turbine("t1").ok == true
+
+        // condemned is TERMINAL: this machine never turns again
+        assert_fails transition("t1", "parked")
+        assert_fails transition("t1", "running")
+        assert turbine_state("t1") == "condemned"
+    }
+}

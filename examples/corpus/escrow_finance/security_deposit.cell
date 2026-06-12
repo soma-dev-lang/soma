@@ -1,0 +1,98 @@
+// ============================================================================
+// SECURITY DEPOSIT — deductions can never exceed what the tenant paid
+// ============================================================================
+//
+// Every US state's tenancy law has the same clause because the same abuse
+// keeps happening: a landlord itemizes $2,400 of "damages" against a
+// $1,500 deposit and bills the tenant for the fantasy difference — or
+// keeps deducting after the deposit was already returned. Here the deposit
+// is a slot that deductions draw down with `deposit >= 0` as the wall:
+// the over-deduction is a REJECTED WRITE. Returning the balance moves the
+// tenancy to a terminal state, so post-return deductions have no edge.
+// ============================================================================
+
+cell DepositAccount {
+    face {
+        signal collect_deposit(id: String, amount: Int) -> Map
+        signal begin_moveout(id: String) -> Map
+        signal deduct(id: String, reason: String, amount: Int) -> Map
+        signal return_balance(id: String) -> Map
+        signal deposit_left(id: String) -> Int
+    }
+
+    memory {
+        deposit: Map<String, Int> [persistent, consistent]
+        invariant deposit >= 0
+        deducted: Map<String, Int> [persistent, consistent]
+        invariant deducted >= 0
+    }
+
+    // closed is terminal: once the balance went back to the tenant,
+    // there is no state from which to invent another deduction.
+    state tenancy {
+        initial: vacant
+        vacant -> occupied
+        occupied -> moveout_review
+        moveout_review -> closed
+    }
+
+    on collect_deposit(id: String, amount: Int) {
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        transition(id, "occupied")
+        deposit.set(id, amount)
+        deducted.set(id, 0)
+        return map("ok", true, "held", amount)
+    }
+
+    on begin_moveout(id: String) {
+        transition(id, "moveout_review")
+        return map("ok", true, "state", get_status(id))
+    }
+
+    on deduct(id: String, reason: String, amount: Int) {
+        let st = get_status(id)
+        if st != "moveout_review" {
+            return map("ok", false, "reason", "deductions only during move-out review")
+        }
+        if amount <= 0 { return map("ok", false, "reason", "bad amount") }
+        let held = deposit.get(id) ?? 0
+        deposit.set(id, held - amount)       // RAISES past the deposit
+        deducted.set(id, (deducted.get(id) ?? 0) + amount)
+        return map("ok", true, "reason", reason, "left", held - amount)
+    }
+
+    on return_balance(id: String) {
+        transition(id, "closed")             // raises unless in review
+        let owed = deposit.get(id) ?? 0
+        deposit.set(id, 0)
+        return map("ok", true, "returned_to_tenant", owed)
+    }
+
+    on deposit_left(id: String) {
+        return deposit.get(id) ?? 0
+    }
+}
+
+cell test DepositTests {
+    rules {
+        assert collect_deposit("apt4b", 1500).ok == true
+        // no deductions while the tenant still lives there
+        assert deduct("apt4b", "carpet", 300).ok == false
+        assert begin_moveout("apt4b").ok == true
+        assert deduct("apt4b", "carpet", 300).ok == true
+        assert deduct("apt4b", "paint", 200).ok == true
+        assert deposit_left("apt4b") == 1000
+        // THE FANTASY INVOICE: $2,400 against $1,000 left — rejected write
+        assert_fails deduct("apt4b", "imaginary water damage", 2400)
+        assert deposit_left("apt4b") == 1000
+        assert_fails deposit.set("apt4b", -1)
+        // the tenant gets exactly what remains, once
+        assert return_balance("apt4b").returned_to_tenant == 1000
+        // closed is terminal: post-return deductions have no state to run in
+        assert deduct("apt4b", "afterthought", 50).ok == false
+        assert_fails transition("apt4b", "moveout_review")
+        assert_fails transition("apt4b", "occupied")
+        // accounting identity: deducted + returned == collected
+        assert (deducted.get("apt4b") ?? 0) == 500
+    }
+}
