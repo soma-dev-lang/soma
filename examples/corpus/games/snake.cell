@@ -1,0 +1,74 @@
+// ============================================================================
+// Snake — one movement tick with growth, wall and self collision
+// ============================================================================
+//
+// The snake is a list of {y, x} segments, head first. tick() moves the head one
+// cell in the current direction; if it lands on food the tail is kept (grow),
+// otherwise the tail is dropped. A move into a wall or into the snake's own
+// body is reported as a crash.
+//
+// Run:  soma run snake.cell --signal demo
+// Test: soma test snake.cell
+
+cell Snake {
+    face {
+        signal tick(snake: List, dir: String, food: Map, w: Int, h: Int) -> Map
+        signal hits_body(snake: List, y: Int, x: Int) -> Bool
+        signal demo() -> Map
+    }
+
+    on hits_body(snake: List, y: Int, x: Int) {
+        return any(snake, seg => seg.y == y && seg.x == x)
+    }
+
+    on tick(snake: List, dir: String, food: Map, w: Int, h: Int) {
+        let head = snake[0]
+        let ny = head.y
+        let nx = head.x
+        if dir == "N" { ny = head.y - 1 }
+        if dir == "S" { ny = head.y + 1 }
+        if dir == "W" { nx = head.x - 1 }
+        if dir == "E" { nx = head.x + 1 }
+
+        // wall collision
+        if ny < 0 || ny >= h || nx < 0 || nx >= w {
+            return map("snake", snake, "crashed", true, "ate", false)
+        }
+
+        let ate = ny == food.y && nx == food.x
+        // build the new body: new head, then old segments (drop tail if not eating)
+        let body = [map("y", ny, "x", nx)]
+        let keep = len(snake) - 1
+        if ate { keep = len(snake) }
+        for i in range(0, keep) {
+            body = push(body, snake[i])
+        }
+        // self collision: new head lands on a surviving segment
+        let crashed = hits_body(snake, ny, nx) && ate == false
+        return map("snake", body, "crashed", crashed, "ate", ate)
+    }
+
+    on demo() {
+        // 3-segment snake moving east into food at (0,3)
+        let s = [map("y",0,"x",2), map("y",0,"x",1), map("y",0,"x",0)]
+        return tick(s, "E", map("y",0,"x",3), 5, 5)
+    }
+}
+
+cell test SnakeTests {
+    rules {
+        // moving east onto food grows the snake from 3 to 4
+        assert len(tick([map("y",0,"x",2), map("y",0,"x",1), map("y",0,"x",0)],
+            "E", map("y",0,"x",3), 5, 5).snake) == 4
+        assert tick([map("y",0,"x",2), map("y",0,"x",1), map("y",0,"x",0)],
+            "E", map("y",0,"x",3), 5, 5).ate == true
+        // moving without eating keeps the length at 3
+        assert len(tick([map("y",0,"x",2), map("y",0,"x",1), map("y",0,"x",0)],
+            "E", map("y",9,"x",9), 5, 5).snake) == 3
+        // running into the west wall crashes
+        assert tick([map("y",0,"x",0)], "W", map("y",9,"x",9), 5, 5).crashed == true
+        // body collision helper
+        assert hits_body([map("y",1,"x",1), map("y",1,"x",2)], 1, 2) == true
+        assert hits_body([map("y",1,"x",1)], 3, 3) == false
+    }
+}

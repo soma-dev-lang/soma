@@ -1,0 +1,76 @@
+// ============================================================================
+// Minesweeper — compute the neighbour-mine board from a mine layout
+// ============================================================================
+//
+// mines is a flat row-major r×c list of 0/1. annotate() returns a board where
+// each non-mine cell holds its count of adjacent mines (0..8) and each mine
+// cell holds -1. reveal_safe() reports whether a click is safe.
+//
+// Run:  soma run minesweeper.cell --signal demo
+// Test: soma test minesweeper.cell
+
+cell Minesweeper {
+    face {
+        signal count_adjacent(mines: List, r: Int, c: Int, y: Int, x: Int) -> Int
+        signal annotate(mines: List, r: Int, c: Int) -> List
+        signal is_safe(mines: List, c: Int, y: Int, x: Int) -> Bool
+        signal demo() -> List
+    }
+
+    on count_adjacent(mines: List, r: Int, c: Int, y: Int, x: Int) {
+        let n = 0
+        for dy in range(-1, 2) {
+            for dx in range(-1, 2) {
+                if dy != 0 || dx != 0 {
+                    let ny = y + dy
+                    let nx = x + dx
+                    if ny >= 0 && ny < r && nx >= 0 && nx < c {
+                        n = n + mines[ny * c + nx]
+                    }
+                }
+            }
+        }
+        return n
+    }
+
+    on annotate(mines: List, r: Int, c: Int) {
+        let out = []
+        for y in range(0, r) {
+            for x in range(0, c) {
+                let v = -1
+                if mines[y * c + x] == 0 {
+                    v = count_adjacent(mines, r, c, y, x)
+                }
+                out = push(out, v)
+            }
+        }
+        return out
+    }
+
+    on is_safe(mines: List, c: Int, y: Int, x: Int) {
+        return mines[y * c + x] == 0
+    }
+
+    on demo() {
+        // 3x3 with a single mine in the centre
+        return annotate([0,0,0, 0,1,0, 0,0,0], 3, 3)
+    }
+}
+
+cell test MinesweeperTests {
+    rules {
+        // single centre mine → every border cell counts 1, centre is -1
+        assert annotate([0,0,0, 0,1,0, 0,0,0], 3, 3)[0] == 1
+        assert annotate([0,0,0, 0,1,0, 0,0,0], 3, 3)[4] == -1
+        assert annotate([0,0,0, 0,1,0, 0,0,0], 3, 3)[1] == 1
+        // a corner mine touches exactly 3 cells
+        assert count_adjacent([1,0,0, 0,0,0, 0,0,0], 3, 3, 1, 1) == 1
+        assert annotate([1,0,0, 0,0,0, 0,0,0], 3, 3)[4] == 1
+        assert annotate([1,0,0, 0,0,0, 0,0,0], 3, 3)[8] == 0
+        // two adjacent mines
+        assert count_adjacent([1,1,0, 0,0,0, 0,0,0], 3, 3, 1, 0) == 2
+        // safety check
+        assert is_safe([0,0,0, 0,1,0, 0,0,0], 3, 1, 1) == false
+        assert is_safe([0,0,0, 0,1,0, 0,0,0], 3, 0, 0) == true
+    }
+}

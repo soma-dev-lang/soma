@@ -1,0 +1,63 @@
+// Planning agent: decompose a goal into ordered subtasks, then execute.
+// Demonstrates: a plan/execute lifecycle, building a task list with range()
+// and push(), and reporting progress. The decomposition is deterministic so
+// the corpus can verify the plan shape without an LLM.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run planner.cell --signal plan "ship feature" 3
+// Test: SOMA_LLM_MOCK=echo soma test planner.cell
+
+cell agent Planner {
+    face {
+        signal plan(goal: String, steps: Int) -> Map
+        signal execute(goal: String, steps: Int) -> Map
+    }
+
+    memory {
+        runs: Map<String, String> [persistent]
+    }
+
+    state flow {
+        initial: idle
+        idle      -> planning
+        planning  -> executing
+        executing -> done
+        *         -> failed
+    }
+
+    // Pure decomposition — returns a list of subtask records.
+    on plan(goal: String, steps: Int) {
+        require steps > 0 else need_at_least_one_step
+        let tasks = list()
+        for i in range(1, steps + 1) {
+            tasks = push(tasks, map("n", i, "desc", "{goal} — step {i}"))
+        }
+        map("goal", goal, "tasks", tasks, "count", len(tasks))
+    }
+
+    on execute(goal: String, steps: Int) {
+        set_budget(2000)
+        let id = to_string(next_id())
+        transition(id, "planning")
+        let p = plan(goal, steps)
+
+        transition(id, "executing")
+        let done = 0
+        for t in p.tasks {
+            done = done + 1
+        }
+
+        transition(id, "done")
+        runs.set(id, map("goal", goal, "completed", done))
+        map("status", "done", "goal", goal, "completed", done)
+    }
+}
+
+cell test PlannerTests {
+    rules {
+        assert plan("ship", 3).count == 3
+        assert plan("ship", 1).tasks[0].desc == "ship — step 1"
+        assert execute("ship", 4).completed == 4
+        assert execute("ship", 4).status == "done"
+        assert_fails plan("ship", 0)
+    }
+}

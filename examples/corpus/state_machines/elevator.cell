@@ -1,0 +1,59 @@
+// An elevator door + motion interlock.
+// Two facts the machine enforces: the car only moves when doors are shut,
+// and doors only open when the car is idle. The cycle
+// idle -> doors_open -> idle -> moving_up/down -> idle keeps the machine
+// live; `idle` is the recurrent hub every state returns to.
+
+cell Elevator {
+    face {
+        signal open_doors(id: String) -> String
+        signal close_doors(id: String) -> String
+        signal go_up(id: String) -> String
+        signal go_down(id: String) -> String
+        signal arrive(id: String) -> String
+        signal phase(id: String) -> String
+        promise "doors only open while idle; car only moves while shut"
+    }
+
+    state car {
+        initial: idle
+        idle       -> doors_open
+        doors_open -> idle
+        idle       -> moving_up
+        idle       -> moving_down
+        moving_up   -> idle
+        moving_down -> idle
+    }
+
+    on open_doors(id: String)  { transition(id, "doors_open")  return get_status(id) }
+    on close_doors(id: String) { transition(id, "idle")        return get_status(id) }
+    on go_up(id: String)       { transition(id, "moving_up")   return get_status(id) }
+    on go_down(id: String)     { transition(id, "moving_down") return get_status(id) }
+    on arrive(id: String)      { transition(id, "idle")        return get_status(id) }
+    on phase(id: String)       { return get_status(id) }
+}
+
+cell test ElevatorTests {
+    rules {
+        // open then close
+        assert open_doors("e1") == "doors_open"
+        assert close_doors("e1") == "idle"
+
+        // travel up and arrive
+        assert go_up("e2") == "moving_up"
+        assert arrive("e2") == "idle"
+
+        // travel down and arrive
+        assert go_down("e3") == "moving_down"
+        assert arrive("e3") == "idle"
+
+        // INTERLOCK: cannot move while doors are open
+        assert open_doors("e4") == "doors_open"
+        assert_fails go_up("e4")
+        assert_fails go_down("e4")
+
+        // INTERLOCK: cannot open doors while moving
+        assert go_up("e5") == "moving_up"
+        assert_fails open_doors("e5")
+    }
+}

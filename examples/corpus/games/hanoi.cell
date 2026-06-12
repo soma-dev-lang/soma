@@ -1,0 +1,77 @@
+// ============================================================================
+// Tower of Hanoi — minimum moves and an explicit move list
+// ============================================================================
+//
+// min_moves(n) = 2^n - 1. solve(n) produces the ordered list of "from->to" peg
+// moves by the classic recursive strategy, implemented iteratively with an
+// explicit stack so it stays within Soma's handler model.
+//
+// Run:  soma run hanoi.cell --signal demo
+// Test: soma test hanoi.cell
+
+cell Hanoi {
+    face {
+        signal min_moves(n: Int) -> Int
+        signal solve(n: Int, from: String, to: String, via: String) -> List
+        signal demo() -> List
+    }
+
+    on min_moves(n: Int) {
+        // 2^n - 1
+        let m = 1
+        for i in range(0, n) { m = m * 2 }
+        return m - 1
+    }
+
+    // Iterative Hanoi via an explicit frame stack. Each frame is either a
+    // "solve k discs" task or an emitted move.
+    on solve(n: Int, from: String, to: String, via: String) {
+        let moves = []
+        // stack of tasks: map("n", k, "from", f, "to", t, "via", v, "kind", ...)
+        let stack = [map("n", n, "from", from, "to", to, "via", via, "kind", "solve")]
+        while len(stack) > 0 {
+            let top = stack[len(stack) - 1]
+            stack = without_last(stack)
+            if top.kind == "move" {
+                moves = push(moves, "{top.from}->{top.to}")
+            } else if top.n == 1 {
+                moves = push(moves, "{top.from}->{top.to}")
+            } else {
+                // push in reverse so they pop in the right order:
+                // solve(n-1, via, to, from); move from->to; solve(n-1, from, via, to)
+                stack = push(stack, map("n", top.n - 1, "from", top.via, "to", top.to, "via", top.from, "kind", "solve"))
+                stack = push(stack, map("from", top.from, "to", top.to, "kind", "move"))
+                stack = push(stack, map("n", top.n - 1, "from", top.from, "to", top.via, "via", top.to, "kind", "solve"))
+            }
+        }
+        return moves
+    }
+
+    on without_last(xs: List) {
+        let out = []
+        for i in range(0, len(xs) - 1) { out = push(out, xs[i]) }
+        return out
+    }
+
+    on demo() {
+        return solve(3, "A", "C", "B")
+    }
+}
+
+cell test HanoiTests {
+    rules {
+        assert min_moves(1) == 1
+        assert min_moves(3) == 7
+        assert min_moves(10) == 1023
+        // solving n discs takes exactly 2^n - 1 moves
+        assert len(solve(3, "A", "C", "B")) == 7
+        assert len(solve(4, "A", "C", "B")) == 15
+        // 1 disc is a single direct move
+        assert len(solve(1, "A", "C", "B")) == 1
+        assert solve(1, "A", "C", "B")[0] == "A->C"
+        // first move of 3-disc solve is the small disc A->C
+        assert solve(3, "A", "C", "B")[0] == "A->C"
+        // last move lands the big disc on C
+        assert solve(2, "A", "C", "B")[2] == "B->C"
+    }
+}

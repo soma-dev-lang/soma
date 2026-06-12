@@ -1,0 +1,67 @@
+// Binary search tree built from Node records with nested `left`/`right`
+// children. Demonstrates trees-of-records, recursive handlers over a
+// record shape, and unit () as the empty subtree.
+
+cell BST {
+    face {
+        signal sample() -> Map
+        signal has(n: Int) -> Bool
+        signal height() -> Int
+        signal in_order() -> List
+    }
+
+    // A hand-built tree:        8
+    //                          / \
+    //                         3   10
+    //                        / \    \
+    //                       1   6    14
+    on sample() {
+        return Node { v: 8,
+            left:  Node { v: 3,
+                left:  Node { v: 1, left: (), right: () },
+                right: Node { v: 6, left: (), right: () } },
+            right: Node { v: 10,
+                left:  (),
+                right: Node { v: 14, left: (), right: () } } }
+    }
+
+    on has(n: Int) {
+        return _has(sample(), n)
+    }
+
+    on _has(t: Map, n: Int) {
+        if t == () { return false }
+        if n == t.v { return true }
+        if n < t.v { return _has(t.left, n) }
+        return _has(t.right, n)
+    }
+
+    on height() {
+        return _h(sample())
+    }
+
+    on _h(t: Map) {
+        if t == () { return 0 }
+        return 1 + max(_h(t.left), _h(t.right))
+    }
+
+    on in_order() {
+        return _walk(sample())
+    }
+
+    on _walk(t: Map) {
+        if t == () { return list() }
+        return list(_walk(t.left), list(t.v), _walk(t.right)) |> flatten()
+    }
+}
+
+cell test BSTTest {
+    rules {
+        assert has(6) == true
+        assert has(7) == false
+        assert height() == 3
+        assert in_order()[0] == 1
+        assert in_order()[5] == 14
+        assert len(in_order()) == 6
+    }
+}

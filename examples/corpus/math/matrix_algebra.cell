@@ -1,0 +1,55 @@
+// ============================================================================
+// Matrix algebra — product, transpose, determinant, trace
+// ============================================================================
+//
+// Matrices are List<List<Float>> built by reshape. `*` is matmul, `.T` is
+// transpose, det() is the determinant (LU with pivoting), diag_sum() the
+// trace. Soma has no structural list ==, so we probe results by index/det.
+//
+//   soma run matrix_algebra.cell run
+// ============================================================================
+
+cell MatrixAlgebra {
+    face {
+        signal product(a: List, b: List) -> List
+        signal trace_of(m: List) -> Float
+        signal run() -> Map
+    }
+
+    on product(a: List, b: List) {
+        return a * b
+    }
+
+    on trace_of(m: List) {
+        return diag_sum(m)
+    }
+
+    on run() {
+        let A = [1, 2, 3, 4].reshape(2, 2)
+        let B = [5, 6, 7, 8].reshape(2, 2)
+        let C = A * B
+        return map(
+            "product_00", C[0][0],
+            "product_11", C[1][1],
+            "det_A", det(A),
+            "trace_A", diag_sum(A),
+            "transpose_shape", A.T.shape
+        )
+    }
+}
+
+cell test MatrixTests {
+    rules {
+        // [1,2;3,4]·[5,6;7,8] = [19,22;43,50]
+        assert run()["product_00"] == 19.0
+        assert run()["product_11"] == 50.0
+        // det([1,2;3,4]) = 1*4 - 2*3 = -2
+        assert abs(det([1, 2, 3, 4].reshape(2, 2)) - (0 - 2.0)) < 0.0000001
+        // trace = 1 + 4 = 5
+        assert diag_sum([1, 2, 3, 4].reshape(2, 2)) == 5.0
+        // transpose flips shape
+        assert [1, 2, 3, 4, 5, 6].reshape(2, 3).T.shape[0] == 3
+        // identity determinant is 1
+        assert det(identity(4)) == 1.0
+    }
+}

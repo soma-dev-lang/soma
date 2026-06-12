@@ -1,0 +1,9 @@
+[package]
+name = "order-lifecycle"
+version = "0.1.0"
+entry = "order_lifecycle.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["Delivered", "Cancelled"]
+never = []

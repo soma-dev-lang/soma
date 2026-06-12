@@ -1,0 +1,58 @@
+// Top-N and bottom-N reporting over a movie ratings table.
+// Demonstrates top/bottom after sort_by, select for projection, avg_by for a
+// summary stat, and filter_by chaining to build a "critically acclaimed" list.
+
+cell MovieCharts {
+    on movies() {
+        return list(
+            map("title", "Dunes",      "rating", 88, "votes", 12000, "year", 2021),
+            map("title", "Neon City",  "rating", 72, "votes", 8400,  "year", 2019),
+            map("title", "Quiet Lake", "rating", 95, "votes", 3100,  "year", 2022),
+            map("title", "Fast Track", "rating", 61, "votes", 22000, "year", 2020),
+            map("title", "Old Roads",  "rating", 90, "votes", 1500,  "year", 2018),
+            map("title", "Sky Burn",   "rating", 55, "votes", 30000, "year", 2023),
+            map("title", "Greywater",  "rating", 83, "votes", 6700,  "year", 2021)
+        )
+    }
+
+    on best() { return movies() |> sort_by("rating", "desc") |> top(3) |> select("title", "rating") }
+
+    on worst() { return movies() |> sort_by("rating", "desc") |> bottom(2) |> select("title", "rating") }
+
+    on most_popular() { return movies() |> sort_by("votes", "desc") |> top(1) }
+
+    on avg_rating() { return movies() |> avg_by("rating") }
+
+    // Acclaimed: rating >= 85 AND a real audience (votes >= 3000).
+    on acclaimed() {
+        return movies()
+            |> filter_by("rating", ">=", 85)
+            |> filter_by("votes", ">=", 3000)
+            |> pluck("title")
+    }
+
+    on run() {
+        let names = best() |> pluck("title")
+        print("Best: {names}")
+        print("Avg rating: {avg_rating()}")
+        return acclaimed()
+    }
+}
+
+cell test MovieChartsTests {
+    rules {
+        // top-rated is Quiet Lake (95)
+        assert best()[0].title == "Quiet Lake"
+        assert best()[0].rating == 95
+        // 3 in the best list
+        assert len(best()) == 3
+        // worst keeps the 2 lowest: Sky Burn (55), Fast Track (61)
+        assert worst()[1].title == "Sky Burn"
+        // most popular by votes is Sky Burn (30000)
+        assert most_popular()[0].title == "Sky Burn"
+        // acclaimed: Dunes(88,12000) and Greywater(83 -> no). Quiet Lake 95 but 3100>=3000 yes.
+        // rating>=85: Quiet Lake(95,3100), Old Roads(90,1500), Dunes(88,12000)
+        // votes>=3000: Quiet Lake, Dunes -> 2 titles
+        assert len(acclaimed()) == 2
+    }
+}

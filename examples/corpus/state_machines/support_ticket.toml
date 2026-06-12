@@ -1,0 +1,13 @@
+[package]
+name = "support-ticket"
+version = "0.1.0"
+entry = "support_ticket.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["closed"]
+never = []
+
+# once resolved, the ticket must still be able to reach closed
+[verify.after.resolved]
+eventually = ["closed"]

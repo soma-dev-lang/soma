@@ -1,0 +1,84 @@
+// ============================================================================
+// Card deck — build, deterministic Fisher-Yates shuffle, and deal
+// ============================================================================
+//
+// A 52-card deck is built as "Rank of Suit" strings. shuffle() uses a seeded
+// linear-congruential PRNG so the permutation is reproducible (no random()).
+// deal() splits the deck into n hands of k cards round-robin.
+//
+// Run:  soma run card_deck.cell --signal demo
+// Test: soma test card_deck.cell
+
+cell CardDeck {
+    face {
+        signal new_deck() -> List
+        signal shuffle(deck: List, seed: Int) -> List
+        signal deal(deck: List, hands: Int, cards: Int) -> List
+        signal demo() -> Map
+    }
+
+    on new_deck() {
+        let suits = ["Clubs", "Diamonds", "Hearts", "Spades"]
+        let ranks = ["2","3","4","5","6","7","8","9","10","J","Q","K","A"]
+        let deck = []
+        for s in suits {
+            for r in ranks {
+                deck = push(deck, "{r} of {s}")
+            }
+        }
+        return deck
+    }
+
+    // Fisher-Yates driven by a seeded LCG → deterministic permutation.
+    on shuffle(deck: List, seed: Int) {
+        let d = deck
+        let state = seed
+        let i = len(d) - 1
+        while i > 0 {
+            // Numerical Recipes LCG, kept in 31 bits.
+            state = band(state * 1103515245 + 12345, 2147483647)
+            let j = state % (i + 1)
+            let tmp = d[i]
+            d[i] = d[j]
+            d[j] = tmp
+            i = i - 1
+        }
+        return d
+    }
+
+    // Round-robin deal: hand h gets cards h, h+hands, h+2*hands, ...
+    on deal(deck: List, hands: Int, cards: Int) {
+        let out = []
+        for h in range(0, hands) {
+            let hand = []
+            for k in range(0, cards) {
+                hand = push(hand, deck[h + k * hands])
+            }
+            out = push(out, hand)
+        }
+        return out
+    }
+
+    on demo() {
+        let d = new_deck()
+        let s = shuffle(d, 42)
+        let hands = deal(s, 4, 5)
+        return map("size", len(d), "top", s[0], "hands", len(hands))
+    }
+}
+
+cell test CardDeckTests {
+    rules {
+        assert len(new_deck()) == 52
+        // a shuffle is a permutation — same length, all cards retained
+        assert len(shuffle(new_deck(), 7)) == 52
+        // determinism: same seed → identical top card
+        assert shuffle(new_deck(), 99)[0] == shuffle(new_deck(), 99)[0]
+        // dealing 4 hands of 5 yields 4 hands of 5 cards each
+        assert len(deal(new_deck(), 4, 5)) == 4
+        assert len(deal(new_deck(), 4, 5)[0]) == 5
+        // an unshuffled deck starts with "2 of Clubs"
+        assert new_deck()[0] == "2 of Clubs"
+        assert new_deck()[51] == "A of Spades"
+    }
+}

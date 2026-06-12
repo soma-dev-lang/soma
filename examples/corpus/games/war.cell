@@ -1,0 +1,75 @@
+// ============================================================================
+// War — the card-comparison game, played to exhaustion
+// ============================================================================
+//
+// Each card is an integer rank 2..14 (J=11..A=14). A "battle" gives the higher
+// card to the winner; ties trigger a simplified "war" where the next card
+// decides. play() runs two ordered decks head to head and reports the winner
+// and number of battles. Fully deterministic.
+//
+// Run:  soma run war.cell --signal demo
+// Test: soma test war.cell
+
+cell War {
+    face {
+        signal battle(a: Int, b: Int) -> String
+        signal play(deck1: List, deck2: List) -> Map
+        signal demo() -> Map
+    }
+
+    on battle(a: Int, b: Int) {
+        if a > b { return "p1" }
+        if b > a { return "p2" }
+        return "tie"
+    }
+
+    // Play through both decks in order; on a tie, the NEXT pair breaks it and
+    // the tie cards go to that winner. Count battles for a termination bound.
+    on play(deck1: List, deck2: List) {
+        let s1 = 0
+        let s2 = 0
+        let battles = 0
+        let i = 0
+        let n = min(len(deck1), len(deck2))
+        while i < n {
+            let r = battle(deck1[i], deck2[i])
+            battles = battles + 1
+            if r == "p1" { s1 = s1 + 1 }
+            if r == "p2" { s2 = s2 + 1 }
+            // a tie carries 1 bonus point to whoever wins the next battle
+            if r == "tie" && i + 1 < n {
+                let nxt = battle(deck1[i + 1], deck2[i + 1])
+                if nxt == "p1" { s1 = s1 + 1 }
+                if nxt == "p2" { s2 = s2 + 1 }
+            }
+            i = i + 1
+        }
+        let winner = if s1 > s2 { "p1" } else if s2 > s1 { "p2" } else { "draw" }
+        return map("p1", s1, "p2", s2, "battles", battles, "winner", winner)
+    }
+
+    on demo() {
+        // ranks: p1 high cards beat p2
+        return play([14, 5, 9, 2], [13, 6, 8, 3])
+    }
+}
+
+cell test WarTests {
+    rules {
+        assert battle(14, 13) == "p1"
+        assert battle(4, 9) == "p2"
+        assert battle(7, 7) == "tie"
+        // battles: 14>13 (p1), 5<6 (p2), 9>8 (p1), 2<3 (p2) → 2-2 draw
+        assert play([14, 5, 9, 2], [13, 6, 8, 3]).p1 == 2
+        assert play([14, 5, 9, 2], [13, 6, 8, 3]).winner == "draw"
+        assert play([14, 5, 9, 2], [13, 6, 8, 3]).battles == 4
+        // a clean p1 sweep
+        assert play([14, 10, 9], [2, 3, 4]).winner == "p1"
+        assert play([14, 10, 9], [2, 3, 4]).p1 == 3
+        // a tie carries to the next battle's winner: 7=7 tie, then 10>2 p1
+        // → p1 gets the battle point plus the tie bonus
+        assert play([7, 10], [7, 2]).p1 == 2
+        // mirror decks → draw
+        assert play([10, 4, 7], [10, 4, 7]).winner == "draw"
+    }
+}

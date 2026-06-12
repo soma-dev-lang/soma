@@ -1,0 +1,54 @@
+// Streaming ingest pipeline: push records into an ephemeral buffer slot, then
+// aggregate the buffer in the same handler. Demonstrates a List slot, slot.push,
+// reading the buffer back with slot.all, and piping it through agg + sort_by.
+
+cell StreamIngest {
+    face {
+        signal process(batch: List) -> Map
+    }
+
+    memory {
+        buffer: List<String> [ephemeral]
+    }
+
+    // Ingest a batch of sensor readings, then summarize per device.
+    on process(batch: List) {
+        for r in batch { buffer.push(r) }
+        let rows = buffer.all
+        return map("ingested", len(rows), "summary", summarize(rows))
+    }
+
+    // Pure aggregation step — no memory, so it is deterministic to test.
+    on summarize(rows: List) {
+        return rows
+            |> agg("device", "reading:sum", "reading:avg", "reading:count")
+            |> sort_by("reading_sum", "desc")
+    }
+
+    on sample() {
+        return list(
+            map("device", "s1", "reading", 10),
+            map("device", "s2", "reading", 5),
+            map("device", "s1", "reading", 20),
+            map("device", "s2", "reading", 15),
+            map("device", "s1", "reading", 30)
+        )
+    }
+
+    on run() {
+        let result = process(sample())
+        for r in result.summary { print("{r.device}: sum {r.reading_sum}, avg {r.reading_avg}") }
+        return result.ingested
+    }
+}
+
+cell test StreamIngestTests {
+    rules {
+        // pure summarize over the sample batch is deterministic
+        // s1 = 10 + 20 + 30 = 60, s2 = 5 + 15 = 20 -> s1 leads
+        assert summarize(sample())[0].device == "s1"
+        assert summarize(sample())[0].reading_sum == 60
+        assert (summarize(sample()) |> filter_by("device", "=", "s2"))[0].reading_sum == 20
+        assert summarize(sample())[0].reading_count == 3
+    }
+}

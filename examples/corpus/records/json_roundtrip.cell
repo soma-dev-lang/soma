@@ -1,0 +1,46 @@
+// Records and JSON: serialize a record to a JSON string and parse it back.
+// Demonstrates to_json/from_json round-tripping — the record's _type tag is
+// part of its data, so is_a still recognizes it after a full round-trip.
+
+cell JsonRecords {
+    face {
+        signal make() -> Map
+        signal as_json() -> String
+        signal reparse() -> Map
+        signal tag_survives() -> Bool
+        signal field_after_parse() -> String
+    }
+
+    on make() {
+        return Profile { user: "ada", level: 7, prefs: list("dark", "compact") }
+    }
+
+    on as_json() {
+        return to_json(make())
+    }
+
+    on reparse() {
+        return from_json(as_json())
+    }
+
+    // Record literals carry _type; it serializes and parses back, so the
+    // reparsed value is still recognized as a Profile.
+    on tag_survives() {
+        return is_a(reparse(), "Profile")
+    }
+
+    on field_after_parse() {
+        return reparse().user
+    }
+}
+
+cell test JsonRecordsTest {
+    rules {
+        assert make().level == 7
+        assert is_a(make(), "Profile") == true
+        assert contains(as_json(), "ada") == true
+        assert tag_survives() == true
+        assert field_after_parse() == "ada"
+        assert reparse().prefs[0] == "dark"
+    }
+}

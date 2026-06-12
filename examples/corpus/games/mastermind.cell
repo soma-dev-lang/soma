@@ -1,0 +1,91 @@
+// ============================================================================
+// Mastermind — score a guess with black and white pegs
+// ============================================================================
+//
+// Black pegs = right colour in the right position. White pegs = right colour
+// in the wrong position, counted with multiplicity via colour frequency
+// matching (the classic rule). Pure scoring over fixed-length code lists.
+//
+// Run:  soma run mastermind.cell --signal demo
+// Test: soma test mastermind.cell
+
+cell Mastermind {
+    face {
+        signal score(secret: List, guess: List) -> Map
+        signal solved(secret: List, guess: List) -> Bool
+        signal demo() -> Map
+    }
+
+    on score(secret: List, guess: List) {
+        let n = len(secret)
+        let black = 0
+        // count exact matches, and bucket the non-matched colours on each side
+        let sleft = []
+        let gleft = []
+        for i in range(0, n) {
+            if secret[i] == guess[i] {
+                black = black + 1
+            } else {
+                sleft = push(sleft, secret[i])
+                gleft = push(gleft, guess[i])
+            }
+        }
+        // white = for each leftover guess colour, a match among leftover secret
+        let white = 0
+        let pool = sleft
+        for g in gleft {
+            let idx = index_of_in(pool, g)
+            if idx >= 0 {
+                white = white + 1
+                pool = without_index(pool, idx)
+            }
+        }
+        return map("black", black, "white", white)
+    }
+
+    // first index of value v in list xs, or -1
+    on index_of_in(xs: List, v: String) {
+        let found = -1
+        for i in range(0, len(xs)) {
+            if xs[i] == v && found == -1 { found = i }
+        }
+        return found
+    }
+
+    // copy of xs with element i removed
+    on without_index(xs: List, i: Int) {
+        let out = []
+        for j in range(0, len(xs)) {
+            if j != i { out = push(out, xs[j]) }
+        }
+        return out
+    }
+
+    on solved(secret: List, guess: List) {
+        return score(secret, guess).black == len(secret)
+    }
+
+    on demo() {
+        // secret RGBY, guess GGRR
+        return score(["R", "G", "B", "Y"], ["G", "G", "R", "R"])
+    }
+}
+
+cell test MastermindTests {
+    rules {
+        // exact match → 4 black, 0 white
+        assert score(["R","G","B","Y"], ["R","G","B","Y"]).black == 4
+        assert score(["R","G","B","Y"], ["R","G","B","Y"]).white == 0
+        assert solved(["R","G","B","Y"], ["R","G","B","Y"]) == true
+        // secret RGBY vs guess GGRR: pos2 G exact (1 black);
+        // leftover secret R,B,Y vs guess G,R,R → one R matches (1 white)
+        assert score(["R","G","B","Y"], ["G","G","R","R"]).black == 1
+        assert score(["R","G","B","Y"], ["G","G","R","R"]).white == 1
+        // duplicate colours don't over-count whites
+        assert score(["R","R","G","G"], ["G","G","G","G"]).black == 2
+        assert score(["R","R","G","G"], ["G","G","G","G"]).white == 0
+        // total order: a near miss, all whites
+        assert score(["A","B","C"], ["C","A","B"]).black == 0
+        assert score(["A","B","C"], ["C","A","B"]).white == 3
+    }
+}

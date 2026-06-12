@@ -1,0 +1,53 @@
+// Sales report: a List<Map> of orders rolled up by region and category.
+// Demonstrates filter_by -> agg (group + sum/avg) -> sort_by, plus sum_by
+// and pluck for headline numbers. Self-verifying via a test cell.
+
+cell SalesReport {
+    on orders() {
+        return list(
+            map("id", 1, "region", "EU", "category", "Hardware", "amount", 1200, "units", 3),
+            map("id", 2, "region", "US", "category", "Software", "amount", 800,  "units", 1),
+            map("id", 3, "region", "EU", "category", "Software", "amount", 450,  "units", 2),
+            map("id", 4, "region", "US", "category", "Hardware", "amount", 2100, "units", 5),
+            map("id", 5, "region", "EU", "category", "Hardware", "amount", 300,  "units", 1),
+            map("id", 6, "region", "APAC", "category", "Software", "amount", 1500, "units", 4),
+            map("id", 7, "region", "US", "category", "Software", "amount", 950,  "units", 2),
+            map("id", 8, "region", "APAC", "category", "Hardware", "amount", 80,  "units", 1)
+        )
+    }
+
+    // Revenue by region, biggest first. Each group row carries amount_sum.
+    on by_region() {
+        return orders()
+            |> agg("region", "amount:sum", "units:sum")
+            |> sort_by("amount_sum", "desc")
+    }
+
+    // Only material orders (>= 500), averaged per category.
+    on category_avg() {
+        return orders()
+            |> filter_by("amount", ">=", 500)
+            |> agg("category", "amount:avg")
+            |> sort_by("amount_avg", "desc")
+    }
+
+    on total_revenue() { return orders() |> sum_by("amount") }
+
+    on run() {
+        let regions = by_region()
+        for r in regions {
+            print("{r.region}: {r.amount_sum} ({r.units_sum} units)")
+        }
+        return total_revenue()
+    }
+}
+
+cell test SalesReportTests {
+    rules {
+        assert total_revenue() == 7380
+        // EU = 1200 + 450 + 300 = 1950
+        assert (by_region() |> filter_by("region", "=", "EU"))[0].amount_sum == 1950
+        // top region by revenue is US (800+2100+950 = 3850)
+        assert by_region()[0].region == "US"
+    }
+}

@@ -1,0 +1,80 @@
+// Euclid's algorithm: GCD (iterative + recursive), LCM, the extended Euclid
+// algorithm returning Bezout coefficients, and a coprimality check.
+// Demonstrates: the modulo recurrence, returning a record of {g, x, y}, and
+// using the builtin gcd() as an oracle in tests.
+//
+//   soma run  examples/corpus/algorithms/gcd_lcm.cell gcd_iter 48 36
+//   soma test examples/corpus/algorithms/gcd_lcm.cell
+
+cell GcdLcm {
+    face {
+        signal gcd_iter(a: Int, b: Int) -> Int
+        signal gcd_rec(a: Int, b: Int) -> Int
+        signal lcm(a: Int, b: Int) -> Int
+        signal egcd(a: Int, b: Int) -> Map
+        signal coprime(a: Int, b: Int) -> Bool
+    }
+
+    on gcd_iter(a: Int, b: Int) {
+        let x = abs(a)
+        let y = abs(b)
+        while y != 0 {
+            let t = y
+            y = x - floor(x / y) * y    // x mod y
+            x = t
+        }
+        return x
+    }
+
+    on gcd_rec(a: Int, b: Int) {
+        if b == 0 { return abs(a) }
+        return gcd_rec(b, a - floor(a / b) * b)
+    }
+
+    on lcm(a: Int, b: Int) {
+        if a == 0 || b == 0 { return 0 }
+        return abs(a * b) / gcd_iter(a, b)
+    }
+
+    // extended Euclid: returns {g, x, y} with a*x + b*y = g
+    on egcd(a: Int, b: Int) {
+        let old_r = a
+        let r = b
+        let old_s = 1
+        let s = 0
+        let old_t = 0
+        let t = 1
+        while r != 0 {
+            let q = floor(old_r / r)
+            let nr = old_r - q * r
+            old_r = r
+            r = nr
+            let ns = old_s - q * s
+            old_s = s
+            s = ns
+            let nt = old_t - q * t
+            old_t = t
+            t = nt
+        }
+        return Bezout { g: old_r, x: old_s, y: old_t }
+    }
+
+    on coprime(a: Int, b: Int) {
+        return gcd_iter(a, b) == 1
+    }
+}
+
+cell test GcdLcmTests {
+    rules {
+        assert gcd_iter(48, 36) == 12
+        assert gcd_iter(48, 36) == gcd(48, 36)
+        assert gcd_rec(1071, 462) == 21
+        assert gcd_iter(17, 5) == 1
+        assert lcm(4, 6) == 12
+        assert lcm(21, 6) == 42
+        assert coprime(14, 15)
+        assert !coprime(14, 21)
+        assert egcd(240, 46).g == 2
+        assert 240 * egcd(240, 46).x + 46 * egcd(240, 46).y == 2
+    }
+}

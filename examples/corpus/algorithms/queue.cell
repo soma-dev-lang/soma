@@ -1,0 +1,47 @@
+// A FIFO queue and a sliding-window maximum over a List.
+// Demonstrates: enqueue (push to the back) / dequeue (take from the front),
+// returning a {value, rest} record from dequeue, and a windowed scan.
+//
+//   soma run  examples/corpus/algorithms/queue.cell window_max "[1,3,-1,-3,5,3,6,7]" 3
+//   soma test examples/corpus/algorithms/queue.cell
+
+cell Queue {
+    face {
+        signal enqueue(q: List, v: Int) -> List
+        signal dequeue(q: List) -> Map
+        signal window_max(xs: List, k: Int) -> List
+    }
+
+    on enqueue(q: List, v: Int) {
+        return push(q, v)
+    }
+
+    // front element + the remaining queue, as a record
+    on dequeue(q: List) {
+        if len(q) == 0 { return Deque { value: (), rest: list() } }
+        let rest = list()
+        for i in range(1, len(q)) { rest = push(rest, q[i]) }
+        return Deque { value: q[0], rest: rest }
+    }
+
+    // max of every contiguous window of width k
+    on window_max(xs: List, k: Int) {
+        let out = list()
+        for i in range(0, len(xs) - k + 1) {
+            let win = list()
+            for j in range(i, i + k) { win = push(win, xs[j]) }
+            out = push(out, max(win))
+        }
+        return out
+    }
+}
+
+cell test QueueTests {
+    rules {
+        assert dequeue(enqueue(enqueue(list(), 7), 9)).value == 7
+        assert to_string(dequeue([1, 2, 3]).rest) == to_string([2, 3])
+        assert dequeue(list()).value == ()
+        assert to_string(window_max([1, 3, -1, -3, 5, 3, 6, 7], 3)) == to_string([3, 3, 5, 5, 6, 7])
+        assert to_string(window_max([4, 4, 4], 1)) == to_string([4, 4, 4])
+    }
+}

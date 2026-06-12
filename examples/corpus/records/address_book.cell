@@ -1,0 +1,48 @@
+// Address book: Contact records stored in a Map slot, round-tripped
+// through storage, and queried. Demonstrates record literals, dot-access,
+// storing records in [persistent] map slots, and self-verifying tests.
+
+cell AddressBook {
+    face {
+        signal add(name: String, email: String, city: String) -> String
+        signal get(name: String) -> Map
+        signal city_of(name: String) -> String
+        signal count() -> Int
+    }
+
+    memory {
+        contacts: Map<String, String> [persistent, consistent]
+    }
+
+    on add(name: String, email: String, city: String) {
+        let c = Contact { name: name, email: email, city: city }
+        contacts.set(name, c)          // storage auto-serializes the record
+        return name
+    }
+
+    on get(name: String) {
+        let raw = contacts.get(name)
+        if raw == () { return map("error", "not found") }
+        return raw                      // comes back as a structured record
+    }
+
+    on city_of(name: String) {
+        let c = get(name)
+        return c.city ?? "unknown"
+    }
+
+    on count() {
+        return contacts.len
+    }
+}
+
+cell test AddressBookTest {
+    rules {
+        assert add("Ada", "ada@x.io", "London") == "Ada"
+        assert add("Linus", "linus@k.org", "Helsinki") == "Linus"
+        assert get("Ada").email == "ada@x.io"
+        assert city_of("Linus") == "Helsinki"
+        assert city_of("Ghost") == "unknown"
+        assert count() == 2
+    }
+}

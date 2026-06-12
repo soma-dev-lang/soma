@@ -1,0 +1,74 @@
+// ============================================================================
+// Nim — optimal play via the Sprague-Grundy nim-sum
+// ============================================================================
+//
+// In normal-play Nim a position is a loss for the player to move iff the XOR
+// of all heap sizes is 0. nim_sum() computes it; best_move() finds a winning
+// (heap, take) move when one exists, else surrenders.
+//
+// Run:  soma run nim.cell --signal demo
+// Test: soma test nim.cell
+
+cell Nim {
+    face {
+        signal nim_sum(heaps: List) -> Int
+        signal is_losing(heaps: List) -> Bool
+        signal best_move(heaps: List) -> Map
+        signal demo() -> Map
+    }
+
+    on nim_sum(heaps: List) {
+        let x = 0
+        for h in heaps {
+            x = bxor(x, h)
+        }
+        return x
+    }
+
+    // A position with nim-sum 0 is a loss for the player about to move.
+    on is_losing(heaps: List) {
+        return nim_sum(heaps) == 0
+    }
+
+    // Find a heap whose target size (heap XOR nim_sum) is smaller, then take
+    // down to it. Returns heap=-1 when the position is already lost.
+    on best_move(heaps: List) {
+        let s = nim_sum(heaps)
+        if s == 0 { return map("heap", -1, "take", 0) }
+        let result = map("heap", -1, "take", 0)
+        for i in range(0, len(heaps)) {
+            let target = bxor(heaps[i], s)
+            if target < heaps[i] && result.heap == -1 {
+                result = map("heap", i, "take", heaps[i] - target)
+            }
+        }
+        return result
+    }
+
+    on demo() {
+        // 3,4,5 → nim-sum 2, winning move exists
+        return map(
+            "nim_sum", nim_sum([3, 4, 5]),
+            "move", best_move([3, 4, 5])
+        )
+    }
+}
+
+cell test NimTests {
+    rules {
+        // 1^2^3 = 0 → losing position
+        assert nim_sum([1, 2, 3]) == 0
+        assert is_losing([1, 2, 3]) == true
+        // 3^4^5 = 2 → winning
+        assert nim_sum([3, 4, 5]) == 2
+        assert is_losing([3, 4, 5]) == false
+        // the winning move turns it into a 0-sum position for the opponent
+        // take from heap, leaving nim-sum 0
+        assert best_move([3, 4, 5]).heap == 0
+        assert best_move([3, 4, 5]).take == 2
+        // applying the move yields a losing position [1,4,5]
+        assert nim_sum([1, 4, 5]) == 0
+        // a lost position offers no move
+        assert best_move([1, 2, 3]).heap == -1
+    }
+}

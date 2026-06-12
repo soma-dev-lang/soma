@@ -1,0 +1,48 @@
+// Coin change, minimum number of coins to make an amount (unbounded knapsack).
+// This is the "fewest coins" variant — distinct from counting the number of
+// ways. Demonstrates: a 1D DP seeded with a big sentinel, the min-over-coins
+// recurrence, and returning -1 when an amount is unreachable.
+//
+//   soma run  examples/corpus/algorithms/min_coins.cell fewest 11
+//   soma test examples/corpus/algorithms/min_coins.cell
+
+cell MinCoins {
+    face {
+        signal fewest(amount: Int) -> Int
+        signal solve(coins: List, amount: Int) -> Int
+    }
+
+    on fewest(amount: Int) {
+        return solve(list(1, 2, 5), amount)
+    }
+
+    on solve(coins: List, amount: Int) {
+        let inf = 1000000
+        // dp[a] = fewest coins to make a, or inf if impossible
+        let dp = list()
+        for a in range(0, amount + 1) { dp = push(dp, inf) }
+        dp[0] = 0
+        for a in range(1, amount + 1) {
+            for c in coins {
+                if c <= a {
+                    let cand = dp[a - c] + 1
+                    if cand < dp[a] { dp[a] = cand }
+                }
+            }
+        }
+        if dp[amount] >= inf { return -1 }
+        return dp[amount]
+    }
+}
+
+cell test MinCoinsTests {
+    rules {
+        assert fewest(11) == 3        // 5 + 5 + 1
+        assert fewest(0) == 0
+        assert fewest(3) == 2         // 2 + 1
+        assert fewest(25) == 5        // 5*5
+        assert solve(list(2), 3) == -1
+        assert solve(list(2), 4) == 2
+        assert solve(list(1, 5, 10, 25), 30) == 2
+    }
+}

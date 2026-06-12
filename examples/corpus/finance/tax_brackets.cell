@@ -1,0 +1,69 @@
+// Progressive income tax over marginal brackets, plus effective rate and
+// marginal rate lookup. Iterates a list of {upto, rate} bracket records,
+// taxing each slice. Records, min(), accumulation.
+
+cell TaxBrackets {
+    face {
+        signal brackets() -> List
+        signal tax_owed(income: Int) -> Float
+        signal effective_rate(income: Int) -> Float
+        signal marginal_rate(income: Int) -> Float
+    }
+
+    // simplified marginal brackets (upper bound, marginal rate on the slice)
+    on brackets() {
+        return list(
+            Bracket { upto: 10000,  rate: 0.10 },
+            Bracket { upto: 40000,  rate: 0.20 },
+            Bracket { upto: 100000, rate: 0.30 },
+            Bracket { upto: -1,     rate: 0.40 }   // -1 = no upper bound
+        )
+    }
+
+    on tax_owed(income: Int) {
+        let owed = 0.0
+        let lower = 0
+        for b in brackets() {
+            let cap = b.upto
+            if cap == -1 { cap = income }
+            let top = min(income, cap)
+            if top > lower {
+                owed = owed + (top - lower) * b.rate
+            }
+            lower = b.upto
+            if b.upto != -1 && income <= b.upto { break }
+        }
+        return owed
+    }
+
+    on effective_rate(income: Int) {
+        if income == 0 { return 0.0 }
+        return tax_owed(income) / income
+    }
+
+    on marginal_rate(income: Int) {
+        let rate = 0.0
+        for b in brackets() {
+            if b.upto == -1 || income <= b.upto {
+                rate = b.rate
+                break
+            }
+        }
+        return rate
+    }
+}
+
+cell test TaxTests {
+    rules {
+        // 10k taxed at 10% = 1000
+        assert abs(tax_owed(10000) - 1000.0) < 0.0001
+        // 40k: 10k*.1 + 30k*.2 = 1000 + 6000 = 7000
+        assert abs(tax_owed(40000) - 7000.0) < 0.0001
+        // 50k: 7000 + 10k*.3 = 10000
+        assert abs(tax_owed(50000) - 10000.0) < 0.0001
+        // effective < marginal for a 50k earner
+        assert effective_rate(50000) < marginal_rate(50000)
+        // top bracket applies above 100k
+        assert abs(marginal_rate(200000) - 0.40) < 0.0001
+    }
+}

@@ -1,0 +1,57 @@
+// Trade settlement as a sum type. A settlement attempt yields one of three
+// tagged variants; `match` over them is exhaustive (drop an arm and
+// `soma check` refuses). Demonstrates struct / tuple / unit variants and
+// exhaustive matching for money outcomes.
+
+cell type Settlement {
+    variants {
+        Settled { trade_id: String, net: Int }   // struct variant
+        Failed(String)                            // tuple variant
+        Pending                                   // unit variant
+    }
+}
+
+cell TradeSettlement {
+    face {
+        signal settle(trade_id: String, qty: Int, price: Int, cash: Int) -> Map
+        signal describe(r: Map) -> String
+        signal is_terminal(r: Map) -> Bool
+    }
+
+    // net = qty*price; fails if the account can't cover it; pending if qty 0
+    on settle(trade_id: String, qty: Int, price: Int, cash: Int) {
+        if qty == 0 { return Pending }
+        let net = qty * price
+        if net > cash { return Failed("insufficient cash") }
+        return Settled { trade_id: trade_id, net: net }
+    }
+
+    on describe(r: Map) {
+        return match r {
+            Settled { trade_id, net } -> "settled {trade_id} for {net}"
+            Failed(reason)            -> "failed: {reason}"
+            Pending                   -> "pending"
+        }
+    }
+
+    on is_terminal(r: Map) {
+        return match r {
+            Settled { trade_id, net } -> true
+            Failed(reason)            -> true
+            Pending                   -> false
+        }
+    }
+}
+
+cell test SettlementTests {
+    rules {
+        // a funded trade settles
+        assert describe(settle("t1", 10, 50, 1000)) == "settled t1 for 500"
+        assert is_terminal(settle("t1", 10, 50, 1000)) == true
+        // underfunded → failed
+        assert describe(settle("t2", 10, 50, 100)) == "failed: insufficient cash"
+        // zero qty → pending, not terminal
+        assert describe(settle("t3", 0, 50, 1000)) == "pending"
+        assert is_terminal(settle("t3", 0, 50, 1000)) == false
+    }
+}

@@ -1,0 +1,53 @@
+// ============================================================================
+// GCD / LCM — Euclid's algorithm and its consequences
+// ============================================================================
+//
+// gcd() is a builtin (Euclid on absolute values). lcm(a,b) = a*b / gcd(a,b).
+// gcd_list folds the builtin across a whole list with reduce. Coprimality is
+// just gcd == 1.
+//
+//   soma run gcd_lcm.cell run
+// ============================================================================
+
+cell GcdLcm {
+    face {
+        signal lcm(a: Int, b: Int) -> Int
+        signal gcd_list(xs: List) -> Int
+        signal coprime(a: Int, b: Int) -> Bool
+        signal run() -> Map
+    }
+
+    on lcm(a: Int, b: Int) {
+        return idiv(a * b, gcd(a, b))
+    }
+
+    on gcd_list(xs: List) {
+        return xs |> reduce(0, p => gcd(p.acc, p.val))
+    }
+
+    on coprime(a: Int, b: Int) {
+        return gcd(a, b) == 1
+    }
+
+    on run() {
+        return map(
+            "gcd_48_36", gcd(48, 36),
+            "lcm_4_6", lcm(4, 6),
+            "gcd_list", gcd_list([24, 36, 60]),
+            "coprime_8_15", coprime(8, 15)
+        )
+    }
+}
+
+cell test GcdTests {
+    rules {
+        assert gcd(48, 36) == 12
+        assert gcd(17, 5) == 1
+        // reduce with seed 0: gcd(0, x) = x, so folding works
+        assert gcd_list([24, 36, 60]) == 12
+        assert lcm(4, 6) == 12
+        assert lcm(21, 6) == 42
+        assert coprime(8, 15)
+        assert coprime(8, 12) == false
+    }
+}

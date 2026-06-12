@@ -1,0 +1,49 @@
+// Binary search over a sorted List<Int> — returns the index or -1.
+// Also includes lower_bound (first index >= target), the building block for
+// insertion into a sorted array. Demonstrates: while loop, mid = (lo+hi)/2
+// with floor, negative-literal sentinel, and known-answer tests.
+//
+//   soma test examples/corpus/algorithms/binary_search_list.cell
+
+cell BinarySearch {
+    face {
+        signal search(xs: List, target: Int) -> Int
+        signal lower_bound(xs: List, target: Int) -> Int
+    }
+
+    on search(xs: List, target: Int) {
+        let lo = 0
+        let hi = len(xs) - 1
+        while lo <= hi {
+            let mid = floor((lo + hi) / 2)
+            if xs[mid] == target { return mid }
+            if xs[mid] < target { lo = mid + 1 } else { hi = mid - 1 }
+        }
+        return -1
+    }
+
+    // first index i with xs[i] >= target (== len(xs) if none)
+    on lower_bound(xs: List, target: Int) {
+        let lo = 0
+        let hi = len(xs)
+        while lo < hi {
+            let mid = floor((lo + hi) / 2)
+            if xs[mid] < target { lo = mid + 1 } else { hi = mid }
+        }
+        return lo
+    }
+}
+
+cell test BinarySearchTests {
+    rules {
+        assert search([1, 3, 5, 7, 9, 11], 7) == 3
+        assert search([1, 3, 5, 7, 9, 11], 1) == 0
+        assert search([1, 3, 5, 7, 9, 11], 11) == 5
+        assert search([1, 3, 5, 7, 9, 11], 4) == -1
+        assert search(list(), 4) == -1
+        assert lower_bound([1, 3, 5, 7], 5) == 2
+        assert lower_bound([1, 3, 5, 7], 4) == 2
+        assert lower_bound([1, 3, 5, 7], 0) == 0
+        assert lower_bound([1, 3, 5, 7], 99) == 4
+    }
+}

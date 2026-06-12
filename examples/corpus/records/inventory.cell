@@ -1,0 +1,58 @@
+// Inventory: a list of Item records with in-place quantity mutation,
+// restock/sell operations, and aggregate reporting via pipelines.
+// Demonstrates building a list of records and mutating xs[i].field.
+
+cell Inventory {
+    face {
+        signal stock() -> List
+        signal value_of(sku: String) -> Int
+        signal total_value() -> Int
+        signal low_stock(threshold: Int) -> List
+        signal sell(sku: String, n: Int) -> Map
+    }
+
+    on stock() {
+        return list(
+            Item { sku: "WIDGET", qty: 12, price: 4 },
+            Item { sku: "GADGET", qty: 3,  price: 25 },
+            Item { sku: "GIZMO",  qty: 40, price: 1 }
+        )
+    }
+
+    on value_of(sku: String) {
+        let it = stock() |> find(i => i.sku == sku)
+        if it == () { return 0 }
+        return it.qty * it.price
+    }
+
+    on total_value() {
+        return sum(stock() |> map(i => i.qty * i.price))
+    }
+
+    on low_stock(threshold: Int) {
+        return stock() |> filter(i => i.qty < threshold) |> pluck("sku")
+    }
+
+    on sell(sku: String, n: Int) {
+        let items = stock()
+        let idx = -1
+        for e in enumerate(items) {
+            if e.value.sku == sku { idx = e.index }
+        }
+        if idx == -1 { return map("error", "no such sku") }
+        if items[idx].qty < n { return map("error", "insufficient stock") }
+        items[idx].qty = items[idx].qty - n      // mutate the record in the list
+        return map("sku", sku, "remaining", items[idx].qty)
+    }
+}
+
+cell test InventoryTest {
+    rules {
+        assert value_of("GADGET") == 75
+        assert total_value() == 163
+        assert len(low_stock(10)) == 1
+        assert low_stock(10)[0] == "GADGET"
+        assert sell("WIDGET", 5).remaining == 7
+        assert sell("GADGET", 99).error == "insufficient stock"
+    }
+}

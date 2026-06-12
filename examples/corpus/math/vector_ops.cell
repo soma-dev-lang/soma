@@ -1,0 +1,55 @@
+// ============================================================================
+// Vector operations — dot product, norm, cosine similarity
+// ============================================================================
+//
+// Vectors are plain lists. dot() zips two lists and sums the pairwise
+// products; norm is sqrt of the self-dot; cosine similarity normalizes the
+// dot by the product of the norms. Reductions (sum) and zip do the work.
+//
+//   soma run vector_ops.cell run
+// ============================================================================
+
+cell VectorOps {
+    face {
+        signal dot(a: List, b: List) -> Float
+        signal norm(a: List) -> Float
+        signal cosine(a: List, b: List) -> Float
+        signal run() -> Map
+    }
+
+    on dot(a: List, b: List) {
+        let prods = zip(a, b) |> map(p => p.left * p.right)
+        return sum(prods)
+    }
+
+    on norm(a: List) {
+        return sqrt(dot(a, a))
+    }
+
+    on cosine(a: List, b: List) {
+        return dot(a, b) / (norm(a) * norm(b))
+    }
+
+    on run() {
+        let u = [3, 4]
+        let v = [4, 3]
+        return map(
+            "dot", dot(u, v),
+            "norm_u", norm(u),
+            "cosine", cosine(u, v)
+        )
+    }
+}
+
+cell test VectorTests {
+    rules {
+        // 3*4 + 4*3 = 24
+        assert dot([3, 4], [4, 3]) == 24
+        // |(3,4)| = 5
+        assert norm([3, 4]) == 5.0
+        // orthogonal vectors have zero dot, cosine 0
+        assert dot([1, 0], [0, 1]) == 0
+        // identical unit-ish vectors have cosine 1
+        assert abs(cosine([1, 2], [1, 2]) - 1.0) < 0.0000001
+    }
+}

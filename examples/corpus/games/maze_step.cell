@@ -1,0 +1,81 @@
+// ============================================================================
+// Maze movement — one step with wall collision on a grid
+// ============================================================================
+//
+// The maze is a flat row-major list: 0 = open, 1 = wall. move() attempts a
+// step in a compass direction; the player stays put if the target is a wall
+// or off the grid. walk() applies a sequence of moves and returns the final
+// position plus whether the exit was reached.
+//
+// Run:  soma run maze_step.cell --signal demo
+// Test: soma test maze_step.cell
+
+cell MazeStep {
+    face {
+        signal can_enter(maze: List, r: Int, c: Int, y: Int, x: Int) -> Bool
+        signal move(maze: List, r: Int, c: Int, y: Int, x: Int, dir: String) -> Map
+        signal walk(maze: List, r: Int, c: Int, sy: Int, sx: Int, moves: List) -> Map
+        signal demo() -> Map
+    }
+
+    on can_enter(maze: List, r: Int, c: Int, y: Int, x: Int) {
+        if y < 0 || y >= r || x < 0 || x >= c { return false }
+        return maze[y * c + x] == 0
+    }
+
+    on move(maze: List, r: Int, c: Int, y: Int, x: Int, dir: String) {
+        let ny = y
+        let nx = x
+        if dir == "N" { ny = y - 1 }
+        if dir == "S" { ny = y + 1 }
+        if dir == "W" { nx = x - 1 }
+        if dir == "E" { nx = x + 1 }
+        if can_enter(maze, r, c, ny, nx) {
+            return map("y", ny, "x", nx, "moved", true)
+        }
+        return map("y", y, "x", x, "moved", false)
+    }
+
+    // Apply a list of direction strings; report final cell and exit reach.
+    on walk(maze: List, r: Int, c: Int, sy: Int, sx: Int, moves: List) {
+        let y = sy
+        let x = sx
+        let blocked = 0
+        for d in moves {
+            let res = move(maze, r, c, y, x, d)
+            y = res.y
+            x = res.x
+            if res.moved == false { blocked = blocked + 1 }
+        }
+        // exit is the bottom-right cell
+        let at_exit = y == r - 1 && x == c - 1
+        return map("y", y, "x", x, "blocked", blocked, "at_exit", at_exit)
+    }
+
+    on demo() {
+        // 3x3 maze, wall at (1,1):
+        //  . . .
+        //  . # .
+        //  . . .
+        let m = [0,0,0, 0,1,0, 0,0,0]
+        return walk(m, 3, 3, 0, 0, ["E", "E", "S", "S"])
+    }
+}
+
+cell test MazeTests {
+    rules {
+        // maze: [0,0,0, 0,1,0, 0,0,0] — wall at (1,1)
+        // moving into the wall at (1,1) from (0,1) going S is blocked
+        assert move([0,0,0, 0,1,0, 0,0,0], 3, 3, 0, 1, "S").moved == false
+        // moving E from (0,0) is open
+        assert move([0,0,0, 0,1,0, 0,0,0], 3, 3, 0, 0, "E").x == 1
+        // stepping off the top edge stays put
+        assert move([0,0,0, 0,1,0, 0,0,0], 3, 3, 0, 0, "N").moved == false
+        // walk around the wall to the exit (2,2)
+        assert walk([0,0,0, 0,1,0, 0,0,0], 3, 3, 0, 0, ["E", "E", "S", "S"]).at_exit == true
+        // a path that bumps the wall records a block
+        assert walk([0,0,0, 0,1,0, 0,0,0], 3, 3, 0, 1, ["S"]).blocked == 1
+        assert can_enter([0,0,0, 0,1,0, 0,0,0], 3, 3, 1, 1) == false
+        assert can_enter([0,0,0, 0,1,0, 0,0,0], 3, 3, 2, 2) == true
+    }
+}

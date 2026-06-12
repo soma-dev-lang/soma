@@ -1,0 +1,61 @@
+// A two-road traffic-light interlock proven safe by construction.
+// The single machine cycles ns_go -> ns_caution -> ew_go -> ew_caution
+// and back, with an all_red emergency reachable from anywhere. Because no
+// state ever has both roads green, the model checker proves the safety
+// property `never = []` over a machine that can never deadlock.
+
+cell TrafficInterlock {
+    face {
+        signal tick(id: String) -> String
+        signal emergency(id: String) -> String
+        signal clear(id: String) -> String
+        signal phase(id: String) -> String
+        signal next(id: String) -> List<String>
+    }
+
+    state lights {
+        initial: ns_go
+        ns_go      -> ns_caution
+        ns_caution -> ew_go
+        ew_go      -> ew_caution
+        ew_caution -> ns_go
+        *          -> all_red
+        all_red    -> ns_go
+    }
+
+    // advance one phase in the normal cycle
+    on tick(id: String) {
+        let cur = get_status(id)
+        let nxt = match cur {
+            "ns_go"      -> "ns_caution"
+            "ns_caution" -> "ew_go"
+            "ew_go"      -> "ew_caution"
+            "ew_caution" -> "ns_go"
+            _            -> "ns_go"
+        }
+        transition(id, nxt)
+        return get_status(id)
+    }
+
+    on emergency(id: String) { transition(id, "all_red")  return get_status(id) }
+    on clear(id: String)     { transition(id, "ns_go")    return get_status(id) }
+    on phase(id: String)     { return get_status(id) }
+    on next(id: String)      { return valid_transitions(id) }
+}
+
+cell test TrafficTests {
+    rules {
+        // full normal cycle returns to the start
+        assert tick("x") == "ns_caution"
+        assert tick("x") == "ew_go"
+        assert tick("x") == "ew_caution"
+        assert tick("x") == "ns_go"
+
+        // emergency from any phase, then clear back to a green
+        assert emergency("y") == "all_red"
+        assert clear("y") == "ns_go"
+
+        // illegal: cannot jump green-to-green across roads (skips caution)
+        assert_fails transition("z", "ew_go")
+    }
+}

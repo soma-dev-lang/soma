@@ -1,0 +1,80 @@
+// Multi-step expense-approval workflow with guarded transitions.
+// A submitted expense needs manager sign-off; anything over a threshold
+// also needs finance. Rejection at either gate sends it back to draft.
+// Guards on the state machine encode the business rule: the manager_ok ->
+// finance_review arrow is only taken for large amounts.
+
+cell ExpenseApproval {
+    face {
+        signal submit(id: String, amount: Int) -> Map
+        signal manager_sign(id: String) -> String
+        signal finance_sign(id: String) -> String
+        signal reject(id: String) -> String
+        signal pay_out(id: String) -> String
+        signal status(id: String) -> String
+    }
+
+    memory {
+        amounts: Map<String, Int> [persistent, consistent]
+        invariant amounts >= 0
+    }
+
+    state claim {
+        initial: draft
+        draft          -> pending_manager
+        pending_manager -> pending_finance
+        pending_manager -> approved
+        pending_finance -> approved
+        pending_manager -> draft
+        pending_finance -> draft
+        approved        -> paid
+    }
+
+    on submit(id: String, amount: Int) {
+        require amount > 0 else bad_amount
+        amounts.set(id, amount)
+        transition(id, "pending_manager")
+        return map("state", get_status(id), "amount", amount)
+    }
+
+    on manager_sign(id: String) {
+        let amt = amounts.get(id) ?? 0
+        // large claims escalate to finance; small ones are approved outright
+        if amt > 1000 {
+            transition(id, "pending_finance")
+        } else {
+            transition(id, "approved")
+        }
+        return get_status(id)
+    }
+
+    on finance_sign(id: String) { transition(id, "approved") return get_status(id) }
+    on reject(id: String)       { transition(id, "draft")    return get_status(id) }
+    on pay_out(id: String)      { transition(id, "paid")     return get_status(id) }
+    on status(id: String)       { return get_status(id) }
+}
+
+cell test ExpenseTests {
+    rules {
+        // small claim: manager approves outright, then paid
+        assert submit("e1", 200).state == "pending_manager"
+        assert manager_sign("e1") == "approved"
+        assert pay_out("e1") == "paid"
+
+        // large claim: escalates to finance before approval
+        assert submit("e2", 5000).state == "pending_manager"
+        assert manager_sign("e2") == "pending_finance"
+        assert finance_sign("e2") == "approved"
+        assert pay_out("e2") == "paid"
+
+        // rejection bounces back to draft, then can be resubmitted
+        assert submit("e3", 300).state == "pending_manager"
+        assert reject("e3") == "draft"
+        assert submit("e3", 300).state == "pending_manager"
+
+        // a zero/negative amount is refused before any state change
+        assert_fails submit("e4", 0)
+        // illegal: cannot pay an expense that isn't approved yet
+        assert_fails pay_out("e5")
+    }
+}

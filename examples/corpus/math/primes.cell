@@ -1,0 +1,75 @@
+// ============================================================================
+// Primes — primality test, prime list, factorization
+// ============================================================================
+//
+// Trial division up to √n decides primality. primes_up_to collects them into
+// a list. factorize peels off prime factors smallest-first. Everything stays
+// in plain Int arithmetic with while loops.
+//
+//   soma run primes.cell run
+// ============================================================================
+
+cell Primes {
+    face {
+        signal is_prime(n: Int) -> Bool
+        signal primes_up_to(n: Int) -> List
+        signal factorize(n: Int) -> List
+        signal run() -> Map
+    }
+
+    on is_prime(n: Int) {
+        if n < 2 { return false }
+        if n < 4 { return true }
+        if n % 2 == 0 { return false }
+        let i = 3
+        while i * i <= n {
+            if n % i == 0 { return false }
+            i = i + 2
+        }
+        return true
+    }
+
+    on primes_up_to(n: Int) {
+        let ps = []
+        for i in range(2, n + 1) {
+            if is_prime(i) { ps = push(ps, i) }
+        }
+        return ps
+    }
+
+    on factorize(n: Int) {
+        let m = n
+        let factors = []
+        let d = 2
+        while d * d <= m {
+            while m % d == 0 {
+                factors = push(factors, d)
+                m = idiv(m, d)
+            }
+            d = d + 1
+        }
+        if m > 1 { factors = push(factors, m) }
+        return factors
+    }
+
+    on run() {
+        return map(
+            "is_97_prime", is_prime(97),
+            "primes_30", primes_up_to(30),
+            "factors_360", factorize(360)
+        )
+    }
+}
+
+cell test PrimeTests {
+    rules {
+        assert is_prime(2)
+        assert is_prime(97)
+        assert is_prime(91) == false        // 7 * 13
+        assert len(primes_up_to(30)) == 10  // 2,3,5,7,11,13,17,19,23,29
+        // 360 = 2^3 * 3^2 * 5
+        assert len(factorize(360)) == 6
+        assert product(factorize(360)) == 360
+        assert product(factorize(97)) == 97
+    }
+}

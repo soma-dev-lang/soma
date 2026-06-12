@@ -1,0 +1,56 @@
+// Paginated product list: GET /products?page=N&size=M slices a stored list.
+// Returns a Map with items + pagination metadata (total, page, pages).
+
+cell Catalog {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal seed(n: Int) -> Int
+        signal page(page: Int, size: Int) -> Map
+        promise all_persistent
+    }
+
+    memory {
+        products: Map<String, String> [persistent, consistent]
+    }
+
+    on seed(n: Int) {
+        for i in range(1, n + 1) {
+            let p = map("id", i, "name", "product-{i}", "price", i * 10)
+            products.set(to_string(i), p)
+        }
+        return products.len()
+    }
+
+    on page(page: Int, size: Int) {
+        let all = products.values
+        let total = len(all)
+        let pages = if total == 0 { 0 } else { floor((total + size - 1) / size) }
+        let start = (page - 1) * size
+        let items = list()
+        let i = start
+        while i < start + size && i < total {
+            items = push(items, all[i])
+            i = i + 1
+        }
+        return map("page", page, "size", size, "total", total, "pages", pages, "items", items)
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/products"} -> page(1, 10)
+            _                                  -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test CatalogTest {
+    rules {
+        assert seed(25) == 25
+        assert page(1, 10).total == 25
+        assert page(1, 10).pages == 3
+        assert len(page(1, 10).items) == 10
+        assert len(page(3, 10).items) == 5
+        assert page(2, 10).page == 2
+    }
+}

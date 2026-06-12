@@ -1,0 +1,56 @@
+// Bank accounts as Account records kept in a persistent Map slot, with
+// deposit/withdraw that read, mutate, and write the record back. Shows
+// the read-modify-write round-trip pattern and a negative (overdraft) path.
+
+cell Bank {
+    face {
+        signal open(owner: String, initial: Int) -> String
+        signal balance(id: String) -> Int
+        signal deposit(id: String, amount: Int) -> Int
+        signal withdraw(id: String, amount: Int) -> Map
+    }
+
+    memory {
+        accounts: Map<String, String> [persistent, consistent]
+    }
+
+    on open(owner: String, initial: Int) {
+        let id = "acct-{owner}"
+        accounts.set(id, Account { id: id, owner: owner, balance: initial })
+        return id
+    }
+
+    on balance(id: String) {
+        let a = accounts.get(id)
+        if a == () { return -1 }
+        return a.balance
+    }
+
+    on deposit(id: String, amount: Int) {
+        let a = accounts.get(id)
+        if a == () { return -1 }
+        a.balance = a.balance + amount      // mutate the loaded record
+        accounts.set(id, a)                  // write it back
+        return a.balance
+    }
+
+    on withdraw(id: String, amount: Int) {
+        let a = accounts.get(id)
+        if a == () { return map("error", "no account") }
+        if a.balance < amount { return map("error", "overdraft") }
+        a.balance = a.balance - amount
+        accounts.set(id, a)
+        return map("id", id, "balance", a.balance)
+    }
+}
+
+cell test BankTest {
+    rules {
+        assert open("Ada", 100) == "acct-Ada"
+        assert balance("acct-Ada") == 100
+        assert deposit("acct-Ada", 50) == 150
+        assert withdraw("acct-Ada", 30).balance == 120
+        assert withdraw("acct-Ada", 9999).error == "overdraft"
+        assert balance("acct-Ghost") == -1
+    }
+}

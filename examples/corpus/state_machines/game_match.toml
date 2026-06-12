@@ -1,0 +1,9 @@
+[package]
+name = "game-match"
+version = "0.1.0"
+entry = "game_match.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["finished", "abandoned"]
+never = []

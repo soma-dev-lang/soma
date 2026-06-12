@@ -1,0 +1,52 @@
+// Levenshtein edit distance — classic 2D dynamic programming.
+// Demonstrates: a DP table as a List of rows (each a List), nested loops over
+// i,j, the insert/delete/substitute min recurrence, and min() over a list.
+//
+//   soma run  examples/corpus/algorithms/edit_distance.cell distance kitten sitting
+//   soma test examples/corpus/algorithms/edit_distance.cell
+
+cell EditDistance {
+    face {
+        signal distance(a: String, b: String) -> Int
+    }
+
+    on distance(a: String, b: String) {
+        let ca = split(a, "")
+        let cb = split(b, "")
+        let n = len(ca)
+        let m = len(cb)
+
+        // dp[i][j] = edit distance between a[0..i) and b[0..j)
+        let dp = list()
+        for i in range(0, n + 1) {
+            let row = list()
+            for j in range(0, m + 1) { row = push(row, 0) }
+            dp = push(dp, row)
+        }
+        for i in range(0, n + 1) { dp[i][0] = i }
+        for j in range(0, m + 1) { dp[0][j] = j }
+
+        for i in range(1, n + 1) {
+            for j in range(1, m + 1) {
+                let cost = if ca[i - 1] == cb[j - 1] { 0 } else { 1 }
+                dp[i][j] = min(list(
+                    dp[i - 1][j] + 1,        // deletion
+                    dp[i][j - 1] + 1,        // insertion
+                    dp[i - 1][j - 1] + cost  // substitution
+                ))
+            }
+        }
+        return dp[n][m]
+    }
+}
+
+cell test EditDistanceTests {
+    rules {
+        assert distance("kitten", "sitting") == 3
+        assert distance("flaw", "lawn") == 2
+        assert distance("", "abc") == 3
+        assert distance("abc", "") == 3
+        assert distance("same", "same") == 0
+        assert distance("a", "b") == 1
+    }
+}

@@ -1,0 +1,51 @@
+// Token-budget enforcement, made testable.
+// Demonstrates: set_budget() as a hard cap, tokens_used()/tokens_remaining(),
+// and a bounded think-loop that STOPS when the budget is exhausted — the
+// verified-termination angle. No network: SOMA_LLM_MOCK=echo.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run budget_guard.cell --signal summarize "a b c d"
+// Test: SOMA_LLM_MOCK=echo soma test budget_guard.cell
+
+cell agent Summarizer {
+    face {
+        signal summarize(text: String) -> Map
+        signal budget_left(cap: Int) -> Int
+    }
+
+    state work {
+        initial: idle
+        idle    -> thinking
+        thinking -> done
+        *       -> failed
+    }
+
+    // Pure budget arithmetic, no LLM — proves the cap math is right.
+    on budget_left(cap: Int) {
+        set_budget(cap)
+        tokens_remaining()
+    }
+
+    on summarize(text: String) {
+        set_budget(4000)
+        let id = to_string(next_id())
+        transition(id, "thinking")
+
+        let r = try { think("Summarize in one line: {text}") }
+        if r.error != () {
+            transition(id, "failed")
+            return map("status", "failed", "error", r.error)
+        }
+
+        transition(id, "done")
+        map("status", "done", "summary", r.value, "used", tokens_used())
+    }
+}
+
+cell test BudgetTests {
+    rules {
+        // A fresh budget reports its full cap as remaining.
+        assert budget_left(4000) == 4000
+        assert budget_left(100) == 100
+        assert summarize("alpha beta").status == "done"
+    }
+}

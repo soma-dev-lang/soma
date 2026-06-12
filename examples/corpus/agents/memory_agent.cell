@@ -1,0 +1,60 @@
+// Agent with persistent memory via remember()/recall().
+// Demonstrates: the remember/recall builtins backed by a [persistent] slot,
+// a knowledge-base lifecycle, and recall() returning () for unknown keys
+// (null-checked with ??).
+//
+// Run:  SOMA_LLM_MOCK=echo soma run memory_agent.cell --signal learn "capital" "Paris"
+// Test: SOMA_LLM_MOCK=echo soma test memory_agent.cell
+
+cell agent Librarian {
+    face {
+        signal learn(key: String, value: String) -> Map
+        signal lookup(key: String) -> String
+        signal answer(question: String) -> Map
+    }
+
+    memory {
+        kb: Map<String, String> [persistent]
+    }
+
+    state task {
+        initial: idle
+        idle    -> working
+        working -> done
+        *       -> failed
+    }
+
+    on learn(key: String, value: String) {
+        remember(key, value)
+        kb.set(key, value)
+        map("stored", key, "value", value)
+    }
+
+    on lookup(key: String) {
+        let v = recall(key)
+        v ?? "unknown"
+    }
+
+    on answer(question: String) {
+        set_budget(2000)
+        let id = to_string(next_id())
+        transition(id, "working")
+        let r = try { think("Answer using stored facts: {question}") }
+        if r.error != () {
+            transition(id, "failed")
+            return map("status", "failed", "error", r.error)
+        }
+        transition(id, "done")
+        map("status", "done", "answer", r.value)
+    }
+}
+
+cell test LibrarianTests {
+    rules {
+        assert learn("capital", "Paris").stored == "capital"
+        assert lookup("capital") == "Paris"
+        // recall on an unknown key falls back via ??.
+        assert lookup("nope") == "unknown"
+        assert answer("hi").status == "done"
+    }
+}

@@ -1,0 +1,60 @@
+// ============================================================================
+// Bisection — bracket a root of a continuous function and halve
+// ============================================================================
+//
+// Given a bracket [a,b] with f(a)·f(b) < 0, the root lies between them; halve
+// the interval toward whichever sub-bracket keeps the sign change. Converges
+// linearly but never diverges. Here f(x) = x² − 2, whose positive root is √2.
+//
+//   soma run bisection_root.cell run
+// ============================================================================
+
+cell BisectionRoot {
+    face {
+        signal f(x: Float) -> Float
+        signal bisect(a: Float, b: Float, tol: Float) -> Float
+        signal run() -> Map
+    }
+
+    on f(x: Float) [native] {
+        return x * x - 2.0
+    }
+
+    on bisect(a: Float, b: Float, tol: Float) [native] {
+        let lo = a
+        let hi = b
+        let i = 0
+        while i < 200 {
+            let mid = (lo + hi) / 2.0
+            let fm = f(mid)
+            let width = hi - lo
+            if width < 0.0 { width = 0.0 - width }
+            if width < tol { return mid }
+            let flo = f(lo)
+            let same = 0
+            if flo < 0.0 {
+                if fm < 0.0 { same = 1 }
+            }
+            if flo >= 0.0 {
+                if fm >= 0.0 { same = 1 }
+            }
+            if same == 1 { lo = mid } else { hi = mid }
+            i = i + 1
+        }
+        return (lo + hi) / 2.0
+    }
+
+    on run() {
+        let r = bisect(0.0, 2.0, 0.0000000001)
+        return map("root", r, "f_root", f(r))
+    }
+}
+
+cell test BisectTests {
+    rules {
+        // positive root of x^2 - 2 is sqrt(2)
+        assert abs(bisect(0.0, 2.0, 0.0000000001) - 1.4142135623730951) < 0.00001
+        // f at the found root is ~0
+        assert abs(f(bisect(0.0, 2.0, 0.0000000001))) < 0.00001
+    }
+}

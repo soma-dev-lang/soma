@@ -1,0 +1,98 @@
+// ============================================================================
+// Yahtzee — score a roll of five dice in any category
+// ============================================================================
+//
+// counts() buckets the five dice into face frequencies. The category scorers
+// read those buckets: upper boxes, n-of-a-kind, full house, straights, and
+// the 50-point Yahtzee. All pure integer logic.
+//
+// Run:  soma run yahtzee.cell --signal demo
+// Test: soma test yahtzee.cell
+
+cell Yahtzee {
+    face {
+        signal counts(dice: List) -> List
+        signal n_of_a_kind(dice: List, n: Int) -> Int
+        signal full_house(dice: List) -> Int
+        signal small_straight(dice: List) -> Int
+        signal yahtzee(dice: List) -> Int
+        signal chance(dice: List) -> Int
+        signal demo() -> Map
+    }
+
+    // Frequency of each face 1..6, indexed 0..5.
+    on counts(dice: List) {
+        let c = [0, 0, 0, 0, 0, 0]
+        for d in dice {
+            c[d - 1] = c[d - 1] + 1
+        }
+        return c
+    }
+
+    // Sum of all dice if some face appears >= n times, else 0.
+    on n_of_a_kind(dice: List, n: Int) {
+        let c = counts(dice)
+        if any(c, x => x >= n) { return sum(dice) }
+        return 0
+    }
+
+    on full_house(dice: List) {
+        let c = counts(dice)
+        let has3 = any(c, x => x == 3)
+        let has2 = any(c, x => x == 2)
+        if has3 && has2 { return 25 }
+        return 0
+    }
+
+    // Four consecutive faces present → 30 points.
+    on small_straight(dice: List) {
+        let c = counts(dice)
+        let runs = [
+            c[0] >= 1 && c[1] >= 1 && c[2] >= 1 && c[3] >= 1,
+            c[1] >= 1 && c[2] >= 1 && c[3] >= 1 && c[4] >= 1,
+            c[2] >= 1 && c[3] >= 1 && c[4] >= 1 && c[5] >= 1
+        ]
+        if any(runs, r => r) { return 30 }
+        return 0
+    }
+
+    on yahtzee(dice: List) {
+        let c = counts(dice)
+        if any(c, x => x == 5) { return 50 }
+        return 0
+    }
+
+    on chance(dice: List) {
+        return sum(dice)
+    }
+
+    on demo() {
+        let d = [3, 3, 3, 5, 5]
+        return map(
+            "full_house", full_house(d),
+            "three_kind", n_of_a_kind(d, 3),
+            "chance", chance(d)
+        )
+    }
+}
+
+cell test YahtzeeTests {
+    rules {
+        // five of a kind
+        assert yahtzee([4, 4, 4, 4, 4]) == 50
+        assert yahtzee([4, 4, 4, 4, 5]) == 0
+        // full house 3+2
+        assert full_house([3, 3, 3, 5, 5]) == 25
+        assert full_house([3, 3, 3, 3, 5]) == 0
+        // three of a kind scores the whole roll's sum
+        assert n_of_a_kind([2, 2, 2, 6, 1], 3) == 13
+        assert n_of_a_kind([2, 2, 3, 6, 1], 3) == 0
+        // four of a kind
+        assert n_of_a_kind([5, 5, 5, 5, 1], 4) == 21
+        // small straight 2-3-4-5
+        assert small_straight([2, 3, 4, 5, 5]) == 30
+        assert small_straight([1, 1, 4, 5, 6]) == 0
+        // chance is just the total
+        assert chance([1, 2, 3, 4, 5]) == 15
+    }
+}

@@ -1,0 +1,68 @@
+// A stack (LIFO) backed by a List, used to check balanced brackets.
+// Demonstrates: list-as-stack with push + index-based pop, a String scan,
+// match over bracket characters, and an early-out on mismatch.
+//
+//   soma run  examples/corpus/algorithms/stack.cell balanced "{[()]}"
+//   soma test examples/corpus/algorithms/stack.cell
+
+cell Brackets {
+    face {
+        signal balanced(s: String) -> Bool
+        signal closes(open: String, close: String) -> Bool
+        signal pop(xs: List) -> List
+    }
+
+    // pop = the list without its last element (the classic stack pop)
+    on pop(xs: List) {
+        let out = list()
+        for i in range(0, len(xs) - 1) { out = push(out, xs[i]) }
+        return out
+    }
+
+    on closes(open: String, close: String) {
+        return match open {
+            "(" -> close == ")"
+            "[" -> close == "]"
+            "{" -> close == "}"
+            _   -> false
+        }
+    }
+
+    on balanced(s: String) {
+        let stack = list()
+        let ok = true
+        for ch in split(s, "") {
+            if ch == "(" || ch == "[" || ch == "{" {
+                stack = push(stack, ch)
+            } else if ch == ")" || ch == "]" || ch == "}" {
+                let n = len(stack)
+                if n == 0 {
+                    ok = false
+                    break
+                }
+                let top = stack[n - 1]
+                if !closes(top, ch) {
+                    ok = false
+                    break
+                }
+                stack = pop(stack)
+            }
+        }
+        return ok && len(stack) == 0
+    }
+}
+
+cell test BracketsTests {
+    rules {
+        assert balanced("{[()]}")
+        assert balanced("()[]{}")
+        assert balanced("")
+        assert !balanced("(]")
+        assert !balanced("([)]")
+        assert !balanced("(((")
+        assert !balanced("))")
+        assert closes("(", ")")
+        assert !closes("(", "]")
+        assert to_string(pop([1, 2, 3])) == to_string([1, 2])
+    }
+}

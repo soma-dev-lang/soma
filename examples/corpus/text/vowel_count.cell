@@ -1,0 +1,54 @@
+// ============================================================================
+// Vowel / consonant counter
+// ============================================================================
+//
+// Walks each character, classifying letters as vowels or consonants and
+// ignoring everything else. Demonstrates membership testing with contains()
+// over a vowel set and returning a small summary Map.
+//
+// Run: soma run vowel_count.cell --signal analyze "Hello World"
+
+cell VowelCount {
+    face {
+        signal count_vowels(s: String) -> Int
+        signal analyze(s: String) -> Map
+    }
+
+    on count_vowels(s: String) {
+        let low = lowercase(s)
+        let n = 0
+        for i in range(0, len(low)) {
+            if contains("aeiou", low[i]) {
+                n = n + 1
+            }
+        }
+        return n
+    }
+
+    on analyze(s: String) {
+        let low = lowercase(s)
+        let vowels = 0
+        let consonants = 0
+        for i in range(0, len(low)) {
+            let c = low[i]
+            if c >= "a" && c <= "z" {
+                if contains("aeiou", c) {
+                    vowels = vowels + 1
+                } else {
+                    consonants = consonants + 1
+                }
+            }
+        }
+        return map("vowels", vowels, "consonants", consonants)
+    }
+}
+
+cell test VowelCountTest {
+    rules {
+        assert count_vowels("hello") == 2
+        assert count_vowels("xyz") == 0
+        assert count_vowels("AEIOU") == 5
+        assert analyze("Hello World")["vowels"] == 3
+        assert analyze("Hello World")["consonants"] == 7
+    }
+}

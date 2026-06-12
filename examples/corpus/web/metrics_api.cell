@@ -1,0 +1,62 @@
+// Metrics / health endpoint. Every request bumps a request counter;
+// GET /health returns status + uptime-style fields, GET /metrics the tallies.
+
+cell Metrics {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal hit(route: String) -> Int
+        signal health() -> Map
+        signal report() -> Map
+        promise all_persistent
+    }
+
+    memory {
+        counters: Map<String, Int> [persistent, consistent]
+    }
+
+    on hit(route: String) {
+        let c = counters.get(route)
+        if c == () { c = 0 }
+        counters.set(route, c + 1)
+        return c + 1
+    }
+
+    on health() {
+        return map("status", "ok", "checks", map("db", "up", "bus", "up"))
+    }
+
+    on report() {
+        let total = 0
+        for k in counters.keys {
+            total = total + counters.get(k)
+        }
+        return map("routes", counters.len(), "total_hits", total)
+    }
+
+    on request(method: String, path: String, body: String) {
+        hit(path)
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/health"}  -> health()
+            {method: "GET", path: "/metrics"} -> report()
+            _                                 -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test MetricsTest {
+    rules {
+        assert health().status == "ok"
+        assert health().checks.db == "up"
+        assert _load() == "3|5"
+    }
+
+    on _load() {
+        hit("/x")
+        hit("/x")
+        hit("/y")
+        hit("/y")
+        hit("/z")
+        return concat(to_string(report().routes), concat("|", to_string(report().total_hits)))
+    }
+}

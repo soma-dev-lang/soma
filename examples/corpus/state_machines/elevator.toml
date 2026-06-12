@@ -1,0 +1,11 @@
+[package]
+name = "elevator"
+version = "0.1.0"
+entry = "elevator.cell"
+
+# `idle` is the recurrent terminal-equivalent hub: every state can reach
+# it, and there is no deadlock.
+[verify]
+deadlock_free = true
+eventually = ["idle"]
+never = []

@@ -1,0 +1,76 @@
+// CRUD JSON API over a persistent Map: notes with title + body.
+// Returns Maps directly (auto-serialized to JSON) and 404 responses on miss.
+//   curl -X POST localhost:8080/api/notes -d '{"title":"hi","body":"world"}'
+
+cell Notes {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal create(data: Map) -> Map
+        signal read(id: String) -> Map
+        signal update(id: String, data: Map) -> Map
+        signal remove(id: String) -> Map
+        signal index() -> List
+        promise all_persistent
+    }
+
+    memory {
+        notes: Map<String, String> [persistent, consistent]
+    }
+
+    on create(data: Map) {
+        let id = to_string(next_id())
+        let note = map("id", id, "title", data.title, "body", data.body)
+        notes.set(id, note)
+        return note
+    }
+
+    on read(id: String) {
+        let raw = notes.get(id)
+        if raw == () { return response(404, map("error", "not found")) }
+        return raw
+    }
+
+    on update(id: String, data: Map) {
+        let raw = notes.get(id)
+        if raw == () { return response(404, map("error", "not found")) }
+        let title = data.title ?? raw.title
+        let body = data.body ?? raw.body
+        let note = map("id", id, "title", title, "body", body)
+        notes.set(id, note)
+        return note
+    }
+
+    on remove(id: String) {
+        let existed = notes.delete(id)
+        if existed == false { return response(404, map("error", "not found")) }
+        return map("deleted", id)
+    }
+
+    on index() {
+        return notes.values
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET",    path: "/api/notes"}        -> index()
+            {method: "POST",   path: "/api/notes"}        -> create(from_json(body))
+            {method: "GET",    path: "/api/notes/" + id}  -> read(id)
+            {method: "PUT",    path: "/api/notes/" + id}  -> update(id, from_json(body))
+            {method: "DELETE", path: "/api/notes/" + id}  -> remove(id)
+            _                                             -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test NotesTest {
+    rules {
+        assert create(map("title", "a", "body", "one")).title == "a"
+        assert create(map("title", "b", "body", "two")).id == "2"
+        assert read("1").body == "one"
+        assert update("1", map("title", "z")).title == "z"
+        assert update("1", map("title", "z")).body == "one"
+        assert remove("2").deleted == "2"
+        assert len(index()) == 1
+    }
+}

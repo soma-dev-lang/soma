@@ -1,0 +1,49 @@
+// Playlist as an ordered list of Track records. Demonstrates building,
+// reordering, and summarizing a list of records, plus sort_by/pluck over
+// record fields and total-duration aggregation.
+
+cell Playlist {
+    face {
+        signal tracks() -> List
+        signal total_seconds() -> Int
+        signal by_artist(artist: String) -> List
+        signal longest() -> Map
+        signal titles_sorted() -> List
+    }
+
+    on tracks() {
+        return list(
+            Track { title: "Aurora",  artist: "Nim",  secs: 210 },
+            Track { title: "Boreal",  artist: "Nim",  secs: 185 },
+            Track { title: "Cinder",  artist: "Vox",  secs: 240 },
+            Track { title: "Dune",    artist: "Vox",  secs: 175 }
+        )
+    }
+
+    on total_seconds() {
+        return sum(tracks() |> pluck("secs"))
+    }
+
+    on by_artist(artist: String) {
+        return tracks() |> filter(t => t.artist == artist) |> pluck("title")
+    }
+
+    on longest() {
+        return tracks() |> max_by("secs")
+    }
+
+    on titles_sorted() {
+        return tracks() |> sort_by("secs", "desc") |> pluck("title")
+    }
+}
+
+cell test PlaylistTest {
+    rules {
+        assert total_seconds() == 810
+        assert len(by_artist("Nim")) == 2
+        assert by_artist("Nim")[0] == "Aurora"
+        assert longest().title == "Cinder"
+        assert titles_sorted()[0] == "Cinder"
+        assert titles_sorted()[3] == "Dune"
+    }
+}

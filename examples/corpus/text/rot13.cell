@@ -1,0 +1,44 @@
+// ============================================================================
+// ROT13 — self-inverse letter rotation
+// ============================================================================
+//
+// Rotates each letter by 13, preserving case; applying it twice restores the
+// original. Demonstrates two alphabet lookups (lower/upper), index_of for the
+// source position, and the involution property in a test.
+//
+// Run: soma run rot13.cell --signal rot13 "Hello, World"
+
+cell Rot13 {
+    face {
+        signal rot13(text: String) -> String
+    }
+
+    on rot13(text: String) {
+        let lower = "abcdefghijklmnopqrstuvwxyz"
+        let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        let out = ""
+        for i in range(0, len(text)) {
+            let c = text[i]
+            let lp = index_of(lower, c)
+            let up = index_of(upper, c)
+            if lp >= 0 {
+                out = out + lower[(lp + 13) % 26]
+            } else if up >= 0 {
+                out = out + upper[(up + 13) % 26]
+            } else {
+                out = out + c
+            }
+        }
+        return out
+    }
+}
+
+cell test Rot13Test {
+    rules {
+        assert rot13("hello") == "uryyb"
+        assert rot13("Hello, World") == "Uryyb, Jbeyq"
+        assert rot13(rot13("Self inverse 123!")) == "Self inverse 123!"
+        assert rot13("ABC") == "NOP"
+        assert rot13("123") == "123"
+    }
+}

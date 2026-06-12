@@ -1,0 +1,76 @@
+// ============================================================================
+// Craps — the come-out roll and point-resolution rules
+// ============================================================================
+//
+// come_out(total) resolves the first roll: 7/11 wins, 2/3/12 craps out, any
+// other number becomes the "point". resolve(point, rolls) plays the rest of
+// the round — rolling the point again wins, a 7 loses. All from a roll log.
+//
+// Run:  soma run craps.cell --signal demo
+// Test: soma test craps.cell
+
+cell Craps {
+    face {
+        signal come_out(total: Int) -> Map
+        signal resolve(point: Int, rolls: List) -> String
+        signal play(rolls: List) -> Map
+        signal demo() -> Map
+    }
+
+    on come_out(total: Int) {
+        return match total {
+            7 || 11      -> map("result", "win",   "point", 0)
+            2 || 3 || 12 -> map("result", "lose",  "point", 0)
+            _            -> map("result", "point", "point", total)
+        }
+    }
+
+    // After a point is set, scan rolls until the point (win) or a 7 (lose).
+    on resolve(point: Int, rolls: List) {
+        let outcome = "open"
+        for r in rolls {
+            if outcome == "open" {
+                if r == point { outcome = "win" }
+                else if r == 7 { outcome = "lose" }
+            }
+        }
+        return outcome
+    }
+
+    // Full round: first element is the come-out, the rest are point rolls.
+    on play(rolls: List) {
+        let co = come_out(rolls[0])
+        if co.result != "point" {
+            return map("result", co.result, "point", 0)
+        }
+        let rest = []
+        for i in range(1, len(rolls)) { rest = push(rest, rolls[i]) }
+        return map("result", resolve(co.point, rest), "point", co.point)
+    }
+
+    on demo() {
+        // come out 6 (point), then 8, 6 → win on the point
+        return play([6, 8, 6])
+    }
+}
+
+cell test CrapsTests {
+    rules {
+        // natural win / craps out
+        assert come_out(7).result == "win"
+        assert come_out(11).result == "win"
+        assert come_out(2).result == "lose"
+        assert come_out(12).result == "lose"
+        // a point is established
+        assert come_out(6).result == "point"
+        assert come_out(6).point == 6
+        // resolving the point: making it wins, a 7 first loses
+        assert resolve(6, [8, 6]) == "win"
+        assert resolve(6, [8, 7, 6]) == "lose"
+        assert resolve(8, [5, 9, 10]) == "open"
+        // full rounds
+        assert play([6, 8, 6]).result == "win"
+        assert play([7]).result == "win"
+        assert play([4, 7]).result == "lose"
+    }
+}

@@ -1,0 +1,9 @@
+[package]
+name = "vending-machine"
+version = "0.1.0"
+entry = "vending_machine.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["idle"]
+never = []

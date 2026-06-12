@@ -1,0 +1,53 @@
+// Chip/cash ledger with a non-negative balance invariant.
+// The memory itself rejects any write that would overdraw an account —
+// the bad .set() never commits, so the slot keeps its previous value.
+// Demonstrates: memory invariant, try around a guarded write, assert_fails.
+
+cell ChipLedger {
+    face {
+        signal credit(player: String, amount: Int) -> Map
+        signal debit(player: String, amount: Int) -> Map
+        signal balance_of(player: String) -> Int
+        promise all_persistent
+    }
+
+    memory {
+        chips: Map<String, Int> [persistent, consistent]
+        invariant chips >= 0
+    }
+
+    on balance_of(player: String) {
+        let b = chips.get(player)
+        if b == () { return 0 }
+        return b
+    }
+
+    on credit(player: String, amount: Int) {
+        let cur = balance_of(player)
+        chips.set(player, cur + amount)
+        return map("ok", true, "balance", cur + amount)
+    }
+
+    on debit(player: String, amount: Int) {
+        let cur = balance_of(player)
+        // If cur - amount < 0 the invariant rejects the write.
+        let r = try { chips.set(player, cur - amount) }
+        if r.error != () {
+            return map("ok", false, "reason", "insufficient funds", "balance", cur)
+        }
+        return map("ok", true, "balance", cur - amount)
+    }
+}
+
+cell test ChipLedgerTests {
+    rules {
+        assert credit("alice", 100).ok == true
+        assert balance_of("alice") == 100
+        assert debit("alice", 40).balance == 60
+        // overdraw is refused, balance unchanged
+        assert debit("alice", 999).ok == false
+        assert balance_of("alice") == 60
+        // a direct negative write is a runtime error
+        assert_fails chips.set("bob", -1)
+    }
+}

@@ -1,0 +1,76 @@
+// ============================================================================
+// 2048 — slide-and-merge a single row (the core move primitive)
+// ============================================================================
+//
+// slide_left() compacts a row toward the left, merging equal adjacent tiles
+// exactly once per move (left-to-right), and reports the points scored (sum of
+// merged tiles). A full board move is four row slides; this is that primitive.
+//
+// Run:  soma run game_2048.cell --signal demo
+// Test: soma test game_2048.cell
+
+cell Game2048 {
+    face {
+        signal compact(row: List) -> List
+        signal slide_left(row: List) -> Map
+        signal demo() -> Map
+    }
+
+    // Drop zeros, preserving order of non-zero tiles.
+    on compact(row: List) {
+        let out = []
+        for v in row {
+            if v != 0 { out = push(out, v) }
+        }
+        return out
+    }
+
+    on slide_left(row: List) {
+        let tiles = compact(row)
+        let merged = []
+        let score = 0
+        let i = 0
+        while i < len(tiles) {
+            if i + 1 < len(tiles) && tiles[i] == tiles[i + 1] {
+                let v = tiles[i] * 2
+                merged = push(merged, v)
+                score = score + v
+                i = i + 2
+            } else {
+                merged = push(merged, tiles[i])
+                i = i + 1
+            }
+        }
+        // pad back to the original width with zeros
+        while len(merged) < len(row) {
+            merged = push(merged, 0)
+        }
+        return map("row", merged, "score", score)
+    }
+
+    on demo() {
+        // [2,2,4,0] → [4,4,0,0] scoring 4
+        return slide_left([2, 2, 4, 0])
+    }
+}
+
+cell test Game2048Tests {
+    rules {
+        // basic merge of the leading pair
+        assert slide_left([2, 2, 4, 0]).row[0] == 4
+        assert slide_left([2, 2, 4, 0]).row[1] == 4
+        assert slide_left([2, 2, 4, 0]).score == 4
+        // a tile only merges once: [2,2,2,2] → [4,4,0,0] scoring 8
+        assert slide_left([2, 2, 2, 2]).row[0] == 4
+        assert slide_left([2, 2, 2, 2]).row[1] == 4
+        assert slide_left([2, 2, 2, 2]).row[2] == 0
+        assert slide_left([2, 2, 2, 2]).score == 8
+        // gaps collapse, no merge
+        assert slide_left([0, 4, 0, 2]).row[0] == 4
+        assert slide_left([0, 4, 0, 2]).row[1] == 2
+        assert slide_left([0, 4, 0, 2]).score == 0
+        // already-merged trailing pair: [4,2,2,0] → [4,4,0,0]
+        assert slide_left([4, 2, 2, 0]).score == 4
+        assert compact([0, 0, 8, 0])[0] == 8
+    }
+}

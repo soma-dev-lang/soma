@@ -1,0 +1,68 @@
+// Breadth-first search on a small directed graph represented as an adjacency
+// Map<String, List>. Demonstrates: a queue (List) of frontier nodes, a
+// visited Map used as a set, level-order distance tracking, and shortest
+// unweighted path length between two nodes.
+//
+//   soma run  examples/corpus/algorithms/bfs.cell hops A F
+//   soma test examples/corpus/algorithms/bfs.cell
+
+cell BFS {
+    face {
+        signal adj() -> Map
+        signal reachable(src: String, dst: String) -> Bool
+        signal hops(src: String, dst: String) -> Int
+    }
+
+    on adj() {
+        return map(
+            "A", list("B", "C"),
+            "B", list("D"),
+            "C", list("D", "E"),
+            "D", list("F"),
+            "E", list("F"),
+            "F", list()
+        )
+    }
+
+    // shortest number of edges from src to dst, or -1 if unreachable
+    on hops(src: String, dst: String) {
+        let g = adj()
+        let dist = map()
+        dist[src] = 0
+        let queue = list(src)
+        let answer = -1
+        while len(queue) > 0 {
+            let node = queue[0]
+            let rest = list()
+            for i in range(1, len(queue)) { rest = push(rest, queue[i]) }
+            queue = rest
+            if node == dst {
+                answer = dist[node]
+                break
+            }
+            for nb in g[node] {
+                if (dist[nb] ?? -1) == -1 {
+                    dist[nb] = dist[node] + 1
+                    queue = push(queue, nb)
+                }
+            }
+        }
+        return answer
+    }
+
+    on reachable(src: String, dst: String) {
+        return hops(src, dst) >= 0
+    }
+}
+
+cell test BFSTests {
+    rules {
+        assert hops("A", "A") == 0
+        assert hops("A", "D") == 2
+        assert hops("A", "F") == 3
+        assert hops("C", "F") == 2
+        assert reachable("A", "F")
+        assert !reachable("F", "A")
+        assert hops("F", "A") == -1
+    }
+}

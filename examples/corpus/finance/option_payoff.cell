@@ -1,0 +1,55 @@
+// European option payoffs at expiry, plus a long straddle.
+// max()/min() of two numbers, records for the trade leg, tolerance asserts.
+
+cell OptionPayoff {
+    face {
+        signal call_payoff(spot: Float, strike: Float) -> Float
+        signal put_payoff(spot: Float, strike: Float) -> Float
+        signal call_pnl(spot: Float, strike: Float, premium: Float) -> Float
+        signal straddle_pnl(spot: Float, strike: Float, call_prem: Float, put_prem: Float) -> Float
+        signal breakeven_call(strike: Float, premium: Float) -> Float
+    }
+
+    // long call payoff = max(S - K, 0)
+    on call_payoff(spot: Float, strike: Float) {
+        return max(spot - strike, 0.0)
+    }
+
+    // long put payoff = max(K - S, 0)
+    on put_payoff(spot: Float, strike: Float) {
+        return max(strike - spot, 0.0)
+    }
+
+    // P&L = payoff - premium paid
+    on call_pnl(spot: Float, strike: Float, premium: Float) {
+        return call_payoff(spot, strike) - premium
+    }
+
+    // long straddle = call + put, minus both premiums
+    on straddle_pnl(spot: Float, strike: Float, call_prem: Float, put_prem: Float) {
+        let gross = call_payoff(spot, strike) + put_payoff(spot, strike)
+        return gross - call_prem - put_prem
+    }
+
+    on breakeven_call(strike: Float, premium: Float) {
+        return strike + premium
+    }
+}
+
+cell test OptionTests {
+    rules {
+        // in-the-money call
+        assert abs(call_payoff(110.0, 100.0) - 10.0) < 0.0001
+        // out-of-the-money call pays nothing
+        assert abs(call_payoff(90.0, 100.0) - 0.0) < 0.0001
+        // put intrinsic
+        assert abs(put_payoff(90.0, 100.0) - 10.0) < 0.0001
+        // call P&L can be negative (premium lost)
+        assert call_pnl(101.0, 100.0, 5.0) < 0.0
+        // straddle profits on a big move
+        assert straddle_pnl(130.0, 100.0, 5.0, 5.0) > 0.0
+        // and loses near the strike
+        assert straddle_pnl(100.0, 100.0, 5.0, 5.0) < 0.0
+        assert abs(breakeven_call(100.0, 5.0) - 105.0) < 0.0001
+    }
+}

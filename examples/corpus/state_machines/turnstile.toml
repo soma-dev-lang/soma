@@ -1,0 +1,11 @@
+[package]
+name = "turnstile"
+version = "0.1.0"
+entry = "turnstile.cell"
+
+# A turnstile is intentionally cyclic (locked <-> unlocked) and has no
+# terminal state, so we only prove deadlock-freedom: every state always
+# has a legal next move.
+[verify]
+deadlock_free = true
+never = []

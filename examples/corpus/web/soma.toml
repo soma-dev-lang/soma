@@ -1,0 +1,8 @@
+[package]
+name = "web-corpus"
+version = "0.1.0"
+entry = "todo_state.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["Done", "Cancelled"]

@@ -1,0 +1,13 @@
+[package]
+name = "subscription-billing"
+version = "0.1.0"
+entry = "subscription_billing.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["canceled"]
+never = []
+
+# once past_due, the subscription must still be able to terminate
+[verify.after.past_due]
+eventually = ["active", "canceled"]

@@ -1,0 +1,53 @@
+// Monthly budget tracker with a spend cap invariant. Total spend per
+// category must never exceed its allotted budget; an over-budget write
+// is rejected by memory. Shows group accounting and a remaining-budget query.
+
+cell BudgetTracker {
+    face {
+        signal spend(category: String, amount: Int) -> Map
+        signal spent(category: String) -> Int
+        signal remaining(category: String) -> Int
+        promise all_persistent
+    }
+
+    memory {
+        // cents spent per category; capped so no category overspends its 50_000 cap
+        outlays: Map<String, Int> [persistent, consistent]
+        invariant outlays >= 0 && outlays <= 50000
+    }
+
+    on spent(category: String) {
+        let s = outlays.get(category)
+        if s == () { return 0 }
+        return s
+    }
+
+    on remaining(category: String) {
+        return 50000 - spent(category)
+    }
+
+    on spend(category: String, amount: Int) {
+        let cur = spent(category)
+        let r = try { outlays.set(category, cur + amount) }
+        if r.error != () {
+            return map("ok", false, "reason", "over budget", "remaining", remaining(category))
+        }
+        return map("ok", true, "spent", cur + amount, "remaining", 50000 - (cur + amount))
+    }
+}
+
+cell test BudgetTests {
+    rules {
+        assert spend("groceries", 12000).ok == true
+        assert spent("groceries") == 12000
+        assert remaining("groceries") == 38000
+        // a charge that blows the cap is refused
+        assert spend("groceries", 40000).ok == false
+        // and nothing was recorded
+        assert spent("groceries") == 12000
+        // hitting the cap exactly is fine
+        assert spend("rent", 50000).ok == true
+        assert remaining("rent") == 0
+        assert_fails outlays.set("x", 60000)
+    }
+}

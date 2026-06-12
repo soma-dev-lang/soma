@@ -1,0 +1,45 @@
+// ============================================================================
+// Reverse word order — "hello world" -> "world hello"
+// ============================================================================
+//
+// Splits on spaces, reverses the resulting list, and re-joins. Also offers a
+// per-word character reversal that keeps word positions. Demonstrates the
+// difference between reversing the word list vs. reversing each word.
+//
+// Run: soma run reverse_words.cell --signal reverse_order "the quick brown fox"
+
+cell ReverseWords {
+    face {
+        signal reverse_order(text: String) -> String
+        signal reverse_each(text: String) -> String
+    }
+
+    on reverse_order(text: String) {
+        let words = split(text, " ")
+        return join(words.reverse(), " ")
+    }
+
+    on _flip(w: String) {
+        let out = ""
+        for i in range(len(w) - 1, -1, -1) {
+            out = out + w[i]
+        }
+        return out
+    }
+
+    on reverse_each(text: String) {
+        let words = split(text, " ")
+        let flipped = words |> map(w => _flip(w))
+        return join(flipped, " ")
+    }
+}
+
+cell test ReverseWordsTest {
+    rules {
+        assert reverse_order("hello world") == "world hello"
+        assert reverse_order("a b c d") == "d c b a"
+        assert reverse_each("hello world") == "olleh dlrow"
+        assert reverse_each("abc") == "cba"
+        assert reverse_order("single") == "single"
+    }
+}

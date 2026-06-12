@@ -1,0 +1,11 @@
+[package]
+name = "traffic-interlock"
+version = "0.1.0"
+entry = "traffic_interlock.cell"
+
+# The interlock is intentionally cyclic; we prove it never deadlocks and
+# can always return to a green phase from the emergency all_red.
+[verify]
+deadlock_free = true
+eventually = ["ns_go"]
+never = []

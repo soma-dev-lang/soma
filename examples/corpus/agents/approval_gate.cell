@@ -1,0 +1,72 @@
+// Human-in-the-loop approval gate guarding an irreversible action.
+// Demonstrates: approve() as a lifecycle gate, a state machine where the
+// "executing" path is only reachable past the gate, and a rejected path
+// that lands in a distinct terminal. approve() auto-approves in run/test
+// mode, so the happy path is testable without a human.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run approval_gate.cell --signal deploy "v2.1.0"
+// Test: SOMA_LLM_MOCK=echo soma test approval_gate.cell
+
+cell agent Deployer {
+    face {
+        signal deploy(version: String) -> Map
+        signal force(version: String, ok: Bool) -> Map
+    }
+
+    memory {
+        history: List<String> [persistent]
+    }
+
+    state pipeline {
+        initial: idle
+        idle      -> planning
+        planning  -> awaiting
+        awaiting  -> executing
+        awaiting  -> rejected
+        executing -> done
+        *         -> failed
+    }
+
+    // Direct, deterministic variant: the approval decision is a parameter,
+    // so both branches of the gate are unit-testable.
+    on force(version: String, ok: Bool) {
+        let id = to_string(next_id())
+        transition(id, "planning")
+        transition(id, "awaiting")
+        if !ok {
+            transition(id, "rejected")
+            return map("status", "rejected", "version", version)
+        }
+        transition(id, "executing")
+        history = push(history, version)
+        transition(id, "done")
+        map("status", "done", "version", version, "count", len(history))
+    }
+
+    on deploy(version: String) {
+        set_budget(1500)
+        let id = to_string(next_id())
+        transition(id, "planning")
+        transition(id, "awaiting")
+
+        let approved = approve("Deploy {version} to production?")
+        if !approved {
+            transition(id, "rejected")
+            return map("status", "rejected", "version", version)
+        }
+
+        transition(id, "executing")
+        history = push(history, version)
+        transition(id, "done")
+        map("status", "done", "version", version)
+    }
+}
+
+cell test DeployTests {
+    rules {
+        assert force("v1", true).status == "done"
+        assert force("v1", false).status == "rejected"
+        // approve() auto-approves in test mode, so deploy reaches done.
+        assert deploy("v2").status == "done"
+    }
+}

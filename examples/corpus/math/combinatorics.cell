@@ -1,0 +1,63 @@
+// ============================================================================
+// Combinatorics — factorial, permutations, combinations
+// ============================================================================
+//
+// factorial folds product over range(1, n+1). nPr = n!/(n-r)! and nCr =
+// n!/(r!(n-r)!). To stay exact for larger n we compute nCr with a running
+// product instead of three separate factorials. Pascal's identity is the
+// cross-check: C(n,r) = C(n-1,r-1) + C(n-1,r).
+//
+//   soma run combinatorics.cell run
+// ============================================================================
+
+cell Combinatorics {
+    face {
+        signal factorial(n: Int) -> Int
+        signal perm(n: Int, r: Int) -> Int
+        signal choose(n: Int, r: Int) -> Int
+        signal run() -> Map
+    }
+
+    on factorial(n: Int) {
+        if n <= 1 { return 1 }
+        return product(range(1, n + 1))
+    }
+
+    on perm(n: Int, r: Int) {
+        return idiv(factorial(n), factorial(n - r))
+    }
+
+    on choose(n: Int, r: Int) {
+        // multiplicative formula: product over i of (n-r+i)/i
+        let result = 1
+        for i in range(1, r + 1) {
+            result = idiv(result * (n - r + i), i)
+        }
+        return result
+    }
+
+    on run() {
+        return map(
+            "fact_6", factorial(6),
+            "perm_5_2", perm(5, 2),
+            "choose_5_2", choose(5, 2),
+            "choose_10_3", choose(10, 3)
+        )
+    }
+}
+
+cell test ComboTests {
+    rules {
+        assert factorial(0) == 1
+        assert factorial(6) == 720
+        // 5 permute 2 = 20
+        assert perm(5, 2) == 20
+        // 5 choose 2 = 10
+        assert choose(5, 2) == 10
+        assert choose(10, 3) == 120
+        // symmetry: C(n,r) = C(n,n-r)
+        assert choose(10, 3) == choose(10, 7)
+        // Pascal's identity
+        assert choose(10, 3) == choose(9, 2) + choose(9, 3)
+    }
+}

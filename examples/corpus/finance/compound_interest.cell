@@ -1,0 +1,45 @@
+// Compound interest: future value, with periodic compounding and a
+// continuous-compounding variant. Pure numeric handlers, tolerance-based
+// float assertions (never == on floats).
+
+cell CompoundInterest {
+    face {
+        signal future_value(principal: Float, rate: Float, years: Int) -> Float
+        signal future_value_n(principal: Float, rate: Float, n: Int, years: Int) -> Float
+        signal continuous(principal: Float, rate: Float, years: Float) -> Float
+        signal doubling_time(rate: Float) -> Float
+    }
+
+    // FV = P * (1 + r)^t   (annual compounding)
+    on future_value(principal: Float, rate: Float, years: Int) {
+        return principal * pow(1.0 + rate, years)
+    }
+
+    // FV = P * (1 + r/n)^(n*t)  (n compounding periods per year)
+    on future_value_n(principal: Float, rate: Float, n: Int, years: Int) {
+        return principal * pow(1.0 + rate / n, n * years)
+    }
+
+    // FV = P * e^(r*t)  (continuous compounding)
+    on continuous(principal: Float, rate: Float, years: Float) {
+        return principal * exp(rate * years)
+    }
+
+    // Rule of ln(2): years to double = ln(2) / ln(1 + r)
+    on doubling_time(rate: Float) {
+        return log(2.0) / log(1.0 + rate)
+    }
+}
+
+cell test CompoundTests {
+    rules {
+        // 1000 at 5% for 2 years = 1102.50
+        assert abs(future_value(1000.0, 0.05, 2) - 1102.5) < 0.001
+        // monthly compounding beats annual
+        assert future_value_n(1000.0, 0.12, 12, 1) > future_value(1000.0, 0.12, 1)
+        // continuous is the upper bound
+        assert abs(continuous(1000.0, 0.10, 1.0) - 1105.170918) < 0.001
+        // at 7%, doubling takes ~10.24 years
+        assert abs(doubling_time(0.07) - 10.244768) < 0.001
+    }
+}

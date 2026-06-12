@@ -1,0 +1,59 @@
+// Entity-Component shape: each Entity record carries a bag of components
+// (position, velocity, health) as nested records. Demonstrates an
+// entity-component data model, nested dot-mutation, and a physics "tick".
+
+cell ECS {
+    face {
+        signal world() -> List
+        signal tick() -> List
+        signal alive_count() -> Int
+        signal damage(id: String, amount: Int) -> Map
+    }
+
+    on world() {
+        return list(
+            Entity { id: "player",
+                pos: Vec2 { x: 0,  y: 0 },
+                vel: Vec2 { x: 1,  y: 2 },
+                hp:  Health { cur: 100, max: 100 } },
+            Entity { id: "enemy",
+                pos: Vec2 { x: 10, y: 5 },
+                vel: Vec2 { x: -1, y: 0 },
+                hp:  Health { cur: 30,  max: 30 } }
+        )
+    }
+
+    // Integrate one step: pos += vel for every entity.
+    on tick() {
+        let es = world()
+        for i in range(0, len(es)) {
+            es[i].pos.x = es[i].pos.x + es[i].vel.x
+            es[i].pos.y = es[i].pos.y + es[i].vel.y
+        }
+        return es
+    }
+
+    on alive_count() {
+        return world() |> count(e => e.hp.cur > 0)
+    }
+
+    on damage(id: String, amount: Int) {
+        let es = world()
+        let e = es |> find(x => x.id == id)
+        if e == () { return map("error", "no entity") }
+        e.hp.cur = max(0, e.hp.cur - amount)
+        return map("id", id, "hp", e.hp.cur, "dead", e.hp.cur == 0)
+    }
+}
+
+cell test ECSTest {
+    rules {
+        assert tick()[0].pos.x == 1
+        assert tick()[0].pos.y == 2
+        assert tick()[1].pos.x == 9
+        assert alive_count() == 2
+        assert damage("enemy", 50).hp == 0
+        assert damage("enemy", 50).dead == true
+        assert damage("player", 10).hp == 90
+    }
+}

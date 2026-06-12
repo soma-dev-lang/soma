@@ -1,0 +1,57 @@
+// A simplified TCP connection state machine (active-open path).
+// closed -> syn_sent -> established -> fin_wait -> closed. This is a
+// classic protocol automaton; the model checker proves that from any
+// state the connection can return to `closed` (no half-open leaks) and
+// that the handshake order cannot be skipped.
+
+cell type TcpState {
+    variants { Closed  SynSent  Established  FinWait  TimeWait }
+}
+
+cell TcpConnection {
+    face {
+        signal open_conn(id: String) -> String
+        signal syn_ack(id: String) -> String
+        signal close_conn(id: String) -> String
+        signal timeout(id: String) -> String
+        signal reset(id: String) -> String
+        signal phase(id: String) -> String
+    }
+
+    state conn: TcpState {
+        initial: Closed
+        Closed      -> SynSent
+        SynSent     -> Established
+        Established -> FinWait
+        FinWait     -> TimeWait
+        TimeWait    -> Closed
+        *           -> Closed
+    }
+
+    on open_conn(id: String)    { transition(id, SynSent)     return get_status(id) }
+    on syn_ack(id: String)    { transition(id, Established) return get_status(id) }
+    on close_conn(id: String) { transition(id, FinWait)     return get_status(id) }
+    on timeout(id: String)    { transition(id, TimeWait)    return get_status(id) }
+    on reset(id: String)      { transition(id, Closed)      return get_status(id) }
+    on phase(id: String)      { return get_status(id) }
+}
+
+cell test TcpTests {
+    rules {
+        // full lifecycle
+        assert open_conn("c1") == "SynSent"
+        assert syn_ack("c1") == "Established"
+        assert close_conn("c1") == "FinWait"
+        assert timeout("c1") == "TimeWait"
+        assert reset("c1") == "Closed"
+
+        // a RST from any state returns to Closed (the * arrow)
+        assert open_conn("c2") == "SynSent"
+        assert reset("c2") == "Closed"
+
+        // illegal: cannot reach Established without sending SYN first
+        assert_fails syn_ack("c3")
+        // illegal: cannot close a connection that was never established
+        assert_fails close_conn("c4")
+    }
+}

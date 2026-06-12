@@ -1,0 +1,51 @@
+// The killer feature: an agent whose termination is PROVEN by soma verify.
+// The lifecycle has a single terminal set {done, failed} reachable from every
+// state, a `* -> failed` catch-all, and the matching soma.toml below drives
+// `soma verify` to prove deadlock-freedom and liveness (eventually done|failed).
+//
+// Check:  soma check verified_termination.cell
+// Verify: soma verify verified_termination.cell   (uses the soma.toml beside it)
+// Run:    SOMA_LLM_MOCK=echo soma run verified_termination.cell --signal solve "x"
+// Test:   SOMA_LLM_MOCK=echo soma test verified_termination.cell
+
+cell agent Solver {
+    face {
+        signal solve(task: String) -> Map
+        promise "eventually reaches done or failed"
+    }
+
+    state workflow {
+        initial: idle
+        idle        -> understanding
+        understanding -> solving
+        solving     -> verifying
+        verifying   -> done
+        *           -> failed
+    }
+
+    on solve(task: String) {
+        set_budget(4000)
+        let id = to_string(next_id())
+
+        transition(id, "understanding")
+        let u = try { think("Restate the task precisely: {task}") }
+        if u.error != () { transition(id, "failed")  return map("status", "failed", "error", u.error) }
+
+        transition(id, "solving")
+        let s = try { think("Solve it: {u.value}") }
+        if s.error != () { transition(id, "failed")  return map("status", "failed", "error", s.error) }
+
+        transition(id, "verifying")
+        let v = try { think("Double-check the solution: {s.value}") }
+        if v.error != () { transition(id, "failed")  return map("status", "failed", "error", v.error) }
+
+        transition(id, "done")
+        map("status", "done", "task", task, "tokens", tokens_used())
+    }
+}
+
+cell test SolverTests {
+    rules {
+        assert solve("compute 2+2").status == "done"
+    }
+}

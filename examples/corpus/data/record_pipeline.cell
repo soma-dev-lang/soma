@@ -1,0 +1,45 @@
+// Pipeline over typed Record literals (Name { field: v }) instead of map().
+// Records carry a _type tag and support dot-mutation. Demonstrates that the
+// data builtins (filter_by, sort_by, agg, pluck) work on records too.
+
+cell RecordPipeline {
+    on staff() {
+        return list(
+            Person { name: "Mara", dept: "Eng",   salary: 130, level: 5 },
+            Person { name: "Theo", dept: "Eng",   salary: 95,  level: 3 },
+            Person { name: "Lena", dept: "Sales", salary: 80,  level: 2 },
+            Person { name: "Omar", dept: "Sales", salary: 110, level: 4 },
+            Person { name: "Priya", dept: "Eng", salary: 145, level: 6 },
+            Person { name: "Sven", dept: "Ops",   salary: 70,  level: 2 }
+        )
+    }
+
+    on seniors() { return staff() |> filter_by("level", ">=", 4) |> sort_by("salary", "desc") }
+
+    on payroll_by_dept() {
+        return staff()
+            |> agg("dept", "salary:sum", "salary:avg")
+            |> sort_by("salary_sum", "desc")
+    }
+
+    on top_earner() { return max_by(staff(), "salary") }
+
+    on run() {
+        for r in payroll_by_dept() { print("{r.dept}: total {r.salary_sum}, avg {r.salary_avg}") }
+        return top_earner().name
+    }
+}
+
+cell test RecordPipelineTests {
+    rules {
+        // records are recognized as their type
+        assert is_a(Person { name: "x", dept: "d", salary: 1, level: 1 }, "Person") == true
+        // 3 seniors (level >= 4): Priya, Mara, Omar
+        assert len(seniors()) == 3
+        assert seniors()[0].name == "Priya"
+        // Eng payroll = 130 + 95 + 145 = 370
+        assert (payroll_by_dept() |> filter_by("dept", "=", "Eng"))[0].salary_sum == 370
+        // overall top earner is Priya
+        assert top_earner().name == "Priya"
+    }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "shipment-tracking"
+version = "0.1.0"
+entry = "shipment_tracking.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["delivered", "returned_to_sender"]
+never = []
+
+[verify.after.out_for_delivery]
+eventually = ["delivered", "returned_to_sender"]

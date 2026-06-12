@@ -1,0 +1,57 @@
+// Fibonacci three ways: naive recursion, bottom-up iteration, and a memoized
+// version backed by a [persistent] memory slot. Demonstrates: recursion,
+// iterative DP with a rolling pair, and slot.get/.set/.has memoization.
+//
+//   soma run  examples/corpus/algorithms/fibonacci_memo.cell fib_memo 40
+//   soma test examples/corpus/algorithms/fibonacci_memo.cell
+
+cell Fibonacci {
+    face {
+        signal fib_rec(n: Int) -> Int
+        signal fib_iter(n: Int) -> Int
+        signal fib_memo(n: Int) -> Int
+    }
+
+    memory {
+        cache: Map<String, Int> [persistent]
+    }
+
+    on fib_rec(n: Int) {
+        if n < 2 { return n }
+        return fib_rec(n - 1) + fib_rec(n - 2)
+    }
+
+    on fib_iter(n: Int) {
+        if n < 2 { return n }
+        let a = 0
+        let b = 1
+        for i in range(2, n + 1) {
+            let next = a + b
+            a = b
+            b = next
+        }
+        return b
+    }
+
+    on fib_memo(n: Int) {
+        if n < 2 { return n }
+        let key = to_string(n)
+        if cache.has(key) { return cache.get(key) }
+        let v = fib_memo(n - 1) + fib_memo(n - 2)
+        cache.set(key, v)
+        return v
+    }
+}
+
+cell test FibonacciTests {
+    rules {
+        assert fib_rec(10) == 55
+        assert fib_iter(10) == 55
+        assert fib_memo(10) == 55
+        assert fib_iter(0) == 0
+        assert fib_iter(1) == 1
+        assert fib_iter(20) == 6765
+        assert fib_memo(30) == 832040
+        assert fib_rec(15) == fib_iter(15)
+    }
+}

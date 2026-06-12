@@ -1,0 +1,44 @@
+// ============================================================================
+// Tokenizer — split text into normalized word tokens
+// ============================================================================
+//
+// Lowercases the input, replaces punctuation with spaces, then splits on
+// whitespace and drops empty fragments. Demonstrates replace/lowercase/split
+// and list filtering with a lambda.
+//
+// Run: soma run tokenizer.cell --signal tokenize "Hello, World! Hello..."
+
+cell Tokenizer {
+    face {
+        signal tokenize(text: String) -> List<String>
+        signal count_tokens(text: String) -> Int
+    }
+
+    // Normalize: lowercase, strip common punctuation, split on spaces.
+    on tokenize(text: String) {
+        let clean = lowercase(text)
+        clean = replace(clean, ",", " ")
+        clean = replace(clean, ".", " ")
+        clean = replace(clean, "!", " ")
+        clean = replace(clean, "?", " ")
+        clean = replace(clean, ";", " ")
+        clean = replace(clean, ":", " ")
+        let parts = split(clean, " ")
+        return parts |> filter(w => len(w) > 0)
+    }
+
+    on count_tokens(text: String) {
+        return len(tokenize(text))
+    }
+}
+
+cell test TokenizerTest {
+    rules {
+        assert count_tokens("Hello, World!") == 2
+        assert count_tokens("one two three four") == 4
+        assert count_tokens("   ") == 0
+        assert tokenize("Hello, HELLO!")[0] == "hello"
+        assert tokenize("a... b... c")[2] == "c"
+        assert count_tokens("Mix; of: punctuation? yes!") == 4
+    }
+}

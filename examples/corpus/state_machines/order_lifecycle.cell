@@ -1,0 +1,57 @@
+// Order lifecycle as a typed state machine.
+// Demonstrates: a sum-typed `state` machine (states ARE variants, so a
+// typo in transition() is a compile error), guarded transitions, and
+// assert_fails on illegal moves. `soma verify` proves the machine always
+// reaches a terminal (delivered or cancelled).
+
+cell type OrderStatus {
+    variants { Draft  Placed  Paid  Shipped  Delivered  Cancelled }
+}
+
+cell OrderFlow {
+    face {
+        signal open(id: String) -> String
+        signal place(id: String) -> String
+        signal pay(id: String) -> String
+        signal ship(id: String) -> String
+        signal deliver(id: String) -> String
+        signal cancel(id: String) -> String
+        signal locate(id: String) -> String
+        promise "every order eventually reaches Delivered or Cancelled"
+    }
+
+    state order: OrderStatus {
+        initial: Draft
+        Draft   -> Placed
+        Placed  -> Paid
+        Paid    -> Shipped
+        Shipped -> Delivered
+        *       -> Cancelled
+    }
+
+    on open(id: String)    { return get_status(id) }
+    on place(id: String)   { transition(id, Placed)    return get_status(id) }
+    on pay(id: String)     { transition(id, Paid)      return get_status(id) }
+    on ship(id: String)    { transition(id, Shipped)   return get_status(id) }
+    on deliver(id: String) { transition(id, Delivered) return get_status(id) }
+    on cancel(id: String)  { transition(id, Cancelled) return get_status(id) }
+    on locate(id: String)  { return get_status(id) }
+}
+
+cell test OrderFlowTests {
+    rules {
+        // happy path: Draft -> Placed -> Paid -> Shipped -> Delivered
+        assert open("a") == "Draft"
+        assert place("a") == "Placed"
+        assert pay("a") == "Paid"
+        assert ship("a") == "Shipped"
+        assert deliver("a") == "Delivered"
+
+        // a fresh order can be cancelled from any state (the * arrow)
+        assert cancel("b") == "Cancelled"
+
+        // illegal skips are rejected by the machine
+        assert_fails ship("c")      // c is still Draft, cannot jump to Shipped
+        assert_fails deliver("d")   // d is still Draft, cannot jump to Delivered
+    }
+}

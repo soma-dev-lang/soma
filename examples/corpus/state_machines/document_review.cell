@@ -1,0 +1,58 @@
+// Document editorial workflow with a typed (sum-type) state machine.
+// A draft is submitted for review; a reviewer either requests changes
+// (back to draft) or approves; approved documents are published. The
+// changes-requested loop is bounded by reaching `published` or `archived`
+// from every state, so liveness holds.
+
+cell type DocState {
+    variants { Draft  InReview  Approved  Published  Archived }
+}
+
+cell Editorial {
+    face {
+        signal create(id: String) -> String
+        signal submit(id: String) -> String
+        signal request_changes(id: String) -> String
+        signal approve_doc(id: String) -> String
+        signal publish_doc(id: String) -> String
+        signal archive(id: String) -> String
+        signal status(id: String) -> String
+    }
+
+    state doc: DocState {
+        initial: Draft
+        Draft     -> InReview
+        InReview  -> Draft
+        InReview  -> Approved
+        Approved  -> Published
+        *         -> Archived
+    }
+
+    on create(id: String)          { return get_status(id) }
+    on submit(id: String)          { transition(id, InReview)   return get_status(id) }
+    on request_changes(id: String) { transition(id, Draft)      return get_status(id) }
+    on approve_doc(id: String)         { transition(id, Approved)   return get_status(id) }
+    on publish_doc(id: String)         { transition(id, Published)  return get_status(id) }
+    on archive(id: String)         { transition(id, Archived)   return get_status(id) }
+    on status(id: String)          { return get_status(id) }
+}
+
+cell test EditorialTests {
+    rules {
+        // submit -> request changes -> resubmit -> approve -> publish
+        assert create("d1") == "Draft"
+        assert submit("d1") == "InReview"
+        assert request_changes("d1") == "Draft"
+        assert submit("d1") == "InReview"
+        assert approve_doc("d1") == "Approved"
+        assert publish_doc("d1") == "Published"
+
+        // any document can be archived (the * arrow), here from Draft
+        assert archive("d2") == "Archived"
+
+        // illegal: cannot publish straight from Draft
+        assert_fails publish_doc("d3")
+        // illegal: cannot approve a document that isn't in review
+        assert_fails approve_doc("d4")
+    }
+}

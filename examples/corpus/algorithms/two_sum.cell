@@ -1,0 +1,46 @@
+// Two-sum with a hash set, and the count of distinct pairs summing to a
+// target. Demonstrates: a Map used as a seen-set, the complement lookup that
+// turns an O(n^2) scan into O(n), and returning index pairs as a record.
+//
+//   soma run  examples/corpus/algorithms/two_sum.cell find "[2,7,11,15]" 9
+//   soma test examples/corpus/algorithms/two_sum.cell
+
+cell TwoSum {
+    face {
+        signal find(xs: List, target: Int) -> Map
+        signal exists(xs: List, target: Int) -> Bool
+    }
+
+    // first pair of indices (i, j) with xs[i] + xs[j] == target, else (-1,-1)
+    on find(xs: List, target: Int) {
+        let seen = map()    // value -> index
+        let result = Pair { i: -1, j: -1 }
+        for k in range(0, len(xs)) {
+            let need = target - xs[k]
+            let nk = to_string(need)
+            let hit = seen[nk] ?? -1
+            if hit >= 0 {
+                result = Pair { i: hit, j: k }
+                break
+            }
+            seen[to_string(xs[k])] = k
+        }
+        return result
+    }
+
+    on exists(xs: List, target: Int) {
+        return find(xs, target).i >= 0
+    }
+}
+
+cell test TwoSumTests {
+    rules {
+        assert find([2, 7, 11, 15], 9).i == 0
+        assert find([2, 7, 11, 15], 9).j == 1
+        assert find([3, 2, 4], 6).i == 1
+        assert find([3, 2, 4], 6).j == 2
+        assert find([1, 2, 3], 100).i == -1
+        assert exists([2, 7, 11, 15], 26)
+        assert !exists([1, 2, 3], 100)
+    }
+}

@@ -1,0 +1,85 @@
+// ============================================================================
+// Blackjack — hand scoring with soft/hard aces and bust detection
+// ============================================================================
+//
+// hand_value() sums card ranks, counting each Ace as 11 then demoting to 1
+// while the total busts. outcome() compares a player and dealer hand under
+// standard rules (blackjack beats 21-of-three, bust loses).
+//
+// Run:  soma run blackjack.cell --signal demo
+// Test: soma test blackjack.cell
+
+cell Blackjack {
+    face {
+        signal card_value(rank: String) -> Int
+        signal hand_value(hand: List) -> Int
+        signal is_bust(hand: List) -> Bool
+        signal outcome(player: List, dealer: List) -> String
+        signal demo() -> Map
+    }
+
+    on card_value(rank: String) {
+        return match rank {
+            "A"                      -> 11
+            "K" || "Q" || "J" || "10" -> 10
+            _                        -> to_int(rank)
+        }
+    }
+
+    on hand_value(hand: List) {
+        let total = 0
+        let aces = 0
+        for c in hand {
+            if c == "A" { aces = aces + 1 }
+            total = total + card_value(c)
+        }
+        // Demote aces from 11 to 1 while busting.
+        while total > 21 && aces > 0 {
+            total = total - 10
+            aces = aces - 1
+        }
+        return total
+    }
+
+    on is_bust(hand: List) {
+        return hand_value(hand) > 21
+    }
+
+    on outcome(player: List, dealer: List) {
+        let p = hand_value(player)
+        let d = hand_value(dealer)
+        if p > 21 { return "dealer" }
+        if d > 21 { return "player" }
+        if p > d { return "player" }
+        if d > p { return "dealer" }
+        return "push"
+    }
+
+    on demo() {
+        // A + K = 21 (blackjack) vs dealer 9 + 8 = 17
+        return map(
+            "player", hand_value(["A", "K"]),
+            "dealer", hand_value(["9", "8"]),
+            "result", outcome(["A", "K"], ["9", "8"])
+        )
+    }
+}
+
+cell test BlackjackTests {
+    rules {
+        // natural blackjack
+        assert hand_value(["A", "K"]) == 21
+        // two aces: 11 + 11 = 22 → demote one → 12
+        assert hand_value(["A", "A"]) == 12
+        // soft 17 stays 17
+        assert hand_value(["A", "6"]) == 17
+        // hard bust
+        assert hand_value(["K", "Q", "5"]) == 25
+        assert is_bust(["K", "Q", "5"]) == true
+        assert is_bust(["A", "A", "9"]) == false
+        // outcomes
+        assert outcome(["A", "K"], ["9", "8"]) == "player"
+        assert outcome(["K", "Q", "5"], ["9", "8"]) == "dealer"
+        assert outcome(["10", "7"], ["10", "7"]) == "push"
+    }
+}

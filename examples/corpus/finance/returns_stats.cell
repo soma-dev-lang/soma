@@ -1,0 +1,61 @@
+// Return-series statistics: arithmetic mean return, volatility (sample
+// stdev), annualized Sharpe ratio, and max drawdown of an equity curve.
+// sqrt/pow, sum() reductions, running peak tracking.
+
+cell ReturnStats {
+    face {
+        signal mean_return(rets: List) -> Float
+        signal volatility(rets: List) -> Float
+        signal sharpe(rets: List, rf: Float) -> Float
+        signal max_drawdown(equity: List) -> Float
+    }
+
+    on mean_return(rets: List) {
+        return sum(rets) / len(rets)
+    }
+
+    // sample standard deviation (n-1 denominator)
+    on volatility(rets: List) {
+        let mu = mean_return(rets)
+        let acc = 0.0
+        for r in rets {
+            acc = acc + (r - mu) * (r - mu)
+        }
+        return sqrt(acc / (len(rets) - 1))
+    }
+
+    // (mean - rf) / vol, annualized by sqrt(252)
+    on sharpe(rets: List, rf: Float) {
+        let excess = mean_return(rets) - rf
+        let vol = volatility(rets)
+        if vol == 0.0 { return 0.0 }
+        return excess / vol * sqrt(252.0)
+    }
+
+    // largest peak-to-trough decline as a positive fraction
+    on max_drawdown(equity: List) {
+        let peak = equity[0]
+        let worst = 0.0
+        for v in equity {
+            if v > peak { peak = v }
+            let dd = (peak - v) / peak
+            if dd > worst { worst = dd }
+        }
+        return worst
+    }
+}
+
+cell test ReturnStatsTests {
+    rules {
+        // mean of [0.01, 0.02, 0.03] = 0.02
+        assert abs(mean_return(list(0.01, 0.02, 0.03)) - 0.02) < 0.0001
+        // volatility of that series: sample stdev = 0.01
+        assert abs(volatility(list(0.01, 0.02, 0.03)) - 0.01) < 0.0001
+        // positive returns vs zero rf → positive Sharpe
+        assert sharpe(list(0.01, 0.02, 0.03), 0.0) > 0.0
+        // equity 100 → 120 → 90 → 110: max drawdown = (120-90)/120 = 0.25
+        assert abs(max_drawdown(list(100.0, 120.0, 90.0, 110.0)) - 0.25) < 0.0001
+        // monotonically rising curve has zero drawdown
+        assert abs(max_drawdown(list(100.0, 110.0, 120.0))) < 0.0001
+    }
+}

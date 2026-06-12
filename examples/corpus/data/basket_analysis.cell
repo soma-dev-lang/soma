@@ -1,0 +1,60 @@
+// Market-basket analysis: transactions of (order, product) lines. Compute
+// product popularity, basket sizes per order, and the average order value.
+// Demonstrates group_by to size baskets, agg for revenue, and count_by.
+
+cell Basket {
+    on lines() {
+        return list(
+            map("order", "o1", "product", "milk",  "price", 2),
+            map("order", "o1", "product", "bread", "price", 3),
+            map("order", "o1", "product", "eggs",  "price", 4),
+            map("order", "o2", "product", "milk",  "price", 2),
+            map("order", "o2", "product", "eggs",  "price", 4),
+            map("order", "o3", "product", "bread", "price", 3),
+            map("order", "o3", "product", "milk",  "price", 2),
+            map("order", "o3", "product", "jam",   "price", 5)
+        )
+    }
+
+    // How many times each product was bought, most popular first.
+    on popularity() {
+        return lines()
+            |> agg("product", "price:count")
+            |> sort_by("price_count", "desc")
+    }
+
+    // Basket size (number of lines) per order, via agg's per-group count.
+    on basket_sizes() {
+        return lines()
+            |> agg("order", "price:count")
+            |> sort_by("count", "desc")
+    }
+
+    // Order value per order.
+    on order_values() {
+        return lines() |> agg("order", "price:sum") |> sort_by("price_sum", "desc")
+    }
+
+    on milk_count() { return count_by(lines(), "product", "milk") }
+
+    on run() {
+        for r in popularity() { print("{r.product}: {r.price_count}") }
+        for r in basket_sizes() { print("{r.order}: {r.count} items") }
+        return order_values()
+    }
+}
+
+cell test BasketTests {
+    rules {
+        // milk appears in 3 orders
+        assert milk_count() == 3
+        assert popularity()[0].product == "milk"
+        // 4 distinct products: milk, bread, eggs, jam
+        assert len(popularity()) == 4
+        // o1 value = 2 + 3 + 4 = 9; o3 = 3 + 2 + 5 = 10 (highest)
+        assert order_values()[0].order == "o3"
+        assert order_values()[0].price_sum == 10
+        // o2 value = 2 + 4 = 6
+        assert (order_values() |> filter_by("order", "=", "o2"))[0].price_sum == 6
+    }
+}

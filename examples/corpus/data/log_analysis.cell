@@ -1,0 +1,58 @@
+// Web access log analysis over List<Map> entries.
+// Demonstrates filter_by on status ranges, count_by, group_by, agg of
+// latency, distinct paths, and top offenders. Classic log-crunching shape.
+
+cell LogAnalysis {
+    on entries() {
+        return list(
+            map("ip", "10.0.0.1", "path", "/",       "status", 200, "ms", 12),
+            map("ip", "10.0.0.2", "path", "/login",  "status", 200, "ms", 45),
+            map("ip", "10.0.0.1", "path", "/api",    "status", 500, "ms", 230),
+            map("ip", "10.0.0.3", "path", "/api",    "status", 404, "ms", 8),
+            map("ip", "10.0.0.2", "path", "/api",    "status", 500, "ms", 410),
+            map("ip", "10.0.0.1", "path", "/login",  "status", 401, "ms", 30),
+            map("ip", "10.0.0.4", "path", "/",       "status", 200, "ms", 15),
+            map("ip", "10.0.0.3", "path", "/api",    "status", 200, "ms", 99),
+            map("ip", "10.0.0.2", "path", "/admin",  "status", 403, "ms", 5)
+        )
+    }
+
+    on errors() { return entries() |> filter_by("status", ">=", 500) }
+
+    on error_count() { return count_by(entries(), "status", 500) }
+
+    // Average latency per path, slowest first.
+    on latency_by_path() {
+        return entries()
+            |> agg("path", "ms:avg", "ms:max")
+            |> sort_by("ms_avg", "desc")
+    }
+
+    on unique_paths() { return entries() |> distinct("path") |> pluck("path") }
+
+    // Requests per IP, busiest first.
+    on traffic_by_ip() {
+        return entries()
+            |> agg("ip", "ms:count")
+            |> sort_by("ms_count", "desc")
+    }
+
+    on run() {
+        print("5xx errors: {error_count()}")
+        for r in latency_by_path() { print("{r.path}: avg {r.ms_avg}ms") }
+        return unique_paths()
+    }
+}
+
+cell test LogAnalysisTests {
+    rules {
+        // two 500s in the log
+        assert error_count() == 2
+        assert len(errors()) == 2
+        // /, /login, /api, /admin = 4 distinct paths
+        assert len(unique_paths()) == 4
+        // busiest IPs tie at 3 requests (10.0.0.1 and 10.0.0.2)
+        assert traffic_by_ip()[0].ms_count == 3
+        assert (traffic_by_ip() |> filter_by("ip", "=", "10.0.0.2"))[0].ms_count == 3
+    }
+}

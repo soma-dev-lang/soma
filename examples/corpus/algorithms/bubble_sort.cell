@@ -1,0 +1,50 @@
+// Bubble sort over a list, with the classic early-exit optimization.
+// Demonstrates: list bracket indexing, in-place swap via a temp, a `swapped`
+// flag to stop once a pass makes no changes, and self-verifying tests.
+//
+//   soma run  examples/corpus/algorithms/bubble_sort.cell sort "[5,1,4,2,8]"
+//   soma test examples/corpus/algorithms/bubble_sort.cell
+
+cell BubbleSort {
+    face {
+        signal sort(xs: List) -> List
+        signal is_sorted(xs: List) -> Bool
+    }
+
+    on sort(xs: List) {
+        let n = len(xs)
+        for i in range(0, n - 1) {
+            let swapped = false
+            for j in range(0, n - 1 - i) {
+                if xs[j] > xs[j + 1] {
+                    let tmp = xs[j]
+                    xs[j] = xs[j + 1]
+                    xs[j + 1] = tmp
+                    swapped = true
+                }
+            }
+            if !swapped { break }
+        }
+        return xs
+    }
+
+    on is_sorted(xs: List) {
+        for i in range(0, len(xs) - 1) {
+            if xs[i] > xs[i + 1] { return false }
+        }
+        return true
+    }
+}
+
+cell test BubbleSortTests {
+    rules {
+        assert sort([5, 1, 4, 2, 8])[0] == 1
+        assert sort([5, 1, 4, 2, 8])[4] == 8
+        assert is_sorted(sort([3, 3, 1, 2]))
+        assert is_sorted(sort([1]))
+        assert is_sorted(sort(list()))
+        assert is_sorted([1, 2, 3, 4])
+        assert !is_sorted([2, 1])
+        assert_fails sort([1, 2])[9]
+    }
+}

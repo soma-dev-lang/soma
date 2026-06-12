@@ -187,3 +187,61 @@ soma describe --builtins --json     # the exact builtin signatures (never guess)
 
 When unsure of a builtin's signature, run `soma describe --builtins` —
 do not guess. When unsure of a cell's API, run `soma describe --faces`.
+
+---
+
+## More verified footguns (found generating 168 programs)
+
+## 11. Handler names must not collide with builtins
+
+```soma
+on merge(a, b) { return a + b + 1000 }   // SILENTLY shadowed by the
+                                          // builtin merge() — your body
+                                          // never runs
+```
+```soma
+on merge_lists(a, b) { ... }              // pick a non-builtin name
+```
+Risky names: `merge`, `map`, `filter`, `sort`, `count`, `top`, `take`,
+`publish`, `all`, `sum`. When in doubt, `soma describe --builtins | grep <name>`.
+
+## 12. `assert_fails` needs an expression that RAISES, not a falsy bool
+
+```soma
+assert_fails 1 == 2          // FAILS the test: 1==2 is just `false`, no error
+```
+```soma
+assert_fails xs[99]          // passes: out-of-bounds RAISES
+assert_fails transition(id, "illegal")   // passes: invalid transition raises
+assert !(1 == 2)             // for a falsy predicate, use plain assert + !
+```
+
+## 13. Slot methods work on declared `memory` slots, not local maps
+
+```soma
+let seen = map()
+seen.set("k", 1)             // error: 'seen' is not a memory slot
+```
+```soma
+let seen = map()
+seen["k"] = 1                // local maps use bracket indexing
+let v = seen["k"] ?? 0
+```
+`.get`/`.set`/`.has`/`.delete`/`.keys` are for `memory { slot: ... }` slots.
+
+## 14. `on` is a reserved keyword
+
+It can't be a parameter name or a map field read as `.on`. Use `enabled`,
+`active`, etc.
+
+## 15. No semicolons; statements are newline-separated
+
+```soma
+{ a = 1; b = 2 }             // lex error
+```
+```soma
+{
+    a = 1
+    b = 2
+}
+```

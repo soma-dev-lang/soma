@@ -1,0 +1,63 @@
+// Moving averages over a price series: simple MA window, full-series mean,
+// and a momentum signal from an SMA crossover. Uses range(), avg(), slicing
+// by index, sum() reductions.
+
+cell MovingAverage {
+    face {
+        signal sma(prices: List, window: Int) -> List
+        signal mean(prices: List) -> Float
+        signal latest_sma(prices: List, window: Int) -> Float
+        signal crossover(prices: List, fast: Int, slow: Int) -> String
+    }
+
+    // simple moving average → list of window-means, one per valid position
+    on sma(prices: List, window: Int) {
+        let out = list()
+        let n = len(prices)
+        for i in range(0, n - window + 1) {
+            let acc = 0.0
+            for j in range(i, i + window) {
+                acc = acc + prices[j]
+            }
+            out = push(out, acc / window)
+        }
+        return out
+    }
+
+    on mean(prices: List) {
+        return sum(prices) / len(prices)
+    }
+
+    // most recent window mean
+    on latest_sma(prices: List, window: Int) {
+        let n = len(prices)
+        let acc = 0.0
+        for j in range(n - window, n) {
+            acc = acc + prices[j]
+        }
+        return acc / window
+    }
+
+    // golden/death cross signal from the last value of two SMAs
+    on crossover(prices: List, fast: Int, slow: Int) {
+        let f = latest_sma(prices, fast)
+        let s = latest_sma(prices, slow)
+        if f > s { return "bullish" }
+        if f < s { return "bearish" }
+        return "neutral"
+    }
+}
+
+cell test MovingAverageTests {
+    rules {
+        // SMA of [1,2,3,4] window 2 → [1.5, 2.5, 3.5]
+        assert len(sma(list(1.0, 2.0, 3.0, 4.0), 2)) == 3
+        assert abs(sma(list(1.0, 2.0, 3.0, 4.0), 2)[0] - 1.5) < 0.0001
+        assert abs(sma(list(1.0, 2.0, 3.0, 4.0), 2)[2] - 3.5) < 0.0001
+        assert abs(mean(list(2.0, 4.0, 6.0)) - 4.0) < 0.0001
+        // rising series → fast SMA above slow → bullish
+        assert crossover(list(1.0, 2.0, 3.0, 4.0, 5.0, 6.0), 2, 4) == "bullish"
+        // falling series → bearish
+        assert crossover(list(6.0, 5.0, 4.0, 3.0, 2.0, 1.0), 2, 4) == "bearish"
+    }
+}

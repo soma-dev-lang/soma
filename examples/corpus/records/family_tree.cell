@@ -1,0 +1,70 @@
+// Family tree: Person records with a list of `children` records, walked
+// recursively. Demonstrates a multi-way tree of records, recursive counting,
+// and collecting a generation by depth.
+
+cell FamilyTree {
+    face {
+        signal root() -> Map
+        signal size() -> Int
+        signal max_depth() -> Int
+        signal names_at(depth: Int) -> List
+    }
+
+    on root() {
+        return Person { name: "Grandma", children: list(
+            Person { name: "Mom", children: list(
+                Person { name: "Me",  children: list() },
+                Person { name: "Sis", children: list() }) },
+            Person { name: "Uncle", children: list(
+                Person { name: "Cousin", children: list() }) }
+        )}
+    }
+
+    on size() {
+        return _count(root())
+    }
+
+    on _count(p: Map) {
+        let total = 1
+        for c in p.children {
+            total = total + _count(c)
+        }
+        return total
+    }
+
+    on max_depth() {
+        return _depth(root())
+    }
+
+    on _depth(p: Map) {
+        if len(p.children) == 0 { return 1 }
+        let best = 0
+        for c in p.children {
+            best = max(best, _depth(c))
+        }
+        return 1 + best
+    }
+
+    on names_at(depth: Int) {
+        return _collect(root(), 0, depth)
+    }
+
+    on _collect(p: Map, cur: Int, target: Int) {
+        if cur == target { return list(p.name) }
+        let out = list()
+        for c in p.children {
+            out = list(out, _collect(c, cur + 1, target)) |> flatten()
+        }
+        return out
+    }
+}
+
+cell test FamilyTreeTest {
+    rules {
+        assert size() == 6
+        assert max_depth() == 3
+        assert names_at(0)[0] == "Grandma"
+        assert len(names_at(1)) == 2
+        assert len(names_at(2)) == 3
+    }
+}

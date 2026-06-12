@@ -1,0 +1,62 @@
+// Voting / poll API: fixed options, one counter per option, results sorted.
+// POST /vote/<option> increments; GET /results returns sorted tallies.
+
+cell Poll {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal vote(option: String) -> Map
+        signal results() -> List
+        signal leader() -> String
+        promise all_persistent
+    }
+
+    memory {
+        tally: Map<String, Int> [persistent, consistent]
+    }
+
+    on _options() { return list("cats", "dogs", "birds") }
+
+    on vote(option: String) {
+        let valid = _options() |> any(o => o == option)
+        if valid == false { return response(400, map("error", "unknown option")) }
+        let cur = tally.get(option)
+        if cur == () { cur = 0 }
+        tally.set(option, cur + 1)
+        return map("option", option, "votes", cur + 1)
+    }
+
+    on results() {
+        let rows = list()
+        for o in _options() {
+            let v = tally.get(o)
+            if v == () { v = 0 }
+            rows = push(rows, map("option", o, "votes", v))
+        }
+        return rows |> sort_by("votes", "desc")
+    }
+
+    on leader() {
+        let r = results()
+        return r[0].option
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "POST", path: "/vote/" + opt} -> vote(opt)
+            {method: "GET",  path: "/results"}     -> results()
+            _                                      -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test PollTest {
+    rules {
+        assert vote("cats").votes == 1
+        assert vote("dogs").votes == 1
+        assert vote("dogs").votes == 2
+        assert leader() == "dogs"
+        assert len(results()) == 3
+        assert vote("fish")._status == 400
+    }
+}

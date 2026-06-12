@@ -1,0 +1,66 @@
+// ============================================================================
+// Number guessing game — hi/lo feedback and a binary-search solver
+// ============================================================================
+//
+// feedback() compares a guess to the secret and returns "low" / "high" /
+// "correct". auto_solve() proves the search space is exhausted in at most
+// ceil(log2(range)) guesses by playing the optimal binary-search strategy.
+//
+// Run:  soma run guessing_game.cell --signal demo
+// Test: soma test guessing_game.cell
+
+cell GuessingGame {
+    face {
+        signal feedback(secret: Int, guess: Int) -> String
+        signal auto_solve(secret: Int, lo: Int, hi: Int) -> Map
+        signal demo() -> Map
+    }
+
+    on feedback(secret: Int, guess: Int) {
+        return match true {
+            _ if guess < secret -> "low"
+            _ if guess > secret -> "high"
+            _                   -> "correct"
+        }
+    }
+
+    // Binary search the [lo, hi] interval; count guesses until "correct".
+    on auto_solve(secret: Int, lo: Int, hi: Int) {
+        let l = lo
+        let h = hi
+        let guesses = 0
+        let found = -1
+        while l <= h {
+            let mid = floor((l + h) / 2)
+            guesses = guesses + 1
+            let f = feedback(secret, mid)
+            if f == "correct" {
+                found = mid
+                l = h + 1
+            } else if f == "low" {
+                l = mid + 1
+            } else {
+                h = mid - 1
+            }
+        }
+        return map("found", found, "guesses", guesses)
+    }
+
+    on demo() {
+        return auto_solve(73, 1, 100)
+    }
+}
+
+cell test GuessingTests {
+    rules {
+        assert feedback(50, 30) == "low"
+        assert feedback(50, 80) == "high"
+        assert feedback(50, 50) == "correct"
+        // binary search always finds the secret
+        assert auto_solve(73, 1, 100).found == 73
+        // 1..100 is solved in at most 7 guesses (ceil(log2(100)) = 7)
+        assert auto_solve(1, 1, 100).guesses <= 7
+        assert auto_solve(100, 1, 100).guesses <= 7
+        assert auto_solve(64, 1, 100).found == 64
+    }
+}

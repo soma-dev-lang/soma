@@ -1,0 +1,42 @@
+// ============================================================================
+// Tiny template renderer — substitute [[key]] placeholders
+// ============================================================================
+//
+// Fills each [[key]] in a template with its value. Keys and values are passed
+// as two parallel lists (a Map *parameter* can't be key-iterated like a memory
+// slot, so explicit lists are the portable idiom). We use square brackets
+// because Soma string interpolation owns {curly} braces.
+//
+// Run: soma run template.cell --signal greet "Bob" "Paris"
+
+cell Template {
+    face {
+        signal fill(tmpl: String, names: List<String>, vals: List<String>) -> String
+        signal greet(name: String, place: String) -> String
+    }
+
+    on fill(tmpl: String, names: List<String>, vals: List<String>) {
+        let out = tmpl
+        for i in range(0, len(names)) {
+            let placeholder = "[[" + names[i] + "]]"
+            out = replace(out, placeholder, vals[i])
+        }
+        return out
+    }
+
+    on greet(name: String, place: String) {
+        return fill("Hello [[name]], welcome to [[place]]!",
+                    list("name", "place"),
+                    list(name, place))
+    }
+}
+
+cell test TemplateTest {
+    rules {
+        assert fill("Hi [[name]]", list("name"), list("Alice")) == "Hi Alice"
+        assert fill("[[a]]+[[b]]=[[c]]", list("a","b","c"), list("1","2","3")) == "1+2=3"
+        assert greet("Bob", "Paris") == "Hello Bob, welcome to Paris!"
+        assert fill("no placeholders", list("x"), list("9")) == "no placeholders"
+        assert fill("[[x]] [[x]]", list("x"), list("hi")) == "hi hi"
+    }
+}

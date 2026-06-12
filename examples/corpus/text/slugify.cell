@@ -1,0 +1,44 @@
+// ============================================================================
+// Slugify — turn a title into a URL-safe slug
+// ============================================================================
+//
+// Lowercases, keeps alphanumerics, turns every run of other characters into a
+// single hyphen, and trims leading/trailing hyphens. Demonstrates a per-char
+// accumulator with a "last was separator" flag to collapse runs.
+//
+// Run: soma run slugify.cell --signal slugify "Hello, World!  Foo--Bar"
+
+cell Slugify {
+    face {
+        signal slugify(title: String) -> String
+    }
+
+    on slugify(title: String) {
+        let low = lowercase(title)
+        let out = ""
+        let pending_dash = false
+        for i in range(0, len(low)) {
+            let c = low[i]
+            if (c >= "a" && c <= "z") || (c >= "0" && c <= "9") {
+                if pending_dash && len(out) > 0 {
+                    out = out + "-"
+                }
+                pending_dash = false
+                out = out + c
+            } else {
+                pending_dash = true
+            }
+        }
+        return out
+    }
+}
+
+cell test SlugifyTest {
+    rules {
+        assert slugify("Hello World") == "hello-world"
+        assert slugify("Hello, World!") == "hello-world"
+        assert slugify("  Foo --  Bar  ") == "foo-bar"
+        assert slugify("Already-Slug-99") == "already-slug-99"
+        assert slugify("!!!") == ""
+    }
+}

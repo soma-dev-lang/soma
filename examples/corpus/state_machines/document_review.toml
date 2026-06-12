@@ -1,0 +1,9 @@
+[package]
+name = "document-review"
+version = "0.1.0"
+entry = "document_review.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["Published", "Archived"]
+never = []

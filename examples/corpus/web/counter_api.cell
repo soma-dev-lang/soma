@@ -1,0 +1,67 @@
+// Counter API: a persistent integer counter exposed over HTTP.
+// One fat `on request` routes GET/POST. State lives in a [persistent] slot.
+//   soma serve counter_api.cell
+//   curl -X POST localhost:8080/inc   ; curl localhost:8080/value
+
+cell CounterApi {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal value() -> Int
+        signal inc() -> Int
+        signal dec() -> Int
+        signal reset() -> Int
+        promise all_persistent
+    }
+
+    memory {
+        store: Map<String, Int> [persistent, consistent]
+    }
+
+    on _n() {
+        let v = store.get("count")
+        if v == () { return 0 }
+        return v
+    }
+
+    on value() { return _n() }
+
+    on inc() {
+        let v = _n() + 1
+        store.set("count", v)
+        return v
+    }
+
+    on dec() {
+        let v = _n() - 1
+        store.set("count", v)
+        return v
+    }
+
+    on reset() {
+        store.set("count", 0)
+        return 0
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET",  path: "/value"} -> to_string(value())
+            {method: "POST", path: "/inc"}   -> to_string(inc())
+            {method: "POST", path: "/dec"}   -> to_string(dec())
+            {method: "POST", path: "/reset"} -> to_string(reset())
+            {method: "GET",  path: "/"}      -> html("<h1>Counter</h1><p>POST /inc /dec /reset, GET /value</p>")
+            _                                -> response(404, "not found")
+        }
+    }
+}
+
+cell test CounterApiTest {
+    rules {
+        assert reset() == 0
+        assert inc() == 1
+        assert inc() == 2
+        assert dec() == 1
+        assert value() == 1
+        assert reset() == 0
+    }
+}

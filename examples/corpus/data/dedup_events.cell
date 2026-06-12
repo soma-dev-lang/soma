@@ -1,0 +1,51 @@
+// Deduplication of an event stream with distinct(). Events arrive with
+// duplicate IDs; we collapse to unique rows, count unique users, and show
+// distinct(field) for value-level dedup. Classic "exactly-once" cleanup.
+
+cell DedupEvents {
+    on events() {
+        return list(
+            map("event_id", "e1", "user", "ana", "kind", "click"),
+            map("event_id", "e2", "user", "ben", "kind", "view"),
+            map("event_id", "e1", "user", "ana", "kind", "click"),
+            map("event_id", "e3", "user", "ana", "kind", "buy"),
+            map("event_id", "e2", "user", "ben", "kind", "view"),
+            map("event_id", "e4", "user", "cleo", "kind", "click"),
+            map("event_id", "e1", "user", "ana", "kind", "click")
+        )
+    }
+
+    // Whole-row dedup: identical maps collapse to one.
+    on unique_events() { return events() |> distinct() }
+
+    // Value-level dedup: the set of users / kinds that appear.
+    on unique_users() { return events() |> distinct("user") |> pluck("user") }
+    on kinds() { return events() |> distinct("kind") |> pluck("kind") }
+
+    // Event volume per kind after dedup, busiest first.
+    on volume_by_kind() {
+        return unique_events()
+            |> agg("kind", "event_id:count")
+            |> sort_by("event_id_count", "desc")
+    }
+
+    on run() {
+        print("raw: {len(events())}, unique: {len(unique_events())}")
+        print("users: {unique_users()}")
+        return kinds()
+    }
+}
+
+cell test DedupEventsTests {
+    rules {
+        // 7 raw rows collapse to 4 unique (e1 x3, e2 x2 dedup)
+        assert len(events()) == 7
+        assert len(unique_events()) == 4
+        // 3 distinct users
+        assert len(unique_users()) == 3
+        // 3 distinct kinds: click, view, buy
+        assert len(kinds()) == 3
+        // after dedup: click(e1) + view(e2) + buy(e3) + click(e4) -> click=2
+        assert (volume_by_kind() |> filter_by("kind", "=", "click"))[0].event_id_count == 2
+    }
+}

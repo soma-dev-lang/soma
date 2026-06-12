@@ -1,0 +1,66 @@
+// ============================================================================
+// Newton's method — square root and reciprocal without division/sqrt
+// ============================================================================
+//
+// sqrt(a) is the positive root of f(x) = x² − a; Newton's iteration becomes
+// the Babylonian update x ← (x + a/x) / 2. The reciprocal 1/a is the root of
+// f(x) = 1/x − a, giving x ← x·(2 − a·x) — a multiply-only iteration.
+//
+//   soma run newton_sqrt.cell run
+// ============================================================================
+
+cell NewtonSqrt {
+    face {
+        signal nsqrt(a: Float) -> Float
+        signal reciprocal(a: Float) -> Float
+        signal run() -> Map
+    }
+
+    on nsqrt(a: Float) [native] {
+        if a <= 0.0 { return 0.0 }
+        let x = a
+        let i = 0
+        while i < 100 {
+            let prev = x
+            x = (x + a / x) / 2.0
+            let d = x - prev
+            if d < 0.0 { d = 0.0 - d }
+            if d < 0.000000000001 { return x }
+            i = i + 1
+        }
+        return x
+    }
+
+    on reciprocal(a: Float) [native] {
+        // multiply-only Newton for 1/a; needs a positive seed
+        let x = 0.1
+        let i = 0
+        while i < 200 {
+            let prev = x
+            x = x * (2.0 - a * x)
+            let d = x - prev
+            if d < 0.0 { d = 0.0 - d }
+            if d < 0.0000000000001 { return x }
+            i = i + 1
+        }
+        return x
+    }
+
+    on run() {
+        return map(
+            "sqrt2", nsqrt(2.0),
+            "sqrt_1024", nsqrt(1024.0),
+            "recip_8", reciprocal(8.0)
+        )
+    }
+}
+
+cell test NewtonTests {
+    rules {
+        assert abs(nsqrt(2.0) - 1.4142135623730951) < 0.0000001
+        assert abs(nsqrt(144.0) - 12.0) < 0.0000001
+        assert abs(nsqrt(1024.0) - 32.0) < 0.0000001
+        assert abs(reciprocal(8.0) - 0.125) < 0.0000001
+        assert abs(reciprocal(4.0) - 0.25) < 0.0000001
+    }
+}

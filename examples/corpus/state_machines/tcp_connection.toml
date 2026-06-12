@@ -1,0 +1,12 @@
+[package]
+name = "tcp-connection"
+version = "0.1.0"
+entry = "tcp_connection.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["Closed"]
+never = []
+
+[verify.after.Established]
+eventually = ["Closed"]

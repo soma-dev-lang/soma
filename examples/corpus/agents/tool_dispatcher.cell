@@ -1,0 +1,76 @@
+// Reflective tool-dispatch agent: routes a named action to the right tool.
+// Demonstrates: several `tool` declarations, a manual dispatcher that mirrors
+// what think() does automatically (so the routing logic is unit-testable),
+// and an unknown-action path that lands in failed.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run tool_dispatcher.cell --signal act "reverse" "abc"
+// Test: SOMA_LLM_MOCK=echo soma test tool_dispatcher.cell
+
+cell agent Toolbox {
+    face {
+        signal act(action: String, arg: String) -> Map
+        signal ask(prompt: String) -> Map
+        tool upper(s: String) -> String "Uppercase a string"
+        tool reverse_str(s: String) -> String "Reverse a string"
+        tool wordcount(s: String) -> String "Count words"
+    }
+
+    state task {
+        initial: idle
+        idle    -> running
+        running -> done
+        *       -> failed
+    }
+
+    on upper(s: String) { uppercase(s) }
+    on reverse_str(s: String) {
+        let cs = list()
+        for i in range(0, len(s)) { cs = push(cs, s[len(s) - 1 - i]) }
+        join(cs, "")
+    }
+    on wordcount(s: String) { to_string(len(split(s, " "))) }
+
+    // Manual dispatcher: same shape as think()'s auto tool-calling, but
+    // deterministic and testable.
+    on act(action: String, arg: String) {
+        let id = to_string(next_id())
+        transition(id, "running")
+        let result = match action {
+            "upper"   -> upper(arg)
+            "reverse" -> reverse_str(arg)
+            "count"   -> wordcount(arg)
+            _         -> ()
+        }
+        if result == () {
+            transition(id, "failed")
+            return map("status", "failed", "error", "unknown action: {action}")
+        }
+        transition(id, "done")
+        map("status", "done", "action", action, "result", result)
+    }
+
+    on ask(prompt: String) {
+        set_budget(2000)
+        let id = to_string(next_id())
+        transition(id, "running")
+        let r = try { think("Use a tool to handle: {prompt}") }
+        if r.error != () {
+            transition(id, "failed")
+            return map("status", "failed", "error", r.error)
+        }
+        transition(id, "done")
+        map("status", "done", "answer", r.value)
+    }
+}
+
+cell test ToolboxTests {
+    rules {
+        assert upper("abc") == "ABC"
+        assert reverse_str("abc") == "cba"
+        assert wordcount("a b c") == "3"
+        assert act("reverse", "hello").result == "olleh"
+        assert act("upper", "hi").result == "HI"
+        assert act("bogus", "x").status == "failed"
+        assert ask("anything").status == "done"
+    }
+}

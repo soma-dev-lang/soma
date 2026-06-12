@@ -1,0 +1,75 @@
+// A coin-operated turnstile — the textbook two-state machine, plus an
+// out-of-service state reachable only via maintenance. Demonstrates a
+// cyclic machine (locked <-> unlocked) with a generic transition handler
+// so we can assert_fails on a jump that the machine forbids (you cannot
+// go straight from locked to out_of_service without unlocking first).
+//
+// NOTE: transitioning an instance to its CURRENT state is a silent no-op,
+// not an error — only a move to a non-adjacent state is rejected.
+
+cell Turnstile {
+    face {
+        signal coin(id: String) -> String
+        signal walk_through(id: String) -> String
+        signal go(id: String, to: String) -> String
+        signal state_of(id: String) -> String
+        signal passes() -> Int
+    }
+
+    memory {
+        stats: Map<String, Int> [persistent, consistent]
+    }
+
+    state gate {
+        initial: locked
+        locked   -> unlocked
+        unlocked -> locked
+        unlocked -> out_of_service
+        out_of_service -> locked
+    }
+
+    on coin(id: String) {
+        transition(id, "unlocked")
+        return get_status(id)
+    }
+
+    on walk_through(id: String) {
+        transition(id, "locked")
+        let n = stats.get("passes") ?? 0
+        stats.set("passes", n + 1)
+        return get_status(id)
+    }
+
+    // generic, machine-validated transition
+    on go(id: String, to: String) {
+        transition(id, to)
+        return get_status(id)
+    }
+
+    on state_of(id: String) { return get_status(id) }
+
+    on passes() { return stats.get("passes") ?? 0 }
+}
+
+cell test TurnstileTests {
+    rules {
+        // a fresh instance starts locked
+        assert state_of("t0") == "locked"
+
+        // coin unlocks, walking through re-locks and counts a pass
+        assert coin("t1") == "unlocked"
+        assert walk_through("t1") == "locked"
+        assert passes() == 1
+
+        // out_of_service can be entered from unlocked
+        assert go("t2", "unlocked") == "unlocked"
+        assert go("t2", "out_of_service") == "out_of_service"
+
+        // illegal: you cannot drop a locked turnstile straight to
+        // out_of_service — it must be unlocked first
+        assert_fails go("t3", "out_of_service")
+
+        // illegal: a state name that doesn't exist is rejected outright
+        assert_fails go("t4", "exploded")
+    }
+}

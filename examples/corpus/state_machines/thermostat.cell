@@ -1,0 +1,74 @@
+// An HVAC thermostat control loop.
+// A single machine cycles between idle, heating, and cooling based on the
+// measured temperature versus a target band. This is a reactive (cyclic)
+// system with no terminal state — the proof obligation is deadlock-freedom:
+// the controller always has a legal next action.
+
+cell Thermostat {
+    face {
+        signal set_target(lo: Int, hi: Int) -> Map
+        signal reading(id: String, temp: Int) -> Map
+        signal mode(id: String) -> String
+    }
+
+    memory {
+        band: Map<String, Int> [persistent, consistent]
+    }
+
+    state hvac {
+        initial: idle
+        idle    -> heating
+        idle    -> cooling
+        heating -> idle
+        cooling -> idle
+    }
+
+    on set_target(lo: Int, hi: Int) {
+        require lo < hi else bad_band
+        band.set("lo", lo)
+        band.set("hi", hi)
+        return map("lo", lo, "hi", hi)
+    }
+
+    on reading(id: String, temp: Int) {
+        let lo = band.get("lo") ?? 18
+        let hi = band.get("hi") ?? 24
+        let cur = get_status(id)
+        // decide the target mode for this temperature
+        let want = if temp < lo { "heating" } else if temp > hi { "cooling" } else { "idle" }
+        // return to idle first if we're actively conditioning and the
+        // desired mode differs (the machine only allows idle<->active)
+        if cur != "idle" && cur != want {
+            transition(id, "idle")
+            cur = "idle"
+        }
+        if cur == "idle" && want != "idle" {
+            transition(id, want)
+        }
+        if cur != "idle" && want == "idle" {
+            transition(id, "idle")
+        }
+        return map("temp", temp, "mode", get_status(id))
+    }
+
+    on mode(id: String) { return get_status(id) }
+}
+
+cell test ThermostatTests {
+    rules {
+        // configure a comfortable band
+        assert set_target(18, 24).lo == 18
+
+        // cold reading -> heating
+        assert reading("h1", 15).mode == "heating"
+        // warming into the band -> idle
+        assert reading("h1", 21).mode == "idle"
+        // hot reading -> cooling
+        assert reading("h1", 28).mode == "cooling"
+        // back into band -> idle
+        assert reading("h1", 22).mode == "idle"
+
+        // an inverted band is rejected
+        assert_fails set_target(30, 10)
+    }
+}

@@ -1,0 +1,56 @@
+// Agent lifecycle typed against a sum type — typos become compile errors.
+// Demonstrates: `cell type` variants typing a `state X: T { }` machine,
+// transition() taking a VARIANT not a string, get_status() returning the
+// variant name as a string, and an exhaustive match over the status.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run typed_lifecycle.cell --signal handle "refund"
+// Test: SOMA_LLM_MOCK=echo soma test typed_lifecycle.cell
+
+cell type TaskStatus {
+    variants { Queued  Working  Reviewed  Shipped  Aborted }
+}
+
+cell agent Worker {
+    face {
+        signal handle(kind: String) -> Map
+        signal label(s: String) -> String
+    }
+
+    state task: TaskStatus {
+        initial: Queued
+        Queued   -> Working
+        Working  -> Reviewed
+        Reviewed -> Shipped
+        *        -> Aborted
+    }
+
+    // Exhaustive match over the sum type — drop an arm and check fails.
+    on label(s: String) {
+        match s {
+            "Queued"   -> "waiting in queue"
+            "Working"  -> "in progress"
+            "Reviewed" -> "passed review"
+            "Shipped"  -> "delivered"
+            "Aborted"  -> "cancelled"
+            _          -> "unknown"
+        }
+    }
+
+    on handle(kind: String) {
+        set_budget(1000)
+        let id = to_string(next_id())
+        transition(id, Working)
+        transition(id, Reviewed)
+        transition(id, Shipped)
+        map("kind", kind, "state", get_status(id), "label", label(get_status(id)))
+    }
+}
+
+cell test WorkerTests {
+    rules {
+        assert label("Working") == "in progress"
+        assert label("Shipped") == "delivered"
+        assert handle("refund").state == "Shipped"
+        assert handle("refund").label == "delivered"
+    }
+}

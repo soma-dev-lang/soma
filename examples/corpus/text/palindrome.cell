@@ -1,0 +1,53 @@
+// ============================================================================
+// Palindrome check — punctuation- and case-insensitive
+// ============================================================================
+//
+// Strips everything but letters/digits, lowercases, then compares the cleaned
+// string against its reverse. Demonstrates per-character filtering with s[i]
+// and a descending range to build the reverse.
+//
+// Run: soma run palindrome.cell --signal is_palindrome "A man, a plan, a canal: Panama"
+
+cell Palindrome {
+    face {
+        signal is_palindrome(s: String) -> Bool
+        signal reverse_str(s: String) -> String
+    }
+
+    // Keep only alphanumeric characters, lowercased.
+    on _clean(s: String) {
+        let low = lowercase(s)
+        let out = ""
+        for i in range(0, len(low)) {
+            let c = low[i]
+            if (c >= "a" && c <= "z") || (c >= "0" && c <= "9") {
+                out = out + c
+            }
+        }
+        return out
+    }
+
+    on reverse_str(s: String) {
+        let out = ""
+        for i in range(len(s) - 1, -1, -1) {
+            out = out + s[i]
+        }
+        return out
+    }
+
+    on is_palindrome(s: String) {
+        let c = _clean(s)
+        return c == reverse_str(c)
+    }
+}
+
+cell test PalindromeTest {
+    rules {
+        assert is_palindrome("racecar")
+        assert is_palindrome("A man, a plan, a canal: Panama")
+        assert is_palindrome("Was it a car or a cat I saw?")
+        assert !is_palindrome("hello")
+        assert reverse_str("abc") == "cba"
+        assert is_palindrome("12321")
+    }
+}

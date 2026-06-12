@@ -1,0 +1,53 @@
+// Employee directory: records driving group_by / agg / inner_join style
+// reporting. Demonstrates records as rows in analytical pipelines and a
+// department roll-up.
+
+cell Employees {
+    face {
+        signal staff() -> List
+        signal headcount(dept: String) -> Int
+        signal payroll() -> Int
+        signal avg_salary(dept: String) -> Int
+        signal raise_all(dept: String, pct: Int) -> List
+    }
+
+    on staff() {
+        return list(
+            Emp { name: "Ada",   dept: "eng",   salary: 150 },
+            Emp { name: "Bea",   dept: "eng",   salary: 130 },
+            Emp { name: "Cyd",   dept: "sales", salary: 90  },
+            Emp { name: "Dot",   dept: "sales", salary: 110 },
+            Emp { name: "Eli",   dept: "eng",   salary: 170 }
+        )
+    }
+
+    on headcount(dept: String) {
+        return staff() |> count(e => e.dept == dept)
+    }
+
+    on payroll() {
+        return sum(staff() |> pluck("salary"))
+    }
+
+    on avg_salary(dept: String) {
+        let rows = staff() |> filter(e => e.dept == dept)
+        return avg(rows |> pluck("salary"))
+    }
+
+    on raise_all(dept: String, pct: Int) {
+        return staff()
+            |> filter(e => e.dept == dept)
+            |> map(e => e |> with("salary", e.salary + floor(e.salary * pct / 100)))
+    }
+}
+
+cell test EmployeesTest {
+    rules {
+        assert headcount("eng") == 3
+        assert payroll() == 650
+        assert avg_salary("eng") == 150
+        assert avg_salary("sales") == 100
+        assert raise_all("sales", 10)[0].salary == 99
+        assert len(raise_all("eng", 5)) == 3
+    }
+}

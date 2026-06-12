@@ -1,0 +1,65 @@
+// ============================================================================
+// Number to words — spell out integers 0..999
+// ============================================================================
+//
+// Composes English number words from ones/teens/tens tables. Demonstrates
+// list-literal lookup tables indexed by digit, integer division with floor,
+// and string assembly with trim to drop stray spaces.
+//
+// Run: soma run number_to_words.cell --signal spell 342
+
+cell NumberToWords {
+    face {
+        signal spell(n: Int) -> String
+    }
+
+    on _ones(d: Int) {
+        let t = list("zero","one","two","three","four","five","six","seven","eight","nine")
+        return t[d]
+    }
+
+    on _teens(d: Int) {
+        let t = list("ten","eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen","eighteen","nineteen")
+        return t[d]
+    }
+
+    on _tens(d: Int) {
+        let t = list("","","twenty","thirty","forty","fifty","sixty","seventy","eighty","ninety")
+        return t[d]
+    }
+
+    // Spell 0..99
+    on _two_digits(n: Int) {
+        if n < 10 { return _ones(n) }
+        if n < 20 { return _teens(n - 10) }
+        let tens = floor(n / 10)
+        let ones = n % 10
+        if ones == 0 { return _tens(tens) }
+        return _tens(tens) + "-" + _ones(ones)
+    }
+
+    on spell(n: Int) {
+        if n == 0 { return "zero" }
+        if n < 100 { return _two_digits(n) }
+        let hundreds = floor(n / 100)
+        let rest = n % 100
+        let out = _ones(hundreds) + " hundred"
+        if rest > 0 {
+            out = out + " " + _two_digits(rest)
+        }
+        return out
+    }
+}
+
+cell test NumberToWordsTest {
+    rules {
+        assert spell(0) == "zero"
+        assert spell(7) == "seven"
+        assert spell(13) == "thirteen"
+        assert spell(20) == "twenty"
+        assert spell(42) == "forty-two"
+        assert spell(100) == "one hundred"
+        assert spell(342) == "three hundred forty-two"
+        assert spell(905) == "nine hundred five"
+    }
+}

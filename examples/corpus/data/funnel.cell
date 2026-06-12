@@ -1,0 +1,58 @@
+// Conversion funnel: count distinct users reaching each stage, then compute
+// step-to-step conversion rates. Demonstrates count over a lambda, distinct
+// per stage, and building a derived report list with map().
+
+cell Funnel {
+    on hits() {
+        return list(
+            map("user", "u1", "stage", "visit"),
+            map("user", "u2", "stage", "visit"),
+            map("user", "u3", "stage", "visit"),
+            map("user", "u4", "stage", "visit"),
+            map("user", "u1", "stage", "signup"),
+            map("user", "u2", "stage", "signup"),
+            map("user", "u3", "stage", "signup"),
+            map("user", "u1", "stage", "purchase"),
+            map("user", "u2", "stage", "purchase")
+        )
+    }
+
+    // Unique users at a given stage.
+    on reached(stage: String) {
+        return hits() |> filter_by("stage", "=", stage) |> distinct("user") |> len
+    }
+
+    // visit -> signup -> purchase counts and conversion %.
+    on report() {
+        let stages = list("visit", "signup", "purchase")
+        let out = list()
+        let prev = 0
+        let i = 0
+        while i < len(stages) {
+            let n = reached(stages[i])
+            let rate = if prev == 0 { 100 } else { floor(n * 100 / prev) }
+            out = out.push(map("stage", stages[i], "users", n, "rate", rate))
+            prev = n
+            i += 1
+        }
+        return out
+    }
+
+    on run() {
+        for r in report() { print("{r.stage}: {r.users} users ({r.rate}%)") }
+        return report()
+    }
+}
+
+cell test FunnelTests {
+    rules {
+        // 4 visited, 3 signed up, 2 purchased
+        assert reached("visit") == 4
+        assert reached("signup") == 3
+        assert reached("purchase") == 2
+        // signup conversion = floor(3*100/4) = 75
+        assert report()[1].rate == 75
+        // purchase conversion = floor(2*100/3) = 66
+        assert report()[2].rate == 66
+    }
+}

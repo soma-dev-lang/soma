@@ -1,0 +1,74 @@
+// URL shortener: POST a long URL, get a short code; GET the code redirects.
+// Base36 code derived from a monotonic id. Hit count tracked per code.
+//   curl -X POST localhost:8080/shorten -d '{"url":"https://soma.dev"}'
+//   curl -i localhost:8080/r/<code>
+
+cell Shortener {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal shorten(url: String) -> Map
+        signal resolve(code: String) -> String
+        signal stats(code: String) -> Map
+        promise all_persistent
+    }
+
+    memory {
+        urls:  Map<String, String> [persistent, consistent]
+        hits:  Map<String, Int>    [persistent, consistent]
+    }
+
+    on _encode(n: Int) {
+        let alpha = "0123456789abcdefghijklmnopqrstuvwxyz"
+        if n == 0 { return "0" }
+        let s = ""
+        let x = n
+        while x > 0 {
+            let d = x - floor(x / 36) * 36
+            s = concat(alpha[d], s)
+            x = floor(x / 36)
+        }
+        return s
+    }
+
+    on shorten(url: String) {
+        let code = _encode(next_id())
+        urls.set(code, url)
+        hits.set(code, 0)
+        return map("code", code, "url", url)
+    }
+
+    on resolve(code: String) {
+        let url = urls.get(code)
+        if url == () { return "" }
+        hits.set(code, hits.get(code) + 1)
+        return url
+    }
+
+    on stats(code: String) {
+        if urls.get(code) == () { return response(404, map("error", "unknown code")) }
+        return map("code", code, "url", urls.get(code), "hits", hits.get(code))
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "POST", path: "/shorten"}       -> shorten(from_json(body).url)
+            {method: "GET",  path: "/r/" + code}     -> {
+                let url = resolve(code)
+                if url == "" { response(404, map("error", "unknown code")) } else { redirect(url) }
+            }
+            {method: "GET",  path: "/stats/" + code} -> stats(code)
+            _                                        -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test ShortenerTest {
+    rules {
+        assert _encode(0) == "0"
+        assert _encode(35) == "z"
+        assert _encode(36) == "10"
+        assert shorten("https://soma.dev").url == "https://soma.dev"
+        assert resolve(shorten("https://x.io").code) == "https://x.io"
+    }
+}

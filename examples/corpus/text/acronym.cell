@@ -1,0 +1,42 @@
+// ============================================================================
+// Acronym / initials — first letter of each word, uppercased
+// ============================================================================
+//
+// "Portable Network Graphics" -> "PNG". Splits on spaces, drops empties, and
+// collects the uppercased first character of each word. Demonstrates building
+// a result by accumulating substring(w, 0, 1) over a filtered word list.
+//
+// Run: soma run acronym.cell --signal acronym "Portable Network Graphics"
+
+cell Acronym {
+    face {
+        signal acronym(phrase: String) -> String
+        signal initials(name: String) -> String
+    }
+
+    on acronym(phrase: String) {
+        let words = split(phrase, " ") |> filter(w => len(w) > 0)
+        let out = ""
+        for w in words {
+            out = out + uppercase(substring(w, 0, 1))
+        }
+        return out
+    }
+
+    // Initials with dot separators: "Ada Lovelace" -> "A.L."
+    on initials(name: String) {
+        let words = split(name, " ") |> filter(w => len(w) > 0)
+        let parts = words |> map(w => uppercase(substring(w, 0, 1)) + ".")
+        return join(parts, "")
+    }
+}
+
+cell test AcronymTest {
+    rules {
+        assert acronym("Portable Network Graphics") == "PNG"
+        assert acronym("as soon as possible") == "ASAP"
+        assert acronym("  spaced   out  words ") == "SOW"
+        assert initials("Ada Lovelace") == "A.L."
+        assert initials("grace brewster hopper") == "G.B.H."
+    }
+}

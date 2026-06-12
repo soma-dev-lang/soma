@@ -1,0 +1,66 @@
+// ============================================================================
+// Tic-tac-toe win detection — pure board logic
+// ============================================================================
+//
+// A board is a flat list of 9 cells, each "X", "O", or "" (empty). The
+// winner() handler scans the 8 winning lines and returns the mark of the
+// winner, "draw" if the board is full with no line, or "" if still playing.
+//
+// Run:  soma run tic_tac_toe.cell --signal demo
+// Test: soma test tic_tac_toe.cell
+
+cell TicTacToe {
+    face {
+        signal winner(board: List) -> String
+        signal is_full(board: List) -> Bool
+        signal demo() -> String
+    }
+
+    // The 8 winning triples (row, column, diagonal indices).
+    on _lines() {
+        return [
+            [0, 1, 2], [3, 4, 5], [6, 7, 8],   // rows
+            [0, 3, 6], [1, 4, 7], [2, 5, 8],   // cols
+            [0, 4, 8], [2, 4, 6]               // diagonals
+        ]
+    }
+
+    on is_full(board: List) {
+        return all(board, c => c != "")
+    }
+
+    on winner(board: List) {
+        let result = ""
+        for line in _lines() {
+            let a = board[line[0]]
+            let b = board[line[1]]
+            let c = board[line[2]]
+            if a != "" && a == b && b == c {
+                result = a
+            }
+        }
+        if result != "" { return result }
+        if is_full(board) { return "draw" }
+        return ""
+    }
+
+    on demo() {
+        let b = ["X", "O", "X", "O", "X", "O", "X", "", ""]
+        return winner(b)
+    }
+}
+
+cell test TicTacToeTests {
+    rules {
+        // X wins the left column (0,3,6)
+        assert winner(["X", "O", "O", "X", "", "", "X", "", ""]) == "X"
+        // O wins the main diagonal (0,4,8)
+        assert winner(["O", "X", "X", "", "O", "", "", "", "O"]) == "O"
+        // full board, no line → draw
+        assert winner(["X", "O", "X", "X", "O", "O", "O", "X", "X"]) == "draw"
+        // game still in progress → ""
+        assert winner(["X", "", "", "", "O", "", "", "", ""]) == ""
+        assert is_full(["X", "O", "X", "O", "X", "O", "X", "O", "X"]) == true
+        assert is_full(["X", "", "X", "O", "X", "O", "X", "O", "X"]) == false
+    }
+}

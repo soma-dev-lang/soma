@@ -1,0 +1,26 @@
+[package]
+name = "agents-corpus"
+version = "0.1.0"
+description = "Verified AI-agent example cells (training corpus)"
+
+# Agent LLM config — overridden by SOMA_LLM_MOCK in examples so no network
+# is required. For real runs, set provider/model and an API key via env.
+[agent]
+provider = "anthropic"
+model    = "claude-opus-4-6"
+key      = "${ANTHROPIC_API_KEY}"
+
+# Termination proof for verified_termination.cell's `workflow` machine:
+# every path eventually reaches a terminal, no deadlocks.
+[verify]
+deadlock_free = true
+eventually    = ["done", "failed"]
+
+[verify.after.understanding]
+eventually = ["solving", "failed"]
+
+[verify.after.solving]
+eventually = ["verifying", "failed"]
+
+[verify.after.verifying]
+eventually = ["done", "failed"]

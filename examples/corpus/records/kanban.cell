@@ -1,0 +1,54 @@
+// Kanban board: Card records stored by id in a Map slot, moved between
+// columns by mutating a field and writing back. Demonstrates records in a
+// keyed store, a column roll-up, and counting by a record field.
+
+cell Kanban {
+    face {
+        signal add(title: String, col: String) -> String
+        signal move(id: String, col: String) -> Map
+        signal column(col: String) -> List
+        signal counts() -> Map
+    }
+
+    memory {
+        cards: Map<String, String> [persistent, consistent]
+    }
+
+    on add(title: String, col: String) {
+        let id = "card-{next_id()}"
+        cards.set(id, Card { id: id, title: title, col: col })
+        return id
+    }
+
+    on move(id: String, col: String) {
+        let c = cards.get(id)
+        if c == () { return map("error", "no card") }
+        c.col = col
+        cards.set(id, c)
+        return map("id", id, "col", col)
+    }
+
+    on column(col: String) {
+        return cards.values |> filter(c => c.col == col) |> pluck("title")
+    }
+
+    on counts() {
+        let vals = cards.values
+        return map(
+            "todo", count(vals, c => c.col == "todo"),
+            "doing", count(vals, c => c.col == "doing"),
+            "done", count(vals, c => c.col == "done")
+        )
+    }
+}
+
+cell test KanbanTest {
+    rules {
+        assert starts_with(add("Spec", "todo"), "card-")
+        assert add("Build", "doing") != ""
+        assert move(add("Ship", "todo"), "done").col == "done"
+        assert counts().done == 1
+        assert len(column("todo")) == 1
+        assert move("card-999", "done").error == "no card"
+    }
+}

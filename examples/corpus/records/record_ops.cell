@@ -1,0 +1,50 @@
+// Functional record updates: with / without / merge produce new records
+// without mutating the original. Demonstrates immutable-style field updates
+// and that the source record is left untouched.
+
+cell RecordOps {
+    face {
+        signal base() -> Map
+        signal promoted() -> Map
+        signal anonymized() -> Map
+        signal merged() -> Map
+        signal source_unchanged() -> Bool
+    }
+
+    on base() {
+        return User { name: "Ada", role: "member", age: 30 }
+    }
+
+    // with() returns a copy with a field replaced/added.
+    on promoted() {
+        return base() |> with("role", "admin")
+    }
+
+    // without() returns a copy with keys removed.
+    on anonymized() {
+        return base() |> without("name", "age")
+    }
+
+    // merge() overlays a second map (right wins on conflict).
+    on merged() {
+        return merge(base(), map("age", 31, "city", "London"))
+    }
+
+    on source_unchanged() {
+        let b = base()
+        let p = b |> with("role", "admin")
+        return b.role == "member" && p.role == "admin"
+    }
+}
+
+cell test RecordOpsTest {
+    rules {
+        assert promoted().role == "admin"
+        assert base().role == "member"
+        assert anonymized().role == "member"
+        assert len(without(base(), "name")) == 3
+        assert merged().age == 31
+        assert merged().city == "London"
+        assert source_unchanged() == true
+    }
+}

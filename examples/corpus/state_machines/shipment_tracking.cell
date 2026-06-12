@@ -1,0 +1,66 @@
+// Parcel shipment tracking with a delivery-exception loop.
+// created -> picked_up -> in_transit -> out_for_delivery -> delivered.
+// A failed delivery attempt bounces out_for_delivery back to in_transit;
+// a parcel can be returned_to_sender from in_transit. Both delivered and
+// returned_to_sender are terminal, and reachable from every state.
+
+cell ShipmentTracker {
+    face {
+        signal label(id: String) -> String
+        signal pickup(id: String) -> String
+        signal depart(id: String) -> String
+        signal out(id: String) -> String
+        signal attempt_failed(id: String) -> String
+        signal deliver(id: String) -> String
+        signal return_parcel(id: String) -> String
+        signal track(id: String) -> String
+    }
+
+    state parcel {
+        initial: created
+        created          -> picked_up
+        picked_up        -> in_transit
+        in_transit       -> out_for_delivery
+        out_for_delivery -> delivered
+        out_for_delivery -> in_transit
+        in_transit       -> returned_to_sender
+    }
+
+    on label(id: String)          { return get_status(id) }
+    on pickup(id: String)         { transition(id, "picked_up")          return get_status(id) }
+    on depart(id: String)         { transition(id, "in_transit")         return get_status(id) }
+    on out(id: String)            { transition(id, "out_for_delivery")   return get_status(id) }
+    on attempt_failed(id: String) { transition(id, "in_transit")         return get_status(id) }
+    on deliver(id: String)        { transition(id, "delivered")          return get_status(id) }
+    on return_parcel(id: String)  { transition(id, "returned_to_sender") return get_status(id) }
+    on track(id: String)          { return get_status(id) }
+}
+
+cell test ShipmentTests {
+    rules {
+        // straight-through delivery
+        assert label("p1") == "created"
+        assert pickup("p1") == "picked_up"
+        assert depart("p1") == "in_transit"
+        assert out("p1") == "out_for_delivery"
+        assert deliver("p1") == "delivered"
+
+        // failed attempt bounces back, then succeeds
+        assert pickup("p2") == "picked_up"
+        assert depart("p2") == "in_transit"
+        assert out("p2") == "out_for_delivery"
+        assert attempt_failed("p2") == "in_transit"
+        assert out("p2") == "out_for_delivery"
+        assert deliver("p2") == "delivered"
+
+        // return to sender from in_transit
+        assert pickup("p3") == "picked_up"
+        assert depart("p3") == "in_transit"
+        assert return_parcel("p3") == "returned_to_sender"
+
+        // illegal: cannot deliver something never picked up
+        assert_fails deliver("p4")
+        // illegal: cannot put a freshly created parcel out for delivery
+        assert_fails out("p5")
+    }
+}

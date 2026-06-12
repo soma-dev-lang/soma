@@ -1,0 +1,70 @@
+// ============================================================================
+// Turn tracker — round/phase state machine with player rotation
+// ============================================================================
+//
+// Models a multi-player turn order: the active player index cycles 0..n-1,
+// incrementing the round each time play wraps back to player 0. A `phase`
+// state machine guards the upkeep → main → end → upkeep cycle, with a *->over
+// catch-all so the game always terminates.
+//
+// Run:  soma run turn_tracker.cell --signal demo
+// Test: soma test turn_tracker.cell
+// Verify: soma verify turn_tracker.cell   (needs soma.toml)
+
+cell TurnTracker {
+    face {
+        signal next_turn(active: Int, round: Int, players: Int) -> Map
+        signal play_rounds(players: Int, turns: Int) -> Map
+        signal demo() -> Map
+    }
+
+    state phase {
+        initial: upkeep
+        upkeep -> main
+        main   -> end
+        end    -> upkeep
+        *      -> over
+    }
+
+    // Advance to the next player; wrapping past the last player bumps round.
+    on next_turn(active: Int, round: Int, players: Int) {
+        let nxt = (active + 1) % players
+        let r = round
+        if nxt == 0 { r = round + 1 }
+        return map("active", nxt, "round", r)
+    }
+
+    // Simulate `turns` total turns over `players` seats.
+    on play_rounds(players: Int, turns: Int) {
+        let active = 0
+        let round = 1
+        for t in range(0, turns) {
+            let s = next_turn(active, round, players)
+            active = s.active
+            round = s.round
+        }
+        return map("active", active, "round", round)
+    }
+
+    on demo() {
+        // 3 players, 7 turns: turns wrap at 3 and 6 → round 3, active 1
+        return play_rounds(3, 7)
+    }
+}
+
+cell test TurnTrackerTests {
+    rules {
+        // player 1 → 2 of 3, same round
+        assert next_turn(1, 5, 3).active == 2
+        assert next_turn(1, 5, 3).round == 5
+        // wrapping past player 2 → player 0, round increments
+        assert next_turn(2, 5, 3).active == 0
+        assert next_turn(2, 5, 3).round == 6
+        // 3 players, 7 turns
+        assert play_rounds(3, 7).round == 3
+        assert play_rounds(3, 7).active == 1
+        // 2 players, 4 turns → back to start of round 3
+        assert play_rounds(2, 4).round == 3
+        assert play_rounds(2, 4).active == 0
+    }
+}

@@ -1,0 +1,74 @@
+// ============================================================================
+// Power series — e via 1/k!, and pi via the Leibniz / Nilakantha series
+// ============================================================================
+//
+// e = Σ 1/k! converges fast (factorial denominator). The Leibniz series
+// pi = 4·Σ (−1)^k/(2k+1) converges painfully slowly; Nilakantha's
+// 3 + 4·Σ (−1)^k / (2k(2k+1)(2k+2)) is far quicker. We carry the factorial
+// incrementally to avoid recomputing it each term.
+//
+//   soma run series.cell run
+// ============================================================================
+
+cell Series {
+    face {
+        signal euler(terms: Int) -> Float
+        signal leibniz(terms: Int) -> Float
+        signal nilakantha(terms: Int) -> Float
+        signal run() -> Map
+    }
+
+    on euler(terms: Int) [native] {
+        let sum = 1.0
+        let term = 1.0
+        let k = 1
+        while k < terms {
+            term = term / to_float(k)
+            sum = sum + term
+            k = k + 1
+        }
+        return sum
+    }
+
+    on leibniz(terms: Int) [native] {
+        let sum = 0.0
+        let k = 0
+        while k < terms {
+            let denom = to_float(2 * k + 1)
+            if k % 2 == 0 { sum = sum + 1.0 / denom } else { sum = sum - 1.0 / denom }
+            k = k + 1
+        }
+        return 4.0 * sum
+    }
+
+    on nilakantha(terms: Int) [native] {
+        let sum = 3.0
+        let k = 1
+        while k <= terms {
+            let a = to_float(2 * k)
+            let denom = a * (a + 1.0) * (a + 2.0)
+            if k % 2 == 1 { sum = sum + 4.0 / denom } else { sum = sum - 4.0 / denom }
+            k = k + 1
+        }
+        return sum
+    }
+
+    on run() {
+        return map(
+            "e", euler(20),
+            "pi_leibniz", leibniz(100000),
+            "pi_nilakantha", nilakantha(1000)
+        )
+    }
+}
+
+cell test SeriesTests {
+    rules {
+        // e to good precision
+        assert abs(euler(20) - 2.718281828459045) < 0.0000001
+        // Leibniz converges slowly: loose tolerance
+        assert abs(leibniz(100000) - 3.141592653589793) < 0.001
+        // Nilakantha converges fast: tight tolerance with few terms
+        assert abs(nilakantha(1000) - 3.141592653589793) < 0.0000001
+    }
+}

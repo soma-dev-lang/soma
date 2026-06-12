@@ -1,0 +1,39 @@
+// ============================================================================
+// Title case — capitalize the first letter of every word
+// ============================================================================
+//
+// Splits on spaces, uppercases each word's first character and lowercases the
+// rest, then re-joins. Demonstrates substring slicing and per-word transforms
+// mapped over the word list.
+//
+// Run: soma run title_case.cell --signal titlecase "the QUICK brown fox"
+
+cell TitleCase {
+    face {
+        signal capitalize(word: String) -> String
+        signal titlecase(text: String) -> String
+    }
+
+    on capitalize(word: String) {
+        if len(word) == 0 { return "" }
+        let head = uppercase(substring(word, 0, 1))
+        let tail = lowercase(substring(word, 1, len(word)))
+        return head + tail
+    }
+
+    on titlecase(text: String) {
+        let words = split(text, " ")
+        let out = words |> map(w => capitalize(w))
+        return join(out, " ")
+    }
+}
+
+cell test TitleCaseTest {
+    rules {
+        assert capitalize("hello") == "Hello"
+        assert capitalize("WORLD") == "World"
+        assert capitalize("a") == "A"
+        assert titlecase("the quick brown fox") == "The Quick Brown Fox"
+        assert titlecase("MIXED case INPUT") == "Mixed Case Input"
+    }
+}

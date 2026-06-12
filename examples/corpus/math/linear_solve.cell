@@ -1,0 +1,45 @@
+// ============================================================================
+// Solving 2x2 linear systems — Cramer's rule via determinants
+// ============================================================================
+//
+// For A·x = b with A 2x2, Cramer's rule gives x_i = det(A_i)/det(A), where
+// A_i is A with column i replaced by b. det() is the matrix builtin. A zero
+// determinant means the system is singular (no unique solution).
+//
+//   soma run linear_solve.cell run
+// ============================================================================
+
+cell LinearSolve {
+    face {
+        signal solve2(a: Float, b: Float, c: Float, d: Float, e: Float, f: Float) -> List
+        signal run() -> Map
+    }
+
+    // solve  [a b; c d] x = [e; f]
+    on solve2(a: Float, b: Float, c: Float, d: Float, e: Float, f: Float) {
+        let A = [a, b, c, d].reshape(2, 2)
+        let detA = det(A)
+        if abs(detA) < 0.0000000001 { return [] }   // singular
+        let dx = det([e, b, f, d].reshape(2, 2))
+        let dy = det([a, e, c, f].reshape(2, 2))
+        return [dx / detA, dy / detA]
+    }
+
+    on run() {
+        // 2x + y = 5 ; x + 3y = 10  ->  x=1, y=3
+        let sol = solve2(2.0, 1.0, 1.0, 3.0, 5.0, 10.0)
+        return map("x", sol[0], "y", sol[1])
+    }
+}
+
+cell test SolveTests {
+    rules {
+        // 2x+y=5, x+3y=10 -> x=1, y=3
+        assert abs(solve2(2.0, 1.0, 1.0, 3.0, 5.0, 10.0)[0] - 1.0) < 0.0000001
+        assert abs(solve2(2.0, 1.0, 1.0, 3.0, 5.0, 10.0)[1] - 3.0) < 0.0000001
+        // x+y=2, x-y=0 -> x=1, y=1
+        assert abs(solve2(1.0, 1.0, 1.0, 0 - 1.0, 2.0, 0.0)[0] - 1.0) < 0.0000001
+        // singular system returns empty
+        assert len(solve2(1.0, 2.0, 2.0, 4.0, 3.0, 6.0)) == 0
+    }
+}

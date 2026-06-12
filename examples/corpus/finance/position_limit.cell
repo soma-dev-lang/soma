@@ -1,0 +1,58 @@
+// Position-limit risk gate. Each symbol's net position must stay within
+// [-MAX, +MAX]. The memory invariant enforces it on every write, so an
+// order that would breach the limit is refused and the book is unchanged.
+
+cell PositionBook {
+    face {
+        signal buy(symbol: String, qty: Int) -> Map
+        signal sell(symbol: String, qty: Int) -> Map
+        signal position(symbol: String) -> Int
+        promise all_persistent
+    }
+
+    memory {
+        positions: Map<String, Int> [persistent, consistent]
+        // net position per symbol bounded to +/- 100 lots
+        invariant positions >= -100 && positions <= 100
+    }
+
+    on position(symbol: String) {
+        let p = positions.get(symbol)
+        if p == () { return 0 }
+        return p
+    }
+
+    on buy(symbol: String, qty: Int) {
+        let cur = position(symbol)
+        let r = try { positions.set(symbol, cur + qty) }
+        if r.error != () {
+            return map("filled", false, "reason", "long limit", "position", cur)
+        }
+        return map("filled", true, "position", cur + qty)
+    }
+
+    on sell(symbol: String, qty: Int) {
+        let cur = position(symbol)
+        let r = try { positions.set(symbol, cur - qty) }
+        if r.error != () {
+            return map("filled", false, "reason", "short limit", "position", cur)
+        }
+        return map("filled", true, "position", cur - qty)
+    }
+}
+
+cell test PositionTests {
+    rules {
+        assert buy("ES", 60).filled == true
+        assert position("ES") == 60
+        // adding 60 more would hit 120 > 100 → refused
+        assert buy("ES", 60).filled == false
+        assert position("ES") == 60
+        // can still trade within bounds
+        assert buy("ES", 40).position == 100
+        // shorting past -100 is refused too
+        assert sell("NQ", 200).filled == false
+        // direct breach is a runtime error
+        assert_fails positions.set("X", 500)
+    }
+}

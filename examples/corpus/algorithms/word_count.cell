@@ -1,0 +1,53 @@
+// Word frequency counting with a Map<String, Int> — the canonical hash-map
+// histogram. Demonstrates: map bracket read/write, the ?? null-coalescing
+// guard for first-seen keys, .has / .get / .set on a memory slot, and finding
+// the most frequent word.
+//
+//   soma run  examples/corpus/algorithms/word_count.cell count "the cat sat on the mat the cat"
+//   soma test examples/corpus/algorithms/word_count.cell
+
+cell WordCount {
+    face {
+        signal count(text: String) -> Map
+        signal most_common(text: String) -> String
+        signal distinct_words(text: String) -> Int
+    }
+
+    on count(text: String) {
+        let counts = map()
+        for w in split(trim(text), " ") {
+            if w != "" {
+                counts[w] = (counts[w] ?? 0) + 1
+            }
+        }
+        return counts
+    }
+
+    on most_common(text: String) {
+        let counts = count(text)
+        let best = ""
+        let best_n = 0
+        for w in counts.keys {
+            if counts[w] > best_n {
+                best_n = counts[w]
+                best = w
+            }
+        }
+        return best
+    }
+
+    on distinct_words(text: String) {
+        return len(count(text).keys)
+    }
+}
+
+cell test WordCountTests {
+    rules {
+        assert count("the cat sat on the mat the cat")["the"] == 3
+        assert count("the cat sat on the mat the cat")["cat"] == 2
+        assert count("the cat sat on the mat the cat")["mat"] == 1
+        assert most_common("the cat sat on the mat the cat") == "the"
+        assert distinct_words("a b c a b a") == 3
+        assert distinct_words("") == 0
+    }
+}

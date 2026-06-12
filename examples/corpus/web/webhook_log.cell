@@ -1,0 +1,70 @@
+// Webhook receiver + event log. POST /hook/<source> appends an event;
+// GET /events returns recent events newest-first with a bounded capacity.
+
+cell Webhooks {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal receive(source: String, payload: String) -> Map
+        signal recent(n: Int) -> List
+        signal count_source(source: String) -> Int
+        promise all_persistent
+    }
+
+    memory {
+        events: List<String> [persistent, capacity(1000), evict(fifo)]
+    }
+
+    on receive(source: String, payload: String) {
+        let ev = map("source", source, "payload", payload, "seq", next_id())
+        events.push(to_json(ev))
+        return ev
+    }
+
+    on _all() {
+        let out = list()
+        for raw in events.all {
+            out = push(out, from_json(raw))
+        }
+        return out
+    }
+
+    on recent(n: Int) {
+        let all = _all() |> reverse()
+        let out = list()
+        let i = 0
+        while i < n && i < len(all) {
+            out = push(out, all[i])
+            i = i + 1
+        }
+        return out
+    }
+
+    on count_source(source: String) {
+        return _all() |> count(e => e.source == source)
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET",  path: "/events"}      -> recent(20)
+            {method: "POST", path: "/hook/" + src} -> receive(src, body)
+            _                                      -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test WebhooksTest {
+    rules {
+        assert _fixture() == "3|2|stripe"
+    }
+
+    on _fixture() {
+        receive("github", "a")
+        receive("github", "b")
+        receive("stripe", "c")
+        let total = len(_all())
+        let gh = count_source("github")
+        let newest = recent(1)[0].source
+        return concat(to_string(total), concat("|", concat(to_string(gh), concat("|", newest))))
+    }
+}

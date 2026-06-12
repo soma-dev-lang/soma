@@ -1,0 +1,9 @@
+[package]
+name = "media-player"
+version = "0.1.0"
+entry = "media_player.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["Stopped"]
+never = []

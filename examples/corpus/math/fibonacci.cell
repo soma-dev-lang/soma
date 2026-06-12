@@ -1,0 +1,65 @@
+// ============================================================================
+// Fibonacci — iterative, and the closed-form Binet approximation
+// ============================================================================
+//
+// The iterative version carries the last two terms in two variables. Binet's
+// formula F(n) = (phi^n − psi^n)/√5 gives a closed form; we round it back to
+// the exact integer for small n. Both agree, which the tests cross-check.
+//
+//   soma run fibonacci.cell run
+// ============================================================================
+
+cell Fibonacci {
+    face {
+        signal fib(n: Int) -> Int
+        signal binet(n: Int) -> Int
+        signal fib_list(n: Int) -> List
+        signal run() -> Map
+    }
+
+    on fib(n: Int) {
+        if n < 2 { return n }
+        let a = 0
+        let b = 1
+        for i in range(2, n + 1) {
+            let next = a + b
+            a = b
+            b = next
+        }
+        return b
+    }
+
+    on binet(n: Int) {
+        let phi = (1.0 + sqrt(5.0)) / 2.0
+        let psi = (1.0 - sqrt(5.0)) / 2.0
+        return round((pow(phi, n) - pow(psi, n)) / sqrt(5.0))
+    }
+
+    on fib_list(n: Int) {
+        let xs = []
+        for i in range(0, n) { xs = push(xs, fib(i)) }
+        return xs
+    }
+
+    on run() {
+        return map(
+            "fib_10", fib(10),
+            "binet_10", binet(10),
+            "first_8", fib_list(8)
+        )
+    }
+}
+
+cell test FibTests {
+    rules {
+        assert fib(0) == 0
+        assert fib(1) == 1
+        assert fib(10) == 55
+        assert fib(20) == 6765
+        // Binet's closed form agrees with the recurrence
+        assert binet(10) == 55
+        assert binet(15) == 610
+        // the list of the first eight Fibonacci numbers sums to 33
+        assert sum(fib_list(8)) == 33
+    }
+}

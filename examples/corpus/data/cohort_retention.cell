@@ -1,0 +1,58 @@
+// Cohort analysis: bucket users by signup month, then measure how many were
+// still active in a later month. Demonstrates inner_join across two tables,
+// group_by + agg, and computing a derived retention-rate column with map().
+
+cell Cohort {
+    on signups() {
+        return list(
+            map("user", "a", "cohort", "jan"),
+            map("user", "b", "cohort", "jan"),
+            map("user", "c", "cohort", "jan"),
+            map("user", "d", "cohort", "feb"),
+            map("user", "e", "cohort", "feb")
+        )
+    }
+
+    // Activity flag in March (1 = active).
+    on march_active() {
+        return list(
+            map("user", "a", "active", 1),
+            map("user", "b", "active", 0),
+            map("user", "c", "active", 1),
+            map("user", "d", "active", 1),
+            map("user", "e", "active", 0)
+        )
+    }
+
+    on joined() { return signups() |> inner_join(march_active(), "user") }
+
+    // Per-cohort: size and number still active.
+    on retention() {
+        let agged = joined() |> agg("cohort", "active:sum", "active:count")
+        return agged |> map(r => {
+            let rate = floor(r.active_sum * 100 / r.active_count)
+            r |> with("retention_pct", rate)
+        })
+        |> sort_by("retention_pct", "desc")
+    }
+
+    on run() {
+        for r in retention() {
+            print("{r.cohort}: {r.active_sum}/{r.active_count} = {r.retention_pct}%")
+        }
+        return retention()
+    }
+}
+
+cell test CohortTests {
+    rules {
+        // all 5 users join cleanly
+        assert len(joined()) == 5
+        // jan: 3 users, 2 active (a,c) -> floor(2*100/3) = 66
+        assert (retention() |> filter_by("cohort", "=", "jan"))[0].retention_pct == 66
+        // feb: 2 users, 1 active (d) -> 50
+        assert (retention() |> filter_by("cohort", "=", "feb"))[0].retention_pct == 50
+        // jan retains better than feb
+        assert retention()[0].cohort == "jan"
+    }
+}

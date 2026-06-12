@@ -1,0 +1,81 @@
+// Todo service backed by a typed state machine (sum type TodoStatus).
+// Each todo transitions Pending -> InProgress -> Done, or * -> Cancelled.
+
+cell type TodoStatus {
+    variants { Pending  InProgress  Done  Cancelled }
+}
+
+cell TodoService {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal add(text: String) -> Map
+        signal start(id: String) -> Map
+        signal finish(id: String) -> Map
+        signal cancel(id: String) -> Map
+        signal show(id: String) -> Map
+        promise all_persistent
+    }
+
+    memory {
+        todos: Map<String, String> [persistent, consistent]
+    }
+
+    state todo: TodoStatus {
+        initial: Pending
+        Pending    -> InProgress
+        InProgress -> Done
+        *          -> Cancelled
+    }
+
+    on add(text: String) {
+        let id = to_string(next_id())
+        todos.set(id, map("id", id, "text", text))
+        return map("id", id, "status", get_status(id))
+    }
+
+    on start(id: String) {
+        if todos.get(id) == () { return response(404, map("error", "not found")) }
+        transition(id, InProgress)
+        return map("id", id, "status", get_status(id))
+    }
+
+    on finish(id: String) {
+        if todos.get(id) == () { return response(404, map("error", "not found")) }
+        transition(id, Done)
+        return map("id", id, "status", get_status(id))
+    }
+
+    on cancel(id: String) {
+        if todos.get(id) == () { return response(404, map("error", "not found")) }
+        transition(id, Cancelled)
+        return map("id", id, "status", get_status(id))
+    }
+
+    on show(id: String) {
+        let t = todos.get(id)
+        if t == () { return response(404, map("error", "not found")) }
+        return map("id", id, "text", t.text, "status", get_status(id))
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "POST", path: "/todos"}            -> add(from_json(body).text)
+            {method: "POST", path: "/start/" + id}      -> start(id)
+            {method: "POST", path: "/finish/" + id}     -> finish(id)
+            {method: "POST", path: "/cancel/" + id}     -> cancel(id)
+            {method: "GET",  path: "/todos/" + id}      -> show(id)
+            _                                           -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test TodoServiceTest {
+    rules {
+        assert add("write tests").status == "Pending"
+        assert start("1").status == "InProgress"
+        assert finish("1").status == "Done"
+        assert show("1").text == "write tests"
+        assert cancel(add("scrap").id).status == "Cancelled"
+    }
+}

@@ -1,0 +1,61 @@
+// Expense report over a List<Map> of line items. A normalize step tags each
+// row as fixed vs variable, then aggregates spend per category and per type.
+// Demonstrates a block-lambda classifier, agg, sum_by, and max_by together.
+
+cell ExpenseReport {
+    on items() {
+        return list(
+            map("category", "rent",    "amount", 1200),
+            map("category", "food",    "amount", 25),
+            map("category", "travel",  "amount", 120),
+            map("category", "food",    "amount", 40),
+            map("category", "rent",    "amount", 1200),
+            map("category", "travel",  "amount", 15),
+            map("category", "utilities","amount", 90)
+        )
+    }
+
+    // Tag rows: rent/utilities are fixed, the rest variable.
+    on classified() {
+        return items() |> map(r => {
+            let kind = if r.category == "rent" || r.category == "utilities" { "fixed" } else { "variable" }
+            r |> with("kind", kind)
+        })
+    }
+
+    on by_category() {
+        return items()
+            |> agg("category", "amount:sum", "amount:count")
+            |> sort_by("amount_sum", "desc")
+    }
+
+    on by_kind() {
+        return classified()
+            |> agg("kind", "amount:sum")
+            |> sort_by("amount_sum", "desc")
+    }
+
+    on total() { return items() |> sum_by("amount") }
+
+    on biggest() { return max_by(items(), "amount") }
+
+    on run() {
+        for r in by_category() { print("{r.category}: {r.amount_sum} ({r.amount_count}x)") }
+        return total()
+    }
+}
+
+cell test ExpenseReportTests {
+    rules {
+        // food = 25 + 40 = 65
+        assert (by_category() |> filter_by("category", "=", "food"))[0].amount_sum == 65
+        // rent appears twice
+        assert (by_category() |> filter_by("category", "=", "rent"))[0].amount_count == 2
+        // total = 1200+25+120+40+1200+15+90 = 2690
+        assert total() == 2690
+        // fixed = rent(2400) + utilities(90) = 2490
+        assert (by_kind() |> filter_by("kind", "=", "fixed"))[0].amount_sum == 2490
+        // biggest single line is rent at 1200
+        assert biggest().amount == 1200
+    }
+}

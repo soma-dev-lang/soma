@@ -1,0 +1,58 @@
+// Self-auditing agent: it inspects its own execution trace.
+// Demonstrates: trace() returning the structured log of every think()/tool/
+// approval, clear_trace() resetting it, and using the trace length as an
+// observable the agent reports back. No network needed.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run trace_audit.cell --signal investigate "fraud"
+// Test: SOMA_LLM_MOCK=echo soma test trace_audit.cell
+
+cell agent Auditor {
+    face {
+        signal investigate(topic: String) -> Map
+        tool fetch(source: String) -> String "Fetch a record from a source"
+    }
+
+    state probe {
+        initial: idle
+        idle      -> gathering
+        gathering -> reporting
+        reporting -> done
+        *         -> failed
+    }
+
+    on fetch(source: String) {
+        "record[{source}]"
+    }
+
+    on investigate(topic: String) {
+        set_budget(3000)
+        clear_trace()
+        let id = to_string(next_id())
+
+        transition(id, "gathering")
+        let a = try { think("Investigate {topic}; use fetch to gather records.") }
+        if a.error != () {
+            transition(id, "failed")
+            return map("status", "failed", "error", a.error)
+        }
+
+        transition(id, "reporting")
+        let b = try { think("Summarize the records you gathered.") }
+        if b.error != () {
+            transition(id, "failed")
+            return map("status", "failed", "error", b.error)
+        }
+
+        transition(id, "done")
+        let log = trace()
+        // Two think() calls → at least two trace entries.
+        map("status", "done", "topic", topic, "trace_entries", len(log))
+    }
+}
+
+cell test AuditTests {
+    rules {
+        assert investigate("fraud").status == "done"
+        assert investigate("fraud").trace_entries >= 2
+    }
+}

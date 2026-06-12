@@ -1,0 +1,58 @@
+// Agent with preconditions and a memory invariant — refuses bad input.
+// Demonstrates: `require ... else` guards on a handler, a memory invariant
+// that rejects out-of-range writes, and assert_fails proving the negative
+// paths actually raise. The agent never enters its work state on bad input.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run guarded_agent.cell --signal spend "rent" 50
+// Test: SOMA_LLM_MOCK=echo soma test guarded_agent.cell
+
+cell agent Treasurer {
+    face {
+        signal spend(item: String, amount: Int) -> Map
+        signal set_limit(n: Int) -> Int
+    }
+
+    memory {
+        ledger: Map<String, String> [persistent]
+        limit:  Map<String, Int>    [persistent]
+        // Invariant scoped to `limit`: any stored cap stays in [1, 1000].
+        invariant limit >= 1 && limit <= 1000
+    }
+
+    state txn {
+        initial: idle
+        idle    -> approved
+        approved -> recorded
+        *       -> rejected
+    }
+
+    on set_limit(n: Int) {
+        require n > 0 else limit_must_be_positive
+        limit.set("max", n)
+        n
+    }
+
+    on spend(item: String, amount: Int) {
+        // Preconditions guard entry to the work states.
+        require amount > 0 else amount_must_be_positive
+        require amount <= 1000 else amount_exceeds_cap
+
+        let id = to_string(next_id())
+        transition(id, "approved")
+        ledger.set(id, map("item", item, "amount", amount))
+        transition(id, "recorded")
+        map("status", "recorded", "id", id, "item", item, "amount", amount)
+    }
+}
+
+cell test TreasurerTests {
+    rules {
+        assert spend("rent", 50).status == "recorded"
+        assert spend("rent", 50).amount == 50
+        assert set_limit(500) == 500
+        // Negative paths never reach the ledger.
+        assert_fails spend("hack", -5)
+        assert_fails spend("yacht", 99999)
+        assert_fails set_limit(0)
+    }
+}

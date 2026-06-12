@@ -1,0 +1,64 @@
+// Key-value store API with namespaced keys and a bulk export endpoint.
+// PUT /kv/<key> sets, GET reads, DELETE removes, GET /kv exports all.
+
+cell KvStore {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal put(key: String, value: String) -> Map
+        signal get_one(key: String) -> Map
+        signal del(key: String) -> Map
+        signal export() -> Map
+        promise all_persistent
+    }
+
+    memory {
+        kv: Map<String, String> [persistent, consistent]
+    }
+
+    on put(key: String, value: String) {
+        kv.set(key, value)
+        return map("key", key, "value", value)
+    }
+
+    on get_one(key: String) {
+        let v = kv.get(key)
+        if v == () { return response(404, map("error", "no such key")) }
+        return map("key", key, "value", v)
+    }
+
+    on del(key: String) {
+        let existed = kv.delete(key)
+        if existed == false { return response(404, map("error", "no such key")) }
+        return map("deleted", key)
+    }
+
+    on export() {
+        let out = map()
+        for k in kv.keys {
+            out = with(out, k, kv.get(k))
+        }
+        return out
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET",    path: "/kv"}        -> export()
+            {method: "PUT",    path: "/kv/" + key} -> put(key, from_json(body).value)
+            {method: "GET",    path: "/kv/" + key} -> get_one(key)
+            {method: "DELETE", path: "/kv/" + key} -> del(key)
+            _                                      -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test KvStoreTest {
+    rules {
+        assert put("a", "1").value == "1"
+        assert put("b", "2").value == "2"
+        assert get_one("a").value == "1"
+        assert export().b == "2"
+        assert del("a").deleted == "a"
+        assert get_one("a")._status == 404
+    }
+}

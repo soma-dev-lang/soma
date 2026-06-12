@@ -1,0 +1,53 @@
+// ============================================================================
+// CSV split/join — parse rows and project columns
+// ============================================================================
+//
+// Splits a CSV body into rows (by newline) and each row into fields (by comma),
+// then maps header names to a list of record Maps. Demonstrates split on "\n"
+// and ",", zipping headers to values, and join to re-serialize a row.
+//
+// Run: soma run csv.cell --signal parse "name,age\nAlice,30\nBob,25"
+
+cell Csv {
+    face {
+        signal parse(body: String) -> List<Map>
+        signal row_to_line(row: List<String>) -> String
+        signal column(body: String, field: String) -> List<String>
+    }
+
+    on parse(body: String) {
+        let lines = split(body, "\n") |> filter(l => len(l) > 0)
+        if len(lines) == 0 { return list() }
+        let headers = split(lines[0], ",")
+        let rows = list()
+        for r in range(1, len(lines)) {
+            let cells = split(lines[r], ",")
+            let rec = map()
+            for c in range(0, len(headers)) {
+                rec[headers[c]] = cells[c]
+            }
+            rows = push(rows, rec)
+        }
+        return rows
+    }
+
+    on row_to_line(row: List<String>) {
+        return join(row, ",")
+    }
+
+    // Pull a single column out as a list of strings.
+    on column(body: String, field: String) {
+        let rows = parse(body)
+        return rows |> map(r => r[field])
+    }
+}
+
+cell test CsvTest {
+    rules {
+        assert len(parse("name,age\nAlice,30\nBob,25")) == 2
+        assert parse("name,age\nAlice,30\nBob,25")[0]["name"] == "Alice"
+        assert parse("name,age\nAlice,30\nBob,25")[1]["age"] == "25"
+        assert row_to_line(list("a", "b", "c")) == "a,b,c"
+        assert column("city\nParis\nRome", "city")[1] == "Rome"
+    }
+}

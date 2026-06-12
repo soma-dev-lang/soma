@@ -1,0 +1,53 @@
+// ============================================================================
+// Word frequency — count occurrences of each word
+// ============================================================================
+//
+// Splits a sentence into words and tallies each into a Map using a list-of
+// words walk. Demonstrates building a frequency Map with get-or-default and
+// in-place map writes.
+//
+// Run: soma run word_frequency.cell --signal frequency "the cat the dog the"
+
+cell WordFrequency {
+    face {
+        signal frequency(text: String) -> Map<String, Int>
+        signal most_common(text: String) -> String
+    }
+
+    on frequency(text: String) {
+        let words = split(lowercase(text), " ")
+        let counts = map()
+        for w in words {
+            if len(w) > 0 {
+                let cur = counts[w] ?? 0
+                counts[w] = cur + 1
+            }
+        }
+        return counts
+    }
+
+    // Return the word with the highest count (first wins on a tie).
+    on most_common(text: String) {
+        let counts = frequency(text)
+        let best = ""
+        let best_n = 0
+        for w in counts.keys() {
+            let n = counts[w]
+            if n > best_n {
+                best_n = n
+                best = w
+            }
+        }
+        return best
+    }
+}
+
+cell test WordFrequencyTest {
+    rules {
+        assert frequency("the cat the dog the")["the"] == 3
+        assert frequency("the cat the dog the")["cat"] == 1
+        assert most_common("a a a b b c") == "a"
+        assert most_common("hello") == "hello"
+        assert frequency("One ONE one")["one"] == 3
+    }
+}

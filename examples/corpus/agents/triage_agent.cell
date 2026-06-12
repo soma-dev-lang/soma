@@ -1,0 +1,63 @@
+// Support-ticket triage agent.
+// Demonstrates: a verified lifecycle state machine, set_budget cap,
+// think_json() for structured LLM output, and a test cell that exercises
+// the deterministic tool handlers without any network (SOMA_LLM_MOCK).
+//
+// Run:  SOMA_LLM_MOCK=echo soma run triage_agent.cell --signal triage "login broken"
+// Test: SOMA_LLM_MOCK=echo soma test triage_agent.cell
+
+cell agent Triage {
+    face {
+        signal triage(text: String) -> Map
+        tool classify(text: String) -> String "Classify ticket urgency: low, medium, high"
+        promise "agent always reaches routed or failed"
+    }
+
+    memory {
+        tickets: Map<String, String> [persistent]
+    }
+
+    state lifecycle {
+        initial: idle
+        idle      -> reading
+        reading   -> classifying
+        classifying -> routed
+        *         -> failed
+    }
+
+    // Deterministic tool: keyword-based urgency, no LLM needed.
+    on classify(text: String) {
+        let t = lowercase(text)
+        if contains(t, "broken") || contains(t, "down") { return "high" }
+        if contains(t, "slow") { return "medium" }
+        "low"
+    }
+
+    on triage(text: String) {
+        set_budget(2000)
+        // Per-ticket state-machine instance, so each triage runs its own
+        // verified lifecycle from idle to routed.
+        let id = to_string(next_id())
+        transition(id, "reading")
+
+        transition(id, "classifying")
+        let urgency = classify(text)
+
+        let queue = if urgency == "high" { "escalation" } else { "standard" }
+        tickets.set(id, map("id", id, "text", text, "urgency", urgency, "queue", queue))
+
+        transition(id, "routed")
+        map("id", id, "urgency", urgency, "queue", queue, "status", "routed")
+    }
+}
+
+cell test TriageTests {
+    rules {
+        assert classify("the server is down") == "high"
+        assert classify("page loads slow") == "medium"
+        assert classify("how do I rename a file") == "low"
+        assert triage("login broken").urgency == "high"
+        assert triage("login broken").queue == "escalation"
+        assert triage("minor typo").status == "routed"
+    }
+}

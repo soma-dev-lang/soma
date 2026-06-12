@@ -1,0 +1,12 @@
+[package]
+name = "expense-approval"
+version = "0.1.0"
+entry = "expense_approval.cell"
+
+[verify]
+deadlock_free = true
+eventually = ["paid"]
+never = []
+
+[verify.after.approved]
+eventually = ["paid"]

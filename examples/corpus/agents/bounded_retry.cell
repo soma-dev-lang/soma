@@ -1,0 +1,59 @@
+// Bounded-retry agent — the verified-termination poster child.
+// A naive `failed -> working` retry arrow creates a livelock the model
+// checker would reject. Here the retry COUNT lives in memory and the loop
+// is bounded, so the machine always reaches succeeded or exhausted.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run bounded_retry.cell --signal attempt "flaky-op" 2
+// Test: SOMA_LLM_MOCK=echo soma test bounded_retry.cell
+
+cell agent Retrier {
+    face {
+        signal attempt(name: String, fail_times: Int) -> Map
+    }
+
+    state run {
+        initial: idle
+        idle      -> working
+        working   -> succeeded
+        working   -> exhausted
+        *         -> failed
+    }
+
+    // Simulates an operation that fails `fail_times`, then succeeds.
+    // The loop is bounded by max_tries, so it cannot run forever.
+    on attempt(name: String, fail_times: Int) {
+        let id = to_string(next_id())
+        transition(id, "working")
+
+        let max_tries = 5
+        let tries = 0
+        let ok = false
+        while tries < max_tries {
+            tries = tries + 1
+            if tries > fail_times {
+                ok = true
+                break
+            }
+        }
+
+        if ok {
+            transition(id, "succeeded")
+            return map("status", "succeeded", "op", name, "tries", tries)
+        }
+        transition(id, "exhausted")
+        map("status", "exhausted", "op", name, "tries", tries)
+    }
+}
+
+cell test RetryTests {
+    rules {
+        // Fails twice then succeeds on the 3rd try.
+        assert attempt("op", 2).status == "succeeded"
+        assert attempt("op", 2).tries == 3
+        // Fails more than the bound → exhausted, but still terminates.
+        assert attempt("op", 9).status == "exhausted"
+        assert attempt("op", 9).tries == 5
+        // Succeeds immediately.
+        assert attempt("op", 0).tries == 1
+    }
+}

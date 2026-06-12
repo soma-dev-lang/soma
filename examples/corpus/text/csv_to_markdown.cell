@@ -1,0 +1,48 @@
+// ============================================================================
+// CSV to Markdown table — render rows as a pipe-delimited table
+// ============================================================================
+//
+// Turns a CSV body into a GitHub-flavored Markdown table: a header row, a
+// separator row of dashes, then one row per data line. Demonstrates splitting
+// on newlines and commas, and assembling lines with join + interpolation.
+//
+// Run: soma run csv_to_markdown.cell --signal to_table "name,age\nAlice,30"
+
+cell CsvToMarkdown {
+    face {
+        signal to_table(body: String) -> String
+    }
+
+    // Wrap a list of cells as "| a | b | c |".
+    on _row(cells: List<String>) {
+        return "| " + join(cells, " | ") + " |"
+    }
+
+    on to_table(body: String) {
+        let lines = split(body, "\n") |> filter(l => len(l) > 0)
+        if len(lines) == 0 { return "" }
+        let headers = split(lines[0], ",")
+        let out = list(_row(headers))
+
+        // separator row: one "---" per column
+        let seps = list()
+        for c in range(0, len(headers)) {
+            seps = push(seps, "---")
+        }
+        out = push(out, _row(seps))
+
+        for r in range(1, len(lines)) {
+            out = push(out, _row(split(lines[r], ",")))
+        }
+        return join(out, "\n")
+    }
+}
+
+cell test CsvToMarkdownTest {
+    rules {
+        assert to_table("a,b\n1,2") == "| a | b |\n| --- | --- |\n| 1 | 2 |"
+        assert to_table("x\n9\n8") == "| x |\n| --- |\n| 9 |\n| 8 |"
+        assert contains(to_table("name,age\nAlice,30"), "| Alice | 30 |")
+        assert to_table("") == ""
+    }
+}

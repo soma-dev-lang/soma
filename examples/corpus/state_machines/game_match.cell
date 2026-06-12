@@ -1,0 +1,80 @@
+// Online game-match lifecycle.
+// lobby -> starting -> playing -> finished, with an abandoned escape from
+// the early phases. A rematch flows finished -> lobby, but because both
+// finished and abandoned are reachable terminals listed in [verify], the
+// rematch loop does not break liveness. Memory holds the player roster.
+
+cell GameMatch {
+    face {
+        signal create(id: String) -> String
+        signal join_player(id: String, name: String) -> Map
+        signal begin(id: String) -> String
+        signal play(id: String) -> String
+        signal finish(id: String) -> String
+        signal abandon(id: String) -> String
+        signal rematch(id: String) -> String
+        signal phase(id: String) -> String
+    }
+
+    memory {
+        roster: Map<String, Int> [persistent, consistent]
+        invariant roster >= 0 && roster <= 4
+    }
+
+    state session {
+        initial: lobby
+        lobby    -> starting
+        starting -> playing
+        playing  -> finished
+        finished -> lobby
+        lobby    -> abandoned
+        starting -> abandoned
+        playing  -> abandoned
+    }
+
+    on create(id: String) {
+        roster.set(id, 0)
+        return get_status(id)
+    }
+
+    on join_player(id: String, name: String) {
+        let n = (roster.get(id) ?? 0) + 1
+        roster.set(id, n)
+        return map("players", n, "joined", name)
+    }
+
+    on begin(id: String)   { transition(id, "starting")  return get_status(id) }
+    on play(id: String)    { transition(id, "playing")   return get_status(id) }
+    on finish(id: String)  { transition(id, "finished")  return get_status(id) }
+    on abandon(id: String) { transition(id, "abandoned") return get_status(id) }
+    on rematch(id: String) { transition(id, "lobby")     return get_status(id) }
+    on phase(id: String)   { return get_status(id) }
+}
+
+cell test GameMatchTests {
+    rules {
+        // full match then rematch back to lobby
+        assert create("g1") == "lobby"
+        assert join_player("g1", "ana").players == 1
+        assert join_player("g1", "bo").players == 2
+        assert begin("g1") == "starting"
+        assert play("g1") == "playing"
+        assert finish("g1") == "finished"
+        assert rematch("g1") == "lobby"
+
+        // abandon from the lobby
+        assert create("g2") == "lobby"
+        assert abandon("g2") == "abandoned"
+
+        // roster invariant rejects a 5th player
+        assert create("g3") == "lobby"
+        assert join_player("g3", "a").players == 1
+        assert join_player("g3", "b").players == 2
+        assert join_player("g3", "c").players == 3
+        assert join_player("g3", "d").players == 4
+        assert_fails join_player("g3", "e")
+
+        // illegal: cannot start playing straight from the lobby
+        assert_fails play("g4")
+    }
+}

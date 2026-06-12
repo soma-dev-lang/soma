@@ -1,0 +1,60 @@
+// Feature-flag service: toggle named flags on/off, query state, list all.
+// Booleans stored as "on"/"off" strings in a persistent map.
+
+cell Flags {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal set_flag(name: String, enabled: Bool) -> Map
+        signal is_on(name: String) -> Bool
+        signal all_flags() -> Map
+        promise all_persistent
+    }
+
+    memory {
+        flags: Map<String, String> [persistent, consistent]
+    }
+
+    on set_flag(name: String, enabled: Bool) {
+        flags.set(name, if enabled { "on" } else { "off" })
+        return map("name", name, "enabled", enabled)
+    }
+
+    on is_on(name: String) {
+        return flags.get(name) == "on"
+    }
+
+    on all_flags() {
+        let out = map()
+        for k in flags.keys {
+            out = with(out, k, flags.get(k) == "on")
+        }
+        return out
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET",  path: "/flags"}        -> all_flags()
+            {method: "POST", path: "/on/" + n}      -> set_flag(n, true)
+            {method: "POST", path: "/off/" + n}     -> set_flag(n, false)
+            {method: "GET",  path: "/flags/" + n}   -> map("name", n, "enabled", is_on(n))
+            _                                            -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test FlagsTest {
+    rules {
+        assert set_flag("dark_mode", true).enabled == true
+        assert is_on("dark_mode") == true
+        assert is_on("never_set") == false
+        assert _summary() == "beta=true,dark=false"
+    }
+
+    on _summary() {
+        set_flag("beta", true)
+        set_flag("dark", false)
+        return concat("beta=", concat(to_string(is_on("beta")),
+               concat(",dark=", to_string(is_on("dark")))))
+    }
+}

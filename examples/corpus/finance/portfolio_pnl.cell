@@ -1,0 +1,62 @@
+// Portfolio P&L tracker over a list of position records.
+// Each position: {symbol, qty, cost, mark}. Computes per-position and
+// total unrealized P&L, market value, and the best/worst performer.
+// Shows records, pipe map/filter, sum_by-style reductions over derived fields.
+
+cell PortfolioPnL {
+    face {
+        signal positions() -> List
+        signal enriched() -> List
+        signal total_pnl() -> Float
+        signal market_value() -> Float
+        signal winners() -> List
+        signal best() -> Map
+    }
+
+    on positions() {
+        return list(
+            Position { symbol: "AAPL", qty: 100, cost: 150.0, mark: 172.0 },
+            Position { symbol: "MSFT", qty: 50,  cost: 300.0, mark: 290.0 },
+            Position { symbol: "NVDA", qty: 20,  cost: 400.0, mark: 880.0 }
+        )
+    }
+
+    // attach pnl = qty * (mark - cost) and value = qty * mark to each row
+    on enriched() {
+        return positions() |> map(p => {
+            let pnl = p.qty * (p.mark - p.cost)
+            let value = p.qty * p.mark
+            p |> with("pnl", pnl) |> with("value", value)
+        })
+    }
+
+    on total_pnl() {
+        let pnls = enriched() |> map(p => p.pnl)
+        return sum(pnls)
+    }
+
+    on market_value() {
+        let vals = enriched() |> map(p => p.value)
+        return sum(vals)
+    }
+
+    on winners() {
+        return enriched() |> filter(p => p.pnl > 0.0)
+    }
+
+    on best() {
+        return enriched() |> sort_by("pnl", "desc") |> top(1)
+    }
+}
+
+cell test PortfolioTests {
+    rules {
+        // AAPL: 100*(172-150)=2200, MSFT: 50*(290-300)=-500, NVDA: 20*480=9600
+        assert abs(total_pnl() - 11300.0) < 0.001
+        assert abs(market_value() - (17200.0 + 14500.0 + 17600.0)) < 0.001
+        // two of three names are up
+        assert len(winners()) == 2
+        // NVDA is the top performer
+        assert best()[0].symbol == "NVDA"
+    }
+}

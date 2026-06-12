@@ -1,0 +1,51 @@
+// ============================================================================
+// Padding & alignment — left/right pad to a fixed width
+// ============================================================================
+//
+// Builds padding by appending a fill character until the target width is met.
+// Used to right-align numbers and left-align labels into fixed columns.
+// Demonstrates while-loop string growth and truncation via substring.
+//
+// Run: soma run pad_align.cell --signal pad_left "42" 5
+
+cell PadAlign {
+    face {
+        signal pad_left(s: String, width: Int) -> String
+        signal pad_right(s: String, width: Int) -> String
+        signal zero_pad(n: Int, width: Int) -> String
+    }
+
+    on pad_left(s: String, width: Int) {
+        let out = s
+        while len(out) < width {
+            out = " " + out
+        }
+        return out
+    }
+
+    on pad_right(s: String, width: Int) {
+        let out = s
+        while len(out) < width {
+            out = out + " "
+        }
+        return out
+    }
+
+    on zero_pad(n: Int, width: Int) {
+        let out = to_string(n)
+        while len(out) < width {
+            out = "0" + out
+        }
+        return out
+    }
+}
+
+cell test PadAlignTest {
+    rules {
+        assert pad_left("42", 5) == "   42"
+        assert pad_right("ab", 4) == "ab  "
+        assert zero_pad(7, 3) == "007"
+        assert zero_pad(123, 2) == "123"
+        assert len(pad_left("x", 10)) == 10
+    }
+}

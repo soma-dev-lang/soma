@@ -1,0 +1,40 @@
+// Longest increasing subsequence (LIS) — O(n^2) dynamic programming.
+// Demonstrates: a 1D DP array seeded to 1, the "best among earlier smaller
+// elements" inner loop, and max() over the table for the final answer.
+//
+//   soma run  examples/corpus/algorithms/lis.cell length "[10,9,2,5,3,7,101,18]"
+//   soma test examples/corpus/algorithms/lis.cell
+
+cell LIS {
+    face {
+        signal length(xs: List) -> Int
+    }
+
+    on length(xs: List) {
+        let n = len(xs)
+        if n == 0 { return 0 }
+        // dp[i] = length of the longest increasing subsequence ending at i
+        let dp = list()
+        for i in range(0, n) { dp = push(dp, 1) }
+        for i in range(1, n) {
+            for j in range(0, i) {
+                if xs[j] < xs[i] {
+                    if dp[j] + 1 > dp[i] { dp[i] = dp[j] + 1 }
+                }
+            }
+        }
+        return max(dp)
+    }
+}
+
+cell test LISTests {
+    rules {
+        assert length([10, 9, 2, 5, 3, 7, 101, 18]) == 4
+        assert length([0, 1, 0, 3, 2, 3]) == 4
+        assert length([7, 7, 7, 7]) == 1
+        assert length([1, 2, 3, 4, 5]) == 5
+        assert length([5, 4, 3, 2, 1]) == 1
+        assert length(list()) == 0
+        assert length([42]) == 1
+    }
+}

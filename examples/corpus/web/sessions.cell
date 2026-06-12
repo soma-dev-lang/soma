@@ -1,0 +1,57 @@
+// Session/login toy: POST /login issues a token, GET /me/<token> returns
+// the user, POST /logout invalidates it. Tokens map to usernames.
+
+cell Sessions {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal login(user: String, pass: String) -> Map
+        signal whoami(token: String) -> Map
+        signal logout(token: String) -> Map
+        promise all_persistent
+    }
+
+    memory {
+        tokens: Map<String, String> [persistent, consistent]
+    }
+
+    on login(user: String, pass: String) {
+        if pass != "secret" { return response(401, map("error", "bad credentials")) }
+        let token = concat("tok-", concat(user, concat("-", to_string(next_id()))))
+        tokens.set(token, user)
+        return map("token", token, "user", user)
+    }
+
+    on whoami(token: String) {
+        let user = tokens.get(token)
+        if user == () { return response(401, map("error", "invalid token")) }
+        return map("user", user)
+    }
+
+    on logout(token: String) {
+        let existed = tokens.delete(token)
+        return map("logged_out", existed)
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "POST", path: "/login"}      -> {
+                let d = from_json(body)
+                login(d.user, d.pass)
+            }
+            {method: "GET",  path: "/me/" + tok}  -> whoami(tok)
+            {method: "POST", path: "/logout/" + tok} -> logout(tok)
+            _                                     -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test SessionsTest {
+    rules {
+        assert login("ada", "secret").user == "ada"
+        assert login("ada", "wrong")._status == 401
+        assert whoami("nope")._status == 401
+        // round-trip in one isolated assertion
+        assert whoami(login("bob", "secret").token).user == "bob"
+    }
+}

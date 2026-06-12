@@ -1,0 +1,56 @@
+// Relational inner_join: enrich order rows with customer details, then
+// roll up spend per customer tier. Demonstrates inner_join on a shared key,
+// select to project columns, and agg over the joined result.
+
+cell OrderJoin {
+    on orders() {
+        return list(
+            map("order_id", 1, "customer_id", "c1", "total", 120),
+            map("order_id", 2, "customer_id", "c2", "total", 80),
+            map("order_id", 3, "customer_id", "c1", "total", 60),
+            map("order_id", 4, "customer_id", "c3", "total", 200),
+            map("order_id", 5, "customer_id", "c2", "total", 40),
+            map("order_id", 6, "customer_id", "c9", "total", 999)
+        )
+    }
+
+    on customers() {
+        return list(
+            map("customer_id", "c1", "name", "Acme",   "tier", "gold"),
+            map("customer_id", "c2", "name", "Globex", "tier", "silver"),
+            map("customer_id", "c3", "name", "Initech","tier", "gold")
+        )
+    }
+
+    // Inner join drops order 6 (customer c9 has no match).
+    on enriched() { return orders() |> inner_join(customers(), "customer_id") }
+
+    on enriched_view() {
+        return enriched() |> select("order_id", "name", "tier", "total")
+    }
+
+    // Total spend per tier among matched orders.
+    on spend_by_tier() {
+        return enriched()
+            |> agg("tier", "total:sum")
+            |> sort_by("total_sum", "desc")
+    }
+
+    on run() {
+        for r in enriched_view() { print("#{r.order_id} {r.name} ({r.tier}): {r.total}") }
+        return spend_by_tier()
+    }
+}
+
+cell test OrderJoinTests {
+    rules {
+        // 5 of 6 orders match a customer (c9 is dropped)
+        assert len(enriched()) == 5
+        // gold = Acme(120+60) + Initech(200) = 380
+        assert (spend_by_tier() |> filter_by("tier", "=", "gold"))[0].total_sum == 380
+        // silver = Globex(80+40) = 120
+        assert (spend_by_tier() |> filter_by("tier", "=", "silver"))[0].total_sum == 120
+        // gold outspends silver
+        assert spend_by_tier()[0].tier == "gold"
+    }
+}

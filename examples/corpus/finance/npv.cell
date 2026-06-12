@@ -1,0 +1,56 @@
+// Discounted cash flow: present value of a single flow, net present value
+// of a cash-flow stream, and a simple payback-period count. Discounting
+// over an index range, sum() of derived discounted flows.
+
+cell DCF {
+    face {
+        signal present_value(cash: Float, rate: Float, period: Int) -> Float
+        signal npv(rate: Float, flows: List) -> Float
+        signal payback_period(flows: List) -> Int
+        signal profitable(rate: Float, flows: List) -> Bool
+    }
+
+    // PV = CF / (1+r)^t
+    on present_value(cash: Float, rate: Float, period: Int) {
+        return cash / pow(1.0 + rate, period)
+    }
+
+    // NPV = sum_t CF_t / (1+r)^t, flows[0] at t=0 (usually the outlay)
+    on npv(rate: Float, flows: List) {
+        let total = 0.0
+        for t in range(0, len(flows)) {
+            total = total + present_value(flows[t], rate, t)
+        }
+        return total
+    }
+
+    // first period index where cumulative (undiscounted) flow turns non-negative
+    on payback_period(flows: List) {
+        let cum = 0.0
+        let result = -1
+        for t in range(0, len(flows)) {
+            cum = cum + flows[t]
+            if cum >= 0.0 && result == -1 {
+                result = t
+            }
+        }
+        return result
+    }
+
+    on profitable(rate: Float, flows: List) {
+        return npv(rate, flows) > 0.0
+    }
+}
+
+cell test DCFTests {
+    rules {
+        // PV of 110 one year out at 10% = 100
+        assert abs(present_value(110.0, 0.10, 1) - 100.0) < 0.0001
+        // invest 100 now, get 60 + 60 → positive NPV at 10%
+        assert npv(0.10, list(-100.0, 60.0, 60.0)) > 0.0
+        // a money-losing project
+        assert profitable(0.10, list(-100.0, 30.0, 30.0)) == false
+        // payback: -100, 60, 60 → cumulative crosses zero at period 2
+        assert payback_period(list(-100.0, 60.0, 60.0)) == 2
+    }
+}

@@ -1,0 +1,62 @@
+// A ReAct-style agent whose tools are real, deterministic computations.
+// Demonstrates: face `tool` declarations that the LLM can call, plus the
+// tool handlers being directly unit-tested (they are ordinary handlers).
+// The think() call dispatches tools automatically; the tools themselves
+// need no network, so the corpus can verify them.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run react_calculator.cell --signal solve "2 and 3"
+// Test: SOMA_LLM_MOCK=echo soma test react_calculator.cell
+
+cell agent Calc {
+    face {
+        signal solve(question: String) -> Map
+        tool add(a: Int, b: Int) -> Int "Add two integers"
+        tool mul(a: Int, b: Int) -> Int "Multiply two integers"
+        tool primes_below(n: Int) -> String "List primes below n, comma-separated"
+    }
+
+    state task {
+        initial: idle
+        idle     -> reasoning
+        reasoning -> answered
+        *        -> failed
+    }
+
+    on add(a: Int, b: Int) { a + b }
+    on mul(a: Int, b: Int) { a * b }
+
+    on primes_below(n: Int) {
+        let out = list()
+        for k in range(2, n) {
+            let is_prime = true
+            for d in range(2, k) {
+                if floor(k / d) * d == k { is_prime = false  break }
+            }
+            if is_prime { out = push(out, k) }
+        }
+        out |> map(p => to_string(p)) |> join(",")
+    }
+
+    on solve(question: String) {
+        set_budget(3000)
+        let id = to_string(next_id())
+        transition(id, "reasoning")
+        let r = try { think("Use the tools to answer: {question}") }
+        if r.error != () {
+            transition(id, "failed")
+            return map("status", "failed", "error", r.error)
+        }
+        transition(id, "answered")
+        map("status", "answered", "answer", r.value)
+    }
+}
+
+cell test CalcTests {
+    rules {
+        assert add(2, 3) == 5
+        assert mul(6, 7) == 42
+        assert primes_below(10) == "2,3,5,7"
+        assert primes_below(3) == "2"
+        assert solve("anything").status == "answered"
+    }
+}

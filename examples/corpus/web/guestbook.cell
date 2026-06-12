@@ -1,0 +1,65 @@
+// Guestbook: append-only signed entries, rendered as a small HTML page.
+// The form POSTs name+message; entries are stored in an immutable log.
+//   curl -X POST localhost:8080/sign -d '{"name":"Ada","message":"hi"}'
+
+cell Guestbook {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal sign(name: String, message: String) -> Map
+        signal entries() -> List
+        promise all_persistent
+    }
+
+    memory {
+        book: List<String> [persistent, immutable, retain(5years)]
+    }
+
+    on sign(name: String, message: String) {
+        if trim(name) == "" { return response(400, map("error", "name required")) }
+        let entry = map("name", escape_html(name), "message", escape_html(message), "at", now())
+        book.push(to_json(entry))
+        return entry
+    }
+
+    on entries() {
+        let out = list()
+        for raw in book.all {
+            out = push(out, from_json(raw))
+        }
+        return out
+    }
+
+    on _render() {
+        let rows = ""
+        for raw in book.all {
+            let e = from_json(raw)
+            let name = e.name
+            let message = e.message
+            rows = concat(rows, "<li><b>{name}</b>: {message}</li>")
+        }
+        if rows == "" { rows = "<li><i>be the first to sign</i></li>" }
+        return concat("<h1>Guestbook</h1><ul>", concat(rows, "</ul>"))
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET",  path: "/"}     -> html(_render())
+            {method: "POST", path: "/sign"} -> {
+                let d = from_json(body)
+                sign(d.name, d.message)
+                redirect("/")
+            }
+            _                               -> response(404, "not found")
+        }
+    }
+}
+
+cell test GuestbookTest {
+    rules {
+        assert sign("Ada", "hello").name == "Ada"
+        assert sign("<b>x</b>", "hi").name == "&lt;b&gt;x&lt;/b&gt;"
+        assert len(entries()) == 2
+        assert sign("", "no name")._status == 400
+    }
+}

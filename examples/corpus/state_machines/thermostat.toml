@@ -1,0 +1,10 @@
+[package]
+name = "thermostat"
+version = "0.1.0"
+entry = "thermostat.cell"
+
+# Reactive controller: no terminal state, so we only require that it never
+# deadlocks — there is always a legal next move from every mode.
+[verify]
+deadlock_free = true
+never = []

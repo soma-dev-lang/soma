@@ -1,0 +1,59 @@
+// FX converter with a rate table in memory and a non-negative rate
+// invariant. Cross rates are derived via a USD base. Demonstrates a
+// Map<String,Float> slot, an invariant on stored values, and triangular
+// cross-rate arithmetic.
+
+cell FxConverter {
+    face {
+        signal set_rate(ccy: String, per_usd: Float) -> Map
+        signal to_usd(ccy: String, amount: Float) -> Float
+        signal convert(from_ccy: String, to_ccy: String, amount: Float) -> Float
+        promise all_persistent
+    }
+
+    memory {
+        // units of CCY per 1 USD; must be strictly sensible (non-negative)
+        rates: Map<String, Float> [persistent, consistent]
+        invariant rates >= 0.0
+    }
+
+    on set_rate(ccy: String, per_usd: Float) {
+        let r = try { rates.set(ccy, per_usd) }
+        if r.error != () {
+            return map("ok", false, "reason", "{r.error}")
+        }
+        return map("ok", true, "ccy", ccy, "per_usd", per_usd)
+    }
+
+    on to_usd(ccy: String, amount: Float) {
+        if ccy == "USD" { return amount }
+        let rate = rates.get(ccy)
+        if rate == () { return 0.0 }
+        return amount / rate
+    }
+
+    // cross rate via USD: from -> USD -> to
+    on convert(from_ccy: String, to_ccy: String, amount: Float) {
+        let usd = to_usd(from_ccy, amount)
+        if to_ccy == "USD" { return usd }
+        let rate = rates.get(to_ccy)
+        if rate == () { return 0.0 }
+        return usd * rate
+    }
+}
+
+cell test FxTests {
+    rules {
+        assert set_rate("EUR", 0.92).ok == true
+        assert set_rate("JPY", 156.0).ok == true
+        // 100 EUR -> USD = 100/0.92 ≈ 108.70
+        assert abs(to_usd("EUR", 100.0) - 108.695652) < 0.001
+        // 100 EUR -> JPY via USD
+        assert abs(convert("EUR", "JPY", 100.0) - (100.0 / 0.92 * 156.0)) < 0.001
+        // USD passthrough
+        assert abs(to_usd("USD", 50.0) - 50.0) < 0.0001
+        // a negative rate is rejected by the invariant
+        assert set_rate("BAD", -1.0).ok == false
+        assert_fails rates.set("X", -0.5)
+    }
+}

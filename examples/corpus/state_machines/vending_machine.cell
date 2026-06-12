@@ -1,0 +1,88 @@
+// A vending machine state machine.
+// idle -> collecting (first coin) -> (more coins) -> dispensing -> idle.
+// A refund from collecting returns to idle. The machine tracks the
+// inserted balance in memory and only dispenses once the price is met.
+
+cell VendingMachine {
+    face {
+        signal insert(id: String, cents: Int) -> Map
+        signal vend(id: String) -> Map
+        signal refund(id: String) -> Map
+        signal state_of(id: String) -> String
+        promise "every session returns to idle (vend or refund)"
+    }
+
+    memory {
+        balance: Map<String, Int> [persistent, consistent]
+        price:   Map<String, Int> [persistent, consistent]
+        invariant balance >= 0
+    }
+
+    state machine {
+        initial: idle
+        idle       -> collecting
+        collecting -> collecting
+        collecting -> dispensing
+        collecting -> idle
+        dispensing -> idle
+    }
+
+    on insert(id: String, cents: Int) {
+        require cents > 0 else bad_coin
+        let cur = balance.get(id) ?? 0
+        balance.set(id, cur + cents)
+        if get_status(id) == "idle" {
+            transition(id, "collecting")
+        }
+        return map("state", get_status(id), "balance", balance.get(id))
+    }
+
+    on vend(id: String) {
+        let bal = balance.get(id) ?? 0
+        let p = price.get("default") ?? 150
+        if bal < p {
+            return map("ok", false, "need", p - bal)
+        }
+        transition(id, "dispensing")
+        let change = bal - p
+        balance.set(id, 0)
+        transition(id, "idle")
+        return map("ok", true, "change", change)
+    }
+
+    on refund(id: String) {
+        let bal = balance.get(id) ?? 0
+        transition(id, "idle")
+        balance.set(id, 0)
+        return map("ok", true, "refunded", bal)
+    }
+
+    on state_of(id: String) { return get_status(id) }
+}
+
+cell test VendingTests {
+    rules {
+        // insert moves idle -> collecting and accumulates balance
+        assert insert("m1", 100).state == "collecting"
+        assert insert("m1", 100).balance == 200
+        // with 200 inserted against a 150 price, vend succeeds with 50 change
+        assert vend("m1").change == 50
+        // and the machine is back at idle
+        assert state_of("m1") == "idle"
+
+        // an under-funded vend is refused (still collecting, no dispense)
+        assert insert("m2", 100).state == "collecting"
+        assert vend("m2").ok == false
+
+        // refund path returns the inserted coins and resets to idle
+        assert insert("m3", 75).state == "collecting"
+        assert refund("m3").refunded == 75
+        assert state_of("m3") == "idle"
+
+        // a zero/negative coin is rejected before any state change
+        assert_fails insert("m4", 0)
+
+        // cannot dispense straight from idle
+        assert_fails transition("m5", "dispensing")
+    }
+}

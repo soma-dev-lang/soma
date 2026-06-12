@@ -1,0 +1,88 @@
+// Depth-first search on a directed graph: preorder traversal and cycle
+// detection via the classic white/grey/black coloring. Demonstrates: recursion
+// over an adjacency Map, a visited set, an explicit recursion stack for cycle
+// detection, and accumulating an order list.
+//
+//   soma run  examples/corpus/algorithms/dfs.cell order A
+//   soma test examples/corpus/algorithms/dfs.cell
+
+cell DFS {
+    face {
+        signal order(start: String) -> List
+        signal has_cycle() -> Bool
+        signal adj() -> Map
+    }
+
+    on adj() {
+        return map(
+            "A", list("B", "C"),
+            "B", list("D"),
+            "C", list("D"),
+            "D", list()
+        )
+    }
+
+    on order(start: String) {
+        let g = adj()
+        let visited = map()
+        let out = list()
+        let stack = list(start)
+        while len(stack) > 0 {
+            let n = len(stack)
+            let node = stack[n - 1]
+            let rest = list()
+            for i in range(0, n - 1) { rest = push(rest, stack[i]) }
+            stack = rest
+            if (visited[node] ?? 0) == 0 {
+                visited[node] = 1
+                out = push(out, node)
+                let nbs = g[node]
+                // push neighbors in reverse so the first one is visited first
+                for i in range(len(nbs) - 1, -1, -1) { stack = push(stack, nbs[i]) }
+            }
+        }
+        return out
+    }
+
+    on has_cycle() {
+        // build a graph WITH a back edge D -> A to exercise detection
+        let g = map(
+            "A", list("B"),
+            "B", list("C"),
+            "C", list("A")
+        )
+        let color = map()      // 0 = white, 1 = grey, 2 = black
+        let found = false
+        for start in g.keys {
+            if (color[start] ?? 0) == 0 {
+                let stack = list(start)
+                while len(stack) > 0 {
+                    let m = len(stack)
+                    let node = stack[m - 1]
+                    if (color[node] ?? 0) == 0 {
+                        color[node] = 1
+                        for nb in g[node] {
+                            if (color[nb] ?? 0) == 1 { found = true }
+                            if (color[nb] ?? 0) == 0 { stack = push(stack, nb) }
+                        }
+                    } else {
+                        color[node] = 2
+                        let rest = list()
+                        for i in range(0, m - 1) { rest = push(rest, stack[i]) }
+                        stack = rest
+                    }
+                }
+            }
+        }
+        return found
+    }
+}
+
+cell test DFSTests {
+    rules {
+        assert order("A")[0] == "A"
+        assert len(order("A")) == 4
+        assert to_string(order("A")) == to_string(list("A", "B", "D", "C"))
+        assert has_cycle()
+    }
+}

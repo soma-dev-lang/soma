@@ -1,0 +1,56 @@
+// Brokerage fee calculator: tiered commission, bps fee with a floor,
+// and a maker/taker exchange fee. Shows clamp/max for floors and caps,
+// and match on a tier bucket.
+
+cell FeeCalculator {
+    face {
+        signal bps_fee(notional: Float, bps: Float, min_fee: Float) -> Float
+        signal tiered_commission(shares: Int) -> Float
+        signal exchange_fee(notional: Float, is_maker: Bool) -> Float
+        signal net_proceeds(notional: Float, bps: Float, min_fee: Float) -> Float
+    }
+
+    // fee = notional * bps/10000, but never below the minimum
+    on bps_fee(notional: Float, bps: Float, min_fee: Float) {
+        let raw = notional * bps / 10000.0
+        return max(raw, min_fee)
+    }
+
+    // per-share commission that drops as volume grows
+    on tiered_commission(shares: Int) {
+        let rate = match shares {
+            0..999       -> 0.010
+            1000..9999   -> 0.005
+            _            -> 0.002
+        }
+        let fee = shares * rate
+        return max(fee, 1.0)
+    }
+
+    // makers get a rebate (negative fee), takers pay
+    on exchange_fee(notional: Float, is_maker: Bool) {
+        if is_maker { return notional * -0.0001 }
+        return notional * 0.0003
+    }
+
+    // sell-side: what you keep after the fee
+    on net_proceeds(notional: Float, bps: Float, min_fee: Float) {
+        return notional - bps_fee(notional, bps, min_fee)
+    }
+}
+
+cell test FeeTests {
+    rules {
+        // 1M notional at 2 bps = 200
+        assert abs(bps_fee(1000000.0, 2.0, 1.0) - 200.0) < 0.0001
+        // tiny trade hits the minimum floor
+        assert abs(bps_fee(100.0, 2.0, 1.0) - 1.0) < 0.0001
+        // mid tier: 5000 shares * 0.005 = 25
+        assert abs(tiered_commission(5000) - 25.0) < 0.0001
+        // maker rebate is negative
+        assert exchange_fee(1000000.0, true) < 0.0
+        // taker pays
+        assert exchange_fee(1000000.0, false) > 0.0
+        assert abs(net_proceeds(10000.0, 5.0, 1.0) - 9995.0) < 0.0001
+    }
+}

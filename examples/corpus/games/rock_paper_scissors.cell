@@ -1,0 +1,71 @@
+// ============================================================================
+// Rock-paper-scissors — round judging and best-of-N scoring
+// ============================================================================
+//
+// judge(a, b) returns "p1", "p2", or "tie" from the two throws. play_match
+// scores a list of round pairs and reports the winner. Pure and deterministic.
+//
+// Run:  soma run rock_paper_scissors.cell --signal demo
+// Test: soma test rock_paper_scissors.cell
+
+cell RockPaperScissors {
+    face {
+        signal judge(a: String, b: String) -> String
+        signal beats(a: String, b: String) -> Bool
+        signal play_match(rounds: List) -> Map
+        signal demo() -> Map
+    }
+
+    // Does throw a beat throw b?
+    on beats(a: String, b: String) {
+        return match a {
+            "rock"     -> b == "scissors"
+            "paper"    -> b == "rock"
+            "scissors" -> b == "paper"
+            _          -> false
+        }
+    }
+
+    on judge(a: String, b: String) {
+        if a == b { return "tie" }
+        if beats(a, b) { return "p1" }
+        return "p2"
+    }
+
+    // rounds is a list of {p1, p2} maps; tally wins and name the victor.
+    on play_match(rounds: List) {
+        let s1 = 0
+        let s2 = 0
+        for r in rounds {
+            let w = judge(r.p1, r.p2)
+            if w == "p1" { s1 = s1 + 1 }
+            if w == "p2" { s2 = s2 + 1 }
+        }
+        let winner = if s1 > s2 { "p1" } else if s2 > s1 { "p2" } else { "tie" }
+        return map("p1", s1, "p2", s2, "winner", winner)
+    }
+
+    on demo() {
+        return play_match([
+            map("p1", "rock",     "p2", "scissors"),
+            map("p1", "paper",    "p2", "scissors"),
+            map("p1", "scissors", "p2", "rock")
+        ])
+    }
+}
+
+cell test RpsTests {
+    rules {
+        assert judge("rock", "scissors") == "p1"
+        assert judge("rock", "paper") == "p2"
+        assert judge("paper", "paper") == "tie"
+        assert beats("scissors", "paper") == true
+        assert beats("scissors", "rock") == false
+        // best-of-3: p1 takes round 1, loses 2 & 3 → p2 wins the match
+        assert play_match([
+            map("p1", "rock",     "p2", "scissors"),
+            map("p1", "rock",     "p2", "paper"),
+            map("p1", "scissors", "p2", "rock")
+        ]).winner == "p2"
+    }
+}

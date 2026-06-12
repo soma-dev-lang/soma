@@ -1,0 +1,53 @@
+// Form handler with server-side validation. POST /contact validates each
+// field and either stores the submission or returns a 422 with field errors.
+
+cell ContactForm {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal submit(data: Map) -> Map
+        signal validate(data: Map) -> List
+        promise all_persistent
+    }
+
+    memory {
+        submissions: Map<String, String> [persistent, consistent]
+    }
+
+    on validate(data: Map) {
+        let errors = list()
+        let name = data.name ?? ""
+        let email = data.email ?? ""
+        let message = data.message ?? ""
+        if trim(name) == "" { errors = push(errors, "name is required") }
+        if contains(email, "@") == false { errors = push(errors, "email is invalid") }
+        if len(trim(message)) < 5 { errors = push(errors, "message too short") }
+        return errors
+    }
+
+    on submit(data: Map) {
+        let errors = validate(data)
+        if len(errors) > 0 { return response(422, map("ok", false, "errors", errors)) }
+        let id = to_string(next_id())
+        let rec = map("id", id, "name", data.name, "email", data.email, "message", data.message)
+        submissions.set(id, rec)
+        return map("ok", true, "id", id)
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET",  path: "/"}        -> html("<form method='post' action='/contact'><input name='name'><input name='email'><textarea name='message'></textarea><button>Send</button></form>")
+            {method: "POST", path: "/contact"} -> submit(from_json(body))
+            _                                  -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test ContactFormTest {
+    rules {
+        assert len(validate(map("name", "Ada", "email", "a@b.c", "message", "hello there"))) == 0
+        assert len(validate(map("name", "", "email", "bad", "message", "x"))) == 3
+        assert submit(map("name", "Ada", "email", "a@b.c", "message", "hello there")).ok == true
+        assert len(validate(map("name", "Ada", "email", "a@b.c", "message", "x"))) == 1
+    }
+}

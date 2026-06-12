@@ -1,0 +1,62 @@
+// ============================================================================
+// Complex numbers — records carrying real and imaginary parts
+// ============================================================================
+//
+// Soma has no native complex type, so a Complex is a record { re, im }.
+// Addition is componentwise; multiplication uses the FOIL identity
+// (a+bi)(c+di) = (ac−bd) + (ad+bc)i; modulus is sqrt(re²+im²). Records carry
+// a _type field so is_a recognizes them.
+//
+//   soma run complex.cell run
+// ============================================================================
+
+cell Complex {
+    face {
+        signal cadd(x: Map, y: Map) -> Map
+        signal cmul(x: Map, y: Map) -> Map
+        signal cmod(x: Map) -> Float
+        signal run() -> Map
+    }
+
+    on cadd(x: Map, y: Map) {
+        return Complex { re: x.re + y.re, im: x.im + y.im }
+    }
+
+    on cmul(x: Map, y: Map) {
+        return Complex {
+            re: x.re * y.re - x.im * y.im,
+            im: x.re * y.im + x.im * y.re
+        }
+    }
+
+    on cmod(x: Map) {
+        return sqrt(x.re * x.re + x.im * x.im)
+    }
+
+    on run() {
+        let a = Complex { re: 1.0, im: 2.0 }
+        let b = Complex { re: 3.0, im: 0 - 1.0 }
+        return map(
+            "sum", cadd(a, b),
+            "product", cmul(a, b),
+            "mod_a", cmod(a)
+        )
+    }
+}
+
+cell test ComplexTests {
+    rules {
+        // (1+2i) + (3-i) = 4 + i
+        assert cadd(Complex { re: 1.0, im: 2.0 }, Complex { re: 3.0, im: 0 - 1.0 }).re == 4.0
+        assert cadd(Complex { re: 1.0, im: 2.0 }, Complex { re: 3.0, im: 0 - 1.0 }).im == 1.0
+        // (1+2i)(3-i) = 3 - i + 6i - 2i^2 = 5 + 5i
+        assert cmul(Complex { re: 1.0, im: 2.0 }, Complex { re: 3.0, im: 0 - 1.0 }).re == 5.0
+        assert cmul(Complex { re: 1.0, im: 2.0 }, Complex { re: 3.0, im: 0 - 1.0 }).im == 5.0
+        // |3+4i| = 5
+        assert cmod(Complex { re: 3.0, im: 4.0 }) == 5.0
+        // i^2 = -1
+        assert cmul(Complex { re: 0, im: 1.0 }, Complex { re: 0, im: 1.0 }).re == 0 - 1.0
+        // records are typed
+        assert is_a(Complex { re: 1.0, im: 0 }, "Complex")
+    }
+}

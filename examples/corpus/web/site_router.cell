@@ -1,0 +1,41 @@
+// Multi-page static site: home, about, and a dynamic greeting route.
+// Demonstrates html() pages, path captures, and a 404 fallthrough.
+
+cell Site {
+    face {
+        signal request(method: String, path: String, body: String) -> String
+        signal greet(name: String) -> String
+        promise "static pages plus one dynamic route"
+    }
+
+    on _page(title: String, body: String) {
+        return concat(
+            concat("<!DOCTYPE html><html><head><title>", title),
+            concat("</title></head><body><nav><a href='/'>home</a> | <a href='/about'>about</a></nav>",
+                   concat(body, "</body></html>")))
+    }
+
+    on greet(name: String) {
+        let safe = escape_html(name)
+        return _page("Hello", "<h1>Hello, {safe}!</h1>")
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET", path: "/"}             -> html(_page("Home", "<h1>Welcome</h1><p>A site in Soma.</p>"))
+            {method: "GET", path: "/about"}        -> html(_page("About", "<h1>About</h1><p>Built with cells.</p>"))
+            {method: "GET", path: "/hello/" + nm}  -> html(greet(nm))
+            _                                      -> html(404, _page("Not Found", "<h1>404</h1>"))
+        }
+    }
+}
+
+cell test SiteTest {
+    rules {
+        assert contains(greet("Ada"), "Hello, Ada!")
+        assert contains(greet("<x>"), "&lt;x&gt;")
+        assert contains(_page("T", "B"), "<title>T</title>")
+        assert contains(_page("T", "B"), "<a href='/about'>about</a>")
+    }
+}

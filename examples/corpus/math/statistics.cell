@@ -1,0 +1,68 @@
+// ============================================================================
+// Descriptive statistics — mean, variance, stddev, median via sort
+// ============================================================================
+//
+// Mean is sum/len. Variance is the mean of squared deviations. Median sorts
+// the sample and takes the middle (or the average of the two middles for an
+// even count). All of it rides on list reductions and bracket indexing.
+//
+//   soma run statistics.cell run
+// ============================================================================
+
+cell Statistics {
+    face {
+        signal mean(xs: List) -> Float
+        signal variance(xs: List) -> Float
+        signal stddev(xs: List) -> Float
+        signal median(xs: List) -> Float
+        signal run() -> Map
+    }
+
+    on mean(xs: List) {
+        return to_float(sum(xs)) / to_float(len(xs))
+    }
+
+    on variance(xs: List) {
+        let m = mean(xs)
+        let sq = xs |> map(x => (to_float(x) - m) * (to_float(x) - m))
+        return sum(sq) / to_float(len(xs))
+    }
+
+    on stddev(xs: List) {
+        return sqrt(variance(xs))
+    }
+
+    on median(xs: List) {
+        let s = sort(xs)
+        let n = len(s)
+        let mid = floor(n / 2)
+        if n % 2 == 1 {
+            return to_float(s[mid])
+        }
+        return (to_float(s[mid - 1]) + to_float(s[mid])) / 2.0
+    }
+
+    on run() {
+        let xs = [2, 4, 4, 4, 5, 5, 7, 9]
+        return map(
+            "mean", mean(xs),
+            "variance", variance(xs),
+            "stddev", stddev(xs),
+            "median", median(xs)
+        )
+    }
+}
+
+cell test StatTests {
+    rules {
+        // mean of 2,4,4,4,5,5,7,9 = 40/8 = 5
+        assert mean([2, 4, 4, 4, 5, 5, 7, 9]) == 5.0
+        // textbook population variance = 4, stddev = 2
+        assert abs(variance([2, 4, 4, 4, 5, 5, 7, 9]) - 4.0) < 0.0000001
+        assert abs(stddev([2, 4, 4, 4, 5, 5, 7, 9]) - 2.0) < 0.0000001
+        // odd-count median
+        assert median([7, 1, 3]) == 3.0
+        // even-count median averages the two middles
+        assert median([1, 2, 3, 4]) == 2.5
+    }
+}

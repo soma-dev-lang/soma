@@ -1,0 +1,40 @@
+// ============================================================================
+// Anagram check — same multiset of letters
+// ============================================================================
+//
+// Two strings are anagrams iff sorting their letters yields the same string.
+// We lowercase, drop spaces, explode into a character list, sort it, and
+// re-join. Demonstrates split/sort/join on character lists.
+//
+// Run: soma run anagram.cell --signal is_anagram "listen" "silent"
+
+cell Anagram {
+    face {
+        signal canonical(s: String) -> String
+        signal is_anagram(a: String, b: String) -> Bool
+    }
+
+    // Sorted, lowercased, space-free signature of a word.
+    on canonical(s: String) {
+        let low = replace(lowercase(s), " ", "")
+        let chars = list()
+        for i in range(0, len(low)) {
+            chars = push(chars, low[i])
+        }
+        return join(chars.sort(), "")
+    }
+
+    on is_anagram(a: String, b: String) {
+        return canonical(a) == canonical(b)
+    }
+}
+
+cell test AnagramTest {
+    rules {
+        assert is_anagram("listen", "silent")
+        assert is_anagram("triangle", "integral")
+        assert is_anagram("Dormitory", "dirty room")
+        assert !is_anagram("hello", "world")
+        assert canonical("cab") == "abc"
+    }
+}

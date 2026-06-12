@@ -1,0 +1,53 @@
+// left_join keeps every left row even when the right side has no match.
+// Products joined to a sparse stock table; unmatched products keep their
+// fields but gain no stock columns. Demonstrates the ?? guard for missing data.
+
+cell Inventory {
+    on products() {
+        return list(
+            map("sku", "P1", "name", "Bolt",   "price", 5),
+            map("sku", "P2", "name", "Nut",    "price", 3),
+            map("sku", "P3", "name", "Washer", "price", 1),
+            map("sku", "P4", "name", "Gasket", "price", 8)
+        )
+    }
+
+    on stock() {
+        return list(
+            map("sku", "P1", "on_hand", 200),
+            map("sku", "P3", "on_hand", 0),
+            map("sku", "P4", "on_hand", 45)
+        )
+    }
+
+    // Every product survives; P2 has no stock row.
+    on joined() { return products() |> left_join(stock(), "sku") }
+
+    // Default missing on_hand to 0 with ??.
+    on availability() {
+        return joined() |> map(r => {
+            let qty = r.on_hand ?? 0
+            r |> with("available", qty > 0)
+        })
+    }
+
+    on out_of_stock() { return availability() |> filter_by("available", "=", false) |> pluck("name") }
+
+    on run() {
+        for r in availability() { print("{r.name}: {r.on_hand ?? 0} on hand") }
+        return out_of_stock()
+    }
+}
+
+cell test InventoryTests {
+    rules {
+        // left join keeps all 4 products
+        assert len(joined()) == 4
+        // P2 (no match) and P3 (zero stock) are out of stock
+        assert len(out_of_stock()) == 2
+        // P1 has 200 on hand
+        assert (availability() |> filter_by("sku", "=", "P1"))[0].on_hand == 200
+        // P2 missing on_hand defaults to unavailable
+        assert (availability() |> filter_by("sku", "=", "P2"))[0].available == false
+    }
+}

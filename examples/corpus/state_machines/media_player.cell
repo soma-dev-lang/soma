@@ -1,0 +1,56 @@
+// A media-player transport state machine.
+// stopped -> playing <-> paused, with stop reachable from play/pause.
+// A typed (sum-type) machine so an illegal transport command is caught
+// statically by the variant name. This is a reactive cyclic system: the
+// proof obligation is deadlock-freedom.
+
+cell type Transport {
+    variants { Stopped  Playing  Paused }
+}
+
+cell MediaPlayer {
+    face {
+        signal play_track(id: String) -> String
+        signal pause_track(id: String) -> String
+        signal resume_track(id: String) -> String
+        signal stop_track(id: String) -> String
+        signal transport_of(id: String) -> String
+        signal next(id: String) -> List<String>
+    }
+
+    state transport: Transport {
+        initial: Stopped
+        Stopped -> Playing
+        Playing -> Paused
+        Paused  -> Playing
+        Playing -> Stopped
+        Paused  -> Stopped
+    }
+
+    on play_track(id: String)   { transition(id, Playing) return get_status(id) }
+    on pause_track(id: String)  { transition(id, Paused)  return get_status(id) }
+    on resume_track(id: String) { transition(id, Playing) return get_status(id) }
+    on stop_track(id: String)   { transition(id, Stopped) return get_status(id) }
+    on transport_of(id: String) { return get_status(id) }
+    on next(id: String)         { return valid_transitions(id) }
+}
+
+cell test MediaPlayerTests {
+    rules {
+        // play, pause, resume, stop
+        assert play_track("m1") == "Playing"
+        assert pause_track("m1") == "Paused"
+        assert resume_track("m1") == "Playing"
+        assert stop_track("m1") == "Stopped"
+
+        // pause then stop directly
+        assert play_track("m2") == "Playing"
+        assert pause_track("m2") == "Paused"
+        assert stop_track("m2") == "Stopped"
+
+        // illegal: cannot pause something that is stopped
+        assert_fails pause_track("m3")
+        // illegal: a stopped transport cannot jump straight to Paused
+        assert_fails transition("m4", Paused)
+    }
+}

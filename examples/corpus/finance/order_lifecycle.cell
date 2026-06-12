@@ -1,0 +1,62 @@
+// Order lifecycle as a verified state machine: an order flows from new to
+// filled or rejected, and a fill settles. Every state can reach a terminal
+// (settled / rejected / cancelled). Pairs with order_lifecycle.toml so
+// `soma verify` proves deadlock-freedom and eventual settlement.
+
+cell OrderLifecycle {
+    face {
+        signal place(id: String) -> String
+        signal fill(id: String) -> String
+        signal settle(id: String) -> String
+        signal reject(id: String) -> String
+        signal cancel(id: String) -> String
+    }
+
+    state order {
+        initial: new
+        new      -> working   { guard { true } }
+        working  -> filled
+        working  -> rejected
+        filled   -> settled
+        *        -> cancelled
+    }
+
+    on place(id: String) {
+        transition(id, "working")
+        return get_status(id)
+    }
+
+    on fill(id: String) {
+        transition(id, "filled")
+        return get_status(id)
+    }
+
+    on settle(id: String) {
+        transition(id, "settled")
+        return get_status(id)
+    }
+
+    on reject(id: String) {
+        transition(id, "rejected")
+        return get_status(id)
+    }
+
+    on cancel(id: String) {
+        transition(id, "cancelled")
+        return get_status(id)
+    }
+}
+
+cell test OrderLifecycleTests {
+    rules {
+        // happy path: new -> working -> filled -> settled
+        assert place("o1") == "working"
+        assert fill("o1") == "filled"
+        assert settle("o1") == "settled"
+        // reject path
+        assert place("o2") == "working"
+        assert reject("o2") == "rejected"
+        // cancel from any state
+        assert cancel("o3") == "cancelled"
+    }
+}

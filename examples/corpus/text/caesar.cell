@@ -1,0 +1,48 @@
+// ============================================================================
+// Caesar cipher — shift letters using an alphabet lookup
+// ============================================================================
+//
+// Builds the shifted output by finding each character's position in the
+// lowercase alphabet with index_of, rotating by the shift, and indexing back
+// in. Non-letters pass through unchanged. Decrypt = encrypt with (26 - shift).
+//
+// Run: soma run caesar.cell --signal encrypt "hello" 3
+
+cell Caesar {
+    face {
+        signal encrypt(text: String, shift: Int) -> String
+        signal decrypt(text: String, shift: Int) -> String
+    }
+
+    on encrypt(text: String, shift: Int) {
+        let alpha = "abcdefghijklmnopqrstuvwxyz"
+        let k = ((shift % 26) + 26) % 26
+        let low = lowercase(text)
+        let out = ""
+        for i in range(0, len(low)) {
+            let c = low[i]
+            let pos = index_of(alpha, c)
+            if pos >= 0 {
+                out = out + alpha[(pos + k) % 26]
+            } else {
+                out = out + c
+            }
+        }
+        return out
+    }
+
+    on decrypt(text: String, shift: Int) {
+        return encrypt(text, 26 - (shift % 26))
+    }
+}
+
+cell test CaesarTest {
+    rules {
+        assert encrypt("hello", 3) == "khoor"
+        assert encrypt("xyz", 5) == "cde"
+        assert decrypt("khoor", 3) == "hello"
+        assert encrypt("abc 123", 1) == "bcd 123"
+        assert encrypt("hello", 0) == "hello"
+        assert decrypt(encrypt("attack at dawn", 13), 13) == "attack at dawn"
+    }
+}

@@ -1,0 +1,48 @@
+// Equity income metrics: dividend yield, payout ratio, dividend-discount
+// (Gordon growth) fair value, and yield-on-cost. Straightforward ratios
+// with guards against division by zero.
+
+cell DividendMetrics {
+    face {
+        signal yield_pct(annual_div: Float, price: Float) -> Float
+        signal payout_ratio(annual_div: Float, eps: Float) -> Float
+        signal gordon_value(next_div: Float, discount: Float, growth: Float) -> Float
+        signal yield_on_cost(annual_div: Float, cost_basis: Float) -> Float
+    }
+
+    on yield_pct(annual_div: Float, price: Float) {
+        if price == 0.0 { return 0.0 }
+        return annual_div / price * 100.0
+    }
+
+    on payout_ratio(annual_div: Float, eps: Float) {
+        if eps == 0.0 { return 0.0 }
+        return annual_div / eps
+    }
+
+    // Gordon growth: V = D1 / (k - g), valid only when k > g
+    on gordon_value(next_div: Float, discount: Float, growth: Float) {
+        if discount <= growth { return 0.0 }
+        return next_div / (discount - growth)
+    }
+
+    on yield_on_cost(annual_div: Float, cost_basis: Float) {
+        if cost_basis == 0.0 { return 0.0 }
+        return annual_div / cost_basis * 100.0
+    }
+}
+
+cell test DividendTests {
+    rules {
+        // $2 div on a $50 stock = 4%
+        assert abs(yield_pct(2.0, 50.0) - 4.0) < 0.0001
+        // $2 div on $5 EPS = 40% payout
+        assert abs(payout_ratio(2.0, 5.0) - 0.40) < 0.0001
+        // Gordon: D1=2, k=8%, g=3% → 2/0.05 = 40
+        assert abs(gordon_value(2.0, 0.08, 0.03) - 40.0) < 0.0001
+        // degenerate Gordon (k <= g) guarded to 0
+        assert abs(gordon_value(2.0, 0.03, 0.08)) < 0.0001
+        // yield on cost beats current yield when bought cheaper
+        assert yield_on_cost(2.0, 25.0) > yield_pct(2.0, 50.0)
+    }
+}

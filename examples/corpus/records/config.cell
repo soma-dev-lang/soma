@@ -1,0 +1,57 @@
+// Nested config record with defaults, merge-style overrides, and a
+// deep-path reader. Demonstrates a settings tree built from records and
+// the ?? null-coalescing guard for optional fields.
+
+cell Config {
+    face {
+        signal defaults() -> Map
+        signal server_port() -> Int
+        signal feature(name: String) -> Bool
+        signal override_port(p: Int) -> Map
+        signal describe() -> String
+    }
+
+    on defaults() {
+        return Settings {
+            server: Server { host: "0.0.0.0", port: 8080 },
+            db:     Db     { url: "sqlite://soma.db", pool: 4 },
+            flags:  Flags  { dark_mode: true, beta: false }
+        }
+    }
+
+    on server_port() {
+        return defaults().server.port
+    }
+
+    on feature(name: String) {
+        let f = defaults().flags
+        return match name {
+            "dark_mode" -> f.dark_mode
+            "beta"      -> f.beta
+            _           -> false
+        }
+    }
+
+    // Copy-update the nested server record with a new port.
+    on override_port(p: Int) {
+        let c = defaults()
+        c.server.port = p
+        return c
+    }
+
+    on describe() {
+        let s = defaults().server
+        return "{s.host}:{s.port}"
+    }
+}
+
+cell test ConfigTest {
+    rules {
+        assert server_port() == 8080
+        assert feature("dark_mode") == true
+        assert feature("beta") == false
+        assert feature("ghost") == false
+        assert override_port(9090).server.port == 9090
+        assert describe() == "0.0.0.0:8080"
+    }
+}

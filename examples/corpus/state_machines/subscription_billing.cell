@@ -1,0 +1,92 @@
+// Subscription billing state machine.
+// trialing -> active -> past_due (on a failed charge) -> active (recovery)
+// or -> canceled. Active subscriptions can be canceled directly. The
+// past_due -> active retry loop is bounded by `canceled` being reachable
+// from every state, so liveness holds. Memory tracks the failed-charge
+// count so the handler can escalate to cancellation.
+
+cell Billing {
+    face {
+        signal start_trial(id: String) -> String
+        signal activate(id: String) -> String
+        signal charge_failed(id: String) -> Map
+        signal recover(id: String) -> String
+        signal cancel(id: String) -> String
+        signal status(id: String) -> String
+        promise "every subscription can reach canceled"
+    }
+
+    memory {
+        fails: Map<String, Int> [persistent, consistent]
+        invariant fails >= 0
+    }
+
+    state sub {
+        initial: trialing
+        trialing  -> active
+        active    -> past_due
+        past_due  -> active
+        past_due  -> canceled
+        active    -> canceled
+        trialing  -> canceled
+    }
+
+    on start_trial(id: String) { return get_status(id) }
+
+    on activate(id: String) {
+        transition(id, "active")
+        fails.set(id, 0)
+        return get_status(id)
+    }
+
+    on charge_failed(id: String) {
+        // only an active subscription can newly enter dunning; a repeat
+        // failure while already past_due keeps it there (self-loop avoided)
+        if get_status(id) == "active" {
+            transition(id, "past_due")
+        }
+        let n = (fails.get(id) ?? 0) + 1
+        fails.set(id, n)
+        // after 3 failed charges, auto-cancel
+        if n >= 3 {
+            transition(id, "canceled")
+        }
+        return map("state", get_status(id), "fails", n)
+    }
+
+    on recover(id: String) {
+        transition(id, "active")
+        fails.set(id, 0)
+        return get_status(id)
+    }
+
+    on cancel(id: String) {
+        transition(id, "canceled")
+        return get_status(id)
+    }
+
+    on status(id: String) { return get_status(id) }
+}
+
+cell test BillingTests {
+    rules {
+        // trial -> active -> fail -> recover
+        assert start_trial("s1") == "trialing"
+        assert activate("s1") == "active"
+        assert charge_failed("s1").state == "past_due"
+        assert recover("s1") == "active"
+
+        // three consecutive failures auto-cancels
+        assert activate("s2") == "active"
+        assert charge_failed("s2").fails == 1
+        assert charge_failed("s2").fails == 2
+        assert charge_failed("s2").state == "canceled"
+
+        // a trialing subscription can be canceled directly
+        assert cancel("s3") == "canceled"
+
+        // illegal: a canceled subscription is terminal — no resurrection
+        assert cancel("s4") == "canceled"
+        assert_fails recover("s4")
+    }
+}

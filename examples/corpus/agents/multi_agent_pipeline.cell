@@ -1,0 +1,69 @@
+// Multi-agent content pipeline with verified handoffs.
+// Demonstrates: delegate() across agent cells, each agent owning its own
+// lifecycle machine, and a coordinator whose pipeline state machine proves
+// the chain always terminates. Deterministic tool stubs keep it testable.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run multi_agent_pipeline.cell --signal produce "soma"
+// Test: SOMA_LLM_MOCK=echo soma test multi_agent_pipeline.cell
+
+cell agent Outliner {
+    face { signal outline(topic: String) -> Map }
+    state w { initial: idle  idle -> active  active -> done  * -> failed }
+    on outline(topic: String) {
+        let id = to_string(next_id())
+        transition(id, "active")
+        let pts = list("intro to {topic}", "details", "conclusion")
+        transition(id, "done")
+        map("status", "done", "points", pts)
+    }
+}
+
+cell agent Drafter {
+    face { signal draft(topic: String, points: Int) -> Map }
+    state w { initial: idle  idle -> active  active -> done  * -> failed }
+    on draft(topic: String, points: Int) {
+        let id = to_string(next_id())
+        transition(id, "active")
+        let words = points * 40
+        transition(id, "done")
+        map("status", "done", "topic", topic, "words", words)
+    }
+}
+
+cell agent Editor {
+    face { signal produce(topic: String) -> Map }
+    memory { articles: Map<String, String> [persistent] }
+    state pipeline {
+        initial: idle
+        idle      -> outlining
+        outlining -> drafting
+        drafting  -> done
+        *         -> failed
+    }
+    on produce(topic: String) {
+        let id = to_string(next_id())
+
+        transition(id, "outlining")
+        let o = delegate("Outliner", "outline", topic)
+        if o.status == "failed" { transition(id, "failed")  return o }
+
+        transition(id, "drafting")
+        let d = delegate("Drafter", "draft", topic, len(o.points))
+        if d.status == "failed" { transition(id, "failed")  return d }
+
+        transition(id, "done")
+        let result = map("topic", topic, "words", d.words, "status", "done")
+        articles.set(topic, result)
+        result
+    }
+}
+
+cell test PipelineTests {
+    rules {
+        assert outline("ai").status == "done"
+        assert len(outline("ai").points) == 3
+        assert draft("ai", 3).words == 120
+        assert produce("soma").status == "done"
+        assert produce("soma").words == 120
+    }
+}

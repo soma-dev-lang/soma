@@ -1,0 +1,59 @@
+// A/B test rollup: per-variant conversions and lift over control.
+// Demonstrates filtering a List<Map> by group, count over a predicate lambda,
+// and computing a derived percentage with integer-aware floor division.
+
+cell AbTest {
+    on samples() {
+        return list(
+            map("variant", "A", "converted", 1),
+            map("variant", "A", "converted", 0),
+            map("variant", "A", "converted", 1),
+            map("variant", "A", "converted", 0),
+            map("variant", "B", "converted", 1),
+            map("variant", "B", "converted", 1),
+            map("variant", "B", "converted", 1),
+            map("variant", "B", "converted", 0)
+        )
+    }
+
+    on of(variant: String) { return samples() |> filter_by("variant", "=", variant) }
+
+    // Conversion rate (%) for a variant.
+    on rate(variant: String) {
+        let rows = of(variant)
+        let conv = rows |> count(r => r.converted == 1)
+        return floor(conv * 100 / len(rows))
+    }
+
+    // Absolute lift of B over A, in percentage points.
+    on lift() { return rate("B") - rate("A") }
+
+    on summary() {
+        return list(
+            map("variant", "A", "rate", rate("A")),
+            map("variant", "B", "rate", rate("B"))
+        ) |> sort_by("rate", "desc")
+    }
+
+    on run() {
+        let ra = rate("A")
+        let rb = rate("B")
+        let l = lift()
+        print("A: {ra}%, B: {rb}%, lift: {l}pp")
+        return summary()
+    }
+}
+
+cell test AbTestTests {
+    rules {
+        // A: 2/4 = 50%, B: 3/4 = 75%
+        assert rate("A") == 50
+        assert rate("B") == 75
+        // lift = 75 - 50 = 25 points
+        assert lift() == 25
+        // B wins
+        assert summary()[0].variant == "B"
+        // each variant has 4 samples
+        assert len(of("A")) == 4
+    }
+}

@@ -1,0 +1,92 @@
+// ============================================================================
+// Connect Four — drop a disc and detect four-in-a-row
+// ============================================================================
+//
+// The board is a flat row-major 6x7 grid (row 0 = top). drop() lands a disc in
+// the lowest empty slot of a column. has_four() scans every horizontal,
+// vertical, and both diagonal directions for four matching discs.
+//
+// Run:  soma run connect_four.cell --signal demo
+// Test: soma test connect_four.cell
+
+cell ConnectFour {
+    face {
+        signal empty_board() -> List
+        signal drop(board: List, col: Int, disc: String) -> Map
+        signal at(board: List, y: Int, x: Int) -> String
+        signal has_four(board: List, disc: String) -> Bool
+        signal demo() -> Bool
+    }
+
+    on empty_board() {
+        let b = []
+        for i in range(0, 42) { b = push(b, "") }
+        return b
+    }
+
+    on at(board: List, y: Int, x: Int) {
+        if y < 0 || y >= 6 || x < 0 || x >= 7 { return "?" }
+        return board[y * 7 + x]
+    }
+
+    // Drop into a column: find the lowest empty row (largest y).
+    on drop(board: List, col: Int, disc: String) {
+        let b = board
+        let landed = -1
+        for y in range(5, -1, -1) {
+            if b[y * 7 + col] == "" && landed == -1 {
+                b[y * 7 + col] = disc
+                landed = y
+            }
+        }
+        return map("board", b, "row", landed, "ok", landed != -1)
+    }
+
+    // Check the four directions from every cell holding `disc`.
+    on has_four(board: List, disc: String) {
+        let dirs = [[0, 1], [1, 0], [1, 1], [1, -1]]
+        let found = false
+        for y in range(0, 6) {
+            for x in range(0, 7) {
+                for d in dirs {
+                    let run = 0
+                    let k = 0
+                    while k < 4 {
+                        if at(board, y + d[0] * k, x + d[1] * k) == disc {
+                            run = run + 1
+                        }
+                        k = k + 1
+                    }
+                    if run == 4 { found = true }
+                }
+            }
+        }
+        return found
+    }
+
+    on demo() {
+        // four reds along the bottom row
+        let b = empty_board()
+        let r1 = drop(b, 0, "R")
+        let r2 = drop(r1.board, 1, "R")
+        let r3 = drop(r2.board, 2, "R")
+        let r4 = drop(r3.board, 3, "R")
+        return has_four(r4.board, "R")
+    }
+}
+
+cell test ConnectFourTests {
+    rules {
+        assert len(empty_board()) == 42
+        // a disc lands on the bottom row (row 5) of an empty column
+        assert drop(empty_board(), 3, "R").row == 5
+        // empty board has no four
+        assert has_four(empty_board(), "R") == false
+        // stacking two in a column leaves the second above the first
+        assert drop(drop(empty_board(), 0, "Y").board, 0, "Y").row == 4
+        // four across the bottom is a win (built in demo())
+        assert demo() == true
+        assert at(empty_board(), 0, 0) == ""
+        assert at(empty_board(), 9, 9) == "?"
+    }
+}

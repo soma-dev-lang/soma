@@ -1,0 +1,49 @@
+// Survey scoring: normalize raw responses, roll up per question, and flag
+// low-confidence questions. Demonstrates avg_by, agg with min/max, a derived
+// spread column, and assert_fails on an out-of-bounds index (negative path).
+
+cell Survey {
+    on responses() {
+        return list(
+            map("q", "ux",    "score", 4, "respondent", "r1"),
+            map("q", "ux",    "score", 5, "respondent", "r2"),
+            map("q", "ux",    "score", 2, "respondent", "r3"),
+            map("q", "perf",  "score", 3, "respondent", "r1"),
+            map("q", "perf",  "score", 3, "respondent", "r2"),
+            map("q", "perf",  "score", 4, "respondent", "r3"),
+            map("q", "price", "score", 1, "respondent", "r1"),
+            map("q", "price", "score", 5, "respondent", "r2")
+        )
+    }
+
+    // Per question: avg, min, max, and spread = max - min.
+    on by_question() {
+        let agged = responses() |> agg("q", "score:avg", "score:min", "score:max")
+        return agged |> map(r => r |> with("spread", r.score_max - r.score_min))
+            |> sort_by("spread", "desc")
+    }
+
+    // Questions where opinions diverge a lot (spread >= 3).
+    on divisive() { return by_question() |> filter_by("spread", ">=", 3) |> pluck("q") }
+
+    on overall_avg() { return responses() |> avg_by("score") }
+
+    on run() {
+        for r in by_question() { print("{r.q}: avg {r.score_avg}, spread {r.spread}") }
+        return divisive()
+    }
+}
+
+cell test SurveyTests {
+    rules {
+        // price spread = 5 - 1 = 4 (most divisive)
+        assert by_question()[0].q == "price"
+        assert by_question()[0].spread == 4
+        // perf spread = 4 - 3 = 1
+        assert (by_question() |> filter_by("q", "=", "perf"))[0].spread == 1
+        // divisive (spread>=3): price(4), ux(5-2=3) -> 2 questions
+        assert len(divisive()) == 2
+        // indexing past the end of a 3-question result is a runtime error
+        assert_fails by_question()[9].q
+    }
+}

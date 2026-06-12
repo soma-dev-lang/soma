@@ -1,0 +1,10 @@
+[package]
+name = "games-corpus"
+version = "0.1.0"
+description = "Training corpus: games & simulations"
+
+# The turn/phase machine is intentionally cyclic (a game loops through
+# phases each round) with a `* -> over` escape, so we verify only that no
+# reachable state deadlocks — liveness to a terminal is not the contract here.
+[verify]
+deadlock_free = true

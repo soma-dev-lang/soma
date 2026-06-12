@@ -1,0 +1,60 @@
+// Mini blog API with tag filtering. Posts carry a list of tags;
+// GET /posts?tag=X filters in-memory using a pipe over stored records.
+
+cell Blog {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal create_post(data: Map) -> Map
+        signal list_all() -> List
+        signal by_tag(tag: String) -> List
+        promise all_persistent
+    }
+
+    memory {
+        posts: Map<String, String> [persistent, consistent]
+    }
+
+    on create_post(data: Map) {
+        let id = to_string(next_id())
+        let tagstr = data.tags |> join(",")
+        let post = map("id", id, "title", data.title, "body", data.body, "tags", tagstr)
+        posts.set(id, post)
+        return post
+    }
+
+    on list_all() { return posts.values }
+
+    on by_tag(tag: String) {
+        let needle = concat(",", concat(tag, ","))
+        return posts.values |> filter(p => contains(concat(",", concat(p.tags, ",")), needle))
+    }
+
+    on _demo() {
+        create_post(map("title", "Hi", "body", "first", "tags", list("soma", "intro")))
+        create_post(map("title", "Two", "body", "second", "tags", list("soma")))
+        create_post(map("title", "Three", "body", "third", "tags", list("rust")))
+        // fingerprint: total/soma-count/rust-count/first-soma-title
+        let parts = list(
+            to_string(len(list_all())),
+            to_string(len(by_tag("soma"))),
+            to_string(len(by_tag("rust"))),
+            to_string(len(by_tag("missing"))))
+        return parts |> join("/")
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "GET",  path: "/posts"}          -> list_all()
+            {method: "POST", path: "/posts"}          -> create_post(from_json(body))
+            {method: "GET",  path: "/posts/tag/" + t} -> by_tag(t)
+            _                                         -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test BlogTest {
+    rules {
+        assert _demo() == "3/2/1/0"
+    }
+}

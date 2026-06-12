@@ -1,0 +1,60 @@
+// Turn-bounded conversation agent — proves a chat loop terminates.
+// Demonstrates: a fixed max-turns loop (no unbounded `chatting -> chatting`
+// cycle that would break liveness), persistent transcript, and clear_context()
+// between sessions. The bound is the verification-friendly idiom for "loops".
+//
+// Run:  SOMA_LLM_MOCK=echo soma run turn_bounded_chat.cell --signal converse "hi" 2
+// Test: SOMA_LLM_MOCK=echo soma test turn_bounded_chat.cell
+
+cell agent Chatbot {
+    face {
+        signal converse(opening: String, turns: Int) -> Map
+    }
+
+    memory {
+        transcript: List<String> [persistent]
+    }
+
+    state session {
+        initial: idle
+        idle    -> talking
+        talking -> closed
+        *       -> aborted
+    }
+
+    on converse(opening: String, turns: Int) {
+        require turns > 0 else need_at_least_one_turn
+        require turns <= 10 else too_many_turns
+        set_budget(6000)
+        let id = to_string(next_id())
+        transition(id, "talking")
+        clear_context()
+
+        let said = 0
+        let last = opening
+        let n = 0
+        while n < turns {
+            n = n + 1
+            let r = try { think("Reply briefly to: {last}") }
+            if r.error != () {
+                transition(id, "aborted")
+                return map("status", "aborted", "error", r.error, "turns", said)
+            }
+            last = r.value
+            said = said + 1
+        }
+
+        transition(id, "closed")
+        map("status", "closed", "turns", said, "last", last)
+    }
+}
+
+cell test ChatTests {
+    rules {
+        assert converse("hello", 1).turns == 1
+        assert converse("hello", 3).turns == 3
+        assert converse("hello", 3).status == "closed"
+        assert_fails converse("hello", 0)
+        assert_fails converse("hello", 50)
+    }
+}

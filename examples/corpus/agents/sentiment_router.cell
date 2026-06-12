@@ -1,0 +1,66 @@
+// Sentiment-routing agent: classify a message, route by polarity.
+// Demonstrates: a match-based deterministic classifier as a tool, a router
+// that branches the lifecycle on the result, and group_by-style bucketing
+// over a batch. think() is available for the fuzzy path but tools are tested.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run sentiment_router.cell --signal route "I love this"
+// Test: SOMA_LLM_MOCK=echo soma test sentiment_router.cell
+
+cell agent Router {
+    face {
+        signal route(msg: String) -> Map
+        tool polarity(msg: String) -> String "positive, negative, or neutral"
+        signal batch_summary(msgs: List<String>) -> Map
+    }
+
+    state task {
+        initial: idle
+        idle    -> classifying
+        classifying -> routed
+        *       -> failed
+    }
+
+    on polarity(msg: String) {
+        let m = lowercase(msg)
+        if contains(m, "love") || contains(m, "great") || contains(m, "good") { return "positive" }
+        if contains(m, "hate") || contains(m, "bad") || contains(m, "broken") { return "negative" }
+        "neutral"
+    }
+
+    on route(msg: String) {
+        set_budget(1000)
+        let id = to_string(next_id())
+        transition(id, "classifying")
+        let p = polarity(msg)
+        let team = match p {
+            "positive" -> "marketing"
+            "negative" -> "support"
+            _          -> "triage"
+        }
+        transition(id, "routed")
+        map("status", "routed", "polarity", p, "team", team)
+    }
+
+    on batch_summary(msgs: List<String>) {
+        let pos = 0
+        let neg = 0
+        for m in msgs {
+            let p = polarity(m)
+            if p == "positive" { pos = pos + 1 }
+            if p == "negative" { neg = neg + 1 }
+        }
+        map("total", len(msgs), "positive", pos, "negative", neg)
+    }
+}
+
+cell test RouterTests {
+    rules {
+        assert polarity("I love this") == "positive"
+        assert polarity("this is broken") == "negative"
+        assert polarity("it is a thing") == "neutral"
+        assert route("great work").team == "marketing"
+        assert route("totally bad").team == "support"
+        assert batch_summary(list("good", "bad", "meh", "love it")).positive == 2
+        assert batch_summary(list("good", "bad", "meh", "love it")).negative == 1
+    }
+}

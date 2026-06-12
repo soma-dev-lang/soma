@@ -1,0 +1,11 @@
+[package]
+name  = "order-lifecycle"
+entry = "order_lifecycle.cell"
+
+[verify]
+deadlock_free = true
+eventually    = ["settled", "rejected", "cancelled"]
+
+[verify.after.filled]
+eventually = ["settled", "cancelled"]
+never      = ["rejected"]

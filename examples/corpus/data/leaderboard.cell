@@ -1,0 +1,59 @@
+// Game leaderboard: rank players by score, award medals, compute gaps.
+// Demonstrates sort_by("score","desc") -> top, pluck, max_by/min_by, and
+// per-row derived fields via map(... with ...). Records built with map().
+
+cell Leaderboard {
+    on players() {
+        return list(
+            map("name", "nova",   "score", 4200, "wins", 31, "country", "PT"),
+            map("name", "blaze",  "score", 5100, "wins", 44, "country", "BR"),
+            map("name", "kira",   "score", 3800, "wins", 22, "country", "JP"),
+            map("name", "echo",   "score", 5100, "wins", 39, "country", "US"),
+            map("name", "vex",    "score", 2900, "wins", 17, "country", "DE"),
+            map("name", "rune",   "score", 4750, "wins", 28, "country", "PT")
+        )
+    }
+
+    // Ranked descending; ties keep stable order.
+    on ranked() { return players() |> sort_by("score", "desc") }
+
+    on podium() { return ranked() |> top(3) |> pluck("name") }
+
+    on champion() { return max_by(players(), "score") }
+
+    // Attach a rank index 1..n as a new field on each row.
+    on with_ranks() {
+        let rows = ranked()
+        let out = list()
+        let i = 0
+        while i < len(rows) {
+            out = out.push(rows[i] |> with("rank", i + 1))
+            i += 1
+        }
+        return out
+    }
+
+    on run() {
+        for r in with_ranks() {
+            print("#{r.rank} {r.name} - {r.score}")
+        }
+        return podium()
+    }
+}
+
+cell test LeaderboardTests {
+    rules {
+        // highest score is 5100, appears twice; max_by returns one of them
+        assert champion().score == 5100
+        // podium is a list of names; top-ranked name is blaze or echo (tie at 5100)
+        assert ranked()[0].score == 5100
+        assert len(podium()) == 3
+        // lowest scorer is vex
+        assert min_by(players(), "score").name == "vex"
+        // rank #1 has the top score
+        assert with_ranks()[0].rank == 1
+        assert with_ranks()[5].rank == 6
+        // there are 6 players
+        assert len(players()) == 6
+    }
+}

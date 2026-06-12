@@ -1,0 +1,73 @@
+// Singly linked list built from Node records whose `next` field is either
+// another Node or () for the tail. Demonstrates a recursive record chain
+// and folding over it without any list builtins.
+
+cell LinkedList {
+    face {
+        signal chain() -> Map
+        signal length() -> Int
+        signal sum_all() -> Int
+        signal nth_value(i: Int) -> Int
+        signal to_list() -> List
+    }
+
+    // 1 -> 2 -> 3 -> 4 -> ()
+    on chain() {
+        return Node { val: 1,
+            next: Node { val: 2,
+                next: Node { val: 3,
+                    next: Node { val: 4, next: () } } } }
+    }
+
+    on length() {
+        let n = chain()
+        let count = 0
+        while n != () {
+            count = count + 1
+            n = n.next
+        }
+        return count
+    }
+
+    on sum_all() {
+        let n = chain()
+        let acc = 0
+        while n != () {
+            acc = acc + n.val
+            n = n.next
+        }
+        return acc
+    }
+
+    on nth_value(i: Int) {
+        let n = chain()
+        let k = 0
+        while n != () && k < i {
+            n = n.next
+            k = k + 1
+        }
+        if n == () { return -1 }
+        return n.val
+    }
+
+    on to_list() {
+        let n = chain()
+        let out = list()
+        while n != () {
+            out = push(out, n.val)
+            n = n.next
+        }
+        return out
+    }
+}
+
+cell test LinkedListTest {
+    rules {
+        assert length() == 4
+        assert sum_all() == 10
+        assert nth_value(2) == 3
+        assert nth_value(9) == -1
+        assert to_list()[0] == 1
+        assert len(to_list()) == 4
+    }
+}

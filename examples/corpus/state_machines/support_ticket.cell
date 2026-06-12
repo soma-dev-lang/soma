@@ -1,0 +1,59 @@
+// Support-ticket lifecycle with a reopen path.
+// open -> in_progress -> resolved -> closed, with a resolved -> reopened
+// loop that funnels back to in_progress. The * -> closed catch-all and the
+// reopened -> in_progress arrow keep the machine live: every state can
+// still reach the terminal `closed`. assert_fails guards illegal skips.
+
+cell TicketDesk {
+    face {
+        signal file(id: String) -> String
+        signal assign(id: String) -> String
+        signal resolve(id: String) -> String
+        signal reopen(id: String) -> String
+        signal close(id: String) -> String
+        signal status(id: String) -> String
+        signal next(id: String) -> List<String>
+    }
+
+    state ticket {
+        initial: open
+        open        -> in_progress
+        in_progress -> resolved
+        resolved    -> reopened
+        reopened    -> in_progress
+        resolved    -> closed
+        *           -> closed
+    }
+
+    on file(id: String)    { return get_status(id) }
+    on assign(id: String)  { transition(id, "in_progress")  return get_status(id) }
+    on resolve(id: String) { transition(id, "resolved")  return get_status(id) }
+    on reopen(id: String)  { transition(id, "reopened")  return get_status(id) }
+    on close(id: String)   { transition(id, "closed")  return get_status(id) }
+    on status(id: String)  { return get_status(id) }
+    on next(id: String)    { return valid_transitions(id) }
+}
+
+cell test TicketTests {
+    rules {
+        // happy path
+        assert file("k1") == "open"
+        assert assign("k1") == "in_progress"
+        assert resolve("k1") == "resolved"
+        assert close("k1") == "closed"
+
+        // reopen loop: resolved -> reopened -> in_progress
+        assert assign("k2") == "in_progress"
+        assert resolve("k2") == "resolved"
+        assert reopen("k2") == "reopened"
+        assert assign("k2") == "in_progress"
+
+        // any ticket can be closed via the * catch-all (here from open)
+        assert close("k3") == "closed"
+
+        // illegal: cannot resolve a ticket nobody has picked up (open)
+        assert_fails resolve("k4")
+        // illegal: cannot reopen something that was never resolved
+        assert_fails reopen("k5")
+    }
+}

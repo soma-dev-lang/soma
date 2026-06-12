@@ -1,0 +1,57 @@
+// group_by returns a Map<String, List>; iterate its entries to compute a
+// custom reduction the built-in agg doesn't cover (here: weighted average).
+// Demonstrates group_by + manual fold with reduce over each bucket.
+
+cell GroupReduce {
+    on votes() {
+        return list(
+            map("poll", "lunch", "option", "pizza", "weight", 3),
+            map("poll", "lunch", "option", "sushi", "weight", 5),
+            map("poll", "lunch", "option", "pizza", "weight", 2),
+            map("poll", "movie", "option", "scifi", "weight", 4),
+            map("poll", "movie", "option", "drama", "weight", 1),
+            map("poll", "movie", "option", "scifi", "weight", 6)
+        )
+    }
+
+    // Total weight per option within each poll, via agg.
+    on tallies() {
+        return votes()
+            |> agg("option", "weight:sum")
+            |> sort_by("weight_sum", "desc")
+    }
+
+    // Manual reduction: total weight across ALL votes via reduce.
+    on total_weight() {
+        return votes() |> reduce(0, p => p.acc + p.val.weight)
+    }
+
+    // Use group_by to count options per poll.
+    on options_per_poll() {
+        let grouped = group_by(votes(), "poll")
+        let out = list()
+        for poll in grouped.keys {
+            out = out.push(map("poll", poll, "votes", len(grouped.get(poll))))
+        }
+        return out |> sort_by("votes", "desc")
+    }
+
+    on run() {
+        for t in tallies() { print("{t.option}: {t.weight_sum}") }
+        return total_weight()
+    }
+}
+
+cell test GroupReduceTests {
+    rules {
+        // pizza: 3+2 = 5, sushi: 5, scifi: 4+6 = 10, drama: 1
+        assert (tallies() |> filter_by("option", "=", "scifi"))[0].weight_sum == 10
+        assert (tallies() |> filter_by("option", "=", "pizza"))[0].weight_sum == 5
+        // scifi is the heaviest option overall
+        assert tallies()[0].option == "scifi"
+        // total weight = 3+5+2+4+1+6 = 21
+        assert total_weight() == 21
+        // each poll has 3 votes
+        assert options_per_poll()[0].votes == 3
+    }
+}

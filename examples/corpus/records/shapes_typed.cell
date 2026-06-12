@@ -1,0 +1,45 @@
+// Typed record literals and runtime type tags. Demonstrates is_a/is_type
+// on record literals, type_of, and dispatching on a record's _type field
+// rather than a sum type — records carry their own type name.
+
+cell Shapes {
+    face {
+        signal circle(r: Int) -> Map
+        signal square(s: Int) -> Map
+        signal kind(shape: Map) -> String
+        signal area(shape: Map) -> Int
+        signal is_circle(shape: Map) -> Bool
+    }
+
+    on circle(r: Int)  { return Circle { r: r } }
+    on square(s: Int)  { return Square { side: s } }
+
+    on kind(shape: Map) {
+        if is_a(shape, "Circle") { return "circle" }
+        if is_a(shape, "Square") { return "square" }
+        return "unknown"
+    }
+
+    // area uses the record tag to choose a formula (pi*r^2 truncated for circle)
+    on area(shape: Map) {
+        if is_a(shape, "Circle") { return floor(3.14159 * shape.r * shape.r) }
+        if is_a(shape, "Square") { return shape.side * shape.side }
+        return 0
+    }
+
+    on is_circle(shape: Map) {
+        return is_type(shape, "Circle")
+    }
+}
+
+cell test ShapesTest {
+    rules {
+        assert kind(circle(2)) == "circle"
+        assert kind(square(3)) == "square"
+        assert area(circle(2)) == 12
+        assert area(square(4)) == 16
+        assert is_circle(circle(1)) == true
+        assert is_circle(square(1)) == false
+        assert type_of(circle(1)) == "Map"
+    }
+}

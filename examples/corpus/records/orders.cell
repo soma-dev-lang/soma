@@ -1,0 +1,57 @@
+// Order records with nested line-items, computed totals, and a state
+// machine over the order lifecycle. Demonstrates records carrying lists
+// of records, with() copy-update, and records that drive transitions.
+
+cell type OrderStatus {
+    variants { Pending  Paid  Shipped  Delivered  Cancelled }
+}
+
+cell Orders {
+    face {
+        signal new_order(customer: String) -> Map
+        signal subtotal(o: Map) -> Int
+        signal with_discount(o: Map, pct: Int) -> Map
+        signal pay(id: String) -> String
+    }
+
+    state order: OrderStatus {
+        initial: Pending
+        Pending  -> Paid
+        Paid     -> Shipped
+        Shipped  -> Delivered
+        *        -> Cancelled
+    }
+
+    on new_order(customer: String) {
+        return Order { customer: customer, lines: list(
+            Line { name: "Keyboard", qty: 1, price: 80 },
+            Line { name: "Mouse",    qty: 2, price: 25 }
+        )}
+    }
+
+    on subtotal(o: Map) {
+        return sum(o.lines |> map(l => l.qty * l.price))
+    }
+
+    // Functional copy-update: return a new record with a `total` field added.
+    on with_discount(o: Map, pct: Int) {
+        let base = subtotal(o)
+        let total = base - floor(base * pct / 100)
+        return o |> with("total", total)
+    }
+
+    on pay(id: String) {
+        transition(id, Paid)
+        return get_status(id)
+    }
+}
+
+cell test OrdersTest {
+    rules {
+        assert subtotal(new_order("Ada")) == 130
+        assert new_order("Ada").customer == "Ada"
+        assert with_discount(new_order("Ada"), 10).total == 117
+        assert pay("ord-1") == "Paid"
+        assert new_order("Ada").lines[1].name == "Mouse"
+    }
+}

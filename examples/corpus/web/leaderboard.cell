@@ -1,0 +1,85 @@
+// Leaderboard API: submit a score, get the ranked top-N. Keeps the best
+// score per player and returns a sorted slice.
+
+cell Leaderboard {
+    face {
+        signal request(method: String, path: String, body: String) -> Map
+        signal submit(player: String, score: Int) -> Map
+        signal leaders(n: Int) -> List
+        signal rank(player: String) -> Int
+        promise all_persistent
+    }
+
+    memory {
+        scores: Map<String, Int> [persistent, consistent]
+    }
+
+    on submit(player: String, score: Int) {
+        let best = scores.get(player)
+        if best == () || score > best { scores.set(player, score) }
+        return map("player", player, "best", scores.get(player))
+    }
+
+    on _ranked() {
+        let rows = list()
+        for p in scores.keys {
+            rows = push(rows, map("player", p, "score", scores.get(p)))
+        }
+        return rows |> sort_by("score", "desc")
+    }
+
+    on leaders(n: Int) {
+        let r = _ranked()
+        let out = list()
+        let i = 0
+        while i < n && i < len(r) {
+            out = push(out, r[i])
+            i = i + 1
+        }
+        return out
+    }
+
+    on rank(player: String) {
+        let r = _ranked()
+        let i = 0
+        let found = 0
+        while i < len(r) {
+            if r[i].player == player { found = i + 1 }
+            i = i + 1
+        }
+        return found
+    }
+
+    on request(method: String, path: String, body: String) {
+        let req = map("method", method, "path", path)
+        match req {
+            {method: "POST", path: "/scores"}    -> {
+                let d = from_json(body)
+                submit(d.player, d.score)
+            }
+            {method: "GET",  path: "/top/" + n}  -> leaders(to_int(n))
+            _                                    -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test LeaderboardTest {
+    rules {
+        assert submit("ada", 50).best == 50
+        assert submit("ada", 30).best == 50
+        assert submit("ada", 80).best == 80
+        // self-contained ordering check
+        assert _board() == "ada:80,bob:60,cy:40"
+    }
+
+    on _board() {
+        submit("ada", 80)
+        submit("bob", 60)
+        submit("cy", 40)
+        let parts = list()
+        for row in leaders(3) {
+            parts = push(parts, concat(row.player, concat(":", to_string(row.score))))
+        }
+        return parts |> join(",")
+    }
+}

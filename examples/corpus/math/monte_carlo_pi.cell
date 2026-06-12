@@ -1,0 +1,43 @@
+// ============================================================================
+// Monte Carlo — estimate pi by dart-throwing
+// ============================================================================
+//
+// Throw random points into the unit square; the fraction landing inside the
+// quarter circle (x²+y² ≤ 1) approaches pi/4. random() is the time-seeded
+// PRNG — flagged nondeterministic for `soma replay`, so the estimate varies
+// run-to-run. The test asserts only that the estimate is in a loose band.
+//
+//   soma run monte_carlo_pi.cell run
+// ============================================================================
+
+cell MonteCarloPi {
+    face {
+        signal estimate(samples: Int) -> Float
+        signal run() -> Map
+    }
+
+    on estimate(samples: Int) {
+        let inside = 0
+        for i in range(0, samples) {
+            let x = random()
+            let y = random()
+            if x * x + y * y <= 1.0 { inside = inside + 1 }
+        }
+        return 4.0 * to_float(inside) / to_float(samples)
+    }
+
+    on run() {
+        let pi = estimate(100000)
+        return map("estimate", pi, "error", abs(pi - 3.141592653589793))
+    }
+}
+
+cell test MonteCarloTests {
+    rules {
+        // 50k darts lands within a generous band of pi (PRNG is seeded by time)
+        assert abs(estimate(50000) - 3.14159) < 0.1
+        // the estimate is always a sane positive number below 4
+        assert estimate(2000) > 2.5
+        assert estimate(2000) < 4.0
+    }
+}

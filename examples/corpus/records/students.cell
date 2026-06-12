@@ -1,0 +1,57 @@
+// Gradebook: Student records each holding a list of Score records. Shows
+// records-within-records, averaging a nested list, and assigning a derived
+// letter grade with a guarded match.
+
+cell Gradebook {
+    face {
+        signal roster() -> List
+        signal gpa(name: String) -> Int
+        signal letter(name: String) -> String
+        signal honor_roll() -> List
+    }
+
+    on roster() {
+        return list(
+            Student { name: "Ada", scores: list(
+                Score { subject: "math", pts: 95 },
+                Score { subject: "cs",   pts: 99 }) },
+            Student { name: "Ben", scores: list(
+                Score { subject: "math", pts: 70 },
+                Score { subject: "cs",   pts: 60 }) },
+            Student { name: "Cal", scores: list(
+                Score { subject: "math", pts: 88 },
+                Score { subject: "cs",   pts: 82 }) }
+        )
+    }
+
+    on gpa(name: String) {
+        let s = roster() |> find(x => x.name == name)
+        if s == () { return -1 }
+        return avg(s.scores |> pluck("pts"))
+    }
+
+    on letter(name: String) {
+        let g = gpa(name)
+        return match g {
+            n if n >= 90 -> "A"
+            n if n >= 80 -> "B"
+            n if n >= 70 -> "C"
+            _            -> "F"
+        }
+    }
+
+    on honor_roll() {
+        return roster() |> filter(s => avg(s.scores |> pluck("pts")) >= 90) |> pluck("name")
+    }
+}
+
+cell test GradebookTest {
+    rules {
+        assert gpa("Ada") == 97
+        assert letter("Ada") == "A"
+        assert letter("Ben") == "F"
+        assert letter("Cal") == "B"
+        assert honor_roll()[0] == "Ada"
+        assert len(honor_roll()) == 1
+    }
+}

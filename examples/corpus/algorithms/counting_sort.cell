@@ -1,0 +1,63 @@
+// Counting sort — a non-comparison O(n + k) sort for small non-negative
+// integers, plus the Sieve of Eratosthenes for the primes up to n.
+// Demonstrates: a count array indexed by value, rebuilding the output by
+// emitting each value count-times, and a boolean sieve over a List.
+//
+//   soma run  examples/corpus/algorithms/counting_sort.cell sort "[4,2,2,8,3,3,1]"
+//   soma test examples/corpus/algorithms/counting_sort.cell
+
+cell CountingSort {
+    face {
+        signal sort(xs: List) -> List
+        signal primes_upto(n: Int) -> List
+    }
+
+    on sort(xs: List) {
+        if len(xs) == 0 { return xs }
+        let hi = max(xs)
+        // counts[v] = how many times v appears
+        let counts = list()
+        for i in range(0, hi + 1) { counts = push(counts, 0) }
+        for v in xs { counts[v] = counts[v] + 1 }
+        let out = list()
+        for v in range(0, hi + 1) {
+            for k in range(0, counts[v]) { out = push(out, v) }
+        }
+        return out
+    }
+
+    on primes_upto(n: Int) {
+        if n < 2 { return list() }
+        let is_prime = list()
+        for i in range(0, n + 1) { is_prime = push(is_prime, true) }
+        is_prime[0] = false
+        is_prime[1] = false
+        let p = 2
+        while p * p <= n {
+            if is_prime[p] {
+                let m = p * p
+                while m <= n {
+                    is_prime[m] = false
+                    m = m + p
+                }
+            }
+            p = p + 1
+        }
+        let out = list()
+        for i in range(2, n + 1) {
+            if is_prime[i] { out = push(out, i) }
+        }
+        return out
+    }
+}
+
+cell test CountingSortTests {
+    rules {
+        assert to_string(sort([4, 2, 2, 8, 3, 3, 1])) == to_string([1, 2, 2, 3, 3, 4, 8])
+        assert to_string(sort([0, 0, 0])) == to_string([0, 0, 0])
+        assert to_string(sort(list())) == to_string(list())
+        assert to_string(primes_upto(20)) == to_string([2, 3, 5, 7, 11, 13, 17, 19])
+        assert len(primes_upto(100)) == 25
+        assert to_string(primes_upto(1)) == to_string(list())
+    }
+}
