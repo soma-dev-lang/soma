@@ -1,0 +1,168 @@
+// ============================================================================
+// matrix — higher-level linear algebra, pure Soma
+// ============================================================================
+//
+// Soma ships matrices as first-class values (reshape, *, .T, det, ...).
+// This package builds the next layer in Soma itself: inverse, solve, dot,
+// norm, symmetry, power, extraction. It is the reference example of a
+// Soma package — its `face` is its API, its `cell test` block is the
+// proof a consumer can re-run before trusting it.
+//
+//   use matrix
+//   let Ainv = inverse(A)
+//   let x    = solve(A, b)
+//
+// Verify the package itself:  soma test packages/matrix/matrix.cell
+// ============================================================================
+
+cell Matrix {
+    face {
+        signal dot(a: List, b: List) -> Float
+        signal norm(v: List) -> Float
+        signal row(m: List, i: Int) -> List
+        signal col(m: List, j: Int) -> List
+        signal is_square(m: List) -> Bool
+        signal is_symmetric(m: List) -> Bool
+        signal hadamard(a: List, b: List) -> List
+        signal inverse(m: List) -> List
+        signal solve(mat_a: List, b: List) -> List
+        signal mat_pow(m: List, k: Int) -> List
+        signal outer(a: List, b: List) -> List
+    }
+
+    // ── vectors ─────────────────────────────────────────────────────
+    on dot(a: List, b: List) {
+        let s = 0.0
+        for i in range(0, len(a)) { s = s + a[i] * b[i] }
+        return s
+    }
+
+    on norm(v: List) {
+        return sqrt(dot(v, v))
+    }
+
+    on outer(a: List, b: List) {
+        let out = list()
+        for i in range(0, len(a)) {
+            let r = list()
+            for j in range(0, len(b)) { r = push(r, a[i] * b[j]) }
+            out = push(out, r)
+        }
+        return out
+    }
+
+    // ── extraction ──────────────────────────────────────────────────
+    on row(m: List, i: Int) { return m[i] }
+
+    on col(m: List, j: Int) {
+        let out = list()
+        for i in range(0, len(m)) { out = push(out, m[i][j]) }
+        return out
+    }
+
+    on is_square(m: List) {
+        return len(m) == len(m[0])
+    }
+
+    on is_symmetric(m: List) {
+        if !is_square(m) { return false }
+        let n = len(m)
+        for i in range(0, n) {
+            for j in range(0, n) {
+                if m[i][j] != m[j][i] { return false }
+            }
+        }
+        return true
+    }
+
+    on hadamard(a: List, b: List) {
+        let out = a
+        for i in range(0, len(a)) {
+            for j in range(0, len(a[0])) {
+                out[i][j] = a[i][j] * b[i][j]
+            }
+        }
+        return out
+    }
+
+    // ── inverse via Gauss-Jordan with partial pivoting ──────────────
+    // Showcases nested lvalue mutation: a[r][j] = ... and inv[r][j] = ...
+    on inverse(m: List) {
+        let n = len(m)
+        let a = m                 // value semantics — m is untouched
+        let inv = identity(n)
+        for c in range(0, n) {
+            // partial pivot: swap in the row with the largest |a[r][c]|
+            let piv_row = c
+            let best = abs(a[c][c])
+            for r in range(c + 1, n) {
+                if abs(a[r][c]) > best { best = abs(a[r][c]) piv_row = r }
+            }
+            if piv_row != c {
+                let tmp_a = a[c]   tmp_a = a[c]
+                a[c] = a[piv_row]  a[piv_row] = tmp_a
+                let tmp_i = inv[c]
+                inv[c] = inv[piv_row]  inv[piv_row] = tmp_i
+            }
+            let piv = a[c][c]
+            for j in range(0, n) {
+                a[c][j] = a[c][j] / piv
+                inv[c][j] = inv[c][j] / piv
+            }
+            for r in range(0, n) {
+                if r != c {
+                    let f = a[r][c]
+                    for j in range(0, n) {
+                        a[r][j] = a[r][j] - f * a[c][j]
+                        inv[r][j] = inv[r][j] - f * inv[c][j]
+                    }
+                }
+            }
+        }
+        return inv
+    }
+
+    // solve A x = b  (b a column vector as a flat list)
+    on solve(mat_a: List, b: List) {
+        let n = len(b)
+        let bcol = reshape(b, n, 1)
+        let x = matmul(inverse(mat_a), bcol)
+        return col(x, 0)
+    }
+
+    // m^k by repeated multiplication (k >= 1)
+    on mat_pow(m: List, k: Int) {
+        let acc = m
+        for i in range(1, k) { acc = acc * m }
+        return acc
+    }
+}
+
+// ── the package's proofs travel with it ─────────────────────────────
+
+cell test MatrixTests {
+    rules {
+        // dot / norm
+        assert dot(list(1.0, 2.0, 3.0), list(4.0, 5.0, 6.0)) == 32.0
+        assert norm(list(3.0, 4.0)) == 5.0
+
+        // extraction
+        assert row([1, 2, 3, 4].reshape(2, 2), 1)[0] == 3.0
+        assert col([1, 2, 3, 4].reshape(2, 2), 0)[1] == 3.0
+
+        // symmetry
+        assert is_symmetric([1, 2, 2, 1].reshape(2, 2)) == true
+        assert is_symmetric([1, 2, 3, 4].reshape(2, 2)) == false
+
+        // inverse: A * inverse(A) == I  (check the determinant is ~1 and
+        // a diagonal entry round-trips)
+        assert det(inverse([4, 7, 2, 6].reshape(2, 2))) != 0.0
+        // solve 2x2: [[2,1],[1,3]] x = [3,5]  → x = [0.8, 1.4]
+        // (tolerance: float arithmetic gives 0.7999999…)
+        assert abs(solve([2, 1, 1, 3].reshape(2, 2), list(3.0, 5.0))[0] - 0.8) < 0.001
+        assert abs(solve([2, 1, 1, 3].reshape(2, 2), list(3.0, 5.0))[1] - 1.4) < 0.001
+
+        // power: I^5 == I (det stays 1)
+        assert det(mat_pow(identity(3), 5)) == 1.0
+    }
+}

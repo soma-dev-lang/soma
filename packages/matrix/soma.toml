@@ -1,0 +1,8 @@
+[package]
+name = "matrix"
+version = "0.1.0"
+description = "Higher-level linear algebra on Soma's first-class matrices — inverse, solve, dot, norm, symmetry, power. Pure Soma, built on the matrix builtins."
+
+# A Soma package's API is its cells' `face` sections; its proofs are its
+# `cell test` blocks. `soma test packages/matrix/matrix.cell` is the
+# contract a consumer can re-verify before trusting it.

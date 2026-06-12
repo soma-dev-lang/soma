@@ -15,3 +15,4 @@ bench/clbg_rust_ref/target/
 # V1: replay logs and proof exports are build artifacts
 **/*.somalog
 proofs/
+.soma_env/

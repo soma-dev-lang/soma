@@ -1,0 +1,7 @@
+[package]
+name = "matrix-demo"
+version = "0.1.0"
+description = "Consumer of the matrix package"
+
+[dependencies]
+matrix = { path = "../packages/matrix" }
