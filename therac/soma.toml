@@ -1,0 +1,8 @@
+[package]
+name = "therac"
+version = "0.1.0"
+description = "Therac — the Therac-25 failure mode made unrepresentable"
+
+[verify]
+cells = ["Therac"]
+deadlock_free = true

@@ -1,0 +1,8 @@
+[package]
+name = "insulin"
+version = "0.1.0"
+description = "Insulin — a dosing pump where the overdose is unrepresentable"
+
+[verify]
+cells = ["Pump"]
+deadlock_free = true

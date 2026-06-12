@@ -1,0 +1,9 @@
+[package]
+name = "ballot"
+version = "0.1.0"
+description = "Ballot — an election where the count is a theorem"
+
+[verify]
+cells = ["Ballot"]
+deadlock_free = true
+eventually = ["certified"]

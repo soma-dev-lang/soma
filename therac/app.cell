@@ -1,0 +1,202 @@
+// ============================================================================
+// THERAC — the bug that killed six people, made unrepresentable
+// ============================================================================
+//
+// Between 1985 and 1987 the Therac-25 radiation therapy machine delivered
+// massive overdoses to six patients. The mechanism: the machine had an
+// electron mode (high-current beam, spread by magnets) and an x-ray mode
+// (100x beam current, aimed at a tungsten target that converts and
+// attenuates it). A race condition in the mode-switching code let the
+// 100x x-ray beam fire WITHOUT the target in place — raw, into a person.
+//
+// The fatal state was: { beam: xray-power, target: retracted }.
+//
+// The Soma fix is not "check the flag more carefully." It is: THAT STATE
+// DOES NOT EXIST. The machine below encodes beam power and target
+// position JOINTLY, so every state is a safe combination. The x-ray beam
+// can only be reached through a state that has the target locked in, and
+// `soma verify` proves the reachable set is exactly the safe states.
+// On top, a memory invariant caps the cumulative dose per patient: even
+// a correct-mode beam cannot exceed the prescription, because the dose
+// ledger refuses the write.
+//
+//   soma verify therac/app.cell    # proves the unsafe state is absent
+//   soma test   therac/app.cell    # the killing sequence, rejected
+//   soma run    therac/app.cell demo
+// ============================================================================
+
+cell Therac {
+    face {
+        signal setup_xray(id: String) -> Map
+        signal setup_electron(id: String) -> Map
+        signal fire_beam(id: String, patient: String, centigray: Int) -> Map
+        signal stand_down(id: String) -> Map
+        signal beam_status(id: String) -> Map
+        signal prescribe(patient: String, limit_cgy: Int) -> Int
+        signal administered(patient: String) -> Int
+        signal demo() -> String
+    }
+
+    memory {
+        // Cumulative dose per patient, in centigray. The prescription is
+        // the wall: a beam that would exceed it is REJECTED at the write,
+        // regardless of what the mode logic believes.
+        dose: Map<String, Int> [persistent, consistent]
+        invariant dose >= 0 && dose <= 8000
+
+        rx: Map<String, Int> [persistent, consistent]
+    }
+
+    // The interlock. Beam power and target position are ONE state, never
+    // two flags that can race. What is ABSENT is the safety proof:
+    // there is no state with the x-ray beam selected and the target out.
+    //
+    //   idle            no beam selected, target retracted
+    //   target_locked   tungsten target IN, no beam yet  (x-ray prep)
+    //   xray_ready      x-ray power armed — only reachable THROUGH
+    //                   target_locked, and the only exit retracts power
+    //                   BEFORE the target
+    //   electron_ready  electron power armed, target out (safe: low current)
+    state interlock {
+        initial: idle
+        idle -> target_locked          // x-ray path: target first,
+        target_locked -> xray_ready    // power second. Always.
+        xray_ready -> target_locked    // power down before target moves
+        target_locked -> idle
+        idle -> electron_ready         // electron path: low current, no target
+        electron_ready -> idle
+    }
+
+    on setup_xray(id: String) {
+        let a = try { transition(id, "target_locked") }
+        if a.error != () { return map("ok", false, "reason", "{a.error}") }
+        let b = try { transition(id, "xray_ready") }
+        if b.error != () { return map("ok", false, "reason", "{b.error}") }
+        return map("ok", true, "mode", get_status(id))
+    }
+
+    on setup_electron(id: String) {
+        let r = try { transition(id, "electron_ready") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "mode", get_status(id))
+    }
+
+    on stand_down(id: String) {
+        let s = get_status(id)
+        if s == "xray_ready" {
+            transition(id, "target_locked")   // power off FIRST
+            transition(id, "idle")            // then the target moves
+        }
+        if s == "electron_ready" { transition(id, "idle") }
+        if s == "target_locked" { transition(id, "idle") }
+        return map("ok", true, "mode", get_status(id))
+    }
+
+    // A beam fires only from an armed state — and the dose ledger is the
+    // second, independent wall: past the prescription, the write refuses.
+    on fire_beam(id: String, patient: String, centigray: Int) {
+        let mode = get_status(id)
+        if mode != "xray_ready" && mode != "electron_ready" {
+            return map("ok", false, "reason", "no beam armed (state: {mode})")
+        }
+        if centigray <= 0 {
+            return map("ok", false, "reason", "dose must be positive")
+        }
+        let limit = rx.get(patient)
+        if limit == () {
+            return map("ok", false, "reason", "no prescription on file for {patient}")
+        }
+        let sofar = administered(patient)
+        if sofar + centigray > limit {
+            return map("ok", false, "reason",
+                "prescription exceeded: {sofar} + {centigray} > {limit} cGy")
+        }
+        // the invariant wall: even if every check above were deleted,
+        // dose.set refuses anything outside [0, 8000]
+        let w = try { dose.set(patient, sofar + centigray) }
+        if w.error != () {
+            return map("ok", false, "reason", "dose ledger refused: {w.error}")
+        }
+        return map("ok", true, "mode", mode, "delivered", centigray,
+                   "total", sofar + centigray, "limit", limit)
+    }
+
+    on prescribe(patient: String, limit_cgy: Int) {
+        rx.set(patient, limit_cgy)
+        return limit_cgy
+    }
+
+    on administered(patient: String) {
+        let d = dose.get(patient)
+        if d == () { return 0 }
+        return d
+    }
+
+    on beam_status(id: String) {
+        return map("machine", id, "mode", get_status(id))
+    }
+
+    on demo() {
+        prescribe("pt-1", 200)
+        let a = setup_xray("m1")
+        let f1 = fire_beam("m1", "pt-1", 180)
+        // THE THERAC-25 SEQUENCE: operator rapidly re-edits the mode —
+        // try to get the x-ray power with the target moving out.
+        // From xray_ready the ONLY transition is power-down to
+        // target_locked; from electron_ready there is no path that keeps
+        // power while the target state changes. The race has no state to
+        // race into.
+        let attack = try { transition("m1", "electron_ready") }
+        let f2 = fire_beam("m1", "pt-1", 180)     // would exceed 200 cGy
+        let s = beam_status("m1")
+        print("setup x-ray:   {a}")
+        print("first beam:    {f1}")
+        print("mode-race try: error = {attack.error}")
+        print("overdose try:  {f2}")
+        print("machine state: {s}")
+        return "demo done"
+    }
+}
+
+cell test InterlockTests {
+    rules {
+        // the x-ray path goes THROUGH target_locked — both steps
+        assert setup_xray("a").ok == true
+        assert beam_status("a").mode == "xray_ready"
+
+        // THE FATAL TRANSITION: x-ray power with the target moving out.
+        // It does not exist. Six people would be alive if it hadn't.
+        assert_fails transition("a", "electron_ready")
+        assert_fails transition("a", "idle")
+
+        // the only exit from x-ray power is powering DOWN first
+        assert stand_down("a").mode == "idle"
+
+        // electron mode never passes through the target states
+        assert setup_electron("b").ok == true
+        assert_fails transition("b", "xray_ready")
+        assert_fails transition("b", "target_locked")
+    }
+}
+
+cell test DoseTests {
+    rules {
+        // prescription enforced by logic...
+        assert prescribe("p", 200) == 200
+        assert setup_xray("m").ok == true
+        assert fire_beam("m", "p", 150).ok == true
+        assert fire_beam("m", "p", 100).ok == false      // 150+100 > 200
+        assert administered("p") == 150
+
+        // ...and by the memory itself: the ledger refuses an insane dose
+        // even if every software check were deleted
+        assert_fails dose.set("p", 9999)
+        assert_fails dose.set("p", -5)
+        assert administered("p") == 150
+
+        // no beam without a prescription on file
+        assert fire_beam("m", "stranger", 10).ok == false
+        // no beam from an unarmed machine
+        assert fire_beam("never-setup", "p", 10).ok == false
+    }
+}

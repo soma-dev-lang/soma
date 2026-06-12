@@ -1,0 +1,188 @@
+// ============================================================================
+// INSULIN — a dosing pump where the overdose is unrepresentable
+// ============================================================================
+//
+// An insulin pump has one job and one catastrophic failure mode: deliver
+// when asked, but NEVER too much. Real pumps have killed people through
+// software defects — double-delivered boluses, missed lockouts, runaway
+// basal. The FDA recalls read like a state-machine bug list.
+//
+// This pump makes the failure modes structural:
+//
+//   THE WINDOW CAP IS MEMORY.   `invariant delivered <= 20` — no code
+//                               path can record more than 20 units in a
+//                               4-hour window. A runaway dose isn't
+//                               caught; the write is refused.
+//
+//   THE LOCKOUT IS CHECKED      A bolus within 30 ticks of the last one
+//   BEFORE ANYTHING MOVES.      is rejected before any state changes.
+//
+//   A FAULTED PUMP IS DEAD.     Occlusion / hardware fault drives the
+//                               machine to `fault` — a TERMINAL state.
+//                               soma verify proves a faulted pump can
+//                               never dose again until it is replaced
+//                               (there is no transition out).
+//
+// Time is an explicit tick counter (1 tick = 1 minute) so every safety
+// property is deterministic and testable.
+//
+//   soma verify insulin/app.cell
+//   soma test   insulin/app.cell
+//   soma run    insulin/app.cell demo
+// ============================================================================
+
+cell Pump {
+    face {
+        signal bolus(units: Int) -> Map
+        signal tick(minutes: Int) -> Int
+        signal fault_detected() -> Map
+        signal pump_state() -> String
+        signal window_total() -> Int
+        signal demo() -> String
+    }
+
+    memory {
+        // units delivered per 4-hour window — THE wall
+        delivered: Map<String, Int> [persistent, consistent]
+        invariant delivered >= 0 && delivered <= 20
+
+        clock: Map<String, Int> [persistent, consistent]
+    }
+
+    // `fault` is terminal: no exit. soma verify proves it — a pump that
+    // has detected occlusion or hardware error can never deliver again.
+    state motor {
+        initial: standby
+        standby -> delivering
+        delivering -> standby
+        standby -> fault
+        delivering -> fault
+    }
+
+    on pump_state() {
+        return get_status("motor")
+    }
+
+    on now_tick() {
+        return clock.get("t") ?? 0
+    }
+
+    on tick(minutes: Int) {
+        clock.set("t", now_tick() + minutes)
+        return now_tick()
+    }
+
+    on window_id() {
+        return idiv(now_tick(), 240)        // 4-hour windows
+    }
+
+    on window_total() {
+        return delivered.get("w{window_id()}") ?? 0
+    }
+
+    on bolus(units: Int) {
+        // gate 0: dose sanity
+        if units <= 0 || units > 10 {
+            return map("ok", false, "reason", "bolus must be 1..10 units")
+        }
+        // gate 1: the machine — a faulted pump cannot arm the motor
+        if pump_state() != "standby" {
+            return map("ok", false, "reason", "pump is not in standby (state: {pump_state()})")
+        }
+        // gate 2: the lockout — 30 minutes between boluses
+        let last = clock.get("last_bolus")
+        let t = now_tick()
+        if last != () && t - last < 30 {
+            let wait = 30 - (t - last)
+            return map("ok", false, "reason", "lockout: wait {wait} more minutes")
+        }
+        // gate 3: THE WALL — the 4h window cap lives on the memory.
+        // Even if gates 0-2 were deleted, this write refuses an overdose.
+        let wid = window_id()
+        let w = try { delivered.set("w{wid}", window_total() + units) }
+        if w.error != () {
+            return map("ok", false, "reason",
+                "window cap: {window_total()} + {units} exceeds 20 units / 4h")
+        }
+        // deliver: through the machine, never around it
+        transition("motor", "delivering")
+        clock.set("last_bolus", t)
+        transition("motor", "standby")
+        return map("ok", true, "units", units, "window_total", window_total(), "at", t)
+    }
+
+    on fault_detected() {
+        transition("motor", "fault")
+        return map("ok", true, "state", "fault")
+    }
+
+    on demo() {
+        let b1 = bolus(6)
+        print("bolus 6u:         {b1}")
+        let b2 = bolus(4)
+        print("bolus 4u (locked):{b2}")
+        tick(35)
+        let b3 = bolus(8)
+        print("bolus 8u (+35m):  {b3}")
+        tick(35)
+        let b4 = bolus(8)
+        print("bolus 8u (cap!):  {b4}")
+        let f = fault_detected()
+        print("occlusion:        {f}")
+        tick(60)
+        let b5 = bolus(2)
+        print("bolus on fault:   {b5}")
+        let revive = try { transition("motor", "standby") }
+        print("revive attempt:   error = {revive.error}")
+        return "demo done"
+    }
+}
+
+cell test DosingTests {
+    rules {
+        // a normal bolus delivers and returns to standby
+        assert bolus(6).ok == true
+        assert pump_state() == "standby"
+        assert window_total() == 6
+
+        // the lockout: a second bolus inside 30 minutes is refused
+        assert bolus(2).ok == false
+        assert window_total() == 6
+
+        // after the lockout, dosing resumes
+        assert tick(35) == 35
+        assert bolus(8).ok == true
+        assert window_total() == 14
+
+        // the window cap: 14 + 8 > 20 — refused by the MEMORY
+        assert tick(35) == 70
+        assert bolus(8).ok == false
+        assert window_total() == 14
+
+        // the wall itself: a 25-unit write is unrepresentable
+        assert_fails delivered.set("w0", 25)
+        assert_fails delivered.set("w0", -1)
+
+        // dose sanity
+        assert bolus(0).ok == false
+        assert bolus(11).ok == false
+    }
+}
+
+cell test FaultTests {
+    rules {
+        // a healthy pump doses
+        assert bolus(3).ok == true
+
+        // occlusion: the pump faults...
+        assert fault_detected().ok == true
+        assert pump_state() == "fault"
+
+        // ...and a faulted pump can NEVER dose or recover — `fault` is
+        // terminal, proven by soma verify and pinned here
+        assert tick(60) >= 60
+        assert bolus(1).ok == false
+        assert_fails transition("motor", "standby")
+        assert_fails transition("motor", "delivering")
+    }
+}

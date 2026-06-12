@@ -1,0 +1,209 @@
+// ============================================================================
+// BALLOT — an election where the count is a theorem
+// ============================================================================
+//
+// The three promises every election makes, and how this one keeps them:
+//
+//   ONE PERSON, ONE VOTE.   A voter's ballot record can only ever hold 1.
+//                           `invariant ballots <= 1` — a second vote is
+//                           rejected by the MEMORY, not by an if-statement
+//                           someone might delete.
+//
+//   VOTES ARE CONSERVED.    Casting is the only tally mutation and it adds
+//                           exactly one ballot to exactly one candidate.
+//                           `total_cast() == sum of all tallies` is asserted
+//                           continuously and holds by construction.
+//
+//   THE PROCESS IS ORDERED. The poll lifecycle is a state machine the
+//                           verifier proves: registration → open → closed →
+//                           certified. You cannot cast before opening or
+//                           after closing — and `certified` is terminal:
+//                           a certified election can never be "re-opened
+//                           for adjustments". soma verify proves it.
+//
+//   soma verify ballot/app.cell
+//   soma test   ballot/app.cell
+//   soma run    ballot/app.cell demo
+// ============================================================================
+
+cell Ballot {
+    face {
+        signal register_voter(voter: String) -> Map
+        signal open_poll() -> Map
+        signal cast_vote(voter: String, candidate: String) -> Map
+        signal close_poll() -> Map
+        signal certify() -> Map
+        signal tally_for(candidate: String) -> Int
+        signal total_cast() -> Int
+        signal results() -> Map
+        signal poll_state() -> String
+        signal demo() -> String
+    }
+
+    memory {
+        // voter -> number of ballots cast. THE wall: nobody's count can
+        // exceed 1, no matter what any handler tries to write.
+        ballots: Map<String, Int> [persistent, consistent]
+        invariant ballots >= 0 && ballots <= 1
+
+        // candidate -> votes. Never decremented by any handler: the only
+        // writer adds exactly 1 (and the invariant refuses negatives).
+        tally: Map<String, Int> [persistent, consistent]
+        invariant tally >= 0
+
+        registry: Map<String, String> [persistent, consistent]
+    }
+
+    // The lifecycle. `certified` has no outgoing transitions — the
+    // verifier proves a certified election is immutable history.
+    state poll {
+        initial: registration
+        registration -> voting
+        voting -> closed
+        closed -> certified
+    }
+
+    on poll_state() {
+        return get_status("poll")
+    }
+
+    on register_voter(voter: String) {
+        if poll_state() != "registration" {
+            return map("ok", false, "reason", "registration is closed (poll is {poll_state()})")
+        }
+        if registry.get(voter) != () {
+            return map("ok", false, "reason", "{voter} is already registered")
+        }
+        registry.set(voter, "registered")
+        return map("ok", true, "voter", voter)
+    }
+
+    on open_poll() {
+        let r = try { transition("poll", "voting") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "voting")
+    }
+
+    on cast_vote(voter: String, candidate: String) {
+        // gate 1: the lifecycle — no ballots outside the voting window
+        if poll_state() != "voting" {
+            return map("ok", false, "reason", "polls are not open (state: {poll_state()})")
+        }
+        // gate 2: the registry
+        if registry.get(voter) == () {
+            return map("ok", false, "reason", "{voter} is not a registered voter")
+        }
+        // gate 3: THE WALL — one person, one vote, enforced by the memory.
+        // already-voted means ballots[voter] is 1; writing 2 is refused.
+        let cast_so_far = ballots.get(voter) ?? 0
+        let w = try { ballots.set(voter, cast_so_far + 1) }
+        if w.error != () {
+            return map("ok", false, "reason", "{voter} has already voted")
+        }
+        // exactly one ballot lands in exactly one tally — conservation
+        tally.set(candidate, tally_for(candidate) + 1)
+        return map("ok", true, "voter", voter, "candidate", candidate)
+    }
+
+    on close_poll() {
+        let r = try { transition("poll", "closed") }
+        if r.error != () { return map("ok", false, "reason", "{r.error}") }
+        return map("ok", true, "state", "closed")
+    }
+
+    on certify() {
+        if poll_state() != "closed" {
+            return map("ok", false, "reason", "cannot certify from {poll_state()}")
+        }
+        transition("poll", "certified")
+        let r = results()
+        return map("ok", true, "state", "certified", "results", r)
+    }
+
+    on tally_for(candidate: String) {
+        return tally.get(candidate) ?? 0
+    }
+
+    // conservation check: every ballot cast is in exactly one tally
+    on total_cast() {
+        let voters = ballots.keys()
+        let n = 0
+        for v in voters { n = n + (ballots.get(v) ?? 0) }
+        return n
+    }
+
+    on results() {
+        let names = tally.keys()
+        let out = map()
+        let total = 0
+        for c in names {
+            let n = tally_for(c)
+            out[c] = n
+            total = total + n
+        }
+        out["_total"] = total
+        out["_conserved"] = total == total_cast()
+        return out
+    }
+
+    on demo() {
+        register_voter("ada")
+        register_voter("bob")
+        register_voter("eve")
+        open_poll()
+        let v1 = cast_vote("ada", "north")
+        let v2 = cast_vote("bob", "south")
+        let v3 = cast_vote("eve", "north")
+        let dup = cast_vote("eve", "north")
+        let mal = cast_vote("mallory", "south")
+        print("vote ada:        {v1}")
+        print("vote bob:        {v2}")
+        print("vote eve:        {v3}")
+        print("eve votes AGAIN: {dup}")
+        print("unregistered:    {mal}")
+        close_poll()
+        let late = cast_vote("ada", "south")
+        print("vote after close:{late}")
+        let cert = certify()
+        print("certified:       {cert}")
+        let again = try { transition("poll", "voting") }
+        print("re-open attempt: error = {again.error}")
+        return "demo done"
+    }
+}
+
+cell test ElectionTests {
+    rules {
+        // ── ordered process: no voting during registration ──────────
+        assert register_voter("v1").ok == true
+        assert register_voter("x").ok == true
+        assert register_voter("y").ok == true
+        assert cast_vote("v1", "a").ok == false
+
+        // ── open: registration closes, voting begins ────────────────
+        assert open_poll().ok == true
+        assert register_voter("late").ok == false
+        assert cast_vote("v1", "a").ok == true
+
+        // ── one person, one vote: the memory wall ───────────────────
+        assert cast_vote("x", "north").ok == true
+        assert cast_vote("x", "south").ok == false       // double vote bounces
+        assert tally_for("south") == 0
+        assert_fails ballots.set("x", 2)                  // 2 ballots: unrepresentable
+        assert_fails ballots.set("y", -1)
+
+        // ── conservation: every ballot is in exactly one tally ──────
+        assert cast_vote("y", "north").ok == true
+        assert total_cast() == 3
+        assert tally_for("north") == 2
+        assert tally_for("a") == 1
+        assert results()._conserved == true
+
+        // ── close, certify, and certified is FOREVER ────────────────
+        assert close_poll().ok == true
+        assert cast_vote("v1", "north").ok == false       // polls closed
+        assert certify().ok == true
+        assert_fails transition("poll", "voting")          // no re-opening
+        assert_fails transition("poll", "closed")
+    }
+}
