@@ -186,8 +186,10 @@ cell Matrix {
 
     // np.hstack / np.vstack on matrices
     on hstack(a: List, b: List) {
+        // rows must be CONCATENATED — numeric `+` on two vectors is
+        // elementwise add, so use the explicit concat()
         let out = list()
-        for i in range(0, len(a)) { out = push(out, a[i] + b[i]) }
+        for i in range(0, len(a)) { out = push(out, concat(a[i], b[i])) }
         return out
     }
 

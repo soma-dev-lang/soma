@@ -274,16 +274,6 @@ fn ufcs_list_methods() {
 }
 
 #[test]
-fn flat_list_concat_unchanged_by_matrix_ops() {
-    let (o, c) = run(
-        "cell T { face { signal go() -> List } on go() { return [1,2] + [3,4] } }",
-        "go",
-    );
-    assert_eq!(c, 0, "{o}");
-    assert!(o.contains("[1, 2, 3, 4]"), "flat-list + must still concat: {o}");
-}
-
-#[test]
 fn vectorized_broadcast_and_masks() {
     let (o, c) = run(
         "cell T { face { signal go() -> String } on go() { let A = [1,2,3,4].reshape(2,2) let v = list(1.0,2.0,3.0) return \"{A + 10} {v * 2} {v * v} {A > 2} {v >= 2.0}\" } }",
@@ -298,11 +288,33 @@ fn vectorized_broadcast_and_masks() {
 }
 
 #[test]
-fn vector_plus_vector_is_still_concat() {
+fn numeric_vector_plus_is_elementwise_concat_is_explicit() {
+    // numeric v + v is elementwise (consistent with * / -)
     let (o, c) = run(
         "cell T { face { signal go() -> List } on go() { return list(1,2) + list(3,4) } }",
         "go",
     );
     assert_eq!(c, 0, "{o}");
-    assert!(o.contains("[1, 2, 3, 4]"), "v+v must stay concat: {o}");
+    assert!(o.contains("[4.0, 6.0]"), "numeric v+v must be elementwise: {o}");
+    // explicit concatenation is concat(a, b)
+    let (o2, c2) = run(
+        "cell T { face { signal go() -> List } on go() { return concat(list(1,2), list(3,4)) } }",
+        "go",
+    );
+    assert_eq!(c2, 0, "{o2}");
+    assert!(o2.contains("[1, 2, 3, 4]"), "concat must join: {o2}");
+    // non-numeric lists keep + = concat
+    let (o3, c3) = run(
+        "cell T { face { signal go() -> List } on go() { return list(\"a\") + list(\"b\") } }",
+        "go",
+    );
+    assert_eq!(c3, 0, "{o3}");
+    assert!(o3.contains("[\"a\", \"b\"]") || o3.contains("[a, b]"), "string-list + stays concat: {o3}");
+    // length mismatch is LOUD and teaches the fix
+    let (o4, c4) = run(
+        "cell T { face { signal go() -> List } on go() { return list(1,2) + list(3) } }",
+        "go",
+    );
+    assert_eq!(c4, 1, "length mismatch must error: {o4}");
+    assert!(o4.contains("concat(a, b)"), "error must mention concat: {o4}");
 }

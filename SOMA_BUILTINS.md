@@ -12,7 +12,7 @@ think/http_*/read_*/next_id have effects but are replayed via the log itself.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `concat` | `concat(a, b) -> String` | Concatenate two values as a string; with one arg, returns it unchanged. |
+| `concat` | `concat(a, b) -> String \| concat(a: List, b: List) -> List` | Concatenate strings, or join two lists (numeric list `+` is elementwise, so this is THE list concat). |
 | `split` | `split(s: String, delim: String) -> List<String>` | Split a string on a delimiter into a list of substrings. |
 | `replace` | `replace(s: String, old: String, new: String) -> String` | Replace every occurrence of `old` with `new`. |
 | `contains` | `contains(haystack: String, needle: String) -> Bool` | True if `needle` occurs anywhere in `haystack`. |

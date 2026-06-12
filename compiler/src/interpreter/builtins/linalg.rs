@@ -37,10 +37,9 @@ pub fn is_vector(v: &Value) -> bool {
 ///   matrix · matrix       *  → matmul        + - → elementwise
 ///   matrix · scalar       * / + -  → broadcast (both orders)
 ///   vector · scalar       * / + -  → broadcast (both orders)
-///   vector · vector       * / -    → elementwise (equal length)
-/// DELIBERATE EXCEPTION: vector + vector stays LIST CONCAT (long-standing
-/// list semantics) — use matrices, or `vadd` in the matrix package, for
-/// elementwise vector addition.
+///   vector · vector       + * / -  → elementwise (equal length)
+/// Non-numeric lists (strings, records, mixed) keep `+` = CONCAT; the
+/// explicit form for any two lists is concat(a, b).
 pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value, RuntimeError>> {
     let opf: Option<fn(f64, f64) -> f64> = match op {
         BinOp::Add => Some(|a, b| a + b),
@@ -84,13 +83,14 @@ pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value,
         let k = arg_f64(l);
         return Some(vec_map(r, |x| f(k, x)));
     }
-    if is_vector(l) && is_vector(r) && matches!(op, BinOp::Mul | BinOp::Div | BinOp::Sub) {
+    if is_vector(l) && is_vector(r) && matches!(op, BinOp::Add | BinOp::Mul | BinOp::Div | BinOp::Sub) {
         let f = opf?;
         let a = match to_vector(l) { Ok(v) => v, Err(e) => return Some(Err(e)) };
         let b = match to_vector(r) { Ok(v) => v, Err(e) => return Some(Err(e)) };
         if a.len() != b.len() {
             return Some(Err(RuntimeError::TypeError(format!(
-                "vector op: lengths {} and {} disagree", a.len(), b.len()))));
+                "vector op: lengths {} and {} disagree — numeric-vector arithmetic is \
+                 elementwise; to CONCATENATE lists use concat(a, b)", a.len(), b.len()))));
         }
         let out: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| f(*x, *y)).collect();
         return Some(Ok(vec_to_value(&out)));

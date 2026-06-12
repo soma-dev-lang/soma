@@ -369,11 +369,12 @@ let halves = A / 2
 let summed = A + A                     // elementwise (equal shapes)
 let v = list(1.0, 2.0, 3.0)
 let v2 = v * 2                         // vector broadcast: * / + -
-let sq = v * v                         // vector elementwise: * / -
+let sq = v * v                         // vector elementwise: + * / -
+let vsum = v + v                       // elementwise add (numeric vectors)
 let mask = A > 2                       // comparison mask → 0/1 matrix
 let vm = v >= 2.0                      // 0/1 vector (feed to where_mask)
-// EXCEPTION: v + v is list CONCAT (not elementwise) — long-standing
-// list semantics. Use 1×n matrices or the matrix package for vadd.
+// list CONCATENATION is explicit: concat(a, b). Non-numeric lists
+// (strings, records) keep + = concat.
 let d = det([4, 3, 6, 3].reshape(2, 2))   // -6.0
 
 // any builtin is also a method (UFCS): xs.sum(), xs.sort(), xs.reverse(),

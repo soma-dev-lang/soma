@@ -13,6 +13,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         result.push_str(b);
                         Some(Ok(Value::String(result)))
                     }
+                    // The explicit list concatenation (numeric `a + b` is
+                    // elementwise, so this is how you join two lists).
+                    (Value::List(a), Value::List(b)) => {
+                        let mut out = a.clone();
+                        out.extend(b.iter().cloned());
+                        Some(Ok(Value::List(out)))
+                    }
                     _ => Some(Ok(Value::String(format!("{}{}", args[0], args[1]))))
                 }
             } else if args.len() == 1 {

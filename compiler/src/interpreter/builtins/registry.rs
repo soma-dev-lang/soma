@@ -41,8 +41,8 @@ pub const CATEGORY_ORDER: &[&str] = &[
 
 pub static BUILTINS: &[BuiltinDoc] = &[
     // ── string ──────────────────────────────────────────────────────
-    doc("concat", "string", "concat(a, b) -> String",
-        "Concatenate two values as a string; with one arg, returns it unchanged."),
+    doc("concat", "string", "concat(a, b) -> String | concat(a: List, b: List) -> List",
+        "Concatenate strings, or join two lists (numeric list `+` is elementwise, so this is THE list concat)."),
     doc("split", "string", "split(s: String, delim: String) -> List<String>",
         "Split a string on a delimiter into a list of substrings."),
     doc("replace", "string", "replace(s: String, old: String, new: String) -> String",
