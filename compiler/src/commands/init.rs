@@ -102,6 +102,7 @@ pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Op
             path: None,
             version: version.map(|v| v.to_string()),
             branch: None,
+            subdir: None,
         })
     } else if let Some(local_path) = path {
         pkg::Dependency::Full(pkg::DependencySpec {
@@ -109,6 +110,7 @@ pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Op
             path: Some(local_path.to_string()),
             version: None,
             branch: None,
+            subdir: None,
         })
     } else {
         pkg::Dependency::Version(version.unwrap_or("*").to_string())

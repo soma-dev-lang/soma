@@ -216,6 +216,10 @@ pub struct DependencySpec {
     pub version: Option<String>,
     #[serde(default)]
     pub branch: Option<String>,
+    /// Subdirectory within the git repo holding the package (so a
+    /// monorepo can host many packages). Default: the repo root.
+    #[serde(default)]
+    pub subdir: Option<String>,
 }
 
 impl Dependency {
@@ -233,12 +237,33 @@ impl Dependency {
         }
     }
 
+    pub fn subdir(&self) -> Option<&str> {
+        match self {
+            Dependency::Version(_) => None,
+            Dependency::Full(spec) => spec.subdir.as_deref(),
+        }
+    }
+
+    pub fn branch(&self) -> Option<&str> {
+        match self {
+            Dependency::Version(_) => None,
+            Dependency::Full(spec) => spec.branch.as_deref(),
+        }
+    }
+
     pub fn version_str(&self) -> &str {
         match self {
             Dependency::Version(v) => v,
             Dependency::Full(spec) => spec.version.as_deref().unwrap_or("*"),
         }
     }
+}
+
+/// The package registry base URL. Override with the SOMA_REGISTRY env
+/// var; defaults to the sparse index hosted on soma-lang.dev.
+pub fn registry_url() -> String {
+    std::env::var("SOMA_REGISTRY")
+        .unwrap_or_else(|_| "https://soma-lang.dev/repo".to_string())
 }
 
 impl Manifest {

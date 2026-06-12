@@ -48,8 +48,9 @@ fn resolve_package(
     } else if let Some(git_url) = dep.git_url() {
         resolve_git(name, git_url, dep, cache_dir, lock)
     } else {
-        // Treat version string as a shorthand git URL
-        // e.g., "user/repo" → "https://github.com/user/repo"
+        // A version string with a slash is a git shorthand
+        // ("user/repo" → https://github.com/user/repo). A bare semver
+        // (or "*") resolves through the registry by NAME.
         let version = dep.version_str();
         if version.contains('/') {
             let url = if version.starts_with("http") {
@@ -59,7 +60,7 @@ fn resolve_package(
             };
             resolve_git(name, &url, dep, cache_dir, lock)
         } else {
-            Err(format!("cannot resolve package '{}': no git or path specified", name))
+            resolve_from_registry(name, version, cache_dir, lock)
         }
     }
 }
@@ -94,7 +95,9 @@ fn resolve_local(
     Ok(dest)
 }
 
-/// Resolve a git dependency
+/// Resolve a git dependency. Clones the repo into a side cache, then
+/// copies the package's `.cell` files (from `subdir`, or the repo root)
+/// into `<cache>/<name>` — so a monorepo can host many packages.
 fn resolve_git(
     name: &str,
     url: &str,
@@ -102,68 +105,124 @@ fn resolve_git(
     cache_dir: &Path,
     lock: &mut LockFile,
 ) -> Result<PathBuf, String> {
-    let dest = cache_dir.join(name);
+    resolve_git_with(name, url, dep.branch(), dep.subdir(), dep.version_str(), cache_dir, lock)
+}
 
-    // Clone or update
-    if dest.join(".git").exists() {
-        // Pull latest
+#[allow(clippy::too_many_arguments)]
+fn resolve_git_with(
+    name: &str,
+    url: &str,
+    branch: Option<&str>,
+    subdir: Option<&str>,
+    version: &str,
+    cache_dir: &Path,
+    lock: &mut LockFile,
+) -> Result<PathBuf, String> {
+    let clone_dir = cache_dir.join(format!("_git_{}", name));
+
+    if clone_dir.join(".git").exists() {
         let output = Command::new("git")
             .args(["pull", "--quiet"])
-            .current_dir(&dest)
+            .current_dir(&clone_dir)
             .output()
             .map_err(|e| format!("git pull failed: {}", e))?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("git pull failed: {}", stderr));
+            return Err(format!("git pull failed: {}", String::from_utf8_lossy(&output.stderr)));
         }
     } else {
-        // Fresh clone
         let mut args = vec!["clone", "--quiet", "--depth", "1"];
-
-        // Branch if specified
-        if let Dependency::Full(ref spec) = dep {
-            if let Some(ref branch) = spec.branch {
-                args.push("-b");
-                args.push(branch);
-            }
-        }
-
+        if let Some(b) = branch { args.push("-b"); args.push(b); }
         args.push(url);
-        args.push(dest.to_str().unwrap_or(""));
-
+        args.push(clone_dir.to_str().unwrap_or(""));
         let output = Command::new("git")
             .args(&args)
             .output()
             .map_err(|e| format!("git clone failed: {}", e))?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("git clone failed: {}", stderr));
+            return Err(format!("git clone failed: {}", String::from_utf8_lossy(&output.stderr)));
         }
     }
 
-    // Get commit hash
     let hash = Command::new("git")
         .args(["rev-parse", "HEAD"])
-        .current_dir(&dest)
+        .current_dir(&clone_dir)
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
-    // Find .cell files
-    let files = find_cell_files(&dest);
+    // The package files live at the subdir (or the repo root).
+    let pkg_src = match subdir {
+        Some(s) => clone_dir.join(s),
+        None => clone_dir.clone(),
+    };
+    if !pkg_src.exists() {
+        return Err(format!("package '{}': subdir '{}' not found in {}",
+            name, subdir.unwrap_or("."), url));
+    }
+    let dest = cache_dir.join(name);
+    let files = copy_cell_files(&pkg_src, &dest)?;
 
+    let source = match subdir {
+        Some(s) => format!("git:{}#{}", url, s),
+        None => format!("git:{}", url),
+    };
     lock.packages.insert(name.to_string(), LockedPackage {
         name: name.to_string(),
-        version: dep.version_str().to_string(),
-        source: format!("git:{}", url),
+        version: version.to_string(),
+        source: source.clone(),
         hash,
         files,
     });
 
-    eprintln!("  {} {} (git: {})", name, dep.version_str(), url);
+    eprintln!("  {} {} ({})", name, version, source);
     Ok(dest)
+}
+
+/// Resolve a named dependency through the sparse HTTP registry.
+/// GET `<registry>/<name>.json` → { versions: { "x.y.z": {git, subdir,
+/// branch} }, latest }. A "*" requirement takes `latest`; an exact
+/// version takes that key.
+fn resolve_from_registry(
+    name: &str,
+    requirement: &str,
+    cache_dir: &Path,
+    lock: &mut LockFile,
+) -> Result<PathBuf, String> {
+    let base = super::manifest::registry_url();
+    let url = format!("{}/{}.json", base.trim_end_matches('/'), name);
+    eprintln!("  resolving {} from {}", name, base);
+
+    let body: serde_json::Value = ureq::get(&url)
+        .call()
+        .map_err(|e| format!("registry: cannot fetch {} ({}). Is the package name right?", url, e))?
+        .into_json()
+        .map_err(|e| format!("registry: {} returned invalid JSON: {}", url, e))?;
+
+    let versions = body.get("versions").and_then(|v| v.as_object())
+        .ok_or_else(|| format!("registry: {} has no 'versions'", name))?;
+
+    let chosen = if requirement == "*" || requirement.is_empty() {
+        body.get("latest").and_then(|v| v.as_str()).map(|s| s.to_string())
+            .or_else(|| versions.keys().max().cloned())
+            .ok_or_else(|| format!("registry: {} lists no versions", name))?
+    } else {
+        if !versions.contains_key(requirement) {
+            return Err(format!("registry: {} has no version '{}' (available: {})",
+                name, requirement,
+                versions.keys().cloned().collect::<Vec<_>>().join(", ")));
+        }
+        requirement.to_string()
+    };
+
+    let entry = &versions[&chosen];
+    let git = entry.get("git").and_then(|v| v.as_str())
+        .ok_or_else(|| format!("registry: {}@{} has no git source", name, chosen))?;
+    let subdir = entry.get("subdir").and_then(|v| v.as_str());
+    let branch = entry.get("branch").and_then(|v| v.as_str());
+
+    resolve_git_with(name, git, branch, subdir, &chosen, cache_dir, lock)
 }
 
 /// Copy .cell files from src to dest
