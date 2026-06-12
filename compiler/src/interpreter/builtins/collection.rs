@@ -6,17 +6,12 @@ use crate::interpreter::soma_int::SomaInt;
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
         "list" => {
-            if args.len() > 1 {
-                if let Some(Value::List(existing)) = args.first() {
-                    let mut result = existing.clone();
-                    result.extend(args[1..].to_vec());
-                    Some(Ok(Value::List(result)))
-                } else {
-                    Some(Ok(Value::List(args.to_vec())))
-                }
-            } else {
-                Some(Ok(Value::List(args.to_vec())))
-            }
+            // Construct a list of the arguments literally, so
+            // list(list(1,2), list(3,4)) nests as [[1,2],[3,4]] — matching
+            // the [a, b] literal. The `x = list(x, item)` append idiom is
+            // handled in-place by the interpreter's assignment fast path
+            // (it never reaches here); use push() or `+` to concatenate.
+            Some(Ok(Value::List(args.to_vec())))
         }
         "map" => {
             if args.len() % 2 != 0 {

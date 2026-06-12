@@ -171,3 +171,53 @@ fn dot_method_call_still_parses() {
     assert_eq!(c, 0, "{o}");
     assert!(o.contains("7"), "{o}");
 }
+
+#[test]
+fn record_literal_construct_and_mutate() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let g = Game { bet: 10, pot: 5 } g.bet = 20 g.pot = g.pot + g.bet return \"{g.bet} {g.pot} {is_a(g, \\\"Game\\\")}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("20 25 true"), "{o}");
+}
+
+#[test]
+fn list_constructs_nested_not_spread() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let xs = list(list(1,2), list(3,4)) return \"{len(xs)} {xs[1][0]}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("2 3"), "nested list must not spread: {o}");
+}
+
+#[test]
+fn nested_lvalue_field_then_index() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let g = Game { board: list(1,2,3) } g.board[0] = 99 return \"{g.board}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("[99, 2, 3]"), "{o}");
+}
+
+#[test]
+fn nested_lvalue_index_then_index() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let xs = list(list(1,2), list(3,4)) xs[1][0] = 88 return \"{xs}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("[[1, 2], [88, 4]]"), "{o}");
+}
+
+#[test]
+fn record_round_trips_through_a_slot() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } memory { players: Map<String, Map> [ephemeral, local] } on go() { players.set(\"p1\", Player { name: \"ana\", chips: 1000 }) let p = players.get(\"p1\") p.chips = p.chips - 200 players.set(\"p1\", p) let back = players.get(\"p1\") return \"{back.name} {back.chips}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("ana 800"), "{o}");
+}

@@ -1970,27 +1970,56 @@ impl Parser {
                 let save_pos = self.pos;
                 let (name, name_span) = self.expect_ident()?;
 
-                if self.check(&Token::LBracket) {
-                    // name[index] = value  (index assignment) — otherwise
-                    // rewind and let it parse as a normal indexing expr.
-                    let probe = self.pos;
-                    self.advance();
-                    let index = self.parse_expr()?;
-                    if self.check(&Token::RBracket) {
-                        self.advance();
-                        if self.check(&Token::Eq) {
+                if self.check(&Token::LBracket) || self.check(&Token::Dot) {
+                    // lvalue chain assignment: name (.field | [index])+ = value
+                    //   g.bet = 10            → name["bet"] = 10
+                    //   xs[i] = v             → name[i] = v
+                    //   g.board[0] = 99       → name["board"] = with(g["board"], 0, 99)
+                    // Nested paths desugar to nested with(); the root set
+                    // reuses IndexSet (which handles maps, records, slots).
+                    // A `.method(` is not an accessor — it falls through to
+                    // expression parsing (method calls, pipes).
+                    let mut accessors: Vec<Spanned<Expr>> = Vec::new();
+                    let chain_ok = loop {
+                        if self.check(&Token::LBracket) {
                             self.advance();
-                            let value = self.parse_expr()?;
-                            return Ok(Spanned::new(
-                                Statement::IndexSet { name, index, value },
-                                start.merge(self.prev_span()),
-                            ));
+                            let idx = self.parse_expr()?;
+                            if !self.check(&Token::RBracket) { break false; }
+                            self.advance();
+                            accessors.push(idx);
+                        } else if self.check(&Token::Dot) {
+                            if let Token::Ident(f) = self.peek_at(1).clone() {
+                                if !matches!(self.peek_at(2), Token::LParen) {
+                                    let fspan = self.peek_span();
+                                    self.advance(); // '.'
+                                    self.advance(); // field ident
+                                    accessors.push(Spanned::new(Expr::Literal(Literal::String(f)), fspan));
+                                    continue;
+                                }
+                            }
+                            break true;
+                        } else {
+                            break true;
                         }
+                    };
+                    if chain_ok && !accessors.is_empty() && self.check(&Token::Eq) {
+                        self.advance();
+                        let value = self.parse_expr()?;
+                        let sp = start;
+                        let k0 = accessors[0].clone();
+                        let base0 = Spanned::new(Expr::Index {
+                            target: Box::new(Spanned::new(Expr::Ident(name.clone()), name_span)),
+                            index: Box::new(k0.clone()),
+                        }, sp);
+                        let new_val = build_nested_with(base0, &accessors[1..], value, sp);
+                        return Ok(Spanned::new(
+                            Statement::IndexSet { name, index: k0, value: new_val },
+                            start.merge(self.prev_span()),
+                        ));
                     }
-                    // not an index-assignment — reparse from the ident as
-                    // an expression statement (postfix handles the read)
+                    // not an lvalue assignment — parse the whole thing as
+                    // an expression statement (postfix handles reads/calls)
                     self.pos = save_pos;
-                    let _ = probe;
                     let expr = self.parse_expr()?;
                     Ok(Spanned::new(Statement::ExprStmt { expr }, start.merge(self.prev_span())))
                 } else if self.check(&Token::Eq) {
@@ -2027,31 +2056,6 @@ impl Parser {
                     );
                     Ok(Spanned::new(
                         Statement::Assign { name, value },
-                        start.merge(self.prev_span()),
-                    ))
-                } else if self.check(&Token::Dot) {
-                    // name.field = value  → desugar to name["field"] = value
-                    // (IndexSet already handles maps, records, and slots).
-                    // Otherwise (method call, field read, chain) reparse as
-                    // a full expression to allow pipes.
-                    if let Token::Ident(field) = self.peek_at(1).clone() {
-                        if matches!(self.peek_at(2), Token::Eq) {
-                            let field_span = self.peek_span();
-                            self.advance(); // '.'
-                            self.advance(); // field ident
-                            self.advance(); // '='
-                            let value = self.parse_expr()?;
-                            let index = Spanned::new(Expr::Literal(Literal::String(field)), field_span);
-                            return Ok(Spanned::new(
-                                Statement::IndexSet { name, index, value },
-                                start.merge(self.prev_span()),
-                            ));
-                        }
-                    }
-                    self.pos = save_pos;
-                    let expr = self.parse_expr()?;
-                    Ok(Spanned::new(
-                        Statement::ExprStmt { expr },
                         start.merge(self.prev_span()),
                     ))
                 } else if self.check(&Token::LParen) {
@@ -3412,4 +3416,36 @@ mod tests {
             }
         }
     }
+}
+
+/// Build the value expression for a nested lvalue assignment by folding
+/// `with()` from the outside in. `base` is the already-indexed root
+/// (`name[k0]`); `accs` are the remaining accessors after the first.
+///   build(base, [], v)        = v
+///   build(base, [a, rest], v) = with(base, a, build(base[a], rest, v))
+fn build_nested_with(
+    base: Spanned<Expr>,
+    accs: &[Spanned<Expr>],
+    value: Spanned<Expr>,
+    sp: Span,
+) -> Spanned<Expr> {
+    if accs.is_empty() {
+        return value;
+    }
+    let key = accs[0].clone();
+    let base_indexed = Spanned::new(
+        Expr::Index {
+            target: Box::new(base.clone()),
+            index: Box::new(key.clone()),
+        },
+        sp,
+    );
+    let inner = build_nested_with(base_indexed, &accs[1..], value, sp);
+    Spanned::new(
+        Expr::FnCall {
+            name: "with".to_string(),
+            args: vec![base, key, inner],
+        },
+        sp,
+    )
 }
