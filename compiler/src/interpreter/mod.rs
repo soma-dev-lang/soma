@@ -1924,6 +1924,15 @@ impl Interpreter {
                             "length" | "len" => Ok(Value::Int(SomaInt::from_i64(items.len() as i64))),
                             "first" => Ok(items.first().cloned().unwrap_or(Value::Unit)),
                             "last" => Ok(items.last().cloned().unwrap_or(Value::Unit)),
+                            // matrix pseudo-fields (parens-free): m.T, m.shape
+                            "T" | "transpose" if builtins::linalg::is_matrix(&target_val) => {
+                                builtins::linalg::call_builtin("transpose", std::slice::from_ref(&target_val))
+                                    .unwrap_or(Ok(Value::Unit)).map_err(ExecError::Runtime)
+                            }
+                            "shape" => {
+                                builtins::linalg::call_builtin("shape", std::slice::from_ref(&target_val))
+                                    .unwrap_or(Ok(Value::Unit)).map_err(ExecError::Runtime)
+                            }
                             _ => {
                                 // Try numeric index
                                 if let Ok(idx) = field.parse::<usize>() {
@@ -2047,6 +2056,21 @@ impl Interpreter {
                         }
                     }
                     _ => {
+                        // UFCS: x.method(a, b) → method(x, a, b) for any
+                        // builtin. Makes matrices first-class — m.reshape(2,2),
+                        // m.transpose(), m.shape(), m.det() — and lists too
+                        // (xs.reverse(), xs.sum(), xs.sort()).
+                        let mut ufcs = Vec::with_capacity(arg_vals.len() + 1);
+                        ufcs.push(target_val.clone());
+                        ufcs.extend(arg_vals.iter().cloned());
+                        if ufcs.iter().any(|v| matches!(v, Value::Lambda { .. } | Value::LambdaBlock { .. })) {
+                            if let Some(res) = builtins::call_lambda_builtin(self, method, &ufcs, cell_name) {
+                                return res.map_err(ExecError::Runtime);
+                            }
+                        }
+                        if let Some(res) = self.call_builtin(method, &ufcs, cell_name) {
+                            return res.map_err(ExecError::Runtime);
+                        }
                         // Try storage as fallback
                         if let Expr::Ident(ref name) = target.node {
                             return self.call_storage_method(cell_name, name, method, &arg_vals);
@@ -2950,6 +2974,13 @@ impl Interpreter {
     }
 
     fn eval_binop(&self, l: &Value, op: BinOp, r: &Value) -> Result<Value, RuntimeError> {
+        // First-class matrix operators. `A * B` is the matrix product when
+        // both are matrices (List<List>); `k * M` / `M * k` scale; `A + B`
+        // and `A - B` are elementwise on equal-shape matrices. Flat-list
+        // `+` (concat) and scalar arithmetic are untouched.
+        if let Some(res) = builtins::linalg::try_matrix_binop(l, op, r) {
+            return res;
+        }
         match (l, r) {
             (Value::Int(a), Value::Int(b)) => match op {
                 BinOp::Add => Ok(Value::Int(a.clone().add(b.clone()))),

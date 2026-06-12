@@ -15,6 +15,61 @@
 use super::super::{Value, RuntimeError};
 use super::super::map_from_pairs;
 use crate::interpreter::soma_int::SomaInt;
+use crate::ast::BinOp;
+
+/// True if `v` is a non-empty matrix (a List whose every element is a List).
+pub fn is_matrix(v: &Value) -> bool {
+    matches!(v, Value::List(items)
+        if !items.is_empty() && items.iter().all(|x| matches!(x, Value::List(_))))
+}
+
+fn is_scalar(v: &Value) -> bool { matches!(v, Value::Int(_) | Value::Float(_)) }
+
+/// Matrix operators for eval_binop. Returns None to fall through to the
+/// normal (scalar/list) handling, Some(result) when a matrix op applies.
+pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value, RuntimeError>> {
+    match op {
+        BinOp::Mul => {
+            if is_matrix(l) && is_matrix(r) {
+                let a = match to_matrix(l) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+                let b = match to_matrix(r) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+                Some(matmul(&a, &b).map(|m| matrix_to_value(&m)))
+            } else if is_matrix(l) && is_scalar(r) {
+                Some(scale_value(l, arg_f64(r)))
+            } else if is_scalar(l) && is_matrix(r) {
+                Some(scale_value(r, arg_f64(l)))
+            } else {
+                None
+            }
+        }
+        BinOp::Add | BinOp::Sub if is_matrix(l) && is_matrix(r) => {
+            Some(elementwise(l, r, matches!(op, BinOp::Sub)))
+        }
+        _ => None,
+    }
+}
+
+fn scale_value(m: &Value, k: f64) -> Result<Value, RuntimeError> {
+    let a = to_matrix(m)?;
+    let r: Vec<Vec<f64>> = a.iter().map(|row| row.iter().map(|x| x * k).collect()).collect();
+    Ok(matrix_to_value(&r))
+}
+
+fn elementwise(l: &Value, r: &Value, sub: bool) -> Result<Value, RuntimeError> {
+    let a = to_matrix(l)?;
+    let b = to_matrix(r)?;
+    if a.len() != b.len() || a[0].len() != b[0].len() {
+        return Err(RuntimeError::TypeError(format!(
+            "matrix {}: shapes {}x{} and {}x{} disagree",
+            if sub { "subtract" } else { "add" },
+            a.len(), a[0].len(), b.len(), b[0].len())));
+    }
+    let out: Vec<Vec<f64>> = a.iter().zip(b.iter())
+        .map(|(ra, rb)| ra.iter().zip(rb.iter())
+            .map(|(x, y)| if sub { x - y } else { x + y }).collect())
+        .collect();
+    Ok(matrix_to_value(&out))
+}
 use indexmap::IndexMap;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -108,6 +163,72 @@ fn to_matrix(v: &Value) -> Result<Vec<Vec<f64>>, RuntimeError> {
 
 fn vec_to_value(v: &[f64]) -> Value {
     Value::List(v.iter().map(|x| Value::Float(*x)).collect())
+}
+
+fn te(msg: &str) -> RuntimeError { RuntimeError::TypeError(msg.to_string()) }
+fn int(n: usize) -> Value { Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n as i64)) }
+fn arg_usize(v: &Value) -> usize { val_to_f64(v).unwrap_or(0.0).max(0.0) as usize }
+fn arg_f64(v: &Value) -> f64 { val_to_f64(v).unwrap_or(0.0) }
+
+/// Flatten a flat list OR a List<List> matrix into a row-major Vec<f64>.
+fn flatten_nums(v: &Value) -> Result<Vec<f64>, RuntimeError> {
+    match v {
+        Value::List(items) if items.iter().any(|x| matches!(x, Value::List(_))) => {
+            let mut out = Vec::new();
+            for row in items {
+                match row {
+                    Value::List(_) => out.extend(to_vector(row)?),
+                    other => out.push(val_to_f64(other)?),
+                }
+            }
+            Ok(out)
+        }
+        Value::List(_) => to_vector(v),
+        _ => Err(te("expected a list or matrix of numbers")),
+    }
+}
+
+fn matmul(a: &[Vec<f64>], b: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, RuntimeError> {
+    let (ar, ac) = (a.len(), a[0].len());
+    let (br, bc) = (b.len(), b[0].len());
+    if ac != br {
+        return Err(RuntimeError::TypeError(format!(
+            "matmul: inner dimensions disagree ({}x{} · {}x{})", ar, ac, br, bc)));
+    }
+    let mut out = vec![vec![0.0; bc]; ar];
+    for i in 0..ar {
+        for k in 0..ac {
+            let aik = a[i][k];
+            for j in 0..bc {
+                out[i][j] += aik * b[k][j];
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn determinant(m: &[Vec<f64>]) -> Result<f64, RuntimeError> {
+    let n = m.len();
+    if n != m[0].len() {
+        return Err(RuntimeError::TypeError("det: matrix must be square".into()));
+    }
+    // LU with partial pivoting
+    let mut a: Vec<Vec<f64>> = m.to_vec();
+    let mut det = 1.0;
+    for i in 0..n {
+        let mut piv = i;
+        for r in (i + 1)..n {
+            if a[r][i].abs() > a[piv][i].abs() { piv = r; }
+        }
+        if a[piv][i].abs() < 1e-12 { return Ok(0.0); }
+        if piv != i { a.swap(piv, i); det = -det; }
+        det *= a[i][i];
+        for r in (i + 1)..n {
+            let f = a[r][i] / a[i][i];
+            for c in i..n { a[r][c] -= f * a[i][c]; }
+        }
+    }
+    Ok(det)
 }
 
 fn matrix_to_value(m: &[Vec<f64>]) -> Value {
@@ -1123,6 +1244,72 @@ fn power_iter_spec_sq(a: &[Vec<f64>]) -> f64 {
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
+        // ── first-class matrix ops ──────────────────────────────────
+        // reshape(values, rows, cols): accept a flat list OR a matrix,
+        // read it row-major, lay it out as rows×cols. Element count must
+        // match exactly.
+        "reshape" => {
+            if args.len() != 3 { return Some(Err(te("reshape(values, rows, cols)"))); }
+            let flat = match flatten_nums(&args[0]) { Ok(f) => f, Err(e) => return Some(Err(e)) };
+            let r = arg_usize(&args[1]);
+            let c = arg_usize(&args[2]);
+            if r * c != flat.len() {
+                return Some(Err(RuntimeError::TypeError(format!(
+                    "reshape: {} values cannot fill a {}x{} matrix ({} cells)", flat.len(), r, c, r * c))));
+            }
+            let m: Vec<Vec<f64>> = (0..r).map(|i| flat[i * c..(i + 1) * c].to_vec()).collect();
+            Some(Ok(matrix_to_value(&m)))
+        }
+        "transpose" => {
+            let m = match to_matrix(&args[0]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+            let (r, c) = (m.len(), m[0].len());
+            let t: Vec<Vec<f64>> = (0..c).map(|j| (0..r).map(|i| m[i][j]).collect()).collect();
+            Some(Ok(matrix_to_value(&t)))
+        }
+        "shape" => {
+            // rows × cols for a matrix; (n) for a flat vector
+            match &args[0] {
+                Value::List(items) if items.iter().all(|x| matches!(x, Value::List(_))) && !items.is_empty() => {
+                    let cols = if let Some(Value::List(r0)) = items.first() { r0.len() } else { 0 };
+                    Some(Ok(Value::List(vec![int(items.len()), int(cols)])))
+                }
+                Value::List(items) => Some(Ok(Value::List(vec![int(items.len())]))),
+                _ => Some(Err(te("shape(matrix or vector)"))),
+            }
+        }
+        "matmul" => {
+            if args.len() != 2 { return Some(Err(te("matmul(a, b)"))); }
+            let a = match to_matrix(&args[0]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+            let b = match to_matrix(&args[1]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+            Some(matmul(&a, &b).map(|m| matrix_to_value(&m)))
+        }
+        "det" => {
+            let m = match to_matrix(&args[0]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+            Some(determinant(&m).map(Value::Float))
+        }
+        "diag_sum" => {
+            // matrix trace (sum of the diagonal). Named diag_sum to avoid
+            // colliding with the agent trace() builtin.
+            let m = match to_matrix(&args[0]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+            let n = m.len().min(m[0].len());
+            Some(Ok(Value::Float((0..n).map(|i| m[i][i]).sum())))
+        }
+        "identity" => {
+            let n = arg_usize(&args[0]);
+            let m: Vec<Vec<f64>> = (0..n).map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect()).collect();
+            Some(Ok(matrix_to_value(&m)))
+        }
+        "scale" => {
+            // scale(matrix, k) — scalar multiply
+            let m = match to_matrix(&args[0]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+            let k = arg_f64(&args[1]);
+            let r: Vec<Vec<f64>> = m.iter().map(|row| row.iter().map(|x| x * k).collect()).collect();
+            Some(Ok(matrix_to_value(&r)))
+        }
+        "flatten_mat" => {
+            // matrix → flat row-major vector
+            match flatten_nums(&args[0]) { Ok(f) => Some(Ok(vec_to_value(&f))), Err(e) => Some(Err(e)) }
+        }
         "importance_sample_rows" => {
             if args.len() < 2 {
                 return Some(Err(RuntimeError::TypeError(

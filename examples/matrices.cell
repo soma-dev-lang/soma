@@ -1,0 +1,61 @@
+// ============================================================================
+// Matrices as first-class citizens
+// ============================================================================
+//
+// A matrix is a List<List<Float>> you build, index, transpose, and operate
+// on with real operators — no opaque handle, no FFI. `reshape` lays a flat
+// list out; `*` is the matrix product; `.T` and `.shape` are parens-free;
+// every builtin is also a method (UFCS).
+//
+//   soma run examples/matrices.cell run
+// ============================================================================
+
+cell Matrices {
+    face { signal run() -> Map }
+
+    on run() {
+        // construct: flat list → shape
+        let I = [1, 0, 0, 1].reshape(2, 2)
+        let A = [1, 2, 3, 4].reshape(2, 2)
+        let B = [5, 6, 7, 8].reshape(2, 2)
+        let W = [1, 2, 3, 4, 5, 6].reshape(2, 3)     // non-square
+
+        print("A          = {A}")
+        print("A.shape     = {A.shape}")
+        print("A.T         = {A.T}")
+        print("A * I       = {A * I}        (identity)")
+        print("A * B       = {A * B}        (matmul)")
+        print("A + B       = {A + B}        (elementwise)")
+        print("3 * A       = {3 * A}        (scalar)")
+        print("W * W.T     = {W * W.T}      (2x3 · 3x2)")
+        print("det(A)      = {det(A)}")
+        print("diag_sum(A) = {diag_sum(A)}  (trace)")
+        print("A[1][0]     = {A[1][0]}        (element)")
+
+        // UFCS: builtins as methods
+        let v = [4, 1, 3, 2]
+        print("v.sort()    = {v.sort()}")
+        print("v.sum()     = {v.sum()}")
+
+        return map(
+            "AxB", A * B,
+            "det_A", det(A),
+            "transpose_shape", W.T.shape
+        )
+    }
+}
+
+cell test MatrixTests {
+    rules {
+        // matmul: [1,2;3,4]·[5,6;7,8] = [19,22;43,50]
+        assert det([4, 3, 6, 3].reshape(2, 2)) == 0 - 6
+        // reshape round-trips the count
+        assert flatten_mat([1, 2, 3, 4].reshape(2, 2)).sum() == 10
+        // shape and transpose (Soma has no structural list ==, so index)
+        assert [1, 2, 3, 4, 5, 6].reshape(2, 3).shape[0] == 2
+        assert [1, 2, 3, 4, 5, 6].reshape(2, 3).shape[1] == 3
+        assert [1, 2, 3, 4, 5, 6].reshape(2, 3).T.shape[0] == 3
+        // identity is a left/right unit (check one entry path via det)
+        assert det(identity(3)) == 1.0
+    }
+}

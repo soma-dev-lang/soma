@@ -347,6 +347,35 @@ clear_context()                               // reset multi-turn LLM conversati
 approve("publish article")                    // human-in-the-loop gate
 ```
 
+## Matrices
+
+A matrix is a `List<List<Float>>` (a list of equal-length rows) and is a
+first-class value: bracket-indexed, method-callable, and operated on with
+arithmetic operators.
+
+```soma
+let M = [1, 0, 0, 1].reshape(2, 2)    // flat list → 2×2 matrix
+let A = [1, 2, 3, 4, 5, 6].reshape(2, 3)
+let s = A.shape                        // [2, 3]  (parens-free pseudo-field)
+let t = A.T                            // transpose (also A.transpose())
+let x = A[1][2]                        // element access (row 1, col 2)
+let n = matrix("1 2; 3 4")             // MATLAB-style literal
+
+// operators: * is matmul (both matrices) or scalar scale; + - elementwise
+let prod = A * A.T                     // 2×2
+let scaled = 2 * A                     // scalar · matrix
+let summed = A + A                     // elementwise (equal shapes)
+let d = det([4, 3, 6, 3].reshape(2, 2))   // -6.0
+
+// any builtin is also a method (UFCS): xs.sum(), xs.sort(), xs.reverse(),
+// m.det(), m.transpose(), m.matmul(other)
+```
+
+Builtins: `reshape(values, r, c)`, `transpose`, `shape`, `matmul`, `det`,
+`diag_sum` (trace), `identity(n)` / `eye(n)`, `scale(m, k)`, `mat`, `rows`,
+`cols`, `diag`, `zeros`, `ones`, plus the quant suite (`svd_lowrank`,
+`regress_sgd`, `clean_covariance`, `var_historical`, …).
+
 ## Agent configuration (soma.toml)
 
 ```toml

@@ -221,3 +221,64 @@ fn record_round_trips_through_a_slot() {
     assert_eq!(c, 0, "{o}");
     assert!(o.contains("ana 800"), "{o}");
 }
+
+#[test]
+fn matrix_reshape_transpose_shape_via_methods() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let M = [1,2,3,4,5,6].reshape(2,3) return \"{M.shape} {M.T.shape}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("[2, 3] [3, 2]"), "{o}");
+}
+
+#[test]
+fn matrix_multiply_operator() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let A = [1,2,3,4].reshape(2,2) let B = [5,6,7,8].reshape(2,2) return to_string(A * B) } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("[[19.0, 22.0], [43.0, 50.0]]"), "{o}");
+}
+
+#[test]
+fn matrix_scalar_and_elementwise() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let A = [1,2,3,4].reshape(2,2) return \"{2 * A} {A + A}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("[[2.0, 4.0], [6.0, 8.0]] [[2.0, 4.0], [6.0, 8.0]]"), "{o}");
+}
+
+#[test]
+fn matrix_det() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> Float } on go() { return det([4,3,6,3].reshape(2,2)) } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    // det([4,3;6,3]) = 4*3 - 3*6 = -6
+    assert!(o.contains("-6"), "{o}");
+}
+
+#[test]
+fn ufcs_list_methods() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let xs = [3,1,2] return \"{xs.sum()} {xs.sort()} {xs.reverse()}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("6 [1, 2, 3] [2, 1, 3]"), "{o}");
+}
+
+#[test]
+fn flat_list_concat_unchanged_by_matrix_ops() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> List } on go() { return [1,2] + [3,4] } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("[1, 2, 3, 4]"), "flat-list + must still concat: {o}");
+}
