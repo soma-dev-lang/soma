@@ -1,358 +1,167 @@
-# soma
+# Soma
 
-The language where the **handler bodies cannot lie to the state machine**.
+**The language for programs you can prove — built for the age of AI agents.**
 
-`cell agent` + `think()` + state machine = **proven termination**, and as
-of V1.3 the verifier proves the handlers actually implement the picture
-they're drawn next to — the spec and the code can no longer drift apart.
+Soma is a declarative language where systems are *cells*: state, contract,
+behavior, and lifecycle in one unit. Its center of gravity is verification —
+not as an add-on, but as the reason the language exists:
+
+- **State machines are proven.** `soma verify` model-checks every lifecycle:
+  reachability, deadlocks, liveness, temporal properties — and proves the
+  handler *bodies* implement the machine they're drawn next to.
+- **Memory carries invariants.** `invariant balance >= 0` is enforced before
+  any write commits. An overdraft isn't a bug to catch; it's unrepresentable.
+- **LLMs run inside the cage.** A `cell agent`'s lifecycle is a state machine
+  the compiler proves terminates; `set_budget` hard-caps its token spend;
+  tool calls are capability-scoped. The model proposes — the language disposes.
+
+```soma
+cell Ledger {
+    memory {
+        account: Map<String, Int> [persistent]
+        invariant account >= 0 && account <= 1000000   // the wall
+    }
+    state flow {
+        initial: proposed
+        proposed -> authorized
+        authorized -> paid          // `paid` is provably unreachable
+        proposed -> rejected        // without passing `authorized`
+    }
+}
+```
 
 ```
-soma serve agent.cell -p 8080                     # serve agent
-soma verify agent.cell                            # PROVE the spec AND the handlers
-soma serve app.cell -p 8081 --join localhost:8082  # cluster
+$ soma verify app.cell
+  ✓ terminal states: [paid, rejected]
+  ✓ liveness: every state can eventually reach a terminal state
+  ✓ refinement: handler `settle` ⟶ {paid}
+  ✓ invariant account >= 0 — writer 'seed' proven (writes 1000)
 ```
+
+Every claim in this README is a command you can run.
 
 ## Install
 
 ```bash
 curl -fsSL https://soma-lang.dev/install.sh | sh
+# or from source:
+git clone https://github.com/soma-dev-lang/soma && cd soma/compiler
+cargo build --release
 ```
 
-Or build from source:
-```bash
-git clone https://github.com/soma-dev-lang/soma.git
-cd soma/compiler && cargo build --release
-sudo cp target/release/soma /usr/local/bin/
-```
-
-## Quick start
+## Sixty seconds
 
 ```bash
 soma init myapp && cd myapp
-soma serve app.cell          # http://localhost:8080
-soma fix app.cell            # auto-repair errors
-soma verify app.cell         # prove state machines
-soma lint app.cell           # catch anti-patterns
+soma check app.cell        # static gates: contracts, interpolation, dispatch
+soma verify app.cell       # PROVE the state machines + invariants
+soma test app.cell         # run `cell test` assertions
+soma serve app.cell        # http://localhost:8080
 ```
 
-## Verified AI Agents
+## Proof-carrying demo apps
+
+Each is a complete, working application where the safety property is a
+theorem, not a code review hope:
+
+| App | The theorem | Try it |
+|-----|-------------|--------|
+| [`treasury/`](treasury/) | An adversarial LLM with a checkbook **cannot overdraw the account** — model demands $999,999, ledger pays $200 | `soma test treasury/app.cell` |
+| [`airlock/`](airlock/) | "Both doors open" (vacuum breach) is **unrepresentable** — no command sequence reaches it | `soma verify airlock/app.cell` |
+| [`poker/`](poker/) | A Hold'em server where **chips can't leak** — bots play over HTTP; a cheater's overbet is rejected at the ledger | `python3 poker/bots.py 12` |
+| [`elevator/`](elevator/) | SCAN scheduling with a **proven door/motion interlock** — the scheduler can be buggy; the safety can't | `soma run elevator/app.cell run_sim 8` |
+| [`hft/`](hft/) | An Avellaneda-Stoikov market maker whose kill switch **provably cannot re-arm** | `soma run hft/app.cell run_stress 5000` |
+| [`delivery/`](delivery/) | A food-delivery platform: typed state machines, sum-type payments, verified lifecycle | `soma serve delivery/app.cell` |
+
+## The language, fast
 
 ```soma
-cell agent Researcher {
-    face {
-        signal research(topic: String) -> Map
-        tool search(query: String) -> String "Search the web"
-    }
+// vectorized (numpy/MATLAB style)
+let M = [1, 0, 0, 1].reshape(2, 2)     // matrices are first-class
+let P = A * B                           // matmul; + - elementwise; A/2, A+10 broadcast
+let mask = A > 2                        // comparison masks
+let v2 = v * v + v                      // vectors: + * / - elementwise
 
-    state workflow {
-        initial: idle
-        idle -> researching -> analyzing -> done
-        * -> failed
-    }
+// records, indexing, mutation
+let g = Game { bet: 10, board: list(1, 2, 3) }
+g.bet = 20
+g.board[0] = 99                         // nested lvalues
+let x = m["key"] ?? 0                   // index + null-coalescing
 
-    on search(query: String) {
-        http_get("https://api.search.com?q={query}")
-    }
-
-    on research(topic: String) {
-        set_budget(5000)                          // hard token cap
-        transition("t", "researching")
-        let facts = think("Research: {topic}",    // LLM + tool calling
-            map("max_tokens", 2000, "timeout", 30000))  // bounded: provable
-        transition("t", "analyzing")
-        let summary = think("Synthesize: {facts}",
-            map("max_tokens", 1000, "timeout", 15000))
-        transition("t", "done")
-        map("summary", summary, "tokens", tokens_used())
-    }
+// sum types with exhaustive matching (compiler refuses a missing arm)
+cell type Pay { variants { Charged { tx: String }  Declined { reason: String }  Cash } }
+match result {
+    Charged { tx }     -> "paid ({tx})"
+    Declined { reason } -> "no: {reason}"
+    Cash                -> "cash"
 }
+
+// pipelines over records
+sales |> filter_by("region", "east") |> agg("product", "qty:sum")
+
+// any builtin is a method (UFCS)
+xs.sort()    xs.sum()    m.transpose()    m.det()
 ```
 
+Three execution backends: a tree-walking interpreter (reference semantics),
+a bytecode VM, and `[native]` Rust codegen — measured at parity with
+`rustc -O` (16.8 ns/op on the same workload; see the benchmark in the repo
+history).
+
+## Built for AI agents — in both directions
+
+**Agents writing Soma:** the toolchain is designed so a model's iteration
+loop converges. `soma check` catches undefined interpolation variables,
+unknown/ambiguous calls, and invalid invariants *before* runtime; error
+messages contain their own fix (`invalid transition: Placed → Delivered.
+Valid targets: [Accepted, Cancelled]`); `soma describe --builtins --json`
+and `--faces` give exact signatures so nothing is guessed. Start with
+[`AGENT_GOTCHAS.md`](AGENT_GOTCHAS.md) — 15 verified wrong→right pairs —
+and [`examples/corpus/`](examples/corpus/): **168 complete programs, every
+one passing `check` and `test`**, generated as LLM training data.
+
+**Soma running agents:** `cell agent` + `think()` + a state machine =
+a lifecycle with proven termination, hard token caps, capability-scoped
+tools, human approval gates, and deterministic replay (`--record` /
+`soma replay`) for audits.
+
+## Packages
+
+A sparse HTTP registry (the Cargo model) lives at `soma-lang.dev/repo`:
+
+```toml
+[dependencies]
+matrix = "^0.2"        # semver ranges, resolved to the highest match
 ```
-$ soma verify agent.cell
-
-✓ no deadlocks
-✓ eventually(done | failed)     ← PROVEN: state machine reaches terminal state
-✓ after(researching, analyzing | failed)
-4 passed, 0 failed
-```
-
-No other agent framework can prove this.
-
-## Agent Runtime
-
-| Builtin | What it does |
-|---------|-------------|
-| `think(prompt)` | LLM call with auto tool dispatch + retry |
-| `think_json(prompt)` | LLM returns structured Map |
-| `delegate(cell, signal, args)` | Cross-agent task dispatch |
-| `set_budget(n)` / `tokens_used()` | Hard token cap enforcement |
-| `remember(k, v)` / `recall(k)` | Persistent agent memory |
-| `approve(action)` | Human-in-the-loop gate |
-| `trace()` | Full execution log |
-
-Config: `SOMA_LLM_KEY`, `SOMA_LLM_URL` (OpenAI or ollama), `SOMA_LLM_MODEL`
-
-## Pattern Matching
-
-```soma
-on request(method: String, path: String, body: String) {
-    let req = map("method", method, "path", path)
-    match req {
-        {method: "GET", path: "/"}                   -> home()
-        {method: "GET", path: "/api/" + resource}    -> list(resource)
-        {method: "POST", path: "/api/" + resource}   -> create(resource, body)
-        n if n.method == "OPTIONS"                   -> cors()
-        _ -> response(404, map("error", "not found"))
-    }
-}
-```
-
-Map destructuring, string prefix, guard clauses, or-patterns, range patterns — all composable.
-
-## Agent Workflow
-
-```
-generate  →  fix  →  lint  →  check  →  verify  →  serve
-```
-
-- `soma fix` auto-repairs missing handlers, contradictory properties
-- `soma lint` catches redundant to_json, unchecked .get(), if-chains
-- `soma check --json` returns errors with `kind` + `fix` fields
-- `soma describe` outputs rich JSON: handlers, memory, state machines, tools
-- `soma verify` proves state machine properties with CTL model checking
-
-## Refinement: handler bodies vs state machine (V1.3)
-
-Soma's tagline is *"the specification is the program."* Before V1.3, that
-was half true: the `state` block was the spec, the handler bodies were
-the code, and the compiler treated them as independent documents. They
-could drift apart silently — and they did, often.
-
-V1.3 closes the gap. `soma verify` now proves three things about every
-cell with a state machine:
-
-1. **Every `transition("inst", "X")` call in any handler body names a
-   state `X` that exists in the cell's `state { }` block.** A typo in a
-   target state name is a compile error, not a runtime surprise.
-2. **Every transition declared in the state block is reached by some
-   handler.** Dead transitions in the spec become warnings — the spec
-   might be aspirational, but the reader is told.
-3. **Per-handler effect summary** — for every handler, the verifier
-   prints the set of states it can transition to, with the path
-   conditions (`if` guards) leading to each call.
-
-```
-$ soma verify rebalancer/app.cell
-
-  ✓ refinement: handler `rebalance` ⟶ {signal_pending,
-        failed [if alpha_cfg != () ∧ alpha_result.error != ()],
-        blocked [if verdict == "BLOCK"],
-        approved [if verdict == "APPROVE"],
-        flagged}
-```
-
-This is the WOW feature the manifesto was claiming. Before V1.3,
-"specification is the program" was a poster. Now it's a theorem.
-
-## Memory-budget proof obligation (V1.4)
-
-`scale { memory: "128Mi" }` is no longer advisory — the compiler
-**proves** your cell fits.
-
-```soma
-cell Optimizer {
-    scale {
-        replicas: 1
-        memory: "128Mi"
-    }
-
-    on optimize(input: Map) {
-        // 200 lines of constraint math: position caps, turnover caps,
-        // cash floor scaling, nested loops...
-    }
-}
-```
-
-```
-$ soma check rebalancer/app.cell
-
-✓ budget proven for cell 'Optimizer': peak ≤ 69.89 MiB ≤ declared 128.00 MiB
-    breakdown: slots 0 B + max-handler 53.89 MiB + state 0 B + runtime 16.00 MiB
-```
-
-The checker walks every handler body, counts every allocation
-(`list()`, `map()`, `push()`, string literals), unrolls loops by
-their `[loop_bound(N)]` annotation or literal `range(0, N)`, takes
-the **max** across handlers (not sum — only one runs at a time),
-adds slot capacities and runtime overhead, and compares against the
-declared budget. Three outcomes:
-
-- **Proven** — closed-form bound fits. The cell will not OOM.
-- **Exceeded** — bound exceeds budget. Compile error with breakdown.
-- **Advisory** — handler calls an unbounded builtin without bounds.
-  The checker lists the exact call sites that prevent the proof.
-
-Builtins become bounded when you pass an options map:
-
-```soma
-think(prompt, map("max_tokens", 500, "timeout", 10000))  // → budget proven
-http_get(url, map("max_bytes", 65536, "timeout", 5000))  // → budget proven
-think(prompt)                                              // → advisory
-```
-
-The checker reads `max_tokens` / `max_bytes` from the options map at
-compile time and computes a closed-form bound (4 bytes/token for LLM
-responses). No runtime overhead — the options also enforce the limits
-at execution time (truncation, timeout).
-
-The cost lattice laws are **mechanically verified in Coq** (Rocq
-9.1.1, zero axioms, zero `Admitted`). The per-builtin cost
-assignments and AST walker are trusted by source inspection.
-No other agent framework proves memory budgets at compile time.
-
-**How tight is the bound?** Measured on real data (10K–50K entries
-with unique ~1 KiB values):
-
-| Slot type | Data | RSS | Proven bound | Ratio |
-|---|---|---|---|---|
-| `[ephemeral]` (HashMap in RAM) | 10 MiB | 17 MiB | 38 MiB | **2.2×** |
-| `[ephemeral]` (HashMap in RAM) | 50 MiB | 67 MiB | ~85 MiB | **1.3×** |
-| `[persistent]` (SQLite on disk) | 100 MiB | 8 MiB | 150 MiB | n/a — data lives on disk |
-
-For `[ephemeral]` slots the bound is **1.3–2.2× the real RSS** —
-tight enough to be useful, conservative enough to be safe. For
-`[persistent]` slots the checker models in-memory capacity (sound
-upper bound) but the runtime uses SQLite, so the actual RSS is just
-the page cache (~2 MiB). The checker is honest about this: the
-proven bound is what *would* happen with a HashMap backend, which is
-the worst case. Interior cells that share a process get their peaks
-aggregated into the parent's budget.
-
-Technical details: `docs/SEMANTICS.md` §1.7. Coq proof:
-`docs/rigor/coq/Soma_Budget.v`.
-
-## Soundness — mechanically verified
-
-The model checker's correctness is not just claimed — it's proven.
-
-- **CTL safety** (`deadlock_free`, `always`, `never`, `mutex`):
-  sound and complete on the abstract state machine (`Soma_CTL.v`).
-- **CTL liveness** (`eventually`, `after`): sound after a depth-bound
-  fix discovered during the rigor pass (`Soma_CTL.v`).
-- **Think-isolation**: if all transition targets are literal,
-  **CTL safety holds regardless of what the LLM returns**
-  (`Soma_Isolation.v`). Tool handlers that call `transition()` are
-  detected and excluded. Adversarial review found and closed the
-  tool-calling side channel.
-- **Runtime fidelity → safety transfer**: the full chain from
-  "runtime guards transitions against G" to "safety holds on the
-  trace" is mechanized with **no unproven gap** (`Soma_RuntimeFidelity.v`).
-- **Budget composition**: cost lattice + per-builtin allocation
-  bounds (`Soma_Budget.v` + `Soma_BudgetOps.v`).
-- **Handler termination**: every handler body structurally
-  terminates (no unbounded `while`, bounded `for` loops,
-  decreasing recursion). `soma verify` reports it per cell.
-- **Signal composition**: every `emit` in an `interior` block has a
-  matching handler, every handler has a signal source. `soma verify`
-  reports matched pairs and orphans.
-
-**50 Coq theorems and lemmas** across 6 files, all `Closed under the
-global context` (zero axioms). Reproduce: `make -C docs/rigor/coq check`.
-
-```
-$ soma verify rebalancer/app.cell
-
-✓ think-isolated: CTL safety holds regardless of LLM output
-  (5 handlers, 20 literal transitions, 0 dynamic)
-✓ termination: all 31 handlers structurally terminate
-✓ 16 temporal properties passed
-```
-
-Every property names its **adversary model** explicitly in
-`docs/ADVERSARIES.md`. Full rigor scorecard: `docs/rigor/README.md`.
-
-## Deterministic record / replay
-
-Production incidents, single-stepped on your laptop:
 
 ```bash
-soma run --record bot.cell    # writes bot.somalog (JSON-lines, opt-in)
-soma replay bot.cell          # bit-deterministic re-execution
+soma install           # → .soma_env/packages/, commit-pinned in soma.lock
 ```
 
-Each replay entry passes if the live result matches the recorded one.
-When a handler calls a nondeterministic builtin (`now`, `random`, …),
-the recorder logs the call site and replay reports each divergence
-with a suggested fix. Demo: `examples/v1/02_replay_trader.cell`.
+A package's API is its cells' `face` sections (`soma describe --faces`),
+and its proofs travel with it: `soma test` the installed package re-verifies
+its `cell test` assertions on *your* toolchain. The first package,
+[`matrix`](packages/matrix/), brings numpy-style linear algebra (inverse,
+solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
-## Performance: `[native]` vs Rust and C
+## Docs
 
-`[native]` compiles handlers to a Rust `cdylib` per cell. Same source,
-~100–300× speedup over the interpreter on tight numeric loops, and
-**essentially tied with hand-written sequential Rust on the CLBG
-numeric challenges** (geomean ~1.02×, faster on 3 of 5). The C
-reference suite under `bench/clbg_c_ref/` reproduces the same
-comparison against `clang -O3 -march=native`. Writeups:
-`bench/results/SUMMARY_clbg.md`, `bench/results/clbg_c_vs_rust_vs_soma_raw.txt`.
+| | |
+|---|---|
+| [SOMA_REFERENCE.md](SOMA_REFERENCE.md) | the language, for agents and humans |
+| [SOMA_BUILTINS.md](SOMA_BUILTINS.md) | every builtin — generated from the compiler, can't drift |
+| [AGENT_GOTCHAS.md](AGENT_GOTCHAS.md) | verified wrong→right pairs |
+| [SOMA_SPEC.md](SOMA_SPEC.md) | machine-readable spec |
+| [wiki/](wiki/) | concepts, verification theory, design notes |
+| [site/llms.txt](site/llms.txt) | the whole language in one file, for LLM context |
 
-Soma never returns wrong answers on integer overflow — the dual-mode
-dispatch wrapper falls back to GMP (`rug` crate) on i64 overflow.
-Numba's `@njit` silently returns garbage in the same situation;
-`examples/overflow_corpus/` exercises this on every commit.
+## Honest status
 
-## What makes Soma different
-
-| | LangChain | CrewAI | Kubernetes | Soma |
-|---|---|---|---|---|
-| Agent termination proof | No | No | No | **Yes (CTL, mechanized in Coq)** |
-| Handler-body refinement check | No | No | No | **Compiler extracts decision tree** |
-| Memory budget proof | No | No | No | **`soma check` proves peak ≤ budget** |
-| Tool calling verified | No | No | No | **Compiler-checked** |
-| Distribution model | No | No | YAML | **In the language** |
-| Auto-repair | No | No | No | **soma fix** |
-| Same code local/cluster | N/A | N/A | No | **Yes** |
-
-## For AI agents
-
-- **Agent guide**: [AGENT.md](AGENT.md)
-- **Language reference**: [SOMA_REFERENCE.md](SOMA_REFERENCE.md)
-- **LLM reference**: [llms.txt](https://soma-lang.dev/llms.txt)
-- **Paper**: [Scale as a Type](https://soma-lang.dev/paper)
-- **Examples**: `examples/` — agents, pipelines, pricing engine, chat, 100+ more
-
-## Real applications
-
-The `rebalancer/` directory is a **1400-line systematic rebalancing
-tool** for a quantitative investment firm — 5 cells (Alpha signal,
-Optimizer, Compliance LLM, Commentary LLM, Portfolio orchestrator),
-15-state verified lifecycle, 89 tests across 4 layers, a demo script,
-and two cells with mechanically-proven memory bounds. The LLM never
-makes investment decisions; all math is in pure deterministic cells.
-
-```
-$ soma verify rebalancer/app.cell
-State machine 'rebalance': 15 states, initial 'requested'
-  ✓ 15 states, 20 transitions
-  ✓ no deadlocks
-  ✓ liveness: every state can eventually reach a terminal state
-
-$ soma check rebalancer/app.cell
-✓ budget proven for cell 'Alpha':     peak ≤ 62.49 MiB ≤ declared 128.00 MiB
-✓ budget proven for cell 'Optimizer': peak ≤ 69.89 MiB ≤ declared 128.00 MiB
-```
-
-Also: `incident-response/` (SRE on-call with LLM triage) and
-`loan-origination/` (consumer lending pipeline with LLM underwriting).
-All three have verified state machines with `eventually(closed)`.
-
-## Test Suite
-
-140 compiler tests + 89 rebalancer tests + 50 Coq theorems/lemmas.
-Language corpus (`examples/usecases/`), 10 CLBG
-challenges, state-explosion bench, backend-equivalence harness, and
-a live-LLM integration test against gemma4:26b via ollama.
-
-## License
-
-MIT
+Soma is an experimental language (binary: `soma 2.3.0`). The verifier
+proves state-machine and invariant properties per cell; cross-cell
+composition is statically *linted*, not yet proven. The interpreter is
+an AST walker (use `[native]` for hot paths). One known semantic
+asymmetry: `+` on non-numeric lists concatenates, on numeric vectors it
+adds elementwise — `concat(a, b)` is always explicit concatenation.
+The test suite is ~280 Rust tests plus 600+ verified `.cell` programs;
+`soma verify` failures are CI-grade errors, not warnings.

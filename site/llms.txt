@@ -1,376 +1,162 @@
-# Soma Language — Complete Reference for AI Agents
+# Soma Language — for AI Agents (soma 2.3.0)
 
-> Soma is a fractal cell language for verified distributed systems and AI agents.
-> An agent's lifecycle is a state machine the compiler proves terminates;
-> set_budget(N) caps the LLM loop inside it. Verification covers the protocol;
-> set_budget covers the LLM. The compiler fixes errors, catches anti-patterns,
-> and auto-serializes storage values. Three execution backends: tree-walking
-> interpreter (default, the reference semantics), bytecode VM (--jit), and
-> native Rust codegen ([native] handler annotation).
+> Soma is a declarative cell language where systems carry their proofs.
+> State machines are model-checked (`soma verify`), memory invariants are
+> enforced before writes commit, and LLM agents run inside lifecycles the
+> compiler proves terminate, with hard token caps. Error messages contain
+> their own fix. This file is the working summary; the full reference is
+> https://soma-lang.dev and the repo: https://github.com/soma-dev-lang/soma
+> Key files in the repo: SOMA_REFERENCE.md (language), SOMA_BUILTINS.md
+> (every builtin, generated from the compiler), AGENT_GOTCHAS.md (verified
+> wrong→right pairs), examples/corpus/ (168 verified programs).
 
-## Agent Workflow
+## The agent loop
 
 ```
-1. Generate code      → write .cell file
-2. Auto-fix errors    → soma fix app.cell
-3. Lint               → soma lint app.cell
-4. Check contracts    → soma check app.cell --json
-5. Verify behavior    → soma verify app.cell --json (PROVES termination)
-6. Serve              → soma serve app.cell -p 8080
+soma check  app.cell     # static gates FIRST: contracts, undefined
+                         # interpolation vars, unknown/ambiguous calls
+soma verify app.cell     # prove state machines + memory invariants
+soma test   app.cell     # run `cell test` assertions (assert/assert_fails)
+soma run    app.cell sig arg1 arg2
+soma serve  app.cell -p 8080
+soma describe app.cell --faces       # contract summary of every cell
+soma describe --builtins --json      # exact builtin signatures — never guess
+soma fix    app.cell                 # auto-repair common check errors
 ```
 
-## Quick Syntax Rules
-
-- No semicolons. Newlines separate statements.
-- No `function`/`def`. Use `on handler_name(params) { }`. Handlers don't take return-type annotations (`-> Int` is invalid on `on`); they DO take them on `signal` declarations inside `face { }`.
-- No `null`. Use `()` for null/unit. `to_int("abc")` returns `()`, NOT `0`.
-- No `[1,2,3]`. Use `list(1, 2, 3)`.
-- No `{key: val}`. Use `map("key", val, "key2", val2)` — must have an even arg count.
-- Strings: `"hello {name}"` (interpolation with `{}`); `"""raw"""` for triple-quoted raw strings.
-- `if`/`match` are expressions: `let x = if cond { a } else { b }`. The `else` is required when used as an expression.
-- `return` inside a `for` exits the entire handler, not just the loop. Use a flag + `break`.
-- `match` is an expression — don't write `return match ...`, just write the match.
-- Last expression in handler is the return value (implicit return).
-- Storage auto-serializes: no `to_json`/`from_json` needed when storing maps/lists. Use them only when the caller explicitly wants a string.
-- Slot **properties** (`.keys`, `.values`, `.len`, `.entries`, `.all`) take NO parens. Slot **methods** (`.get(k)`, `.set(k, v)`, `.delete(k)`, `.has(k)`) take parens.
-- `7 / 2 == 3.5` (Float promotion). Use `floor(7 / 2)` for truncating division.
-- Private handlers start with `_`: `on _helper()` is not exposed as an HTTP route.
-- Use `len`, not `length`. Use `distinct`, not `unique`. Use `push`, not `append_to`. Use `nth`, not `at`.
-
-## Cell Kinds
-
-The `cell` keyword takes a kind modifier — same five-section structure (face, memory, state, scale, handlers), the kind tells the compiler what role the cell plays.
-
-| Kind                       | Purpose                                                     |
-|----------------------------|-------------------------------------------------------------|
-| `cell Foo { }`             | Regular cell — functions, services, web apps                |
-| `cell agent Foo { }`       | Agent cell — unlocks `think`, `set_budget`, `tool` decls    |
-| `cell property Foo { }`    | Define a memory property (see `stdlib/durability.cell`)     |
-| `cell backend Foo { }`     | Define a storage backend implementation                     |
-| `cell type Foo<T> { }`     | Define a custom type                                        |
-| `cell checker Foo { }`     | Custom validation rule run by the checker                   |
-| `cell builtin Foo { }`     | FFI bridge to a Rust builtin (stdlib only)                  |
-| `cell test Foo { }`        | Test cell — `rules { assert ... }`, run with `soma test`    |
-
-## Composition: interior + runtime
+## Cell anatomy
 
 ```soma
-cell System {
-    interior {
-        cell Worker { /* ... */ }
-        cell Cache  { /* ... */ }
-    }
-    runtime {
-        start Worker                       // bring up the child
-        connect Worker.done -> Cache       // wire signals
-        emit initialize()                  // fire startup signal
-    }
-}
-```
-
-`soma describe` dumps the full interior graph as JSON.
-
-## Execution Backends
-
-| Backend                  | How to invoke                                          | When to use                                                  |
-|--------------------------|--------------------------------------------------------|--------------------------------------------------------------|
-| Tree-walking interpreter | `soma run file.cell` (default)                         | Development. Reference semantics — other backends agree with it. |
-| Bytecode VM              | `soma run file.cell --jit`                             | Better startup-amortized cost for hot loops without going native. |
-| Native (Rust `cdylib`)   | `[native]` handler annotation, or `soma build`         | Tight numeric loops. Whole-loop BigInt dispatches to GMP via `rug`. Single BigInt ops cross FFI and are slower. |
-
-### Refinement check — handler bodies cannot lie to the state machine (V1.3)
-
-Before V1.3, `soma verify` only proved CTL properties about the picture
-of the state machine — the `state { }` block. It trusted the handler
-bodies to call `transition()` consistently with the picture. They
-could lie. They no longer can.
-
-For each cell with a `state` block, `soma verify` now proves three things:
-
-1. **No undeclared targets.** Every `transition("inst", "X")` call in
-   any handler body names a state `X` that exists in the cell's state
-   machine. A typo in a target state name is a compile error, not a
-   runtime surprise.
-2. **No dead transitions.** Every transition declared in the state
-   block is reached by some handler — emitted as a warning (not an
-   error), since the spec might be aspirational.
-3. **Per-handler effect summary.** The verifier prints the set of
-   target states each handler can reach, with path conditions
-   (`if` guards) leading to each call site.
-
-```
-$ soma verify examples/refinement/02_payment_undeclared_target.cell
-  ✗ refinement: handler `settle` calls transition(_, "completed") but
-      "completed" is not in state machine `lifecycle`
-```
-
-Sound but incomplete: the V1.3 check is purely syntactic (no SMT yet),
-so it never falsely accuses a correct program but it does miss bugs
-that hide behind dynamic transition targets or guard arithmetic.
-Both incompleteness sources are surfaced in the verifier output so
-the user knows exactly which handlers got the strong check. Full
-SMT-backed control-flow analysis is V1.4 work. Demos:
-`examples/refinement/`. Honest scope notes in `docs/SEMANTICS.md §1.5`.
-
-### Deterministic record / replay (V1)
-
-Recording is opt-in at the command line, off by default, zero overhead:
-
-```sh
-soma run --record bot.cell           # writes bot.somalog (JSON-lines)
-soma replay bot.cell                 # re-executes every entry, bit-compares
-```
-
-Each replayed entry passes if `live_result == recorded_result`, fails
-otherwise. When a handler calls a nondeterministic builtin
-(`now`, `now_ms`, `timestamp`, `today`, `date_now`, `random`, `rand`),
-the recorder logs the call site and replay reports the divergence with
-a suggested fix: "mark the handler [pure] or pass the clock as an
-explicit input parameter." This makes production incidents
-single-step debuggable on a laptop. The full feature lives in
-`compiler/src/interpreter/record_log.rs` (~150 lines) and
-`compiler/src/commands/replay.rs` (~140 lines). Demo:
-`examples/v1/02_replay_trader.cell`.
-
-### Performance vs Numba
-
-`bench/compare_B.sh` runs Soma vs Python+Numba on the same 100 challenges. Across the 27 cells where both sides have a measurable inner-time, the geometric mean (over 3 independent runs) is **~2.6× Soma faster**. Soma wins ≥2× on 15 / 27 cells (concentrated on BigInt and auto-memo workloads); Numba wins ≥2× on 0 / 27. Numba edges out by 1.3-1.5× on 2-3 tight i64 loops where its `nsw nuw` UB optimizations help.
-
-Critically: **Soma never returns wrong answers on integer overflow.** The dual-mode dispatch wrapper catches the i64 fast path's overflow panic and falls back to GMP/Rug for the correct BigInt result. Numba's `@njit` silently produces wrong values when intermediates exceed int64 (LLVM `nsw nuw` UB). Four regression cells in `examples/overflow_corpus/` exercise this on every commit. Writeup: `bench/results/SUMMARY_bench_B_v9_corrected.md`.
-
-## Verified AI Agent — the specialty
-
-```soma
-cell agent Researcher {
-    face {
-        signal research(topic: String) -> Map
-        tool search(query: String) -> String "Search the web"
-        tool summarize(text: String) -> String "Summarize findings"
-    }
-
-    memory {
-        findings: Map<String, String> [persistent]
-    }
-
-    state workflow {
-        initial: idle
-        idle -> researching
-        researching -> analyzing
-        analyzing -> done
-        * -> failed
-    }
-
-    // Tool implementations — LLM calls these automatically
-    on search(query: String) {
-        http_get("https://api.search.com?q={query}")
-    }
-
-    on summarize(text: String) {
-        think("Summarize concisely: {text}")
-    }
-
-    on research(topic: String) {
-        set_budget(5000)                    // hard token cap
-        transition("t", "researching")
-
-        // think() reads tool declarations, sends to LLM as function-calling tools
-        // LLM can call search() and summarize() — auto-dispatched to handlers above
-        // Loops until final answer. Retries on rate limits.
-        let facts = think("Research '{topic}' thoroughly. Use search tool.")
-
-        transition("t", "analyzing")
-        // Multi-turn: this think() shares conversation context with the previous one
-        let summary = think("Synthesize your findings into 3 key insights.")
-
-        transition("t", "done")
-        findings.set(topic, map("summary", summary, "facts", facts))
-        map("status", "done", "summary", summary, "tokens", tokens_used())
-    }
-}
-
-// soma verify PROVES: every path reaches done or failed. No infinite loops.
-```
-
-## Agent Builtins
-
-| Builtin                        | Description                                        |
-|--------------------------------|----------------------------------------------------|
-| `think(prompt)`                | Call LLM with tool-calling loop                    |
-| `think_json(prompt)`           | Call LLM, return structured Map                    |
-| `delegate(cell, signal, args)` | Call another agent's handler                       |
-| `set_budget(max_tokens)`       | Hard cap on LLM token spend                        |
-| `tokens_used()`                | Tokens consumed so far                             |
-| `tokens_remaining()`           | Budget remaining (-1 = unlimited)                  |
-| `remember(key, value)`         | Persistent agent memory                            |
-| `recall(key)`                  | Recall from agent memory                           |
-| `approve(action)`              | Human-in-the-loop gate                             |
-| `trace()`                      | Full execution log (think/tool/transition events)  |
-| `clear_context()`              | Reset multi-turn conversation                      |
-| `clear_trace()`                | Reset trace log                                    |
-
-Config via env vars (always override `[agent]` in soma.toml):
-- `SOMA_LLM_KEY` or `OPENAI_API_KEY` — API key (required for hosted providers)
-- `SOMA_LLM_URL` — endpoint (default: OpenAI; for ollama use `http://localhost:11434/v1/chat/completions`)
-- `SOMA_LLM_MODEL` — model name
-- `SOMA_LLM_RETRIES` — retry count (exponential backoff)
-- `SOMA_LLM_MOCK=echo` — offline testing; `think()` returns the prompt verbatim. Use this in tests and CI.
-
-For Anthropic (Claude) configuration in `soma.toml`:
-
-```toml
-[agent]
-provider = "anthropic"
-model    = "claude-opus-4-6"     # use the latest Claude 4.6 model IDs
-key      = "${ANTHROPIC_API_KEY}" # ${VAR} expands env vars — never inline raw keys
-```
-
-## Cell Structure
-
-```soma
-cell AppName {
-    face {
-        signal create(payload: Map) -> Map
-        promise "all items are tracked"
+cell App {
+    face {                                   // the contract
+        signal add(a: Int, b: Int) -> Int    // return types live HERE
+        promise all_persistent
     }
     memory {
-        items: Map<String, String> [persistent, consistent]
-        invariant _slot_len <= 10000
-    }
-    state workflow {
+        data: Map<String, Int> [persistent, consistent]
+        invariant data >= 0                  // checked BEFORE every write;
+    }                                        // violating write rejected, slot unchanged
+    state flow {                             // model-checked by `soma verify`
         initial: draft
-        draft -> active
-        active -> completed
-        * -> cancelled
+        draft -> approved
+        draft -> rejected                    // approved/rejected: terminal
     }
-    every 30s { cleanup() }
-    after 5s { initialize() }
-
-    on create(payload: Map) {
-        let id = to_string(next_id())
-        items.set(id, payload)            // auto-serialized
-        ensure items.len > 0
-        map("id", id, "status", "ok")
-    }
-
+    on add(a: Int, b: Int) { return a + b }  // NO return type on handlers
     on request(method: String, path: String, body: String) {
-        let req = map("method", method, "path", path)
-        match req {
-            {method: "GET", path: "/"}                    -> html(home())
-            {method: "GET", path: "/api/" + resource}     -> list(resource)
-            {method: "POST", path: "/api/" + resource}    -> create(resource, body)
-            {method: "DELETE", path: "/api/" + resource}   -> delete(resource)
+        match map("method", method, "path", path) {
+            {method: "GET", path: "/"} -> html("<h1>hi</h1>")
+            {method: "POST", path: "/add/" + id} -> handle(id)
             _ -> response(404, map("error", "not found"))
         }
     }
 }
 ```
 
-## Match Patterns (all composable)
+## Core syntax (current)
 
 ```soma
-match value {
-    "literal"                    -> expr
-    "a" || "b"                   -> expr          // or-pattern
-    name                         -> use(name)     // variable binding
-    "/api/" + rest               -> api(rest)     // string prefix
-    {method: "GET", path}        -> get(path)     // map destructuring
-    {method: "POST", path: "/api/" + r} -> post(r) // nested
-    0..17                        -> "minor"       // range pattern
-    n if n > 100                 -> "big"         // guard clause
-    ()                           -> "null"        // unit/null
-    _                            -> "default"     // wildcard
+let x = 42                  x += 1            // no semicolons; newlines separate
+let v = -1                                    // negative literals work
+let s = "hello {name}"                        // interpolation; UNDEFINED vars are
+                                              // check-time errors; no nested "..." inside {}
+let xs = [1, 2, 3]          xs[0] = 99        // bracket index read AND write
+let m = map("k", 1)         m["k"] = 2        // maps too; m.k and m["k"] both read
+let g = Game { bet: 10 }    g.bet = 20        // records: literal + dot mutation
+g.board[0] = 7              xs[i][j] = v      // nested lvalues
+let y = m["nope"] ?? 0                        // null-coalescing; () is null
+for i in range(0, 10) { }   range(9, -1, -1)  // stepped/descending ranges
+sum(xs) avg(xs) min(xs) max(xs) product(xs)   // reductions over lists
+xs.sort()  xs.reverse()  m2.det()             // UFCS: any builtin as method
+match x { 1 -> "a"  n if n > 5 -> "big"  _ -> "other" }   // arms use ->
+let f = p => p * 2          f(3)              // lambdas use =>; first-class
+data |> filter(x => x.ok) |> sort_by("score", "desc") |> top(10)
+let r = try { risky() }     if r.error != () { ... }      // error handling
+```
+
+## Vectorized (numpy/MATLAB style)
+
+```soma
+let M = [1, 0, 0, 1].reshape(2, 2)    // matrices = List<List<Float>>, first-class
+A * B          // matmul        A + B / A - B   elementwise
+A + 10  A / 2  // scalar broadcast (both orders)
+v * v  v + v   // numeric vectors: + * / - elementwise
+A > 2  v >= 1.0                       // comparison masks (0/1)
+A.T    A.shape    det(A)    matrix("1 2; 3 4")
+concat(a, b)   // EXPLICIT list concatenation (+ on non-numeric lists concats)
+```
+
+## Sum types (exhaustive — compiler refuses a missing arm)
+
+```soma
+cell type Pay { variants { Charged { tx: String }  Declined { reason: String }  Cash } }
+match r {
+    Charged { tx }      -> "paid {tx}"
+    Declined { reason } -> "no: {reason}"
+    Cash                -> "cash"
 }
+// typed state machines: state order: OrderState { initial: Placed ... }
+// transition(id, Variant) is compile-checked against the type
 ```
 
-## Types
-
-| Type      | Example                              | Notes                                                   |
-|-----------|--------------------------------------|---------------------------------------------------------|
-| Int       | `42`, `-1`                           | 64-bit                                                  |
-| BigInt    | `signal compute(n: BigInt)`          | Arbitrary precision; declared in face / handler params  |
-| Float     | `3.14`, `1.5e3`                      | 64-bit. `7 / 2 == 3.5` (use `floor` for truncation)     |
-| String    | `"hello {name}"`, `"""raw"""`        | `{}` interpolation; triple-quote is raw                 |
-| Bool      | `true`, `false`                      |                                                         |
-| List      | `list(1, 2, 3)`                      | Ordered, length via `.len`                              |
-| Map       | `map("key", val, "key2", val2)`      | MUST have even arg count                                |
-| Unit      | `()`                                 | Null equivalent                                         |
-| Duration  | `5s`, `1min`, `500ms`, `1h`, `2years`| Converts to ms internally                               |
-| Record    | `User { name: "Alice", age: 30 }`    | Typed map with `_type` field                            |
-
-`to_int("abc")` returns `()`, NOT `0`. Always null-check the result of `to_int`/`to_float` on user input.
-
-## Storage (auto-serializes)
+## Agents (LLMs inside the cage)
 
 ```soma
-data.set("key", map("name", "Alice", "score", 95))  // auto-serialized
-let user = data.get("key")                            // auto-deserialized
-print(user.name)                                      // "Alice"
-data.delete("key")
-data.keys              // list of keys (no parens — these are properties)
-data.values            // list of values
-data.len               // count
-data.has("key")        // bool — methods do take parens
+cell agent Researcher {
+    face {
+        signal research(topic: String) -> Map
+        tool search(q: String) -> String [capability: "https://api.x.com/*"] "Search"
+    }
+    state job { initial: idle  idle -> working  working -> done  * -> failed }
+    on research(topic: String) {
+        set_budget(5000)                              // hard token cap
+        transition("t", "working")
+        let facts = think("Research {topic}", map("max_tokens", 2000))
+        transition("t", "done")
+        return map("facts", facts, "spent", tokens_used())
+    }
+}
+// soma verify PROVES eventually(done | failed). Test offline with
+// SOMA_LLM_MOCK=echo (or fixed:RESPONSE). Record/replay: --record, soma replay.
 ```
 
-Storage rules:
-- `slot.get(k)` returns `()` for missing keys, NOT an error. Always check `if raw == ()` before calling `from_json` on raw strings.
-- Storage auto-serializes Maps and Lists. `slot.set(k, some_map)` stores it directly; `slot.get(k)` returns the structured value. Don't wrap in `to_json` first — the lint flags it.
-- Properties (`.keys`, `.values`, `.len`, `.entries`, `.all`) take NO parentheses. Methods (`.get(k)`, `.set(k, v)`, `.delete(k)`, `.has(k)`) take parentheses.
+## Top gotchas (full list: AGENT_GOTCHAS.md — all verified)
 
-## Pipes
+1. Handler names must not collide with builtins (merge, map, filter, sort,
+   count, top, publish, all, sum) — the builtin silently wins.
+2. `match` arms use `->` (`=>` is lambdas). Handlers don't declare return
+   types (face signals do).
+3. No nested string literals inside `{...}` interpolation — bind a let first.
+4. `==` on lists/maps is not structural — compare elements or to_string().
+5. `transition()` returns {id, from, to}; read state with get_status(id).
+   Wrap fallible transitions in try { }.
+6. Slot methods (.set/.get) are for `memory` slots; local maps use m[k].
+7. `assert_fails expr` needs an expression that RAISES (not a falsy bool).
+8. serve routes only the cell that owns `request` — put routable signals
+   there, delegating to domain cells.
+9. Adjacent string literals don't concatenate; `on` is a reserved word.
+10. Floats: compare with a tolerance, never ==.
 
-```soma
-data |> filter(x => x.score > 50)
-data |> map(x => x.name)
-data |> sort_by("score", "desc")
-data |> top(10)
-data |> reduce(0, p => p.acc + p.val)
-data |> group_by("dept")
-data |> with("new_field", value)
+## Packages
+
+```toml
+[dependencies]
+matrix = "^0.2"                  # semver; registry at soma-lang.dev/repo
+local = { path = "../pkg" }      # or git = "...", subdir = "packages/x"
 ```
+`soma install` → .soma_env/packages/, commit-pinned in soma.lock.
+`use matrix` imports it. A package's API = its face; its proofs (cell test)
+re-run on YOUR toolchain: `soma test .soma_env/packages/matrix/matrix.cell`.
 
-## Error Handling
+## Performance
 
-```soma
-let result = try { risky() }
-if result.error != () { handle_error() }
+Interpreter is the reference semantics. Annotate hot handlers `[native]`
+for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on numeric loops.
+Native vocabulary is restricted (numbers, buffers; no strings/maps/think).
 
-let value = try { risky() }?    // ? propagates errors
-ensure balance >= 0              // postcondition
-```
+## Learn from working code
 
-## CLI Commands
-
-| Command                                 | Description                                                          |
-|-----------------------------------------|----------------------------------------------------------------------|
-| `soma run file.cell [args]`             | Execute the entry handler in the tree-walking interpreter            |
-| `soma run file.cell --signal name [args]`| Execute a specific named handler                                    |
-| `soma run file.cell --jit [args]`       | Execute via the bytecode VM                                          |
-| `soma run file.cell --record [args]`    | Record every handler invocation to `<file>.somalog` (V1)             |
-| `soma replay file.cell [--log path]`    | Re-execute a `.somalog` deterministically + report any divergence (V1) |
-| `soma serve file.cell [-p port]`        | HTTP server (HTTP `:port`, WS `:port+1`, TCP bus `:port+2`)          |
-| `soma serve file.cell --watch`          | Hot reload on `.cell` change                                         |
-| `soma serve file.cell --join host:port` | Join an existing cluster via that seed's bus port                    |
-| `soma check file.cell [--json]`         | Contract + property + signal checking                                |
-| `soma fix file.cell`                    | Auto-repair (missing handlers, contradictory properties, typos)      |
-| `soma lint file.cell [--json]`          | Anti-pattern checks                                                  |
-| `soma verify file.cell [--json]`        | Prove state machine + distribution properties (CTL)                  |
-| `soma describe file.cell`               | Rich JSON: handlers, memory, state, face, scheduled tasks, scale     |
-| `soma test file.cell`                   | Run test cells (`cell test Foo { rules { assert ... } }`)            |
-| `soma build file.cell [-o out.rs]`      | Generate Rust skeleton (native codegen frontend)                     |
-| `soma init [name]`                      | Create project (`soma.toml`, `main.cell`, `.soma_env/`)              |
-| `soma add pkg [--git URL] [--path DIR]` | Add dependency to `[dependencies]`                                   |
-| `soma install`                          | Install dependencies                                                 |
-| `soma props`                            | List registered properties + backends                                |
-| `soma repl`                             | Interactive evaluator                                                |
-| `soma ast file.cell`                    | Dump AST as JSON                                                     |
-| `soma tokens file.cell`                 | Dump lexer token stream                                              |
-| `soma env`                              | Show stdlib path, cache dir, resolved config                         |
-
-## Links
-
-- GitHub: https://github.com/soma-dev-lang/soma
-- Agent guide: https://github.com/soma-dev-lang/soma/blob/main/AGENT.md
-- Language reference: https://github.com/soma-dev-lang/soma/blob/main/SOMA_REFERENCE.md
-- Spec: https://github.com/soma-dev-lang/soma/blob/main/SOMA_SPEC.md
-- Paper: https://soma-lang.dev/paper
+- examples/corpus/ — 168 programs, all passing check+test (algorithms, web,
+  agents, state machines, finance, games, data, text, math, records)
+- treasury/ airlock/ poker/ elevator/ hft/ delivery/ — complete apps where
+  the safety property is a verified theorem
+- packages/matrix/ — the reference package (numpy-style linalg, 43 proofs)
