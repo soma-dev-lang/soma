@@ -2,6 +2,6 @@
   "registry": "soma-lang.dev/repo",
   "description": "The Soma package registry — a sparse HTTP index. soma add <name> resolves GET /<name>.json.",
   "packages": [
-    { "name": "matrix", "latest": "0.1.0", "description": "Higher-level linear algebra on first-class matrices." }
+    { "name": "matrix", "latest": "0.2.0", "description": "numpy-style linear algebra: inverse, solve, lstsq, arange, stacking, statistics, elementwise lambdas." }
   ]
 }

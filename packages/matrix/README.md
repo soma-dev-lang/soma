@@ -1,9 +1,27 @@
-# matrix — Soma's first package
+# matrix — Soma's first package (0.2.0: the numpy layer)
 
-Higher-level linear algebra on Soma's first-class matrices: `inverse`,
-`solve`, `dot`, `norm`, `is_symmetric`, `hadamard`, `mat_pow`, `outer`,
-`row`/`col`. Pure Soma, built on the `reshape` / `*` / `det` / `matmul`
-builtins.
+numpy-style linear algebra on Soma's first-class matrices. Pure Soma,
+built on the `reshape` / `*` / `det` / `matmul` builtins.
+
+| numpy | matrix package |
+|-------|----------------|
+| `np.arange(a, b, s)` | `arange(a, b, s)` |
+| `np.linspace(a, b, n)` | `linspace(a, b, n)` |
+| `np.hstack` / `np.vstack` | `hstack(a, b)` / `vstack(a, b)` |
+| `m[r0:r1, c0:c1]` | `submatrix(m, r0, r1, c0, c1)` |
+| `m[idx]` (fancy rows) | `take_rows(m, idx)` |
+| `np.argmax` / `argmin` / `cumsum` | `argmax(v)` / `argmin(v)` / `cumsum(v)` |
+| `m.sum(axis=1/0)` | `row_sums(m)` / `col_sums(m)` |
+| `np.mean/var/std/median/cov` | `mean_of` / `variance_of` / `std_of` / `median_of` / `covariance` |
+| `np.vectorize(f)(m)` | `emap(m, x => ...)` / `vmap(v, f)` (lambdas!) |
+| `np.clip` | `clip_mat(m, lo, hi)` |
+| `np.where(mask, a, b)` | `where_mask(mask, a, b)` |
+| `np.linalg.lstsq` | `lstsq(A, b)` (normal equations) |
+| `np.linalg.inv / solve` | `inverse(m)` / `solve(A, b)` |
+| `np.random.rand(r, c)` | `rand_mat(r, c)` |
+
+0.1.0 API (`dot`, `norm`, `is_symmetric`, `hadamard`, `mat_pow`, `outer`,
+`row`/`col`) is unchanged — 0.2.0 is additive.
 
 ```soma
 use matrix

@@ -1,9 +1,14 @@
 {
   "name": "matrix",
-  "description": "Higher-level linear algebra on Soma's first-class matrices — inverse, solve, dot, norm, symmetry, power.",
-  "latest": "0.1.0",
+  "description": "numpy-style linear algebra on Soma's first-class matrices — inverse, solve, lstsq, arange/linspace, stacking/slicing, statistics, elementwise lambdas.",
+  "latest": "0.2.0",
   "versions": {
     "0.1.0": {
+      "git": "https://github.com/soma-dev-lang/soma",
+      "subdir": "packages/matrix",
+      "branch": "main"
+    },
+    "0.2.0": {
       "git": "https://github.com/soma-dev-lang/soma",
       "subdir": "packages/matrix"
     }

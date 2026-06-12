@@ -1,0 +1,25 @@
+// The numpy layer of the matrix package, through a real install.
+use matrix
+
+cell NumpyDemo {
+    face { signal run() -> Map }
+    on run() {
+        let xs = linspace(0.0, 10.0, 5)
+        let cs = cumsum(list(1, 2, 3, 4))
+        let A = [1, 2, 3, 4, 5, 6].reshape(2, 3)
+        let middle = submatrix(A, 0, 2, 1, 3)
+        let rsum = row_sums(A)
+        let squared = emap(A, x => x * x)
+        // least squares on noisy-ish line y = 3x - 2 through (1,1),(2,4),(3,7)
+        let coeffs = lstsq([1,1,2,1,3,1].reshape(3,2), list(1.0, 4.0, 7.0))
+        let sigma = std_of(list(2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0))
+        print("linspace(0,10,5)  = {xs}")
+        print("cumsum(1..4)      = {cs}")
+        print("A[0:2, 1:3]       = {middle}")
+        print("row_sums(A)       = {rsum}")
+        print("emap(A, x => x^2) = {squared}")
+        print("lstsq slope/inter = {coeffs}")
+        print("std               = {sigma}")
+        return map("slope", coeffs[0], "std", sigma)
+    }
+}

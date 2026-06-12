@@ -28,6 +28,29 @@ cell Matrix {
         signal solve(mat_a: List, b: List) -> List
         signal mat_pow(m: List, k: Int) -> List
         signal outer(a: List, b: List) -> List
+        // ── numpy layer (0.2.0) ─────────────────────────────────────
+        signal arange(start: Float, stop: Float, step: Float) -> List
+        signal linspace(start: Float, stop: Float, n: Int) -> List
+        signal hstack(a: List, b: List) -> List
+        signal vstack(a: List, b: List) -> List
+        signal submatrix(m: List, r0: Int, r1: Int, c0: Int, c1: Int) -> List
+        signal take_rows(m: List, idx: List) -> List
+        signal argmax(v: List) -> Int
+        signal argmin(v: List) -> Int
+        signal cumsum(v: List) -> List
+        signal row_sums(m: List) -> List
+        signal col_sums(m: List) -> List
+        signal mean_of(v: List) -> Float
+        signal variance_of(v: List) -> Float
+        signal std_of(v: List) -> Float
+        signal median_of(v: List) -> Float
+        signal covariance(a: List, b: List) -> Float
+        signal emap(m: List, f: Map) -> List
+        signal vmap(v: List, f: Map) -> List
+        signal clip_mat(m: List, lo: Float, hi: Float) -> List
+        signal where_mask(mask: List, a: List, b: List) -> List
+        signal lstsq(mat_a: List, b: List) -> List
+        signal rand_mat(r: Int, c: Int) -> List
     }
 
     // ── vectors ─────────────────────────────────────────────────────
@@ -136,6 +159,181 @@ cell Matrix {
         for i in range(1, k) { acc = acc * m }
         return acc
     }
+
+    // ── numpy layer (0.2.0) ─────────────────────────────────────────
+
+    // np.arange: start, start+step, ... < stop (step may be negative)
+    on arange(start: Float, stop: Float, step: Float) {
+        let out = list()
+        let x = start
+        if step > 0.0 {
+            while x < stop { out = push(out, x)  x = x + step }
+        }
+        if step < 0.0 {
+            while x > stop { out = push(out, x)  x = x + step }
+        }
+        return out
+    }
+
+    // np.linspace: n evenly spaced points including both endpoints
+    on linspace(start: Float, stop: Float, n: Int) {
+        if n == 1 { return list(start) }
+        let out = list()
+        let step = (stop - start) / (n - 1)
+        for i in range(0, n) { out = push(out, start + i * step) }
+        return out
+    }
+
+    // np.hstack / np.vstack on matrices
+    on hstack(a: List, b: List) {
+        let out = list()
+        for i in range(0, len(a)) { out = push(out, a[i] + b[i]) }
+        return out
+    }
+
+    on vstack(a: List, b: List) {
+        // NOTE: `a + b` on two matrices is ELEMENTWISE add (the matrix
+        // operator), so stacking must concatenate rows explicitly.
+        let out = list()
+        for r in a { out = push(out, r) }
+        for r in b { out = push(out, r) }
+        return out
+    }
+
+    // m[r0:r1, c0:c1] — half-open slices, numpy-style
+    on submatrix(m: List, r0: Int, r1: Int, c0: Int, c1: Int) {
+        let out = list()
+        for i in range(r0, r1) {
+            let r = list()
+            for j in range(c0, c1) { r = push(r, m[i][j]) }
+            out = push(out, r)
+        }
+        return out
+    }
+
+    // fancy indexing: m[idx] for a list of row indices
+    on take_rows(m: List, idx: List) {
+        let out = list()
+        for i in idx { out = push(out, m[i]) }
+        return out
+    }
+
+    // np.argmax / np.argmin over a vector
+    on argmax(v: List) {
+        let best = 0
+        for i in range(1, len(v)) { if v[i] > v[best] { best = i } }
+        return best
+    }
+
+    on argmin(v: List) {
+        let best = 0
+        for i in range(1, len(v)) { if v[i] < v[best] { best = i } }
+        return best
+    }
+
+    on cumsum(v: List) {
+        let out = list()
+        let acc = 0.0
+        for x in v { acc = acc + x  out = push(out, acc) }
+        return out
+    }
+
+    // axis reductions: sum along axis 1 / axis 0
+    on row_sums(m: List) {
+        let out = list()
+        for r in m { out = push(out, sum(r)) }
+        return out
+    }
+
+    on col_sums(m: List) {
+        let out = list()
+        for j in range(0, len(m[0])) { out = push(out, sum(col(m, j))) }
+        return out
+    }
+
+    // ── statistics (population variance, like np.var default) ──────
+    on mean_of(v: List) {
+        return sum(v) / (1.0 * len(v))
+    }
+
+    on variance_of(v: List) {
+        let mu = mean_of(v)
+        let acc = 0.0
+        for x in v { acc = acc + (x - mu) * (x - mu) }
+        return acc / len(v)
+    }
+
+    on std_of(v: List) {
+        return sqrt(variance_of(v))
+    }
+
+    on median_of(v: List) {
+        let s = v.sort()
+        let n = len(s)
+        if n % 2 == 1 { return 1.0 * s[idiv(n, 2)] }
+        return (s[idiv(n, 2) - 1] + s[idiv(n, 2)]) / 2.0
+    }
+
+    on covariance(a: List, b: List) {
+        let ma = mean_of(a)
+        let mb = mean_of(b)
+        let acc = 0.0
+        for i in range(0, len(a)) { acc = acc + (a[i] - ma) * (b[i] - mb) }
+        return acc / len(a)
+    }
+
+    // ── elementwise with lambdas (np.vectorize) ─────────────────────
+    on vmap(v: List, f: Map) {
+        let out = list()
+        for x in v { out = push(out, f(x)) }
+        return out
+    }
+
+    on emap(m: List, f: Map) {
+        let out = list()
+        for r in m { out = push(out, vmap(r, f)) }
+        return out
+    }
+
+    // np.clip over a matrix
+    on clip_mat(m: List, lo: Float, hi: Float) {
+        return emap(m, x => clamp(x, lo, hi))
+    }
+
+    // np.where(mask, a, b) — elementwise select (mask of 0/1)
+    on where_mask(mask: List, a: List, b: List) {
+        let out = list()
+        for i in range(0, len(mask)) {
+            let r = list()
+            for j in range(0, len(mask[0])) {
+                if mask[i][j] != 0 { r = push(r, a[i][j]) } else { r = push(r, b[i][j]) }
+            }
+            out = push(out, r)
+        }
+        return out
+    }
+
+    // np.linalg.lstsq via the normal equations: x = (AᵀA)⁻¹ Aᵀ b.
+    // Fine for small well-conditioned systems (this is a demo package).
+    on lstsq(mat_a: List, b: List) {
+        let at = transpose(mat_a)
+        let ata = matmul(at, mat_a)
+        let n = len(b)
+        let atb = matmul(at, reshape(b, n, 1))
+        let x = matmul(inverse(ata), atb)
+        return col(x, 0)
+    }
+
+    // np.random.rand(r, c) — uniform [0,1)
+    on rand_mat(r: Int, c: Int) {
+        let out = list()
+        for i in range(0, r) {
+            let rw = list()
+            for j in range(0, c) { rw = push(rw, random()) }
+            out = push(out, rw)
+        }
+        return out
+    }
 }
 
 // ── the package's proofs travel with it ─────────────────────────────
@@ -164,5 +362,57 @@ cell test MatrixTests {
 
         // power: I^5 == I (det stays 1)
         assert det(mat_pow(identity(3), 5)) == 1.0
+    }
+}
+
+cell test NumpyLayerTests {
+    rules {
+        // arange / linspace
+        assert to_string(arange(0.0, 5.0, 2.0)) == to_string(list(0.0, 2.0, 4.0))
+        assert to_string(arange(3.0, 0.0, -1.0)) == to_string(list(3.0, 2.0, 1.0))
+        assert len(linspace(0.0, 1.0, 5)) == 5
+        assert linspace(0.0, 1.0, 5)[2] == 0.5
+        assert linspace(0.0, 1.0, 5)[4] == 1.0
+
+        // stacking and slicing
+        assert to_string(hstack([1,2].reshape(1,2), [3,4].reshape(1,2))) == to_string([1,2,3,4].reshape(1,4))
+        assert len(vstack(identity(2), identity(2))) == 4
+        assert to_string(submatrix([1,2,3,4,5,6,7,8,9].reshape(3,3), 0, 2, 1, 3)) == to_string([2,3,5,6].reshape(2,2))
+        assert len(take_rows(identity(3), list(2, 0))) == 2
+        assert take_rows(identity(3), list(2, 0))[0][2] == 1.0
+
+        // arg/cum reductions
+        assert argmax(list(3, 9, 2, 7)) == 1
+        assert argmin(list(3, 9, 2, 7)) == 2
+        assert to_string(cumsum(list(1, 2, 3))) == to_string(list(1.0, 3.0, 6.0))
+        assert to_string(row_sums([1,2,3,4].reshape(2,2))) == to_string(list(3.0, 7.0))
+        assert to_string(col_sums([1,2,3,4].reshape(2,2))) == to_string(list(4.0, 6.0))
+
+        // statistics
+        assert mean_of(list(1.0, 2.0, 3.0, 4.0)) == 2.5
+        assert variance_of(list(2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0)) == 4.0
+        assert std_of(list(2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0)) == 2.0
+        assert median_of(list(5, 1, 3)) == 3.0
+        assert median_of(list(4, 1, 3, 2)) == 2.5
+        assert covariance(list(1.0, 2.0, 3.0), list(2.0, 4.0, 6.0)) > 1.3
+
+        // elementwise lambdas, clip, where
+        assert to_string(vmap(list(1, 2, 3), x => x * x)) == to_string(list(1, 4, 9))
+        assert emap([1,2,3,4].reshape(2,2), x => x * 10.0)[1][1] == 40.0
+        assert clip_mat([-5, 2, 9, 1].reshape(2,2), 0.0, 5.0)[0][0] == 0.0
+        assert clip_mat([-5, 2, 9, 1].reshape(2,2), 0.0, 5.0)[1][0] == 5.0
+        assert where_mask([1,0,0,1].reshape(2,2), ones(2,2), zeros(2,2))[0][0] == 1.0
+        assert where_mask([1,0,0,1].reshape(2,2), ones(2,2), zeros(2,2))[0][1] == 0.0
+
+        // least squares: perfect line y = 2x + 1 through A=[[x,1]]
+        // points (1,3), (2,5), (3,7) → coeffs [2, 1]
+        assert abs(lstsq([1,1,2,1,3,1].reshape(3,2), list(3.0, 5.0, 7.0))[0] - 2.0) < 0.0001
+        assert abs(lstsq([1,1,2,1,3,1].reshape(3,2), list(3.0, 5.0, 7.0))[1] - 1.0) < 0.0001
+
+        // random matrix has the right shape and range
+        assert len(rand_mat(2, 3)) == 2
+        assert len(rand_mat(2, 3)[0]) == 3
+        assert max(rand_mat(3, 3).flatten_mat()) < 1.0
+        assert min(rand_mat(3, 3).flatten_mat()) >= 0.0
     }
 }
