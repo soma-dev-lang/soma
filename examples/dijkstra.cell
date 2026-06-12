@@ -1,0 +1,80 @@
+// Dijkstra shortest path on a small weighted graph.
+// Demonstrates: maps as adjacency + distance tables, the "pick the
+// closest unvisited node" loop, list-of-edges records, and a big
+// sentinel for infinity.
+//
+//   soma run examples/dijkstra.cell shortest A E      → distance A→E
+
+cell Graph {
+    face {
+        signal shortest(src: String, dst: String) -> Int
+        signal edges() -> List
+    }
+
+    // edges as records: { from, to, w } — undirected (added both ways)
+    on edges() {
+        return list(
+            Edge { from: "A", to: "B", w: 4 },
+            Edge { from: "A", to: "C", w: 1 },
+            Edge { from: "C", to: "B", w: 2 },
+            Edge { from: "B", to: "E", w: 4 },
+            Edge { from: "C", to: "D", w: 5 },
+            Edge { from: "D", to: "E", w: 1 }
+        )
+    }
+
+    on shortest(src: String, dst: String) {
+        let nodes = list("A", "B", "C", "D", "E")
+        let inf = 1000000
+
+        // dist[node] and visited[node] as maps
+        let dist = map()
+        let visited = map()
+        for n in nodes {
+            dist[n] = inf
+            visited[n] = 0
+        }
+        dist[src] = 0
+
+        let count = len(nodes)
+        for step in range(0, count) {
+            // pick the unvisited node with the smallest dist
+            let u = ""
+            let best = inf + 1
+            for n in nodes {
+                if visited[n] == 0 && dist[n] < best {
+                    best = dist[n]
+                    u = n
+                }
+            }
+            if u == "" { step = step }      // no reachable node left
+            if u != "" {
+                visited[u] = 1
+                // relax neighbours
+                for e in edges() {
+                    let from = e.from
+                    let to = e.to
+                    let w = e.w
+                    if from == u && dist[u] + w < dist[to] {
+                        dist[to] = dist[u] + w
+                    }
+                    if to == u && dist[u] + w < dist[from] {
+                        dist[from] = dist[u] + w
+                    }
+                }
+            }
+        }
+        return dist[dst]
+    }
+}
+
+cell test DijkstraTests {
+    rules {
+        // A→C(1)→B(2)=3 ; A→C→D(5)→E(1)=7 vs A→C→B→E(4)=4+3=... =7? compute:
+        // A-C=1, C-B=2 → A-B=3, B-E=4 → A-E=7 ; A-C-D=6, D-E=1 → A-E=7. tie → 7
+        assert shortest("A", "C") == 1
+        assert shortest("A", "B") == 3
+        assert shortest("A", "E") == 7
+        assert shortest("A", "A") == 0
+    }
+}

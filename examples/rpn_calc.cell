@@ -1,0 +1,64 @@
+// RPN (reverse-Polish) calculator — a stack machine over a list.
+// Demonstrates: list-as-stack (push/pop via index), string split,
+// to_int/to_float, branching, and a clean error path.
+//
+//   soma run examples/rpn_calc.cell eval "3 4 + 5 *"     → 35
+//   soma run examples/rpn_calc.cell eval "10 2 /"        → 5
+
+cell RPN {
+    face {
+        signal eval(expr: String) -> Float
+        signal apply(op: String, a: Float, b: Float) -> Float
+    }
+
+    on apply(op: String, a: Float, b: Float) {
+        if op == "+" { return a + b }
+        if op == "-" { return a - b }
+        if op == "*" { return a * b }
+        if op == "/" {
+            if b == 0.0 { return 0.0 }
+            return a / b
+        }
+        return 0.0
+    }
+
+    on eval(expr: String) {
+        let stack = list()
+        let tokens = split(expr, " ")
+        for tok in tokens {
+            let t = trim(tok)
+            if t != "" {
+                if t == "+" || t == "-" || t == "*" || t == "/" {
+                    let n = len(stack)
+                    let b = stack[n - 1]
+                    let a = stack[n - 2]
+                    // pop two, push the result
+                    stack = without_last(stack)
+                    stack = without_last(stack)
+                    stack = push(stack, apply(t, a, b))
+                } else {
+                    stack = push(stack, to_float(t))
+                }
+            }
+        }
+        if len(stack) == 0 { return 0.0 }
+        return stack[len(stack) - 1]
+    }
+
+    on without_last(xs: List) {
+        let out = list()
+        for i in range(0, len(xs) - 1) { out = push(out, xs[i]) }
+        return out
+    }
+}
+
+cell test RPNTests {
+    rules {
+        assert eval("3 4 +") == 7.0
+        assert eval("3 4 + 5 *") == 35.0
+        assert eval("10 2 /") == 5.0
+        assert eval("2 3 4 * +") == 14.0
+        assert eval("100 50 - 2 /") == 25.0
+        assert apply("*", 6.0, 7.0) == 42.0
+    }
+}
