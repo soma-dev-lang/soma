@@ -203,18 +203,27 @@ fn resolve_from_registry(
     let versions = body.get("versions").and_then(|v| v.as_object())
         .ok_or_else(|| format!("registry: {} has no 'versions'", name))?;
 
-    let chosen = if requirement == "*" || requirement.is_empty() {
-        body.get("latest").and_then(|v| v.as_str()).map(|s| s.to_string())
-            .or_else(|| versions.keys().max().cloned())
-            .ok_or_else(|| format!("registry: {} lists no versions", name))?
-    } else {
-        if !versions.contains_key(requirement) {
-            return Err(format!("registry: {} has no version '{}' (available: {})",
-                name, requirement,
-                versions.keys().cloned().collect::<Vec<_>>().join(", ")));
-        }
-        requirement.to_string()
-    };
+    // Parse the requirement as a semver range. A bare "0.1.0" is caret
+    // (^0.1.0) per Cargo; "=0.1.0" pins exactly; "*" matches anything.
+    let req_str = if requirement.is_empty() { "*" } else { requirement };
+    let req = semver::VersionReq::parse(req_str)
+        .map_err(|e| format!("invalid version requirement '{}' for {}: {}", req_str, name, e))?;
+
+    // Published versions that are valid semver, ascending.
+    let mut candidates: Vec<semver::Version> = versions.keys()
+        .filter_map(|k| semver::Version::parse(k).ok())
+        .collect();
+    candidates.sort();
+
+    // Highest published version satisfying the range.
+    let chosen = candidates.iter().rev()
+        .find(|v| req.matches(v))
+        .map(|v| v.to_string())
+        .ok_or_else(|| {
+            let avail: Vec<String> = candidates.iter().map(|v| v.to_string()).collect();
+            format!("registry: no version of {} matches '{}' (available: {})",
+                name, req_str, if avail.is_empty() { "none".into() } else { avail.join(", ") })
+        })?;
 
     let entry = &versions[&chosen];
     let git = entry.get("git").and_then(|v| v.as_str())
