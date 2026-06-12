@@ -1,8 +1,0 @@
-cell Test {
-    on run() {
-        let l = list("a", "b", "c")
-        let first = get(l, 0)
-        print(first)
-        return "done"
-    }
-}
