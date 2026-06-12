@@ -282,3 +282,27 @@ fn flat_list_concat_unchanged_by_matrix_ops() {
     assert_eq!(c, 0, "{o}");
     assert!(o.contains("[1, 2, 3, 4]"), "flat-list + must still concat: {o}");
 }
+
+#[test]
+fn vectorized_broadcast_and_masks() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> String } on go() { let A = [1,2,3,4].reshape(2,2) let v = list(1.0,2.0,3.0) return \"{A + 10} {v * 2} {v * v} {A > 2} {v >= 2.0}\" } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("[[11.0, 12.0], [13.0, 14.0]]"), "matrix+scalar: {o}");
+    assert!(o.contains("[2.0, 4.0, 6.0]"), "vector*scalar: {o}");
+    assert!(o.contains("[1.0, 4.0, 9.0]"), "vector elementwise: {o}");
+    assert!(o.contains("[[0.0, 0.0], [1.0, 1.0]]"), "matrix mask: {o}");
+    assert!(o.contains("[0.0, 1.0, 1.0]"), "vector mask: {o}");
+}
+
+#[test]
+fn vector_plus_vector_is_still_concat() {
+    let (o, c) = run(
+        "cell T { face { signal go() -> List } on go() { return list(1,2) + list(3,4) } }",
+        "go",
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("[1, 2, 3, 4]"), "v+v must stay concat: {o}");
+}

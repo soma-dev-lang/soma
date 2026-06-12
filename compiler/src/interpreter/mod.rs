@@ -3058,6 +3058,11 @@ impl Interpreter {
     }
 
     fn eval_cmpop(&self, l: &Value, op: CmpOp, r: &Value) -> Result<Value, RuntimeError> {
+        // Vectorized comparison masks: `A > 2` → 0/1 matrix, `v > 2` →
+        // 0/1 vector (numpy-style; feed the mask to where_mask).
+        if let Some(res) = builtins::linalg::try_tensor_cmpop(l, op, r) {
+            return res;
+        }
         // Handle Unit comparisons first (before type coercion)
         if matches!(l, Value::Unit) || matches!(r, Value::Unit) {
             let result = match op {

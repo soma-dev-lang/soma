@@ -361,10 +361,19 @@ let t = A.T                            // transpose (also A.transpose())
 let x = A[1][2]                        // element access (row 1, col 2)
 let n = matrix("1 2; 3 4")             // MATLAB-style literal
 
-// operators: * is matmul (both matrices) or scalar scale; + - elementwise
-let prod = A * A.T                     // 2×2
-let scaled = 2 * A                     // scalar · matrix
+// vectorized operators (numpy/MATLAB style):
+let prod = A * A.T                     // matmul (both matrices)
+let scaled = 2 * A                     // scalar broadcast: * / + - both orders
+let shifted = A + 10                   // matrix + scalar
+let halves = A / 2
 let summed = A + A                     // elementwise (equal shapes)
+let v = list(1.0, 2.0, 3.0)
+let v2 = v * 2                         // vector broadcast: * / + -
+let sq = v * v                         // vector elementwise: * / -
+let mask = A > 2                       // comparison mask → 0/1 matrix
+let vm = v >= 2.0                      // 0/1 vector (feed to where_mask)
+// EXCEPTION: v + v is list CONCAT (not elementwise) — long-standing
+// list semantics. Use 1×n matrices or the matrix package for vadd.
 let d = det([4, 3, 6, 3].reshape(2, 2))   // -6.0
 
 // any builtin is also a method (UFCS): xs.sum(), xs.sort(), xs.reverse(),

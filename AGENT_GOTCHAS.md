@@ -165,8 +165,12 @@ sum(xs)   product(xs)   avg(xs)   min(xs)   max(xs)
 xs.sum()   xs.sort()   xs.reverse()   m.det()   m.transpose()
 // nested record/list mutation
 g.board[0] = 99    g.meta.turn = 5    xs[i][j] = v
-// matrices are first-class
+// matrices are first-class, with vectorized (numpy-style) operators
 let M = [1,0,0,1].reshape(2,2)     let P = A * B      let t = M.T      det(M)
+A + 10    A / 2    1 - A           // scalar broadcast on matrices
+v * 2     v - 1    v * v   10 / v  // vector broadcast + elementwise (* / -)
+A > 2     v >= 2.0                 // comparison masks (0/1)
+// CAUTION: v + v is list CONCAT, not elementwise add — the one exception
 // `with` is functional copy-update for maps AND lists
 let m2 = with(m, "k", 9)           let l2 = with(xs, 0, 9)
 ```

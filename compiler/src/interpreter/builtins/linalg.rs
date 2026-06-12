@@ -25,34 +25,116 @@ pub fn is_matrix(v: &Value) -> bool {
 
 fn is_scalar(v: &Value) -> bool { matches!(v, Value::Int(_) | Value::Float(_)) }
 
-/// Matrix operators for eval_binop. Returns None to fall through to the
-/// normal (scalar/list) handling, Some(result) when a matrix op applies.
+/// True if `v` is a non-empty flat numeric vector (a List of numbers).
+pub fn is_vector(v: &Value) -> bool {
+    matches!(v, Value::List(items)
+        if !items.is_empty() && items.iter().all(|x| matches!(x, Value::Int(_) | Value::Float(_))))
+}
+
+/// Vectorized (numpy/MATLAB-style) operators for eval_binop. Returns
+/// None to fall through to the normal handling, Some(result) when a
+/// tensor op applies. Covers:
+///   matrix · matrix       *  → matmul        + - → elementwise
+///   matrix · scalar       * / + -  → broadcast (both orders)
+///   vector · scalar       * / + -  → broadcast (both orders)
+///   vector · vector       * / -    → elementwise (equal length)
+/// DELIBERATE EXCEPTION: vector + vector stays LIST CONCAT (long-standing
+/// list semantics) — use matrices, or `vadd` in the matrix package, for
+/// elementwise vector addition.
 pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value, RuntimeError>> {
-    match op {
-        BinOp::Mul => {
-            if is_matrix(l) && is_matrix(r) {
+    let opf: Option<fn(f64, f64) -> f64> = match op {
+        BinOp::Add => Some(|a, b| a + b),
+        BinOp::Sub => Some(|a, b| a - b),
+        BinOp::Mul => Some(|a, b| a * b),
+        BinOp::Div => Some(|a, b| a / b),
+        _ => None,
+    };
+
+    // ── matrix cases ────────────────────────────────────────────────
+    if is_matrix(l) && is_matrix(r) {
+        return match op {
+            BinOp::Mul => {
                 let a = match to_matrix(l) { Ok(m) => m, Err(e) => return Some(Err(e)) };
                 let b = match to_matrix(r) { Ok(m) => m, Err(e) => return Some(Err(e)) };
                 Some(matmul(&a, &b).map(|m| matrix_to_value(&m)))
-            } else if is_matrix(l) && is_scalar(r) {
-                Some(scale_value(l, arg_f64(r)))
-            } else if is_scalar(l) && is_matrix(r) {
-                Some(scale_value(r, arg_f64(l)))
-            } else {
-                None
             }
-        }
-        BinOp::Add | BinOp::Sub if is_matrix(l) && is_matrix(r) => {
-            Some(elementwise(l, r, matches!(op, BinOp::Sub)))
-        }
-        _ => None,
+            BinOp::Add | BinOp::Sub => Some(elementwise(l, r, matches!(op, BinOp::Sub))),
+            _ => None,
+        };
     }
+    if is_matrix(l) && is_scalar(r) {
+        let f = opf?;
+        let k = arg_f64(r);
+        return Some(mat_map(l, |x| f(x, k)));
+    }
+    if is_scalar(l) && is_matrix(r) {
+        let f = opf?;
+        let k = arg_f64(l);
+        return Some(mat_map(r, |x| f(k, x)));
+    }
+
+    // ── flat vector cases ───────────────────────────────────────────
+    if is_vector(l) && is_scalar(r) && !matches!(op, BinOp::And | BinOp::Or) {
+        let f = opf?;
+        let k = arg_f64(r);
+        return Some(vec_map(l, |x| f(x, k)));
+    }
+    if is_scalar(l) && is_vector(r) && !matches!(op, BinOp::And | BinOp::Or) {
+        let f = opf?;
+        let k = arg_f64(l);
+        return Some(vec_map(r, |x| f(k, x)));
+    }
+    if is_vector(l) && is_vector(r) && matches!(op, BinOp::Mul | BinOp::Div | BinOp::Sub) {
+        let f = opf?;
+        let a = match to_vector(l) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+        let b = match to_vector(r) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+        if a.len() != b.len() {
+            return Some(Err(RuntimeError::TypeError(format!(
+                "vector op: lengths {} and {} disagree", a.len(), b.len()))));
+        }
+        let out: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| f(*x, *y)).collect();
+        return Some(Ok(vec_to_value(&out)));
+    }
+
+    None
 }
 
-fn scale_value(m: &Value, k: f64) -> Result<Value, RuntimeError> {
+/// Comparison masks: `A > 2` → a 0/1 matrix, `v > 2` → a 0/1 vector
+/// (numpy-style boolean masks, as floats — feed them to where_mask).
+pub fn try_tensor_cmpop(l: &Value, op: crate::ast::CmpOp, r: &Value) -> Option<Result<Value, RuntimeError>> {
+    use crate::ast::CmpOp;
+    let cmp = move |x: f64, k: f64| -> f64 {
+        let b = match op {
+            CmpOp::Lt => x < k,
+            CmpOp::Gt => x > k,
+            CmpOp::Le => x <= k,
+            CmpOp::Ge => x >= k,
+            CmpOp::Eq => x == k,
+            CmpOp::Ne => x != k,
+        };
+        if b { 1.0 } else { 0.0 }
+    };
+    if is_matrix(l) && is_scalar(r) {
+        let k = arg_f64(r);
+        return Some(mat_map(l, |x| cmp(x, k)));
+    }
+    if is_vector(l) && is_scalar(r) {
+        let k = arg_f64(r);
+        return Some(vec_map(l, |x| cmp(x, k)));
+    }
+    None
+}
+
+fn mat_map(m: &Value, f: impl Fn(f64) -> f64) -> Result<Value, RuntimeError> {
     let a = to_matrix(m)?;
-    let r: Vec<Vec<f64>> = a.iter().map(|row| row.iter().map(|x| x * k).collect()).collect();
-    Ok(matrix_to_value(&r))
+    let out: Vec<Vec<f64>> = a.iter().map(|row| row.iter().map(|x| f(*x)).collect()).collect();
+    Ok(matrix_to_value(&out))
+}
+
+fn vec_map(v: &Value, f: impl Fn(f64) -> f64) -> Result<Value, RuntimeError> {
+    let a = to_vector(v)?;
+    let out: Vec<f64> = a.iter().map(|x| f(*x)).collect();
+    Ok(vec_to_value(&out))
 }
 
 fn elementwise(l: &Value, r: &Value, sub: bool) -> Result<Value, RuntimeError> {
