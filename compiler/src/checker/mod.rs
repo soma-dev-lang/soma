@@ -21,6 +21,7 @@ pub mod dispatch;
 pub mod dead_code;
 pub mod guards;
 pub mod habits;
+pub mod routes;
 pub mod cross_machine;
 
 pub use properties::PropertyChecker;
@@ -504,6 +505,9 @@ impl<'a> Checker<'a> {
         }
         for (message, span) in native::int_division_warnings(program) {
             self.warnings.push(CheckWarning::NativeSemantics { message, span });
+        }
+        for (message, span) in routes::check_program(program) {
+            self.warnings.push(CheckWarning::HabitWarning { message, span });
         }
         for w in invariants::lint_program(program) {
             self.warnings.push(CheckWarning::HabitWarning { message: w.message, span: w.span });

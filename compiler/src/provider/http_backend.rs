@@ -167,6 +167,12 @@ impl StorageBackend for HttpBackend {
         self.post("append", serde_json::json!({"value": Self::encode_value(&value)}));
     }
 
+    fn unappend(&self) {
+        // remote providers may not support it; a provider that does not
+        // simply keeps the entry (documented limit of rollback)
+        self.post("unappend", serde_json::json!({}));
+    }
+
     fn list(&self) -> Vec<StoredValue> {
         self.post("list", serde_json::json!({}))
             .and_then(|r| r.get("items")?.as_array().map(|a| a.iter().map(Self::decode_value).collect()))

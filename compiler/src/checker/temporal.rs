@@ -116,7 +116,7 @@ impl StateMachineGraph {
             states.insert(to.clone());
 
             if from == "*" {
-                wildcard_targets.push((to.clone(), guard_desc));
+                wildcard_targets.push((to.clone(), guard_desc, t.node.except.clone()));
             } else {
                 states.insert(from.clone());
                 adj.entry(from.clone()).or_default().push((to.clone(), guard_desc));
@@ -124,9 +124,9 @@ impl StateMachineGraph {
         }
 
         // Expand wildcards
-        for (target, guard) in &wildcard_targets {
+        for (target, guard, except) in &wildcard_targets {
             for state in &states.clone() {
-                if state != target {
+                if state != target && !except.contains(state) {
                     adj.entry(state.clone()).or_default().push((target.clone(), guard.clone()));
                 }
             }

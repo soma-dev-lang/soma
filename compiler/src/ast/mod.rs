@@ -388,12 +388,25 @@ pub struct StateMachineSection {
     pub state_type: Option<String>,
 }
 
+impl StateMachineSection {
+    /// Does the wildcard edge `t` (`* -> x [except […]]`) leave `state`?
+    /// `*` means EVERY state — `* -> deleted` must also delete a `read`
+    /// message — so a wildcard un-terminates otherwise final states unless
+    /// they are listed in `except`. `soma verify` points that out.
+    pub fn wildcard_applies(&self, t: &Transition, state: &str) -> bool {
+        state != t.to && !t.except.iter().any(|e| e == state)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Transition {
     /// Source state ("*" = any)
     pub from: String,
     /// Target state
     pub to: String,
+    /// `* -> failed except [paid, denied]`: states a wildcard edge does NOT
+    /// leave. Empty for ordinary edges.
+    pub except: Vec<String>,
     /// Guard condition (must be true for transition to proceed)
     pub guard: Option<Spanned<Expr>>,
     /// Effect statements (run after transition)
@@ -747,6 +760,10 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::MethodCall { target, method, args } => {
             let a: Vec<String> = args.iter().map(|x| render_expr(&x.node)).collect();
             format!("{}.{}({})", render_expr(&target.node), method, a.join(", "))
+        }
+        // `a ?? b` is desugared to _coalesce(a, b) by the parser
+        Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => {
+            format!("({} ?? {})", render_expr(&args[0].node), render_expr(&args[1].node))
         }
         Expr::FnCall { name, args } => {
             let a: Vec<String> = args.iter().map(|x| render_expr(&x.node)).collect();

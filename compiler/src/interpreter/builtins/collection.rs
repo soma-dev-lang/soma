@@ -52,6 +52,26 @@ fn clamp_index(i: i64, len: usize) -> usize {
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
+        // fail("kind", "detail") raises a domain error; fail(r) re-raises a
+        // caught try-result with its original kind.
+        "fail" => {
+            match args.first() {
+                Some(Value::Map(m)) if m.contains_key("error") => {
+                    let kind = m.get("kind").map(|v| format!("{}", v)).unwrap_or_else(|| "error".to_string());
+                    let message = m.get("error").map(|v| format!("{}", v)).unwrap_or_default();
+                    Some(Err(RuntimeError::Domain { kind, message }))
+                }
+                Some(k) => {
+                    let kind = format!("{}", k);
+                    let message = match args.get(1) {
+                        Some(d) => format!("{}: {}", kind, d),
+                        None => kind.clone(),
+                    };
+                    Some(Err(RuntimeError::Domain { kind, message }))
+                }
+                None => Some(Err(RuntimeError::Domain { kind: "error".to_string(), message: "fail()".to_string() })),
+            }
+        }
         // contains(list, x) — membership by structural equality;
         // contains(map, key). (contains(string, sub) lives in string.rs.)
         "contains" if matches!(args.first(), Some(Value::List(_) | Value::Map(_))) && args.len() == 2 => {

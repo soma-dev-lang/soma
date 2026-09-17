@@ -62,6 +62,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         });
     let cell_name = cell.node.name.clone();
 
+    let request_routes = std::sync::Arc::new(crate::checker::routes::explicit_routes(&cell.node));
     let handler_names: Vec<String> = cell.node.sections.iter()
         .filter_map(|s| {
             if let ast::Section::OnSignal(ref on) = s.node {
@@ -855,6 +856,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         let program = program.clone();
         let storage_slots = storage_slots.clone();
         let handler_names = handler_names.clone();
+        let request_routes = request_routes.clone();
         let handler_params = handler_params.clone();
         let cell_name = cell_name.clone();
         let base_dir = base_dir.clone();
@@ -1014,7 +1016,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
             let (url_path, query_string) = url.split_once('?').unwrap_or((&url, ""));
             let path = url_path.trim_start_matches('/');
             let (sig, rest) = path.split_once('/').unwrap_or((path, ""));
-            if handler_names.contains(&sig.to_string()) && !sig.starts_with('_') {
+            // a path `request` matches explicitly is `request`'s, even when a
+            // handler has the same name as its first segment
+            if handler_names.contains(&sig.to_string()) && !sig.starts_with('_') && !request_routes.matches(url_path) {
                 let mut args: Vec<interpreter::Value> = if rest.is_empty() {
                     vec![]
                 } else {

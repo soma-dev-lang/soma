@@ -81,6 +81,9 @@ pub trait StorageBackend: Send + Sync {
     fn set(&self, key: &str, value: StoredValue);
     fn delete(&self, key: &str) -> bool;
     fn append(&self, value: StoredValue);
+    /// Remove the most recently appended entry — the undo of `append`,
+    /// used to roll a failed handler back.
+    fn unappend(&self);
     fn list(&self) -> Vec<StoredValue>;
     fn keys(&self) -> Vec<String>;
     fn values(&self) -> Vec<StoredValue>;
@@ -119,6 +122,10 @@ impl StorageBackend for MemoryBackend {
 
     fn append(&self, value: StoredValue) {
         self.log.write().unwrap_or_else(|e| e.into_inner()).push(value);
+    }
+
+    fn unappend(&self) {
+        self.log.write().unwrap_or_else(|e| e.into_inner()).pop();
     }
 
     fn list(&self) -> Vec<StoredValue> {
@@ -246,6 +253,11 @@ impl StorageBackend for FileBackend {
 
     fn append(&self, value: StoredValue) {
         self.log.write().unwrap().push(value);
+        self.persist();
+    }
+
+    fn unappend(&self) {
+        self.log.write().unwrap().pop();
         self.persist();
     }
 
@@ -400,6 +412,17 @@ impl StorageBackend for SqliteBackend {
         conn.execute(
             &format!("INSERT INTO \"{}_log\" (value, type) VALUES (?1, ?2)", self.table),
             rusqlite::params![val_str, type_tag],
+        ).ok();
+    }
+
+    fn unappend(&self) {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            &format!(
+                "DELETE FROM \"{0}_log\" WHERE rowid = (SELECT MAX(rowid) FROM \"{0}_log\")",
+                self.table
+            ),
+            [],
         ).ok();
     }
 

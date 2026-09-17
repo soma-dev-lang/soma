@@ -358,11 +358,39 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
 
     let verify_config = manifest.as_ref().map(|m| &m.verify);
 
+    let mut unknown_states: Vec<String> = Vec::new();
+    let mut check_failed = false;
+
     for path in files {
         let source = commands::read_source(path);
-        let tokens = commands::lex(&source);
-        let mut program = commands::parse(tokens);
+        let file_str = path.display().to_string();
+        let tokens = commands::lex_with_location(&source, Some(&file_str));
+        let mut program = commands::parse_with_location(tokens, Some(&source), Some(&file_str));
         commands::resolve_imports(&mut program, path);
+
+        // A proof about a program that does not pass `soma check` is a proof
+        // about nothing: run the static gates first.
+        {
+            let mut registry = registry::Registry::new();
+            commands::load_meta_cells_from_program(&program, &mut registry, path);
+            let mut chk = checker::Checker::new(&registry);
+            chk.source = Some((file_str.clone(), source.clone()));
+            chk.check(&program);
+            if chk.has_errors() {
+                eprintln!("{} fails `soma check` — fix these before verifying:", path.display());
+                for line in chk.report().lines().filter(|l| !l.starts_with("warning") && !l.starts_with("advisory") && !l.starts_with("✓")) {
+                    eprintln!("  {}", line);
+                }
+                check_failed = true;
+            }
+        }
+
+        // every state any machine of this file declares
+        let all_states: std::collections::HashSet<String> = program.cells.iter()
+            .flat_map(|c| c.node.sections.iter())
+            .filter_map(|s| if let ast::Section::State(sm) = &s.node { Some(sm) } else { None })
+            .flat_map(|sm| StateMachineGraph::from_ast(sm).states.into_iter())
+            .collect();
 
         eprintln!("Verifying {}...", path.display());
         total_cells += program.cells.iter()
@@ -424,8 +452,13 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
 
                         // [verify.before.paid] requires = ["manager_approved"]
                         for (target, before_cfg) in &cfg.before {
+                            // requires = [a, b]: at least ONE of them
                             if !before_cfg.requires.is_empty() {
                                 props.push(Property::Requires(target.clone(), before_cfg.requires.clone()));
+                            }
+                            // requires_all = [a, b]: EACH of them
+                            for state in &before_cfg.requires_all {
+                                props.push(Property::Requires(target.clone(), vec![state.clone()]));
                             }
                         }
 
@@ -444,6 +477,36 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
                         }
                     }
 
+                    // A property naming a state the machine does not have is
+                    // a typo, not a theorem: `never = ["piad"]` used to pass
+                    // as "never reached in any execution".
+                    if applies {
+                        if let Some(cfg) = verify_config {
+                            let mut named: Vec<(&str, &String)> = Vec::new();
+                            named.extend(cfg.eventually.iter().map(|s| ("eventually", s)));
+                            named.extend(cfg.never.iter().map(|s| ("never", s)));
+                            named.extend(cfg.always.iter().map(|s| ("always", s)));
+                            for (trigger, a) in &cfg.after {
+                                named.push(("[verify.after.<state>]", trigger));
+                                named.extend(a.eventually.iter().map(|s| ("after … eventually", s)));
+                                named.extend(a.never.iter().map(|s| ("after … never", s)));
+                            }
+                            for (target, b) in &cfg.before {
+                                named.push(("[verify.before.<state>]", target));
+                                named.extend(b.requires.iter().map(|s| ("before … requires", s)));
+                                named.extend(b.requires_all.iter().map(|s| ("before … requires_all", s)));
+                            }
+                            // with several machines in scope a state may belong
+                            // to another one: only complain when NO machine of
+                            // the verified files declares it
+                            for (what, state) in named {
+                                if !graph.states.contains(state) && !all_states.contains(state.as_str()) {
+                                    unknown_states.push(format!("{} names state '{}', which no state machine declares", what, state));
+                                }
+                            }
+                        }
+                    }
+
                     let results: Vec<PropertyResult> = props.iter()
                         .map(|p| check_property(&graph, p))
                         .collect();
@@ -454,6 +517,9 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
         }
     }
 
+    if all_results.is_empty() && check_failed {
+        std::process::exit(1);
+    }
     if all_results.is_empty() {
         if json {
             println!("{{\"state_machines\":[], \"temporal\":[], \"passed\": true}}");
@@ -463,8 +529,12 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
         return;
     }
 
+    unknown_states.sort();
+    unknown_states.dedup();
     let has_failures = all_results.iter().any(|r| r.has_failures())
-        || all_temporal.iter().any(|(_, rs)| rs.iter().any(|r| !r.passed));
+        || all_temporal.iter().any(|(_, rs)| rs.iter().any(|r| !r.passed))
+        || !unknown_states.is_empty()
+        || check_failed;
 
     if json {
         // Machine-readable JSON output for agents
@@ -537,7 +607,7 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
                 + cfg.never.len()
                 + (!cfg.always.is_empty()) as usize
                 + cfg.after.values().map(|a| (!a.eventually.is_empty()) as usize + a.never.len()).sum::<usize>()
-                + cfg.before.values().filter(|b| !b.requires.is_empty()).count();
+                + cfg.before.values().map(|b| (!b.requires.is_empty()) as usize + b.requires_all.len()).sum::<usize>();
             if user_props > 0 {
                 eprintln!("soma.toml: {} user-defined properties loaded", user_props);
             }
@@ -547,6 +617,25 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
 
         if total_cells > 1 {
             eprintln!("note: verification is per-cell. Cross-cell signal composition is not yet verified.");
+        }
+    }
+
+    if !json {
+        for u in &unknown_states {
+            eprintln!("error: soma.toml: {} — a property about a state that does not exist proves nothing", u);
+        }
+        // ONE verdict, last, so nobody stops reading at an early "0 failures"
+        let structural = all_results.iter().filter(|r| r.has_failures()).count();
+        let temporal = all_temporal.iter().flat_map(|(_, rs)| rs.iter()).filter(|r| !r.passed).count();
+        if has_failures {
+            let mut why: Vec<String> = Vec::new();
+            if check_failed { why.push("soma check failed".to_string()); }
+            if structural > 0 { why.push(format!("{} machine/invariant check(s) failed", structural)); }
+            if temporal > 0 { why.push(format!("{} temporal propert{} failed", temporal, if temporal == 1 { "y" } else { "ies" })); }
+            if !unknown_states.is_empty() { why.push(format!("{} propert{} on unknown states", unknown_states.len(), if unknown_states.len() == 1 { "y" } else { "ies" })); }
+            eprintln!("VERIFY FAILED — {}", why.join("; "));
+        } else {
+            eprintln!("VERIFY OK");
         }
     }
 

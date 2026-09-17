@@ -506,6 +506,7 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
 
     let mut edges: Vec<(String, String, bool)> = Vec::new(); // (from, to, has_guard)
     let mut wildcard_targets: Vec<String> = Vec::new();
+    let mut wildcard_edges: Vec<&Transition> = Vec::new();
 
     for t in &sm.transitions {
         let from = &t.node.from;
@@ -514,6 +515,7 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
 
         if from == "*" {
             wildcard_targets.push(to.clone());
+            wildcard_edges.push(&t.node);
         } else {
             states.insert(from.clone());
             edges.push((from.clone(), to.clone(), has_guard));
@@ -522,10 +524,21 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
     }
 
     // Expand wildcards: * -> X means every state can go to X
-    for target in &wildcard_targets {
+    // States that would be final without the wildcards — to report the ones
+    // a wildcard un-terminates.
+    let final_without_wildcards: Vec<String> = states
+        .iter()
+        .filter(|s| !edges.iter().any(|(f, _, _)| f == *s))
+        .cloned()
+        .collect();
+    let mut unterminated: Vec<(String, String)> = Vec::new();
+    for w in &wildcard_edges {
         for state in &states.clone() {
-            if state != target {
-                edges.push((state.clone(), target.clone(), false));
+            if sm.wildcard_applies(w, state) {
+                edges.push((state.clone(), w.to.clone(), false));
+                if final_without_wildcards.contains(state) && !wildcard_targets.contains(state) {
+                    unterminated.push((state.clone(), w.to.clone()));
+                }
             }
         }
     }
@@ -682,6 +695,31 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
         result.checks.push(VerifyCheck::Pass(
             format!("wildcard transitions: * -> [{}]", wildcard_targets.join(", "))
         ));
+    }
+    // `*` means every state, so `* -> failed` also adds `paid -> failed`:
+    // `paid` is no longer final. Right for `* -> deleted`; rarely what is
+    // meant by `* -> failed`. Say so, with the way to keep states final.
+    if !unterminated.is_empty() {
+        let mut by_target: Vec<(String, Vec<String>)> = Vec::new();
+        for (state, target) in &unterminated {
+            match by_target.iter_mut().find(|(t, _)| t == target) {
+                Some((_, v)) => v.push(state.clone()),
+                None => by_target.push((target.clone(), vec![state.clone()])),
+            }
+        }
+        for (target, mut from) in by_target {
+            from.sort();
+            let edges: Vec<String> = from.iter().map(|s| format!("{} -> {}", s, target)).collect();
+            result.checks.push(VerifyCheck::Warning(format!(
+                "`* -> {target}` also adds {} — so {} {} not final. If {} should stay final, write \
+                 `* -> {target} except [{}]`",
+                edges.join(", "),
+                from.join(", "),
+                if from.len() == 1 { "is" } else { "are" },
+                if from.len() == 1 { "it" } else { "they" },
+                from.join(", ")
+            )));
+        }
     }
 
     // (No per-terminal path warning: "approved cannot reach rejected" is a

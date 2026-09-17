@@ -169,12 +169,40 @@ and — with no LLM key configured — mocks `think()` (echo: reply = prompt). A
 failure prints the asserted source, `file:line`, left/right, and the fields a
 value really has when `x.field` came back `()`.
 
+## Handlers are atomic
+
+A top-level handler invocation is all-or-nothing: if it raises, every memory
+write and every `transition()` it made is rolled back. A failing `try { }`
+block is rolled back to where it started, and the handler continues. Under
+`soma serve` handlers run one at a time, so read-modify-write is safe
+(300 parallel payments of 10 against a balance of 1000 pay exactly 100).
+You do not write compensation code. Not rolled back: effects outside the
+process (http calls, think(), emitted events).
+
+## Errors
+
+```soma
+fail("not_found", "reservation {id}")     // raise: a kind + a detail
+require amount > 0 else InvalidAmount      // raise with kind InvalidAmount (a bare tag)
+let r = try { reserve(id) }                // r = {value, error, kind, detail}
+if r.kind == "not_found" { return response(404, map("error", r.detail)) }
+if r.error != () { fail(r) }               // re-raise unchanged
+```
+Kinds raised by the runtime: `invalid_transition`, `guard_failed`, `invariant`,
+`ensure`, `division_by_zero`, `index`, `llm`, `budget`, `type`. Branch on
+`r.kind`, never on substrings of `r.error`.
+
 ## HTTP
 
 `response(status, body)` is a map `{_status, _body}` (assert `r._status == 404`);
 `html(..)`, `redirect(..)` likewise. A handler may also return a plain map or
 string (200). `soma run app.cell request GET /path ""` calls the router without
 a server; `soma serve app.cell -p 8080` serves it. Static files: `static/`.
+`soma serve` ALSO exposes every public handler of the request-owning cell at
+`/<handler>/<arg>/<arg>` (that is how forms post to `/add`). A path that
+`request` matches explicitly goes to `request`; prefix handlers that must not
+be reachable over HTTP with `_` (`on _debit(…)`). `soma check` warns when a
+handler and a route share a name.
 
 ## Verification properties
 
@@ -195,8 +223,17 @@ never = ["paid"]                    # `paid` is unreachable once `rejected` was 
 eventually = ["archived"]           # after `rejected`, every path reaches `archived`
 
 [verify.before.paid]
-requires = ["manager_approved"]     # precedence: no path reaches `paid` without it
+requires = ["manager_approved"]     # precedence: no path reaches `paid` without ONE of these
+requires_all = ["held", "picked"]   # …without EACH of these
 ```
+In the machine, `* -> failed` means from EVERY state — it also adds
+`paid -> failed`, so `paid` is no longer final (verify says so). Keep states
+final with `* -> failed except [paid, denied]`. A property naming a state no
+machine declares is an error, and verify ends with one verdict line
+(`VERIFY OK` / `VERIFY FAILED — …`). `soma verify` and `soma test` refuse a
+program that fails `soma check`. Invariants on computed values are proven by
+induction when interval reasoning suffices (`(counts.get(k) ?? 0) + 1` keeps
+`counts >= 0`); the rest is reported per conjunct as runtime-checked.
 A failed property prints a counter-example path and is an error. What verify
 does NOT prove: data-dependent rules inside handlers, and invariants on computed
 values (those are runtime-checked — reported as such, never as "proven").

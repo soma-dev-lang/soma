@@ -185,8 +185,12 @@ pub struct VerifyConfig {
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeforeConfig {
+    /// at least ONE of these states precedes the target
     #[serde(default)]
     pub requires: Vec<String>,
+    /// EACH of these states precedes the target
+    #[serde(default)]
+    pub requires_all: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

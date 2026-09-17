@@ -97,6 +97,14 @@ impl Walk<'_> {
         }
     }
 
+    /// A loop body has no value: its last statement is as discardable as
+    /// any other (`for o in orders { rows.push(o) }` does nothing).
+    fn loop_body(&mut self, stmts: &[Spanned<Statement>]) {
+        for s in stmts {
+            self.stmt(s, false);
+        }
+    }
+
     fn stmt(&mut self, stmt: &Spanned<Statement>, is_last: bool) {
         match &stmt.node {
             Statement::ExprStmt { expr } => {
@@ -128,11 +136,11 @@ impl Walk<'_> {
             }
             Statement::For { iter, body, .. } => {
                 self.expr(iter);
-                self.stmts(body);
+                self.loop_body(body);
             }
             Statement::While { condition, body, .. } => {
                 self.expr(condition);
-                self.stmts(body);
+                self.loop_body(body);
             }
             Statement::Emit { args, .. } => {
                 for a in args {

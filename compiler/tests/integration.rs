@@ -550,6 +550,7 @@ fn test_verify_agent_state_machine() {
                 researching -> done
                 * -> failed
             }
+            on search(query: String) { return "result: {query}" }
             on research(topic: String) {
                 return "researched"
             }

@@ -31,6 +31,21 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
     resolve_imports(&mut program, path);
     load_meta_cells_from_program(&program, registry, path);
 
+    // Tests of a program that fails `soma check` mislead: a duplicate handler
+    // or a non-exhaustive match used to run anyway ("last definition wins").
+    {
+        let mut chk = crate::checker::Checker::new(registry);
+        chk.source = Some((file_str.clone(), source.clone()));
+        chk.check(&program);
+        if chk.has_errors() {
+            eprintln!("{} fails `soma check` — fix these before running its tests:", path.display());
+            for line in chk.report().lines().filter(|l| !l.starts_with("warning") && !l.starts_with("advisory") && !l.starts_with("✓")) {
+                eprintln!("  {}", line);
+            }
+            process::exit(1);
+        }
+    }
+
     let test_cells: Vec<&ast::CellDef> = program.cells.iter()
         .filter(|c| c.node.kind == ast::CellKind::Test)
         .map(|c| &c.node)
@@ -187,7 +202,7 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 // forever. Undefined functions and variables
                                 // are bugs (`soma check` reports both), never
                                 // the domain error a test means to prove.
-                                Err(e) if e.contains("UndefinedFn") || e.contains("UndefinedVar") => {
+                                Err(e) if e.starts_with("undefined function") || e.starts_with("undefined variable") => {
                                     failed += 1;
                                     println!("  ✗ {}  assert_fails {} — FAILED: it raised {}, a bug rather than the failure under test (run `soma check`)",
                                              at, shown, e);
@@ -321,8 +336,9 @@ fn eval_test_expr(
 ) -> Result<interpreter::Value, String> {
     // Delegate to the real interpreter for full expression support
     // (pipes, lambdas, match, field access, method calls, etc.)
-    interp.eval_expr_with_env(expr, env, "", "")
-        .map_err(|e| format!("{:?}", e))
+    // errors are shown the way the language words them, not as a Rust
+    // Debug dump (`Runtime(RequireFailed("…"))`)
+    interp.eval_expr_with_env(expr, env, "", "").map_err(|e| describe_error(&e))
 }
 
 /// V1.6: run a property-based test. Draw `count` random integers from
@@ -357,7 +373,7 @@ fn run_property(
         let mut env = std::collections::HashMap::new();
         env.insert(var.to_string(), interpreter::Value::Int(interpreter::SomaInt::from_i64(r)));
         let v = interp.eval_expr_with_env(body, &env, "", "")
-            .map_err(|e| format!("{:?}", e))?;
+            .map_err(|e| describe_error(&e))?;
         if !v.is_truthy() {
             return Ok(Some(r.to_string()));
         }
@@ -386,5 +402,13 @@ fn format_expr(expr: &ast::Expr) -> String {
             format!("{} {} {}", format_expr(&left.node), op, format_expr(&right.node))
         }
         _ => "...".to_string(),
+    }
+}
+
+/// An execution error in the language's own words.
+fn describe_error(e: &interpreter::ExecError) -> String {
+    match e {
+        interpreter::ExecError::Runtime(r) => r.to_string(),
+        other => format!("{:?}", other),
     }
 }

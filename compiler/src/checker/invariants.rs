@@ -20,7 +20,7 @@
 //! builtins.
 
 use crate::ast::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::names::{builtin_names, suggest};
 use super::verify::{VerifyCheck, VerifyResult};
@@ -162,12 +162,42 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             continue;
         }
 
-        // every write site in every handler: (handler, slot, value expr)
-        let mut writes: Vec<(String, String, Expr)> = Vec::new();
-        for section in &cell.node.sections {
-            if let Section::OnSignal(on) = &section.node {
-                collect_writes_stmts(&on.body, &on.signal_name, &mut writes);
+        // Induction hypothesis: a value READ from a guarded slot satisfied
+        // that slot's invariants when it was written (every write is
+        // checked before it commits; storage starts empty). So
+        // `counts.get(k) ?? 0` lies in the interval the invariants allow.
+        let mut hyp: HashMap<String, (f64, f64)> = HashMap::new();
+        for (inv, targets, _) in &guarded {
+            for slot in targets {
+                let (mut lo, mut hi) = hyp.get(slot).copied().unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+                for c in conjuncts(inv) {
+                    if let Some((l, h)) = interval_of(c, slot) {
+                        lo = lo.max(l);
+                        hi = hi.min(h);
+                    }
+                }
+                hyp.insert(slot.clone(), (lo, hi));
             }
+        }
+
+        let handlers: HashMap<String, &OnSection> = cell
+            .node
+            .sections
+            .iter()
+            .filter_map(|s| if let Section::OnSignal(on) = &s.node { Some((on.signal_name.clone(), on)) } else { None })
+            .collect();
+
+        // every write site in every handler: (handler, slot, value expr)
+        let mut writes: Vec<(String, String, Expr, bool)> = Vec::new();
+        for on in handlers.values() {
+            collect_writes_stmts(&on.body, &on.signal_name, false, &mut writes);
+        }
+        writes.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+
+        // local variable ranges, per handler
+        let mut locals: HashMap<String, HashMap<String, Known>> = HashMap::new();
+        for (name, on) in &handlers {
+            locals.insert(name.clone(), local_ranges(on, &hyp, &handlers));
         }
 
         let mut result = VerifyResult {
@@ -180,10 +210,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         };
 
         for (inv, targets, inv_text) in &guarded {
-            let inv_text = inv_text.clone();
-            let relevant: Vec<&(String, String, Expr)> = writes
+            let relevant: Vec<&(String, String, Expr, bool)> = writes
                 .iter()
-                .filter(|(_, slot, _)| targets.contains(slot))
+                .filter(|(_, slot, _, _)| targets.contains(slot))
                 .collect();
             if relevant.is_empty() {
                 result.checks.push(VerifyCheck::Pass(format!(
@@ -191,29 +220,65 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 )));
                 continue;
             }
+            let parts = conjuncts(inv);
             let mut runtime_checked: Vec<String> = Vec::new();
-            for (handler, slot, value_expr) in relevant {
-                match prove(inv, slot, static_value(value_expr)) {
-                    Proof::Holds => {
-                        result.checks.push(VerifyCheck::Pass(format!(
-                            "invariant {inv_text} — writer '{handler}' proven (writes {})",
+            for (handler, slot, value_expr, in_try) in relevant {
+                let ctx = RangeCtx {
+                    hyp: &hyp,
+                    vars: locals.get(handler).cloned().unwrap_or_default(),
+                    handlers: &handlers,
+                    depth: 0,
+                };
+                let known = ctx.range_of(value_expr);
+                let inductive = uses_slot_read(value_expr, &ctx);
+                let verdicts: Vec<Proof> = parts.iter().map(|c| prove(c, slot, known)).collect();
+                let how = if inductive { "proven by induction" } else { "proven" };
+
+                if verdicts.iter().any(|v| *v == Proof::Violated) && *in_try {
+                    // Always rejected AND caught: the author is showing that
+                    // this write is unrepresentable. That is a result, not a bug.
+                    result.checks.push(VerifyCheck::Pass(format!(
+                        "invariant {inv_text} — writer '{handler}' can never commit {} to '{slot}': the write is \
+                         always rejected (and the handler catches it)",
+                        render_expr(value_expr)
+                    )));
+                } else if verdicts.iter().any(|v| *v == Proof::Violated) {
+                    result.checks.push(VerifyCheck::Fail(
+                        format!(
+                            "invariant {inv_text} — writer '{handler}' writes {} to '{slot}': statically violated",
                             render_expr(value_expr)
-                        )));
-                    }
-                    Proof::Violated => {
-                        result.checks.push(VerifyCheck::Fail(
-                            format!(
-                                "invariant {inv_text} — writer '{handler}' writes {} to '{slot}': statically violated",
+                        ),
+                        None,
+                    ));
+                } else if verdicts.iter().all(|v| *v == Proof::Holds) {
+                    result.checks.push(VerifyCheck::Pass(format!(
+                        "invariant {inv_text} — writer '{handler}' {how} (writes {})",
+                        render_expr(value_expr)
+                    )));
+                } else {
+                    // part proven, part not: say exactly which
+                    for (c, v) in parts.iter().zip(&verdicts) {
+                        if *v == Proof::Holds {
+                            result.checks.push(VerifyCheck::Pass(format!(
+                                "invariant {} — writer '{handler}' {how} (writes {})",
+                                render_expr(c),
                                 render_expr(value_expr)
-                            ),
-                            None,
-                        ));
-                    }
-                    Proof::Unknown => {
-                        let tag = format!("{handler} → {slot}");
-                        if !runtime_checked.contains(&tag) {
-                            runtime_checked.push(tag);
+                            )));
                         }
+                    }
+                    let open: Vec<String> = parts
+                        .iter()
+                        .zip(&verdicts)
+                        .filter(|(_, v)| **v != Proof::Holds)
+                        .map(|(c, _)| render_expr(c))
+                        .collect();
+                    let tag = if open.len() == parts.len() {
+                        format!("{handler} → {slot}")
+                    } else {
+                        format!("{handler} → {slot} [{}]", open.join(" && "))
+                    };
+                    if !runtime_checked.contains(&tag) {
+                        runtime_checked.push(tag);
                     }
                 }
             }
@@ -230,6 +295,281 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
 
     results
 }
+
+// ── Interval reasoning ──────────────────────────────────────────────
+
+/// Split `a && b && c` into its conjuncts.
+fn conjuncts(inv: &Expr) -> Vec<&Expr> {
+    match inv {
+        Expr::BinaryOp { left, op: BinOp::And, right } => {
+            let mut v = conjuncts(&left.node);
+            v.extend(conjuncts(&right.node));
+            v
+        }
+        other => vec![other],
+    }
+}
+
+/// The interval a single comparison allows for `slot` (closed superset:
+/// `x > 5` contributes [5, ∞) — wider is sound for a hypothesis).
+fn interval_of(cmp: &Expr, slot: &str) -> Option<(f64, f64)> {
+    let Expr::CmpOp { left, op, right } = cmp else { return None };
+    let (subject_is_abs, op, bound) = match (subject_of(&left.node, slot), const_of(&right.node)) {
+        (Some(s), Some(c)) => (s, *op, c),
+        _ => match (const_of(&left.node), subject_of(&right.node, slot)) {
+            (Some(c), Some(s)) => (s, flip(*op), c),
+            _ => return None,
+        },
+    };
+    let inf = f64::INFINITY;
+    Some(match (subject_is_abs, op) {
+        (false, CmpOp::Ge | CmpOp::Gt) => (bound, inf),
+        (false, CmpOp::Le | CmpOp::Lt) => (-inf, bound),
+        (false, CmpOp::Eq) => (bound, bound),
+        (true, CmpOp::Le | CmpOp::Lt) => (-bound, bound),
+        _ => return None,
+    })
+}
+
+struct RangeCtx<'a> {
+    hyp: &'a HashMap<String, (f64, f64)>,
+    vars: HashMap<String, Known>,
+    handlers: &'a HashMap<String, &'a OnSection>,
+    depth: usize,
+}
+
+fn bounds(k: Known) -> Option<(f64, f64)> {
+    match k {
+        Known::Exact(v) => Some((v, v)),
+        Known::Range(lo, hi) => Some((lo, hi)),
+        Known::Unknown => None,
+    }
+}
+
+fn mk(lo: f64, hi: f64) -> Known {
+    if lo.is_nan() || hi.is_nan() {
+        Known::Unknown
+    } else if lo == hi {
+        Known::Exact(lo)
+    } else {
+        Known::Range(lo, hi)
+    }
+}
+
+fn join(a: Known, b: Known) -> Known {
+    match (bounds(a), bounds(b)) {
+        (Some((al, ah)), Some((bl, bh))) => mk(al.min(bl), ah.max(bh)),
+        _ => Known::Unknown,
+    }
+}
+
+impl RangeCtx<'_> {
+    /// A read of a guarded slot: `slot.get(k)` or `slot[k]`.
+    fn slot_read(&self, expr: &Expr) -> Option<Known> {
+        let slot = match expr {
+            Expr::MethodCall { target, method, .. } if method == "get" => match &target.node {
+                Expr::Ident(n) => n,
+                _ => return None,
+            },
+            Expr::Index { target, .. } => match &target.node {
+                Expr::Ident(n) => n,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let (lo, hi) = self.hyp.get(slot)?;
+        if lo.is_infinite() && hi.is_infinite() {
+            return None;
+        }
+        Some(mk(*lo, *hi))
+    }
+
+    fn range_of(&self, expr: &Expr) -> Known {
+        if let Some(k) = self.slot_read(expr) {
+            return k;
+        }
+        match expr {
+            Expr::Literal(Literal::Int(n)) => Known::Exact(*n as f64),
+            Expr::Literal(Literal::Float(f)) => Known::Exact(*f),
+            Expr::Ident(n) => self.vars.get(n).copied().unwrap_or(Known::Unknown),
+            Expr::BinaryOp { left, op, right } => {
+                let (Some((al, ah)), Some((bl, bh))) =
+                    (bounds(self.range_of(&left.node)), bounds(self.range_of(&right.node)))
+                else {
+                    return Known::Unknown;
+                };
+                match op {
+                    BinOp::Add => mk(al + bl, ah + bh),
+                    BinOp::Sub => mk(al - bh, ah - bl),
+                    BinOp::Mul => {
+                        let c = [al * bl, al * bh, ah * bl, ah * bh];
+                        if c.iter().any(|x| x.is_nan()) {
+                            return Known::Unknown; // 0 × ∞
+                        }
+                        mk(c.iter().cloned().fold(f64::INFINITY, f64::min), c.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+                    }
+                    BinOp::Div if bl == bh && bl != 0.0 && al == ah => Known::Exact(al / bl),
+                    _ => Known::Unknown,
+                }
+            }
+            Expr::FnCall { name, args } => match (name.as_str(), args.len()) {
+                // a ?? b: a when present, else b
+                ("_coalesce", 2) => join(self.range_of(&args[0].node), self.range_of(&args[1].node)),
+                ("clamp", 3) => match (bounds(self.range_of(&args[1].node)), bounds(self.range_of(&args[2].node))) {
+                    (Some((lo, _)), Some((_, hi))) if lo <= hi => mk(lo, hi),
+                    _ => Known::Unknown,
+                },
+                ("max", 2) | ("min", 2) => {
+                    let (Some((al, ah)), Some((bl, bh))) =
+                        (bounds(self.range_of(&args[0].node)), bounds(self.range_of(&args[1].node)))
+                    else {
+                        // max(x, 0) ≥ 0 even when x is unknown
+                        let known = [&args[0], &args[1]].iter().find_map(|a| bounds(self.range_of(&a.node)));
+                        return match (name.as_str(), known) {
+                            ("max", Some((l, _))) => mk(l, f64::INFINITY),
+                            ("min", Some((_, h))) => mk(f64::NEG_INFINITY, h),
+                            _ => Known::Unknown,
+                        };
+                    };
+                    if name == "max" { mk(al.max(bl), ah.max(bh)) } else { mk(al.min(bl), ah.min(bh)) }
+                }
+                ("abs", 1) => match bounds(self.range_of(&args[0].node)) {
+                    Some((lo, hi)) => {
+                        let low = if lo <= 0.0 && hi >= 0.0 { 0.0 } else { lo.abs().min(hi.abs()) };
+                        mk(low, lo.abs().max(hi.abs()))
+                    }
+                    None => mk(0.0, f64::INFINITY),
+                },
+                ("len", 1) => mk(0.0, f64::INFINITY),
+                // a small accessor handler: `on total() { return counts.get("n") ?? 0 }`
+                (_, 0) if self.depth < 3 => match self.handlers.get(name) {
+                    Some(on) => {
+                        let inner = RangeCtx {
+                            hyp: self.hyp,
+                            vars: local_ranges_at(on, self.hyp, self.handlers, self.depth + 1),
+                            handlers: self.handlers,
+                            depth: self.depth + 1,
+                        };
+                        let mut rets: Vec<&Expr> = Vec::new();
+                        collect_return_values(&on.body, &mut rets);
+                        if rets.is_empty() {
+                            return Known::Unknown;
+                        }
+                        rets.iter().map(|e| inner.range_of(e)).reduce(join).unwrap_or(Known::Unknown)
+                    }
+                    None => Known::Unknown,
+                },
+                _ => Known::Unknown,
+            },
+            _ => Known::Unknown,
+        }
+    }
+}
+
+/// Did the proof lean on the induction hypothesis — a read of a guarded
+/// slot, directly, through a local, or through an accessor handler?
+fn uses_slot_read(expr: &Expr, ctx: &RangeCtx) -> bool {
+    let mut found = false;
+    super::termination::walk_expr(expr, &mut |e| {
+        let via_local_or_accessor = match e {
+            Expr::Ident(n) => ctx.vars.get(n).is_some_and(|k| bounds(*k).is_some_and(|(l, h)| l != h)),
+            Expr::FnCall { name, args } => args.is_empty() && ctx.handlers.contains_key(name),
+            _ => false,
+        };
+        if ctx.slot_read(e).is_some() || via_local_or_accessor {
+            found = true;
+        }
+    });
+    found
+}
+
+fn collect_return_values<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e Expr>) {
+    for (i, stmt) in stmts.iter().enumerate() {
+        match &stmt.node {
+            Statement::Return { value } => out.push(&value.node),
+            Statement::ExprStmt { expr } if i + 1 == stmts.len() => out.push(&expr.node),
+            Statement::If { then_body, else_body, .. } => {
+                collect_return_values(then_body, out);
+                collect_return_values(else_body, out);
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => collect_return_values(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn local_ranges(
+    on: &OnSection,
+    hyp: &HashMap<String, (f64, f64)>,
+    handlers: &HashMap<String, &OnSection>,
+) -> HashMap<String, Known> {
+    local_ranges_at(on, hyp, handlers, 0)
+}
+
+/// Range of every local: the join of all its assignments. Three rounds;
+/// a bound still moving after that (an accumulator in a loop) is widened
+/// to ±∞. Parameters are unknown.
+fn local_ranges_at(
+    on: &OnSection,
+    hyp: &HashMap<String, (f64, f64)>,
+    handlers: &HashMap<String, &OnSection>,
+    depth: usize,
+) -> HashMap<String, Known> {
+    let mut assigns: Vec<(&str, &Expr)> = Vec::new();
+    collect_assigns(&on.body, &mut assigns);
+    let params: HashSet<&str> = on.params.iter().map(|p| p.name.as_str()).collect();
+
+    let mut vars: HashMap<String, Known> = HashMap::new();
+    for round in 0..4 {
+        let mut next: HashMap<String, Known> = HashMap::new();
+        for (name, value) in &assigns {
+            if params.contains(name) {
+                next.insert((*name).to_string(), Known::Unknown);
+                continue;
+            }
+            let ctx = RangeCtx { hyp, vars: vars.clone(), handlers, depth };
+            let r = ctx.range_of(value);
+            let merged = match next.get(*name) {
+                Some(prev) => join(*prev, r),
+                None => r,
+            };
+            next.insert((*name).to_string(), merged);
+        }
+        if round == 3 {
+            // widen whatever is still growing
+            for (name, k) in next.iter_mut() {
+                if let (Some((pl, ph)), Some((l, h))) = (vars.get(name).copied().and_then(bounds), bounds(*k)) {
+                    let lo = if l < pl { f64::NEG_INFINITY } else { l };
+                    let hi = if h > ph { f64::INFINITY } else { h };
+                    *k = mk(lo, hi);
+                }
+            }
+        }
+        vars = next;
+    }
+    vars
+}
+
+fn collect_assigns<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<(&'e str, &'e Expr)>) {
+    for stmt in stmts {
+        match &stmt.node {
+            Statement::Let { name, value } | Statement::Assign { name, value } => out.push((name.as_str(), &value.node)),
+            Statement::If { then_body, else_body, .. } => {
+                collect_assigns(then_body, out);
+                collect_assigns(else_body, out);
+            }
+            Statement::While { body, .. } => collect_assigns(body, out),
+            Statement::For { var, body, .. } => {
+                // the loop variable is unknown
+                out.push((var.as_str(), &UNKNOWN_EXPR));
+                collect_assigns(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+static UNKNOWN_EXPR: Expr = Expr::Literal(Literal::Unit);
 
 /// Constant-fold a value expression where possible.
 fn static_value(expr: &Expr) -> Known {
@@ -362,46 +702,46 @@ fn flip(op: CmpOp) -> CmpOp {
 
 // ── Write-site collection ───────────────────────────────────────────
 
-fn collect_writes_stmts(stmts: &[Spanned<Statement>], handler: &str, out: &mut Vec<(String, String, Expr)>) {
+fn collect_writes_stmts(stmts: &[Spanned<Statement>], handler: &str, in_try: bool, out: &mut Vec<(String, String, Expr, bool)>) {
     for stmt in stmts {
         match &stmt.node {
             Statement::Let { value, .. }
             | Statement::Assign { value, .. }
-            | Statement::Return { value } => collect_writes_expr(&value.node, handler, out),
-            Statement::ExprStmt { expr } => collect_writes_expr(&expr.node, handler, out),
+            | Statement::Return { value } => collect_writes_expr(&value.node, handler, in_try, out),
+            Statement::ExprStmt { expr } => collect_writes_expr(&expr.node, handler, in_try, out),
             Statement::If { condition, then_body, else_body } => {
-                collect_writes_expr(&condition.node, handler, out);
-                collect_writes_stmts(then_body, handler, out);
-                collect_writes_stmts(else_body, handler, out);
+                collect_writes_expr(&condition.node, handler, in_try, out);
+                collect_writes_stmts(then_body, handler, in_try, out);
+                collect_writes_stmts(else_body, handler, in_try, out);
             }
             Statement::While { condition, body, .. } => {
-                collect_writes_expr(&condition.node, handler, out);
-                collect_writes_stmts(body, handler, out);
+                collect_writes_expr(&condition.node, handler, in_try, out);
+                collect_writes_stmts(body, handler, in_try, out);
             }
             Statement::For { iter, body, .. } => {
-                collect_writes_expr(&iter.node, handler, out);
-                collect_writes_stmts(body, handler, out);
+                collect_writes_expr(&iter.node, handler, in_try, out);
+                collect_writes_stmts(body, handler, in_try, out);
             }
             // `slot[k] = v` — same write path as slot.set(k, v) at runtime.
             // A local of the same name is filtered out later (only guarded
             // slot names are kept).
             Statement::IndexSet { name, index, value } => {
-                out.push((handler.to_string(), name.clone(), value.node.clone()));
-                collect_writes_expr(&index.node, handler, out);
-                collect_writes_expr(&value.node, handler, out);
+                out.push((handler.to_string(), name.clone(), value.node.clone(), in_try));
+                collect_writes_expr(&index.node, handler, in_try, out);
+                collect_writes_expr(&value.node, handler, in_try, out);
             }
             Statement::MethodCall { target, method, args } => {
-                push_slot_write(target, method, args, handler, out);
+                push_slot_write(target, method, args, handler, in_try, out);
                 for a in args {
-                    collect_writes_expr(&a.node, handler, out);
+                    collect_writes_expr(&a.node, handler, in_try, out);
                 }
             }
             Statement::Emit { args, .. } => {
                 for a in args {
-                    collect_writes_expr(&a.node, handler, out);
+                    collect_writes_expr(&a.node, handler, in_try, out);
                 }
             }
-            Statement::Ensure { condition } => collect_writes_expr(&condition.node, handler, out),
+            Statement::Ensure { condition } => collect_writes_expr(&condition.node, handler, in_try, out),
             _ => {}
         }
     }
@@ -416,79 +756,79 @@ fn push_slot_write(
     method: &str,
     args: &[Spanned<Expr>],
     handler: &str,
-    out: &mut Vec<(String, String, Expr)>,
+    in_try: bool,
+    out: &mut Vec<(String, String, Expr, bool)>,
 ) {
     match method {
         "set" | "put" if args.len() >= 2 => {
-            out.push((handler.to_string(), slot.to_string(), args[1].node.clone()));
+            out.push((handler.to_string(), slot.to_string(), args[1].node.clone(), in_try));
         }
         "push" | "append" if !args.is_empty() => {
-            out.push((handler.to_string(), slot.to_string(), args[0].node.clone()));
+            out.push((handler.to_string(), slot.to_string(), args[0].node.clone(), in_try));
         }
         "delete" | "remove" => {
-            out.push((handler.to_string(), slot.to_string(), Expr::Ident("<deleted entry>".to_string())));
+            out.push((handler.to_string(), slot.to_string(), Expr::Ident("<deleted entry>".to_string()), in_try));
         }
         _ => {}
     }
 }
 
-fn collect_writes_expr(expr: &Expr, handler: &str, out: &mut Vec<(String, String, Expr)>) {
+fn collect_writes_expr(expr: &Expr, handler: &str, in_try: bool, out: &mut Vec<(String, String, Expr, bool)>) {
     match expr {
         Expr::MethodCall { target, method, args } => {
             if let Expr::Ident(slot) = &target.node {
-                push_slot_write(slot, method, args, handler, out);
+                push_slot_write(slot, method, args, handler, in_try, out);
             }
-            collect_writes_expr(&target.node, handler, out);
+            collect_writes_expr(&target.node, handler, in_try, out);
             for a in args {
-                collect_writes_expr(&a.node, handler, out);
+                collect_writes_expr(&a.node, handler, in_try, out);
             }
         }
         Expr::FnCall { args, .. } => {
             for a in args {
-                collect_writes_expr(&a.node, handler, out);
+                collect_writes_expr(&a.node, handler, in_try, out);
             }
         }
-        Expr::FieldAccess { target, .. } => collect_writes_expr(&target.node, handler, out),
+        Expr::FieldAccess { target, .. } => collect_writes_expr(&target.node, handler, in_try, out),
         Expr::BinaryOp { left, right, .. }
         | Expr::CmpOp { left, right, .. }
         | Expr::Pipe { left, right } => {
-            collect_writes_expr(&left.node, handler, out);
-            collect_writes_expr(&right.node, handler, out);
+            collect_writes_expr(&left.node, handler, in_try, out);
+            collect_writes_expr(&right.node, handler, in_try, out);
         }
-        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => {
-            collect_writes_expr(&i.node, handler, out)
-        }
+        Expr::Try(i) => collect_writes_expr(&i.node, handler, true, out),
+        Expr::Not(i) | Expr::TryPropagate(i) => collect_writes_expr(&i.node, handler, in_try, out),
         Expr::ListLiteral(items) => {
             for i in items {
-                collect_writes_expr(&i.node, handler, out);
+                collect_writes_expr(&i.node, handler, in_try, out);
             }
         }
         Expr::Record { fields, .. } => {
             for (_, v) in fields {
-                collect_writes_expr(&v.node, handler, out);
+                collect_writes_expr(&v.node, handler, in_try, out);
             }
         }
-        Expr::Lambda { body, .. } => collect_writes_expr(&body.node, handler, out),
+        Expr::Lambda { body, .. } => collect_writes_expr(&body.node, handler, in_try, out),
         Expr::LambdaBlock { stmts, result, .. } => {
-            collect_writes_stmts(stmts, handler, out);
-            collect_writes_expr(&result.node, handler, out);
+            collect_writes_stmts(stmts, handler, in_try, out);
+            collect_writes_expr(&result.node, handler, in_try, out);
         }
         Expr::Match { subject, arms } => {
-            collect_writes_expr(&subject.node, handler, out);
+            collect_writes_expr(&subject.node, handler, in_try, out);
             for arm in arms {
                 if let Some(g) = &arm.guard {
-                    collect_writes_expr(&g.node, handler, out);
+                    collect_writes_expr(&g.node, handler, in_try, out);
                 }
-                collect_writes_stmts(&arm.body, handler, out);
-                collect_writes_expr(&arm.result.node, handler, out);
+                collect_writes_stmts(&arm.body, handler, in_try, out);
+                collect_writes_expr(&arm.result.node, handler, in_try, out);
             }
         }
         Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
-            collect_writes_expr(&condition.node, handler, out);
-            collect_writes_stmts(then_body, handler, out);
-            collect_writes_expr(&then_result.node, handler, out);
-            collect_writes_stmts(else_body, handler, out);
-            collect_writes_expr(&else_result.node, handler, out);
+            collect_writes_expr(&condition.node, handler, in_try, out);
+            collect_writes_stmts(then_body, handler, in_try, out);
+            collect_writes_expr(&then_result.node, handler, in_try, out);
+            collect_writes_stmts(else_body, handler, in_try, out);
+            collect_writes_expr(&else_result.node, handler, in_try, out);
         }
         _ => {}
     }

@@ -1392,6 +1392,35 @@ impl Parser {
                 });
             }
 
+            // `* -> failed except [paid, denied]` — states the wildcard does
+            // not leave (they stay final)
+            let mut except: Vec<String> = Vec::new();
+            if matches!(self.peek(), Token::Ident(s) if s == "except") {
+                if from != "*" {
+                    return Err(ParseError::FixIt {
+                        message: format!("`except` only applies to a wildcard transition: `* -> {} except [a, b]`", to),
+                        span: self.peek_span(),
+                    });
+                }
+                self.advance();
+                let bracketed = self.check(&Token::LBracket);
+                if bracketed {
+                    self.advance();
+                }
+                loop {
+                    let (name, _) = self.expect_any_name()?;
+                    except.push(name);
+                    if self.check(&Token::Comma) {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+                if bracketed {
+                    self.expect(Token::RBracket)?;
+                }
+            }
+
             let mut guard = None;
             let mut effect = Vec::new();
 
@@ -1424,7 +1453,7 @@ impl Parser {
             }
 
             transitions.push(Spanned::new(
-                Transition { from: from.clone(), to: to.clone(), guard, effect },
+                Transition { from: from.clone(), to: to.clone(), except, guard, effect },
                 start.merge(self.prev_span()),
             ));
 
@@ -1435,7 +1464,7 @@ impl Parser {
                 self.advance();
                 let (next, _) = self.expect_any_name()?;
                 transitions.push(Spanned::new(
-                    Transition { from: prev.clone(), to: next.clone(), guard: None, effect: vec![] },
+                    Transition { from: prev.clone(), to: next.clone(), except: vec![], guard: None, effect: vec![] },
                     start.merge(self.prev_span()),
                 ));
                 prev = next;
@@ -2040,10 +2069,36 @@ impl Parser {
                             break true;
                         }
                     };
-                    if chain_ok && !accessors.is_empty() && self.check(&Token::Eq) {
+                    let compound = match self.peek() {
+                        Token::PlusEq => Some(BinOp::Add),
+                        Token::MinusEq => Some(BinOp::Sub),
+                        Token::StarEq => Some(BinOp::Mul),
+                        Token::SlashEq => Some(BinOp::Div),
+                        _ => None,
+                    };
+                    if chain_ok && !accessors.is_empty() && (self.check(&Token::Eq) || compound.is_some()) {
                         self.advance();
-                        let value = self.parse_expr()?;
+                        let rhs = self.parse_expr()?;
                         let sp = start;
+                        // `m[k] += 1`, `acc.balance -= x`: read the same chain
+                        // and write `read op rhs` back through it
+                        let value = match compound {
+                            None => rhs,
+                            Some(op) => {
+                                let mut read = Spanned::new(Expr::Ident(name.clone()), name_span);
+                                for acc in &accessors {
+                                    read = Spanned::new(
+                                        Expr::Index { target: Box::new(read), index: Box::new(acc.clone()) },
+                                        sp,
+                                    );
+                                }
+                                let rhs_span = rhs.span;
+                                Spanned::new(
+                                    Expr::BinaryOp { left: Box::new(read), op, right: Box::new(rhs) },
+                                    sp.merge(rhs_span),
+                                )
+                            }
+                        };
                         let k0 = accessors[0].clone();
                         let base0 = Spanned::new(Expr::Index {
                             target: Box::new(Spanned::new(Expr::Ident(name.clone()), name_span)),

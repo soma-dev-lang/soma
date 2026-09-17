@@ -18,7 +18,7 @@ What cost them time, by severity:
 - [x] S3 `invariant len(links) <= 1000` silently bounds the written VALUE's length, not the entry count; no per-slot size bound syntax.
 - [x] S4 cost prover says "no max_tokens" for `think(prompt, system, map("max_tokens", N))` — only reads opts in arg 2.
 - [x] S5 `assert_fails` passes for the wrong reason (UndefinedVar); wants `assert_fails expr matching "text"`.
-- [ ] S6 `promise cost <= 1000` in face silently accepted, no effect.
+- [x] S6 `promise cost <= 1000` in face silently accepted, no effect.
 - [x] S7 `SOMA_LLM_MOCK=bogus` silently accepted.
 - [x] S8 undefined variable (typo) passed check, failed only at runtime (found by me before the reports).
 
@@ -73,10 +73,10 @@ Scores ("I would want to use this again"): data 6/10 (cycle 1: "no"), reservatio
 Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 check cycles (cycle 1: ~10); "each hint resolved in one step".
 
 ### Blockers (found by the site evaluator, reproduced with numbers)
-- [ ] B1 `soma serve` is threaded, handlers are not atomic: 300 payments of 10 against a balance of 1000, 50 parallel calls → 122–153 paid. Lost updates on read-modify-write.
-- [ ] B2 no rollback: a handler that raises keeps its earlier writes/transitions. corpus/escrow_finance/wire_dual_control's story ("the wire never exists") is false: the wire ends `drafted`, then can be sent. Four agents hand-wrote compensation.
-- [ ] B3 every non-underscore handler of the request-owning cell is auto-routed (`GET /open_account/acme/999999` sets a balance, bypassing the router) and shadows `request` routes (`POST /hold/r1` → 500). Passed check, verify, test AND `soma run … request`.
-- [ ] B4 vacuous properties pass: `never = ["piad"]` (undeclared state); `soma verify` exits 0 on a file that fails `soma check`; `soma test` runs a file that fails check.
+- [x] B1 `soma serve` is threaded, handlers are not atomic: 300 payments of 10 against a balance of 1000, 50 parallel calls → 122–153 paid. Lost updates on read-modify-write.
+- [x] B2 no rollback: a handler that raises keeps its earlier writes/transitions. corpus/escrow_finance/wire_dual_control's story ("the wire never exists") is false: the wire ends `drafted`, then can be sent. Four agents hand-wrote compensation.
+- [x] B3 every non-underscore handler of the request-owning cell is auto-routed (`GET /open_account/acme/999999` sets a balance, bypassing the router) and shadows `request` routes (`POST /hold/r1` → 500). Passed check, verify, test AND `soma run … request`.
+- [x] B4 vacuous properties pass: `never = ["piad"]` (undeclared state); `soma verify` exits 0 on a file that fails `soma check`; `soma test` runs a file that fails check.
 
 ### Error model (2 agents, top friction)
 - [x] R1 no documented way to raise; errors stringly typed, no payload, no re-raise; everything prefixed "require failed:" → `fail(kind, detail)`, `r.kind` / `r.detail` on try-results, `fail(r)` re-raises, prefix only on real requires, test output in the language's words (no Rust Debug dumps).
@@ -94,10 +94,10 @@ Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 che
 - [x] C8 `m[k] += 1`, `acc.balance += x` unsupported.
 
 ### Verify
-- [x] V1 `* -> failed` made success states non-terminal (2 agents) → `*` no longer applies to a state with no explicit outgoing edge.
+- [x] V1 `* -> failed` made success states non-terminal (2 agents). First fix (wildcard skips final states) broke `* -> deleted` in 4 programs and was REVERTED; now: verify warns with the exact fix, and `* -> failed except [paid, denied]` keeps states final.
 - [x] V2 invariants on computed values: interval + induction prover; per-conjunct report; always-rejected-and-caught writes reported as such.
-- [ ] V3 `requires = [a, b]` is "one of" (passes silently when you meant both) → `requires_all`.
-- [ ] V4 summary says "0 failures" before the temporal section fails; streams interleave; "think-isolated" printed for cells with no LLM; "N literal transitions" counts call sites.
+- [x] V3 `requires = [a, b]` is "one of" (passes silently when you meant both) → `requires_all`.
+- [x] V4 summary says "0 failures" before the temporal section fails; streams interleave; "think-isolated" printed for cells with no LLM; "N literal transitions" counts call sites.
 - [ ] V5 `get_status(unknown id)` returns the initial state.
 
 ### Tests / mocks
@@ -113,3 +113,11 @@ Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 che
 - [ ] W3 corpus: /corpus/domains.json (~1 KB), finer features (guard, precedence, router, two_cell), drop the `tests` feature (all 316 have it), programs combining http + state_machine + invariant, each program's soma.toml + verify line in the index; audit narratives against behaviour.
 - [ ] W4 /status: license (SPDX), changelog, release date, known limits, security contact, security.txt; LICENSE on the site; pin install.sh to a tag + checksum.
 - [ ] W5 llms-full.txt repeats llms.txt (10 KB paid twice) and carries ~20 KB of linalg/quant irrelevant to a service → profiles; spec.md says "Version: 2.2.1"; /examples is a dead end; repo-relative links dangle; docs hash in version.json.
+
+### Cycle 2 — decisions taken
+- **Handlers are atomic.** Undo journal in the interpreter (writes, deletes, appends, transitions); a failing top-level handler is rolled back; a failing `try` is a savepoint; top-level invocations are serialized process-wide. The evaluator's experiment now pays exactly 100/300 (was 122–153), pinned by a test.
+- **Error model.** `fail(kind, detail)`, `r.kind` / `r.detail`, `fail(r)`; "require failed:" only on requires; no Rust Debug dumps in test output.
+- **Routing.** A path `request` matches explicitly wins over the auto-exposed handler of the same name; check warns (19 true collisions in the repo, 4 in rebalancer).
+- **Gates.** verify and test refuse a program that fails check; properties on undeclared states are errors; one final VERIFY verdict; `requires_all`.
+- **Prover.** Interval + induction reasoning on invariants, reported per conjunct; an always-rejected write under `try` is reported as "can never commit" (2 governance programs rely on it).
+- Ordering against `()` raises (was silently false); variant payloads compare structurally; `m[k] += 1` / `a.f += x`.

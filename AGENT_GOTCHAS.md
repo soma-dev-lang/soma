@@ -263,16 +263,12 @@ It can't be a parameter name or a map field read as `.on`. Use `enabled`,
 It's a face-declaration keyword — can't be a state name, param, or
 identifier. `error: expected name, found Given`. Use `granted`, `input`, etc.
 
-## 17. `rules { }` blocks take only assertions — no bare statements
+## 17. What a test cell's `rules { }` accepts
 
-```soma
-rules { setup()  assert x() == 1 }     // error: expected ... assert ...
-```
-```soma
-rules { assert setup() != ()  assert x() == 1 }   // wrap setup in an assert
-```
-Valid rule forms: `assert`, `assert_fails`, `property`, plus meta-cell
-rules (`contradicts`, `implies`, `requires`, ...).
+`assert`, `assert_fails` (optionally `… matching "text"`), `let name = expr`
+(a fixture for the rules below), `mock think "reply"` / `mock think ["a", "b"]`
+/ `mock think error "timeout"`, and `property`. No bare statements: put logic
+in a handler and call it.
 
 ## 18. One invariant, one slot
 
@@ -347,3 +343,27 @@ model checker keeps the edge (an over-approximation, so safety results hold).
 A `soma.toml` that does not parse — or has an unknown key under `[verify]` — is
 an error for every command (it used to be ignored silently, so `[verify]`
 properties were never checked). `[package]` is optional.
+
+## 24. Handlers are atomic; errors have kinds
+
+A handler that raises leaves nothing behind: its writes and transitions are
+rolled back (a failing `try { }` block too, to where it began). Do not write
+compensation code. Raise with `fail("kind", "detail")` or
+`require cond else Tag`; catch with `let r = try { … }` and branch on `r.kind`
+(`"not_found"`, `"invalid_transition"`, `"guard_failed"`, `"invariant"`, …);
+`fail(r)` re-raises.
+
+## 25. `* -> failed` leaves EVERY state, final ones included
+
+```soma
+state s { initial: a   a -> paid   * -> failed }               // paid -> failed exists: paid is not final
+state s { initial: a   a -> paid   * -> failed except [paid] }  // paid stays final
+```
+`soma verify` warns about the first form and prints the second.
+
+## 26. A route in `request` and a handler of the same name
+
+`soma serve` exposes every public handler at `/<name>/<args>`. With
+`on hold(id, qty)` and a route `"/hold/" + id`, the explicit route wins — but
+other `/hold/…` shapes still reach the handler. Prefix internal handlers with
+`_`. `soma check` warns.

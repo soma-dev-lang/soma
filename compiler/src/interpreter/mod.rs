@@ -16,6 +16,21 @@ pub use crate::interpreter::soma_int::SomaInt;
 use num_bigint::BigInt;
 use thiserror::Error;
 
+/// How to undo one committed effect (see `Interpreter::journal`).
+pub(crate) enum UndoOp {
+    /// `set` / `delete`: restore the previous value, or remove the key
+    Restore { backend: Arc<dyn StorageBackend>, key: String, prev: Option<crate::runtime::storage::StoredValue> },
+    /// `append` / `push`
+    Unappend { backend: Arc<dyn StorageBackend> },
+}
+
+/// One handler at a time. `soma serve` runs each request on its own thread
+/// over shared storage; without this, two concurrent read-modify-write
+/// handlers both read the old balance (measured: 300 payments of 10 against
+/// 1000 with 50 parallel calls paid out 122–153 times). Handlers are
+/// serialized: correctness first, the language's claim is that limits hold.
+static HANDLER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Error, Debug)]
 pub enum RuntimeError {
     #[error("undefined variable: {0}")]
@@ -26,10 +41,77 @@ pub enum RuntimeError {
     TypeError(String),
     #[error("no handler found for signal '{0}' in cell '{1}'")]
     NoHandler(String, String),
-    #[error("require failed: {0}")]
+    #[error("{}", display_require(.0))]
     RequireFailed(String),
+    /// `fail("not_found", "reservation {id}")` — a domain error with a kind
+    /// a caller can branch on (`r.kind == "not_found"`).
+    #[error("{message}")]
+    Domain { kind: String, message: String },
     #[error("stack overflow (recursion depth exceeded)")]
     StackOverflow,
+}
+
+/// RequireFailed carries three different things: a `require … else Tag`
+/// that failed, and the runtime's own refusals (illegal transition, failed
+/// guard, violated invariant, failed ensure). Only the first is a
+/// "require"; the others are reported as what they are.
+fn display_require(msg: &str) -> String {
+    const OWN: &[&str] = &["invalid transition", "guard failed", "memory invariant", "ensure postcondition"];
+    if OWN.iter().any(|p| msg.starts_with(p)) {
+        msg.to_string()
+    } else {
+        format!("require failed: {}", msg)
+    }
+}
+
+impl RuntimeError {
+    /// A stable machine-readable kind, exposed as `r.kind` on a try-result.
+    pub fn kind(&self) -> String {
+        match self {
+            RuntimeError::UndefinedVar(_) => "undefined_variable".to_string(),
+            RuntimeError::UndefinedFn(_) => "undefined_function".to_string(),
+            RuntimeError::NoHandler(..) => "no_handler".to_string(),
+            RuntimeError::StackOverflow => "stack_overflow".to_string(),
+            RuntimeError::Domain { kind, .. } => kind.clone(),
+            RuntimeError::RequireFailed(msg) => {
+                if msg.starts_with("invalid transition") {
+                    "invalid_transition".to_string()
+                } else if msg.starts_with("guard failed") {
+                    "guard_failed".to_string()
+                } else if msg.starts_with("memory invariant") {
+                    "invariant".to_string()
+                } else if msg.starts_with("ensure postcondition") {
+                    "ensure".to_string()
+                } else {
+                    // `require cond else Tag` → "Tag: constraint violated"
+                    msg.split(':').next().unwrap_or("require").trim().to_string()
+                }
+            }
+            RuntimeError::TypeError(msg) => {
+                if msg.contains("division by zero") || msg.contains("modulo by zero") {
+                    "division_by_zero".to_string()
+                } else if msg.starts_with("think()") {
+                    "llm".to_string()
+                } else if msg.contains("token budget") {
+                    "budget".to_string()
+                } else if msg.contains("out of bounds") {
+                    "index".to_string()
+                } else {
+                    "type".to_string()
+                }
+            }
+        }
+    }
+
+    /// The part after the kind, when the message has the `kind: detail` shape.
+    pub fn detail(&self) -> String {
+        match self {
+            RuntimeError::Domain { kind, message } => {
+                message.strip_prefix(&format!("{}: ", kind)).unwrap_or(message).to_string()
+            }
+            other => other.to_string(),
+        }
+    }
 }
 
 /// Return a human-readable type name for a Value (e.g. "String", "Int").
@@ -428,6 +510,12 @@ pub struct Interpreter {
     /// transition's guard: `a -> b { guard { amount < 10000 } }` reads the
     /// caller's `amount`.
     pub(crate) transition_env: Option<Env>,
+    /// Undo journal of the running top-level handler. Every committed
+    /// write / delete / append / state transition records how to undo
+    /// itself; a handler that fails is rolled back entirely, and a
+    /// `try { }` that fails is rolled back to where it started (savepoint).
+    /// None outside a top-level invocation.
+    pub(crate) journal: Option<Vec<UndoOp>>,
     /// Scripted LLM replies (`mock think …` in a test cell): Ok(text) or
     /// Err(message). think() consumes this queue before any mock mode.
     pub mock_queue: std::collections::VecDeque<Result<String, String>>,
@@ -596,6 +684,7 @@ impl Interpreter {
             last_span: None,
             current_handler: None,
             transition_env: None,
+            journal: None,
             mock_queue: std::collections::VecDeque::new(),
             test_auto_mock: false,
             auto_mock_noted: false,
@@ -731,7 +820,20 @@ impl Interpreter {
 
     /// Run a signal handler on a cell with the given arguments.
     /// Only clones the handler's params and body — not the whole CellDef.
+    /// Invoke a handler. A top-level invocation is ATOMIC: serialized
+    /// against every other top-level invocation of the process and rolled
+    /// back entirely if it fails (see `atomically`). A nested call — a
+    /// handler calling a handler — joins the unit already running.
     pub fn call_signal(
+        &mut self,
+        cell_name: &str,
+        signal_name: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        self.atomically(|me| me.call_signal_inner(cell_name, signal_name, args))
+    }
+
+    fn call_signal_inner(
         &mut self,
         cell_name: &str,
         signal_name: &str,
@@ -1765,14 +1867,25 @@ impl Interpreter {
 
             Expr::Try(inner) => {
                 // try { expr } → returns map("value", result) or map("error", message)
-                match self.eval_expr(&inner.node, env, cell_name, signal_name) {
+                // savepoint: what a failing `try` block wrote is undone
+                let savepoint = self.journal.as_ref().map(|j| j.len());
+                let outcome = self.eval_expr(&inner.node, env, cell_name, signal_name);
+                if let (Err(ExecError::Runtime(_)), Some(mark)) = (&outcome, savepoint) {
+                    self.rollback_to(mark);
+                }
+                match outcome {
                     Ok(val) => Ok(map_from_pairs(vec![
                         ("value".to_string(), val),
                         ("error".to_string(), Value::Unit),
                     ])),
+                    // error: the message; kind: what to branch on
+                    // ("not_found", "invalid_transition", "invariant", …);
+                    // detail: the message without its kind. `fail(r)` re-raises.
                     Err(ExecError::Runtime(e)) => Ok(map_from_pairs(vec![
                         ("value".to_string(), Value::Unit),
                         ("error".to_string(), Value::String(format!("{}", e))),
+                        ("kind".to_string(), Value::String(e.kind())),
+                        ("detail".to_string(), Value::String(e.detail())),
                     ])),
                     Err(ExecError::Return(val)) => Err(ExecError::Return(val)),
                     Err(ExecError::Break) => Err(ExecError::Break),
@@ -2196,7 +2309,10 @@ impl Interpreter {
                 let size_after = backend.len() as i64 + if exists { 0 } else { 1 };
                 self.check_invariants(cell_name, slot_name, &key_str, val, size_after, "write")?;
 
-                // Write locally
+                // Write locally (journaled: a failing handler is rolled back)
+                if let Some(j) = self.journal.as_mut() {
+                    j.push(UndoOp::Restore { backend: backend.clone(), key: key_str.clone(), prev: backend.get(&key_str) });
+                }
                 backend.set(&key_str, value_to_stored(val));
 
                 // In cluster mode: broadcast to peers via EVENT bus
@@ -2224,6 +2340,11 @@ impl Interpreter {
                     self.check_invariants(cell_name, slot_name, &key_str, &old, size_after, "delete")?;
                 }
 
+                if let Some(j) = self.journal.as_mut() {
+                    if let Some(prev) = backend.get(&key_str) {
+                        j.push(UndoOp::Restore { backend: backend.clone(), key: key_str.clone(), prev: Some(prev) });
+                    }
+                }
                 let removed = backend.delete(&key_str);
 
                 // Broadcast delete to cluster
@@ -2239,6 +2360,9 @@ impl Interpreter {
                     )))?;
                 let size_after = backend.len() as i64 + 1;
                 self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
+                if let Some(j) = self.journal.as_mut() {
+                    j.push(UndoOp::Unappend { backend: backend.clone() });
+                }
                 backend.append(value_to_stored(val));
                 Ok(Value::Unit)
             }
@@ -3121,7 +3245,16 @@ impl Interpreter {
             let result = match op {
                 CmpOp::Eq => matches!((l, r), (Value::Unit, Value::Unit)),
                 CmpOp::Ne => !matches!((l, r), (Value::Unit, Value::Unit)),
-                _ => false,
+                // Ordering against () used to be a silent `false`: a typo'd
+                // field (`r.statuss >= 500`) reads as () and every record
+                // quietly failed the test. `() + 1` already raises; so does this.
+                _ => {
+                    let side = if matches!(l, Value::Unit) { "left" } else { "right" };
+                    return Err(RuntimeError::TypeError(format!(
+                        "cannot order () with {op}: the {side} side is () (null) — a missing map field \
+                         or an unset slot reads as (). Test it first (`x != ()`) or default it (`x ?? 0`)",
+                    )));
+                }
             };
             return Ok(Value::Bool(result));
         }
@@ -3213,6 +3346,40 @@ impl Interpreter {
         }
     }
 
+    /// Undo journaled effects back to `mark` (newest first).
+    pub(crate) fn rollback_to(&mut self, mark: usize) {
+        let Some(journal) = self.journal.as_mut() else { return };
+        while journal.len() > mark {
+            match journal.pop() {
+                Some(UndoOp::Restore { backend, key, prev }) => match prev {
+                    Some(v) => backend.set(&key, v),
+                    None => {
+                        backend.delete(&key);
+                    }
+                },
+                Some(UndoOp::Unappend { backend }) => backend.unappend(),
+                None => break,
+            }
+        }
+    }
+
+    /// Run `f` as ONE atomic unit: serialized against every other top-level
+    /// invocation in the process, and rolled back entirely if it fails.
+    /// Nested use (a handler calling a handler) joins the running unit.
+    pub fn atomically<T, E>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E> {
+        if self.journal.is_some() {
+            return f(self);
+        }
+        let _serial = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.journal = Some(Vec::new());
+        let result = f(self);
+        if result.is_err() {
+            self.rollback_to(0);
+        }
+        self.journal = None;
+        result
+    }
+
     /// Does the program define a handler `name` taking exactly `argc`
     /// arguments? Then a call resolves to it rather than to a builtin.
     #[inline]
@@ -3246,14 +3413,14 @@ impl Interpreter {
 
         // Find matching transition
         let transition = sm.transitions.iter().find(|t| {
-            (t.node.from == current || t.node.from == "*") && t.node.to == target
+            (t.node.from == current || (t.node.from == "*" && sm.wildcard_applies(&t.node, &current))) && t.node.to == target
         });
 
         let transition = match transition {
             Some(t) => t,
             None => {
                 let valid: Vec<String> = sm.transitions.iter()
-                    .filter(|t| t.node.from == current || t.node.from == "*")
+                    .filter(|t| t.node.from == current || (t.node.from == "*" && sm.wildcard_applies(&t.node, &current)))
                     .map(|t| t.node.to.clone())
                     .collect();
                 return Err(RuntimeError::RequireFailed(format!(
@@ -3303,7 +3470,12 @@ impl Interpreter {
             .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
 
         // Perform transition
-        status_slot.set(id, crate::runtime::storage::StoredValue::String(target.to_string()));
+        let status_backend = status_slot.clone();
+        let prev_status = status_backend.get(id);
+        status_backend.set(id, crate::runtime::storage::StoredValue::String(target.to_string()));
+        if let Some(j) = self.journal.as_mut() {
+            j.push(UndoOp::Restore { backend: status_backend, key: id.to_string(), prev: prev_status });
+        }
 
         // V1.6: structured trace entry — TraceStep::Transition variant.
         self.agent_trace.push(
@@ -3352,7 +3524,7 @@ impl Interpreter {
             .unwrap_or(sm.initial.clone());
 
         let targets: Vec<Value> = sm.transitions.iter()
-            .filter(|t| t.node.from == current || t.node.from == "*")
+            .filter(|t| t.node.from == current || (t.node.from == "*" && sm.wildcard_applies(&t.node, &current)))
             .map(|t| Value::String(t.node.to.clone()))
             .collect();
 
@@ -3434,18 +3606,9 @@ fn variant_fields_equal(a: &VariantValue, b: &VariantValue) -> bool {
 }
 
 fn value_eq(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x.cmp(y) == 0,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::String(x), Value::String(y)) => x == y,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Unit, Value::Unit) => true,
-        (Value::Variant { type_name: t1, variant: v1, fields: f1 },
-         Value::Variant { type_name: t2, variant: v2, fields: f2 }) => {
-            t1 == t2 && v1 == v2 && variant_fields_equal(f1, f2)
-        }
-        _ => false,
-    }
+    // payloads compare structurally — a Map or List inside a variant used
+    // to make `==` false while both sides printed identically
+    deep_equal(a, b)
 }
 
 /// Convert a runtime Value to a StoredValue

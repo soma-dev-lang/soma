@@ -191,6 +191,8 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     // ── pipeline ────────────────────────────────────────────────────
     doc("filter_by", "pipeline", "filter_by(rows: List<Map>, field, op: \">\"|\">=\"|\"<\"|\"<=\"|\"==\"|\"!=\", value) -> List<Map>",
         "Keep rows whose `field` compares true against `value` (op defaults to == with 3 args)."),
+    doc("fail", "types", "fail(kind: String, detail?) -> never | fail(r: TryResult) -> never",
+        "Raise a domain error. `try { f() }` yields {value, error, kind, detail}: branch on r.kind (\"not_found\", \"invalid_transition\", \"guard_failed\", \"invariant\", a `require … else Tag` tag, …); fail(r) re-raises a caught error unchanged."),
     doc("slice", "collection", "slice(xs: List|String, start: Int, end?: Int) -> List|String",
         "Sub-list / substring, end exclusive; negative indexes count from the end (slice(xs, -2) = last two). Clamped, never raises."),
     doc("keys", "collection", "keys(m: Map) -> List<String>",
