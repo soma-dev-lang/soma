@@ -2950,12 +2950,40 @@ impl Parser {
                 ))
             }
             Token::Try => {
-                // try { expr } → returns map("value", result) or map("error", message)
+                // try { expr } → {value, error, kind, detail}. A block of several
+                // statements is allowed too: `try { _take(sku, qty)  transition(id, "held") }`
+                // — it is desugared to a one-arm match (whose body every analysis
+                // already walks); the value is the block's last expression.
                 self.advance();
                 self.expect(Token::LBrace)?;
-                let expr = self.parse_expr()?;
+                let mut stmts: Vec<Spanned<Statement>> = Vec::new();
+                while !self.check(&Token::RBrace) && !self.is_at_end() {
+                    stmts.push(self.parse_statement()?);
+                }
                 self.expect(Token::RBrace)?;
-                Ok(Spanned::new(Expr::Try(Box::new(expr)), start.merge(self.prev_span())))
+                let span = start.merge(self.prev_span());
+                let inner = if stmts.len() == 1 && matches!(stmts[0].node, Statement::ExprStmt { .. }) {
+                    match stmts.pop().unwrap().node {
+                        Statement::ExprStmt { expr } => expr,
+                        _ => unreachable!(),
+                    }
+                } else {
+                    let result = match stmts.last().map(|s| &s.node) {
+                        Some(Statement::ExprStmt { .. }) => match stmts.pop().unwrap().node {
+                            Statement::ExprStmt { expr } => expr,
+                            _ => unreachable!(),
+                        },
+                        _ => Spanned::new(Expr::Literal(Literal::Unit), span),
+                    };
+                    Spanned::new(
+                        Expr::Match {
+                            subject: Box::new(Spanned::new(Expr::Literal(Literal::Unit), span)),
+                            arms: vec![MatchArm { pattern: MatchPattern::Wildcard, guard: None, body: stmts, result }],
+                        },
+                        span,
+                    )
+                };
+                Ok(Spanned::new(Expr::Try(Box::new(inner)), span))
             }
             Token::LBracket => {
                 self.advance();

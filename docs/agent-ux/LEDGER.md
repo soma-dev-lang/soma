@@ -80,17 +80,17 @@ Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 che
 
 ### Error model (2 agents, top friction)
 - [x] R1 no documented way to raise; errors stringly typed, no payload, no re-raise; everything prefixed "require failed:" → `fail(kind, detail)`, `r.kind` / `r.detail` on try-results, `fail(r)` re-raises, prefix only on real requires, test output in the language's words (no Rust Debug dumps).
-- [ ] R2 `require c else "msg {x}"` / `else variable` silently taken literally; `require … else Tag` absent from docs.
+- [x] R2 `require c else "msg {x}"` / `else variable` silently taken literally; `require … else Tag` absent from docs.
 - [ ] R3 `try { f() }?` returns the error map as a normal value (not a propagate).
 
 ### Still reaching runtime past a green check
-- [ ] C1 call with the wrong argument count; face return type vs returned value.
+- [x] C1 call with the wrong argument count; face return type vs returned value.
 - [x] C2 `() >= 500` was silently false (typo'd field) → ordering against () raises.
 - [x] C3 variant `==` false when a payload is a Map/List.
 - [ ] C4 field typo on an untyped record (`order.statuss` → ()). Needs typed records.
 - [ ] C5 record read from a slot, mutated, never written back: silent lost update. Wants a lint.
-- [ ] C6 `invariant accts.balance >= 0` passes check, rejects every write (`value.balance` works).
-- [ ] C7 `from_json("garbage")` returns the string; `to_int("1.5")` = 1; no strict parse.
+- [x] C6 `invariant accts.balance >= 0` passes check, rejects every write (`value.balance` works).
+- [x] C7 `from_json("garbage")` returns the string; `to_int("1.5")` = 1; no strict parse.
 - [x] C8 `m[k] += 1`, `acc.balance += x` unsupported.
 
 ### Verify
@@ -101,18 +101,18 @@ Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 che
 - [ ] V5 `get_status(unknown id)` returns the initial state.
 
 ### Tests / mocks
-- [ ] T1 `mock approve false`; scripted tool calls; mixed queue with an error in the middle; mock clock; per-assert isolation.
-- [ ] T2 `soma check --json` lists the proven cost bound under "warnings".
+- [x] T1 `mock approve false`; scripted tool calls; mixed queue with an error in the middle; mock clock; per-assert isolation.
+- [x] T2 `soma check --json` lists the proven cost bound under "warnings".
 
 ### Small language gaps
-- [ ] G1 `parse_int`, `pad_left`, negative index `xs[-1]`, `avg([1,2])` truncates, default parameters, unknown function alias table (`parseInt` → to_int) with the span on the call, parser reports one error per run.
+- [~] G1 `parse_int`, `pad_left`, negative index `xs[-1]`, `avg([1,2])` truncates, default parameters, unknown function alias table (`parseInt` → to_int) with the span on the call, parser reports one error per run.
 
 ### Site (evaluator)
-- [ ] W1 add /docs/guarantees.md (PROVEN | ENFORCED AT RUNTIME | NOT COVERED) and align the /agents headline ("PROVES … memory invariants" is broader than the truth).
-- [ ] W2 /docs/serving.md: routing table, exposure rules, bind address/ports, threading, response shape.
-- [ ] W3 corpus: /corpus/domains.json (~1 KB), finer features (guard, precedence, router, two_cell), drop the `tests` feature (all 316 have it), programs combining http + state_machine + invariant, each program's soma.toml + verify line in the index; audit narratives against behaviour.
-- [ ] W4 /status: license (SPDX), changelog, release date, known limits, security contact, security.txt; LICENSE on the site; pin install.sh to a tag + checksum.
-- [ ] W5 llms-full.txt repeats llms.txt (10 KB paid twice) and carries ~20 KB of linalg/quant irrelevant to a service → profiles; spec.md says "Version: 2.2.1"; /examples is a dead end; repo-relative links dangle; docs hash in version.json.
+- [x] W1 add /docs/guarantees.md (PROVEN | ENFORCED AT RUNTIME | NOT COVERED) and align the /agents headline ("PROVES … memory invariants" is broader than the truth).
+- [x] W2 /docs/serving.md: routing table, exposure rules, bind address/ports, threading, response shape.
+- [x] W3 corpus: /corpus/domains.json (~1 KB), finer features (guard, precedence, router, two_cell), drop the `tests` feature (all 316 have it), programs combining http + state_machine + invariant, each program's soma.toml + verify line in the index; audit narratives against behaviour.
+- [x] W4 /status: license (SPDX), changelog, release date, known limits, security contact, security.txt; LICENSE on the site; pin install.sh to a tag + checksum.
+- [x] W5 llms-full.txt repeats llms.txt (10 KB paid twice) and carries ~20 KB of linalg/quant irrelevant to a service → profiles; spec.md says "Version: 2.2.1"; /examples is a dead end; repo-relative links dangle; docs hash in version.json.
 
 ### Cycle 2 — decisions taken
 - **Handlers are atomic.** Undo journal in the interpreter (writes, deletes, appends, transitions); a failing top-level handler is rolled back; a failing `try` is a savepoint; top-level invocations are serialized process-wide. The evaluator's experiment now pays exactly 100/300 (was 122–153), pinned by a test.
@@ -121,3 +121,9 @@ Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 che
 - **Gates.** verify and test refuse a program that fails check; properties on undeclared states are errors; one final VERIFY verdict; `requires_all`.
 - **Prover.** Interval + induction reasoning on invariants, reported per conjunct; an always-rejected write under `try` is reported as "can never commit" (2 governance programs rely on it).
 - Ordering against `()` raises (was silently false); variant payloads compare structurally; `m[k] += 1` / `a.f += x`.
+
+### Cycle 2 — site and corpus
+- /docs/guarantees.md (proven | enforced | not covered), /docs/serving.md (routing, exposure, atomicity, ports), /status (maturity, MIT, changelog, limits, security contact), /.well-known/security.txt, /LICENSE, /CHANGELOG.md, /llms-service.txt (~35 KB, no linalg), /corpus/domains.json; each corpus program's soma.toml and verify verdict in its index; features guard/fail/cost/tools/multi_cell/service, `tests` dropped; spec.md (2.2.1) withdrawn; version.json carries the sha256 of `soma docs agent` from the binary.
+- New corpus domain `services/`: payments_approval (Ledger + Api, proven precedence), warehouse_reservations (two cells, guard, slot.size, except), refund_agent (tools, proven cost, mock think / mock approve, daily cap).
+- Found on the way: any URL with a query string was an HTTP 500 for a 3-parameter `request` (the query map was pushed unconditionally) — fixed. `try { }` now accepts a block of statements.
+- Lesson written into guarantees.md: an error means "nothing happened" (rollback includes a rejection transition) — a refusal that must be recorded is returned, not raised.

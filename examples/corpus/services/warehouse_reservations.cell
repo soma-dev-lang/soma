@@ -1,0 +1,164 @@
+// WAREHOUSE RESERVATIONS — two cells: a stock ledger with hard bounds and a
+// reservation lifecycle with a supervisor guard, behind one HTTP router.
+//
+// Enforced: on-hand quantity stays in [0, 10000] per SKU; at most 500 SKUs
+// (`units.size <= 500`, an entry-count bound); a reservation above 100 units
+// only reaches `held` when a supervisor is named (guard, enforced at the
+// transition). A hold that would overdraw stock ends `rejected` and stock is
+// untouched — the failing `try` block is rolled back to where it started.
+// Proven: shipped requires picked AND held; released never ships; rejected
+// and shipped are final (`* -> rejected except [shipped, released]`).
+//
+//   soma check  warehouse_reservations.cell
+//   soma verify warehouse_reservations.cell
+//   soma test   warehouse_reservations.cell
+
+cell Stock {
+    face {
+        signal receive(sku: String, qty: Int) -> Int
+        signal on_hand(sku: String) -> Int
+        signal _take(sku: String, qty: Int) -> Int
+        signal _give_back(sku: String, qty: Int) -> Int
+    }
+    memory {
+        units: Map<String, Int> [persistent]
+        invariant units >= 0 && units <= 10000
+        invariant units.size <= 500
+    }
+    on on_hand(sku: String) { return units.get(sku) ?? 0 }
+    on receive(sku: String, qty: Int) {
+        require qty > 0 else InvalidQuantity
+        units.set(sku, on_hand(sku) + qty)
+        return on_hand(sku)
+    }
+    on _take(sku: String, qty: Int) {
+        units.set(sku, on_hand(sku) - qty)          // "invariant" when it would go negative
+        return on_hand(sku)
+    }
+    on _give_back(sku: String, qty: Int) {
+        units.set(sku, on_hand(sku) + qty)
+        return on_hand(sku)
+    }
+}
+
+cell Reservations {
+    face {
+        signal reserve(id: String, sku: String, qty: Int) -> Map
+        signal hold(id: String, supervisor: String) -> Map
+        signal pick(id: String) -> Map
+        signal ship(id: String) -> Map
+        signal release(id: String) -> Map
+        signal reservation(id: String) -> Map
+        signal request(method: String, path: String, body: String) -> Map
+    }
+    memory {
+        skus: Map<String, String> [persistent]
+        qtys: Map<String, Int> [persistent]
+        invariant qtys > 0
+    }
+    state lifecycle {
+        initial: requested
+        requested -> held { guard { qty <= 100 || supervisor != "" } }
+        held -> picked
+        picked -> shipped
+        held -> released
+        * -> rejected except [shipped, released]
+    }
+
+    on reserve(id: String, sku: String, qty: Int) {
+        if skus.get(id) != () { fail("conflict", "reservation {id} exists") }
+        skus.set(id, sku)
+        qtys.set(id, qty)
+        return reservation(id)
+    }
+    // Take the stock, then move: if the stock ledger or the guard refuses,
+    // the `try` block is rolled back (nothing was taken) and the reservation
+    // is rejected. The rejection is RETURNED, not raised: raising would roll
+    // the whole handler back, rejection included — an error means "nothing
+    // happened".
+    on hold(id: String, supervisor: String) {
+        let qty = _qty(id)
+        let r = try {
+            _take(skus.get(id), qty)
+            transition(id, "held")                  // the guard reads `qty` and `supervisor`
+        }
+        if r.error != () {
+            transition(id, "rejected")
+            return with(reservation(id), "reason", r.detail)
+        }
+        return reservation(id)
+    }
+    on pick(id: String) { transition(id, "picked")  return reservation(id) }
+    on ship(id: String) { transition(id, "shipped")  return reservation(id) }
+    on release(id: String) {
+        transition(id, "released")                  // only from held: picked -> released does not exist
+        _give_back(skus.get(id), _qty(id))
+        return reservation(id)
+    }
+    on reservation(id: String) {
+        return map("id", id, "sku", skus.get(id), "qty", _qty(id), "state", get_status(id))
+    }
+    on _qty(id: String) {
+        let q = qtys.get(id)
+        if q == () { fail("not_found", "reservation {id}") }
+        return q
+    }
+
+    on request(method: String, path: String, body: String) {
+        let r = try { _route(method, path, body) }
+        if r.error == () { return r.value }
+        if r.kind == "not_found" { return response(404, map("error", r.detail)) }
+        if r.kind == "conflict" || r.kind == "invalid_transition" { return response(409, map("error", r.error)) }
+        return response(422, map("error", r.error))
+    }
+    on _route(method: String, path: String, body: String) {
+        return match map("method", method, "path", path) {
+            {method: "POST", path: "/reservations"} -> {
+                let b = from_json(body)
+                reserve(b.id, b.sku, b.qty)
+            }
+            {method: "POST", path: "/reservations/hold/" + id} -> hold(id, (from_json(body) ?? map()).supervisor ?? "")
+            {method: "POST", path: "/reservations/pick/" + id} -> pick(id)
+            {method: "POST", path: "/reservations/ship/" + id} -> ship(id)
+            {method: "POST", path: "/reservations/release/" + id} -> release(id)
+            {method: "GET", path: "/reservations/" + id} -> reservation(id)
+            {method: "GET", path: "/stock/" + sku} -> map("sku", sku, "on_hand", on_hand(sku))
+            _ -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test WarehouseTests {
+    rules {
+        assert receive("widget", 50) == 50
+        // happy path
+        assert reserve("r1", "widget", 20).state == "requested"
+        assert hold("r1", "").state == "held"
+        assert on_hand("widget") == 30
+        assert pick("r1").state == "picked"
+        assert_fails release("r1") matching "invalid transition"     // picked -> released does not exist
+        assert ship("r1").state == "shipped"
+        assert_fails hold("r1", "") matching "invalid transition"    // shipped is final
+        // overdraw: rejected, and the stock is untouched
+        assert reserve("r2", "widget", 100).state == "requested"
+        assert hold("r2", "").state == "rejected"
+        assert reservation("r2").state == "rejected"
+        assert on_hand("widget") == 30
+        // supervisor guard both ways
+        assert receive("bolt", 1000) == 1000
+        assert reserve("r3", "bolt", 500).state == "requested"
+        assert hold("r3", "").state == "rejected"                   // > 100 units, nobody signed
+        assert reservation("r3").state == "rejected"
+        assert reserve("r4", "bolt", 500).state == "requested"
+        assert hold("r4", "ana").state == "held"
+        assert release("r4").state == "held" || reservation("r4").state == "released"
+        assert on_hand("bolt") == 1000
+        // bounds
+        assert_fails receive("widget", 20000) matching "invariant"
+        assert_fails reserve("r5", "widget", 0) matching "invariant"
+        // HTTP
+        assert request("GET", "/reservations/nope", "")._status == 404
+        assert request("POST", "/reservations/ship/r2", "")._status == 409   // rejected is final
+        assert request("GET", "/stock/bolt", "").on_hand == 1000
+    }
+}

@@ -1095,7 +1095,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                     interpreter::Value::String(req_path.to_string()),
                     body_arg,
                 ];
-                if !query_map.is_empty() {
+                // The query map is the optional 4th parameter of `request`.
+                // Passing it to a 3-parameter handler made ANY url with a
+                // query string (?utm_source=…, a cache-buster) a 500:
+                // "request() expected 3 arguments, got 4".
+                let wants_query = handler_params.get("request").is_some_and(|p| p.len() >= 4);
+                if wants_query {
                     req_args.push(interpreter::map_from_pairs(query_map));
                 }
                 (

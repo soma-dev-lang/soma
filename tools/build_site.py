@@ -85,7 +85,22 @@ FEATURES = [
     ("match", re.compile(r"\bmatch\s")),
     ("try", re.compile(r"\btry\s*\{")),
     ("lambda", re.compile(r"=>")),
+    ("guard", re.compile(r"\bguard\s*\{")),
+    ("fail", re.compile(r"\bfail\s*\(|\brequire\b")),
+    ("cost", re.compile(r"^\s*cost\s*\{", re.M)),
+    ("tools", re.compile(r"^\s*tool\s+\w+\(", re.M)),
 ]
+
+
+def structural_features(src):
+    """Features that need a count rather than a pattern."""
+    out = []
+    cells = re.findall(r"^cell\s+(?!test\b|type\b)(?:agent\s+)?(\w+)", src, re.M)
+    if len(cells) >= 2:
+        out.append("multi_cell")
+    if re.search(r"\bon\s+request\s*\(", src) and re.search(r"^\s*invariant\s", src, re.M) and re.search(r"^\s*state\s+\w+", src, re.M):
+        out.append("service")  # http + invariant + lifecycle: a whole verified service
+    return out
 
 
 def header_comment(src):
@@ -124,6 +139,11 @@ def verify_one(path):
     for cmd in ("check", "test", "verify"):
         r = soma(cmd, path, cwd=d)
         out = r.stdout + r.stderr
+        if cmd == "verify":
+            m = re.search(r"(\d+ passed, \d+ warnings?, \d+ failures?)", re.sub(r"\x1b\[[0-9;]*m", "", out))
+            t = re.search(r"Temporal: (\d+ passed, \d+ failed)", out)
+            if m:
+                res["verify_summary"] = m.group(1) + (f"; temporal {t.group(1)}" if t else "")
         if cmd == "test" and "no test cells found" in out:
             res[cmd] = None
         elif cmd == "verify" and "No state machines found" in out:
@@ -158,7 +178,7 @@ def build_corpus(version):
         title, summary, usage = header_comment(src)
         rel = os.path.relpath(path, ROOT)
         v = verdicts.get(rel)
-        if v is not None and not all(x in (True, None) for x in v.values()):
+        if v is not None and not all(x in (True, None) for k, x in v.items() if k != "verify_summary"):
             failing.append((rel, v))
             continue  # never publish an example the toolchain rejects
         dst = os.path.join(out_dir, domain, name)
@@ -172,14 +192,28 @@ def build_corpus(version):
             "url": f"{BASE}/corpus/{domain}/{name}",
             "repo_path": rel,
             "lines": src.count("\n") + 1,
-            "features": [k for k, rx in FEATURES if rx.search(src)],
+            "features": [k for k, rx in FEATURES if rx.search(src)] + structural_features(src),
             "cells": re.findall(r"^cell\s+(?:agent\s+|type\s+|test\s+)?(\w+)", src, re.M),
         }
         if usage:
             entry["usage"] = usage
         if v is not None:
-            entry["verified"] = {k: x for k, x in v.items() if x is not None}
+            entry["verified"] = {k: x for k, x in v.items() if x is not None and k != "verify_summary"}
+            if v.get("verify_summary"):
+                entry["verify"] = v["verify_summary"]
+        # the soma.toml a program is verified with (its [verify] properties,
+        # its [agent] mock) is part of the program
+        manifest = os.path.join(os.path.dirname(path), "soma.toml")
+        if os.path.exists(manifest):
+            shutil.copyfile(manifest, os.path.join(out_dir, domain, "soma.toml"))
+            entry["manifest"] = f"{BASE}/corpus/{domain}/soma.toml"
         entries.append(entry)
+
+    # a feature nearly every program has carries no information
+    for feat in {f for e in entries for f in e["features"]}:
+        if sum(1 for e in entries if feat in e["features"]) > 0.9 * len(entries):
+            for e in entries:
+                e["features"] = [f for f in e["features"] if f != feat]
 
     domains = {}
     for e in entries:
@@ -208,6 +242,18 @@ def build_corpus(version):
         {k: e[k] for k in ("id", "title", "features", "lines", "url")} for e in entries
     ]
     write("corpus/index.json", json.dumps(light, indent=0, ensure_ascii=False))
+    # domains.json: ~1 KB — where to look before fetching anything bigger
+    write("corpus/domains.json", json.dumps({
+        "description": "Domains of the verified corpus. Fetch /corpus/<domain>/index.json (≈12 KB, with "
+                       "summaries) for one domain, /corpus/index.json (≈80 KB) to filter all programs by feature.",
+        "soma_version": version,
+        "count": len(entries),
+        "features": {f: sum(1 for e in entries if f in e["features"]) for f in index["features"]},
+        "domains": [
+            {"domain": d, "programs": n, "index": f"{BASE}/corpus/{d}/index.json"}
+            for d, n in sorted(domains.items())
+        ],
+    }, indent=1, ensure_ascii=False))
     for domain in domains:
         sub = dict(index)
         sub["count"] = domains[domain]
@@ -300,10 +346,16 @@ def main():
         "docs/reference.md": "SOMA_REFERENCE.md",
         "docs/builtins.md": "SOMA_BUILTINS.md",
         "docs/gotchas.md": "AGENT_GOTCHAS.md",
-        "docs/spec.md": "SOMA_SPEC.md",
+        "docs/guarantees.md": "docs/site/guarantees.md",
+        "docs/serving.md": "docs/site/serving.md",
+        "CHANGELOG.md": "CHANGELOG.md",
+        "LICENSE": "LICENSE",
     }
     for dst, src in docs.items():
         write(dst, read(src))
+    stale = os.path.join(SITE, "docs", "spec.md")  # SOMA_SPEC.md says "Version: 2.2.1"
+    if os.path.exists(stale):
+        os.remove(stale)
     write("skill/SKILL.md", read("SKILL.md"))
 
     # builtins, straight from the compiler
@@ -323,7 +375,27 @@ def main():
         "\n\n---\n\n# PART 4 — Every builtin (SOMA_BUILTINS.md, generated from the compiler)\n\n" + read("SOMA_BUILTINS.md").strip(),
         "\n",
     ]
-    write("llms-full.txt", "".join(full))
+    full_text = "".join(full)
+    write("llms-full.txt", full_text)
+
+    # llms-service.txt: what you need to build a verified service, without
+    # the linear-algebra / quant reference (~half the size of llms-full)
+    service = [
+        llms.rstrip(),
+        "\n\n---\n\n" + read("docs/site/guarantees.md").strip(),
+        "\n\n---\n\n" + read("docs/site/serving.md").strip(),
+        "\n\n---\n\n# Verified wrong→right pairs\n\n" + read("AGENT_GOTCHAS.md").strip(),
+        "\n",
+    ]
+    write("llms-service.txt", "".join(service))
+
+    import hashlib
+    # the hash an agent can reproduce with `soma docs agent | shasum -a 256`
+    # on the released binary — so it is computed from the BINARY's copy
+    embedded = soma("docs", "agent").stdout
+    docs_sha = hashlib.sha256(embedded.encode("utf-8")).hexdigest()
+    if embedded != llms:
+        print("WARNING: site/llms.txt differs from the binary's embedded copy — rebuild the compiler first")
 
     write(
         "version.json",
@@ -331,12 +403,23 @@ def main():
             {
                 "soma_version": version,
                 "generated": today,
+                "license": "MIT",
+                # `soma docs agent | shasum -a 256` on the matching binary
+                # prints this: the site and the binary say the same thing
+                "llms_txt_sha256": docs_sha,
                 "corpus_programs": len(entries),
                 "builtins": len(builtins),
                 "gotchas": len(gotchas),
                 "resources": {
                     "llms": f"{BASE}/llms.txt",
                     "llms_full": f"{BASE}/llms-full.txt",
+                    "llms_service": f"{BASE}/llms-service.txt",
+                    "guarantees": f"{BASE}/docs/guarantees.md",
+                    "serving": f"{BASE}/docs/serving.md",
+                    "corpus_domains": f"{BASE}/corpus/domains.json",
+                    "changelog": f"{BASE}/CHANGELOG.md",
+                    "license": f"{BASE}/LICENSE",
+                    "status": f"{BASE}/status",
                     "agent_block": f"{BASE}/agent.md",
                     "skill": f"{BASE}/skill/SKILL.md",
                     "builtins": f"{BASE}/builtins.json",
@@ -352,9 +435,10 @@ def main():
     # sitemap: every page and every machine file (not the 316 sources —
     # corpus/index.json is their sitemap)
     pages = [
-        "", "paper", "agents", "llms.txt", "llms-full.txt", "agent.md", "skill/SKILL.md",
-        "docs/reference.md", "docs/builtins.md", "docs/gotchas.md", "docs/spec.md",
-        "builtins.json", "gotchas.json", "corpus/index.json", "corpus/index.md",
+        "", "paper", "agents", "status", "llms.txt", "llms-service.txt", "llms-full.txt", "agent.md",
+        "skill/SKILL.md", "docs/guarantees.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md",
+        "docs/gotchas.md", "builtins.json", "gotchas.json", "corpus/domains.json", "corpus/index.json",
+        "corpus/index.md", "CHANGELOG.md", "LICENSE",
         "repo/index.json", "version.json",
     ]
     sm = ['<?xml version="1.0" encoding="UTF-8"?>',

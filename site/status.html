@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soma — status</title>
+<meta name="description" content="Adoption facts for Soma: version, license, changelog, known limits, security contact, maturity.">
+<link rel="canonical" href="https://soma-lang.dev/status">
+<style>
+:root { color-scheme: light dark; --bg:#0f1115; --panel:#171a21; --text:#e7e9ee; --muted:#a9afbd; --line:#303642; --accent:#8ab4f8; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif; }
+a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:#1f232c; padding:.1rem .3rem; border-radius:4px; }
+nav { display:flex; gap:1.2rem; align-items:center; padding:1rem 1.5rem; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+nav .brand { font-weight:700; margin-right:auto; } nav .brand a { color:var(--text); }
+main { max-width:760px; margin:0 auto; padding:2.5rem 1.4rem 4rem; }
+table { width:100%; border-collapse:collapse; margin:1rem 0; }
+th, td { text-align:left; padding:.5rem .6rem; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:500; width:11rem; }
+h2 { margin-top:2.4rem; }
+.note { color:var(--muted); }
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand"><a href="/">soma</a></div>
+  <a href="/">Overview</a><a href="/agents">For agents</a><a href="/docs/guarantees.md">Guarantees</a><a href="/status">Status</a><a href="https://github.com/soma-dev-lang/soma">GitHub</a>
+</nav>
+<main>
+<h1>Status</h1>
+<p>The facts a person or an agent needs before adopting a language. Machine-readable at <a href="/version.json">/version.json</a>.</p>
+<table>
+<tr><th>Maturity</th><td><strong>Experimental.</strong> One author. Used for the demos in the repository and for the author's own trading automata. Not yet used in a system that other people depend on.</td></tr>
+<tr><th>Version</th><td>The soma release this site is generated from is in <a href="/version.json">version.json</a> (<code>soma_version</code>); the binary prints it with <code>soma --version</code>. <code>llms_txt_sha256</code> there equals <code>soma docs agent | shasum -a 256</code> on that binary: the site and the binary say the same thing.</td></tr>
+<tr><th>License</th><td>MIT — <a href="/LICENSE">/LICENSE</a>.</td></tr>
+<tr><th>Changelog</th><td><a href="/CHANGELOG.md">/CHANGELOG.md</a>. Releases: <a href="https://github.com/soma-dev-lang/soma/releases">github.com/soma-dev-lang/soma/releases</a>.</td></tr>
+<tr><th>Install</th><td><code>curl -fsSL https://soma-lang.dev/install.sh | sh</code> fetches <code>site/setup.sh</code> from the repository's main branch and either downloads the release binary for your platform or builds from source. Read it first; pin a release by cloning a tag and building with <code>cargo build --release</code>.</td></tr>
+<tr><th>What is proven</th><td><a href="/docs/guarantees.md">/docs/guarantees.md</a> — three columns: proven statically, enforced at runtime, not covered. Read the third column.</td></tr>
+<tr><th>Known limits</th><td>Verification is per cell; data-dependent rules are runtime checks; records are untyped; <code>soma serve</code> has no authentication or TLS and serializes handlers (throughput is not a goal); one package in the registry; the bytecode VM is incomplete (the interpreter is the reference).</td></tr>
+<tr><th>How it is tested</th><td>~290 Rust tests; every program of the corpus and the repository (1,000+ files) re-run through check / verify / test on each change; fresh-agent usability cycles whose findings and fixes are logged in <a href="https://github.com/soma-dev-lang/soma/blob/main/docs/agent-ux/LEDGER.md">docs/agent-ux/LEDGER.md</a>.</td></tr>
+<tr><th>Security</th><td>Report a vulnerability privately via <a href="https://github.com/soma-dev-lang/soma/security/advisories/new">GitHub security advisories</a> (<a href="/.well-known/security.txt">security.txt</a>). Do not run <code>soma serve</code> on the open internet without a reverse proxy in front of it.</td></tr>
+<tr><th>Maintainer</th><td>Antoine Delorme — issues and discussion on <a href="https://github.com/soma-dev-lang/soma/issues">GitHub issues</a>.</td></tr>
+</table>
+<p class="note">Everything on this site is meant to be read by people and by models alike. Nothing here is hidden from either.</p>
+</main>
+</body>
+</html>

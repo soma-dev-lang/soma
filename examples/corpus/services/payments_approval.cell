@@ -1,0 +1,164 @@
+// PAYMENTS APPROVAL — a whole service in one file: a ledger that cannot
+// overdraw, a payment lifecycle the verifier proves, an HTTP API that maps
+// error kinds to status codes, and tests that run offline.
+//
+// What is PROVEN (soma verify + soma.toml): paid is unreachable without
+// authorized; nothing follows rejected; every payment ends paid or rejected.
+// What is ENFORCED: the balance never goes negative (invariant, checked on
+// every write); a handler that fails is rolled back entirely, so a payment
+// whose debit is refused stays exactly where it was.
+//
+//   soma check  payments_approval.cell
+//   soma verify payments_approval.cell
+//   soma test   payments_approval.cell
+//   soma run    payments_approval.cell request POST /payments '{"id":"p1","amount":250}'
+
+cell Ledger {
+    face {
+        signal _deposit(amount: Int) -> Int
+        signal _debit(amount: Int) -> Int
+        signal balance() -> Int
+    }
+    memory {
+        account: Map<String, Int> [persistent]
+        invariant account >= 0                      // an overdraft is unrepresentable
+    }
+    on balance() { return account.get("cash") ?? 0 }
+    on _deposit(amount: Int) {
+        require amount > 0 else InvalidAmount
+        account.set("cash", balance() + amount)
+        return balance()
+    }
+    on _debit(amount: Int) {
+        require amount > 0 else InvalidAmount
+        account.set("cash", balance() - amount)     // raises kind "invariant" when it would overdraw
+        return balance()
+    }
+}
+
+cell Payments {
+    face {
+        signal propose(id: String, amount: Int) -> Map
+        signal authorize(id: String) -> Map
+        signal sign_off(id: String, officer: String) -> Map
+        signal settle(id: String) -> Map
+        signal reject(id: String) -> Map
+        signal payment(id: String) -> Map
+        signal request(method: String, path: String, body: String) -> Map
+    }
+    memory {
+        amounts: Map<String, Int> [persistent]
+        invariant amounts > 0 && amounts <= 1000000
+    }
+    // Small payments: proposed -> authorized -> paid.
+    // Large ones need a second person: proposed -> pending_signoff -> signed_off -> authorized.
+    state flow {
+        initial: proposed
+        proposed -> authorized
+        proposed -> pending_signoff
+        pending_signoff -> signed_off
+        signed_off -> authorized
+        authorized -> paid
+        proposed -> rejected
+        pending_signoff -> rejected
+    }
+
+    on propose(id: String, amount: Int) {
+        if amounts.get(id) != () { fail("conflict", "payment {id} already exists") }
+        amounts.set(id, amount)                     // > 0 and <= 1,000,000 or it raises
+        return payment(id)
+    }
+    on authorize(id: String) {
+        let amount = _amount(id)
+        if amount > 10000 {
+            transition(id, "pending_signoff")      // large: a second person first
+        } else {
+            transition(id, "authorized")
+        }
+        return payment(id)
+    }
+    on sign_off(id: String, officer: String) {
+        require officer != "" else OfficerRequired
+        transition(id, "signed_off")
+        transition(id, "authorized")
+        return payment(id)
+    }
+    on settle(id: String) {
+        // Either order is safe — the handler is atomic. Here the transition
+        // goes first: when the ledger refuses the debit, the transition is
+        // rolled back and the payment is still `authorized`.
+        transition(id, "paid")
+        _debit(_amount(id))
+        return payment(id)
+    }
+    on reject(id: String) {
+        transition(id, "rejected")
+        return payment(id)
+    }
+    on payment(id: String) {
+        return map("id", id, "amount", _amount(id), "state", get_status(id))
+    }
+    on _amount(id: String) {
+        let a = amounts.get(id)
+        if a == () { fail("not_found", "payment {id}") }
+        return a
+    }
+
+    // Error kinds → HTTP statuses. Every route is spelled out here, so the
+    // handlers above are reached through this router (soma check warns when a
+    // route and a handler share a name; here they do not).
+    on request(method: String, path: String, body: String) {
+        let r = try { _route(method, path, body) }
+        if r.error == () { return r.value }
+        if r.kind == "not_found" { return response(404, map("error", r.detail)) }
+        if r.kind == "conflict" { return response(409, map("error", r.detail)) }
+        if r.kind == "invalid_transition" { return response(409, map("error", r.error)) }
+        if r.kind == "invariant" { return response(422, map("error", "refused by the ledger", "detail", r.error)) }
+        return response(422, map("error", r.error))
+    }
+    on _route(method: String, path: String, body: String) {
+        return match map("method", method, "path", path) {
+            {method: "POST", path: "/payments"} -> {
+                let p = from_json(body)
+                propose(p.id, p.amount)
+            }
+            {method: "POST", path: "/payments/authorize/" + id} -> authorize(id)
+            {method: "POST", path: "/payments/settle/" + id} -> settle(id)
+            {method: "POST", path: "/payments/reject/" + id} -> reject(id)
+            {method: "GET", path: "/payments/" + id} -> payment(id)
+            {method: "GET", path: "/balance"} -> map("balance", balance())
+            _ -> response(404, map("error", "no route"))
+        }
+    }
+}
+
+cell test PaymentsTests {
+    rules {
+        assert _deposit(500) == 500
+        // happy path, small payment
+        assert propose("p1", 200).state == "proposed"
+        assert authorize("p1").state == "authorized"
+        assert settle("p1").state == "paid"
+        assert balance() == 300
+        // a rejected debit leaves the payment where it was — atomic handler
+        assert propose("p2", 900).state == "proposed"
+        assert authorize("p2").state == "authorized"
+        let s = try { settle("p2") }
+        assert s.kind == "invariant"
+        assert payment("p2").state == "authorized"
+        assert balance() == 300
+        // large payments need a second person; the proof: paid requires authorized
+        assert propose("p3", 50000).state == "proposed"
+        assert authorize("p3").state == "pending_signoff"
+        assert_fails settle("p3") matching "invalid transition"
+        assert sign_off("p3", "cfo").state == "authorized"
+        // errors carry kinds the router turns into statuses
+        assert_fails propose("p1", 1) matching "conflict"
+        assert_fails payment("nope") matching "not_found"
+        assert_fails propose("p4", 0) matching "invariant"
+        assert request("GET", "/payments/nope", "")._status == 404
+        assert request("POST", "/payments/settle/p1", "")._status == 409
+        assert request("GET", "/balance", "").balance == 300
+        assert request("POST", "/payments", "{\"id\":\"p5\",\"amount\":10}").state == "proposed"
+    }
+}

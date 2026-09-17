@@ -1,0 +1,161 @@
+// REFUND AGENT — an LLM decides, the language decides what it may do.
+//
+// The model proposes approve / deny / escalate as JSON; its output becomes a
+// sum type (malformed → Escalate, never a crash). The hard rules are not the
+// model's to bend: a refund above the order amount or after 30 days is
+// refused by guards on the edge to `paid`; the daily payout cap is a memory
+// invariant; a refund above 20,000 cents needs a human (`approve()`), which
+// tests script with `mock approve`. Proven: paid is unreachable without
+// decided; nothing after denied. Proven too: the cost bound, because every
+// think() has a literal max_tokens and runs once.
+//
+//   soma check  refund_agent.cell      → cost: 'tokens' bound proven
+//   soma verify refund_agent.cell
+//   soma test   refund_agent.cell      → offline: think() and approve() are scripted
+
+cell type Decision {
+    variants {
+        Approve
+        Deny { reason: String }
+        Escalate { reason: String }
+    }
+}
+
+cell agent RefundAgent {
+    face {
+        signal seed_order(order_id: String, amount: Int, days_since_delivery: Int) -> Int
+        signal decide(request_id: String, order_id: String, amount: Int, text: String) -> Map
+        signal status(request_id: String) -> String
+        signal paid_today() -> Int
+        tool lookup_order(order_id: String) -> Map "Order amount and days since delivery"
+    }
+    cost {
+        tokens: 300
+    }
+    memory {
+        orders: Map<String, Map> [persistent]
+        paid_by_day: Map<String, Int> [persistent]
+        invariant paid_by_day >= 0 && paid_by_day <= 100000   // daily cap, whatever the model says
+    }
+    state request {
+        initial: received
+        received -> decided
+        decided -> paid { guard { amount <= order.amount && order.days <= 30 } }
+        decided -> denied
+        decided -> escalated
+        * -> failed except [paid, denied, escalated]
+    }
+
+    on seed_order(order_id: String, amount: Int, days_since_delivery: Int) {
+        orders.set(order_id, map("amount", amount, "days", days_since_delivery))
+        return amount
+    }
+    on lookup_order(order_id: String) {
+        let o = orders.get(order_id)
+        if o == () { fail("not_found", "order {order_id}") }
+        return o
+    }
+    on paid_today() { return paid_by_day.get(today()) ?? 0 }
+    on status(request_id: String) { return get_status(request_id) }
+
+    on decide(request_id: String, order_id: String, amount: Int, text: String) {
+        let order = lookup_order(order_id)
+        set_budget(2000)
+        let r = try {
+            think(
+                "Refund request for order {order_id}: {text}. Amount asked: {amount}. Reply with JSON {\"decision\": \"approve\"|\"deny\"|\"escalate\", \"reason\": \"...\"}",
+                "You are a support agent. Be strict.",
+                map("max_tokens", 300)
+            )
+        }
+        if r.error != () {
+            transition(request_id, "failed")
+            return map("state", "failed", "reason", r.detail)
+        }
+        transition(request_id, "decided")
+        let decision = _parse(r.value)
+        return match decision {
+            Approve -> _pay(request_id, order_id, amount, order)
+            Deny { reason } -> {
+                transition(request_id, "denied")
+                map("state", "denied", "reason", reason)
+            }
+            Escalate { reason } -> {
+                transition(request_id, "escalated")
+                map("state", "escalated", "reason", reason)
+            }
+        }
+    }
+
+    // Approval says approve; the rules decide. The guard on decided -> paid
+    // reads `amount` and `order` from this handler; a refused guard is
+    // caught, rolled back, and the case is escalated instead.
+    on _pay(request_id: String, order_id: String, amount: Int, order: Map) {
+        if amount > 20000 && !approve("refund {amount} on {order_id}") {
+            transition(request_id, "escalated")
+            return map("state", "escalated", "reason", "human declined")
+        }
+        let p = try {
+            transition(request_id, "paid")
+            paid_by_day.set(today(), paid_today() + amount)      // the daily cap lives here
+        }
+        if p.error != () {
+            transition(request_id, "escalated")
+            return map("state", "escalated", "reason", p.detail)
+        }
+        return map("state", "paid", "amount", amount)
+    }
+
+    on _parse(raw: String) {
+        let j = try { from_json(raw) }
+        if j.error != () || type_of(j.value) != "Map" { return Escalate { reason: "unreadable decision" } }
+        let d = j.value
+        return match d.decision ?? "" {
+            "approve" -> Approve
+            "deny" -> Deny { reason: d.reason ?? "" }
+            _ -> Escalate { reason: d.reason ?? "unknown decision" }
+        }
+    }
+}
+
+cell test RefundTests {
+    rules {
+        assert seed_order("o1", 5000, 3) == 5000
+        assert seed_order("o2", 50000, 3) == 50000
+        assert seed_order("o3", 5000, 45) == 5000
+        // the model approves, deny and escalate — scripted per test
+        mock think """{"decision": "approve", "reason": "ok"}"""
+        assert decide("r1", "o1", 4000, "broken").state == "paid"
+        assert status("r1") == "paid"
+        mock think """{"decision": "deny", "reason": "used"}"""
+        assert decide("r2", "o1", 4000, "meh").state == "denied"
+        mock think "garbage from the model"
+        assert decide("r3", "o1", 10, "?").state == "escalated"
+        // the model says approve for MORE than the order: the guard refuses, the case escalates
+        mock think """{"decision": "approve", "reason": "generous"}"""
+        assert decide("r4", "o1", 9000, "want more").state == "escalated"
+        assert status("r4") == "escalated"
+        assert paid_today() == 4000
+        // 30-day rule
+        mock think """{"decision": "approve"}"""
+        assert decide("r5", "o3", 100, "late").state == "escalated"
+        // human gate above 20,000: declined, then accepted
+        mock think """{"decision": "approve"}"""
+        mock approve false
+        assert decide("r6", "o2", 30000, "big").state == "escalated"
+        mock think """{"decision": "approve"}"""
+        mock approve true
+        assert decide("r7", "o2", 30000, "big").state == "paid"
+        assert paid_today() == 34000
+        // the daily cap: 34000 + 70000 > 100000 → escalated, cap intact
+        assert seed_order("o4", 100000, 1) == 100000
+        mock think """{"decision": "approve"}"""
+        mock approve true
+        assert decide("r8", "o4", 70000, "huge").state == "escalated"
+        assert paid_today() == 34000
+        // an LLM failure is a failed request, not a crash
+        mock think error "timeout"
+        assert decide("r9", "o1", 10, "x").state == "failed"
+        assert status("r9") == "failed"
+    }
+}

@@ -10,3 +10,9 @@
 /builtins               /builtins.json   302
 /corpus                 /corpus/index.md 302
 /corpus/                /corpus/index.md 302
+/docs/spec.md           /docs/reference.md 301
+/spec                   /docs/reference.md 302
+/guarantees             /docs/guarantees.md 302
+/serving                /docs/serving.md 302
+/license                /LICENSE 302
+/changelog              /CHANGELOG.md 302

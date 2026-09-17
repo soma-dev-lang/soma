@@ -1,0 +1,21 @@
+[package]
+name = "services-corpus"
+version = "0.1.0"
+description = "Whole verified services: HTTP + lifecycle + invariants, in one file each"
+
+[agent]
+mock = "echo"
+
+# payments_approval.cell — the properties its README promises
+[verify]
+cells = ["Payments"]
+eventually = ["paid", "rejected"]
+
+[verify.before.paid]
+requires = ["authorized"]
+
+[verify.after.rejected]
+never = ["paid", "authorized", "signed_off"]
+
+[verify.after.paid]
+never = ["rejected"]
