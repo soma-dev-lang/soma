@@ -302,7 +302,14 @@ fn walk_stmt(stmt: &Statement, reg: &VariantRegistry, issues: &mut Vec<SumTypeIs
             walk_expr(&condition.node, condition.span, reg, issues);
             for s in body { walk_stmt(&s.node, reg, issues); }
         }
-        _ => {}
+        Statement::IndexSet { index, value, .. } => {
+            walk_expr(&index.node, index.span, reg, issues);
+            walk_expr(&value.node, value.span, reg, issues);
+        }
+        Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => {
+            for a in args { walk_expr(&a.node, a.span, reg, issues); }
+        }
+        Statement::Require { .. } | Statement::Break | Statement::Continue => {}
     }
 }
 
@@ -345,7 +352,21 @@ fn walk_expr(expr: &Expr, span: Span, reg: &VariantRegistry, issues: &mut Vec<Su
         Expr::Record { fields, .. } => {
             for (_, v) in fields { walk_expr(&v.node, v.span, reg, issues); }
         }
-        _ => {}
+        // a match can sit anywhere an expression can — lambdas included
+        Expr::Lambda { body, .. } => walk_expr(&body.node, body.span, reg, issues),
+        Expr::LambdaBlock { stmts, result, .. } => {
+            for s in stmts { walk_stmt(&s.node, reg, issues); }
+            walk_expr(&result.node, result.span, reg, issues);
+        }
+        Expr::ListLiteral(items) => {
+            for i in items { walk_expr(&i.node, i.span, reg, issues); }
+        }
+        Expr::Index { target, index } => {
+            walk_expr(&target.node, target.span, reg, issues);
+            walk_expr(&index.node, index.span, reg, issues);
+        }
+        Expr::FieldAccess { target, .. } => walk_expr(&target.node, target.span, reg, issues),
+        Expr::Literal(_) | Expr::Ident(_) => {}
     }
 }
 

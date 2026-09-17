@@ -42,14 +42,36 @@ impl std::fmt::Display for CostFinding {
 /// (sum_max_tokens, max_timeout_ms) pair. Unbounded calls (no options
 /// map, or missing max_tokens) make the totals partial and return a
 /// `is_partial = true` flag.
-struct CostWalk {
+struct CostWalk<'a> {
     tokens: i64,
     latency_ms: i64,
     unbounded_sites: Vec<String>,
+    /// Sibling handlers of the cell, by name — a call to one of them
+    /// spends whatever its body spends.
+    handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>,
+    /// Handlers currently being expanded (recursion guard).
+    stack: Vec<String>,
 }
 
-impl CostWalk {
-    fn new() -> Self { Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new() } }
+impl<'a> CostWalk<'a> {
+    fn new(handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>) -> Self {
+        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), handlers, stack: Vec::new() }
+    }
+
+    /// A fresh accumulator for a nested scope (loop body, lambda, callee).
+    fn child(&self) -> CostWalk<'a> {
+        CostWalk {
+            tokens: 0,
+            latency_ms: 0,
+            unbounded_sites: Vec::new(),
+            handlers: self.handlers,
+            stack: self.stack.clone(),
+        }
+    }
+
+    fn spends(&self) -> bool {
+        self.tokens > 0 || self.latency_ms > 0 || !self.unbounded_sites.is_empty()
+    }
 
     fn visit_stmt(&mut self, stmt: &Statement, handler_name: &str) {
         match stmt {
@@ -73,19 +95,32 @@ impl CostWalk {
                     self.unbounded_sites.push(format!("{}::while-loop", handler_name));
                 }
                 let mult = bound.unwrap_or(1) as i64;
-                let mut inner = CostWalk::new();
+                let mut inner = self.child();
                 for s in body { inner.visit_stmt(&s.node, handler_name); }
                 self.tokens += inner.tokens.saturating_mul(mult);
                 // Latency in a loop is sequential — multiply.
                 self.latency_ms += inner.latency_ms.saturating_mul(mult);
+                self.unbounded_sites.extend(inner.unbounded_sites);
             }
             Statement::For { iter, body, bound, .. } => {
                 self.visit_expr(&iter.node, handler_name);
-                let mult = bound.unwrap_or(100) as i64;  // default-cap a for loop at 100 iters
-                let mut inner = CostWalk::new();
+                let mut inner = self.child();
                 for s in body { inner.visit_stmt(&s.node, handler_name); }
+                // Iteration count: [loop_bound(N)], else a literal range.
+                // Anything else (a list, a computed range) is unknown: the
+                // x100 figure below is then an ESTIMATE, and a body that
+                // spends makes the whole bound advisory, not proven.
+                let known = bound.map(|b| b as i64).or_else(|| literal_range_len(&iter.node));
+                if known.is_none() && inner.spends() {
+                    self.unbounded_sites.push(format!(
+                        "{}::for-loop over a collection of unknown size (add [loop_bound(N)])",
+                        handler_name
+                    ));
+                }
+                let mult = known.unwrap_or(100);
                 self.tokens += inner.tokens.saturating_mul(mult);
                 self.latency_ms += inner.latency_ms.saturating_mul(mult);
+                self.unbounded_sites.extend(inner.unbounded_sites);
             }
             Statement::MethodCall { args, .. } | Statement::Emit { args, .. } => {
                 for a in args { self.visit_expr(&a.node, handler_name); }
@@ -110,6 +145,19 @@ impl CostWalk {
                     self.latency_ms += timeout.unwrap_or(10_000);
                 }
                 for a in args { self.visit_expr(&a.node, handler_name); }
+                // A call to a sibling handler spends what its body spends.
+                if let Some(body) = self.handlers.get(name.as_str()).copied() {
+                    if self.stack.iter().any(|h| h == name) {
+                        self.unbounded_sites.push(format!("{}::recursive call to {}", handler_name, name));
+                    } else {
+                        let mut callee = self.child();
+                        callee.stack.push(name.clone());
+                        for s in body { callee.visit_stmt(&s.node, name); }
+                        self.tokens += callee.tokens;
+                        self.latency_ms += callee.latency_ms;
+                        self.unbounded_sites.extend(callee.unbounded_sites);
+                    }
+                }
             }
             Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. }
             | Expr::Pipe { left, right } => {
@@ -122,10 +170,27 @@ impl CostWalk {
                 self.visit_expr(&target.node, handler_name);
                 for a in args { self.visit_expr(&a.node, handler_name); }
             }
-            Expr::Lambda { body, .. } => self.visit_expr(&body.node, handler_name),
-            Expr::LambdaBlock { stmts, result, .. } => {
-                for s in stmts { self.visit_stmt(&s.node, handler_name); }
-                self.visit_expr(&result.node, handler_name);
+            // A lambda runs once per element of whatever it is mapped over
+            // — an unknown count. Count its body once (a lower bound) and,
+            // if it spends, make the bound advisory.
+            Expr::Lambda { .. } | Expr::LambdaBlock { .. } => {
+                let mut inner = self.child();
+                match expr {
+                    Expr::Lambda { body, .. } => inner.visit_expr(&body.node, handler_name),
+                    Expr::LambdaBlock { stmts, result, .. } => {
+                        for s in stmts { inner.visit_stmt(&s.node, handler_name); }
+                        inner.visit_expr(&result.node, handler_name);
+                    }
+                    _ => {}
+                }
+                if inner.spends() {
+                    self.unbounded_sites.push(format!(
+                        "{}::lambda body spends (runs once per element)", handler_name
+                    ));
+                }
+                self.tokens += inner.tokens;
+                self.latency_ms += inner.latency_ms;
+                self.unbounded_sites.extend(inner.unbounded_sites);
             }
             Expr::Match { subject, arms } => {
                 self.visit_expr(&subject.node, handler_name);
@@ -225,9 +290,18 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>) -> Vec<CostFindin
     let mut peak_tokens = 0i64;
     let mut peak_latency_ms = 0i64;
     let mut advisory_sites: Vec<String> = Vec::new();
+    let handlers: std::collections::HashMap<String, &[Spanned<Statement>]> = cell
+        .sections
+        .iter()
+        .filter_map(|s| match &s.node {
+            Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.as_slice())),
+            _ => None,
+        })
+        .collect();
     for section in &cell.sections {
         if let Section::OnSignal(ref handler) = section.node {
-            let mut walk = CostWalk::new();
+            let mut walk = CostWalk::new(&handlers);
+            walk.stack.push(handler.signal_name.clone());
             for s in &handler.body {
                 walk.visit_stmt(&s.node, &handler.signal_name);
             }
@@ -246,6 +320,11 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>) -> Vec<CostFindin
 
     let mut findings = Vec::new();
 
+    // With an unbounded site the computed peaks are LOWER bounds: they
+    // can still prove a budget is exceeded, never that it holds.
+    advisory_sites.sort();
+    advisory_sites.dedup();
+    let bounded = advisory_sites.is_empty();
     if !advisory_sites.is_empty() {
         findings.push(CostFinding::Advisory {
             axis: "tokens",
@@ -260,7 +339,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>) -> Vec<CostFindin
             findings.push(CostFinding::Exceeded {
                 axis: "tokens", declared, computed: peak_tokens, unit: "tokens",
             });
-        } else {
+        } else if bounded {
             findings.push(CostFinding::Proven {
                 axis: "tokens", computed: peak_tokens, declared, unit: "tokens",
             });
@@ -271,7 +350,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>) -> Vec<CostFindin
             findings.push(CostFinding::Exceeded {
                 axis: "latency", declared, computed: peak_latency_ms, unit: "ms",
             });
-        } else {
+        } else if bounded {
             findings.push(CostFinding::Proven {
                 axis: "latency", computed: peak_latency_ms, declared, unit: "ms",
             });
@@ -287,11 +366,28 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>) -> Vec<CostFindin
             findings.push(CostFinding::Exceeded {
                 axis: "usd", declared, computed: peak_usd_milli, unit: "milli-USD",
             });
-        } else {
+        } else if bounded {
             findings.push(CostFinding::Proven {
                 axis: "usd", computed: peak_usd_milli, declared, unit: "milli-USD",
             });
         }
     }
     findings
+}
+
+/// Iteration count of `range(n)` / `range(lo, hi)` with literal bounds.
+fn literal_range_len(iter: &Expr) -> Option<i64> {
+    let Expr::FnCall { name, args } = iter else { return None };
+    if name != "range" {
+        return None;
+    }
+    let lit = |e: &Spanned<Expr>| match e.node {
+        Expr::Literal(Literal::Int(n)) => Some(n),
+        _ => None,
+    };
+    match args.len() {
+        1 => lit(&args[0]).map(|n| n.max(0)),
+        2 => Some((lit(&args[1])? - lit(&args[0])?).max(0)),
+        _ => None,
+    }
 }

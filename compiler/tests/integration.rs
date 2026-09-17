@@ -649,3 +649,45 @@ fn test_refinement_dispatch_undeclared_at_top_level_in_loop() {
     assert!(out.contains("\"ZZZ\""), "must name the bad target: {}", out);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `soma replay` must tell "the source changed" apart from handler
+/// nondeterminism — the log carries a source fingerprint.
+#[test]
+fn replay_blames_a_changed_source_not_nondeterminism() {
+    let dir = std::env::temp_dir().join("soma_replay_src_changed");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cell = dir.join("r.cell");
+    let src = r#"
+cell R {
+    face { signal go(n: Int) -> Int }
+    on go(n: Int) {
+        let t = now()
+        return n + 1
+    }
+}
+"#;
+    std::fs::write(&cell, src).unwrap();
+    let run = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_soma"))
+            .args(args)
+            .current_dir(&dir)
+            .output()
+            .expect("failed to run soma");
+        (
+            format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)),
+            o.status.code(),
+        )
+    };
+    let (out, code) = run(&["run", "r.cell", "--signal", "go", "--record", "5"]);
+    assert_eq!(code, Some(0), "{out}");
+    let (out, code) = run(&["replay", "r.cell"]);
+    assert_eq!(code, Some(0), "unchanged source must replay clean: {out}");
+
+    std::fs::write(&cell, src.replace("n + 1", "n + 2")).unwrap();
+    let (out, code) = run(&["replay", "r.cell"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("the source changed since this entry was recorded"), "got: {out}");
+    assert!(!out.contains("cause:    nondeterminism"), "got: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

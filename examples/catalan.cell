@@ -18,7 +18,7 @@ cell Catalan {
         let i = 0
         while i < n {
             c = c * (4 * i + 2)
-            c = c / (i + 2)
+            c = idiv(c, i + 2)
             i = i + 1
         }
         return to_string(c)
@@ -30,14 +30,14 @@ cell Catalan {
         let i = 0
         while i < n {
             c = c * (4 * i + 2)
-            c = c / (i + 2)
+            c = idiv(c, i + 2)
             i = i + 1
         }
         // Count digits via repeated division by 10
         let d = 0
         if c == 0 { return 1 }
         while c > 0 {
-            c = c / 10
+            c = idiv(c, 10)
             d = d + 1
         }
         return d

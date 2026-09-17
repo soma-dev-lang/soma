@@ -16,10 +16,10 @@ cell Isqrt {
     on isqrt(n: Int) [native] {
         if n < 2 { return n }
         let x = n
-        let y = (x + 1) / 2
+        let y = idiv(x + 1, 2)
         while y < x {
             x = y
-            y = (x + n / x) / 2
+            y = idiv(x + idiv(n, x), 2)
         }
         return x
     }

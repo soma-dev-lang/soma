@@ -783,6 +783,7 @@ impl Interpreter {
             args: args.clone(),
             result: result.clone(),
             nondet: std::mem::take(&mut self.record_nondet_called),
+            src: self.source_text.as_deref().map(record_log::source_fingerprint),
         };
         if let Err(e) = record_log::append(&path, &entry) {
             eprintln!("warning: failed to append to {}: {}", path.display(), e);
@@ -2157,7 +2158,7 @@ impl Interpreter {
                 // a violated invariant must leave the slot untouched.
                 let exists = backend.get(&key_str).is_some();
                 let size_after = backend.len() as i64 + if exists { 0 } else { 1 };
-                self.check_invariants(cell_name, slot_name, &key_str, val, size_after)?;
+                self.check_invariants(cell_name, slot_name, &key_str, val, size_after, "write")?;
 
                 // Write locally
                 backend.set(&key_str, value_to_stored(val));
@@ -2175,6 +2176,18 @@ impl Interpreter {
                         "delete() requires a key argument".to_string()
                     )))?;
                 let key_str = format!("{}", key);
+
+                // Invariants are checked BEFORE the delete commits, like
+                // set/push: `size` is the entry count after removal, and the
+                // slot value is bound to the entry being removed (it already
+                // satisfied the invariant when written, so only size/key
+                // clauses can flip). Deleting a missing key is a no-op.
+                if let Some(stored) = backend.get(&key_str) {
+                    let old = auto_deserialize(stored_to_value(stored));
+                    let size_after = backend.len() as i64 - 1;
+                    self.check_invariants(cell_name, slot_name, &key_str, &old, size_after, "delete")?;
+                }
+
                 let removed = backend.delete(&key_str);
 
                 // Broadcast delete to cluster
@@ -2189,7 +2202,7 @@ impl Interpreter {
                         "append() requires a value argument".to_string()
                     )))?;
                 let size_after = backend.len() as i64 + 1;
-                self.check_invariants(cell_name, slot_name, "", val, size_after)?;
+                self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
                 backend.append(value_to_stored(val));
                 Ok(Value::Unit)
             }
@@ -2891,6 +2904,7 @@ impl Interpreter {
         key_str: &str,
         val: &Value,
         size_after: i64,
+        op: &str,
     ) -> Result<(), ExecError> {
         let prefixed = format!("{}.{}", cell_name, slot_name);
         let invs = match self.invariants.get(&prefixed).or_else(|| self.invariants.get(slot_name)) {
@@ -2911,8 +2925,8 @@ impl Interpreter {
                 Ok(v) if is_truthy(&v) => {}
                 Ok(_) => {
                     return Err(ExecError::Runtime(RuntimeError::RequireFailed(format!(
-                        "memory invariant violated on '{}': {} — rejected write of {} (key \"{}\"); the slot is unchanged",
-                        slot_name, crate::ast::render_expr(inv), val, key_str
+                        "memory invariant violated on '{}': {} — rejected {} of {} (key \"{}\"); the slot is unchanged",
+                        slot_name, crate::ast::render_expr(inv), op, val, key_str
                     ))));
                 }
                 Err(e) => {

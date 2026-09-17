@@ -11,7 +11,7 @@
 cell Triangular {
 
     on triangle(n: Int) [native] {
-        return n * (n + 1) / 2
+        return idiv(n * (n + 1), 2)
     }
 
     on tau(n: Int) [native] {
@@ -23,7 +23,7 @@ cell Triangular {
             if m % p == 0 {
                 let e = 0
                 while m % p == 0 {
-                    m = m / p
+                    m = idiv(m, p)
                     e = e + 1
                 }
                 count = count * (e + 1)

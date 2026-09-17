@@ -36,10 +36,10 @@ cell Partitions {
             let total = 0
             let k = 1
             while k > 0 {
-                let g1 = k * (3 * k - 1) / 2
+                let g1 = idiv(k * (3 * k - 1), 2)
                 if g1 > i { break }
                 let term = get(p, i - g1, w)
-                let g2 = k * (3 * k + 1) / 2
+                let g2 = idiv(k * (3 * k + 1), 2)
                 if g2 <= i {
                     term = term + get(p, i - g2, w)
                 }

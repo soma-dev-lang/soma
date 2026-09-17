@@ -22,12 +22,12 @@ cell Multinomial {
 
     on multi3(k1: Int, k2: Int, k3: Int) [native] {
         let n = k1 + k2 + k3
-        return factorial(n) / (factorial(k1) * factorial(k2) * factorial(k3))
+        return idiv(factorial(n), factorial(k1) * factorial(k2) * factorial(k3))
     }
 
     on multi4(k1: Int, k2: Int, k3: Int, k4: Int) [native] {
         let n = k1 + k2 + k3 + k4
-        return factorial(n) / (factorial(k1) * factorial(k2) * factorial(k3) * factorial(k4))
+        return idiv(factorial(n), factorial(k1) * factorial(k2) * factorial(k3) * factorial(k4))
     }
 
     on check3(k1: Int, k2: Int, k3: Int, expected: String) {

@@ -12,11 +12,14 @@
 //!      - `[loop_bound(N)]` annotation, OR
 //!      - a collection variable (`.keys()`, `.values()`, the result
 //!        of a prior let-binding) — bounded by slot capacity
-//!   2. There are no `while` loops without `[loop_bound(N)]`
-//!   3. Every recursive call has a literal integer argument that
-//!      is strictly less than the caller's corresponding parameter
-//!      (structural recursion on a decreasing Int argument)
-//!   4. No direct/mutual recursion without a decreasing measure
+//!   2. There are no `while` loops (`[loop_bound(N)]` is a budget hint,
+//!      not enforced at runtime, so it does not discharge the proof)
+//!   3. Every recursive call has an argument of the form `param - N`
+//!      (structural recursion on a decreasing Int argument) AND the
+//!      handler has a conditional branch that can stop the descent
+//!   4. The handler is not on a call cycle through other handlers
+//!      (mutual recursion, in this cell or across cells) — no measure
+//!      is attempted for those, they are flagged conservatively
 //!
 //! ## What this does NOT check
 //!
@@ -32,6 +35,7 @@
 //! Per handler: `Terminates` or `MayNotTerminate { reasons }`.
 
 use crate::ast::*;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub enum TerminationFinding {
@@ -47,9 +51,11 @@ pub enum TerminationFinding {
     },
 }
 
-/// Check termination for all handlers in a cell.
-pub fn check_cell_termination(cell: &CellDef) -> Vec<TerminationFinding> {
+/// Check termination for all handlers in a cell. `program` supplies the
+/// call graph: handlers call each other by bare name, across cells too.
+pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<TerminationFinding> {
     let mut findings = Vec::new();
+    let graph = call_graph(program);
 
     for section in &cell.sections {
         if let Section::OnSignal(ref on) = section.node {
@@ -57,11 +63,33 @@ pub fn check_cell_termination(cell: &CellDef) -> Vec<TerminationFinding> {
             for stmt in &on.body {
                 check_stmt_termination(&stmt.node, &on.signal_name, &on.params, &mut reasons);
             }
+            let mut self_recursive = false;
+            for stmt in &on.body {
+                walk_stmt(&stmt.node, &mut |e| {
+                    if matches!(e, Expr::FnCall { name, .. } if name == &on.signal_name) {
+                        self_recursive = true;
+                    }
+                });
+            }
+            if self_recursive && reasons.is_empty() && !has_conditional(&on.body) {
+                reasons.push(format!(
+                    "handler `{}`: recursion has no base case (no conditional branch can stop the descent)",
+                    on.signal_name
+                ));
+            }
+            if let Some(cycle) = find_cycle(&graph, &on.signal_name) {
+                reasons.push(format!(
+                    "handler `{}`: mutual recursion {} without a provable decreasing measure",
+                    on.signal_name,
+                    cycle.join(" → ")
+                ));
+            }
             if reasons.is_empty() {
                 findings.push(TerminationFinding::Terminates {
                     handler: on.signal_name.clone(),
                 });
             } else {
+                reasons.dedup();
                 findings.push(TerminationFinding::MayNotTerminate {
                     handler: on.signal_name.clone(),
                     reasons,
@@ -71,6 +99,198 @@ pub fn check_cell_termination(cell: &CellDef) -> Vec<TerminationFinding> {
     }
 
     findings
+}
+
+/// handler name → names of the handlers its body calls (self-edges are
+/// excluded: direct recursion is judged by the decreasing-argument rule).
+fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
+    let mut handlers: Vec<&OnSection> = Vec::new();
+    for cell in &program.cells {
+        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
+            continue;
+        }
+        for section in &cell.node.sections {
+            if let Section::OnSignal(ref on) = section.node {
+                handlers.push(on);
+            }
+        }
+    }
+    let names: HashSet<&str> = handlers.iter().map(|h| h.signal_name.as_str()).collect();
+    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+    for on in handlers {
+        let mut calls = Vec::new();
+        for stmt in &on.body {
+            walk_stmt(&stmt.node, &mut |e| {
+                if let Expr::FnCall { name, .. } = e {
+                    if names.contains(name.as_str()) && name != &on.signal_name && !calls.contains(name) {
+                        calls.push(name.clone());
+                    }
+                }
+            });
+        }
+        graph.entry(on.signal_name.clone()).or_default().extend(calls);
+    }
+    graph
+}
+
+/// A path `start → … → start` of length ≥ 2, if one exists.
+fn find_cycle(graph: &HashMap<String, Vec<String>>, start: &str) -> Option<Vec<String>> {
+    let mut stack: Vec<Vec<String>> = vec![vec![start.to_string()]];
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(path) = stack.pop() {
+        let last = path.last().unwrap();
+        for next in graph.get(last).map(|v| v.as_slice()).unwrap_or(&[]) {
+            if next == start {
+                let mut cycle = path.clone();
+                cycle.push(start.to_string());
+                return Some(cycle);
+            }
+            if seen.insert(next.clone()) {
+                let mut p = path.clone();
+                p.push(next.clone());
+                stack.push(p);
+            }
+        }
+    }
+    None
+}
+
+/// Visit every expression reachable from a statement, nested statements
+/// and sub-expressions included.
+fn walk_stmt(stmt: &Statement, f: &mut dyn FnMut(&Expr)) {
+    match stmt {
+        Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
+            walk_expr(&value.node, f)
+        }
+        Statement::If { condition, then_body, else_body } => {
+            walk_expr(&condition.node, f);
+            for s in then_body.iter().chain(else_body) {
+                walk_stmt(&s.node, f);
+            }
+        }
+        Statement::For { iter, body, .. } => {
+            walk_expr(&iter.node, f);
+            for s in body {
+                walk_stmt(&s.node, f);
+            }
+        }
+        Statement::While { condition, body, .. } => {
+            walk_expr(&condition.node, f);
+            for s in body {
+                walk_stmt(&s.node, f);
+            }
+        }
+        Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => {
+            for a in args {
+                walk_expr(&a.node, f);
+            }
+        }
+        Statement::IndexSet { index, value, .. } => {
+            walk_expr(&index.node, f);
+            walk_expr(&value.node, f);
+        }
+        Statement::Ensure { condition } => walk_expr(&condition.node, f),
+        Statement::ExprStmt { expr } => walk_expr(&expr.node, f),
+        Statement::Require { .. } | Statement::Break | Statement::Continue => {}
+    }
+}
+
+fn walk_expr(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
+    f(expr);
+    match expr {
+        Expr::Literal(_) | Expr::Ident(_) => {}
+        Expr::FieldAccess { target, .. } => walk_expr(&target.node, f),
+        Expr::Index { target, index } => {
+            walk_expr(&target.node, f);
+            walk_expr(&index.node, f);
+        }
+        Expr::MethodCall { target, args, .. } => {
+            walk_expr(&target.node, f);
+            for a in args {
+                walk_expr(&a.node, f);
+            }
+        }
+        Expr::FnCall { args, .. } => {
+            for a in args {
+                walk_expr(&a.node, f);
+            }
+        }
+        Expr::BinaryOp { left, right, .. }
+        | Expr::CmpOp { left, right, .. }
+        | Expr::Pipe { left, right } => {
+            walk_expr(&left.node, f);
+            walk_expr(&right.node, f);
+        }
+        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => walk_expr(&i.node, f),
+        Expr::Record { fields, .. } => {
+            for (_, v) in fields {
+                walk_expr(&v.node, f);
+            }
+        }
+        Expr::ListLiteral(items) => {
+            for i in items {
+                walk_expr(&i.node, f);
+            }
+        }
+        Expr::Lambda { body, .. } => walk_expr(&body.node, f),
+        Expr::LambdaBlock { stmts, result, .. } => {
+            for s in stmts {
+                walk_stmt(&s.node, f);
+            }
+            walk_expr(&result.node, f);
+        }
+        Expr::Match { subject, arms } => {
+            walk_expr(&subject.node, f);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    walk_expr(&g.node, f);
+                }
+                for s in &arm.body {
+                    walk_stmt(&s.node, f);
+                }
+                walk_expr(&arm.result.node, f);
+            }
+        }
+        Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
+            walk_expr(&condition.node, f);
+            for s in then_body.iter().chain(else_body) {
+                walk_stmt(&s.node, f);
+            }
+            walk_expr(&then_result.node, f);
+            walk_expr(&else_result.node, f);
+        }
+    }
+}
+
+/// Does the body contain any conditional branch (if / match / if-expr)?
+/// A self-recursive handler without one has no base case.
+fn has_conditional(body: &[Spanned<Statement>]) -> bool {
+    let mut found = false;
+    for s in body {
+        if matches!(s.node, Statement::If { .. }) {
+            return true;
+        }
+        walk_stmt(&s.node, &mut |e| {
+            if matches!(e, Expr::Match { .. } | Expr::IfExpr { .. }) {
+                found = true;
+            }
+        });
+        // nested statements (loops, lambdas) may hold the `if`
+        if !found {
+            found = nested_if(&s.node);
+        }
+    }
+    found
+}
+
+fn nested_if(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::If { .. } => true,
+        Statement::For { body, .. } | Statement::While { body, .. } => {
+            body.iter().any(|s| nested_if(&s.node))
+        }
+        _ => false,
+    }
 }
 
 fn check_stmt_termination(
@@ -95,6 +315,7 @@ fn check_stmt_termination(
                     handler_name
                 ));
             }
+            check_expr_termination(&iter.node, handler_name, params, reasons);
 
             // Recurse into body
             for s in body {
@@ -102,7 +323,8 @@ fn check_stmt_termination(
             }
         }
 
-        Statement::While { body, .. } => {
+        Statement::While { condition, body, .. } => {
+            check_expr_termination(&condition.node, handler_name, params, reasons);
             // While loops are NEVER structurally terminating without
             // additional analysis. Flag them unconditionally.
             // Future: check for [loop_bound(N)] on while loops.
@@ -116,7 +338,8 @@ fn check_stmt_termination(
             }
         }
 
-        Statement::If { then_body, else_body, .. } => {
+        Statement::If { condition, then_body, else_body } => {
+            check_expr_termination(&condition.node, handler_name, params, reasons);
             for s in then_body {
                 check_stmt_termination(&s.node, handler_name, params, reasons);
             }
@@ -138,10 +361,17 @@ fn check_stmt_termination(
             check_expr_termination(&value.node, handler_name, params, reasons);
         }
 
+        Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => {
+            for a in args {
+                check_expr_termination(&a.node, handler_name, params, reasons);
+            }
+        }
+        Statement::Ensure { condition } => {
+            check_expr_termination(&condition.node, handler_name, params, reasons);
+        }
+
         // These are always terminating
-        Statement::Emit { .. } | Statement::Require { .. }
-        | Statement::MethodCall { .. } | Statement::Break
-        | Statement::Continue | Statement::Ensure { .. } => {}
+        Statement::Require { .. } | Statement::Break | Statement::Continue => {}
     }
 }
 
@@ -184,6 +414,9 @@ fn check_expr_termination(
         Expr::Match { subject, arms } => {
             check_expr_termination(&subject.node, handler_name, params, reasons);
             for arm in arms {
+                if let Some(g) = &arm.guard {
+                    check_expr_termination(&g.node, handler_name, params, reasons);
+                }
                 for s in &arm.body {
                     check_stmt_termination(&s.node, handler_name, params, reasons);
                 }
@@ -215,8 +448,43 @@ fn check_expr_termination(
             check_expr_termination(&result.node, handler_name, params, reasons);
         }
 
-        // Leaf expressions and simple combinators — always terminate
-        _ => {}
+        // Combinators: a recursive call can hide in any operand
+        // (`return 1 + f(n)`), so descend everywhere.
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            check_expr_termination(&left.node, handler_name, params, reasons);
+            check_expr_termination(&right.node, handler_name, params, reasons);
+        }
+        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => {
+            check_expr_termination(&i.node, handler_name, params, reasons);
+        }
+        Expr::FieldAccess { target, .. } => {
+            check_expr_termination(&target.node, handler_name, params, reasons);
+        }
+        Expr::Index { target, index } => {
+            check_expr_termination(&target.node, handler_name, params, reasons);
+            check_expr_termination(&index.node, handler_name, params, reasons);
+        }
+        Expr::MethodCall { target, args, .. } => {
+            check_expr_termination(&target.node, handler_name, params, reasons);
+            for a in args {
+                check_expr_termination(&a.node, handler_name, params, reasons);
+            }
+        }
+        Expr::Record { fields, .. } => {
+            for (_, v) in fields {
+                check_expr_termination(&v.node, handler_name, params, reasons);
+            }
+        }
+        Expr::ListLiteral(items) => {
+            for i in items {
+                check_expr_termination(&i.node, handler_name, params, reasons);
+            }
+        }
+        Expr::Lambda { body, .. } => {
+            check_expr_termination(&body.node, handler_name, params, reasons);
+        }
+
+        Expr::Literal(_) | Expr::Ident(_) => {}
     }
 }
 

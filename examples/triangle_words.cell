@@ -43,7 +43,7 @@ cell TriangleWords {
         let lo = 0
         let hi = s
         while lo <= hi {
-            let mid = (lo + hi) / 2
+            let mid = idiv(lo + hi, 2)
             if mid * mid <= s {
                 r = mid
                 lo = mid + 1

@@ -4,11 +4,44 @@
 
 use crate::interpreter::builtins::registry;
 
+/// Hand-written references, embedded at build time: an agent without
+/// network access still has the language, and the text cannot be newer or
+/// older than the binary that prints it.
+const AGENT_SUMMARY: &str = include_str!("../../../site/llms.txt");
+const REFERENCE: &str = include_str!("../../../SOMA_REFERENCE.md");
+const GOTCHAS: &str = include_str!("../../../AGENT_GOTCHAS.md");
+const AGENTS_MD: &str = include_str!("../../../site/agent.md");
+
+const TOPICS: &[(&str, &str)] = &[
+    ("agent", "working summary of the language for a model's context (start here)"),
+    ("reference", "the full language reference"),
+    ("gotchas", "mistakes models make, each with the real diagnostic and the fix"),
+    ("builtins", "every builtin with its exact signature, generated from the compiler"),
+    ("agents-md", "drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma"),
+    ("all", "agent + reference + gotchas + builtins, one stream"),
+];
+
 pub fn cmd_docs(topic: &str) {
     match topic {
         "builtins" => print_builtins_markdown(),
+        "agent" | "llms" => print!("{}", AGENT_SUMMARY),
+        "reference" => print!("{}", REFERENCE),
+        "gotchas" => print!("{}", GOTCHAS),
+        "agents-md" => print!("{}", AGENTS_MD),
+        "all" => {
+            print!("{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n", AGENT_SUMMARY, REFERENCE, GOTCHAS);
+            print_builtins_markdown();
+        }
+        "" | "topics" => {
+            println!("soma docs <topic>\n");
+            for (name, what) in TOPICS {
+                println!("  {:<10} {}", name, what);
+            }
+            println!("\nOnline: https://soma-lang.dev/llms-full.txt");
+        }
         other => {
-            eprintln!("error: unknown docs topic '{}'. Valid topics: [builtins]", other);
+            let names: Vec<&str> = TOPICS.iter().map(|(n, _)| *n).collect();
+            eprintln!("error: unknown docs topic '{}'. Valid topics: [{}]", other, names.join(", "));
             std::process::exit(1);
         }
     }

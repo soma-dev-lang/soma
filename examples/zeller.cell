@@ -21,8 +21,8 @@ cell Zeller {
             y = y - 1
         }
         let K = y % 100
-        let J = y / 100
-        let h = (day + (13 * (m + 1)) / 5 + K + K / 4 + J / 4 + 5 * J) % 7
+        let J = idiv(y, 100)
+        let h = (day + idiv(13 * (m + 1), 5) + K + idiv(K, 4) + idiv(J, 4) + 5 * J) % 7
         // Convert from Zeller's (0=Sat..6=Fri) to ISO (1=Mon..7=Sun)
         // ISO = ((h + 5) mod 7) + 1
         return ((h + 5) % 7) + 1

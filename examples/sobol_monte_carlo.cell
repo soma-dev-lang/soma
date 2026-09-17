@@ -25,7 +25,7 @@ cell SobolMonteCarlo {
             if num % 2 == 1 {
                 result = result + base
             }
-            num = num / 2
+            num = idiv(num, 2)
             base = base / 2.0
         }
         return result

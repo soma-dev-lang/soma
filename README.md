@@ -35,7 +35,7 @@ $ soma verify app.cell
   ✓ terminal states: [paid, rejected]
   ✓ liveness: every state can eventually reach a terminal state
   ✓ refinement: handler `settle` ⟶ {paid}
-  ✓ invariant account >= 0 — writer 'seed' proven (writes 1000)
+  ⚠ invariant account >= 0 && account <= 1000000 — runtime-checked (computed values)
 ```
 
 Every claim in this README is a command you can run.
@@ -116,9 +116,24 @@ unknown/ambiguous calls, and invalid invariants *before* runtime; error
 messages contain their own fix (`invalid transition: Placed → Delivered.
 Valid targets: [Accepted, Cancelled]`); `soma describe --builtins --json`
 and `--faces` give exact signatures so nothing is guessed. Start with
-[`AGENT_GOTCHAS.md`](AGENT_GOTCHAS.md) — 15 verified wrong→right pairs —
-and [`examples/corpus/`](examples/corpus/): **168 complete programs, every
+[`AGENT_GOTCHAS.md`](AGENT_GOTCHAS.md) — 20 verified wrong→right pairs —
+and [`examples/corpus/`](examples/corpus/): **316 complete programs, every
 one passing `check` and `test`**, generated as LLM training data.
+
+Everything an agent needs is one command or one fetch away:
+
+```bash
+soma docs agent                  # the language summary, embedded in the binary
+soma describe --builtins --json  # exact signatures — never guess
+soma example invariant http      # verified programs with those features
+soma example <id>                # …and the source of one
+soma init myapp                  # app.cell + soma.toml + AGENTS.md for the next agent
+```
+
+Online, [soma-lang.dev/agents](https://soma-lang.dev/agents) lists the
+machine-readable surface: `llms.txt`, `llms-full.txt`, `builtins.json`,
+`gotchas.json`, `corpus/index.json` — all generated from the compiler and
+the corpus by `tools/build_site.py`, so the site cannot drift.
 
 **Soma running agents:** `cell agent` + `think()` + a state machine =
 a lifecycle with proven termination, hard token caps, capability-scoped
@@ -157,11 +172,15 @@ solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
 ## Honest status
 
-Soma is an experimental language (binary: `soma 2.3.0`). The verifier
+Soma is an experimental language (binary: `soma 2.4.0`). The verifier
 proves state-machine and invariant properties per cell; cross-cell
 composition is statically *linted*, not yet proven. The interpreter is
 an AST walker (use `[native]` for hot paths). One known semantic
 asymmetry: `+` on non-numeric lists concatenates, on numeric vectors it
 adds elementwise — `concat(a, b)` is always explicit concatenation.
-The test suite is ~280 Rust tests plus 600+ verified `.cell` programs;
+The test suite is ~260 Rust tests plus 600+ verified `.cell` programs;
 `soma verify` failures are CI-grade errors, not warnings.
+
+## License
+
+[MIT](LICENSE).

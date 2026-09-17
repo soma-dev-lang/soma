@@ -48,7 +48,7 @@ cell ChampernowneWords {
     on letters(n: Int) [native] {
         if n == 1000 { return 11 }   // "one thousand"
         if n >= 100 {
-            let h = n / 100
+            let h = idiv(n, 100)
             let rem = n % 100
             // "<digit> hundred"
             let l = ones_letters(h) + 7
@@ -59,7 +59,7 @@ cell ChampernowneWords {
             return l
         }
         if n >= 20 {
-            let t = n / 10
+            let t = idiv(n, 10)
             let r = n % 10
             let l = tens_letters(t)
             if r > 0 { l = l + ones_letters(r) }

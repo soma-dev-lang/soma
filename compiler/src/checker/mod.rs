@@ -18,6 +18,7 @@ pub mod names;
 pub mod interpolation_check;
 pub mod invariants;
 pub mod dispatch;
+pub mod dead_code;
 pub mod cross_machine;
 
 pub use properties::PropertyChecker;
@@ -191,6 +192,14 @@ pub enum CheckError {
         message: String,
         span: Span,
     },
+
+    /// A statement that can never run and changes the result — e.g. the
+    /// second half of `return "a" "b"`.
+    #[error("{message}")]
+    DeadCode {
+        message: String,
+        span: Span,
+    },
 }
 
 #[derive(Debug)]
@@ -268,6 +277,16 @@ pub enum CheckWarning {
         message: String,
         span: Span,
     },
+    /// A [native] handler whose result depends on the backend.
+    NativeSemantics {
+        message: String,
+        span: Span,
+    },
+    /// Statements after return/break/continue in the same block.
+    Unreachable {
+        message: String,
+        span: Span,
+    },
     /// V1.7: an interpolation issue inside `try { }` — the error is
     /// catchable by design, so it warns instead of failing the gate.
     InterpolationRecoverable {
@@ -329,6 +348,8 @@ impl std::fmt::Display for CheckWarning {
             Self::CostAdvisory { message, .. } => write!(f, "advisory: {message}"),
             Self::CostProven { message, .. } => write!(f, "✓ {message}"),
             Self::DispatchShadow { message, .. } => write!(f, "warning: {message}"),
+            Self::Unreachable { message, .. } => write!(f, "warning: {message}"),
+            Self::NativeSemantics { message, .. } => write!(f, "warning: {message}"),
             Self::InterpolationRecoverable { message, .. } => {
                 write!(f, "warning: {message} (inside try {{ }} — recoverable, so not an error)")
             }
@@ -398,6 +419,16 @@ impl<'a> Checker<'a> {
                 message: issue.message,
                 span: issue.span,
             });
+        }
+        for (message, span) in native::int_division_warnings(program) {
+            self.warnings.push(CheckWarning::NativeSemantics { message, span });
+        }
+        let (dead_errors, dead_warnings) = dead_code::check_program(program);
+        for e in dead_errors {
+            self.errors.push(CheckError::DeadCode { message: e.message, span: e.span });
+        }
+        for w in dead_warnings {
+            self.warnings.push(CheckWarning::Unreachable { message: w.message, span: w.span });
         }
         for w in dispatch_warnings {
             self.warnings.push(CheckWarning::DispatchShadow {

@@ -32,14 +32,14 @@ cell ClbgFasta {
     // Uses simplified cumulative probability table → A/C/G/T/N.
     // We accumulate into a strbuf sized to hold the whole output.
     on emit_iub(n: Int) [native] {
-        let buf = strbuf(n + n / 60 + 16)
+        let buf = strbuf(n + idiv(n, 60) + 16)
         let state = 42
         let line_len = 60
         let count = 0
         let i = 0
         while i < n {
             state = (state * 3877 + 29573) % 139968
-            let p = state * 100 / 139968
+            let p = idiv(state * 100, 139968)
             // Cumulative thresholds (cascading: later overrides earlier).
             //   < 27       → A (65)
             //   27 ≤ p<39  → C (67)

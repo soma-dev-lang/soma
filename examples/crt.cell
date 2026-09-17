@@ -15,13 +15,13 @@ cell CRT {
 
     on egcd_x(a: Int, b: Int) [native] {
         if b == 0 { return 1 }
-        let q = a / b
+        let q = idiv(a, b)
         return egcd_y(b, a - q * b)
     }
 
     on egcd_y(a: Int, b: Int) [native] {
         if b == 0 { return 0 }
-        let q = a / b
+        let q = idiv(a, b)
         return egcd_x(b, a - q * b) - q * egcd_y(b, a - q * b)
     }
 

@@ -52,7 +52,7 @@ cell Heapsort {
 
     on heapsort(arr: Int, n: Int) [native] {
         // Build heap
-        let i = n / 2 - 1
+        let i = idiv(n, 2) - 1
         while i >= 0 {
             arr = sift_down(arr, n, i)
             i = i - 1

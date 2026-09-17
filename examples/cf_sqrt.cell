@@ -21,10 +21,10 @@ cell CFSqrt {
     on isqrt(n: Int) [native] {
         if n < 2 { return n }
         let x = n
-        let y = (x + 1) / 2
+        let y = idiv(x + 1, 2)
         while y < x {
             x = y
-            y = (x + n / x) / 2
+            y = idiv(x + idiv(n, x), 2)
         }
         return x
     }
@@ -42,8 +42,8 @@ cell CFSqrt {
         let go = 1
         while go == 1 {
             m = d * a - m
-            d = (n - m * m) / d
-            a = (a0 + m) / d
+            d = idiv(n - m * m, d)
+            a = idiv(a0 + m, d)
             len = len + 1
             if a == stop { go = 0 }
         }

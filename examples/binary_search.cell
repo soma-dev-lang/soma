@@ -39,7 +39,7 @@ cell BinarySearch {
         let lo = 0
         let hi = n - 1
         while lo <= hi {
-            let mid = (lo + hi) / 2
+            let mid = idiv(lo + hi, 2)
             let v = get(arr, mid)
             if v == target { return mid }
             if v < target {

@@ -19,7 +19,7 @@ cell Legendre {
         let r = a % p
         if r < 0 { r = r + p }
         if r == 0 { return 0 }
-        let e = (p - 1) / 2
+        let e = idiv(p - 1, 2)
         let v = pow_mod(r, e, p)
         if v == 1 { return 1 }
         return 0 - 1

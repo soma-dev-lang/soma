@@ -27,7 +27,7 @@ cell Champernowne {
             block_size = 9 * block_start * digits
         }
         // m is the (1-indexed) position within `digits`-digit numbers
-        let num_idx = (m - 1) / digits      // 0-based number offset within block
+        let num_idx = idiv(m - 1, digits)      // 0-based number offset within block
         let digit_idx = (m - 1) % digits    // 0-based digit within that number
         let number = block_start + num_idx
         // Extract the digit_idx-th character of `number`'s decimal repr

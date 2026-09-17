@@ -39,21 +39,21 @@ cell Padovan {
         print("===========================================")
         print("")
         check(0, "1")
-        check(5, "2")
-        check(10, "9")
-        check(20, "86")
-        check(50, "11405773")
-        check(100, "187056393929")
+        check(5, "3")
+        check(10, "12")
+        check(20, "200")
+        check(50, "922111")
+        check(100, "1177482265857")
 
         // Headline: P(500) is a 53-digit number
         let start = now_ms()
         let p500 = padovan(500)
         let elapsed = now_ms() - start
         let len = str_len(to_string(p500))
-        if len == 53 {
-            print("  P(500) has 53 digits  ({elapsed}ms) ✓")
+        if len == 61 {
+            print("  P(500) has 61 digits  ({elapsed}ms) ✓")
         } else {
-            print("  P(500) has {len} digits, expected 53")
+            print("  P(500) has {len} digits, expected 61")
         }
     }
 }

@@ -22,10 +22,10 @@ cell Abundant {
             if m % p == 0 {
                 let pe = 1
                 while m % p == 0 {
-                    m = m / p
+                    m = idiv(m, p)
                     pe = pe * p
                 }
-                total = total * ((p * pe - 1) / (p - 1))
+                total = total * (idiv(p * pe - 1, p - 1))
             }
             p = p + 1
         }
@@ -58,7 +58,7 @@ cell Abundant {
         while n <= limit {
             let found = 0
             let a = bit_next(bs, 12)
-            let half = n / 2
+            let half = idiv(n, 2)
             while a >= 0 {
                 if a > half { break }
                 if bit_test(bs, n - a) == 1 {

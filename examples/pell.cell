@@ -34,8 +34,8 @@ cell Pell {
         while true {
             // Next CF coefficient
             m = d * a - m
-            d = (nn - m * m) / d
-            a = (a0 + m) / d
+            d = idiv(nn - m * m, d)
+            a = idiv(a0 + m, d)
 
             // Next convergent
             let h_next = a * h_cur + h_prev
@@ -60,10 +60,10 @@ cell Pell {
     on isqrt(n: Int) [native] {
         if n < 2 { return n }
         let x = n
-        let y = (x + 1) / 2
+        let y = idiv(x + 1, 2)
         while y < x {
             x = y
-            y = (x + n / x) / 2
+            y = idiv(x + idiv(n, x), 2)
         }
         return x
     }

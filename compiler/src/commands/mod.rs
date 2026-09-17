@@ -10,6 +10,7 @@ pub mod repl;
 pub mod provider;
 pub mod describe;
 pub mod docs;
+pub mod example;
 pub mod deploy;
 pub mod lint;
 pub mod replay;
@@ -42,13 +43,24 @@ pub fn find_stdlib() -> PathBuf {
         candidates.push(PathBuf::from(home).join(".soma/stdlib"));
     }
 
+    // An EMPTY stdlib directory must not win: `.soma_env/stdlib` created by
+    // an older `soma init` hid ~/.soma/stdlib and made `persistent` unknown.
     for candidate in &candidates {
-        if candidate.exists() {
+        if crate::pkg::env::dir_has_cells(candidate) {
             return candidate.clone();
         }
     }
 
-    PathBuf::from("stdlib")
+    // Nothing on disk: materialize the copy embedded in the binary.
+    if let Some(home) = std::env::var_os("HOME") {
+        let dir = PathBuf::from(home).join(".soma/stdlib");
+        if crate::pkg::env::write_embedded_stdlib(&dir).is_ok() {
+            return dir;
+        }
+    }
+    let dir = std::env::temp_dir().join("soma-stdlib");
+    let _ = crate::pkg::env::write_embedded_stdlib(&dir);
+    dir
 }
 
 pub fn read_source(path: &PathBuf) -> String {

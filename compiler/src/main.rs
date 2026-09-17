@@ -33,10 +33,11 @@ use registry::Registry;
     Cluster (same code, multiple nodes):\n  \
       soma serve app.cell -p 8080\n  \
       soma serve app.cell -p 8081 --join localhost:8082\n\n\
-    Agent integration (MCP server):\n  \
-      pip install mcp\n  \
-      python3 mcp/soma_mcp.py\n\n\
-    Docs: https://soma-lang.dev\n\
+    For coding agents:\n  \
+      soma docs agent                # the language, offline, for your context\n  \
+      soma describe --builtins --json   # exact signatures — never guess\n  \
+      soma example invariant http    # verified programs to start from\n\n\
+    Docs: https://soma-lang.dev   (agents: https://soma-lang.dev/llms-full.txt)\n\
     Paper: https://soma-lang.dev/paper")]
 #[command(after_help = "Examples:\n  \
     soma serve app.cell                     Start web server\n  \
@@ -62,6 +63,8 @@ enum Commands {
         /// Path to the .cell source file
         file: PathBuf,
         /// Arguments to pass (parsed as integers or strings)
+        // negative numbers are values, not flags: `soma run f.cell -7 2`
+        #[arg(allow_negative_numbers = true)]
         args: Vec<String>,
         /// Deprecated: use [native] on handlers instead
         #[arg(long, hide = true)]
@@ -117,6 +120,10 @@ enum Commands {
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
+        /// Rewrite `a / b` on two Ints inside [native] handlers to
+        /// idiv(a, b) — for code written when native `/` truncated
+        #[arg(long)]
+        native_idiv: bool,
     },
     /// Prove state machines, temporal logic, CAP properties, quorum
     Verify {
@@ -163,8 +170,17 @@ enum Commands {
     },
     /// Render generated reference docs: soma docs builtins
     Docs {
-        /// Topic to render (currently: builtins)
+        /// agent | reference | gotchas | builtins | agents-md | all (omit to list)
+        #[arg(default_value = "")]
         topic: String,
+    },
+    /// Find a verified example program: soma example invariant http
+    Example {
+        /// Search terms (domain, feature, word) — or an exact id to print its source
+        terms: Vec<String>,
+        /// Output as JSON (for agents)
+        #[arg(long)]
+        json: bool,
     },
 
     // ── Project ───────────────────────────────────────────────────
@@ -275,7 +291,13 @@ fn main_inner() {
     match cli.command {
         Commands::Check { file, json } => commands::check::cmd_check(&file, json, &mut registry),
         Commands::Lint { file, json } => commands::lint::cmd_lint(&file, json),
-        Commands::Fix { file, json } => commands::fix::cmd_fix(&file, json, &mut registry),
+        Commands::Fix { file, json, native_idiv } => {
+            if native_idiv {
+                commands::fix::cmd_fix_native_idiv(&file);
+            } else {
+                commands::fix::cmd_fix(&file, json, &mut registry);
+            }
+        }
         Commands::Build { file, output } => commands::build::cmd_build(&file, output.as_deref(), &mut registry),
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
@@ -315,6 +337,7 @@ fn main_inner() {
             }
         }
         Commands::Docs { topic } => commands::docs::cmd_docs(&topic),
+        Commands::Example { terms, json } => commands::example::cmd_example(&terms, json),
     }
 }
 

@@ -52,7 +52,7 @@ cell MatrixFib {
             bb = sb
             bc = sc
             bd = sd
-            m = m / 2
+            m = idiv(m, 2)
         }
         // F(n) = upper-right entry of R
         return to_string(rb)

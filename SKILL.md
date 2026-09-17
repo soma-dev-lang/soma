@@ -112,7 +112,7 @@ let y = if cond { a } else { b }            // if IS an expression (else is requ
 
 ### Subtleties that bite
 
-- **Integer division auto-promotes to Float when non-exact.** `7 / 2 == 3.5`, not `3`. Use `floor(7 / 2)` if you want integer division. `Int` is 64-bit; `BigInt` exists for arbitrary precision. The native backend has a dual-mode dispatch that will use GMP (via `rug`) for whole BigInt loops; single BigInt ops go through FFI and are slower.
+- **Integer division auto-promotes to Float when non-exact.** `7 / 2 == 3.5`, not `3`. Use `idiv(7, 2)` for the integer quotient (truncates toward zero, BigInt-exact, same in `[native]`) — not `floor(7 / 2)`, which rounds `-7 / 2` to `-4` and goes through a Float. `Int` is 64-bit; `BigInt` exists for arbitrary precision. The native backend has a dual-mode dispatch that will use GMP (via `rug`) for whole BigInt loops; single BigInt ops go through FFI and are slower.
 - **`map()` must have an even number of arguments.** `map("a", 1, "b")` is a compile error — the checker will flag it, but `soma fix` won't always auto-repair.
 - **`if` is an expression, but only with an `else` branch.** `let x = if cond { a }` is invalid. `let x = if cond { a } else { b }` is valid.
 - **`return` inside a `for` loop exits the whole handler.** Don't use `return` to break out of a loop — use a variable and `break`.
@@ -842,7 +842,9 @@ Run: `soma test file.cell`. The test harness exposes handlers in the same file. 
 | `soma verify file.cell` | CTL model checking |
 | `soma build file.cell [-o out.rs]` | Generate Rust skeleton (native codegen) |
 | `soma test file.cell` | Run test cells |
-| `soma init [name]` | Initialize project |
+| `soma init [name]` | Initialize project: `app.cell` (passes check/verify/test), `soma.toml`, `AGENTS.md` |
+| `soma docs [agent\|reference\|gotchas\|builtins\|all]` | Language docs embedded in the binary (offline) |
+| `soma example [terms…\|id]` | Search the verified corpus by domain/feature/word; an exact id prints the source |
 | `soma add pkg [--git URL] [--path DIR]` | Add dependency |
 | `soma install` | Install dependencies |
 | `soma repl` | Interactive REPL |
@@ -902,7 +904,7 @@ The workflow prompt from `AGENT.md`: **generate → check → verify → serve**
 17. **Agent cell without a state machine** — verification story collapses.
 18. **Raw API keys in `soma.toml`** — use `${ENV_VAR}`.
 19. **`to_int("abc") == 0`** assumption — it's `()`, null-check it.
-20. **Integer division surprise** — `7 / 2 == 3.5`, use `floor` for truncation.
+20. **Integer division surprise** — `7 / 2 == 3.5` (in `[native]` handlers too); use `idiv(a, b)` for the integer quotient.
 
 ## 24. Idiomatic templates
 

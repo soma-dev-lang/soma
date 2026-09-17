@@ -14,7 +14,10 @@
 <meta name="twitter:title" content="Soma language">
 <meta name="twitter:description" content="A factual overview of the Soma language implementation and its limits.">
 <link rel="canonical" href="https://soma-lang.dev">
-<link rel="alternate" type="text/plain" href="/llms.txt" title="LLM Reference">
+<link rel="alternate" type="text/plain" href="/llms.txt" title="Language summary for models">
+<link rel="alternate" type="text/plain" href="/llms-full.txt" title="Full language reference for models">
+<link rel="alternate" type="text/markdown" href="/agent.md" title="Drop-in AGENTS.md block">
+<link rel="alternate" type="application/json" href="/version.json" title="Index of machine-readable resources">
 <style>
 :root {
   color-scheme: light dark;
@@ -225,8 +228,9 @@ footer {
   "description": "Experimental cell-based programming language with state-machine checks, memory properties, agent-oriented tooling, and a Rust implementation.",
   "url": "https://soma-lang.dev",
   "downloadUrl": "https://github.com/soma-dev-lang/soma",
-  "softwareVersion": "2.2.0",
-  "license": "MIT",
+  "softwareVersion": "2.4.0",
+  "license": "https://github.com/soma-dev-lang/soma/blob/main/LICENSE",
+  "codeRepository": "https://github.com/soma-dev-lang/soma",
   "programmingLanguage": "Rust",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
 }
@@ -240,6 +244,7 @@ footer {
     <a href="#language">Language</a>
     <a href="#verification">Verification</a>
     <a href="#agents">Agents</a>
+    <a href="/agents">For AI agents</a>
     <a href="#runtime">Runtime</a>
     <a href="#limits">Limits</a>
     <a href="/paper">Paper</a>
@@ -256,6 +261,7 @@ footer {
     <code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
     <button type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
   </div>
+  <p><strong>Reading this as an AI agent?</strong> Go to <a href="/agents">/agents</a>, or fetch <a href="/llms-full.txt">/llms-full.txt</a> (the whole language, one request), <a href="/builtins.json">/builtins.json</a> (exact signatures) and <a href="/corpus/index.json">/corpus/index.json</a> (300+ verified programs, filterable by feature). A project's <code>AGENTS.md</code> block is at <a href="/agent.md">/agent.md</a>.</p>
   <p class="note">Installer note: the shell installer executes code fetched from the project repository. Review <a href="https://github.com/soma-dev-lang/soma/blob/main/site/setup.sh">site/setup.sh</a> before running it in an environment you care about.</p>
 </header>
 
@@ -449,7 +455,7 @@ make check</code></pre>
 </section>
 
 <footer>
-  <p>Project source: <a href="https://github.com/soma-dev-lang/soma">github.com/soma-dev-lang/soma</a>. Machine-readable language reference: <a href="/llms.txt">llms.txt</a>. Paper: <a href="/paper">/paper</a>.</p>
+  <p>Project source: <a href="https://github.com/soma-dev-lang/soma">github.com/soma-dev-lang/soma</a>. For models: <a href="/llms.txt">llms.txt</a>, <a href="/llms-full.txt">llms-full.txt</a>, <a href="/builtins.json">builtins.json</a>, <a href="/gotchas.json">gotchas.json</a>, <a href="/corpus/index.json">corpus/index.json</a>, <a href="/version.json">version.json</a>. Paper: <a href="/paper">/paper</a>.</p>
 </footer>
 </main>
 </body>

@@ -51,14 +51,17 @@ on add(a: Int, b: Int) { return a + b }
 ## 4. Adjacent string literals do NOT concatenate
 
 ```soma
-return "hello " "world"     // silently returns just "hello " (the
-                            // second string parses as a dead statement)
+return "hello " "world"
+// error: in G.hello: a string literal follows `return` and is never
+//        evaluated — adjacent string literals do not concatenate
 ```
 ```soma
 return "hello world"        // one literal
 let name = "world"
 return "hello {name}"       // or interpolate
 ```
+(`soma check` also warns on any other unreachable statement after
+`return` / `break` / `continue`.)
 
 ## 5. `==` on lists/maps is not structural
 
@@ -198,16 +201,22 @@ do not guess. When unsure of a cell's API, run `soma describe --faces`.
 
 ## 11. Handler names must not collide with builtins
 
+Builtins win dispatch from a call site. If the builtin can take the call,
+your handler's body never runs — `soma check` warns:
+
 ```soma
-on merge(a, b) { return a + b + 1000 }   // SILENTLY shadowed by the
-                                          // builtin merge() — your body
-                                          // never runs
+on merge(a, b) { return a + b + 1000 }
+on use_it()   { return merge(1, 2) }     // returns the BUILTIN's result
+// warning: call to 'merge' inside G.use_it resolves to the BUILTIN
+//          merge(), not the handler G.merge
 ```
 ```soma
 on merge_lists(a, b) { ... }              // pick a non-builtin name
 ```
-Risky names: `merge`, `map`, `filter`, `sort`, `count`, `top`, `take`,
-`publish`, `all`, `sum`. When in doubt, `soma describe --builtins | grep <name>`.
+Risky names: `merge`, `map`, `filter`, `sort`, `top`, `take`, `publish`,
+`approve`, `all`, `sum`, `gcd`. When in doubt, `soma describe --builtins | grep <name>`.
+(A handler calling its own homonymous builtin — `on list() { return list(1, 2) }` —
+is the intended pattern and stays silent.)
 
 ## 12. `assert_fails` needs an expression that RAISES, not a falsy bool
 
@@ -265,3 +274,43 @@ rules { assert setup() != ()  assert x() == 1 }   // wrap setup in an assert
 ```
 Valid rule forms: `assert`, `assert_fails`, `property`, plus meta-cell
 rules (`contradicts`, `implies`, `requires`, ...).
+
+## 18. One invariant, one slot
+
+An invariant is checked per write, with only the written slot in scope.
+```soma
+memory { a: Map<String, Int>  b: Map<String, Int>  invariant a + b <= 100 }
+// error: memory invariant references several slots (a, b) — ... Write
+//        one invariant per slot
+```
+`size` invariants are enforced on `delete` too: `invariant size >= 1`
+rejects removing the last entry.
+
+## 19. `7 / 2 = 3.5` everywhere — say `idiv` when you mean the integer quotient
+
+`/` on two Ints is 3.5 (an Int only when exact) in the interpreter AND in
+`[native]` handlers. Native code is statically typed, so where the quotient
+must be an Int it is checked instead of truncated:
+
+```soma
+on mid(lo: Int, hi: Int) [native] {
+    let m = lo
+    m = (lo + hi) / 2        // m is an Int slot
+    return m
+}
+// mid(1, 2) → error: Int / Int is not exact here, and this spot can only
+//             hold an Int (7 / 2 is 3.5) — write idiv(a, b) ...
+```
+```soma
+on mid(lo: Int, hi: Int) [native] { return idiv(lo + hi, 2) }   // 1, everywhere
+```
+`soma check` warns on Int / Int in native handlers; `soma fix f.cell --native-idiv`
+rewrites them (for code written when native `/` truncated). A `[native]`
+division by zero is an ordinary, `try`-catchable runtime error.
+
+## 20. A cost bound is only *proven* when every `think()` count is known
+
+`think()` reached through a loop over a list, a lambda (`map(xs, x => think(..))`)
+or a recursive helper makes the bound **advisory**. Give the loop a literal
+`range(0, N)` or `[loop_bound(N)]` to get `bound proven` back. Calls to sibling
+handlers are composed: `for i in range(0, 3) { helper() }` costs 3 × helper.

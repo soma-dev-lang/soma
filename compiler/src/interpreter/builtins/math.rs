@@ -136,7 +136,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "idiv" => {
             // Integer division: idiv(7, 2) = 3 (truncates toward zero)
-            if args.len() >= 2 {
+            if let (Some(Value::Int(a)), Some(Value::Int(b))) = (args.first(), args.get(1)) {
+                // Int path keeps BigInts exact (val_to_i64 would turn any
+                // value beyond i64 into 0).
+                if b.to_i64() == Some(0) {
+                    Some(Err(RuntimeError::TypeError("division by zero".to_string())))
+                } else {
+                    Some(Ok(Value::Int(a.clone().div(b.clone()))))
+                }
+            } else if args.len() >= 2 {
                 let a = val_to_i64(&args[0]);
                 let b = val_to_i64(&args[1]);
                 if b == 0 {

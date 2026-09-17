@@ -4,5 +4,6 @@ version = "0.1.0"
 entry = "todo_state.cell"
 
 [verify]
+cells = ["TodoService"]
 deadlock_free = true
 eventually = ["Done", "Cancelled"]

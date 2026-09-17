@@ -49,6 +49,27 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
             for inv in &mem.invariants {
                 let mut idents = HashSet::new();
                 collect_idents(&inv.node, &mut idents);
+                // An invariant is evaluated per write, with only the slot
+                // being written in scope. Naming two slots can never
+                // evaluate — every write to either would be rejected.
+                let mut named: Vec<&str> = slot_names
+                    .iter()
+                    .copied()
+                    .filter(|s| idents.contains(*s))
+                    .collect();
+                if named.len() > 1 {
+                    named.sort();
+                    issues.push(InvariantIssue {
+                        message: format!(
+                            "memory invariant references several slots ({}) — an invariant is \
+                             checked per write, with only the written slot's value in scope, so \
+                             this could never evaluate and every write would be rejected. Write \
+                             one invariant per slot",
+                            named.join(", ")
+                        ),
+                        span: inv.span,
+                    });
+                }
                 for name in idents {
                     if slot_names.contains(name.as_str())
                         || GENERIC_BINDINGS.contains(&name.as_str())
@@ -361,8 +382,53 @@ fn collect_writes_stmts(stmts: &[Spanned<Statement>], handler: &str, out: &mut V
                 collect_writes_expr(&iter.node, handler, out);
                 collect_writes_stmts(body, handler, out);
             }
+            // `slot[k] = v` — same write path as slot.set(k, v) at runtime.
+            // A local of the same name is filtered out later (only guarded
+            // slot names are kept).
+            Statement::IndexSet { name, index, value } => {
+                out.push((handler.to_string(), name.clone(), value.node.clone()));
+                collect_writes_expr(&index.node, handler, out);
+                collect_writes_expr(&value.node, handler, out);
+            }
+            Statement::MethodCall { target, method, args } => {
+                push_slot_write(target, method, args, handler, out);
+                for a in args {
+                    collect_writes_expr(&a.node, handler, out);
+                }
+            }
+            Statement::Emit { args, .. } => {
+                for a in args {
+                    collect_writes_expr(&a.node, handler, out);
+                }
+            }
+            Statement::Ensure { condition } => collect_writes_expr(&condition.node, handler, out),
             _ => {}
         }
+    }
+}
+
+/// Record a slot mutation. set/put and push/append write a known value
+/// expression; delete/remove changes `size`, which is never statically
+/// known — it is recorded with an opaque value so the invariant is
+/// reported as runtime-checked rather than "no handler writes".
+fn push_slot_write(
+    slot: &str,
+    method: &str,
+    args: &[Spanned<Expr>],
+    handler: &str,
+    out: &mut Vec<(String, String, Expr)>,
+) {
+    match method {
+        "set" | "put" if args.len() >= 2 => {
+            out.push((handler.to_string(), slot.to_string(), args[1].node.clone()));
+        }
+        "push" | "append" if !args.is_empty() => {
+            out.push((handler.to_string(), slot.to_string(), args[0].node.clone()));
+        }
+        "delete" | "remove" => {
+            out.push((handler.to_string(), slot.to_string(), Expr::Ident("<deleted entry>".to_string())));
+        }
+        _ => {}
     }
 }
 
@@ -370,12 +436,7 @@ fn collect_writes_expr(expr: &Expr, handler: &str, out: &mut Vec<(String, String
     match expr {
         Expr::MethodCall { target, method, args } => {
             if let Expr::Ident(slot) = &target.node {
-                if matches!(method.as_str(), "set" | "put") && args.len() >= 2 {
-                    out.push((handler.to_string(), slot.clone(), args[1].node.clone()));
-                }
-                if matches!(method.as_str(), "push" | "append") && !args.is_empty() {
-                    out.push((handler.to_string(), slot.clone(), args[0].node.clone()));
-                }
+                push_slot_write(slot, method, args, handler, out);
             }
             collect_writes_expr(&target.node, handler, out);
             for a in args {

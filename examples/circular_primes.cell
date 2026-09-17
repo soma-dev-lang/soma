@@ -27,7 +27,7 @@ cell CircularPrimes {
         let m = n
         while m > 0 {
             d = d + 1
-            m = m / 10
+            m = idiv(m, 10)
         }
         return d
     }
@@ -45,7 +45,7 @@ cell CircularPrimes {
     on rotate(n: Int) [native] {
         let d = num_digits(n)
         let last = n % 10
-        let rest = n / 10
+        let rest = idiv(n, 10)
         return last * pow10(d - 1) + rest
     }
 

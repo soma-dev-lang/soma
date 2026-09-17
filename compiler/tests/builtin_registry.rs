@@ -151,5 +151,6 @@ fn docs_builtins_renders_generated_markdown() {
 fn docs_unknown_topic_lists_valid_topics() {
     let (_, err, code) = soma(&["docs", "nope"]);
     assert_ne!(code, 0);
-    assert!(err.contains("Valid topics: [builtins]"), "got: {}", err);
+    assert!(err.contains("Valid topics: ["), "got: {}", err);
+    assert!(err.contains("builtins") && err.contains("agent"), "got: {}", err);
 }

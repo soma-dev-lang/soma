@@ -19,14 +19,14 @@ cell Totient {
         while p * p <= m {
             if m % p == 0 {
                 while m % p == 0 {
-                    m = m / p
+                    m = idiv(m, p)
                 }
-                result = result - result / p
+                result = result - idiv(result, p)
             }
             p = p + 1
         }
         if m > 1 {
-            result = result - result / m
+            result = result - idiv(result, m)
         }
         return result
     }

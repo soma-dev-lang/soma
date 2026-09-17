@@ -16,7 +16,7 @@ cell Pandigital {
         let m = n
         while m > 0 {
             d = d + 1
-            m = m / 10
+            m = idiv(m, 10)
         }
         return d
     }
@@ -32,7 +32,7 @@ cell Pandigital {
             let bit = shl(1, d)
             if band(mask, bit) != 0 { return 0 }
             mask = bor(mask, bit)
-            m = m / 10
+            m = idiv(m, 10)
         }
         return mask
     }

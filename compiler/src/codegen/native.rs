@@ -53,6 +53,11 @@ pub struct NativeSig {
     pub return_type: NativeType,
     /// If true, args are passed via shared buffer (_soma_push_*), not C params
     pub uses_shared_args: bool,
+    /// The Float return type comes only from `/` on Ints (`return a / b`).
+    /// The interpreter answers an Int when such a quotient is exact, so the
+    /// host turns an integral result back into an Int — unless a division
+    /// was inexact during the call (`_soma_div_inexact_take`).
+    pub int_rational_return: bool,
 }
 
 /// Parallel configuration for code generation
@@ -385,6 +390,8 @@ pub fn generate_native_source_with_config(
         // Compute the return type using the FULLY populated FnGenerator
         // (with sibling_info) so Return statements get the right coercion target.
         let ret_type = gen.infer_return_type(&handler.body);
+        let int_rational_return =
+            ret_type == NativeType::Float && gen.returns_int_rational(&handler.body);
         gen.fn_return_type = ret_type;
 
         match mode {
@@ -481,6 +488,7 @@ pub fn generate_native_source_with_config(
                     param_types,
                     return_type: ret_type,
                     uses_shared_args: true,
+                    int_rational_return,
                 });
             }
             Mode::Direct => {
@@ -492,6 +500,7 @@ pub fn generate_native_source_with_config(
                             param_types,
                             return_type: ret_type,
                             uses_shared_args: false,
+                    int_rational_return,
                         });
                     } else {
                         sigs.push(NativeSig {
@@ -499,6 +508,7 @@ pub fn generate_native_source_with_config(
                             param_types,
                             return_type: ret_type,
                             uses_shared_args: false,
+                    int_rational_return,
                         });
                     }
                 } else if param_types.len() > 3 {
@@ -508,6 +518,7 @@ pub fn generate_native_source_with_config(
                         param_types,
                         return_type: ret_type,
                         uses_shared_args: false,
+                    int_rational_return,
                     });
                 } else {
                     sigs.push(NativeSig {
@@ -515,6 +526,7 @@ pub fn generate_native_source_with_config(
                         param_types,
                         return_type: ret_type,
                         uses_shared_args: false,
+                    int_rational_return,
                     });
                 }
             }
@@ -539,8 +551,203 @@ pub fn generate_native_source_with_config(
         out.push_str(&err_block);
     }
 
+    let out = guard_exported_handlers(&out);
     (out, sigs)
 }
+
+/// Runtime support for the panic guard: an error buffer the host polls
+/// after every call (see native_ffi::take_native_error).
+const PANIC_GUARD_SUPPORT: &str = r#"
+// ── Panic guard ─────────────────────────────────────────────────────
+// A panic must never unwind across `extern "C"` (that aborts the whole
+// soma process). Every exported handler runs inside _soma_guard: the
+// panic is caught, its message lands in _SOMA_ERROR, and the host turns
+// it into an ordinary, `try`-catchable Soma runtime error.
+thread_local! {
+    static _SOMA_ERROR: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    static _SOMA_GUARD_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0);
+}
+static _SOMA_GUARD_HOOK: std::sync::Once = std::sync::Once::new();
+
+fn _soma_guard<T: Default>(f: impl FnOnce() -> T) -> T {
+    _SOMA_GUARD_HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // guarded panics become Soma errors — keep stderr quiet
+            if _SOMA_GUARD_DEPTH.with(|d| d.get()) == 0 {
+                prev(info);
+            }
+        }));
+    });
+    _SOMA_GUARD_DEPTH.with(|d| d.set(d.get() + 1));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    _SOMA_GUARD_DEPTH.with(|d| d.set(d.get() - 1));
+    match r {
+        Ok(v) => v,
+        Err(payload) => {
+            let raw = if let Some(s) = payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            // same wording as the interpreter, so behavior does not
+            // depend on the backend
+            let msg = if let Some(clean) = raw.strip_prefix("soma:") {
+                clean.to_string()
+            } else if raw.contains("remainder") {
+                "modulo by zero".to_string()
+            } else if raw.contains("divide by zero") || raw.contains("division by zero") {
+                "division by zero".to_string()
+            } else {
+                format!("[native] {}", raw)
+            };
+            _SOMA_ERROR.with(|e| *e.borrow_mut() = Some(msg));
+            T::default()
+        }
+    }
+}
+
+// ── Int / Int ───────────────────────────────────────────────────────
+// Soma's `/` on two Ints is 3.5 for 7 / 2, and an Int only when the
+// quotient is exact. Native code is statically typed, so the codegen picks
+// by context: a Float context gets _soma_div_f (3.5); a context that can
+// only hold an Int gets _soma_div_exact — exact quotient or a runtime
+// error, never a silently truncated 3. idiv() is the truncating division.
+const _SOMA_BIG_QUOTIENT: &str = "soma:this Int / Int is exact but its quotient is too large for a Float \
+(beyond 2^53), and native code types `/` as Float — write idiv(a, b) to keep the exact Int";
+
+const _SOMA_INEXACT: &str = "soma:Int / Int is not exact here, and this spot can only hold an Int \
+(7 / 2 is 3.5) — write idiv(a, b) for the integer quotient, or to_float(a) / b for the fraction";
+
+#[allow(dead_code)]
+#[inline(always)]
+fn _soma_div_exact(a: i64, b: i64) -> i64 {
+    if b == 0 {
+        panic!("division by zero");
+    }
+    match a.checked_rem(b) {
+        Some(0) => a / b,
+        Some(_) => panic!("{}", _SOMA_INEXACT),
+        // i64::MIN / -1: overflow — the dual-mode wrapper retries in BigInt
+        None => panic!("attempt to divide with overflow"),
+    }
+}
+
+/// Set when a Float-context Int / Int had a remainder during this call
+/// (process-wide: parallel handlers divide on worker threads).
+static _SOMA_DIV_INEXACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[allow(dead_code)]
+#[inline(always)]
+fn _soma_div_f(a: i64, b: i64) -> f64 {
+    if b == 0 {
+        panic!("division by zero");
+    }
+    if a.checked_rem(b).unwrap_or(0) != 0 {
+        _SOMA_DIV_INEXACT.store(true, std::sync::atomic::Ordering::Relaxed);
+    } else if let Some(q) = a.checked_div(b) {
+        // exact, but too big for a Float to carry exactly
+        if q.unsigned_abs() > (1u64 << 53) {
+            panic!("{}", _SOMA_BIG_QUOTIENT);
+        }
+    }
+    a as f64 / b as f64
+}
+
+/// 1 if an Int / Int was inexact since the last call; clears the flag.
+#[no_mangle]
+pub extern "C" fn _soma_div_inexact_take() -> i64 {
+    _SOMA_DIV_INEXACT.swap(false, std::sync::atomic::Ordering::Relaxed) as i64
+}
+
+#[no_mangle]
+pub extern "C" fn _soma_error_len() -> i64 {
+    _SOMA_ERROR.with(|e| e.borrow().as_ref().map(|s| s.len() as i64).unwrap_or(0))
+}
+
+#[no_mangle]
+pub extern "C" fn _soma_error_ptr() -> *const u8 {
+    _SOMA_ERROR.with(|e| e.borrow().as_ref().map(|s| s.as_ptr()).unwrap_or(std::ptr::null()))
+}
+
+#[no_mangle]
+pub extern "C" fn _soma_error_clear() {
+    _SOMA_ERROR.with(|e| *e.borrow_mut() = None);
+}
+"#;
+
+/// Wrap the body of every exported handler (`#[no_mangle] pub extern "C"
+/// fn`, except the `_soma_*` runtime helpers) in `_soma_guard`. Works on
+/// the generated text so every wrapper flavor — direct, rug, dual-mode,
+/// memo, parallel, array — is covered by one rule. Generated top-level
+/// functions always close with a column-0 `}`.
+fn guard_exported_handlers(src: &str) -> String {
+    const HEAD: &str = "#[no_mangle]\npub extern \"C\" fn ";
+    let mut out = String::with_capacity(src.len() + 4096);
+    let mut rest = src;
+    while let Some(pos) = rest.find(HEAD) {
+        let after_head = pos + HEAD.len();
+        out.push_str(&rest[..after_head]);
+        rest = &rest[after_head..];
+        if rest.starts_with("_soma_") {
+            continue;
+        }
+        // signature runs to the first " {\n"; body to the first "\n}\n"
+        let (Some(sig_end), Some(body_end)) = (rest.find(" {\n"), rest.find("\n}\n")) else {
+            continue;
+        };
+        if sig_end > body_end {
+            continue;
+        }
+        let sig = &rest[..sig_end];
+        let body = &rest[sig_end + 3..body_end];
+        out.push_str(sig);
+        out.push_str(" {\n    _soma_guard(move || {\n");
+        out.push_str(body);
+        out.push_str("\n    })\n}\n");
+        rest = &rest[body_end + 3..];
+    }
+    out.push_str(rest);
+    out.push_str(PANIC_GUARD_SUPPORT);
+    if src.contains("use rug::Integer") {
+        out.push_str(BIG_DIV_SUPPORT);
+    }
+    out
+}
+
+/// BigInt flavors of the Int / Int helpers (see PANIC_GUARD_SUPPORT).
+const BIG_DIV_SUPPORT: &str = r#"
+#[allow(dead_code)]
+fn _soma_div_exact_big(a: Integer, b: Integer) -> Integer {
+    if b == 0 {
+        panic!("division by zero");
+    }
+    let (q, r) = a.div_rem(b);
+    if r != 0 {
+        panic!("{}", _SOMA_INEXACT);
+    }
+    q
+}
+
+#[allow(dead_code)]
+fn _soma_div_f_big(a: Integer, b: Integer) -> f64 {
+    if b == 0 {
+        panic!("division by zero");
+    }
+    if !a.is_divisible(&b) {
+        _SOMA_DIV_INEXACT.store(true, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        // exact: a Float may only carry it when it fits in 53 bits
+        let q = Integer::from(&a / &b);
+        if q.significant_bits() > 53 {
+            panic!("{}", _SOMA_BIG_QUOTIENT);
+        }
+    }
+    a.to_f64() / b.to_f64()
+}
+"#;
 
 // ── Mode selection ──────────────────────────────────────────────────
 
@@ -1984,7 +2191,7 @@ fn is_bounded_builtin(name: &str) -> bool {
     matches!(name,
         "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_len"
         | "bit_test" | "bit_set" | "bit_clr" | "bit_next"
-        | "gcd" | "sqrt_int" | "pow_mod"
+        | "gcd" | "sqrt_int" | "pow_mod" | "idiv"
         | "abs" | "min" | "max"
         | "floor" | "ceil" | "round"
         | "to_int" | "len"
@@ -2294,9 +2501,10 @@ fn collect_tab_final<'a>(
             true
         }
         Expr::BinaryOp { left, right, op } => {
-            // Allow +, -, *, /, %
+            // Allow +, -, *, % — not `/`: it is a Float (7 / 2 = 3.5) and
+            // the table renderer only speaks i64
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod => {}
                 _ => return false,
             }
             collect_tab_final(&left.node, fn_name, out)
@@ -2330,7 +2538,7 @@ const PURE_BUILTINS: &[&str] = &[
     "to_float", "to_int", "to_string",
     "band", "bor", "bxor", "bnot", "shl", "shr", "bit_len",
     "bit_test", "bit_set", "bit_clr", "bit_next",
-    "pow_mod", "gcd", "sqrt_int",
+    "pow_mod", "gcd", "sqrt_int", "idiv",
     "str_len", "str_at", "str_eq",
 ];
 
@@ -3346,13 +3554,10 @@ impl FnGenerator {
                 let lt = self.infer_expr_type(&left.node);
                 let rt = self.infer_expr_type(&right.node);
                 match op {
-                    BinOp::Div => {
-                        if lt == NativeType::Int && rt == NativeType::Int {
-                            NativeType::Int
-                        } else {
-                            NativeType::Float
-                        }
-                    }
+                    // `/` is a Float, like the interpreter's 7 / 2 = 3.5 —
+                    // Int / Int included. Where the value lands in an Int
+                    // slot the generators emit an exact-or-error division.
+                    BinOp::Div => NativeType::Float,
                     BinOp::And | BinOp::Or => NativeType::Bool,
                     BinOp::Add if lt == NativeType::String || rt == NativeType::String => NativeType::String,
                     _ => {
@@ -3374,7 +3579,7 @@ impl FnGenerator {
                     "to_int" | "len" | "floor" | "ceil" | "round" => NativeType::Int,
                     "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_len" => NativeType::Int,
                     "bit_test" | "bit_set" | "bit_clr" | "bit_next" => NativeType::Int,
-                    "gcd" | "pow_mod" | "sqrt_int" => NativeType::Int,
+                    "gcd" | "pow_mod" | "sqrt_int" | "idiv" => NativeType::Int,
                     "str_len" | "str_at" => NativeType::Int,
                     "str_eq" => NativeType::Bool,
                     // Buffer/HashMap/StringBuf accessors that return values
@@ -3401,6 +3606,97 @@ impl FnGenerator {
                 }
             }
             _ => NativeType::Float,
+        }
+    }
+
+    /// True when every returned expression is "int-rational": built from
+    /// Int-typed leaves with + - * / only (through Float locals defined the
+    /// same way). Such a value is a Float in native code purely because
+    /// `/` on Ints is; the interpreter would answer an Int whenever every
+    /// division along the way is exact.
+    fn returns_int_rational(&self, body: &[Spanned<Statement>]) -> bool {
+        // Float locals whose every definition is int-rational (fixpoint:
+        // a later bad assignment disqualifies the variable).
+        let mut rational: HashSet<String> = HashSet::new();
+        let mut banned: HashSet<String> = HashSet::new();
+        for _ in 0..4 {
+            let before = (rational.len(), banned.len());
+            self.scan_rational_defs(body, &mut rational, &mut banned);
+            if before == (rational.len(), banned.len()) {
+                break;
+            }
+        }
+        let mut returns: Vec<&Expr> = Vec::new();
+        Self::collect_return_exprs(body, &mut returns);
+        if let Some(last) = body.last() {
+            if let Statement::ExprStmt { expr } = &last.node {
+                returns.push(&expr.node);
+            }
+        }
+        !returns.is_empty() && returns.iter().all(|e| self.is_int_rational(e, &rational))
+    }
+
+    fn scan_rational_defs(
+        &self,
+        body: &[Spanned<Statement>],
+        rational: &mut HashSet<String>,
+        banned: &mut HashSet<String>,
+    ) {
+        for stmt in body {
+            match &stmt.node {
+                Statement::Let { name, value } | Statement::Assign { name, value } => {
+                    if self.var_types.get(name).copied() != Some(NativeType::Float) {
+                        continue;
+                    }
+                    if !banned.contains(name) && self.is_int_rational(&value.node, rational) {
+                        rational.insert(name.clone());
+                    } else {
+                        rational.remove(name);
+                        banned.insert(name.clone());
+                    }
+                }
+                Statement::If { then_body, else_body, .. } => {
+                    self.scan_rational_defs(then_body, rational, banned);
+                    self.scan_rational_defs(else_body, rational, banned);
+                }
+                Statement::While { body, .. } | Statement::For { body, .. } => {
+                    self.scan_rational_defs(body, rational, banned);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_return_exprs<'e>(body: &'e [Spanned<Statement>], out: &mut Vec<&'e Expr>) {
+        for stmt in body {
+            match &stmt.node {
+                Statement::Return { value } => out.push(&value.node),
+                Statement::If { then_body, else_body, .. } => {
+                    Self::collect_return_exprs(then_body, out);
+                    Self::collect_return_exprs(else_body, out);
+                }
+                Statement::While { body, .. } | Statement::For { body, .. } => {
+                    Self::collect_return_exprs(body, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn is_int_rational(&self, expr: &Expr, rational: &HashSet<String>) -> bool {
+        match expr {
+            Expr::Literal(Literal::Int(_)) => true,
+            Expr::Ident(name) => {
+                rational.contains(name)
+                    || self.var_types.get(name).copied() == Some(NativeType::Int)
+            }
+            Expr::BinaryOp { left, op, right } => {
+                matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+                    && self.is_int_rational(&left.node, rational)
+                    && self.is_int_rational(&right.node, rational)
+            }
+            Expr::FnCall { .. } => self.infer_expr_type(expr) == NativeType::Int,
+            _ => false,
         }
     }
 
@@ -3785,6 +4081,33 @@ impl FnGenerator {
         } else {
             NativeType::Int
         };
+
+        // Int / Int: 3.5 where a Float fits, exact-or-error where only an
+        // Int does (see _soma_div_exact). Never a truncating `/`.
+        if matches!(op, BinOp::Div) && common == NativeType::Int {
+            // Rug mode: operands may be rug::Integer — BigInt helpers
+            if matches!(self.mode, Mode::Rug)
+                && !(self.is_small_int_expr(left) && self.is_small_int_expr(right))
+            {
+                let l = self.gen_expr_rug(left);
+                let r = self.gen_expr_rug(right);
+                if target_ty == NativeType::Int {
+                    self.err("internal: BigInt `/` reached the i64 emitter in an Int context");
+                }
+                return self.coerce_direct(
+                    format!("_soma_div_f_big({}, {})", l, r),
+                    NativeType::Float,
+                    target_ty,
+                );
+            }
+            let l = self.gen_expr_direct(left, NativeType::Int);
+            let r = self.gen_expr_direct(right, NativeType::Int);
+            return if target_ty == NativeType::Int {
+                format!("_soma_div_exact({}, {})", l, r)
+            } else {
+                self.coerce_direct(format!("_soma_div_f({}, {})", l, r), NativeType::Float, target_ty)
+            };
+        }
 
         // Literal-literal arithmetic: const-fold ourselves to avoid Rust's
         // const-evaluator catching overflow at compile time.
@@ -4178,6 +4501,14 @@ impl FnGenerator {
                 )
             }
             // Number theory
+            // idiv(a, b): integer division truncating toward zero — the
+            // backend-independent spelling (`/` on two Ints promotes to
+            // Float in the interpreter when non-exact).
+            "idiv" if args.len() == 2 => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                format!("(({}) / ({}))", a, b)
+            }
             "gcd" if args.len() == 2 => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
@@ -4642,7 +4973,8 @@ impl FnGenerator {
                     self.gen_binop_rug(&left.node, *op, &right.node)
                 } else {
                     {
-                        self.err("mixed Int/Float binary operation in Rug-mode integer expression");
+                        self.err("mixed Int/Float binary operation in Rug-mode integer expression \
+                                  (note: `/` on two Ints is a Float — use idiv(a, b) for an integer quotient)");
                         "Integer::from(0i64)".to_string()
                     }
                 }
@@ -4657,6 +4989,18 @@ impl FnGenerator {
 
     /// Rug-mode binop returning rug::Integer.
     fn gen_binop_rug(&self, left: &Expr, op: BinOp, right: &Expr) -> String {
+        // An Integer-valued `/`: exact quotient or runtime error — never
+        // rug's truncating division (that is idiv).
+        if matches!(op, BinOp::Div) {
+            if self.is_small_int_expr(left) && self.is_small_int_expr(right) {
+                let l = self.gen_expr_direct(left, NativeType::Int);
+                let r = self.gen_expr_direct(right, NativeType::Int);
+                return format!("Integer::from(_soma_div_exact({}, {}))", l, r);
+            }
+            let l = self.gen_expr_rug(left);
+            let r = self.gen_expr_rug(right);
+            return format!("_soma_div_exact_big({}, {})", l, r);
+        }
         let op_str = arith_op_str(op);
         // Literal-literal: const-fold to avoid Rust's const-evaluator
         // catching overflow at compile time. We're in Rug-mode, so a folded
@@ -4951,7 +5295,8 @@ impl FnGenerator {
         let Expr::BinaryOp { left, op, right } = value else { return None; };
         let op_assign = match op {
             BinOp::Add => "+=", BinOp::Sub => "-=", BinOp::Mul => "*=",
-            BinOp::Div => "/=", BinOp::Mod => "%=", _ => return None,
+            // no `/=`: rug's truncates; `/` must go through _soma_div_exact_big
+            BinOp::Mod => "%=", _ => return None,
         };
 
         // Form 1: name = name OP rhs
@@ -5511,6 +5856,11 @@ impl FnGenerator {
                 )
             }
             // Number theory: rug has these as methods. All args must be &Integer.
+            "idiv" if args.len() == 2 => {
+                let a = self.gen_expr_rug(&args[0].node);
+                let b = self.gen_expr_rug(&args[1].node);
+                format!("(({}) / ({}))", a, b)
+            }
             "gcd" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);
                 // Second arg as a borrowed Integer reference where possible.

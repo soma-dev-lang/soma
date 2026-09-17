@@ -63,7 +63,7 @@ cell Mergesort {
 
     on mergesort(arr: Int, lo: Int, hi: Int) [native] {
         if hi - lo > 1 {
-            let mid = (lo + hi) / 2
+            let mid = idiv(lo + hi, 2)
             arr = mergesort(arr, lo, mid)
             arr = mergesort(arr, mid, hi)
             arr = merge(arr, lo, mid, hi)

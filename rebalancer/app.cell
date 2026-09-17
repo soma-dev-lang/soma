@@ -503,7 +503,9 @@ cell Portfolio {
 
     // ── Manual gates ───────────────────────────────────────────
 
-    on approve(payload: Map) {
+    // Named approve_run, not approve: `approve` is a builtin, and builtins
+    // win dispatch — the route below would never reach this handler.
+    on approve_run(payload: Map) {
         let run_id = payload.run_id ?? ""
         let run = _load_run(run_id)
         if run == () { return map("error", "not found") }
@@ -815,7 +817,7 @@ cell Portfolio {
             {method: "POST", path: "/history"}    -> set_history(from_json(body))
             {method: "POST", path: "/policy"}     -> set_policy(from_json(body))
             {method: "POST", path: "/rebalance"}  -> rebalance(from_json(body))
-            {method: "POST", path: "/approve"}    -> approve(from_json(body))
+            {method: "POST", path: "/approve"}    -> approve_run(from_json(body))
             {method: "POST", path: "/cancel"}     -> cancel(from_json(body))
             {method: "POST", path: "/execute"}    -> execute(from_json(body))
             {method: "POST", path: "/reconcile"}  -> reconcile(from_json(body))

@@ -67,6 +67,7 @@ cell agent Atlas [model: claude_sonnet] {
         signal request(method: String, path: String, body: String) -> String
         signal incoming(sender: String, body: String) -> Map
         signal approve(id: String) -> Map
+        signal approve_email(id: String) -> Map
         signal decline(id: String) -> Map
         signal verdict(action: String, ref_id: String) -> Map
 
@@ -221,7 +222,12 @@ cell agent Atlas [model: claude_sonnet] {
     }
 
     // Human-in-the-loop approval gate. Only handler that calls send_reply.
-    on approve(id: String) {
+    // `approve` is also a builtin, and builtins win dispatch from a call
+    // site — so the logic lives in approve_email; `approve` stays as the
+    // signal entry point (/approve/<id>).
+    on approve(id: String) { return approve_email(id) }
+
+    on approve_email(id: String) {
         if emails.get(id) == () { return response(404, map("error", "not found")) }
         let to = senders.get(id)
         let current = get_status(id)
@@ -277,7 +283,7 @@ cell agent Atlas [model: claude_sonnet] {
 
     // Protocol counterpart — the human's verdict comes back as a signal.
     on verdict(action: String, ref_id: String) {
-        if action == "approve" { return approve(ref_id) }
+        if action == "approve" { return approve_email(ref_id) }
         return decline(ref_id)
     }
 

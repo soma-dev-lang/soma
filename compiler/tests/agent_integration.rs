@@ -1,5 +1,6 @@
 /// Agent integration tests — require a running ollama instance at localhost:11434.
-/// These tests are skipped automatically when ollama is not reachable.
+/// These tests are skipped automatically when ollama is not reachable or
+/// does not have LLM_MODEL pulled.
 
 use std::process::Command;
 
@@ -19,11 +20,25 @@ fn soma_with_env(args: &[&str], env: &[(&str, &str)]) -> (String, String, i32) {
     (stdout, stderr, code)
 }
 
+/// Reachable AND serving LLM_MODEL. A bare TCP connect is not enough: an
+/// ollama without the model answers 404 on every completion, which would
+/// fail these tests for an environment reason.
 fn ollama_available() -> bool {
-    std::net::TcpStream::connect_timeout(
-        &"127.0.0.1:11434".parse().unwrap(),
-        std::time::Duration::from_secs(2),
-    ).is_ok()
+    use std::io::{Read, Write};
+    let timeout = std::time::Duration::from_secs(2);
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&"127.0.0.1:11434".parse().unwrap(), timeout) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    if stream
+        .write_all(b"GET /api/tags HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut body = String::new();
+    let _ = stream.read_to_string(&mut body);
+    body.contains(&format!("\"{}\"", LLM_MODEL))
 }
 
 const LLM_URL: &str = "http://localhost:11434/v1/chat/completions";
@@ -40,7 +55,7 @@ fn llm_env() -> Vec<(&'static str, &'static str)> {
 #[test]
 fn test_think_basic() {
     if !ollama_available() {
-        eprintln!("SKIP: ollama not reachable at localhost:11434");
+        eprintln!("SKIP: ollama with {} not available at localhost:11434", LLM_MODEL);
         return;
     }
 
@@ -70,7 +85,7 @@ fn test_think_basic() {
 #[test]
 fn test_think_with_tool_calling() {
     if !ollama_available() {
-        eprintln!("SKIP: ollama not reachable at localhost:11434");
+        eprintln!("SKIP: ollama with {} not available at localhost:11434", LLM_MODEL);
         return;
     }
 
@@ -110,7 +125,7 @@ fn test_think_with_tool_calling() {
 #[test]
 fn test_token_tracking() {
     if !ollama_available() {
-        eprintln!("SKIP: ollama not reachable at localhost:11434");
+        eprintln!("SKIP: ollama with {} not available at localhost:11434", LLM_MODEL);
         return;
     }
 
@@ -142,4 +157,44 @@ fn test_token_tracking() {
     }
 
     let _ = std::fs::remove_file(&tmp);
+}
+
+/// Hermetic (no ollama needed): `soma test` must honor soma.toml
+/// `[agent] mock`, exactly like `soma run` does.
+#[test]
+fn test_cmd_reads_agent_mock_from_manifest() {
+    let dir = std::env::temp_dir().join("soma_test_manifest_mock");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("soma.toml"),
+        "[package]\nname = \"m\"\nversion = \"0.1.0\"\n\n[agent]\nmock = \"fixed:pong\"\n",
+    )
+    .unwrap();
+    let cell = dir.join("app.cell");
+    std::fs::write(&cell, r#"
+        cell agent T {
+            face { signal ask() -> String }
+            on ask() { return think("ping") }
+        }
+        cell test TTests {
+            rules { assert ask() == "pong" }
+        }
+    "#).unwrap();
+
+    // make sure the env cannot be what satisfies the test
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soma"));
+    cmd.args(["test", cell.to_str().unwrap()])
+        .env_remove("SOMA_LLM_MOCK")
+        .env_remove("SOMA_LLM_URL")
+        .env_remove("SOMA_LLM_KEY");
+    let output = cmd.output().expect("failed to run soma");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.status.code(), Some(0), "manifest mock must apply under `soma test`: {text}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

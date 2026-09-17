@@ -13,32 +13,32 @@ cell TonelliShanks {
     on sqrt_mod(n: Int, p: Int) [native] {
         // Legendre symbol: n^((p-1)/2) mod p
         // Returns 1 if QR, p-1 if QNR, 0 if n ≡ 0
-        let leg = pow_mod(n, (p - 1) / 2, p)
+        let leg = pow_mod(n, idiv(p - 1, 2), p)
         if leg != 1 { return 0 }
 
         // Easy case: p ≡ 3 (mod 4) → x = n^((p+1)/4) mod p
         if p % 4 == 3 {
-            return pow_mod(n, (p + 1) / 4, p)
+            return pow_mod(n, idiv(p + 1, 4), p)
         }
 
         // Decompose p − 1 = q · 2^s, q odd
         let q = p - 1
         let s = 0
         while q % 2 == 0 {
-            q = q / 2
+            q = idiv(q, 2)
             s = s + 1
         }
 
         // Find a quadratic non-residue z
         let z = 2
-        while pow_mod(z, (p - 1) / 2, p) != p - 1 {
+        while pow_mod(z, idiv(p - 1, 2), p) != p - 1 {
             z = z + 1
         }
 
         let m = s
         let c = pow_mod(z, q, p)
         let t = pow_mod(n, q, p)
-        let r = pow_mod(n, (q + 1) / 2, p)
+        let r = pow_mod(n, idiv(q + 1, 2), p)
 
         while true {
             if t == 1 { return r }

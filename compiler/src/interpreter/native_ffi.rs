@@ -118,110 +118,54 @@ pub fn compile_and_load_natives_with_config(
         // Step 2: Generate Rust source
         let (rust_source, sigs) = native::generate_native_source_with_config(&native_handlers, parallel_config);
 
-        // Step 3: Check cache
+        // Step 3: Check cache. The source hash names the cache entry AND is
+        // stamped into the dylib as `_soma_build_id()`, so a loaded library
+        // can prove it was built from this exact source.
         let source_hash = hash_source(&rust_source);
+        let rust_source = format!(
+            "{}\n#[no_mangle]\npub extern \"C\" fn _soma_build_id() -> u64 {{ 0x{}u64 }}\n",
+            rust_source, source_hash
+        );
         let cache = cache_dir();
         let dylib_name = format!("native_{}_{}.{}", cell.node.name.to_lowercase(), source_hash, dylib_ext());
         let dylib_path = cache.join(&dylib_name);
 
-        if !dylib_path.exists() {
-            // Write Rust source
-            let rs_path = cache.join(format!("native_{}_{}.rs", cell.node.name.to_lowercase(), source_hash));
-            std::fs::write(&rs_path, &rust_source)
-                .map_err(|e| format!("failed to write native source: {}", e))?;
-
-            // Compile with cargo (enables num-bigint for BigInt support)
-            eprintln!("[native] compiling {} handler(s) for cell '{}'...",
-                native_handlers.len(), cell.node.name);
-
-            // Create a mini cargo project for this native compilation
-            let proj_dir = cache_dir().join("proj");
-            let proj_src = proj_dir.join("src");
-            std::fs::create_dir_all(&proj_src).ok();
-
-            // Write Cargo.toml — only include rug if a Rug-mode handler is present
-            let uses_rug = rust_source.contains("use rug::Integer");
-            let uses_regex = rust_source.contains("regex::Regex");
-            let mut deps = String::new();
-            if uses_rug {
-                deps.push_str("rug = { version = \"1\", default-features = false, features = [\"integer\"] }\n");
+        // Step 4: Build if needed, load, verify. A cached entry that fails
+        // verification (written by an older soma without the build lock, or
+        // damaged on disk) is dropped and rebuilt once — never trusted: a
+        // wrong dylib can export a same-named handler and return wrong
+        // results silently.
+        let mut loaded = None;
+        for attempt in 0..2 {
+            let mut from_cache = true;
+            if !dylib_path.exists() {
+                // Every soma process in this directory shares one cargo
+                // project (proj/src/lib.rs). Without mutual exclusion,
+                // process A can compile process B's source and publish it
+                // under A's hash.
+                let _build_lock = acquire_build_lock(&cache)?;
+                // another process may have built it while we waited
+                if !dylib_path.exists() {
+                    from_cache = false;
+                    build_dylib(&cell.node.name, native_handlers.len(), &rust_source, &source_hash, &cache, &dylib_path)?;
+                }
             }
-            if uses_regex {
-                deps.push_str("regex = \"1\"\n");
+            match open_verified(&dylib_path, &source_hash) {
+                Ok(lib) => {
+                    if from_cache {
+                        eprintln!("[native] using cached {} for cell '{}'", dylib_name, cell.node.name);
+                    }
+                    loaded = Some(lib);
+                    break;
+                }
+                Err(e) if from_cache && attempt == 0 => {
+                    eprintln!("[native] cached {} rejected ({}) — rebuilding", dylib_name, e);
+                    let _ = std::fs::remove_file(&dylib_path);
+                }
+                Err(e) => return Err(e),
             }
-            // CORRECTNESS RULE: every cell uses overflow_checks=true.
-            //
-            // Soma's contract is: when the user writes `Int`, the
-            // compiler picks i64 OR BigInt, and the answer is ALWAYS
-            // correct. Without runtime overflow checks, the Direct
-            // fast path silently produces wrong values on i64
-            // overflow, which violates the contract.
-            //
-            // overflow_checks=true panics on every overflowing op;
-            // the dispatch wrapper's catch_unwind catches the panic
-            // and falls back to Rug. This is the foundation that
-            // makes dual-mode dispatch sound.
-            //
-            // Performance is recovered through (a) target-cpu=native
-            // (still applied here, doesn't affect correctness),
-            // (b) thin LTO, (c) per-op wrapping arithmetic in the
-            // codegen for ops where the classifier proved safety
-            // (handled in native.rs, not here), and (d) the various
-            // codegen peepholes / Buf primitive / auto-memo etc.
-            let cargo_toml = format!(
-                "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = true\npanic = \"unwind\"\nlto = \"thin\"\ncodegen-units = 1\n",
-                deps
-            );
-            // Per-cell .cargo/config.toml: use target-cpu=native so
-            // LLVM can emit SIMD/AVX2/NEON for the host machine.
-            // Doesn't affect correctness — only enables hardware
-            // features the codegen would otherwise miss.
-            let cargo_config_dir = proj_dir.join(".cargo");
-            std::fs::create_dir_all(&cargo_config_dir).ok();
-            let cargo_config = "[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n";
-            std::fs::write(cargo_config_dir.join("config.toml"), cargo_config)
-                .map_err(|e| format!("cannot write .cargo/config.toml: {}", e))?;
-            std::fs::write(proj_dir.join("Cargo.toml"), &cargo_toml)
-                .map_err(|e| format!("cannot write Cargo.toml: {}", e))?;
-
-            // Write the generated source as lib.rs
-            std::fs::write(proj_src.join("lib.rs"), &rust_source)
-                .map_err(|e| format!("cannot write lib.rs: {}", e))?;
-
-            // Build with cargo
-            let output = std::process::Command::new("cargo")
-                .args(["build", "--release", "--quiet"])
-                .current_dir(&proj_dir)
-                .output()
-                .map_err(|e| format!("cargo not found: {}", e))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!(
-                    "[native] compilation failed for cell '{}':\n{}\n\nGenerated source:\n{}",
-                    cell.node.name, stderr, rust_source
-                ));
-            }
-
-            // Copy the built dylib to the cache
-            let built_dylib = if cfg!(target_os = "macos") {
-                proj_dir.join("target/release/libsoma_native.dylib")
-            } else {
-                proj_dir.join("target/release/libsoma_native.so")
-            };
-            std::fs::copy(&built_dylib, &dylib_path)
-                .map_err(|e| format!("cannot copy dylib: {}", e))?;
-
-            eprintln!("[native] compiled → {}", dylib_path.display());
-        } else {
-            eprintln!("[native] using cached {} for cell '{}'", dylib_name, cell.node.name);
         }
-
-        // Step 4: Load the shared library
-        let lib = unsafe {
-            libloading::Library::new(&dylib_path)
-                .map_err(|e| format!("failed to load native library: {}", e))?
-        };
+        let lib = loaded.ok_or_else(|| "failed to load native library".to_string())?;
 
         // Step 5: Resolve function symbols
         for sig in sigs {
@@ -260,7 +204,205 @@ pub fn compile_and_load_natives_with_config(
 
 /// Call a loaded native function with the given interpreter Values.
 /// Returns the result as a Value.
+/// Load a dylib and check its `_soma_build_id()` stamp against the hash
+/// of the source we expect it to have been built from.
+fn open_verified(dylib_path: &std::path::Path, source_hash: &str) -> Result<libloading::Library, String> {
+    let lib = unsafe {
+        libloading::Library::new(dylib_path)
+            .map_err(|e| format!("failed to load native library: {}", e))?
+    };
+    let expected = u64::from_str_radix(source_hash, 16).map_err(|e| e.to_string())?;
+    let actual = unsafe {
+        let id: libloading::Symbol<unsafe extern "C" fn() -> u64> = lib
+            .get(b"_soma_build_id")
+            .map_err(|_| "no build id".to_string())?;
+        id()
+    };
+    if actual != expected {
+        return Err(format!("build id {:016x}, expected {}", actual, source_hash));
+    }
+    Ok(lib)
+}
+
+/// Exclusive, blocking, cross-process lock on the native build directory.
+/// Released when the returned file is dropped.
+fn acquire_build_lock(cache: &std::path::Path) -> Result<std::fs::File, String> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(cache.join("build.lock"))
+        .map_err(|e| format!("cannot open native build lock: {}", e))?;
+    lock.lock().map_err(|e| format!("cannot take native build lock: {}", e))?;
+    Ok(lock)
+}
+
+/// Compile `rust_source` in the shared cargo project and publish the
+/// dylib at `dylib_path`. Caller must hold the build lock.
+fn build_dylib(
+    cell_name: &str,
+    n_handlers: usize,
+    rust_source: &str,
+    source_hash: &str,
+    cache: &std::path::Path,
+    dylib_path: &std::path::Path,
+) -> Result<(), String> {
+        // Write Rust source
+        let rs_path = cache.join(format!("native_{}_{}.rs", cell_name.to_lowercase(), source_hash));
+        std::fs::write(&rs_path, rust_source)
+            .map_err(|e| format!("failed to write native source: {}", e))?;
+
+        // Compile with cargo (enables num-bigint for BigInt support)
+        eprintln!("[native] compiling {} handler(s) for cell '{}'...",
+            n_handlers, cell_name);
+
+        // Create a mini cargo project for this native compilation
+        let proj_dir = cache_dir().join("proj");
+        let proj_src = proj_dir.join("src");
+        std::fs::create_dir_all(&proj_src).ok();
+
+        // Write Cargo.toml — only include rug if a Rug-mode handler is present
+        let uses_rug = rust_source.contains("use rug::Integer");
+        let uses_regex = rust_source.contains("regex::Regex");
+        let mut deps = String::new();
+        if uses_rug {
+            deps.push_str("rug = { version = \"1\", default-features = false, features = [\"integer\"] }\n");
+        }
+        if uses_regex {
+            deps.push_str("regex = \"1\"\n");
+        }
+        // CORRECTNESS RULE: every cell uses overflow_checks=true.
+        //
+        // Soma's contract is: when the user writes `Int`, the
+        // compiler picks i64 OR BigInt, and the answer is ALWAYS
+        // correct. Without runtime overflow checks, the Direct
+        // fast path silently produces wrong values on i64
+        // overflow, which violates the contract.
+        //
+        // overflow_checks=true panics on every overflowing op;
+        // the dispatch wrapper's catch_unwind catches the panic
+        // and falls back to Rug. This is the foundation that
+        // makes dual-mode dispatch sound.
+        //
+        // Performance is recovered through (a) target-cpu=native
+        // (still applied here, doesn't affect correctness),
+        // (b) thin LTO, (c) per-op wrapping arithmetic in the
+        // codegen for ops where the classifier proved safety
+        // (handled in native.rs, not here), and (d) the various
+        // codegen peepholes / Buf primitive / auto-memo etc.
+        let cargo_toml = format!(
+            "[package]\nname = \"soma_native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n[dependencies]\n{}\n[profile.release]\nopt-level = 3\noverflow-checks = true\npanic = \"unwind\"\nlto = \"thin\"\ncodegen-units = 1\n",
+            deps
+        );
+        // Per-cell .cargo/config.toml: use target-cpu=native so
+        // LLVM can emit SIMD/AVX2/NEON for the host machine.
+        // Doesn't affect correctness — only enables hardware
+        // features the codegen would otherwise miss.
+        let cargo_config_dir = proj_dir.join(".cargo");
+        std::fs::create_dir_all(&cargo_config_dir).ok();
+        let cargo_config = "[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n";
+        std::fs::write(cargo_config_dir.join("config.toml"), cargo_config)
+            .map_err(|e| format!("cannot write .cargo/config.toml: {}", e))?;
+        std::fs::write(proj_dir.join("Cargo.toml"), &cargo_toml)
+            .map_err(|e| format!("cannot write Cargo.toml: {}", e))?;
+
+        // Write the generated source as lib.rs
+        std::fs::write(proj_src.join("lib.rs"), rust_source)
+            .map_err(|e| format!("cannot write lib.rs: {}", e))?;
+
+        // Build with cargo
+        let output = std::process::Command::new("cargo")
+            .args(["build", "--release", "--quiet"])
+            .current_dir(&proj_dir)
+            .output()
+            .map_err(|e| format!("cargo not found: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "[native] compilation failed for cell '{}':\n{}\n\nGenerated source:\n{}",
+                cell_name, stderr, rust_source
+            ));
+        }
+
+        // Copy the built dylib to the cache
+        let built_dylib = if cfg!(target_os = "macos") {
+            proj_dir.join("target/release/libsoma_native.dylib")
+        } else {
+            proj_dir.join("target/release/libsoma_native.so")
+        };
+        // Publish atomically: a concurrent loader must never see a
+        // half-copied dylib under the final name.
+        let tmp_path = dylib_path.with_extension(format!("tmp{}", std::process::id()));
+        std::fs::copy(&built_dylib, &tmp_path)
+            .map_err(|e| format!("cannot copy dylib: {}", e))?;
+        std::fs::rename(&tmp_path, dylib_path)
+            .map_err(|e| format!("cannot publish dylib: {}", e))?;
+
+        eprintln!("[native] compiled → {}", dylib_path.display());
+    Ok(())
+}
+
 pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super::Value, String> {
+    if native.sig.int_rational_return {
+        let _ = take_div_inexact(native); // drop a stale flag from an earlier call
+    }
+    let result = call_native_unguarded(native, args);
+    // A panic inside the handler (division by zero, index out of range…)
+    // is caught by the generated _soma_guard and parked in the dylib's
+    // error buffer; the returned value is then a meaningless default.
+    if let Some(err) = take_native_error(native) {
+        return Err(err);
+    }
+    // `return a / b`: the interpreter answers an Int when the quotient is
+    // exact. The native handler is statically Float — restore the Int when
+    // the value is integral and no division of the call had a remainder.
+    if native.sig.int_rational_return {
+        if let Ok(super::Value::Float(v)) = &result {
+            let inexact = take_div_inexact(native);
+            if !inexact && v.fract() == 0.0 && v.abs() < 9_007_199_254_740_992.0 {
+                return Ok(super::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*v as i64)));
+            }
+        }
+    }
+    result
+}
+
+/// Read-and-clear the dylib's "an Int / Int was inexact" flag.
+fn take_div_inexact(native: &LoadedNative) -> bool {
+    let Some(lib) = native.lib.as_ref() else { return true };
+    unsafe {
+        match lib.get::<unsafe extern "C" fn() -> i64>(b"_soma_div_inexact_take") {
+            Ok(f) => f() != 0,
+            Err(_) => true, // unknown → keep the Float
+        }
+    }
+}
+
+/// Read and clear the dylib's error buffer. None when no error is pending
+/// (or for a dylib built before the panic guard existed).
+fn take_native_error(native: &LoadedNative) -> Option<String> {
+    let lib = native.lib.as_ref()?;
+    unsafe {
+        let len_fn: libloading::Symbol<unsafe extern "C" fn() -> i64> = lib.get(b"_soma_error_len").ok()?;
+        let len = len_fn() as usize;
+        if len == 0 {
+            return None;
+        }
+        let ptr_fn: libloading::Symbol<unsafe extern "C" fn() -> *const u8> = lib.get(b"_soma_error_ptr").ok()?;
+        let clear_fn: libloading::Symbol<unsafe extern "C" fn()> = lib.get(b"_soma_error_clear").ok()?;
+        let ptr = ptr_fn();
+        let msg = if ptr.is_null() {
+            "[native] handler panicked".to_string()
+        } else {
+            String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+        };
+        clear_fn();
+        Some(msg)
+    }
+}
+
+fn call_native_unguarded(native: &LoadedNative, args: &[super::Value]) -> Result<super::Value, String> {
     use super::Value;
 
     let param_count = native.sig.param_types.len();

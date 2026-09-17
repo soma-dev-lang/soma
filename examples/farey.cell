@@ -17,12 +17,12 @@ cell Farey {
         let p = 2
         while p * p <= m {
             if m % p == 0 {
-                while m % p == 0 { m = m / p }
-                result = result - result / p
+                while m % p == 0 { m = idiv(m, p) }
+                result = result - idiv(result, p)
             }
             p = p + 1
         }
-        if m > 1 { result = result - result / m }
+        if m > 1 { result = result - idiv(result, m) }
         return result
     }
 

@@ -5,7 +5,7 @@
 cell M14Binsearch {
     on bs(lo: Int, hi: Int, target: Int) [native] {
         if lo >= hi { return 0 - 1 }
-        let mid = (lo + hi) / 2
+        let mid = idiv(lo + hi, 2)
         if mid == target { return mid }
         if mid < target {
             return bs(mid + 1, hi, target)

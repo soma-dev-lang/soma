@@ -48,18 +48,27 @@ impl SomaEnv {
         })
     }
 
-    /// Sync stdlib from the global installation into this env
+    /// Sync stdlib into this env: from a stdlib directory when one is
+    /// around (repo checkout, next to the binary, ~/.soma/stdlib), and from
+    /// the copy embedded in the binary otherwise — a lone `soma` executable
+    /// must still know what `persistent` means.
     fn sync_stdlib(&self, project_dir: &Path) -> Result<(), String> {
-        // Find global stdlib
-        let candidates = [
+        let mut candidates = vec![
             project_dir.join("stdlib"),
             PathBuf::from("stdlib"),
             PathBuf::from("../stdlib"),
         ];
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                candidates.push(parent.join("../stdlib"));
+                candidates.push(parent.join("stdlib"));
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            candidates.push(PathBuf::from(home).join(".soma/stdlib"));
+        }
 
-        let global_stdlib = candidates.iter().find(|p| p.exists());
-
-        if let Some(src) = global_stdlib {
+        if let Some(src) = candidates.iter().find(|p| dir_has_cells(p)) {
             let entries = fs::read_dir(src).map_err(|e| format!("{}", e))?;
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -71,6 +80,8 @@ impl SomaEnv {
                 }
             }
         }
+        // whatever is still missing comes from the binary
+        write_embedded_stdlib(&self.stdlib_dir)?;
 
         Ok(())
     }
@@ -142,4 +153,37 @@ impl SomaEnv {
 
         paths
     }
+}
+
+/// The standard property definitions, embedded at build time.
+pub const EMBEDDED_STDLIB: &[(&str, &str)] = &[
+    ("access.cell", include_str!("../../../stdlib/access.cell")),
+    ("backends.cell", include_str!("../../../stdlib/backends.cell")),
+    ("budget.cell", include_str!("../../../stdlib/budget.cell")),
+    ("builtins.cell", include_str!("../../../stdlib/builtins.cell")),
+    ("consistency.cell", include_str!("../../../stdlib/consistency.cell")),
+    ("durability.cell", include_str!("../../../stdlib/durability.cell")),
+    ("lifecycle.cell", include_str!("../../../stdlib/lifecycle.cell")),
+    ("mutability.cell", include_str!("../../../stdlib/mutability.cell")),
+    ("redundancy.cell", include_str!("../../../stdlib/redundancy.cell")),
+];
+
+/// True when `dir` holds at least one .cell file (an empty stdlib
+/// directory is worse than none: it hides the real one).
+pub fn dir_has_cells(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .map(|it| it.flatten().any(|e| e.path().extension().map_or(false, |x| x == "cell")))
+        .unwrap_or(false)
+}
+
+/// Write the embedded stdlib files that `dir` does not have yet.
+pub fn write_embedded_stdlib(dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {}", dir.display(), e))?;
+    for (name, text) in EMBEDDED_STDLIB {
+        let dest = dir.join(name);
+        if !dest.exists() {
+            fs::write(&dest, text).map_err(|e| format!("cannot write {}: {}", dest.display(), e))?;
+        }
+    }
+    Ok(())
 }

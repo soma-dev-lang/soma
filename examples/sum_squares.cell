@@ -12,7 +12,7 @@
 cell SumSquares {
 
     on sum_of_squares_formula(n: Int) [native] {
-        return n * (n + 1) * (2 * n + 1) / 6
+        return idiv(n * (n + 1) * (2 * n + 1), 6)
     }
 
     on sum_of_squares_loop(n: Int) [native] {
@@ -26,7 +26,7 @@ cell SumSquares {
     }
 
     on square_of_sum(n: Int) [native] {
-        let s = n * (n + 1) / 2
+        let s = idiv(n * (n + 1), 2)
         return s * s
     }
 

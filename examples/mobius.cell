@@ -19,7 +19,7 @@ cell Mobius {
         let p = 2
         while p * p <= m {
             if m % p == 0 {
-                m = m / p
+                m = idiv(m, p)
                 count = count + 1
                 if m % p == 0 { return 0 }   // squared factor → 0
             }

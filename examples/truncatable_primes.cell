@@ -28,7 +28,7 @@ cell TruncatablePrimes {
         let m = n
         while m > 0 {
             d = d + 1
-            m = m / 10
+            m = idiv(m, 10)
         }
         return d
     }
@@ -49,7 +49,7 @@ cell TruncatablePrimes {
         let m = n
         while m > 0 {
             if is_prime(m) == 0 { return 0 }
-            m = m / 10
+            m = idiv(m, 10)
         }
         // Left-truncation
         let d = num_digits(n)

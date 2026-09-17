@@ -22,14 +22,14 @@ cell Pi {
             num = num + r
             let den = s * 3
             den = den + t
-            let d = num / den
+            let d = idiv(num, den)
 
             // safe check: floor((q*4 + r) / (s*4 + t))
             let num4 = q * 4
             num4 = num4 + r
             let den4 = s * 4
             den4 = den4 + t
-            let d4 = num4 / den4
+            let d4 = idiv(num4, den4)
 
             if d == d4 {
                 if digits == 0 {

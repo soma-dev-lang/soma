@@ -7,7 +7,7 @@
 cell M19MixedArgs {
     on f(n: Int) [native] {
         if n <= 1 { return 1 }
-        let half = n / 2
+        let half = idiv(n, 2)
         // First call is eligible (n - 1)
         let a = f(n - 1)
         // Second call uses local — ineligible

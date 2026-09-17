@@ -3,16 +3,22 @@ name = "agents-corpus"
 version = "0.1.0"
 description = "Verified AI-agent example cells (training corpus)"
 
-# Agent LLM config — overridden by SOMA_LLM_MOCK in examples so no network
-# is required. For real runs, set provider/model and an API key via env.
+# Agent LLM config. `mock = "echo"` keeps every example in this directory
+# hermetic: `soma test` / `soma run` need no network and no API key, and
+# results are deterministic. For a live run, delete the `mock` line (or
+# override with SOMA_LLM_MOCK) and provide the key via env.
 [agent]
 provider = "anthropic"
 model    = "claude-opus-4-6"
 key      = "${ANTHROPIC_API_KEY}"
+mock     = "echo"
 
 # Termination proof for verified_termination.cell's `workflow` machine:
 # every path eventually reaches a terminal, no deadlocks.
+# `cells` scopes these properties to Solver — the other agents in this
+# directory have their own state names and must not inherit them.
 [verify]
+cells = ["Solver"]
 deadlock_free = true
 eventually    = ["done", "failed"]
 

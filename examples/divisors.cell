@@ -23,7 +23,7 @@ cell Divisors {
             if m % p == 0 {
                 let e = 0
                 while m % p == 0 {
-                    m = m / p
+                    m = idiv(m, p)
                     e = e + 1
                 }
                 count = count * (e + 1)
@@ -44,11 +44,11 @@ cell Divisors {
             if m % p == 0 {
                 let pe = 1
                 while m % p == 0 {
-                    m = m / p
+                    m = idiv(m, p)
                     pe = pe * p
                 }
                 // factor: 1 + p + p² + ... + p^e = (p·pe - 1)/(p - 1)
-                total = total * ((p * pe - 1) / (p - 1))
+                total = total * (idiv(p * pe - 1, p - 1))
             }
             p = p + 1
         }

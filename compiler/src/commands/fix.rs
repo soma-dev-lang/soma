@@ -403,3 +403,150 @@ fn remove_property_from_source(source: &mut String, slot_name: &str, prop: &str)
     }
     false
 }
+
+/// `soma fix --native-idiv`: rewrite every `a / b` on two Ints inside a
+/// [native] handler to `idiv(a, b)`. Native `/` used to truncate; it is now
+/// 3.5 like everywhere else, so code that relied on the integer quotient
+/// must say so. Innermost divisions first, one pass per nesting level.
+pub fn cmd_fix_native_idiv(path: &PathBuf) {
+    let mut total = 0usize;
+    for _pass in 0..16 {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot read {}: {}", path.display(), e);
+                std::process::exit(1);
+            }
+        };
+        let program = parse_program(path);
+        let mut sites = crate::checker::native::int_division_sites(&program);
+        if sites.is_empty() {
+            break;
+        }
+        // smallest first, drop anything overlapping an already chosen site
+        sites.sort_by_key(|(l, r)| r.end - l.start);
+        // spans count CHARACTERS (the lexer walks a Vec<char>); text
+        // surgery needs byte offsets
+        let mut byte_at: Vec<usize> = source.char_indices().map(|(b, _)| b).collect();
+        byte_at.push(source.len());
+        let at = |c: usize| byte_at.get(c).copied().unwrap_or(source.len());
+        let mut chosen: Vec<(usize, usize, String)> = Vec::new();
+        for (l, r) in sites {
+            let Some((start, end, text)) = idiv_rewrite(&source, at(l.start), at(l.end), at(r.start), at(r.end)) else { continue };
+            if chosen.iter().any(|(s, e, _)| start < *e && *s < end) {
+                continue;
+            }
+            chosen.push((start, end, text));
+        }
+        if chosen.is_empty() {
+            break;
+        }
+        chosen.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
+        let mut out = source.clone();
+        for (start, end, text) in &chosen {
+            out.replace_range(*start..*end, text);
+        }
+        total += chosen.len();
+        if let Err(e) = std::fs::write(path, out) {
+            eprintln!("error: cannot write {}: {}", path.display(), e);
+            std::process::exit(1);
+        }
+    }
+    println!("{}: {} division(s) rewritten to idiv()", path.display(), total);
+}
+
+/// Replacement for one division given its operand spans. Spans cover the
+/// bare operands and ignore parentheses at their edges: for
+/// `((2 * n + 1) * m) / (n + 2)` the left span is `2 * n + 1) * m` and the
+/// right one `n + 2`. Each operand is first re-balanced — a `)` with no
+/// partner pulls in the `(` before the span, a `(` left open pulls in the
+/// `)` after it. Whatever parentheses then remain between the operands and
+/// the `/` are wrappers: each is matched outward and dropped.
+fn idiv_rewrite(src: &str, l_start: usize, l_end: usize, r_start: usize, r_end: usize) -> Option<(usize, usize, String)> {
+    if !(l_start <= l_end && l_end <= r_start && r_start <= r_end && r_end <= src.len()) {
+        return None;
+    }
+    let bytes = src.as_bytes();
+    // (missing `(` before, missing `)` after) for a piece of text
+    let imbalance = |text: &str| -> (usize, usize) {
+        let (mut depth, mut min) = (0i64, 0i64);
+        for c in text.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    min = min.min(depth);
+                }
+                _ => {}
+            }
+        }
+        ((-min) as usize, (depth - min) as usize)
+    };
+    // step left over `n` opening parens (whitespace allowed)
+    let eat_opens = |from: usize, n: usize| -> Option<usize> {
+        let mut i = from;
+        for _ in 0..n {
+            loop {
+                if i == 0 {
+                    return None;
+                }
+                i -= 1;
+                if bytes[i] == b'(' {
+                    break;
+                }
+                if !bytes[i].is_ascii_whitespace() {
+                    return None;
+                }
+            }
+        }
+        Some(i)
+    };
+    // step right over `n` closing parens (whitespace allowed)
+    let eat_closes = |from: usize, n: usize| -> Option<usize> {
+        let mut i = from;
+        for _ in 0..n {
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() || bytes[i] != b')' {
+                return None;
+            }
+            i += 1;
+        }
+        Some(i)
+    };
+
+    // re-balance each operand
+    let (l_need_open, l_need_close) = imbalance(src.get(l_start..l_end)?);
+    let l_text_start = eat_opens(l_start, l_need_open)?;
+    let l_text_end = eat_closes(l_end, l_need_close)?;
+    let (r_need_open, r_need_close) = imbalance(src.get(r_start..r_end)?);
+    let r_text_start = eat_opens(r_start, r_need_open)?;
+    let r_text_end = eat_closes(r_end, r_need_close)?;
+    if l_text_end > r_text_start {
+        return None;
+    }
+
+    // what is left between them: whitespace, wrapper parens, one `/`
+    let between = src.get(l_text_end..r_text_start)?;
+    if between.matches('/').count() != 1
+        || between.chars().any(|c| !(c.is_whitespace() || c == '(' || c == ')' || c == '/'))
+    {
+        return None;
+    }
+    let slash = between.find('/')?;
+    let (before, after) = (&between[..slash], &between[slash + 1..]);
+    if before.contains('(') || after.contains(')') {
+        return None;
+    }
+    let start = eat_opens(l_text_start, before.matches(')').count())?;
+    let end = eat_closes(r_text_end, after.matches('(').count())?;
+
+    let left = src.get(l_text_start..l_text_end)?.trim();
+    let right = src.get(r_text_start..r_text_end)?.trim();
+    // last line of defense: never write unbalanced text
+    if imbalance(left) != (0, 0) || imbalance(right) != (0, 0) {
+        return None;
+    }
+    Some((start, end, format!("idiv({}, {})", left, right)))
+}

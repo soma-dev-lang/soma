@@ -13,10 +13,10 @@ cell Pythagoras {
     on isqrt(n: Int) [native] {
         if n < 2 { return n }
         let x = n
-        let y = (x + 1) / 2
+        let y = idiv(x + 1, 2)
         while y < x {
             x = y
-            y = (x + n / x) / 2
+            y = idiv(x + idiv(n, x), 2)
         }
         return x
     }
@@ -30,9 +30,9 @@ cell Pythagoras {
     on count_triples_under(perimeter: Int) [native] {
         let count = 0
         let a = 1
-        while a < perimeter / 3 {
+        while a < idiv(perimeter, 3) {
             let b = a + 1
-            while b < perimeter / 2 {
+            while b < idiv(perimeter, 2) {
                 let c = perimeter - a - b
                 if c <= b { b = perimeter }
                 if c > b {

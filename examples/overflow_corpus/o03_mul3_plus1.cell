@@ -14,7 +14,7 @@ cell O03Mul3Plus1 {
         let v = n
         while v != 1 {
             if v % 2 == 0 {
-                v = v / 2
+                v = idiv(v, 2)
             } else {
                 v = 3 * v + 1
             }

@@ -303,3 +303,202 @@ fn composition_silent_without_cross_cell_call() {
         "no composition warning expected for same-cell transitions: {out}"
     );
 }
+
+// ── Silent footguns promoted to diagnostics ─────────────────────────
+
+#[test]
+fn adjacent_string_literals_after_return_fail_check() {
+    let (out, code) = check_src(
+        "dead_adjacent_strings.cell",
+        r#"
+        cell G {
+            face { signal hello() -> String }
+            on hello() {
+                return "hello " "world"
+            }
+        }
+        "#,
+    );
+    assert_ne!(code, 0, "half the string is silently dropped — must fail: {out}");
+    assert!(out.contains("adjacent string literals do not concatenate"), "got: {out}");
+}
+
+#[test]
+fn unreachable_code_after_return_warns_but_passes() {
+    let (out, code) = check_src(
+        "dead_unreachable.cell",
+        r#"
+        cell G {
+            face { signal f() -> Int }
+            on f() {
+                return 1
+                let x = 2
+            }
+        }
+        "#,
+    );
+    assert_eq!(code, 0, "unreachable code is a warning, not an error: {out}");
+    assert!(out.contains("unreachable code after `return`"), "got: {out}");
+}
+
+#[test]
+fn call_shadowed_by_builtin_warns() {
+    let (out, code) = check_src(
+        "dispatch_builtin_shadow.cell",
+        r#"
+        cell G {
+            face {
+                signal merge(a: Int, b: Int) -> Int
+                signal use_it() -> Int
+            }
+            on merge(a: Int, b: Int) { return a + b + 1000 }
+            on use_it() { return merge(1, 2) }
+        }
+        "#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("resolves to the BUILTIN merge()"), "got: {out}");
+}
+
+#[test]
+fn handler_calling_its_homonymous_builtin_is_silent() {
+    // `on list()` calling the builtin list() is the documented pattern.
+    let (out, code) = check_src(
+        "dispatch_builtin_homonym.cell",
+        r#"
+        cell G {
+            face { signal list() -> List }
+            on list() { return list(1, 2) }
+        }
+        "#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("BUILTIN"), "got: {out}");
+}
+
+#[test]
+fn native_int_division_warns_and_idiv_is_silent() {
+    let (out, code) = check_src(
+        "native_int_div.cell",
+        r#"
+        cell N {
+            face {
+                signal mid(lo: Int, hi: Int) -> Int
+                signal mid_ok(lo: Int, hi: Int) -> Int
+                signal avg(a: Float, b: Float) -> Float
+            }
+            on mid(lo: Int, hi: Int) [native] { return (lo + hi) / 2 }
+            on mid_ok(lo: Int, hi: Int) [native] { return idiv(lo + hi, 2) }
+            on avg(a: Float, b: Float) [native] { return (a + b) / 2.0 }
+        }
+        "#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("in N.mid [native]"), "Int / Int must warn: {out}");
+    assert!(!out.contains("N.mid_ok"), "idiv must not warn: {out}");
+    assert!(!out.contains("N.avg"), "Float division must not warn: {out}");
+}
+
+#[test]
+fn non_exhaustive_match_inside_a_lambda_fails_check() {
+    let (out, code) = check_src(
+        "sum_lambda_match.cell",
+        r#"
+        cell type Pay { variants { Charged { tx: String }  Declined { reason: String }  Cash } }
+        cell M {
+            face { signal go() -> String }
+            on go() {
+                let f = x => match x {
+                    Charged { tx } -> "paid"
+                    Cash -> "cash"
+                }
+                return f(Cash)
+            }
+        }
+        "#,
+    );
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("missing variant `Declined`"), "got: {out}");
+}
+
+const SPENDER: &str = r#"
+        cell agent Spender {
+            face {
+                signal one(x: String) -> String
+                signal HANDLER(items: List) -> Int
+            }
+            cost {
+                tokens: 100000
+            }
+            state flow {
+                initial: idle
+                idle -> done
+            }
+            on one(x: String) {
+                return think("s {x}", map("max_tokens", 500, "timeout", 5000))
+            }
+            on HANDLER(items: List) {
+                BODY
+                return len(items)
+            }
+        }
+"#;
+
+/// A token bound is only "proven" when every think() runs a known number
+/// of times. Through a sibling call in a loop over a list, or inside a
+/// lambda, the count is unknown: the bound must be advisory.
+#[test]
+fn cost_bound_is_not_proven_through_helpers_loops_or_lambdas() {
+    for (name, body) in [
+        ("via_helper", "for i in items { one(i) }"),
+        ("via_lambda", r#"let r = map(items, x => think("s {x}", map("max_tokens", 500)))"#),
+    ] {
+        let src = SPENDER.replace("HANDLER", name).replace("BODY", body);
+        let (out, _) = check_src(&format!("cost_{name}.cell"), &src);
+        assert!(out.contains("bound is advisory"), "{name}: {out}");
+        assert!(!out.contains("'tokens' bound proven"), "{name} must not be proven: {out}");
+    }
+    // a literal range IS a known count: 3 x 500 tokens, proven
+    let src = SPENDER
+        .replace("HANDLER", "via_range")
+        .replace("BODY", r#"for i in range(0, 3) { one("x") }"#);
+    let (out, code) = check_src("cost_via_range.cell", &src);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("'tokens' bound proven — peak 1500 tokens"), "got: {out}");
+}
+
+#[test]
+fn fix_native_idiv_rewrites_integer_divisions_only() {
+    let tmp = std::env::temp_dir().join("fix_native_idiv.cell");
+    // the em dash makes byte offsets ≠ character offsets
+    std::fs::write(&tmp, r#"// migration test — spans count characters
+cell F {
+    face {
+        signal a(lo: Int, hi: Int) -> Int
+        signal b(x: Float) -> Float
+        signal c(lo: Int, hi: Int) -> Int
+    }
+    on a(lo: Int, hi: Int) [native] {
+        let mid = (lo + hi) / 2
+        let tri = hi * (hi + 1) / 2
+        let q = hi / (lo + 1) / 3
+        let w = ((2 * hi + 1) * lo + 3 * (hi - 1)) / (hi + 2)
+        return mid + tri + q + w
+    }
+    on b(x: Float) [native] { return x / 2.0 }
+    on c(lo: Int, hi: Int) { return (lo + hi) / 2 }
+}
+"#).unwrap();
+    let (out, _, code) = soma(&["fix", tmp.to_str().unwrap(), "--native-idiv"]);
+    assert_eq!(code, 0, "{out}");
+    let fixed = std::fs::read_to_string(&tmp).unwrap();
+    assert!(fixed.contains("let mid = idiv(lo + hi, 2)"), "{fixed}");
+    assert!(fixed.contains("let tri = idiv(hi * (hi + 1), 2)"), "{fixed}");
+    assert!(fixed.contains("let q = idiv(idiv(hi, lo + 1), 3)"), "{fixed}");
+    assert!(fixed.contains("let w = idiv((2 * hi + 1) * lo + 3 * (hi - 1), hi + 2)"), "{fixed}");
+    assert!(fixed.contains("return x / 2.0"), "Float division must stay: {fixed}");
+    assert!(fixed.contains("on c(lo: Int, hi: Int) { return (lo + hi) / 2 }"), "interpreted handler must stay: {fixed}");
+    let (out, _, code) = soma(&["check", tmp.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("is a Float (7 / 2"), "nothing left to warn about: {out}");
+}

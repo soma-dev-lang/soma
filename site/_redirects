@@ -1,0 +1,12 @@
+# Where agents look first
+/AGENTS.md              /agent.md        200
+/agents.md              /agent.md        200
+/CLAUDE.md              /agent.md        200
+/.well-known/llms.txt   /llms.txt        200
+/llm.txt                /llms.txt        301
+/SKILL.md               /skill/SKILL.md  200
+/docs                   /docs/reference.md 302
+/reference              /docs/reference.md 302
+/builtins               /builtins.json   302
+/corpus                 /corpus/index.md 302
+/corpus/                /corpus/index.md 302

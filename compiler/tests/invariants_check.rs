@@ -188,3 +188,88 @@ cell C {
         "clamp within bounds must be statically proven: {out}"
     );
 }
+
+#[test]
+fn delete_cannot_break_a_size_invariant() {
+    let p = write_probe(
+        "v18_inv_delete.cell",
+        r#"
+cell D {
+    face {
+        signal seed() -> Int
+        signal drop_it() -> Int
+        signal count() -> Int
+    }
+    memory {
+        roster: Map<String, Int>
+        invariant size >= 1
+    }
+    on seed() { roster.set("a", 1) return 1 }
+    on drop_it() { roster.delete("a") return roster.len() }
+    on count() { return roster.len() }
+}
+cell test DTests {
+    rules {
+        assert seed() == 1
+        assert_fails drop_it()
+        assert count() == 1
+        // deleting a missing key is a no-op, not a violation
+        assert roster.delete("nope") == false
+    }
+}
+"#,
+    );
+    let (out, code) = soma(&["test", &p]);
+    assert_eq!(code, 0, "delete must be invariant-checked: {out}");
+    assert!(out.contains("rejected delete"), "got: {out}");
+
+    let (out, _) = soma(&["verify", &p]);
+    assert!(
+        out.contains("drop_it → roster"),
+        "verify must list the delete as a runtime-checked writer: {out}"
+    );
+}
+
+#[test]
+fn bracket_writes_are_seen_by_verify() {
+    let p = write_probe(
+        "v18_inv_bracket.cell",
+        r#"
+cell B {
+    face { signal go() -> Int }
+    memory {
+        account: Map<String, Int>
+        invariant account >= 0
+    }
+    on go() {
+        account["balance"] = -5
+        return 1
+    }
+}
+"#,
+    );
+    let (out, code) = soma(&["verify", &p]);
+    assert_ne!(code, 0, "a literal violating bracket write must fail verify: {out}");
+    assert!(out.contains("statically violated"), "got: {out}");
+}
+
+#[test]
+fn check_rejects_multi_slot_invariants() {
+    let p = write_probe(
+        "v18_inv_multislot.cell",
+        r#"
+cell M {
+    face { signal go() -> Int }
+    memory {
+        a: Map<String, Int>
+        b: Map<String, Int>
+        invariant a + b <= 100
+    }
+    on go() { a.set("k", 1) return 1 }
+}
+"#,
+    );
+    let (out, code) = soma(&["check", &p]);
+    assert_ne!(code, 0, "an invariant no write can satisfy must fail check: {out}");
+    assert!(out.contains("references several slots (a, b)"), "got: {out}");
+}

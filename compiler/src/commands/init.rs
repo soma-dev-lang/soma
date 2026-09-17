@@ -42,20 +42,16 @@ pub fn cmd_init(name: Option<&str>) {
         process::exit(1);
     });
 
-    let main_path = project_dir.join("main.cell");
+    // app.cell — the name every doc, the help text and the site use.
+    let main_path = project_dir.join("app.cell");
     if !main_path.exists() {
-        fs::write(&main_path, r#"// Your Soma app starts here
-
-cell App {
-    face {
-        signal hello(name: String) -> String
+        fs::write(&main_path, STARTER_APP).ok();
     }
-
-    on hello(name: String) {
-        return concat("Hello, ", concat(name, "!"))
-    }
-}
-"#).ok();
+    // AGENTS.md: any coding agent opening this project learns the loop
+    // (check → verify → test) and where the exact references are.
+    let agents_path = project_dir.join("AGENTS.md");
+    if !agents_path.exists() {
+        fs::write(&agents_path, AGENTS_MD).ok();
     }
 
     let rel_prefix = if name.is_some() {
@@ -67,7 +63,8 @@ cell App {
     println!("initialized soma project: {}", project_name);
     println!("");
     println!("  {}soma.toml        project manifest", rel_prefix);
-    println!("  {}main.cell        entry point", rel_prefix);
+    println!("  {}app.cell         entry point — a counter with an invariant, a lifecycle and tests", rel_prefix);
+    println!("  {}AGENTS.md        instructions for coding agents working in this project", rel_prefix);
     println!("  {}.soma_env/       isolated environment", rel_prefix);
     println!("    stdlib/         {} property definitions", env.all_cell_paths().len());
     println!("    packages/      dependencies (empty)");
@@ -77,9 +74,10 @@ cell App {
     if name.is_some() {
         println!("  cd {}", project_name);
     }
-    println!("  soma run main.cell hello world");
-    println!("  soma add mypackage --git https://github.com/user/repo");
-    println!("  soma serve main.cell");
+    println!("  soma check app.cell && soma verify app.cell && soma test app.cell");
+    println!("  soma run app.cell add 5");
+    println!("  soma serve app.cell              # http://localhost:8080");
+    println!("  soma example invariant http      # verified programs to start from");
 }
 
 pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Option<&str>) {
@@ -188,3 +186,77 @@ pub fn cmd_env() {
         println!("no environment found (run `soma init`)");
     }
 }
+
+/// Drop-in instructions for coding agents — the same text the site serves
+/// at https://soma-lang.dev/agent.md.
+const AGENTS_MD: &str = include_str!("../../../site/agent.md");
+
+/// The starter program. It passes check, verify and test as written, and
+/// shows the four things a cell is for: a contract, a limit that holds, a
+/// lifecycle that is proven, and tests that travel with the code.
+const STARTER_APP: &str = r#"// A counter that cannot go negative, behind a session that must be opened
+// before it is used and cannot be used once closed.
+//
+//   soma check  app.cell      static gates
+//   soma verify app.cell      proves the `session` state machine
+//   soma test   app.cell      runs CounterTests
+//   soma run    app.cell add 5
+//   soma serve  app.cell      GET /  ·  POST /add/5
+
+cell Counter {
+    face {
+        signal start(id: String) -> String
+        signal stop(id: String) -> String
+        signal add(n: Int) -> Int
+        signal total() -> Int
+        signal request(method: String, path: String, body: String) -> Map
+    }
+
+    memory {
+        counts: Map<String, Int> [persistent]
+        invariant counts >= 0 && counts <= 1000000     // checked before every write
+    }
+
+    state session {
+        initial: idle
+        idle -> open
+        open -> closed                                  // closed is terminal
+    }
+
+    on total() { return counts.get("n") ?? 0 }
+
+    on add(n: Int) {
+        counts.set("n", total() + n)                    // a bad write raises; the slot keeps its value
+        return total()
+    }
+
+    on start(id: String) {
+        transition(id, "open")
+        return get_status(id)
+    }
+
+    on stop(id: String) {
+        transition(id, "closed")
+        return get_status(id)
+    }
+
+    on request(method: String, path: String, body: String) {
+        match map("method", method, "path", path) {
+            {method: "GET", path: "/"} -> map("total", total())
+            {method: "POST", path: "/add/" + n} -> map("total", add(to_int(n)))
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}
+
+cell test CounterTests {
+    rules {
+        assert add(5) == 5
+        assert_fails add(0 - 100)            // the invariant refuses a negative total…
+        assert total() == 5                  // …and the slot is unchanged
+        assert start("s1") == "open"
+        assert stop("s1") == "closed"
+        assert_fails start("s1")             // closed is terminal: no way back
+    }
+}
+"#;

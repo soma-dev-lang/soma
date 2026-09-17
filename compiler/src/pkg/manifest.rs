@@ -291,7 +291,9 @@ impl Manifest {
                 version: "0.1.0".to_string(),
                 description: String::new(),
                 author: String::new(),
-                entry: "main.cell".to_string(),
+                // new projects: app.cell, the name the docs use. A manifest
+                // without `entry` still defaults to main.cell (default_entry).
+                entry: "app.cell".to_string(),
             },
             dependencies: HashMap::new(),
             peers: HashMap::new(),

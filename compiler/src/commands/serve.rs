@@ -907,7 +907,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         }
 
         if url.starts_with("/static/") {
-            let file_path = base_dir.join(&url[1..]);
+            // drop any ?query (cache-busting `a.css?v=2`) before hitting disk
+            let url_path = url.split('?').next().unwrap_or(&url);
+            let file_path = base_dir.join(&url_path[1..]);
             // Canonicalize to prevent path traversal attacks
             let canonical = match file_path.canonicalize() {
                 Ok(p) => p,
@@ -918,7 +920,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                     return;
                 }
             };
-            let base_canonical = base_dir.canonicalize().unwrap_or_else(|_| base_dir.as_ref().clone());
+            // Confine to <project>/static — NOT the project root: a root
+            // check lets `/static/../soma.toml` (API keys), the .cell
+            // sources and .soma_data out. A missing static/ dir confines
+            // to a path nothing can be under.
+            let static_root = base_dir.join("static");
+            let base_canonical = static_root.canonicalize().unwrap_or(static_root);
             if !canonical.starts_with(&base_canonical) {
                 let resp = tiny_http::Response::from_string("forbidden")
                     .with_status_code(403);

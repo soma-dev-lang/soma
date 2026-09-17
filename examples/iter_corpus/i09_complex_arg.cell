@@ -6,7 +6,7 @@
 cell I09ComplexArg {
     on f(a: Int, b: Int) [native] {
         if a == 0 { return b }
-        let q = a / 3
+        let q = idiv(a, 3)
         let r = a - q * 3
         return f(q, b + r)
     }

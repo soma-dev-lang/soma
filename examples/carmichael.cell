@@ -33,7 +33,7 @@ cell Carmichael {
         let p = 2
         while p * p <= m {
             if m % p == 0 {
-                m = m / p
+                m = idiv(m, p)
                 if m % p == 0 { return 0 }      // squared factor
                 if (n - 1) % (p - 1) != 0 { return 0 }
             } else {

@@ -18,7 +18,7 @@ cell Karatsuba {
         if bits <= 64 {
             return x * y
         }
-        let half = bits / 2
+        let half = idiv(bits, 2)
 
         // Split: x = x_h * 2^half + x_l ; same for y
         let x_l = band(x, shl(1, half) - 1)

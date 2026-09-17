@@ -43,6 +43,18 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
 
     let mut interp = interpreter::Interpreter::new(&program);
 
+    // Read agent config from soma.toml [agent] / [models.*], like `soma run`
+    // — otherwise `mock = "..."` and per-cell models are inert under test.
+    {
+        let soma_toml = path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+        if let Ok(content) = std::fs::read_to_string(&soma_toml) {
+            if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
+                interp.agent_config = Some(manifest.agent);
+                interp.agent_models = manifest.models;
+            }
+        }
+    }
+
     for cell in &program.cells {
         if matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
             for section in &cell.node.sections {

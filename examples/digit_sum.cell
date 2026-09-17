@@ -18,7 +18,7 @@ cell DigitSum {
         if m < 0 { m = 0 - m }
         while m > 0 {
             s = s + m % 10
-            m = m / 10
+            m = idiv(m, 10)
         }
         return s
     }

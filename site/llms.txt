@@ -1,14 +1,40 @@
-# Soma Language — for AI Agents (soma 2.3.0)
+# Soma Language — for AI Agents
 
 > Soma is a declarative cell language where systems carry their proofs.
-> State machines are model-checked (`soma verify`), memory invariants are
-> enforced before writes commit, and LLM agents run inside lifecycles the
-> compiler proves terminate, with hard token caps. Error messages contain
-> their own fix. This file is the working summary; the full reference is
-> https://soma-lang.dev and the repo: https://github.com/soma-dev-lang/soma
-> Key files in the repo: SOMA_REFERENCE.md (language), SOMA_BUILTINS.md
-> (every builtin, generated from the compiler), AGENT_GOTCHAS.md (verified
-> wrong→right pairs), examples/corpus/ (168 verified programs).
+> One file holds a whole service: contract (`face`), storage with invariants
+> (`memory`), a model-checked lifecycle (`state`), handlers, HTTP routes and
+> tests. `soma verify` proves the state machines; memory invariants reject
+> bad writes before they commit; LLM agents run inside lifecycles the
+> compiler proves terminate, with hard token caps. Every compiler error
+> names its own fix, so the write → check → fix loop converges.
+
+Everything below is current for the soma binary named in
+https://soma-lang.dev/version.json and generated from the compiler or
+verified against it. Unknown URLs on this site return 404, never a page.
+
+## Machine-readable resources
+
+- [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch
+- [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma
+- [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same knowledge packaged as an agent skill
+- [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
+- [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
+- [corpus/index.json](https://soma-lang.dev/corpus/index.json): 300+ verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
+- [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md), [docs/spec.md](https://soma-lang.dev/docs/spec.md): raw markdown
+- [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry
+- Source: https://github.com/soma-dev-lang/soma
+
+## Pick Soma when / skip it when
+
+Pick it when the task has a lifecycle or a limit that must hold: payments,
+approvals, interlocks, quotas, escrow, agent workflows with a budget — and
+you want to hand back evidence (`soma verify` output) instead of "I believe
+this is correct". Also for a small self-contained HTTP service: one file,
+no framework, storage and tests included.
+Skip it when you need a large ecosystem, a mature package set, or raw
+interpreter speed outside numeric `[native]` handlers. Soma is
+experimental: verification is per cell; cross-cell composition is linted,
+not proven.
 
 ## The agent loop
 
@@ -22,7 +48,13 @@ soma serve  app.cell -p 8080
 soma describe app.cell --faces       # contract summary of every cell
 soma describe --builtins --json      # exact builtin signatures — never guess
 soma fix    app.cell                 # auto-repair common check errors
+soma docs agent                      # this file, offline, from the binary
+soma example invariant http          # verified programs with those features;
+soma example <id>                    #   …and the source of one
+soma init myapp                      # app.cell + soma.toml + AGENTS.md
 ```
+Work in that order. `check` is cheap and catches most mistakes before
+anything runs; a `verify` failure is an error, not a warning.
 
 ## Cell anatomy
 
@@ -122,7 +154,8 @@ cell agent Researcher {
 ## Top gotchas (full list: AGENT_GOTCHAS.md — all verified)
 
 1. Handler names must not collide with builtins (merge, map, filter, sort,
-   count, top, publish, all, sum) — the builtin silently wins.
+   count, top, publish, approve, all, sum): builtins win dispatch from a
+   call site. `soma check` warns when a call resolves to the builtin.
 2. `match` arms use `->` (`=>` is lambdas). Handlers don't declare return
    types (face signals do).
 3. No nested string literals inside `{...}` interpolation — bind a let first.
@@ -133,8 +166,14 @@ cell agent Researcher {
 7. `assert_fails expr` needs an expression that RAISES (not a falsy bool).
 8. serve routes only the cell that owns `request` — put routable signals
    there, delegating to domain cells.
-9. Adjacent string literals don't concatenate; `on` is a reserved word.
+9. Adjacent string literals don't concatenate (`return "a" "b"` is a check
+   error); `on` and `given` are reserved words.
 10. Floats: compare with a tolerance, never ==.
+11. `7 / 2` is `3.5` — everywhere, `[native]` included. `idiv(7, 2)` is the
+    integer quotient (truncates toward zero, BigInt-exact).
+12. One memory invariant names one slot; `size` invariants also guard
+    `delete`. A cost bound is *proven* only when every `think()` runs a
+    known number of times (literal `range`, `[loop_bound(N)]`).
 
 ## Packages
 
@@ -152,11 +191,16 @@ re-run on YOUR toolchain: `soma test .soma_env/packages/matrix/matrix.cell`.
 Interpreter is the reference semantics. Annotate hot handlers `[native]`
 for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on numeric loops.
 Native vocabulary is restricted (numbers, buffers; no strings/maps/think).
+Same semantics as the interpreter: a native division by zero is an ordinary
+`try`-catchable error, and an Int slot refuses a non-exact `/` instead of
+truncating.
 
 ## Learn from working code
 
-- examples/corpus/ — 168 programs, all passing check+test (algorithms, web,
-  agents, state machines, finance, games, data, text, math, records)
+- https://soma-lang.dev/corpus/index.json — 316 programs, all passing
+  check+test (algorithms, web, agents, state machines, finance, games,
+  data, safety interlocks, medical, aerospace…). Before writing a cell,
+  fetch one with the features you need and adapt it.
 - treasury/ airlock/ poker/ elevator/ hft/ delivery/ — complete apps where
   the safety property is a verified theorem
 - packages/matrix/ — the reference package (numpy-style linalg, 43 proofs)

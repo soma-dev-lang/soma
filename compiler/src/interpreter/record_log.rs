@@ -38,6 +38,20 @@ pub struct RecordEntry {
     pub args: Vec<Value>,
     pub result: Value,
     pub nondet: Vec<String>,
+    /// Fingerprint of the source the entry was recorded from (absent in
+    /// logs written before this field existed). Lets `soma replay` tell
+    /// "the code changed" apart from "the handler is nondeterministic".
+    pub src: Option<String>,
+}
+
+/// FNV-1a fingerprint of a source text, as lowercase hex.
+pub fn source_fingerprint(source: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in source.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", h)
 }
 
 impl RecordEntry {
@@ -47,7 +61,7 @@ impl RecordEntry {
         let nondet_json: Vec<serde_json::Value> = self.nondet.iter()
             .map(|s| serde_json::Value::String(s.clone()))
             .collect();
-        let obj = serde_json::json!({
+        let mut obj = serde_json::json!({
             "v": 1,
             "ts": self.ts_ms,
             "cell": self.cell,
@@ -56,6 +70,9 @@ impl RecordEntry {
             "result": result_json,
             "nondet": nondet_json,
         });
+        if let Some(src) = &self.src {
+            obj["src"] = serde_json::Value::String(src.clone());
+        }
         obj.to_string()
     }
 
@@ -71,7 +88,8 @@ impl RecordEntry {
             .and_then(|x| x.as_array())
             .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default();
-        Some(Self { ts_ms, cell, handler, args, result, nondet })
+        let src = v.get("src").and_then(|x| x.as_str()).map(String::from);
+        Some(Self { ts_ms, cell, handler, args, result, nondet, src })
     }
 }
 

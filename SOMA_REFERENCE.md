@@ -16,6 +16,10 @@
 - Strings: `"hello {name}"` (interpolation with `{}`).
 - Multi-line strings: `"""..."""` (raw, no escape needed, quotes work inside).
 - Integer division: `7 / 2 = 3.5` (auto-promotes to float when non-exact).
+  Same in `[native]` handlers: `7 / 2 = 3.5`, an exact quotient is an Int (BigInt-exact). Native code is
+  statically typed, so a slot that can only hold an Int (an Int variable, an index) refuses a non-exact
+  quotient with a runtime error — it never truncates.
+  `idiv(a, b)` is the integer quotient on every backend (truncates toward zero, BigInt-exact).
 
 ## Cell structure
 

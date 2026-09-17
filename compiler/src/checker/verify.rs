@@ -78,7 +78,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 }
 
                 // ── V1.4: handler termination check ──────────────
-                let term_findings = super::termination::check_cell_termination(&cell.node);
+                let term_findings = super::termination::check_cell_termination(&cell.node, program);
                 let all_terminate = term_findings.iter().all(|f|
                     matches!(f, super::termination::TerminationFinding::Terminates { .. }));
                 if all_terminate && !term_findings.is_empty() {

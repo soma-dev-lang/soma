@@ -29,7 +29,7 @@ cell ESpigot {
         let term = scale
         let k = 1
         while term > 0 {
-            term = term / k
+            term = idiv(term, k)
             sum = sum + term
             k = k + 1
         }

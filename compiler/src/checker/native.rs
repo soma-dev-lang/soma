@@ -63,7 +63,7 @@ pub(crate) const ALLOWED_BUILTINS: &[&str] = &[
     "band", "bor", "bxor", "bnot", "shl", "shr", "bit_len",
     "bit_test", "bit_set", "bit_clr", "bit_next",
     // Number theory
-    "pow_mod", "gcd", "sqrt_int",
+    "pow_mod", "gcd", "sqrt_int", "idiv",
     // String introspection
     "str_len", "str_at", "str_eq",
     // Fixed-size i64 buffer (random-access array primitive for [native])
@@ -226,4 +226,288 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
             Ok(())
         }
     }
+}
+
+// ── Backend-dependent semantics ─────────────────────────────────────
+
+/// `a / b` on two Ints is 3.5 for 7 / 2 on every backend. Native code is
+/// statically typed, though: where the quotient lands in a slot that can
+/// only hold an Int (an Int variable, an index, an Int argument) a
+/// non-exact division is a RUNTIME ERROR there, while the interpreter
+/// would retype the variable to Float. Code that means "integer quotient"
+/// should say idiv(a, b). Returns one warning per handler dividing two
+/// Int-typed operands.
+pub fn int_division_warnings(program: &Program) -> Vec<(String, Span)> {
+    load_int_handlers(program);
+    let mut out = Vec::new();
+    for cell in super::names::collect_cells(program) {
+        for section in &cell.sections {
+            let Section::OnSignal(on) = &section.node else { continue };
+            if !on.properties.iter().any(|p| p == "native") {
+                continue;
+            }
+            let mut env: std::collections::HashMap<String, Num> = std::collections::HashMap::new();
+            for p in &on.params {
+                env.insert(p.name.clone(), match &p.ty.node {
+                    TypeExpr::Simple(t) if t == "Int" => Num::Int,
+                    TypeExpr::Simple(t) if t == "Float" => Num::Float,
+                    _ => Num::Unknown,
+                });
+            }
+            let mut sites: Vec<(Span, Span)> = Vec::new();
+            scan_stmts(&on.body, &mut env, &mut sites);
+            let hits = sites.len();
+            if hits > 0 {
+                out.push((
+                    format!(
+                        "in {}.{} [native]: `/` on two Ints is a Float (7 / 2 = 3.5); where the result must \
+                         be an Int a non-exact quotient is a runtime error — {} occurrence{}. Write \
+                         idiv(a, b) for an integer quotient (`soma fix --native-idiv` rewrites them)",
+                        cell.name,
+                        on.signal_name,
+                        hits,
+                        if hits == 1 { "" } else { "s" }
+                    ),
+                    section.span,
+                ));
+            }
+        }
+    }
+    out
+}
+
+thread_local! {
+    /// Handlers whose face signal declares `-> Int`, for the current scan.
+    static INT_HANDLERS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Record every `signal f(..) -> Int` of the program for scan_expr.
+fn load_int_handlers(program: &Program) {
+    let mut set = std::collections::HashSet::new();
+    for cell in super::names::collect_cells(program) {
+        for section in &cell.sections {
+            if let Section::Face(face) = &section.node {
+                for decl in &face.declarations {
+                    if let FaceDecl::Signal(sig) = &decl.node {
+                        if matches!(sig.return_type.as_ref().map(|t| &t.node), Some(TypeExpr::Simple(t)) if t == "Int") {
+                            set.insert(sig.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    INT_HANDLERS.with(|h| *h.borrow_mut() = set);
+
+    // No face declaration (scripts, benchmarks): a [native] handler whose
+    // returns all scan as Int is Int. Self-calls are assumed Int while
+    // scanning; two rounds settle sibling chains.
+    for _ in 0..2 {
+        for cell in super::names::collect_cells(program) {
+            for section in &cell.sections {
+                let Section::OnSignal(on) = &section.node else { continue };
+                if !on.properties.iter().any(|p| p == "native")
+                    || INT_HANDLERS.with(|h| h.borrow().contains(&on.signal_name))
+                {
+                    continue;
+                }
+                INT_HANDLERS.with(|h| h.borrow_mut().insert(on.signal_name.clone()));
+                let mut env: std::collections::HashMap<String, Num> = std::collections::HashMap::new();
+                for p in &on.params {
+                    env.insert(p.name.clone(), match &p.ty.node {
+                        TypeExpr::Simple(t) if t == "Int" => Num::Int,
+                        TypeExpr::Simple(t) if t == "Float" => Num::Float,
+                        _ => Num::Unknown,
+                    });
+                }
+                let mut sink = Vec::new();
+                scan_stmts(&on.body, &mut env, &mut sink);
+                let mut returns = Vec::new();
+                collect_returns(&on.body, &mut returns);
+                let all_int = !returns.is_empty()
+                    && returns.iter().all(|e| {
+                        // a bare Int / Int return is what we are trying to
+                        // classify — it counts as Int-valued (pre-idiv code)
+                        let t = scan_expr(e, &env, &mut sink);
+                        t == Num::Int || matches!(e, Expr::BinaryOp { op: BinOp::Div, left, right }
+                            if scan_expr(&left.node, &env, &mut sink) == Num::Int
+                            && scan_expr(&right.node, &env, &mut sink) == Num::Int)
+                    });
+                if !all_int {
+                    INT_HANDLERS.with(|h| h.borrow_mut().remove(&on.signal_name));
+                }
+            }
+        }
+    }
+}
+
+fn collect_returns<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e Expr>) {
+    for stmt in stmts {
+        match &stmt.node {
+            Statement::Return { value } => out.push(&value.node),
+            Statement::If { then_body, else_body, .. } => {
+                collect_returns(then_body, out);
+                collect_returns(else_body, out);
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => collect_returns(body, out),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Num {
+    Int,
+    Float,
+    Unknown,
+}
+
+fn scan_stmts(stmts: &[Spanned<Statement>], env: &mut std::collections::HashMap<String, Num>, hits: &mut Vec<(Span, Span)>) {
+    for stmt in stmts {
+        match &stmt.node {
+            Statement::Let { name, value } | Statement::Assign { name, value } => {
+                let t = scan_expr(&value.node, env, hits);
+                // a variable that is ever Float stays Float (loops reassign)
+                let merged = match (env.get(name), t) {
+                    (Some(Num::Float), _) | (_, Num::Float) => Num::Float,
+                    (Some(Num::Unknown), _) | (_, Num::Unknown) => Num::Unknown,
+                    _ => Num::Int,
+                };
+                env.insert(name.clone(), merged);
+            }
+            Statement::Return { value } | Statement::Ensure { condition: value } => {
+                scan_expr(&value.node, env, hits);
+            }
+            Statement::ExprStmt { expr } => {
+                scan_expr(&expr.node, env, hits);
+            }
+            Statement::If { condition, then_body, else_body } => {
+                scan_expr(&condition.node, env, hits);
+                scan_stmts(then_body, env, hits);
+                scan_stmts(else_body, env, hits);
+            }
+            Statement::While { condition, body, .. } => {
+                scan_expr(&condition.node, env, hits);
+                scan_stmts(body, env, hits);
+            }
+            Statement::For { var, iter, body, .. } => {
+                scan_expr(&iter.node, env, hits);
+                env.insert(var.clone(), Num::Unknown);
+                scan_stmts(body, env, hits);
+            }
+            Statement::IndexSet { index, value, .. } => {
+                scan_expr(&index.node, env, hits);
+                scan_expr(&value.node, env, hits);
+            }
+            Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => {
+                for a in args {
+                    scan_expr(&a.node, env, hits);
+                }
+            }
+            Statement::Require { .. } | Statement::Break | Statement::Continue => {}
+        }
+    }
+}
+
+fn scan_expr(expr: &Expr, env: &std::collections::HashMap<String, Num>, hits: &mut Vec<(Span, Span)>) -> Num {
+    match expr {
+        Expr::Literal(Literal::Int(_)) => Num::Int,
+        Expr::Literal(Literal::Float(_)) => Num::Float,
+        Expr::Ident(n) => env.get(n).copied().unwrap_or(Num::Unknown),
+        Expr::BinaryOp { left, op, right } => {
+            let l = scan_expr(&left.node, env, hits);
+            let r = scan_expr(&right.node, env, hits);
+            if matches!(op, BinOp::And | BinOp::Or) {
+                return Num::Unknown;
+            }
+            if matches!(op, BinOp::Div) && l == Num::Int && r == Num::Int {
+                // literal / literal that divides exactly agrees everywhere
+                let exact = matches!(
+                    (&left.node, &right.node),
+                    (Expr::Literal(Literal::Int(a)), Expr::Literal(Literal::Int(b))) if *b != 0 && a % b == 0
+                );
+                if !exact {
+                    hits.push((left.span, right.span));
+                }
+            }
+            match (l, r) {
+                (Num::Float, _) | (_, Num::Float) => Num::Float,
+                (Num::Int, Num::Int) => Num::Int,
+                _ => Num::Unknown,
+            }
+        }
+        Expr::FnCall { name, args } => {
+            let tys: Vec<Num> = args.iter().map(|a| scan_expr(&a.node, env, hits)).collect();
+            match name.as_str() {
+                "to_float" | "sqrt" | "log" | "exp" | "pow" | "sin" | "cos" | "random" => Num::Float,
+                "to_int" | "idiv" | "gcd" | "len" | "floor" | "ceil" | "round" | "pow_mod"
+                | "sqrt_int" | "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_len" => Num::Int,
+                "abs" | "min" | "max" => {
+                    if tys.iter().any(|t| *t == Num::Float) {
+                        Num::Float
+                    } else if !tys.is_empty() && tys.iter().all(|t| *t == Num::Int) {
+                        Num::Int
+                    } else {
+                        Num::Unknown
+                    }
+                }
+                other if INT_HANDLERS.with(|h| h.borrow().contains(other)) => Num::Int,
+                _ => Num::Unknown,
+            }
+        }
+        Expr::CmpOp { left, right, .. } => {
+            scan_expr(&left.node, env, hits);
+            scan_expr(&right.node, env, hits);
+            Num::Unknown
+        }
+        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => {
+            scan_expr(&i.node, env, hits);
+            Num::Unknown
+        }
+        Expr::IfExpr { condition, then_result, else_result, .. } => {
+            scan_expr(&condition.node, env, hits);
+            let a = scan_expr(&then_result.node, env, hits);
+            let b = scan_expr(&else_result.node, env, hits);
+            if a == b { a } else { Num::Unknown }
+        }
+        Expr::MethodCall { target, args, .. } => {
+            scan_expr(&target.node, env, hits);
+            for a in args {
+                scan_expr(&a.node, env, hits);
+            }
+            Num::Unknown
+        }
+        Expr::Index { target, index } => {
+            scan_expr(&target.node, env, hits);
+            scan_expr(&index.node, env, hits);
+            Num::Unknown
+        }
+        _ => Num::Unknown,
+    }
+}
+
+/// Operand spans (left, right) of every Int / Int division inside [native]
+/// handlers — the rewrite sites of `soma fix --native-idiv`.
+pub fn int_division_sites(program: &Program) -> Vec<(Span, Span)> {
+    load_int_handlers(program);
+    let mut out = Vec::new();
+    for cell in super::names::collect_cells(program) {
+        for section in &cell.sections {
+            let Section::OnSignal(on) = &section.node else { continue };
+            if !on.properties.iter().any(|p| p == "native") {
+                continue;
+            }
+            let mut env: std::collections::HashMap<String, Num> = std::collections::HashMap::new();
+            for p in &on.params {
+                env.insert(p.name.clone(), match &p.ty.node {
+                    TypeExpr::Simple(t) if t == "Int" => Num::Int,
+                    TypeExpr::Simple(t) if t == "Float" => Num::Float,
+                    _ => Num::Unknown,
+                });
+            }
+            scan_stmts(&on.body, &mut env, &mut out);
+        }
+    }
+    out
 }

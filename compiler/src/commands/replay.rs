@@ -98,7 +98,18 @@ pub fn cmd_replay(
                     println!("      args:     {}", fmt_args(&entry.args));
                     println!("      recorded: {}", entry.result);
                     println!("      replayed: {}", live);
-                    if !entry.nondet.is_empty() {
+                    let source_changed = entry
+                        .src
+                        .as_ref()
+                        .is_some_and(|recorded| *recorded != record_log::source_fingerprint(&source));
+                    if source_changed {
+                        println!("      cause:    the source changed since this entry was recorded");
+                        println!("      fix:      replay against the recorded version, or re-record with `soma run --record`");
+                        if !entry.nondet.is_empty() {
+                            println!("      note:     the handler also calls nondeterministic builtins: {}",
+                                entry.nondet.join(", "));
+                        }
+                    } else if !entry.nondet.is_empty() {
                         println!("      cause:    nondeterminism in handler — calls to {}",
                             entry.nondet.join(", "));
                         let suggestion = suggest_fix(&entry.nondet);
