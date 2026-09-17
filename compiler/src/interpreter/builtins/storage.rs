@@ -40,6 +40,14 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 Some(Err(RuntimeError::TypeError("get_status(id) requires 1 arg".to_string())))
             }
         }
+        "has_state" => {
+            if let Some(id) = args.first() {
+                let id_str = format!("{}", id);
+                Some(Ok(Value::Bool(interp.do_has_state_for(cell_name, &id_str))))
+            } else {
+                Some(Err(RuntimeError::TypeError("has_state(id) requires 1 arg".to_string())))
+            }
+        }
         "valid_transitions" => {
             if let Some(id) = args.first() {
                 let id_str = format!("{}", id);

@@ -209,7 +209,33 @@ impl<'a> Walker<'a> {
             }
             Expr::FieldAccess { target, .. } => self.walk_expr(target),
             Expr::Index { target, index } => { self.walk_expr(target); self.walk_expr(index); }
-            Expr::MethodCall { target, args, .. } => {
+            Expr::MethodCall { target, method, args } => {
+                // `Ledger.deposit(a, n)` — a call into another cell: the
+                // handler must exist there (the runtime resolves it by name)
+                if let Expr::Ident(cell) = &target.node {
+                    if self.index.cells.contains(cell) && !self.scope.contains(cell) {
+                        let defined = self.index.handler_map.get(method)
+                            .map(|cs| cs.contains(cell)).unwrap_or(false);
+                        if !defined {
+                            let owners = self.index.handler_map.get(method).cloned().unwrap_or_default();
+                            let hint = if !owners.is_empty() {
+                                format!(" — '{method}' is a handler of {}", owners.join(", "))
+                            } else {
+                                let names: Vec<&String> = self.index.handler_map.iter()
+                                    .filter(|(_, cs)| cs.contains(cell)).map(|(h, _)| h).collect();
+                                match suggest(method, names.iter().copied()) {
+                                    Some(s) => format!(" (did you mean '{s}'?)"),
+                                    None => String::new(),
+                                }
+                            };
+                            self.issues.push(InterpolationIssue {
+                                message: format!("cell '{cell}' has no handler '{method}'{hint}"),
+                                span: target.span,
+                                warning: false,
+                            });
+                        }
+                    }
+                }
                 self.walk_expr(target);
                 for a in args {
                     self.walk_expr(a);

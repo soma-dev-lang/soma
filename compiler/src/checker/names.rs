@@ -47,6 +47,8 @@ pub struct ProgramIndex {
     pub variants: HashSet<String>,
     /// Memory slot names across all cells.
     pub slots: HashSet<String>,
+    /// Top-level cell names (targets of `Cell.handler(args)` calls).
+    pub cells: HashSet<String>,
 }
 
 /// Collect all cells in the program, recursing into interior sections.
@@ -94,6 +96,7 @@ impl ProgramIndex {
         let top_level: HashSet<&str> = program.cells.iter()
             .map(|c| c.node.name.as_str())
             .collect();
+        let cells: HashSet<String> = top_level.iter().map(|s| s.to_string()).collect();
 
         for cell in collect_cells(program) {
             known.insert(cell.name.clone());
@@ -147,7 +150,7 @@ impl ProgramIndex {
             }
         }
 
-        Self { handler_map, known, variants, slots }
+        Self { handler_map, known, variants, slots, cells }
     }
 }
 

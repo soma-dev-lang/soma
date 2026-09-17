@@ -417,3 +417,93 @@ cell Bank {
     assert!(stats.contains("\"paid\": 100") || stats.contains("\"paid\":100"), "lost updates: {stats}");
     assert!(stats.contains("\"cash\": 0") || stats.contains("\"cash\":0"), "{stats}");
 }
+
+#[test]
+fn cli_args_take_json_for_map_and_list_params_and_unknown_ids_are_detectable() {
+    let d = dir("cli_json");
+    std::fs::write(d.join("app.cell"), r#"
+cell Orders {
+  memory { orders: Map<String, Map<String, Any>> }
+  state flow {
+    initial: new
+    new -> paid
+  }
+  on validate(o: Map<String, Any>) {
+    orders[o.id] = o
+    o.qty * 2
+  }
+  on tags(xs: List<String>) { len(xs) }
+  on pay_then_probe(id: String) {
+    let before = has_state(id)
+    transition(id, "paid")
+    map("before", before, "after", has_state(id), "state", get_status(id), "fresh", has_state("nobody"))
+  }
+}
+cell test Probe {
+  rules {
+    let r = pay_then_probe("x")
+    assert r.before == false
+    assert r.after == true
+    assert r.state == "paid"
+    assert r.fresh == false
+    assert get_status("nobody") == "new"
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["run", "app.cell", "validate", r#"{"id":"a","qty":21}"#]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.trim().ends_with("42"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "app.cell", "tags", r#"["a","b"]"#]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.trim().ends_with('2'), "{out}");
+    let (out, code) = soma_in(&d, &["run", "app.cell", "validate", "garbage"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("expects Map") && out.contains("not valid JSON"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "app.cell", "validate", "[1]"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("not a Map"), "{out}");
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn state_block_rejects_final_declarations_with_a_fix() {
+    let d = dir("final_hint");
+    std::fs::write(d.join("app.cell"), "cell A {\n  state s {\n    initial: a\n    a -> b\n    final: b\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "app.cell"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("do not declare 'final'") && out.contains("no outgoing transition is final"), "{out}");
+}
+
+#[test]
+fn other_cells_are_called_by_qualified_name_and_check_knows_their_handlers() {
+    let d = dir("qualified_call");
+    let src = r#"
+cell Ledger {
+  memory { bal: Map<String, Int> }
+  on deposit(a: String, n: Int) {
+    bal[a] = (bal.get(a) ?? 0) + n
+    bal[a]
+  }
+}
+cell Api {
+  on request(method: String, path: String, body: Map<String, Any>) {
+    Ledger.deposit("x", 5)
+  }
+}
+cell test T {
+  rules {
+    assert Ledger.deposit("a", 3) == 3
+    assert Api.request("POST", "/", map()) == 5
+    assert deposit("a", 1) == 4
+  }
+}
+"#;
+    std::fs::write(d.join("app.cell"), src).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    std::fs::write(d.join("bad.cell"), src.replace("Ledger.deposit(\"x\", 5)", "Ledger.depositt(\"x\", 5)")).unwrap();
+    let (out, code) = soma_in(&d, &["check", "bad.cell"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("cell 'Ledger' has no handler 'depositt'") && out.contains("did you mean 'deposit'"), "{out}");
+}

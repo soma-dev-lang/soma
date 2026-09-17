@@ -272,7 +272,9 @@ cell agent Researcher {
 1. `f(args)` calls YOUR handler `f` when one takes that many arguments, the
    builtin `f` otherwise (`on list() { return list(1, 2) }` reaches the
    builtin). `soma check` warns when an argument count sends a call to a
-   builtin you probably did not mean.
+   builtin you probably did not mean. Another cell's handler: `Ledger.post(x)`
+   (or bare `post(x)` when the name is unique); `get_status(id)` answers the
+   initial state for an unknown id — `has_state(id)` tells them apart.
 2. `match` arms use `->` (`=>` is lambdas). Handlers don't declare return
    types (face signals do).
 3. No nested string literals inside `{...}` interpolation — bind a let first.

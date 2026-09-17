@@ -332,7 +332,11 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
     let Some(params) = params else { return args };
     args.into_iter().enumerate().map(|(i, arg)| {
         let Some(param) = params.get(i) else { return arg };
-        let ast::TypeExpr::Simple(ref ty) = param.ty.node else { return arg };
+        let ty: String = match param.ty.node {
+            ast::TypeExpr::Simple(ref ty) => ty.clone(),
+            ast::TypeExpr::Generic { ref name, .. } => name.clone(),
+            _ => return arg,
+        };
         let fail = |got: &str| -> interpreter::Value {
             eprintln!("error: argument '{}' of signal '{}' expects {}, got {}",
                 param.name, signal_name, ty, got);
@@ -351,6 +355,18 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
             // a numeric/bool-looking CLI token passed to a String param is a string
             ("String", interpreter::Value::String(_)) => arg,
             ("String", other) => interpreter::Value::String(format!("{}", other)),
+            // a Map/List parameter takes its CLI token as JSON
+            ("Map" | "List", interpreter::Value::String(s)) => {
+                if serde_json::from_str::<serde_json::Value>(s).is_err() {
+                    return fail(&format!("a string that is not valid JSON: '{}'", s));
+                }
+                let v = crate::interpreter::builtins::json_to_value(s);
+                match (ty.as_str(), &v) {
+                    ("Map", interpreter::Value::Map(_)) | ("List", interpreter::Value::List(_)) => v,
+                    _ => fail(&format!("JSON that is not a {}: '{}'", ty, s)),
+                }
+            }
+            ("Map" | "List", other) => fail(&format!("'{}'", other)),
             _ => arg,
         }
     }).collect()

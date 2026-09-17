@@ -345,6 +345,15 @@ impl Parser {
             Token::Scale => { let span = tok.span; self.advance(); Ok(("scale".to_string(), span)) }
             Token::Cost => { let span = tok.span; self.advance(); Ok(("cost".to_string(), span)) }
             Token::Protocol => { let span = tok.span; self.advance(); Ok(("protocol".to_string(), span)) }
+            // verify-property words are ordinary field names (`r.after`, `x.requires`)
+            Token::After => { let span = tok.span; self.advance(); Ok(("after".to_string(), span)) }
+            Token::Every => { let span = tok.span; self.advance(); Ok(("every".to_string(), span)) }
+            Token::Ensure => { let span = tok.span; self.advance(); Ok(("ensure".to_string(), span)) }
+            Token::Requires => { let span = tok.span; self.advance(); Ok(("requires".to_string(), span)) }
+            Token::Connect => { let span = tok.span; self.advance(); Ok(("connect".to_string(), span)) }
+            Token::Variants => { let span = tok.span; self.advance(); Ok(("variants".to_string(), span)) }
+            Token::Implies => { let span = tok.span; self.advance(); Ok(("implies".to_string(), span)) }
+            Token::Contradicts => { let span = tok.span; self.advance(); Ok(("contradicts".to_string(), span)) }
             _ => Err(ParseError::Expected {
                 expected: "identifier".to_string(),
                 found: tok.token.clone(),
@@ -1365,6 +1374,23 @@ impl Parser {
                 let (state_name, _) = self.expect_any_name()?;
                 initial = state_name;
                 continue;
+            }
+
+            // Fix-it: `final: paid` / `terminal: paid` / `states: [a, b]` —
+            // states are never declared; a state with no outgoing transition
+            // is final.
+            if let Token::Ident(word) = self.peek().clone() {
+                if matches!(word.as_str(), "final" | "terminal" | "end" | "states" | "accept")
+                    && matches!(self.peek_at(1), Token::Colon | Token::Eq)
+                {
+                    return Err(ParseError::FixIt {
+                        message: format!(
+                            "state machines do not declare '{}' — states are named by transitions ('a -> b'), and a state with no outgoing transition is final; delete this line",
+                            word
+                        ),
+                        span: self.peek_span(),
+                    });
+                }
             }
 
             // Parse transition: from -> to { guard { ... } effect { ... } }

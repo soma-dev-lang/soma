@@ -54,7 +54,7 @@ What cost them time, by severity:
 - [x] E6 missing everyday builtins: `keys(m)`/`values(m)`/`entries(m)` as functions, `contains(list, x)`, `slice`, comparator/key-function sort, `round(x, digits)`, `deep_eq`.
 - [x] E7 no `let` inside test `rules` — every assertion re-calls the fixture handler.
 - [x] E8 `soma test` does not compile `[native]` handlers: a native-vs-interpreted assertion compares the interpreter with itself.
-- [ ] E9 `soma run app.cell validate '{"id":1}'` passes a String into a `Map` parameter; error surfaces deep inside the handler.
+- [x] E9 `soma run app.cell validate '{"id":1}'` passes a String into a `Map` parameter; error surfaces deep inside the handler.
 - [ ] E10 `[native]` placement (`on f(n: Int) [native] {`) and test-cell anatomy (`cell test Name { rules { } }`) not in `docs agent`.
 
 ### Cycle 1 — decisions taken
@@ -98,10 +98,10 @@ Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 che
 - [x] V2 invariants on computed values: interval + induction prover; per-conjunct report; always-rejected-and-caught writes reported as such.
 - [x] V3 `requires = [a, b]` is "one of" (passes silently when you meant both) → `requires_all`.
 - [x] V4 summary says "0 failures" before the temporal section fails; streams interleave; "think-isolated" printed for cells with no LLM; "N literal transitions" counts call sites.
-- [ ] V5 `get_status(unknown id)` returns the initial state.
+- [x] V5 `get_status(unknown id)` returns the initial state → documented as such; `has_state(id)` added.
 
 ### Tests / mocks
-- [x] T1 `mock approve false`; scripted tool calls; mixed queue with an error in the middle; mock clock; per-assert isolation.
+- [~] T1 `mock approve false`; scripted tool calls; mixed queue with an error in the middle; mock clock; per-assert isolation.
 - [x] T2 `soma check --json` lists the proven cost bound under "warnings".
 
 ### Small language gaps
@@ -127,3 +127,9 @@ Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 che
 - New corpus domain `services/`: payments_approval (Ledger + Api, proven precedence), warehouse_reservations (two cells, guard, slot.size, except), refund_agent (tools, proven cost, mock think / mock approve, daily cap).
 - Found on the way: any URL with a query string was an HTTP 500 for a 3-parameter `request` (the query map was pushed unconditionally) — fixed. `try { }` now accepts a block of statements.
 - Lesson written into guarantees.md: an error means "nothing happened" (rollback includes a rejection transition) — a refusal that must be recorded is returned, not raised.
+
+### Cycle 3 — found while preparing the cycle (2026-09-18, night)
+- `Ledger.deposit(x)` (qualified cross-cell call) passed check and died at runtime with "undefined variable: Ledger"; only the bare handler name worked. Now: `Cell.handler(args)` calls the handler, check reports a missing handler with did-you-mean. llms.txt gotcha 1 says both forms.
+- `final: paid` in a state block gave "expected '->', found ':'" — now a fix-it ("states with no outgoing transition are final; delete this line").
+- `r.after` was a parse error (`after` is a verify keyword): verify words are now accepted as field names.
+- `soma run app.cell validate '{"id":1}'` passed a String to a `Map` parameter (E9): the token is parsed as JSON for Map/List parameters, with a boundary error when it is not.

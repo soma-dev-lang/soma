@@ -1589,6 +1589,12 @@ impl Interpreter {
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
+                if !env.contains_key(target) && self.cells.contains_key(target)
+                    && !self.storage.contains_key(target)
+                    && !self.storage.contains_key(&format!("{}.{}", cell_name, target))
+                {
+                    return self.call_cell_handler(target, method, arg_vals);
+                }
                 // Check if target is a memory slot with a storage backend
                 self.call_storage_method(cell_name, target, method, &arg_vals)
             }
@@ -2184,6 +2190,10 @@ impl Interpreter {
                         || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name))
                     {
                         return self.call_storage_method(cell_name, slot_name, method, &arg_vals);
+                    }
+                    // `Ledger.deposit(a, n)`: a call into another cell's handler
+                    if !env.contains_key(slot_name) && self.cells.contains_key(slot_name) {
+                        return self.call_cell_handler(slot_name, method, arg_vals);
                     }
                 }
                 // Evaluate target and call method on the value
@@ -3529,6 +3539,27 @@ impl Interpreter {
             .unwrap_or(sm.initial.clone());
 
         Ok(Value::String(current))
+    }
+
+    /// True when `id` has a recorded state, i.e. it was transitioned at
+    /// least once. `get_status` answers the initial state for unknown ids,
+    /// which is indistinguishable from a fresh instance — this is the check.
+    /// `Cell.handler(args)` — explicit cross-cell call.
+    fn call_cell_handler(&mut self, cell: &str, handler: &str, args: Vec<Value>) -> Result<Value, ExecError> {
+        let exists = self.cells.get(cell).map(|c| c.sections.iter().any(|s| {
+            matches!(s.node, Section::OnSignal(ref on) if on.signal_name == handler)
+        })).unwrap_or(false);
+        if !exists {
+            return Err(ExecError::Runtime(RuntimeError::UndefinedFn(format!("{cell}.{handler} — cell '{cell}' has no handler '{handler}'"))));
+        }
+        self.call_signal(cell, handler, args).map_err(ExecError::Runtime)
+    }
+
+    pub(crate) fn do_has_state_for(&self, cell_name: &str, id: &str) -> bool {
+        match self.find_state_machine_for(cell_name) {
+            Some((_, status_slot)) => status_slot.get(id).is_some(),
+            None => false,
+        }
     }
 
     pub(crate) fn do_valid_transitions(&self, id: &str) -> Value {

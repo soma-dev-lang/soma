@@ -330,7 +330,9 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("transition", "state", "transition(id, target_state: String) -> {id, from, to}",
         "Move instance `id` to `target_state` (read the new state with get_status(id)); raises kind \"invalid_transition\" with the valid targets, or \"guard_failed\". Rolled back if the handler later fails."),
     doc("get_status", "state", "get_status(id) -> String",
-        "Current state of instance `id` (initial state if never transitioned)."),
+        "Current state of instance `id` — the INITIAL state when `id` was never transitioned (an unknown id looks like a fresh instance; use has_state(id) to tell them apart)."),
+    doc("has_state", "state", "has_state(id) -> Bool",
+        "True when instance `id` was transitioned at least once (a recorded state exists). get_status(id) alone cannot distinguish an unknown id from a fresh one."),
     doc("valid_transitions", "state", "valid_transitions(id) -> List<String>",
         "States reachable from instance `id`'s current state."),
 
