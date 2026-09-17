@@ -66,3 +66,50 @@ What cost them time, by severity:
 - Tests: `let` and `mock think "…"` / `mock think error "…"` in rules, `assert_fails … matching "text"`, `[native]` handlers run natively, think() auto-mocked when no key, UndefinedVar no longer counts as a passing assert_fails.
 - Parser: hints for 13 Python/TS idioms (`{k: v}`, `xs[a:b]`, `(a, b) =>`, `for (k, v) in`, ternary, and/or, const, elif, `;`, `@decorator`, `def`, unnamed test cell).
 - Invariants: `links.size <= N` bounds one slot; `len(slot)` warns (it measures the written value).
+
+## Cycle 2 — 2026-09-18 night (5 agents: log analytics, warehouse reservations (2 cells), refund agent with tools, port of a Python Bank class, cold evaluation of soma-lang.dev)
+
+Scores ("I would want to use this again"): data 6/10 (cycle 1: "no"), reservations 7, refund agent 7, Python port 6, website: want 6 / easy 7, verdict PILOT.
+Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 check cycles (cycle 1: ~10); "each hint resolved in one step".
+
+### Blockers (found by the site evaluator, reproduced with numbers)
+- [ ] B1 `soma serve` is threaded, handlers are not atomic: 300 payments of 10 against a balance of 1000, 50 parallel calls → 122–153 paid. Lost updates on read-modify-write.
+- [ ] B2 no rollback: a handler that raises keeps its earlier writes/transitions. corpus/escrow_finance/wire_dual_control's story ("the wire never exists") is false: the wire ends `drafted`, then can be sent. Four agents hand-wrote compensation.
+- [ ] B3 every non-underscore handler of the request-owning cell is auto-routed (`GET /open_account/acme/999999` sets a balance, bypassing the router) and shadows `request` routes (`POST /hold/r1` → 500). Passed check, verify, test AND `soma run … request`.
+- [ ] B4 vacuous properties pass: `never = ["piad"]` (undeclared state); `soma verify` exits 0 on a file that fails `soma check`; `soma test` runs a file that fails check.
+
+### Error model (2 agents, top friction)
+- [x] R1 no documented way to raise; errors stringly typed, no payload, no re-raise; everything prefixed "require failed:" → `fail(kind, detail)`, `r.kind` / `r.detail` on try-results, `fail(r)` re-raises, prefix only on real requires, test output in the language's words (no Rust Debug dumps).
+- [ ] R2 `require c else "msg {x}"` / `else variable` silently taken literally; `require … else Tag` absent from docs.
+- [ ] R3 `try { f() }?` returns the error map as a normal value (not a propagate).
+
+### Still reaching runtime past a green check
+- [ ] C1 call with the wrong argument count; face return type vs returned value.
+- [x] C2 `() >= 500` was silently false (typo'd field) → ordering against () raises.
+- [x] C3 variant `==` false when a payload is a Map/List.
+- [ ] C4 field typo on an untyped record (`order.statuss` → ()). Needs typed records.
+- [ ] C5 record read from a slot, mutated, never written back: silent lost update. Wants a lint.
+- [ ] C6 `invariant accts.balance >= 0` passes check, rejects every write (`value.balance` works).
+- [ ] C7 `from_json("garbage")` returns the string; `to_int("1.5")` = 1; no strict parse.
+- [x] C8 `m[k] += 1`, `acc.balance += x` unsupported.
+
+### Verify
+- [x] V1 `* -> failed` made success states non-terminal (2 agents) → `*` no longer applies to a state with no explicit outgoing edge.
+- [x] V2 invariants on computed values: interval + induction prover; per-conjunct report; always-rejected-and-caught writes reported as such.
+- [ ] V3 `requires = [a, b]` is "one of" (passes silently when you meant both) → `requires_all`.
+- [ ] V4 summary says "0 failures" before the temporal section fails; streams interleave; "think-isolated" printed for cells with no LLM; "N literal transitions" counts call sites.
+- [ ] V5 `get_status(unknown id)` returns the initial state.
+
+### Tests / mocks
+- [ ] T1 `mock approve false`; scripted tool calls; mixed queue with an error in the middle; mock clock; per-assert isolation.
+- [ ] T2 `soma check --json` lists the proven cost bound under "warnings".
+
+### Small language gaps
+- [ ] G1 `parse_int`, `pad_left`, negative index `xs[-1]`, `avg([1,2])` truncates, default parameters, unknown function alias table (`parseInt` → to_int) with the span on the call, parser reports one error per run.
+
+### Site (evaluator)
+- [ ] W1 add /docs/guarantees.md (PROVEN | ENFORCED AT RUNTIME | NOT COVERED) and align the /agents headline ("PROVES … memory invariants" is broader than the truth).
+- [ ] W2 /docs/serving.md: routing table, exposure rules, bind address/ports, threading, response shape.
+- [ ] W3 corpus: /corpus/domains.json (~1 KB), finer features (guard, precedence, router, two_cell), drop the `tests` feature (all 316 have it), programs combining http + state_machine + invariant, each program's soma.toml + verify line in the index; audit narratives against behaviour.
+- [ ] W4 /status: license (SPDX), changelog, release date, known limits, security contact, security.txt; LICENSE on the site; pin install.sh to a tag + checksum.
+- [ ] W5 llms-full.txt repeats llms.txt (10 KB paid twice) and carries ~20 KB of linalg/quant irrelevant to a service → profiles; spec.md says "Version: 2.2.1"; /examples is a dead end; repo-relative links dangle; docs hash in version.json.
