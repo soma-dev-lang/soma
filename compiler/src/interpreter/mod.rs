@@ -396,6 +396,11 @@ pub struct Interpreter {
     pub(crate) cells: HashMap<String, CellDef>,
     /// Pre-computed handler lookup — avoids scanning sections on every call
     handler_cache: HashMap<HandlerKey, HandlerValue>,
+    /// handler name → the parameter counts it is defined with (any cell).
+    /// Drives call resolution: `f(a, b)` is the user's handler when one
+    /// takes 2 arguments, the builtin `f` otherwise. User definitions
+    /// shadow the library — and adding a builtin can never hijack a program.
+    handler_arities: HashMap<String, Vec<usize>>,
     /// Maximum recursion depth
     max_depth: usize,
     pub(crate) current_depth: usize,
@@ -419,6 +424,10 @@ pub struct Interpreter {
     pub last_span: Option<crate::ast::Span>,
     /// Cached handler for the current recursive call (avoids repeated HashMap lookups)
     current_handler: Option<(String, String, Arc<Vec<Param>>, Arc<Vec<Spanned<Statement>>>)>,
+    /// Locals of the handler at its `transition()` call, handed to the
+    /// transition's guard: `a -> b { guard { amount < 10000 } }` reads the
+    /// caller's `amount`.
+    pub(crate) transition_env: Option<Env>,
     /// V1.6: tool-capability scope. Set when the LLM dispatches into a tool
     /// with declared capabilities; the http/* builtins consult it.
     pub(crate) current_tool_caps: Option<Vec<String>>,
@@ -476,6 +485,7 @@ impl Interpreter {
     pub fn new(program: &Program) -> Self {
         let mut cells = HashMap::new();
         let mut handler_cache = HashMap::new();
+        let mut handler_arities: HashMap<String, Vec<usize>> = HashMap::new();
         let mut state_machines = HashMap::new();
         let mut record_handlers: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
         for cell in &program.cells {
@@ -488,6 +498,7 @@ impl Interpreter {
                     }
                     let value = (Arc::new(on.params.clone()), Arc::new(on.body.clone()));
                     handler_cache.insert(key, value);
+                    handler_arities.entry(on.signal_name.clone()).or_default().push(on.params.len());
                     if on.properties.iter().any(|p| p == "record") {
                         record_handlers.insert((cell.node.name.clone(), on.signal_name.clone()));
                     }
@@ -561,6 +572,7 @@ impl Interpreter {
         Self {
             cells,
             handler_cache,
+            handler_arities,
             max_depth: 512,
             current_depth: 0,
             emitted_signals: Vec::new(),
@@ -573,6 +585,7 @@ impl Interpreter {
             source_text: None,
             last_span: None,
             current_handler: None,
+            transition_env: None,
             current_tool_caps: None,
             native_handlers: HashMap::new(),
             cluster: None,
@@ -602,6 +615,7 @@ impl Interpreter {
                 let key = (cell.name.clone(), on.signal_name.clone());
                 let value = (Arc::new(on.params.clone()), Arc::new(on.body.clone()));
                 self.handler_cache.insert(key, value);
+                self.handler_arities.entry(on.signal_name.clone()).or_default().push(on.params.len());
             }
         }
         self.cells.insert(cell.name.clone(), cell);
@@ -1597,15 +1611,21 @@ impl Interpreter {
                     }
                     return self.apply_lambda(&lam, arg_vals.into_iter().next().unwrap(), cell_name);
                 }
+                // Resolution: a handler of the program taking this many
+                // arguments shadows a builtin of the same name. `on list()`
+                // can still call the builtin list(1, 2) — 2 ≠ 0 arguments.
+                let user_wins = self.user_handler_takes(name, arg_vals.len());
                 // Check lambda builtins first (map, filter, find, etc.) — need &mut self
-                if arg_vals.iter().any(|v| matches!(v, Value::Lambda { .. })) {
+                if !user_wins && arg_vals.iter().any(|v| matches!(v, Value::Lambda { .. })) {
                     if let Some(val) = builtins::call_lambda_builtin(self, name, &arg_vals, cell_name) {
                         return val.map_err(ExecError::Runtime);
                     }
                 }
-                // Check builtins FIRST (before recursive calls)
-                // This ensures list() calls the builtin even inside a "list" handler
-                if let Some(val) = self.call_builtin(name, &arg_vals, cell_name) {
+                if name == "transition" {
+                    self.transition_env = Some(env.clone());
+                }
+                let builtin_result = if user_wins { None } else { self.call_builtin(name, &arg_vals, cell_name) };
+                if let Some(val) = builtin_result {
                     val.map_err(ExecError::Runtime)
                 }
                 // Then check for recursive call to current signal — use cached handler
@@ -1860,14 +1880,16 @@ impl Interpreter {
                         for arg in args {
                             all_args.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                         }
+                        let user_wins = self.user_handler_takes(name, all_args.len());
                         // Check lambda builtins first (map, filter, etc.)
-                        if all_args.iter().any(|v| matches!(v, Value::Lambda { .. } | Value::LambdaBlock { .. })) {
+                        if !user_wins && all_args.iter().any(|v| matches!(v, Value::Lambda { .. } | Value::LambdaBlock { .. })) {
                             if let Some(val) = builtins::call_lambda_builtin(self, name, &all_args, cell_name) {
                                 return val.map_err(ExecError::Runtime);
                             }
                         }
-                        // Call as builtin first, then signal
-                        if let Some(val) = self.call_builtin(name, &all_args, cell_name) {
+                        // A matching user handler first, then builtin, then signal
+                        let builtin_result = if user_wins { None } else { self.call_builtin(name, &all_args, cell_name) };
+                        if let Some(val) = builtin_result {
                             val.map_err(ExecError::Runtime)
                         } else {
                             self.find_and_call_with_args(name, all_args)
@@ -1877,7 +1899,8 @@ impl Interpreter {
                     Expr::Ident(name) => {
                         // Bare function: expr |> fn → fn(expr)
                         let all_args = vec![left_val];
-                        if let Some(val) = self.call_builtin(name, &all_args, cell_name) {
+                        let builtin_result = if self.user_handler_takes(name, 1) { None } else { self.call_builtin(name, &all_args, cell_name) };
+                        if let Some(val) = builtin_result {
                             val.map_err(ExecError::Runtime)
                         } else {
                             self.find_and_call_with_args(name, all_args)
@@ -2970,6 +2993,9 @@ impl Interpreter {
     }
 
     fn values_equal(&self, a: &Value, b: &Value) -> bool {
+        if matches!(a, Value::List(_) | Value::Map(_) | Value::Variant { .. }) {
+            return deep_equal(a, b);
+        }
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => x == y,
             (Value::Float(x), Value::Float(y)) => x == y,
@@ -3153,11 +3179,32 @@ impl Interpreter {
                 };
                 Ok(Value::Bool(result))
             }
+            // Structural equality on collections: [1, 2] == [1, 2], and two
+            // maps are equal when they hold the same keys with equal values,
+            // whatever the insertion order.
+            (Value::List(_), Value::List(_)) | (Value::Map(_), Value::Map(_)) => {
+                let eq = deep_equal(l, r);
+                match op {
+                    CmpOp::Eq => Ok(Value::Bool(eq)),
+                    CmpOp::Ne => Ok(Value::Bool(!eq)),
+                    _ => Err(RuntimeError::TypeError(format!(
+                        "cannot order {}s with <, >, <=, >= — compare a field or len() instead",
+                        value_type_name(l)
+                    ))),
+                }
+            }
             _ => Err(RuntimeError::TypeError(format!(
                 "cannot compare {} and {}",
                 value_type_name(l), value_type_name(r)
             ))),
         }
+    }
+
+    /// Does the program define a handler `name` taking exactly `argc`
+    /// arguments? Then a call resolves to it rather than to a builtin.
+    #[inline]
+    fn user_handler_takes(&self, name: &str, argc: usize) -> bool {
+        self.handler_arities.get(name).is_some_and(|a| a.contains(&argc))
     }
 
     /// Native function boundary. The names here correspond to `native "name"`
@@ -3207,13 +3254,15 @@ impl Interpreter {
         let guard_clone = transition.node.guard.as_ref().map(|g| g.node.clone());
 
         // Evaluate guard expression if present
+        let caller_env = self.transition_env.take();
         if let Some(guard_expr) = guard_clone {
-            let mut env = FxHashMap::default();
-            // Provide the current state and target as variables in guard scope
+            // Guard scope: the locals of the handler that called
+            // transition(), the cell's memory slots, and _id / _from / _to.
+            let mut env = caller_env.unwrap_or_default();
             env.insert("_from".to_string(), Value::String(current.clone()));
             env.insert("_to".to_string(), Value::String(target.to_string()));
             env.insert("_id".to_string(), Value::String(id.to_string()));
-            let result = self.eval_expr(&guard_expr, &mut env, "", "")
+            let result = self.eval_expr(&guard_expr, &mut env, cell_name, "")
                 .map_err(|e| match e {
                     ExecError::Runtime(r) => r,
                     ExecError::Return(v) => RuntimeError::TypeError(format!("guard returned {:?}", v)),
@@ -3328,6 +3377,31 @@ impl Interpreter {
             }
         }
         None
+    }
+}
+
+/// Structural equality: numbers by value (1 == 1.0), lists element-wise,
+/// maps by key set (insertion order is irrelevant), variants by tag and
+/// payload. Values of different kinds are unequal.
+pub(crate) fn deep_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y) == 0,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Int(x), Value::Float(y)) | (Value::Float(y), Value::Int(x)) => x.to_f64() == *y,
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Unit, Value::Unit) => true,
+        (Value::List(x), Value::List(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| deep_equal(p, q))
+        }
+        (Value::Map(x), Value::Map(y)) => {
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| deep_equal(v, w)))
+        }
+        (
+            Value::Variant { type_name: t1, variant: v1, fields: f1 },
+            Value::Variant { type_name: t2, variant: v2, fields: f2 },
+        ) => t1 == t2 && v1 == v2 && variant_fields_equal(f1, f2),
+        _ => false,
     }
 }
 

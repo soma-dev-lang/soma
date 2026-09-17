@@ -193,7 +193,20 @@ impl<'a> Walker<'a> {
         let span = expr.span;
         match &expr.node {
             Expr::Literal(Literal::String(s)) => self.scan_string(s, span),
-            Expr::Literal(_) | Expr::Ident(_) => {}
+            Expr::Literal(_) => {}
+            // A bare identifier read. Same conservative scope as the
+            // interpolation scan: add-only, so a name bound anywhere
+            // earlier in the handler is known. What is left is a name
+            // bound NOWHERE — a typo or an incomplete rename, which would
+            // otherwise only fail at runtime, on the path that reads it.
+            Expr::Ident(name) => {
+                if !self.known(name)
+                    && !super::names::builtin_names().contains(name.as_str())
+                    && !matches!(name.as_str(), "true" | "false" | "_" | "self" | "value" | "key" | "size")
+                {
+                    self.report_undefined_ident(name, span);
+                }
+            }
             Expr::FieldAccess { target, .. } => self.walk_expr(target),
             Expr::Index { target, index } => { self.walk_expr(target); self.walk_expr(index); }
             Expr::MethodCall { target, args, .. } => {
@@ -440,6 +453,34 @@ impl<'a> Walker<'a> {
             message: format!(
                 "string interpolation references undefined variable '{name}'{suggestion} — \
                  define it before this line, or escape literal braces as '{{{{{name}}}}}'"
+            ),
+            span,
+            warning: self.try_depth > 0,
+        });
+    }
+
+    fn report_undefined_ident(&mut self, name: &str, span: Span) {
+        let foreign = match name {
+            "null" | "None" | "nil" | "undefined" | "NULL" => Some("Soma's null is `()`: `if x == () { … }`, `x ?? default`"),
+            "True" | "TRUE" => Some("write `true`"),
+            "False" | "FALSE" => Some("write `false`"),
+            _ => None,
+        };
+        if let Some(hint) = foreign {
+            self.issues.push(InterpolationIssue {
+                message: format!("'{name}' does not exist in Soma — {hint}"),
+                span,
+                warning: self.try_depth > 0,
+            });
+            return;
+        }
+        let suggestion = suggest(name, self.scope.iter().chain(self.index.known.iter()))
+            .map(|s| format!(" (did you mean '{}'?)", s))
+            .unwrap_or_default();
+        self.issues.push(InterpolationIssue {
+            message: format!(
+                "undefined variable '{name}'{suggestion} — no let, parameter, loop variable, \
+                 match binding or memory slot with that name is in scope"
             ),
             span,
             warning: self.try_depth > 0,

@@ -63,7 +63,26 @@ pub fn find_stdlib() -> PathBuf {
     dir
 }
 
+/// A soma.toml beside the program that does not parse is a hard error.
+/// Every consumer used to swallow the failure (`.ok()`), so a manifest with
+/// a typo — or, before 2.5, just without `[package]` — silently lost its
+/// `[verify]` properties and `[agent]` settings while `soma verify` went on
+/// printing "passed".
+fn validate_manifest_beside(path: &PathBuf) {
+    let toml_path = path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
+    let Ok(content) = fs::read_to_string(&toml_path) else { return };
+    if let Err(e) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
+        eprintln!("error: {} does not parse — its [verify] properties and [agent] settings would be ignored", toml_path.display());
+        for line in e.to_string().lines() {
+            eprintln!("  {}", line);
+        }
+        eprintln!("  valid [verify] keys: cells, deadlock_free, eventually, never, always, and [verify.after.<state>] with eventually / never");
+        process::exit(1);
+    }
+}
+
 pub fn read_source(path: &PathBuf) -> String {
+    validate_manifest_beside(path);
     match fs::read_to_string(path) {
         Ok(source) => source,
         Err(e) => {

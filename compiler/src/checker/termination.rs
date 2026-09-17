@@ -157,7 +157,7 @@ fn find_cycle(graph: &HashMap<String, Vec<String>>, start: &str) -> Option<Vec<S
 
 /// Visit every expression reachable from a statement, nested statements
 /// and sub-expressions included.
-fn walk_stmt(stmt: &Statement, f: &mut dyn FnMut(&Expr)) {
+pub(super) fn walk_stmt(stmt: &Statement, f: &mut dyn FnMut(&Expr)) {
     match stmt {
         Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => {
             walk_expr(&value.node, f)
@@ -195,7 +195,7 @@ fn walk_stmt(stmt: &Statement, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
-fn walk_expr(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
+pub(super) fn walk_expr(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
     f(expr);
     match expr {
         Expr::Literal(_) | Expr::Ident(_) => {}

@@ -3,8 +3,122 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use crate::interpreter::soma_int::SomaInt;
 
+/// Total order over values, for sorting: () < Bool < numbers < String <
+/// List (lexicographic) < everything else. Numbers compare by value, so
+/// 2 < 2.5 < 3. Used by sort_by; stable sorts keep ties in input order.
+pub fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    fn rank(v: &Value) -> u8 {
+        match v {
+            Value::Unit => 0,
+            Value::Bool(_) => 1,
+            Value::Int(_) | Value::Float(_) => 2,
+            Value::String(_) => 3,
+            Value::List(_) => 4,
+            _ => 5,
+        }
+    }
+    match (a, b) {
+        (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
+        (Value::Int(x), Value::Int(y)) => x.cmp(y).cmp(&0),
+        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
+            let f = |v: &Value| match v {
+                Value::Int(i) => i.to_f64(),
+                Value::Float(f) => *f,
+                _ => 0.0,
+            };
+            f(a).partial_cmp(&f(b)).unwrap_or(Ordering::Equal)
+        }
+        (Value::String(x), Value::String(y)) => x.cmp(y),
+        (Value::List(x), Value::List(y)) => {
+            for (p, q) in x.iter().zip(y.iter()) {
+                let o = compare_values(p, q);
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            x.len().cmp(&y.len())
+        }
+        _ => rank(a).cmp(&rank(b)),
+    }
+}
+
+/// Resolve a possibly negative index against `len` (-1 = last), clamped.
+fn clamp_index(i: i64, len: usize) -> usize {
+    let len = len as i64;
+    let i = if i < 0 { len + i } else { i };
+    i.clamp(0, len) as usize
+}
+
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
+        // contains(list, x) — membership by structural equality;
+        // contains(map, key). (contains(string, sub) lives in string.rs.)
+        "contains" if matches!(args.first(), Some(Value::List(_) | Value::Map(_))) && args.len() == 2 => {
+            match &args[0] {
+                Value::List(items) => Some(Ok(Value::Bool(
+                    items.iter().any(|it| crate::interpreter::deep_equal(it, &args[1])),
+                ))),
+                Value::Map(entries) => Some(Ok(Value::Bool(entries.contains_key(&format!("{}", args[1]))))),
+                _ => None,
+            }
+        }
+        // slice(xs, start, end?) — end exclusive, negative indexes count from
+        // the end; works on lists and strings. Out-of-range is clamped.
+        "slice" if matches!(args.first(), Some(Value::List(_) | Value::String(_))) && (args.len() == 2 || args.len() == 3) => {
+            let idx = |v: &Value| match v {
+                Value::Int(i) => i.to_i64(),
+                Value::Float(f) => Some(*f as i64),
+                _ => None,
+            };
+            let Some(start) = idx(&args[1]) else {
+                return Some(Err(RuntimeError::TypeError("slice(xs, start, end?): start must be an Int".to_string())));
+            };
+            let end = match args.get(2) {
+                None | Some(Value::Unit) => None,
+                Some(v) => match idx(v) {
+                    Some(e) => Some(e),
+                    None => return Some(Err(RuntimeError::TypeError("slice(xs, start, end?): end must be an Int".to_string()))),
+                },
+            };
+            match &args[0] {
+                Value::List(items) => {
+                    let a = clamp_index(start, items.len());
+                    let b = end.map(|e| clamp_index(e, items.len())).unwrap_or(items.len());
+                    Some(Ok(Value::List(if a < b { items[a..b].to_vec() } else { Vec::new() })))
+                }
+                Value::String(text) => {
+                    let chars: Vec<char> = text.chars().collect();
+                    let a = clamp_index(start, chars.len());
+                    let b = end.map(|e| clamp_index(e, chars.len())).unwrap_or(chars.len());
+                    Some(Ok(Value::String(if a < b { chars[a..b].iter().collect() } else { String::new() })))
+                }
+                _ => None,
+            }
+        }
+        // keys(m) / values(m) / entries(m) on a Map VALUE (memory slots use
+        // the .keys() / .values() / .entries() methods). With any other
+        // argument shape these fall through, so a handler named `entries`
+        // keeps working.
+        "keys" if args.len() == 1 && matches!(args[0], Value::Map(_)) => {
+            let Value::Map(m) = &args[0] else { return None };
+            Some(Ok(Value::List(m.keys().map(|k| Value::String(k.clone())).collect())))
+        }
+        "values" if args.len() == 1 && matches!(args[0], Value::Map(_)) => {
+            let Value::Map(m) = &args[0] else { return None };
+            Some(Ok(Value::List(m.values().cloned().collect())))
+        }
+        "entries" if args.len() == 1 && matches!(args[0], Value::Map(_)) => {
+            let Value::Map(m) = &args[0] else { return None };
+            Some(Ok(Value::List(
+                m.iter()
+                    .map(|(k, v)| map_from_pairs(vec![
+                        ("key".to_string(), Value::String(k.clone())),
+                        ("value".to_string(), v.clone()),
+                    ]))
+                    .collect(),
+            )))
+        }
         "list" => {
             // Construct a list of the arguments literally, so
             // list(list(1,2), list(3,4)) nests as [[1,2],[3,4]] — matching

@@ -98,6 +98,10 @@ g.board[0] = 7              xs[i][j] = v      // nested lvalues
 let y = m["nope"] ?? 0                        // null-coalescing; () is null
 for i in range(0, 10) { }   range(9, -1, -1)  // stepped/descending ranges
 sum(xs) avg(xs) min(xs) max(xs) product(xs)   // reductions over lists
+contains(xs, x)  slice(xs, 1, -1)  keys(m) values(m) entries(m)   // membership, slices, map views
+sort_by(rows, "field")   sort_by(rows, r => [0 - r.total, r.name])   // stable; list key = several keys
+xs = push(xs, x)            concat(a, b)      // push/concat RETURN a new list; `+` on numeric
+                                              // lists adds element-wise — it does not concatenate
 xs.sort()  xs.reverse()  m2.det()             // UFCS: any builtin as method
 match x { 1 -> "a"  n if n > 5 -> "big"  _ -> "other" }   // arms use ->
 let f = p => p * 2          f(3)              // lambdas use =>; first-class
@@ -153,13 +157,16 @@ cell agent Researcher {
 
 ## Top gotchas (full list: AGENT_GOTCHAS.md — all verified)
 
-1. Handler names must not collide with builtins (merge, map, filter, sort,
-   count, top, publish, approve, all, sum): builtins win dispatch from a
-   call site. `soma check` warns when a call resolves to the builtin.
+1. `f(args)` calls YOUR handler `f` when one takes that many arguments, the
+   builtin `f` otherwise (`on list() { return list(1, 2) }` reaches the
+   builtin). `soma check` warns when an argument count sends a call to a
+   builtin you probably did not mean.
 2. `match` arms use `->` (`=>` is lambdas). Handlers don't declare return
    types (face signals do).
 3. No nested string literals inside `{...}` interpolation — bind a let first.
-4. `==` on lists/maps is not structural — compare elements or to_string().
+4. `==` is structural on lists, maps and variants (`[] == []`, key order
+   irrelevant). `null`/`None` do not exist: null is `()`, test with `x == ()`
+   or default with `x ?? 0`.
 5. `transition()` returns {id, from, to}; read state with get_status(id).
    Wrap fallible transitions in try { }.
 6. Slot methods (.set/.get) are for `memory` slots; local maps use m[k].

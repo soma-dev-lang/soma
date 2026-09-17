@@ -47,8 +47,10 @@ with the `features` you need before writing a new cell).
 - `transition(id, "state")` returns `{id, from, to}`; read the state with
   `get_status(id)`. Wrap a transition that may be illegal in `try { }`.
 - `.get/.set/.delete` are for `memory` slots; local maps use `m["k"]`.
-- Don't name a handler after a builtin (`merge`, `count`, `approve`, …):
-  the builtin wins at call sites. `soma check` warns.
+- `==` is structural on lists/maps; null is `()` (`x == ()`, `x ?? 0`); `push`/`concat`
+  return NEW lists (`xs = push(xs, x)`); `+` on numeric lists adds element-wise.
+- Guards (`a -> b { guard { amount < 100 } }`) read the locals of the handler that
+  calls `transition()`.
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
 

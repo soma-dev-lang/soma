@@ -125,6 +125,25 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
     };
 
     match name {
+        // sort_by(rows, r => r.total)            ascending by key
+        // sort_by(rows, r => r.total, "desc")    descending
+        // sort_by(rows, r => [0 - r.total, r.name])   several keys: a list
+        // Stable: ties keep their input order.
+        "sort_by" => {
+            let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(false);
+            let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(list.len());
+            for item in list {
+                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                    Ok(k) => keyed.push((k, item.clone())),
+                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                }
+            }
+            keyed.sort_by(|a, b| {
+                let o = collection::compare_values(&a.0, &b.0);
+                if desc { o.reverse() } else { o }
+            });
+            Some(Ok(Value::List(keyed.into_iter().map(|(_, v)| v).collect())))
+        }
         "map" => {
             let mut result = Vec::with_capacity(list.len());
             for item in list {

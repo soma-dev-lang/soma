@@ -8,9 +8,9 @@
 //!   - unknown name (no cell, no builtin)        → check ERROR
 //!   - 2+ definers, caller is not one of them     → check ERROR
 //!   - caller defines it AND another cell does    → check WARNING
-//!   - name is a builtin AND a handler, called
-//!     from a different handler                   → check WARNING
-//!     (builtins win dispatch: the handler body never runs)
+//!   - name is a builtin AND a handler: the call goes to the handler
+//!     when the argument count matches, to the builtin otherwise.
+//!     A mismatching count, or a same-arity self-call  → check WARNING
 //!     (the recursive-self-call trap that forced the Mesa app to
 //!     rename its whole domain API)
 //!
@@ -31,10 +31,64 @@ pub struct DispatchFinding {
     pub span: Span,
 }
 
+/// handler name → parameter counts it is defined with, across cells.
+fn handler_arities(program: &Program) -> std::collections::HashMap<String, Vec<usize>> {
+    let mut out: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for cell in super::names::collect_cells(program) {
+        for section in &cell.sections {
+            if let Section::OnSignal(on) = &section.node {
+                out.entry(on.signal_name.clone()).or_default().push(on.params.len());
+            }
+        }
+    }
+    out
+}
+
+/// Resolution rule (interpreter FnCall): `f(args)` is the program's handler
+/// `f` when one takes that many arguments, the builtin `f` otherwise.
 pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFinding>) {
     let index = ProgramIndex::build(program);
+    let arities = handler_arities(program);
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
+
+    // Test cells: `assert approve("x") == …` calls the BUILTIN approve()
+    // when a handler is named after one — the test then exercises the
+    // wrong function and fails (or passes) for no visible reason.
+    for cell in super::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Test) {
+            continue;
+        }
+        for section in &cell.sections {
+            let Section::Rules(rules) = &section.node else { continue };
+            let mut seen: HashSet<String> = HashSet::new();
+            for rule in &rules.rules {
+                let expr = match &rule.node {
+                    Rule::Assert(e) | Rule::AssertFails(e) => e,
+                    _ => continue,
+                };
+                visit_calls_expr(&expr.node, &mut |name, argc, _has_lambda| {
+                    if !super::names::builtin_names().contains(name) {
+                        return;
+                    }
+                    let Some(takes) = arities.get(name) else { return };
+                    if takes.contains(&argc) || !seen.insert(name.to_string()) {
+                        return; // resolves to the handler
+                    }
+                    let definer = index.handler_map.get(name).map(|d| d[0].clone()).unwrap_or_default();
+                    warnings.push(DispatchFinding {
+                        message: format!(
+                            "call to '{name}' with {argc} argument(s) in test cell {test} resolves to the BUILTIN \
+                             {name}(): the handler {definer}.{name} takes {takes:?}. Pass the handler's argument \
+                             count to call it",
+                            test = cell.name,
+                        ),
+                        span: rule.span,
+                    });
+                });
+            }
+        }
+    }
 
     for cell in super::names::collect_cells(program) {
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
@@ -56,10 +110,10 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
             bind_all(body, &mut bound);
 
             let mut calls: Vec<String> = Vec::new();
-            let mut arities: Vec<(String, usize, bool)> = Vec::new();
+            let mut call_shapes: Vec<(String, usize, bool)> = Vec::new();
             visit_calls(body, &mut |name, argc, has_lambda| {
                 calls.push(name.to_string());
-                arities.push((name.to_string(), argc, has_lambda));
+                call_shapes.push((name.to_string(), argc, has_lambda));
             });
             let caller_native = match &section.node {
                 Section::OnSignal(on) => on.properties.iter().any(|p| p == "native"),
@@ -78,30 +132,39 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                     continue;
                 }
                 if super::names::builtin_names().contains(name.as_str()) {
-                    // Builtins win dispatch over handlers (so `on list()` can
-                    // call the builtin list()). From any OTHER handler the
-                    // intent is ambiguous and the user's body silently never
-                    // runs — say which one the call resolves to.
-                    // …when the builtin can actually take the call (else it
-                    // falls through to the handler), and not between
-                    // [native] handlers, which link to each other directly.
-                    let taken = arities
-                        .iter()
-                        .any(|(n, argc, has_lambda)| n == &name && builtin_accepts(n, *argc, *has_lambda));
-                    let native_pair = caller_native && index_native(program, &name);
-                    if handler_label != name && taken && !native_pair {
-                        if let Some(definers) = index.handler_map.get(&name) {
-                            warnings.push(DispatchFinding {
-                                message: format!(
-                                    "call to '{name}' inside {caller}.{handler_label} resolves to the \
-                                     BUILTIN {name}(), not the handler {definer}.{name} — builtins win \
-                                     dispatch, so that handler's body never runs from a call site. \
-                                     Rename the handler if you meant it",
-                                    caller = cell.name,
-                                    definer = definers[0],
-                                ),
-                                span: section.span,
-                            });
+                    if let Some(takes) = arities.get(&name) {
+                        let argcs: Vec<usize> =
+                            call_shapes.iter().filter(|(n, _, _)| n == &name).map(|(_, a, _)| *a).collect();
+                        let definer = index.handler_map.get(&name).map(|d| d[0].clone()).unwrap_or_default();
+                        for argc in argcs {
+                            if takes.contains(&argc) {
+                                // goes to the handler. Inside the homonymous
+                                // handler that is a self-call — almost never
+                                // meant when a builtin has the same name.
+                                if handler_label == name {
+                                    warnings.push(DispatchFinding {
+                                        message: format!(
+                                            "inside {caller}.{name}, `{name}(…)` with {argc} argument(s) calls the \
+                                             handler ITSELF (recursion), not the builtin {name}() — a handler \
+                                             shadows a builtin of the same name and arity. For an empty list write []",
+                                            caller = cell.name,
+                                        ),
+                                        span: section.span,
+                                    });
+                                }
+                            } else if handler_label != name {
+                                // (inside the homonymous handler, another
+                                // arity plainly means the builtin: silent)
+                                warnings.push(DispatchFinding {
+                                    message: format!(
+                                        "call to '{name}' with {argc} argument(s) inside {caller}.{handler_label} \
+                                         resolves to the BUILTIN {name}(): the handler {definer}.{name} takes \
+                                         {takes:?}. If you meant the handler, pass its argument count",
+                                        caller = cell.name,
+                                    ),
+                                    span: section.span,
+                                });
+                            }
                         }
                     }
                     continue;
@@ -392,7 +455,7 @@ fn builtin_accepts(name: &str, argc: usize, has_lambda: bool) -> bool {
 
 /// Collect every name a handler body can bind, including nested blocks,
 /// lambda params and match patterns.
-fn bind_all(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) {
+pub(super) fn bind_all(stmts: &[Spanned<Statement>], bound: &mut HashSet<String>) {
     for stmt in stmts {
         match &stmt.node {
             Statement::Let { name, value } | Statement::Assign { name, value } => {

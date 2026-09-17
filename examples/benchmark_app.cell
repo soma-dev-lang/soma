@@ -29,7 +29,7 @@ cell Contacts {
     }
 
     on list() {
-        let items = list()
+        let items = []
         for key in contacts.keys() {
             items = list(items, from_json(contacts.get(key)))
         }
@@ -37,7 +37,7 @@ cell Contacts {
     }
 
     on search(q: String) {
-        let results = list()
+        let results = []
         for key in contacts.keys() {
             let c = from_json(contacts.get(key))
             if contains(c.name, q) { results = list(results, c) }

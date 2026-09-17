@@ -1,7 +1,15 @@
-// 033: Guard conditions — state machine with guard declarations
-// Guards are checked by `soma verify` at compile time.
-// Here we demonstrate the syntax and exercise un-guarded transitions.
+// 033: Guard conditions — a transition that only fires when its guard holds.
+//
+// A guard is evaluated when a handler calls transition(). It sees the locals
+// of THAT handler, the cell's memory slots, and _id / _from / _to. `soma
+// check` verifies that every name a guard reads is bound by the handler that
+// takes the transition; the guard itself is enforced at runtime.
 cell GuardState {
+    face {
+        signal submit(id: String, content: String) -> String
+        signal approve(id: String, role: String) -> String
+        signal run() -> String
+    }
     state review {
         initial: draft
         draft -> submitted {
@@ -13,16 +21,28 @@ cell GuardState {
         approved -> published
         * -> rejected
     }
+    on submit(id: String, content: String) {
+        transition(id, "submitted")          // guard reads this handler's `content`
+        return get_status(id)
+    }
+    on approve(id: String, role: String) {
+        transition(id, "approved")           // guard reads this handler's `role`
+        return get_status(id)
+    }
     on run() {
-        let id = "doc"
-        let s1 = get_status(id)
-        print("initial:", s1)
-        // Use the wildcard transition (not guarded)
-        transition(id, "rejected")
-        let s2 = get_status(id)
-        print("rejected:", s2)
-        // Show valid transitions are defined
-        print("guard syntax demonstrated")
+        print("submit with text:", submit("doc", "hello"))
+        let r = try { approve("doc", "guest") }
+        print("guest approval refused:", r.error != ())
+        print("admin approval:", approve("doc", "admin"))
         return "done"
+    }
+}
+
+cell test GuardTests {
+    rules {
+        assert_fails submit("empty", "")
+        assert submit("d1", "text") == "submitted"
+        assert_fails approve("d1", "guest")
+        assert approve("d1", "admin") == "approved"
     }
 }

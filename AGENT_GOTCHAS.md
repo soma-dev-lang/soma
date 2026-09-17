@@ -63,19 +63,15 @@ return "hello {name}"       // or interpolate
 (`soma check` also warns on any other unreachable statement after
 `return` / `break` / `continue`.)
 
-## 5. `==` on lists/maps is not structural
+## 5. `==` IS structural on lists, maps and variants
 
 ```soma
-return list(1, 2) == list(1, 2)
-// error: cannot compare List and List
+[1, 2] == [1, 2]                                  // true
+map("US", 1, "EU", 2) == map("EU", 2, "US", 1)    // true — key order is irrelevant
+[] == []                                          // true
 ```
-```soma
-// compare element-wise, or stringify for a quick check
-let a = list(1, 2)
-let b = list(1, 2)
-return a[0] == b[0] && a[1] == b[1]
-// or: return to_string(a) == to_string(b)
-```
+`<`, `>` on lists or maps is an error (compare a field or `len()`), and values
+of different kinds are an error to compare (`1 == "1"`), not `false`.
 
 ## 6. Float equality needs a tolerance
 
@@ -199,24 +195,27 @@ do not guess. When unsure of a cell's API, run `soma describe --faces`.
 
 ## More verified footguns (found generating 168 programs)
 
-## 11. Handler names must not collide with builtins
+## 11. Your handler shadows a builtin of the same name — when the argument count matches
 
-Builtins win dispatch from a call site. If the builtin can take the call,
-your handler's body never runs — `soma check` warns:
+`f(args)` calls the program's handler `f` if one takes that many arguments,
+the builtin `f` otherwise. User code shadows the library, as everywhere else.
 
 ```soma
-on merge(a, b) { return a + b + 1000 }
-on use_it()   { return merge(1, 2) }     // returns the BUILTIN's result
-// warning: call to 'merge' inside G.use_it resolves to the BUILTIN
-//          merge(), not the handler G.merge
+on merge(a: Int, b: Int) { return a + b + 1000 }
+on use_it()  { return merge(1, 2) }      // 1003 — your handler
+on list()    { return list(1, 2) }       // [1, 2] — 2 ≠ 0 arguments: the builtin
 ```
+`soma check` warns on the two confusing cases:
 ```soma
-on merge_lists(a, b) { ... }              // pick a non-builtin name
+on merge(a: Int, b: Int, c: Int) { … }
+on use_it() { return merge(m1, m2) }
+// warning: call to 'merge' with 2 argument(s) … resolves to the BUILTIN merge():
+//          the handler G.merge takes [3]
+on list() { let items = list() … }
+// warning: inside G.list, `list(…)` with 0 argument(s) calls the handler ITSELF
+//          (recursion), not the builtin list(). For an empty list write []
 ```
-Risky names: `merge`, `map`, `filter`, `sort`, `top`, `take`, `publish`,
-`approve`, `all`, `sum`, `gcd`. When in doubt, `soma describe --builtins | grep <name>`.
-(A handler calling its own homonymous builtin — `on list() { return list(1, 2) }` —
-is the intended pattern and stays silent.)
+Method calls (`xs.count(p)`) always go to builtins.
 
 ## 12. `assert_fails` needs an expression that RAISES, not a falsy bool
 
@@ -314,3 +313,37 @@ division by zero is an ordinary, `try`-catchable runtime error.
 or a recursive helper makes the bound **advisory**. Give the loop a literal
 `range(0, N)` or `[loop_bound(N)]` to get `bound proven` back. Calls to sibling
 handlers are composed: `for i in range(0, 3) { helper() }` costs 3 × helper.
+
+## 21. Habits from Python / TypeScript that `soma check` now redirects
+
+```soma
+if x == null { }          // error: 'null' does not exist — Soma's null is `()`; also `x ?? default`
+xs.includes(v)            // error: no method 'includes' — in Soma: contains(xs, v)
+rows.push(o)              // warning: result discarded — push returns a NEW list: rows = push(rows, o)
+[a[0]] + rest             // warning: `+` ADDS numeric lists element-wise — concat(a, b) / push(xs, x)
+let t = lefft + 1         // error: undefined variable 'lefft' (did you mean 'left'?)
+```
+Everyday collection builtins: `contains(list|map|string, x)`, `slice(xs, start, end?)`
+(negative indexes count from the end), `keys(m)` / `values(m)` / `entries(m)`,
+`sort_by(rows, "field")` or `sort_by(rows, r => [0 - r.total, r.name], "desc"?)`
+(stable; a list key sorts on several keys), `round(x, digits)`.
+
+## 22. Transition guards see the calling handler's locals
+
+```soma
+state expense { initial: approved   approved -> paid { guard { amount < 10000 } } }
+on pay(id: String) {
+    let amount = amounts.get(id) ?? 0      // the guard reads THIS `amount`
+    transition(id, "paid")                 // raises "guard failed…" when false
+}
+```
+A guard sees: the locals of the handler calling `transition()`, the cell's
+memory slots, `_id`, `_from`, `_to`. `soma check` rejects a guard that reads a
+name its calling handler never binds. Guards are enforced at runtime; the
+model checker keeps the edge (an over-approximation, so safety results hold).
+
+## 23. `soma.toml` is validated
+
+A `soma.toml` that does not parse — or has an unknown key under `[verify]` — is
+an error for every command (it used to be ignored silently, so `[verify]`
+properties were never checked). `[package]` is optional.

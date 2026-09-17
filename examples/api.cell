@@ -32,7 +32,7 @@ cell UserAPI {
 
     on list() {
         let keys = users.keys()
-        let items = list()
+        let items = []
         for key in keys {
             items = list(items, from_json(users.get(key)))
         }

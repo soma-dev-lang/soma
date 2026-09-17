@@ -6,7 +6,8 @@
 // API:
 //   POST /create?customer=alice      → creates order in "draft"
 //   POST /add_item/1?item=widget     → adds item to order
-//   POST /advance/1?to=submitted     → transition draft → submitted
+//   POST /advance/1?to=submitted&role=clerk   → transition draft → submitted
+//   POST /advance/1?to=approved&role=admin    → the guard on submitted -> approved reads `role`
 //   GET  /status/1                   → current state
 //   GET  /transitions/1              → valid next states
 //   GET  /list                       → all orders
@@ -15,7 +16,7 @@ cell OrderSystem {
     face {
         signal create(customer: String) -> String
         signal add_item(id: String, item: String) -> String
-        signal advance(id: String, to: String) -> String
+        signal advance(id: String, to: String, role: String) -> String
         signal status(id: String) -> String
         signal transitions(id: String) -> String
         signal list() -> String
@@ -68,7 +69,9 @@ cell OrderSystem {
         return map("id", id, "items", items.get(id))
     }
 
-    on advance(id: String, to: String) {
+    // `role` is read by the guard on submitted -> approved: a guard sees the
+    // locals of the handler that calls transition().
+    on advance(id: String, to: String, role: String) {
         let customer = orders.get(id)
         if customer == () {
             return response(404, map("error", "order not found"))

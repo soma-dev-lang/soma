@@ -25,6 +25,7 @@ pub fn cmd_check(path: &PathBuf, json: bool, registry: &mut Registry) {
 
     let mut chk = checker::Checker::new(registry);
     chk.manifest = manifest.as_ref();
+    chk.source = Some((file_str.clone(), source.clone()));
     chk.check(&program);
 
     if json {

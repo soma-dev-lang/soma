@@ -5,6 +5,11 @@ use std::path::Path;
 /// soma.toml — the project manifest
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
+    /// Optional: a soma.toml that only configures `[verify]` or `[agent]`
+    /// is a perfectly good manifest. (It used to be required, and a
+    /// manifest without it failed to parse — silently — so its `[verify]`
+    /// properties were never checked and `mock` never applied.)
+    #[serde(default)]
     pub package: PackageInfo,
     #[serde(default)]
     pub dependencies: HashMap<String, Dependency>,
@@ -149,6 +154,7 @@ pub struct ParallelConfig {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // a typo'd property must not vanish silently
 pub struct VerifyConfig {
     /// Cells these properties apply to. Empty = all cells in the package.
     /// Lets one soma.toml serve a directory of unrelated cells without
@@ -173,6 +179,7 @@ pub struct VerifyConfig {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AfterConfig {
     #[serde(default)]
     pub eventually: Vec<String>,
@@ -182,6 +189,7 @@ pub struct AfterConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PackageInfo {
+    #[serde(default)]
     pub name: String,
     #[serde(default = "default_version")]
     pub version: String,
@@ -191,6 +199,18 @@ pub struct PackageInfo {
     pub author: String,
     #[serde(default = "default_entry")]
     pub entry: String,
+}
+
+impl Default for PackageInfo {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            version: default_version(),
+            description: String::new(),
+            author: String::new(),
+            entry: default_entry(),
+        }
+    }
 }
 
 fn default_version() -> String { "0.1.0".to_string() }

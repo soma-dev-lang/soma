@@ -1,0 +1,122 @@
+//! Transition guards must be evaluable.
+//!
+//! `a -> b { guard { amount < 10000 } }` is evaluated when a handler calls
+//! `transition(id, "b")`, in this scope: the locals of THAT handler at the
+//! call, the cell's memory slots, builtins, and `_id` / `_from` / `_to`.
+//! A name the calling handler never binds is an `UndefinedVar` at runtime —
+//! and an `assert_fails transition(...)` then passes for the wrong reason.
+//! This pass reports it at check time, per (guard, calling handler).
+
+use crate::ast::*;
+use std::collections::HashSet;
+
+pub struct GuardIssue {
+    pub message: String,
+    pub span: Span,
+}
+
+const GUARD_BINDINGS: &[&str] = &["_id", "_from", "_to", "true", "false"];
+
+pub fn check_program(program: &Program) -> Vec<GuardIssue> {
+    let mut issues = Vec::new();
+    for cell in super::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
+            continue;
+        }
+        let slots: HashSet<String> = cell
+            .sections
+            .iter()
+            .filter_map(|s| if let Section::Memory(m) = &s.node { Some(m) } else { None })
+            .flat_map(|m| m.slots.iter().map(|sl| sl.node.name.clone()))
+            .collect();
+
+        for section in &cell.sections {
+            let Section::State(sm) = &section.node else { continue };
+            for tr in &sm.transitions {
+                let Some(guard) = &tr.node.guard else { continue };
+                let mut names: Vec<String> = Vec::new();
+                super::termination::walk_expr(&guard.node, &mut |e| {
+                    if let Expr::Ident(n) = e {
+                        if !names.contains(n) {
+                            names.push(n.clone());
+                        }
+                    }
+                });
+                let free: Vec<&String> = names
+                    .iter()
+                    .filter(|n| {
+                        !slots.contains(*n)
+                            && !GUARD_BINDINGS.contains(&n.as_str())
+                            && !super::names::builtin_names().contains(n.as_str())
+                    })
+                    .collect();
+                if free.is_empty() {
+                    continue;
+                }
+
+                // every handler that takes this transition with a literal target
+                let mut callers = 0usize;
+                for hs in &cell.sections {
+                    let Section::OnSignal(on) = &hs.node else { continue };
+                    let mut takes = false;
+                    for stmt in &on.body {
+                        super::termination::walk_stmt(&stmt.node, &mut |e| {
+                            if let Expr::FnCall { name, args } = e {
+                                if name == "transition" && args.len() >= 2 {
+                                    match &args[1].node {
+                                        Expr::Literal(Literal::String(s)) => {
+                                            if s == &tr.node.to {
+                                                takes = true;
+                                            }
+                                        }
+                                        // a Variant name used as the target
+                                        Expr::Ident(v) if v == &tr.node.to => takes = true,
+                                        // a computed target can be ANY state:
+                                        // this handler may take this edge
+                                        _ => takes = true,
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    if !takes {
+                        continue;
+                    }
+                    callers += 1;
+                    let mut bound: HashSet<String> = on.params.iter().map(|p| p.name.clone()).collect();
+                    super::dispatch::bind_all(&on.body, &mut bound);
+                    for n in &free {
+                        if !bound.contains(*n) {
+                            issues.push(GuardIssue {
+                                message: format!(
+                                    "guard on `{} -> {}` reads '{}', but handler `{}` — which takes that \
+                                     transition — has no variable '{}'. A guard sees the locals of the handler \
+                                     calling transition(), the cell's memory slots, and _id / _from / _to: bind \
+                                     `let {} = …` before the call",
+                                    tr.node.from, tr.node.to, n, on.signal_name, n, n
+                                ),
+                                span: guard.span,
+                            });
+                        }
+                    }
+                }
+                if callers == 0 {
+                    issues.push(GuardIssue {
+                        message: format!(
+                            "guard on `{} -> {}` reads {} but no handler calls transition() toward `{}`, \
+                             so nothing is known to bind {}. A guard sees the locals of the handler \
+                             calling transition(), the cell's memory slots, and _id / _from / _to",
+                            tr.node.from,
+                            tr.node.to,
+                            free.iter().map(|n| format!("'{}'", n)).collect::<Vec<_>>().join(", "),
+                            tr.node.to,
+                            if free.len() == 1 { "it" } else { "them" }
+                        ),
+                        span: guard.span,
+                    });
+                }
+            }
+        }
+    }
+    issues
+}

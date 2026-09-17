@@ -19,6 +19,8 @@ pub mod interpolation_check;
 pub mod invariants;
 pub mod dispatch;
 pub mod dead_code;
+pub mod guards;
+pub mod habits;
 pub mod cross_machine;
 
 pub use properties::PropertyChecker;
@@ -193,6 +195,20 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// A habit from another language the runtime would reject.
+    #[error("{message}")]
+    Habit {
+        message: String,
+        span: Span,
+    },
+
+    /// A transition guard reads a name its calling handler never binds.
+    #[error("{message}")]
+    GuardScope {
+        message: String,
+        span: Span,
+    },
+
     /// A statement that can never run and changes the result — e.g. the
     /// second half of `return "a" "b"`.
     #[error("{message}")]
@@ -282,6 +298,11 @@ pub enum CheckWarning {
         message: String,
         span: Span,
     },
+    /// A habit from another language that silently does the wrong thing.
+    HabitWarning {
+        message: String,
+        span: Span,
+    },
     /// Statements after return/break/continue in the same block.
     Unreachable {
         message: String,
@@ -349,6 +370,7 @@ impl std::fmt::Display for CheckWarning {
             Self::CostProven { message, .. } => write!(f, "✓ {message}"),
             Self::DispatchShadow { message, .. } => write!(f, "warning: {message}"),
             Self::Unreachable { message, .. } => write!(f, "warning: {message}"),
+            Self::HabitWarning { message, .. } => write!(f, "warning: {message}"),
             Self::NativeSemantics { message, .. } => write!(f, "warning: {message}"),
             Self::InterpolationRecoverable { message, .. } => {
                 write!(f, "warning: {message} (inside try {{ }} — recoverable, so not an error)")
@@ -357,9 +379,68 @@ impl std::fmt::Display for CheckWarning {
     }
 }
 
+impl CheckError {
+    /// Where in the source this diagnostic points, when it points somewhere.
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            Self::PropertyContradiction { span, .. }
+            | Self::InvalidPropertyCombination { span, .. }
+            | Self::UnmatchedAwait { span, .. }
+            | Self::UnmatchedHandler { span, .. }
+            | Self::SignalTypeMismatch { span, .. }
+            | Self::DuplicateCellName { span, .. }
+            | Self::DuplicateSlot { span, .. }
+            | Self::DuplicateSignal { span, .. }
+            | Self::MissingHandler { span, .. }
+            | Self::ParamCountMismatch { span, .. }
+            | Self::CustomCheckerFailed { span, .. }
+            | Self::ScaleShardNotFound { span, .. }
+            | Self::SumTypeIssue { span, .. }
+            | Self::DeterminismViolation { span, .. }
+            | Self::ModelCapabilityMissing { span, .. }
+            | Self::CostExceeded { span, .. }
+            | Self::ScaleConsistencyMismatch { span, .. }
+            | Self::PromiseViolation { span, .. }
+            | Self::BudgetExceeded { span, .. }
+            | Self::InterpolationUndefined { span, .. }
+            | Self::DispatchIssue { span, .. }
+            | Self::InvariantIssue { span, .. }
+            | Self::DeadCode { span, .. }
+            | Self::GuardScope { span, .. }
+            | Self::Habit { span, .. } => Some(*span),
+        }
+    }
+}
+
+impl CheckWarning {
+    /// Where in the source this diagnostic points, when it points somewhere.
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            Self::UnhandledSignal { span, .. }
+            | Self::PropertyImplication { span, .. }
+            | Self::UnknownProperty { span, .. }
+            | Self::UnverifiablePromise { span, .. }
+            | Self::AwaitWithoutHandler { span, .. }
+            | Self::ScaleEventualConsistency { span, .. }
+            | Self::AgentMissingStateMachine { span, .. }
+            | Self::CostAdvisory { span, .. }
+            | Self::CostProven { span, .. }
+            | Self::DispatchShadow { span, .. }
+            | Self::NativeSemantics { span, .. }
+            | Self::Unreachable { span, .. }
+            | Self::HabitWarning { span, .. }
+            | Self::InterpolationRecoverable { span, .. } => Some(*span),
+            Self::BudgetAdvisory { .. }
+            | Self::BudgetOk { .. } => None,
+        }
+    }
+}
+
 /// Top-level checker that runs all verification passes.
 /// Uses the Registry for data-driven property checking.
 pub struct Checker<'a> {
+    /// (file name, source text) — lets reports point at file:line:col.
+    pub source: Option<(String, String)>,
     pub registry: &'a Registry,
     pub manifest: Option<&'a crate::pkg::manifest::Manifest>,
     pub errors: Vec<CheckError>,
@@ -369,6 +450,7 @@ pub struct Checker<'a> {
 impl<'a> Checker<'a> {
     pub fn new(registry: &'a Registry) -> Self {
         Self {
+            source: None,
             registry,
             manifest: None,
             errors: Vec::new(),
@@ -422,6 +504,16 @@ impl<'a> Checker<'a> {
         }
         for (message, span) in native::int_division_warnings(program) {
             self.warnings.push(CheckWarning::NativeSemantics { message, span });
+        }
+        let (habit_errors, habit_warnings) = habits::check_program(program);
+        for e in habit_errors {
+            self.errors.push(CheckError::Habit { message: e.message, span: e.span });
+        }
+        for w in habit_warnings {
+            self.warnings.push(CheckWarning::HabitWarning { message: w.message, span: w.span });
+        }
+        for issue in guards::check_program(program) {
+            self.errors.push(CheckError::GuardScope { message: issue.message, span: issue.span });
         }
         let (dead_errors, dead_warnings) = dead_code::check_program(program);
         for e in dead_errors {
@@ -1102,10 +1194,12 @@ impl<'a> Checker<'a> {
 
         for warning in &self.warnings {
             output.push_str(&format!("{}\n", warning));
+            output.push_str(&self.location_block(warning.span()));
         }
 
         for error in &self.errors {
             output.push_str(&format!("error: {}\n", error));
+            output.push_str(&self.location_block(error.span()));
         }
 
         // Tally only real warnings, not informational notes (BudgetOk).
@@ -1140,24 +1234,64 @@ impl<'a> Checker<'a> {
 
     /// Machine-readable JSON report for agent consumption.
     /// Each error includes a `fix` field with a concrete repair suggestion.
+    /// `  --> file:line:col` plus the source line and a caret, like runtime
+    /// errors — empty when the diagnostic has no position or no source.
+    fn location_block(&self, span: Option<Span>) -> String {
+        let (Some((file, text)), Some(span)) = (&self.source, span) else { return String::new() };
+        if span.start == 0 && span.end == 0 {
+            return String::new();
+        }
+        let (line, col) = crate::interpreter::span_to_location(text, span.start);
+        let mut block = format!(
+            "  --> {}:{}:{}\n{}",
+            file,
+            line,
+            col,
+            crate::interpreter::format_error_context(text, span.start)
+        );
+        if !block.ends_with('\n') {
+            block.push('\n');
+        }
+        block
+    }
+
+    /// file / line / col / source line for the JSON report.
+    fn location_json(&self, span: Option<Span>, v: &mut serde_json::Value) {
+        let (Some((file, text)), Some(span)) = (&self.source, span) else { return };
+        if span.start == 0 && span.end == 0 {
+            return;
+        }
+        let (line, col) = crate::interpreter::span_to_location(text, span.start);
+        v["file"] = serde_json::json!(file);
+        v["line"] = serde_json::json!(line);
+        v["col"] = serde_json::json!(col);
+        if let Some(src) = text.split('\n').nth(line - 1) {
+            v["source_line"] = serde_json::json!(src.trim_end());
+        }
+    }
+
     pub fn report_json(&self) -> String {
         let errors: Vec<serde_json::Value> = self.errors.iter().map(|e| {
             let (msg, fix, kind) = Self::error_with_fix(e);
-            serde_json::json!({
+            let mut v = serde_json::json!({
                 "level": "error",
                 "kind": kind,
                 "message": msg,
                 "fix": fix,
-            })
+            });
+            self.location_json(e.span(), &mut v);
+            v
         }).collect();
 
         let warnings: Vec<serde_json::Value> = self.warnings.iter().map(|w| {
             let (msg, fix) = Self::warning_with_fix(w);
-            serde_json::json!({
+            let mut v = serde_json::json!({
                 "level": "warning",
                 "message": msg,
                 "fix": fix,
-            })
+            });
+            self.location_json(w.span(), &mut v);
+            v
         }).collect();
 
         let output = serde_json::json!({

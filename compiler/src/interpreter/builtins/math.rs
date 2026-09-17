@@ -25,6 +25,20 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 _ => Err(RuntimeError::TypeError("abs expects a number".to_string())),
             })
         }
+        // round(x, digits): keep `digits` decimals → Float (round(2.345, 2) = 2.35)
+        "round" if args.len() == 2 => {
+            let x = match &args[0] {
+                Value::Float(f) => *f,
+                Value::Int(i) => i.to_f64(),
+                _ => return Some(Err(RuntimeError::TypeError("round(x, digits): x must be a number".to_string()))),
+            };
+            let d = match &args[1] {
+                Value::Int(i) => i.to_i64().unwrap_or(0).clamp(0, 15) as i32,
+                _ => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be an Int".to_string()))),
+            };
+            let p = 10f64.powi(d);
+            Some(Ok(Value::Float((x * p).round() / p)))
+        }
         "round" => {
             args.first().map(|a| match a {
                 Value::Float(n) => {

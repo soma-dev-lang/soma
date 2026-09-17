@@ -41,6 +41,20 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
         process::exit(1);
     }
 
+    // Assertions are reported with their exact source text and file:line —
+    // spans count characters (the lexer walks a Vec<char>).
+    let src_chars: Vec<char> = source.chars().collect();
+    let text_of = |span: ast::Span, fallback: String| -> String {
+        if span.end > span.start && span.end <= src_chars.len() {
+            let raw: String = src_chars[span.start..span.end].iter().collect();
+            raw.split_whitespace().collect::<Vec<_>>().join(" ")
+        } else {
+            fallback
+        }
+    };
+    let line_of = |span: ast::Span| -> usize { interpreter::span_to_location(&source, span.start).0 };
+    let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("").to_string();
+
     let mut interp = interpreter::Interpreter::new(&program);
 
     // Read agent config from soma.toml [agent] / [models.*], like `soma run`
@@ -88,18 +102,22 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                         ast::Rule::Assert(expr) => {
                             total += 1;
 
+                            let shown = text_of(expr.span, format_expr(&expr.node));
                             match eval_test_assertion(&mut interp, &expr.node) {
-                                Ok(true) => {
+                                Ok((true, _)) => {
                                     passed += 1;
-                                    println!("  ✓ assert {}", format_expr(&expr.node));
+                                    println!("  ✓ assert {}", shown);
                                 }
-                                Ok(false) => {
+                                Ok((false, detail)) => {
                                     failed += 1;
-                                    println!("  ✗ assert {} — FAILED", format_expr(&expr.node));
+                                    println!("  ✗ {}:{}  assert {} — FAILED", file_name, line_of(expr.span), shown);
+                                    for line in detail {
+                                        println!("         {}", line);
+                                    }
                                 }
                                 Err(e) => {
                                     failed += 1;
-                                    println!("  ✗ assert {} — ERROR: {}", format_expr(&expr.node), e);
+                                    println!("  ✗ {}:{}  assert {} — ERROR: {}", file_name, line_of(expr.span), shown, e);
                                 }
                             }
                         }
@@ -164,7 +182,7 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
 fn eval_test_assertion(
     interp: &mut interpreter::Interpreter,
     expr: &ast::Expr,
-) -> Result<bool, String> {
+) -> Result<(bool, Vec<String>), String> {
     match expr {
         ast::Expr::CmpOp { left, op, right } => {
             let left_val = eval_test_expr(interp, &left.node)?;
@@ -173,18 +191,46 @@ fn eval_test_assertion(
             let result = interp.eval_cmpop_values(&left_val, op.clone(), &right_val)
                 .unwrap_or(false);
 
+            let mut detail = Vec::new();
             if !result {
-                eprintln!("         left:  {}", left_val);
-                eprintln!("         right: {}", right_val);
+                detail.push(format!("left:  {}", left_val));
+                detail.push(format!("right: {}", right_val));
+                for side in [&left.node, &right.node] {
+                    if let Some(why) = explain_absent_field(interp, side) {
+                        detail.push(why);
+                    }
+                }
             }
 
-            Ok(result)
+            Ok((result, detail))
         }
         _ => {
             let val = eval_test_expr(interp, expr)?;
-            Ok(val.is_truthy())
+            Ok((val.is_truthy(), Vec::new()))
         }
     }
+}
+
+/// `x.field` that evaluates to `()`: reading a missing key is not an error
+/// in Soma, so a wrong field name shows up as a bare `null`. Say which
+/// fields the value actually has — that is almost always the whole fix
+/// (`.status` vs `._status`, `.url` on a try-result vs `.value.url`).
+fn explain_absent_field(interp: &mut interpreter::Interpreter, expr: &ast::Expr) -> Option<String> {
+    let ast::Expr::FieldAccess { target, field } = expr else { return None };
+    if !matches!(eval_test_expr(interp, expr), Ok(interpreter::Value::Unit)) {
+        return None;
+    }
+    let interpreter::Value::Map(entries) = eval_test_expr(interp, &target.node).ok()? else { return None };
+    let keys: Vec<String> = entries.iter().map(|(k, _)| k.clone()).collect();
+    if keys.iter().any(|k| k == field) {
+        return None; // the field exists and really is ()
+    }
+    let near = keys
+        .iter()
+        .find(|k| k.trim_start_matches('_') == field.as_str() || **k == format!("_{field}"))
+        .map(|k| format!(" — did you mean '.{k}'?"))
+        .unwrap_or_default();
+    Some(format!("note:  '.{field}' is absent; the value has fields [{}]{near}", keys.join(", ")))
 }
 
 fn eval_test_expr(

@@ -57,8 +57,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let (Value::String(haystack), Value::String(needle)) = (&args[0], &args[1]) {
                     Some(Ok(Value::Bool(haystack.contains(needle.as_str()))))
+                } else if matches!(args[0], Value::List(_) | Value::Map(_)) {
+                    // list / map membership: collection.rs
+                    None
+                } else if matches!(args[0], Value::String(_)) {
+                    // contains("abc", 1): compare against the text form
+                    let Value::String(haystack) = &args[0] else { return None };
+                    Some(Ok(Value::Bool(haystack.contains(format!("{}", args[1]).as_str()))))
                 } else {
-                    Some(Ok(Value::Bool(false)))
+                    Some(Err(RuntimeError::TypeError(format!(
+                        "contains(haystack, needle): haystack must be a String, List or Map, got {}",
+                        crate::interpreter::value_type_name(&args[0])
+                    ))))
                 }
             } else {
                 Some(Err(RuntimeError::TypeError("contains(string, substring)".to_string())))

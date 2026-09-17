@@ -63,26 +63,20 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if let Some(Value::List(items)) = args.first() {
                 let field = if args.len() >= 2 { format!("{}", args[1]) } else { return Some(Ok(Value::List(items.clone()))); };
                 let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(false);
-                let has_float = items.iter().any(|item| {
-                    if let Value::Map(entries) = item {
-                        entries.get(&field).map(|v| matches!(v, Value::Float(_))).unwrap_or(false)
-                    } else { false }
-                });
+                // Generic, stable ordering of the field values: numbers by
+                // value, strings lexicographically (they used to all compare
+                // as 0, i.e. not sort at all).
+                let field_of = |row: &Value| -> Value {
+                    match row {
+                        Value::Map(entries) => entries.get(&field).cloned().unwrap_or(Value::Unit),
+                        _ => Value::Unit,
+                    }
+                };
                 let mut sorted = items.clone();
-                if has_float {
-                    sorted.sort_by(|a, b| {
-                        let av = map_field_f64(a, &field);
-                        let bv = map_field_f64(b, &field);
-                        if desc { bv.partial_cmp(&av).unwrap_or(std::cmp::Ordering::Equal) }
-                        else { av.partial_cmp(&bv).unwrap_or(std::cmp::Ordering::Equal) }
-                    });
-                } else {
-                    sorted.sort_by(|a, b| {
-                        let av = map_field_i64(a, &field);
-                        let bv = map_field_i64(b, &field);
-                        if desc { bv.cmp(&av) } else { av.cmp(&bv) }
-                    });
-                }
+                sorted.sort_by(|a, b| {
+                    let o = super::collection::compare_values(&field_of(a), &field_of(b));
+                    if desc { o.reverse() } else { o }
+                });
                 Some(Ok(Value::List(sorted)))
             } else {
                 Some(Err(RuntimeError::TypeError("sort_by expects (list, field)".to_string())))

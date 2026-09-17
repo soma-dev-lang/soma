@@ -662,29 +662,20 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
         .map(|t| (t.node.from.as_str(), t.node.to.as_str()))
         .collect();
 
-    let unguarded: Vec<(&str, &str)> = sm.transitions.iter()
-        .filter(|t| t.node.guard.is_none() && t.node.from != "*")
-        .map(|t| (t.node.from.as_str(), t.node.to.as_str()))
-        .collect();
-
     if !guarded.is_empty() {
         let guards_str: Vec<String> = guarded.iter()
             .map(|(f, t)| format!("{} -> {}", f, t))
             .collect();
+        // Honest wording: the model checker treats a guarded edge as always
+        // enabled (an over-approximation, so safety results still hold); the
+        // guard itself is enforced when transition() runs.
         result.checks.push(VerifyCheck::Pass(
-            format!("guarded transitions: {}", guards_str.join(", "))
+            format!("guards (enforced at runtime, edges kept in the model): {}", guards_str.join(", "))
         ));
     }
 
-    // Warn about critical transitions without guards
-    for (from, to) in &unguarded {
-        // Warn if it's a "dangerous" transition (to terminal or to a state that implies commitment)
-        if terminals.contains(&to.to_string()) || *to == "sent" || *to == "approved" || *to == "deployed" {
-            result.checks.push(VerifyCheck::Warning(
-                format!("{} -> {} has no guard (consider adding a guard condition)", from, to)
-            ));
-        }
-    }
+    // (No warning for unguarded transitions: an unguarded edge is the normal
+    // case, and the nag pushed authors toward guards they did not need.)
 
     // 8. Wildcard analysis
     if !wildcard_targets.is_empty() {
@@ -693,28 +684,9 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
         ));
     }
 
-    // 9. Path analysis: check if every non-terminal state has a path to every terminal
-    for terminal in &terminals {
-        let reaches_terminal: Vec<String> = reachable.iter()
-            .filter(|s| {
-                let path = bfs(s, &adj);
-                path.contains(terminal)
-            })
-            .cloned()
-            .collect();
-
-        let cant_reach: Vec<String> = reachable.iter()
-            .filter(|s| !reaches_terminal.contains(s) && !terminals.contains(s))
-            .cloned()
-            .collect();
-
-        if !cant_reach.is_empty() && !wildcard_targets.contains(terminal) {
-            result.checks.push(VerifyCheck::Warning(
-                format!("states [{}] cannot reach terminal '{}'",
-                    cant_reach.join(", "), terminal)
-            ));
-        }
-    }
+    // (No per-terminal path warning: "approved cannot reach rejected" is a
+    // design decision, not a defect. Liveness — every state reaches SOME
+    // terminal — is check 5 above.)
 
     result
 }

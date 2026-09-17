@@ -341,18 +341,50 @@ fn unreachable_code_after_return_warns_but_passes() {
     assert!(out.contains("unreachable code after `return`"), "got: {out}");
 }
 
+/// Resolution rule: `f(args)` is the program's handler `f` when one takes
+/// that many arguments, the builtin otherwise. User code shadows the
+/// library, so a handler named after a builtin is called like any other.
 #[test]
-fn call_shadowed_by_builtin_warns() {
-    let (out, code) = check_src(
-        "dispatch_builtin_shadow.cell",
-        r#"
+fn a_handler_shadows_a_builtin_of_the_same_arity() {
+    let tmp = std::env::temp_dir().join("dispatch_handler_wins.cell");
+    std::fs::write(&tmp, r#"
         cell G {
             face {
                 signal merge(a: Int, b: Int) -> Int
                 signal use_it() -> Int
+                signal list() -> List
             }
             on merge(a: Int, b: Int) { return a + b + 1000 }
             on use_it() { return merge(1, 2) }
+            on list() { return list(1, 2) }
+        }
+        cell test GT {
+            rules {
+                assert use_it() == 1003
+                assert merge(1, 2) == 1003
+                assert list() == [1, 2]
+            }
+        }
+    "#).unwrap();
+    let (out, _, code) = soma(&["check", tmp.to_str().unwrap()]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("BUILTIN"), "matching arity goes to the handler, silently: {out}");
+    let (out, _, code) = soma(&["test", tmp.to_str().unwrap()]);
+    assert_eq!(code, 0, "handler must win when the argument count matches: {out}");
+}
+
+#[test]
+fn a_mismatching_argument_count_falls_to_the_builtin_with_a_warning() {
+    let (out, code) = check_src(
+        "dispatch_builtin_arity.cell",
+        r#"
+        cell G {
+            face {
+                signal merge(a: Int, b: Int, c: Int) -> Int
+                signal use_it() -> Map
+            }
+            on merge(a: Int, b: Int, c: Int) { return a + b + c }
+            on use_it() { return merge(map("a", 1), map("b", 2)) }
         }
         "#,
     );
@@ -361,19 +393,21 @@ fn call_shadowed_by_builtin_warns() {
 }
 
 #[test]
-fn handler_calling_its_homonymous_builtin_is_silent() {
-    // `on list()` calling the builtin list() is the documented pattern.
+fn a_same_arity_self_call_under_a_builtin_name_warns() {
     let (out, code) = check_src(
-        "dispatch_builtin_homonym.cell",
+        "dispatch_self_call.cell",
         r#"
         cell G {
             face { signal list() -> List }
-            on list() { return list(1, 2) }
+            on list() {
+                let items = list()
+                return items
+            }
         }
         "#,
     );
     assert_eq!(code, 0, "{out}");
-    assert!(!out.contains("BUILTIN"), "got: {out}");
+    assert!(out.contains("calls the handler ITSELF"), "got: {out}");
 }
 
 #[test]
