@@ -77,7 +77,7 @@ pub fn cmd_init(name: Option<&str>) {
     println!("  soma check app.cell && soma verify app.cell && soma test app.cell");
     println!("  soma run app.cell add 5");
     println!("  soma serve app.cell              # http://localhost:8080");
-    println!("  soma example invariant http      # verified programs to start from");
+    println!("  soma example invariant state_machine      # verified programs to start from");
 }
 
 pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Option<&str>) {

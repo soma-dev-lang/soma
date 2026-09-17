@@ -267,13 +267,48 @@ fn agent_think(
 
     // Mock mode: soma.toml mock or SOMA_LLM_MOCK env
     let cfg_mock = cfg.map(|c| c.mock.clone()).unwrap_or_default();
-    let mock_val = std::env::var("SOMA_LLM_MOCK").ok()
+    let mut mock_val = std::env::var("SOMA_LLM_MOCK").ok()
         .or_else(|| if cfg_mock.is_empty() { None } else { Some(cfg_mock) });
+
+    // `soma test` with no key anywhere: mock instead of hitting the network.
+    if mock_val.is_none() && interp.test_auto_mock && interp.mock_queue.is_empty() {
+        let has_key = ["SOMA_LLM_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"].iter().any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()))
+            || cfg.is_some_and(|c| !resolve_env_vars(&c.key).is_empty());
+        if !has_key {
+            if !interp.auto_mock_noted {
+                eprintln!("note: no LLM key configured — think() is mocked (echo: the reply is the prompt). \
+                           Script replies with `mock think \"…\"`, or set [agent] mock in soma.toml.");
+                interp.auto_mock_noted = true;
+            }
+            mock_val = Some("echo".to_string());
+        }
+    }
+
+    // Scripted replies (`mock think …`) come first, whatever the mode.
+    let scripted = interp.mock_queue.pop_front();
+    if let Some(Err(msg)) = &scripted {
+        interp.agent_trace.push(super::llm::trace_think(0, prompt, 0, 0, "error"));
+        return Err(RuntimeError::TypeError(format!("think() failed: {} (scripted by `mock think error`)", msg)));
+    }
+    if scripted.is_some() && mock_val.is_none() {
+        mock_val = Some("echo".to_string());
+    }
+
     if let Some(mock) = mock_val {
-        let response = match mock.as_str() {
-            "echo" => prompt.to_string(),
-            s if s.starts_with("fixed:") => s[6..].to_string(),
-            _ => format!("[mock] {}", prompt),
+        let response = match (&scripted, mock.as_str()) {
+            (Some(Ok(text)), _) => text.clone(),
+            (_, "echo") => prompt.to_string(),
+            (_, s) if s.starts_with("fixed:") => s[6..].to_string(),
+            (_, other) => {
+                // a configuration mistake, not a domain error: a handler's
+                // `try { think(..) }` must not be able to swallow it
+                eprintln!(
+                    "error: unknown LLM mock mode '{}' (SOMA_LLM_MOCK or [agent] mock) — expected `echo` \
+                     (reply = the prompt) or `fixed:<text>`",
+                    other
+                );
+                std::process::exit(2);
+            }
         };
         // V1.6: TraceStep::Think variant (mock mode: fixed token=0)
         interp.agent_trace.push(super::llm::trace_think(0, prompt, 0, 0, "stop"));

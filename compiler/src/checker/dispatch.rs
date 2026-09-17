@@ -64,7 +64,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
             let mut seen: HashSet<String> = HashSet::new();
             for rule in &rules.rules {
                 let expr = match &rule.node {
-                    Rule::Assert(e) | Rule::AssertFails(e) => e,
+                    Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => e,
                     _ => continue,
                 };
                 visit_calls_expr(&expr.node, &mut |name, argc, _has_lambda| {

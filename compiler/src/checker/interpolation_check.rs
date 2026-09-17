@@ -50,7 +50,7 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
         for section in &cell.sections {
             if let Section::Rules(rules) = &section.node {
                 for rule in &rules.rules {
-                    if let Rule::AssertFails(expr) = &rule.node {
+                    if let Rule::AssertFails(expr) | Rule::AssertFailsMatching(expr, _) = &rule.node {
                         if let Expr::FnCall { name, .. } = &expr.node {
                             blessed_failing.insert(name.clone());
                         }
@@ -462,6 +462,9 @@ impl<'a> Walker<'a> {
     fn report_undefined_ident(&mut self, name: &str, span: Span) {
         let foreign = match name {
             "null" | "None" | "nil" | "undefined" | "NULL" => Some("Soma's null is `()`: `if x == () { … }`, `x ?? default`"),
+            "const" | "var" | "val" => Some("bindings are `let x = …`; reassign with `x = …`"),
+            "function" | "def" | "fn" | "func" | "lambda" => Some("a function is a handler: `on name(x: Int) { … }`; a lambda is `x => expr`"),
+            "this" | "self" => Some("there is no `this`: memory slots and handlers of the cell are in scope by name"),
             "True" | "TRUE" => Some("write `true`"),
             "False" | "FALSE" => Some("write `false`"),
             _ => None,

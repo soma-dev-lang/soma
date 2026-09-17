@@ -24,6 +24,13 @@ pub enum Property {
     Eventually(StatePredicate),
     /// After reaching state S, P eventually holds on all subsequent paths
     After(String, StatePredicate),
+    /// After reaching `trigger`, `state` is never reached again: `state` is
+    /// unreachable from `trigger`. (NOT "eventually some state ≠ `state`",
+    /// which holds trivially the moment the machine is in `trigger`.)
+    AfterNever(String, String),
+    /// Precedence: every path from the initial state to `target` passes
+    /// through one of `via` first ("paid requires manager_approved").
+    Requires(String, Vec<String>),
     /// No reachable state is a deadlock (has outgoing transitions or is terminal)
     DeadlockFree,
     /// States S1 and S2 are never simultaneously reachable in a composed system
@@ -271,6 +278,119 @@ pub fn check_property(graph: &StateMachineGraph, property: &Property) -> Propert
                 property: format!("always({})", pred.describe()),
                 passed: true,
                 message: format!("holds in all {} reachable states", reachable.len()),
+                counter_example: None,
+            }
+        }
+
+        Property::AfterNever(trigger, banned) => {
+            let name = format!("after('{}', never '{}')", trigger, banned);
+            if !reachable.contains(trigger) {
+                return PropertyResult {
+                    property: name,
+                    passed: true,
+                    message: format!("state '{}' is unreachable (vacuously true)", trigger),
+                    counter_example: None,
+                };
+            }
+            // BFS from `trigger`; reaching `banned` in ≥ 1 step refutes it
+            let mut prev: HashMap<String, String> = HashMap::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut queue: VecDeque<String> = VecDeque::new();
+            queue.push_back(trigger.clone());
+            let mut hit = false;
+            'search: while let Some(state) = queue.pop_front() {
+                for (next, _) in graph.adj.get(&state).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    if !seen.insert(next.clone()) {
+                        continue;
+                    }
+                    prev.insert(next.clone(), state.clone());
+                    if next == banned {
+                        hit = true;
+                        break 'search;
+                    }
+                    queue.push_back(next.clone());
+                }
+            }
+            if hit {
+                let mut path = vec![banned.clone()];
+                while let Some(p) = prev.get(path.last().unwrap()) {
+                    path.push(p.clone());
+                    if p == trigger {
+                        break;
+                    }
+                }
+                path.reverse();
+                return PropertyResult {
+                    property: name,
+                    passed: false,
+                    message: format!("'{}' is reachable after '{}'", banned, trigger),
+                    counter_example: Some(path),
+                };
+            }
+            PropertyResult {
+                property: name,
+                passed: true,
+                message: format!("'{}' is unreachable once '{}' has been reached", banned, trigger),
+                counter_example: None,
+            }
+        }
+
+        Property::Requires(target, via) => {
+            // Search for a path initial → target that avoids every `via`
+            // state. Finding one refutes the precedence; it is the
+            // counter-example.
+            let name = format!("requires('{}' only after one of [{}])", target, via.join(", "));
+            if via.iter().any(|v| v == &graph.initial) {
+                return PropertyResult {
+                    property: name,
+                    passed: true,
+                    message: format!("the initial state '{}' is itself a required state", graph.initial),
+                    counter_example: None,
+                };
+            }
+            let mut prev: HashMap<String, String> = HashMap::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut queue: VecDeque<String> = VecDeque::new();
+            seen.insert(graph.initial.clone());
+            queue.push_back(graph.initial.clone());
+            let mut found = graph.initial == *target;
+            while let Some(state) = queue.pop_front() {
+                if found {
+                    break;
+                }
+                for (next, _) in graph.adj.get(&state).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    if via.contains(next) || !seen.insert(next.clone()) {
+                        continue;
+                    }
+                    prev.insert(next.clone(), state.clone());
+                    if next == target {
+                        found = true;
+                        break;
+                    }
+                    queue.push_back(next.clone());
+                }
+            }
+            if found {
+                let mut path = vec![target.clone()];
+                while let Some(p) = prev.get(path.last().unwrap()) {
+                    path.push(p.clone());
+                }
+                path.reverse();
+                return PropertyResult {
+                    property: name,
+                    passed: false,
+                    message: format!("'{}' is reachable without passing through any of [{}]", target, via.join(", ")),
+                    counter_example: Some(path),
+                };
+            }
+            PropertyResult {
+                property: name,
+                passed: true,
+                message: if reachable.contains(target) {
+                    format!("every path to '{}' passes through one of [{}]", target, via.join(", "))
+                } else {
+                    format!("'{}' is unreachable (vacuously true)", target)
+                },
                 counter_example: None,
             }
         }

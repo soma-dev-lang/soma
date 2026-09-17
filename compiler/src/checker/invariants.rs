@@ -141,7 +141,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         }
 
         // invariant → the slots it guards (same scoping rule as runtime)
-        let mut guarded: Vec<(Expr, Vec<String>)> = Vec::new();
+        let mut guarded: Vec<(Expr, Vec<String>, String)> = Vec::new();
         for section in &cell.node.sections {
             let Section::Memory(mem) = &section.node else { continue };
             let slot_names: Vec<String> =
@@ -155,7 +155,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     .cloned()
                     .collect();
                 let targets = if named.is_empty() { slot_names.clone() } else { named };
-                guarded.push((inv.node.clone(), targets));
+                guarded.push((normalize_invariant(&inv.node, &slot_names), targets, render_expr(&inv.node)));
             }
         }
         if guarded.is_empty() {
@@ -179,8 +179,8 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             checks: vec![],
         };
 
-        for (inv, targets) in &guarded {
-            let inv_text = render_expr(inv);
+        for (inv, targets, inv_text) in &guarded {
+            let inv_text = inv_text.clone();
             let relevant: Vec<&(String, String, Expr)> = writes
                 .iter()
                 .filter(|(_, slot, _)| targets.contains(slot))
@@ -556,6 +556,85 @@ fn collect_fn_names(expr: &Expr, out: &mut HashSet<String>) {
                 collect_fn_names(&i.node, out);
             }
         }
+        _ => {}
+    }
+}
+
+// ── Per-slot entry count: `slot.size` ───────────────────────────────
+
+/// Rewrite `slot.size` / `slot.len` / `slot.count` (and their `()` method
+/// forms) to the generic `size` binding. Scoping must be computed on the
+/// ORIGINAL expression, which still names the slot — that is what makes
+/// `invariant links.size <= 1000` bound `links` only, not every slot of the
+/// section the way a bare `size` does.
+pub fn normalize_invariant(expr: &Expr, slots: &[String]) -> Expr {
+    let is_count = |f: &str| matches!(f, "size" | "len" | "count" | "length");
+    let is_slot = |e: &Expr| matches!(e, Expr::Ident(n) if slots.iter().any(|s| s == n));
+    let sub = |e: &Spanned<Expr>| Box::new(Spanned::new(normalize_invariant(&e.node, slots), e.span));
+    match expr {
+        Expr::FieldAccess { target, field } if is_count(field) && is_slot(&target.node) => {
+            Expr::Ident("size".to_string())
+        }
+        Expr::MethodCall { target, method, args } if args.is_empty() && is_count(method) && is_slot(&target.node) => {
+            Expr::Ident("size".to_string())
+        }
+        Expr::BinaryOp { left, op, right } => Expr::BinaryOp { left: sub(left), op: *op, right: sub(right) },
+        Expr::CmpOp { left, op, right } => Expr::CmpOp { left: sub(left), op: *op, right: sub(right) },
+        Expr::Not(inner) => Expr::Not(sub(inner)),
+        Expr::FnCall { name, args } => Expr::FnCall {
+            name: name.clone(),
+            args: args.iter().map(|a| Spanned::new(normalize_invariant(&a.node, slots), a.span)).collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// `invariant len(links) <= 1000` reads like "at most 1000 links" and means
+/// "every written VALUE is at most 1000 long". Returns (message, span).
+pub fn lint_program(program: &Program) -> Vec<InvariantIssue> {
+    let mut out = Vec::new();
+    for cell in &program.cells {
+        for section in &cell.node.sections {
+            let Section::Memory(mem) = &section.node else { continue };
+            let slots: Vec<String> = mem.slots.iter().map(|s| s.node.name.clone()).collect();
+            for inv in &mem.invariants {
+                let mut hits: Vec<(String, String)> = Vec::new();
+                find_len_of_slot(&inv.node, &slots, &mut hits);
+                for (func, slot) in hits {
+                    out.push(InvariantIssue {
+                        message: format!(
+                            "`{func}({slot})` in an invariant measures the VALUE being written to '{slot}', not how \
+                             many entries '{slot}' holds. For an entry-count bound write `{slot}.size <= N`; if you \
+                             do mean the value's length, write `{func}(value)`"
+                        ),
+                        span: inv.span,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+fn find_len_of_slot(expr: &Expr, slots: &[String], out: &mut Vec<(String, String)>) {
+    match expr {
+        Expr::FnCall { name, args } => {
+            if matches!(name.as_str(), "len" | "size" | "count") && args.len() == 1 {
+                if let Expr::Ident(n) = &args[0].node {
+                    if slots.iter().any(|s| s == n) {
+                        out.push((name.clone(), n.clone()));
+                    }
+                }
+            }
+            for a in args {
+                find_len_of_slot(&a.node, slots, out);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => {
+            find_len_of_slot(&left.node, slots, out);
+            find_len_of_slot(&right.node, slots, out);
+        }
+        Expr::Not(i) => find_len_of_slot(&i.node, slots, out),
         _ => {}
     }
 }

@@ -505,6 +505,9 @@ impl<'a> Checker<'a> {
         for (message, span) in native::int_division_warnings(program) {
             self.warnings.push(CheckWarning::NativeSemantics { message, span });
         }
+        for w in invariants::lint_program(program) {
+            self.warnings.push(CheckWarning::HabitWarning { message: w.message, span: w.span });
+        }
         let (habit_errors, habit_warnings) = habits::check_program(program);
         for e in habit_errors {
             self.errors.push(CheckError::Habit { message: e.message, span: e.span });

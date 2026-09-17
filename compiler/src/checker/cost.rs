@@ -223,7 +223,9 @@ fn extract_think_opts(args: &[Spanned<Expr>]) -> (Option<i64>, Option<i64>) {
     if args.len() < 2 { return (None, None); }
     let mut max_tokens = None;
     let mut timeout = None;
-    if let Expr::FnCall { name, args: kvs } = &args[1].node {
+    // The options map is the LAST argument, exactly as the runtime reads it:
+    // think(prompt, map(..)) and think(prompt, system, map(..)) are both bounded.
+    if let Expr::FnCall { name, args: kvs } = &args[args.len() - 1].node {
         if name == "map" {
             let mut i = 0;
             while i + 1 < kvs.len() {

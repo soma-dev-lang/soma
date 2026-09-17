@@ -176,6 +176,17 @@ pub struct VerifyConfig {
     /// After reaching state X, must eventually reach one of Y
     #[serde(default)]
     pub after: HashMap<String, AfterConfig>,
+    /// Precedence: `[verify.before.paid] requires = ["manager_approved"]` —
+    /// every path to `paid` passes through one of the listed states.
+    #[serde(default)]
+    pub before: HashMap<String, BeforeConfig>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeforeConfig {
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

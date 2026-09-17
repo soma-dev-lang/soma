@@ -428,6 +428,13 @@ pub struct Interpreter {
     /// transition's guard: `a -> b { guard { amount < 10000 } }` reads the
     /// caller's `amount`.
     pub(crate) transition_env: Option<Env>,
+    /// Scripted LLM replies (`mock think …` in a test cell): Ok(text) or
+    /// Err(message). think() consumes this queue before any mock mode.
+    pub mock_queue: std::collections::VecDeque<Result<String, String>>,
+    /// Under `soma test` with no key and no mock configured, think() is
+    /// mocked (echo) instead of failing on the network.
+    pub test_auto_mock: bool,
+    pub(crate) auto_mock_noted: bool,
     /// V1.6: tool-capability scope. Set when the LLM dispatches into a tool
     /// with declared capabilities; the http/* builtins consult it.
     pub(crate) current_tool_caps: Option<Vec<String>>,
@@ -560,10 +567,13 @@ impl Interpreter {
                             .copied()
                             .collect();
                         let targets: &[&str] = if named.is_empty() { &slot_names } else { &named };
+                        // `links.size <= N` → the generic `size`, scoped above to `links`
+                        let owned: Vec<String> = slot_names.iter().map(|s| s.to_string()).collect();
+                        let inv_expr = crate::checker::invariants::normalize_invariant(&inv.node, &owned);
                         for t in targets {
                             let key = format!("{}.{}", cell.node.name, t);
-                            invariants.entry(key).or_default().push(inv.node.clone());
-                            invariants.entry((*t).to_string()).or_default().push(inv.node.clone());
+                            invariants.entry(key).or_default().push(inv_expr.clone());
+                            invariants.entry((*t).to_string()).or_default().push(inv_expr.clone());
                         }
                     }
                 }
@@ -586,6 +596,9 @@ impl Interpreter {
             last_span: None,
             current_handler: None,
             transition_env: None,
+            mock_queue: std::collections::VecDeque::new(),
+            test_auto_mock: false,
+            auto_mock_noted: false,
             current_tool_caps: None,
             native_handlers: HashMap::new(),
             cluster: None,

@@ -327,6 +327,17 @@ pub enum Rule {
     /// evaluating expr produces a runtime error (e.g. an invalid state
     /// transition), fails when it succeeds.
     AssertFails(Spanned<Expr>),
+    /// `assert_fails expr matching "text"` — also requires the raised error
+    /// to contain `text`, so the test cannot pass for the wrong reason (an
+    /// UndefinedVar instead of the invalid transition it meant to prove).
+    AssertFailsMatching(Spanned<Expr>, String),
+    /// `let orders = fixture()` — a binding visible to the following rules
+    /// of the same test cell.
+    Let { name: String, value: Spanned<Expr> },
+    /// `mock think "reply"` / `mock think ["a", "b"]` queue the next LLM
+    /// replies; `mock think error "timeout"` queues a failure. think()
+    /// consumes the queue first, then falls back to the mock mode.
+    MockThink { reply: Spanned<Expr>, is_error: bool },
     /// V1.6: `property "name" forall x: Int in 0..100 ensures expr`
     /// — randomized test that quantifies over `count` random inputs.
     Property {

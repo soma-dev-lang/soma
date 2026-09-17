@@ -76,7 +76,7 @@ fn validate_manifest_beside(path: &PathBuf) {
         for line in e.to_string().lines() {
             eprintln!("  {}", line);
         }
-        eprintln!("  valid [verify] keys: cells, deadlock_free, eventually, never, always, and [verify.after.<state>] with eventually / never");
+        eprintln!("  valid [verify] keys: cells, deadlock_free, eventually, never, always, [verify.after.<state>] with eventually / never, [verify.before.<state>] with requires");
         process::exit(1);
     }
 }
@@ -105,6 +105,54 @@ pub fn lex(source: &str) -> Vec<lexer::SpannedToken> {
     lex_with_location(source, None)
 }
 
+/// A hint for syntax carried over from Python / TypeScript / Rust. The
+/// parser reports what it expected; this says what Soma writes instead.
+/// Matched on the offending source line, so it is cheap and never wrong
+/// about the grammar — at worst it stays silent.
+fn foreign_syntax_hint(message: &str, source: &str, offset: usize) -> Option<String> {
+    let (line_no, col) = crate::interpreter::span_to_location(source, offset);
+    let line = source.split('\n').nth(line_no.saturating_sub(1)).unwrap_or("");
+    let t = line.trim();
+    let at: String = line.chars().skip(col.saturating_sub(1)).collect();
+    let at = at.trim_start();
+    let has = |needle: &str| t.contains(needle);
+
+    let hint = if message.contains("unexpected character '@'") {
+        "annotations go after the parameter list: `on f(n: Int) [native] { … }`"
+    } else if message.contains("unexpected character ';'") || (t.ends_with(';') && message.contains("';'")) {
+        "Soma has no semicolons — one statement per line"
+    } else if t.starts_with("for (") || t.starts_with("for(") {
+        "iterate a map with `for k in keys(m) { let v = m[k] }` or `for e in entries(m) { e.key  e.value }`; \
+         a list with `for x in xs { }`"
+    } else if t.starts_with("def ") || t.starts_with("fn ") || t.starts_with("function ") || t.starts_with("func ") {
+        "Soma has no `def` / `fn` / `function` — a function is a handler inside a cell: `on name(x: Int) { return x + 1 }` \
+         (its return type goes on `signal name(x: Int) -> Int` in `face { }`)"
+    } else if t.starts_with("const ") || t.starts_with("var ") {
+        "bindings are `let x = …`; reassign with `x = …`"
+    } else if t.starts_with("elif ") || has("} elif ") || has("} elsif ") {
+        "write `else if`"
+    } else if t.starts_with("cell test {") || t.starts_with("cell test{") {
+        "a test cell needs a name and a rules block: `cell test MyTests { rules { assert f(1) == 2 } }`"
+    } else if message.contains("expected ']'") && at.starts_with(':') {
+        "no slice syntax — `slice(xs, start, end)` (end exclusive; negative indexes count from the end, \
+         `slice(xs, -2)` = last two)"
+    } else if message.contains("expected ')'") && at.starts_with(',') && has("=>") {
+        "a lambda takes exactly ONE parameter: `x => …`. To sort: `sort_by(rows, r => [0 - r.total, r.name])`; \
+         to fold: `reduce(xs, 0, p => p.acc + p.val)`"
+    } else if message.contains("expected expression") && at.starts_with('{') {
+        "Soma has no `{k: v}` literal — a map is `map(\"k\", v)` (empty: `map()`), a record is `Name { k: v }`"
+    } else if at.starts_with("=>") && has("match") || (message.contains("'=>'") && has("->") == false && has("match")) {
+        "match arms use `->`; `=>` is for lambdas"
+    } else if has(" ? ") && has(" : ") && message.contains("expected") {
+        "no ternary — `if` is an expression: `let x = if cond { a } else { b }`"
+    } else if (has(" and ") || has(" or ") || t.starts_with("not ") || has(" not ")) && message.contains("expected") {
+        "boolean operators are `&&`, `||`, `!`"
+    } else {
+        return None;
+    };
+    Some(format!("  hint: {}", hint))
+}
+
 pub fn lex_with_location(source: &str, file: Option<&str>) -> Vec<lexer::SpannedToken> {
     let mut lex = lexer::Lexer::new(source);
     match lex.tokenize() {
@@ -119,6 +167,9 @@ pub fn lex_with_location(source: &str, file: Option<&str>) -> Vec<lexer::Spanned
                 };
                 let context = crate::interpreter::format_error_context(source, pos);
                 eprintln!("error: {}\n{}\n{}", e, location, context);
+                if let Some(h) = foreign_syntax_hint(&e.to_string(), source, pos) {
+                    eprintln!("{}", h);
+                }
             } else {
                 eprintln!("error: {}", e);
             }
@@ -146,6 +197,9 @@ pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str
                     };
                     let context = crate::interpreter::format_error_context(src, span.start);
                     eprintln!("error: {}\n{}\n{}", e, location, context);
+                    if let Some(h) = foreign_syntax_hint(&e.to_string(), src, span.start) {
+                        eprintln!("{}", h);
+                    }
                 }
                 _ => {
                     eprintln!("error: {}", e);

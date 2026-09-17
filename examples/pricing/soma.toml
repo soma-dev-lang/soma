@@ -7,7 +7,14 @@ eventually = ["confirmed", "cancelled", "eod_frozen"]
 
 [verify.after.executed]
 eventually = ["settled", "failed", "eod_frozen"]
-never = ["cancelled"]
+# `never = ["cancelled"]` used to sit here and "pass" — the old check was
+# vacuous. It is FALSE for this machine: executed → failed → pending →
+# cancelled (a failed execution is retried from `pending`, where a trade can
+# still be cancelled). If an executed trade must never be cancellable, the
+# machine needs a retry state that has no edge to `cancelled`.
+
+[verify.after.settled]
+never = ["cancelled"]          # what does hold: a settled trade is never cancelled
 
 [verify.after.failed]
 eventually = ["pending", "eod_frozen"]

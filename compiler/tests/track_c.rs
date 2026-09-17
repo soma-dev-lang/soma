@@ -115,7 +115,9 @@ fn test_assert_fails_fails_when_expr_succeeds() {
     );
     let (out, _, code) = soma(&["test", &temp_cell("af_fail", &source)]);
     assert_eq!(code, 1, "out: {}", out);
-    assert!(out.contains("✗ assert_fails"), "out: {}", out);
+    // failures are located: `✗ file.cell:LINE  assert_fails …`
+    assert!(out.contains("✗") && out.contains("assert_fails transition"), "out: {}", out);
+    assert!(out.contains(".cell:"), "a failure must carry file:line — out: {}", out);
     assert!(out.contains("expected a runtime error"), "out: {}", out);
 }
 

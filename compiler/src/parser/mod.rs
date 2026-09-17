@@ -951,7 +951,45 @@ impl Parser {
         if matches!(self.peek(), Token::Ident(s) if s == "assert_fails") {
             self.advance();
             let expr = self.parse_expr()?;
+            if matches!(self.peek(), Token::Ident(s) if s == "matching") {
+                self.advance();
+                let Token::StringLit(text) = self.peek().clone() else {
+                    return Err(ParseError::Expected {
+                        expected: "a string after `matching` (assert_fails f(x) matching \"invalid transition\")".to_string(),
+                        found: self.peek().clone(),
+                        span: self.peek_span(),
+                    });
+                };
+                self.advance();
+                return Ok(Spanned::new(Rule::AssertFailsMatching(expr, text), start.merge(self.prev_span())));
+            }
             return Ok(Spanned::new(Rule::AssertFails(expr), start.merge(self.prev_span())));
+        }
+        // `mock think <expr>` / `mock think error <expr>`
+        if matches!(self.peek(), Token::Ident(s) if s == "mock") {
+            self.advance();
+            if !matches!(self.peek(), Token::Ident(s) if s == "think") {
+                return Err(ParseError::Expected {
+                    expected: "think (mock think \"reply\" | mock think [\"a\", \"b\"] | mock think error \"msg\")".to_string(),
+                    found: self.peek().clone(),
+                    span: self.peek_span(),
+                });
+            }
+            self.advance();
+            let is_error = matches!(self.peek(), Token::Ident(s) if s == "error");
+            if is_error {
+                self.advance();
+            }
+            let reply = self.parse_expr()?;
+            return Ok(Spanned::new(Rule::MockThink { reply, is_error }, start.merge(self.prev_span())));
+        }
+        // `let name = expr` — a fixture shared by the following rules
+        if matches!(self.peek(), Token::Let) {
+            self.advance();
+            let (name, _) = self.expect_ident()?;
+            self.expect(Token::Eq)?;
+            let value = self.parse_expr()?;
+            return Ok(Spanned::new(Rule::Let { name, value }, start.merge(self.prev_span())));
         }
         match self.peek() {
             Token::Contradicts => {
@@ -1095,7 +1133,7 @@ impl Parser {
                 ))
             }
             _ => Err(ParseError::Expected {
-                expected: "contradicts, implies, requires, mutex_group, check, matches, native, assert, assert_fails, or property".to_string(),
+                expected: "assert, assert_fails, let, mock think, or property (a test cell's rules hold assertions — put logic in a handler)".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),

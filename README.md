@@ -125,7 +125,7 @@ Everything an agent needs is one command or one fetch away:
 ```bash
 soma docs agent                  # the language summary, embedded in the binary
 soma describe --builtins --json  # exact signatures — never guess
-soma example invariant http      # verified programs with those features
+soma example invariant state_machine      # verified programs with those features
 soma example <id>                # …and the source of one
 soma init myapp                  # app.cell + soma.toml + AGENTS.md for the next agent
 ```

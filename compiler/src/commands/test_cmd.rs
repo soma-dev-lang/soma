@@ -92,18 +92,68 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
     let mut passed = 0;
     let mut failed = 0;
 
+    interp.test_auto_mock = true;
+
+    // [native] handlers run natively under test too — otherwise an assertion
+    // comparing a native handler with its interpreted twin compares the
+    // interpreter with itself and proves nothing about the compiled code.
+    let parallel_config = crate::codegen::native::ParallelConfig::default();
+    match interpreter::native_ffi::compile_and_load_natives_with_config(&program, &parallel_config) {
+        Ok(natives) => interp.native_handlers = natives,
+        Err(e) => {
+            eprintln!("warning: [native] handlers could not be compiled — they run INTERPRETED in this test run");
+            for line in e.lines().take(3) {
+                eprintln!("  {}", line);
+            }
+        }
+    }
+
     for test_cell in &test_cells {
         println!("test {} ...", test_cell.name);
+        // `let` rules bind here; every later rule of the cell sees them
+        let mut test_env: std::collections::HashMap<String, interpreter::Value> = std::collections::HashMap::new();
+        interp.mock_queue.clear();
 
         for section in &test_cell.sections {
             if let ast::Section::Rules(ref rules) = section.node {
                 for rule in &rules.rules {
                     match &rule.node {
+                        ast::Rule::Let { name, value } => {
+                            match eval_test_expr(&mut interp, &value.node, &test_env) {
+                                Ok(v) => {
+                                    test_env.insert(name.clone(), v);
+                                }
+                                Err(e) => {
+                                    total += 1;
+                                    failed += 1;
+                                    println!("  ✗ {}:{}  let {} = … — ERROR: {}", file_name, line_of(rule.span), name, e);
+                                }
+                            }
+                        }
+                        ast::Rule::MockThink { reply, is_error } => {
+                            match eval_test_expr(&mut interp, &reply.node, &test_env) {
+                                Ok(interpreter::Value::List(items)) => {
+                                    for it in items {
+                                        let text = format!("{}", it);
+                                        interp.mock_queue.push_back(if *is_error { Err(text) } else { Ok(text) });
+                                    }
+                                }
+                                Ok(v) => {
+                                    let text = format!("{}", v);
+                                    interp.mock_queue.push_back(if *is_error { Err(text) } else { Ok(text) });
+                                }
+                                Err(e) => {
+                                    total += 1;
+                                    failed += 1;
+                                    println!("  ✗ {}:{}  mock think … — ERROR: {}", file_name, line_of(rule.span), e);
+                                }
+                            }
+                        }
                         ast::Rule::Assert(expr) => {
                             total += 1;
 
                             let shown = text_of(expr.span, format_expr(&expr.node));
-                            match eval_test_assertion(&mut interp, &expr.node) {
+                            match eval_test_assertion(&mut interp, &expr.node, &test_env) {
                                 Ok((true, _)) => {
                                     passed += 1;
                                     println!("  ✓ assert {}", shown);
@@ -121,28 +171,42 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 }
                             }
                         }
-                        ast::Rule::AssertFails(expr) => {
+                        ast::Rule::AssertFails(_) | ast::Rule::AssertFailsMatching(..) => {
                             total += 1;
+                            let (expr, wanted) = match &rule.node {
+                                ast::Rule::AssertFails(e) => (e, None),
+                                ast::Rule::AssertFailsMatching(e, t) => (e, Some(t.as_str())),
+                                _ => unreachable!(),
+                            };
+                            let shown = text_of(expr.span, format_expr(&expr.node));
+                            let at = format!("{}:{}", file_name, line_of(expr.span));
 
-                            match eval_test_expr(&mut interp, &expr.node) {
-                                // A typo'd signal name is NOT the failure
-                                // under test — a vacuously green assert_fails
-                                // would hide it forever. (UndefinedVar stays a
-                                // passing domain error: it can arise inside
-                                // the handler being asserted on.)
-                                Err(e) if e.contains("UndefinedFn") => {
+                            match eval_test_expr(&mut interp, &expr.node, &test_env) {
+                                // A typo'd name is NOT the failure under test —
+                                // a vacuously green assert_fails would hide it
+                                // forever. Undefined functions and variables
+                                // are bugs (`soma check` reports both), never
+                                // the domain error a test means to prove.
+                                Err(e) if e.contains("UndefinedFn") || e.contains("UndefinedVar") => {
                                     failed += 1;
-                                    println!("  ✗ assert_fails {} — FAILED: the expression itself is invalid ({}), not a domain error; fix the test",
-                                             format_expr(&expr.node), e);
+                                    println!("  ✗ {}  assert_fails {} — FAILED: it raised {}, a bug rather than the failure under test (run `soma check`)",
+                                             at, shown, e);
                                 }
-                                Err(e) => {
-                                    passed += 1;
-                                    println!("  ✓ assert_fails {} — raised {}", format_expr(&expr.node), e);
-                                }
+                                Err(e) => match wanted {
+                                    Some(text) if !e.contains(text) => {
+                                        failed += 1;
+                                        println!("  ✗ {}  assert_fails {} matching \"{}\" — FAILED: it raised something else: {}",
+                                                 at, shown, text, e);
+                                    }
+                                    _ => {
+                                        passed += 1;
+                                        println!("  ✓ assert_fails {} — raised {}", shown, e);
+                                    }
+                                },
                                 Ok(v) => {
                                     failed += 1;
-                                    println!("  ✗ assert_fails {} — FAILED: expected a runtime error, but it succeeded with {}",
-                                             format_expr(&expr.node), v);
+                                    println!("  ✗ {}  assert_fails {} — FAILED: expected a runtime error, but it succeeded with {}",
+                                             at, shown, v);
                                 }
                             }
                         }
@@ -182,11 +246,12 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
 fn eval_test_assertion(
     interp: &mut interpreter::Interpreter,
     expr: &ast::Expr,
+    env: &std::collections::HashMap<String, interpreter::Value>,
 ) -> Result<(bool, Vec<String>), String> {
     match expr {
         ast::Expr::CmpOp { left, op, right } => {
-            let left_val = eval_test_expr(interp, &left.node)?;
-            let right_val = eval_test_expr(interp, &right.node)?;
+            let (left_val, left_note) = eval_side(interp, &left.node, env)?;
+            let (right_val, right_note) = eval_side(interp, &right.node, env)?;
 
             let result = interp.eval_cmpop_values(&left_val, op.clone(), &right_val)
                 .unwrap_or(false);
@@ -195,52 +260,68 @@ fn eval_test_assertion(
             if !result {
                 detail.push(format!("left:  {}", left_val));
                 detail.push(format!("right: {}", right_val));
-                for side in [&left.node, &right.node] {
-                    if let Some(why) = explain_absent_field(interp, side) {
-                        detail.push(why);
-                    }
-                }
+                detail.extend(left_note);
+                detail.extend(right_note);
             }
 
             Ok((result, detail))
         }
         _ => {
-            let val = eval_test_expr(interp, expr)?;
+            let val = eval_test_expr(interp, expr, env)?;
             Ok((val.is_truthy(), Vec::new()))
         }
     }
 }
 
-/// `x.field` that evaluates to `()`: reading a missing key is not an error
-/// in Soma, so a wrong field name shows up as a bare `null`. Say which
-/// fields the value actually has — that is almost always the whole fix
-/// (`.status` vs `._status`, `.url` on a try-result vs `.value.url`).
-fn explain_absent_field(interp: &mut interpreter::Interpreter, expr: &ast::Expr) -> Option<String> {
-    let ast::Expr::FieldAccess { target, field } = expr else { return None };
-    if !matches!(eval_test_expr(interp, expr), Ok(interpreter::Value::Unit)) {
-        return None;
+/// Evaluate one side of a comparison ONCE (handlers have side effects). For
+/// `x.field` on a map that lacks the field, also explain the resulting `()`:
+/// reading a missing key is not an error in Soma, so a wrong field name shows
+/// up as a bare `null`. Naming the fields that exist is almost always the
+/// whole fix (`.status` vs `._status`, `.url` on a try-result vs `.value.url`).
+fn eval_side(
+    interp: &mut interpreter::Interpreter,
+    expr: &ast::Expr,
+    env: &std::collections::HashMap<String, interpreter::Value>,
+) -> Result<(interpreter::Value, Option<String>), String> {
+    let ast::Expr::FieldAccess { target, field } = expr else {
+        return Ok((eval_test_expr(interp, expr, env)?, None));
+    };
+    // matrices answer .T / .shape, variants have payload fields: let the
+    // interpreter handle anything that is not a plain map
+    if matches!(field.as_str(), "T" | "shape") {
+        return Ok((eval_test_expr(interp, expr, env)?, None));
     }
-    let interpreter::Value::Map(entries) = eval_test_expr(interp, &target.node).ok()? else { return None };
-    let keys: Vec<String> = entries.iter().map(|(k, _)| k.clone()).collect();
-    if keys.iter().any(|k| k == field) {
-        return None; // the field exists and really is ()
+    let base = eval_test_expr(interp, &target.node, env)?;
+    let interpreter::Value::Map(entries) = &base else {
+        let mut scope = env.clone();
+        scope.insert("__test_base".to_string(), base);
+        let rebuilt = ast::Expr::FieldAccess {
+            target: Box::new(ast::Spanned::new(ast::Expr::Ident("__test_base".to_string()), target.span)),
+            field: field.clone(),
+        };
+        return Ok((eval_test_expr(interp, &rebuilt, &scope)?, None));
+    };
+    if let Some(v) = entries.get(field) {
+        return Ok((v.clone(), None));
     }
+    let keys: Vec<String> = entries.keys().cloned().collect();
     let near = keys
         .iter()
-        .find(|k| k.trim_start_matches('_') == field.as_str() || **k == format!("_{field}"))
+        .find(|k| k.trim_start_matches('_') == field.as_str())
         .map(|k| format!(" — did you mean '.{k}'?"))
         .unwrap_or_default();
-    Some(format!("note:  '.{field}' is absent; the value has fields [{}]{near}", keys.join(", ")))
+    let note = format!("note:  '.{field}' is absent; the value has fields [{}]{near}", keys.join(", "));
+    Ok((interpreter::Value::Unit, Some(note)))
 }
 
 fn eval_test_expr(
     interp: &mut interpreter::Interpreter,
     expr: &ast::Expr,
+    env: &std::collections::HashMap<String, interpreter::Value>,
 ) -> Result<interpreter::Value, String> {
     // Delegate to the real interpreter for full expression support
     // (pipes, lambdas, match, field access, method calls, etc.)
-    let env = std::collections::HashMap::new();
-    interp.eval_expr_with_env(expr, &env, "", "")
+    interp.eval_expr_with_env(expr, env, "", "")
         .map_err(|e| format!("{:?}", e))
 }
 

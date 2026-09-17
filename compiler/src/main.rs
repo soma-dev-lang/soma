@@ -36,7 +36,7 @@ use registry::Registry;
     For coding agents:\n  \
       soma docs agent                # the language, offline, for your context\n  \
       soma describe --builtins --json   # exact signatures — never guess\n  \
-      soma example invariant http    # verified programs to start from\n\n\
+      soma example invariant state_machine    # verified programs to start from\n\n\
     Docs: https://soma-lang.dev   (agents: https://soma-lang.dev/llms-full.txt)\n\
     Paper: https://soma-lang.dev/paper")]
 #[command(after_help = "Examples:\n  \
@@ -174,7 +174,7 @@ enum Commands {
         #[arg(default_value = "")]
         topic: String,
     },
-    /// Find a verified example program: soma example invariant http
+    /// Find a verified example program: soma example invariant state_machine
     Example {
         /// Search terms (domain, feature, word) — or an exact id to print its source
         terms: Vec<String>,
@@ -414,9 +414,19 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
                             props.push(Property::Never(StatePredicate::InState(state.clone())));
                         }
 
-                        // always = ["valid_state"]
-                        for state in &cfg.always {
-                            props.push(Property::Always(StatePredicate::InState(state.clone())));
+                        // always = ["a", "b"]: the machine is only ever in one
+                        // of these states (one property over the SET — a
+                        // per-state `always` could only hold for a machine
+                        // with a single state).
+                        if !cfg.always.is_empty() {
+                            props.push(Property::Always(StatePredicate::InSet(cfg.always.clone())));
+                        }
+
+                        // [verify.before.paid] requires = ["manager_approved"]
+                        for (target, before_cfg) in &cfg.before {
+                            if !before_cfg.requires.is_empty() {
+                                props.push(Property::Requires(target.clone(), before_cfg.requires.clone()));
+                            }
                         }
 
                         // [verify.after.sent]
@@ -429,10 +439,7 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
                                 ));
                             }
                             for state in &after_cfg.never {
-                                props.push(Property::After(
-                                    trigger.clone(),
-                                    StatePredicate::NotInState(state.clone()),
-                                ));
+                                props.push(Property::AfterNever(trigger.clone(), state.clone()));
                             }
                         }
                     }
@@ -524,9 +531,13 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
         let failed_temporal = total_temporal - passed_temporal;
 
         if let Some(cfg) = verify_config {
-            let user_props = cfg.eventually.len() + cfg.never.len() + cfg.always.len()
-                + cfg.after.values().map(|a| a.eventually.len() + a.never.len()).sum::<usize>()
-                + if cfg.deadlock_free { 1 } else { 0 };
+            // count PROPERTIES, the way they are reported below (a list of
+            // states is one property), so "N loaded" matches the tally
+            let user_props = (!cfg.eventually.is_empty()) as usize
+                + cfg.never.len()
+                + (!cfg.always.is_empty()) as usize
+                + cfg.after.values().map(|a| (!a.eventually.is_empty()) as usize + a.never.len()).sum::<usize>()
+                + cfg.before.values().filter(|b| !b.requires.is_empty()).count();
             if user_props > 0 {
                 eprintln!("soma.toml: {} user-defined properties loaded", user_props);
             }
