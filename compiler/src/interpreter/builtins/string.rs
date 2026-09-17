@@ -208,9 +208,33 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Ok(Value::String(out))
             })
         }
+        // pad_left("7", 4, "0") = "0007"; pad_right("ab", 4) = "ab  "
+        "pad_left" | "pad_right" if args.len() >= 2 => {
+            let text = format!("{}", args[0]);
+            let width = match &args[1] {
+                Value::Int(i) => i.to_i64().unwrap_or(0).max(0) as usize,
+                _ => return Some(Err(RuntimeError::TypeError(format!("{name}(s, width, fill?): width must be an Int")))),
+            };
+            let fill = args.get(2).map(|f| format!("{}", f)).filter(|f| !f.is_empty()).unwrap_or_else(|| " ".to_string());
+            let have = text.chars().count();
+            if have >= width {
+                return Some(Ok(Value::String(text)));
+            }
+            let pad: String = fill.chars().cycle().take(width - have).collect();
+            Some(Ok(Value::String(if name == "pad_left" { format!("{pad}{text}") } else { format!("{text}{pad}") })))
+        }
         "from_json" => {
             args.first().map(|arg| {
                 match arg {
+                    // invalid JSON raises (kind "json") — it used to come back
+                    // as the input string, so `try { from_json(s) }` never failed
+                    Value::String(s) if serde_json::from_str::<serde_json::Value>(s).is_err() && !s.trim().is_empty() => {
+                        let shown: String = s.chars().take(60).collect();
+                        Err(RuntimeError::Domain {
+                            kind: "json".to_string(),
+                            message: format!("json: not valid JSON: {}", shown),
+                        })
+                    }
                     Value::String(s) => Ok(json_to_value(s)),
                     Value::Map(_) | Value::List(_) => Ok(arg.clone()),
                     Value::Unit => Ok(Value::Unit),

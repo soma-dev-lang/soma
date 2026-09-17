@@ -196,6 +196,23 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                         });
                     }
                     Some(definers) => {
+                        // wrong number of arguments: a runtime error on the
+                        // path that calls it, unless check says so first
+                        if let Some(takes) = arities.get(&name) {
+                            for (_, argc, _) in call_shapes.iter().filter(|(n, _, _)| n == &name) {
+                                if !takes.contains(argc) {
+                                    errors.push(DispatchFinding {
+                                        message: format!(
+                                            "call to '{name}' passes {argc} argument(s), but the handler {}.{name} takes {}",
+                                            definers[0],
+                                            takes.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(" or "),
+                                        ),
+                                        span: section.span,
+                                    });
+                                    break;
+                                }
+                            }
+                        }
                         let caller_defines = definers.contains(&cell.name);
                         if caller_defines && definers.len() >= 2 {
                             let others: Vec<&String> =
@@ -332,6 +349,15 @@ fn visit_calls_expr(expr: &Expr, out: &mut dyn FnMut(&str, usize, bool)) {
             // identifier is a call, not a variable reference.
             if let Expr::Ident(name) = &right.node {
                 out(name, 1, false);
+            } else if let Expr::FnCall { name, args } = &right.node {
+                // `xs |> f(a)` calls f(xs, a): the piped value is an argument
+                let has_lambda = args
+                    .iter()
+                    .any(|a| matches!(a.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }));
+                out(name, args.len() + 1, has_lambda);
+                for a in args {
+                    visit_calls_expr(&a.node, out);
+                }
             } else {
                 visit_calls_expr(&right.node, out);
             }

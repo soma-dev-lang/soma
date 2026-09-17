@@ -128,6 +128,7 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
         // `let` rules bind here; every later rule of the cell sees them
         let mut test_env: std::collections::HashMap<String, interpreter::Value> = std::collections::HashMap::new();
         interp.mock_queue.clear();
+        interp.approve_queue.clear();
 
         for section in &test_cell.sections {
             if let ast::Section::Rules(ref rules) = section.node {
@@ -161,6 +162,21 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                     total += 1;
                                     failed += 1;
                                     println!("  ✗ {}:{}  mock think … — ERROR: {}", file_name, line_of(rule.span), e);
+                                }
+                            }
+                        }
+                        ast::Rule::MockApprove { reply } => {
+                            match eval_test_expr(&mut interp, &reply.node, &test_env) {
+                                Ok(interpreter::Value::List(items)) => {
+                                    for it in items {
+                                        interp.approve_queue.push_back(it.is_truthy());
+                                    }
+                                }
+                                Ok(v) => interp.approve_queue.push_back(v.is_truthy()),
+                                Err(e) => {
+                                    total += 1;
+                                    failed += 1;
+                                    println!("  ✗ {}:{}  mock approve … — ERROR: {}", file_name, line_of(rule.span), e);
                                 }
                             }
                         }

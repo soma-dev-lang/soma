@@ -1290,7 +1290,9 @@ impl<'a> Checker<'a> {
             v
         }).collect();
 
-        let warnings: Vec<serde_json::Value> = self.warnings.iter().map(|w| {
+        // A proven bound ("✓ cost: 'tokens' bound proven …") is good news,
+        // not a warning to act on: it goes under "notes".
+        let warnings: Vec<serde_json::Value> = self.warnings.iter().filter(|w| !w.is_note()).map(|w| {
             let (msg, fix) = Self::warning_with_fix(w);
             let mut v = serde_json::json!({
                 "level": "warning",
@@ -1300,13 +1302,17 @@ impl<'a> Checker<'a> {
             self.location_json(w.span(), &mut v);
             v
         }).collect();
+        let notes: Vec<serde_json::Value> = self.warnings.iter().filter(|w| w.is_note()).map(|w| {
+            serde_json::json!({ "level": "note", "message": format!("{}", w) })
+        }).collect();
 
         let output = serde_json::json!({
             "passed": self.errors.is_empty(),
             "errors": errors,
             "warnings": warnings,
+            "notes": notes,
             "error_count": self.errors.len(),
-            "warning_count": self.warnings.len(),
+            "warning_count": self.warnings.iter().filter(|w| !w.is_note()).count(),
         });
 
         serde_json::to_string_pretty(&output).unwrap()

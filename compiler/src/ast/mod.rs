@@ -338,6 +338,9 @@ pub enum Rule {
     /// replies; `mock think error "timeout"` queues a failure. think()
     /// consumes the queue first, then falls back to the mock mode.
     MockThink { reply: Spanned<Expr>, is_error: bool },
+    /// `mock approve false` / `mock approve [true, false]` — script the
+    /// next answers of the human-approval builtin (auto-approved otherwise).
+    MockApprove { reply: Spanned<Expr> },
     /// V1.6: `property "name" forall x: Int in 0..100 ensures expr`
     /// — randomized test that quantifies over `count` random inputs.
     Property {

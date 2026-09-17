@@ -968,9 +968,14 @@ impl Parser {
         // `mock think <expr>` / `mock think error <expr>`
         if matches!(self.peek(), Token::Ident(s) if s == "mock") {
             self.advance();
+            if matches!(self.peek(), Token::Ident(s) if s == "approve") {
+                self.advance();
+                let reply = self.parse_expr()?;
+                return Ok(Spanned::new(Rule::MockApprove { reply }, start.merge(self.prev_span())));
+            }
             if !matches!(self.peek(), Token::Ident(s) if s == "think") {
                 return Err(ParseError::Expected {
-                    expected: "think (mock think \"reply\" | mock think [\"a\", \"b\"] | mock think error \"msg\")".to_string(),
+                    expected: "think or approve (mock think \"reply\" | mock think [\"a\", \"b\"] | mock think error \"msg\" | mock approve false)".to_string(),
                     found: self.peek().clone(),
                     span: self.peek_span(),
                 });

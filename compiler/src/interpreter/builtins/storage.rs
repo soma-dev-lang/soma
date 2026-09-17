@@ -157,6 +157,11 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         // ── Agent: approve(action) — human-in-the-loop ─────────────
         "approve" => {
+            if let (Some(Value::String(action)), Some(answer)) = (args.first(), interp.approve_queue.pop_front()) {
+                // scripted by `mock approve …` in a test cell
+                interp.agent_trace.push(super::llm::trace_approval(action, if answer { "approved" } else { "refused" }));
+                return Some(Ok(Value::Bool(answer)));
+            }
             if let Some(Value::String(action)) = args.first() {
                 // In serve mode: pause and wait for HTTP approval
                 // In run mode: auto-approve with a warning

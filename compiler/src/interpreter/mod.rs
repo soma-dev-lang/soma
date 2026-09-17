@@ -519,6 +519,8 @@ pub struct Interpreter {
     /// Scripted LLM replies (`mock think …` in a test cell): Ok(text) or
     /// Err(message). think() consumes this queue before any mock mode.
     pub mock_queue: std::collections::VecDeque<Result<String, String>>,
+    /// Scripted answers for approve() (`mock approve false`).
+    pub approve_queue: std::collections::VecDeque<bool>,
     /// Under `soma test` with no key and no mock configured, think() is
     /// mocked (echo) instead of failing on the network.
     pub test_auto_mock: bool,
@@ -686,6 +688,7 @@ impl Interpreter {
             transition_env: None,
             journal: None,
             mock_queue: std::collections::VecDeque::new(),
+            approve_queue: std::collections::VecDeque::new(),
             test_auto_mock: false,
             auto_mock_noted: false,
             current_tool_caps: None,
@@ -1059,10 +1062,11 @@ impl Interpreter {
                 // A local list or map, updated in place.
                 match env.get_mut(name) {
                     Some(Value::List(items)) => {
-                        let i = idx_val.as_int().map_err(ExecError::Runtime)?;
+                        let raw = idx_val.as_int().map_err(ExecError::Runtime)?;
+                        let i = if raw < 0 { raw + items.len() as i64 } else { raw };
                         if i < 0 || i as usize >= items.len() {
                             return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                                "list index {} out of bounds (length {})", i, items.len()
+                                "list index {} out of bounds (length {})", raw, items.len()
                             ))));
                         }
                         items[i as usize] = new_val;
@@ -1515,9 +1519,22 @@ impl Interpreter {
             } => {
                 let result = self.eval_constraint(&constraint.node, env, cell_name, signal_name)?;
                 if !result {
-                    Err(ExecError::Runtime(RuntimeError::RequireFailed(
-                        format!("{}: constraint violated", else_signal)
-                    )))
+                    // `else Tag` → kind Tag. `else "text {x}"` → a message,
+                    // interpolated like any string (it used to be kept
+                    // literally, braces and all), kind "require".
+                    let is_tag = !else_signal.is_empty()
+                        && else_signal.chars().all(|c| c.is_alphanumeric() || c == '_');
+                    if is_tag {
+                        Err(ExecError::Runtime(RuntimeError::RequireFailed(
+                            format!("{}: constraint violated", else_signal)
+                        )))
+                    } else {
+                        let text = self.interpolate_string(else_signal, env, cell_name, signal_name)?;
+                        Err(ExecError::Runtime(RuntimeError::Domain {
+                            kind: "require".to_string(),
+                            message: format!("require failed: {}", text),
+                        }))
+                    }
                 } else {
                     Ok(Value::Unit)
                 }
@@ -2047,9 +2064,14 @@ impl Interpreter {
             Expr::FieldAccess { target, field } => {
                 // Check if target is an ident referring to a storage slot
                 if let Expr::Ident(ref slot_name) = target.node {
-                    // Try storage first, fall back to env variable
-                    if self.storage.contains_key(slot_name)
-                        || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name))
+                    // A local binding shadows a slot of the same name — in an
+                    // invariant the slot name IS bound, to the value being
+                    // written, so `invariant accts.balance >= 0` reads that
+                    // record's field (it used to call a slot method named
+                    // `balance` and reject every write). Otherwise: storage.
+                    if !env.contains_key(slot_name)
+                        && (self.storage.contains_key(slot_name)
+                            || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name)))
                     {
                         return self.call_storage_method(cell_name, slot_name, field, &[]);
                     }
@@ -2121,10 +2143,12 @@ impl Interpreter {
                 let idx_val = self.eval_expr(&index.node, env, cell_name, signal_name)?;
                 match target_val {
                     Value::List(ref items) => {
-                        let i = idx_val.as_int().map_err(ExecError::Runtime)?;
+                        let raw = idx_val.as_int().map_err(ExecError::Runtime)?;
+                        // xs[-1] is the last element, like slice(xs, -1)
+                        let i = if raw < 0 { raw + items.len() as i64 } else { raw };
                         if i < 0 || i as usize >= items.len() {
                             return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                                "list index {} out of bounds (length {})", i, items.len()
+                                "list index {} out of bounds (length {})", raw, items.len()
                             ))));
                         }
                         Ok(items[i as usize].clone())

@@ -70,12 +70,14 @@ pub fn check_program(program: &Program) -> (Vec<HabitFinding>, Vec<HabitFinding>
         let cell_names: HashSet<String> =
             super::names::collect_cells(program).iter().map(|c| c.name.clone()).collect();
         for section in &cell.sections {
-            let body: &[Spanned<Statement>] = match &section.node {
-                Section::OnSignal(on) if !on.properties.iter().any(|p| p == "native") => &on.body,
-                Section::Every(ev) | Section::After(ev) => &ev.body,
+            let (body, params): (&[Spanned<Statement>], &[Param]) = match &section.node {
+                Section::OnSignal(on) if !on.properties.iter().any(|p| p == "native") => (&on.body, &on.params),
+                Section::Every(ev) | Section::After(ev) => (&ev.body, &[]),
                 _ => continue,
             };
-            let mut w = Walk { index: &index, cells: &cell_names, errors: &mut errors, warnings: &mut warnings };
+            let mut bound: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            super::dispatch::bind_all(body, &mut bound);
+            let mut w = Walk { bound, index: &index, cells: &cell_names, errors: &mut errors, warnings: &mut warnings };
             w.stmts(body);
         }
     }
@@ -83,6 +85,8 @@ pub fn check_program(program: &Program) -> (Vec<HabitFinding>, Vec<HabitFinding>
 }
 
 struct Walk<'a> {
+    /// every name the handler binds (params, lets, loop vars…)
+    bound: HashSet<String>,
     index: &'a ProgramIndex,
     cells: &'a HashSet<String>,
     errors: &'a mut Vec<HabitFinding>,
@@ -147,7 +151,19 @@ impl Walk<'_> {
                     self.expr(a);
                 }
             }
-            Statement::Require { .. } | Statement::Break | Statement::Continue => {}
+            Statement::Require { else_signal, .. } => {
+                if self.bound.contains(else_signal) {
+                    self.warnings.push(HabitFinding {
+                        message: format!(
+                            "`require … else {else_signal}` uses the NAME `{else_signal}` as the error tag, not the \
+                             value of the variable. For a computed message write \
+                             `require … else \"text {{{else_signal}}}\"` or `fail(\"kind\", {else_signal})`"
+                        ),
+                        span: stmt.span,
+                    });
+                }
+            }
+            Statement::Break | Statement::Continue => {}
         }
     }
 

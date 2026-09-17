@@ -148,6 +148,33 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
             else { args.first().map(|a| Ok(a.clone())) }
         }
+        // parse_int("42") = 42; anything that is not exactly an integer
+        // ("1.5", "12abc", "", " 7") is () — to_int() is lenient and truncates.
+        "parse_int" => {
+            Some(Ok(match args.first() {
+                Some(Value::String(t)) => {
+                    let t = t.as_str();
+                    let digits = t.strip_prefix('-').or_else(|| t.strip_prefix('+')).unwrap_or(t);
+                    if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                        Value::Int(SomaInt::from_decimal_str(t.strip_prefix('+').unwrap_or(t)))
+                    } else {
+                        Value::Unit
+                    }
+                }
+                Some(Value::Int(i)) => Value::Int(i.clone()),
+                _ => Value::Unit,
+            }))
+        }
+        "parse_float" => {
+            Some(Ok(match args.first() {
+                Some(Value::String(t)) if !t.trim().is_empty() && t.trim() == t.as_str() => {
+                    t.parse::<f64>().ok().filter(|f| f.is_finite()).map(Value::Float).unwrap_or(Value::Unit)
+                }
+                Some(Value::Float(f)) => Value::Float(*f),
+                Some(Value::Int(i)) => Value::Float(i.to_f64()),
+                _ => Value::Unit,
+            }))
+        }
         "idiv" => {
             // Integer division: idiv(7, 2) = 3 (truncates toward zero)
             if let (Some(Value::Int(a)), Some(Value::Int(b))) = (args.first(), args.get(1)) {
@@ -415,8 +442,14 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             "avg" => {
                 let mut acc = SomaInt::from_i64(0);
                 for x in ints.iter() { acc = acc.add(x.clone()); }
-                // integer average (truncated), matching avg_by
-                Ok(Value::Int(acc.div(SomaInt::from_i64(n))))
+                // same rule as `/`: avg([1, 2]) is 1.5, an exact average
+                // stays an Int (it used to truncate to 1)
+                let count = SomaInt::from_i64(n);
+                if acc.clone().modulo(count.clone()).to_i64() == Some(0) {
+                    Ok(Value::Int(acc.div(count)))
+                } else {
+                    Ok(Value::Float(acc.to_f64() / n as f64))
+                }
             }
             "min" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) <= 0 { a } else { b }).unwrap())),
             "max" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) >= 0 { a } else { b }).unwrap())),
