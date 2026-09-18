@@ -62,11 +62,27 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
         for section in &cell.sections {
             let Section::Rules(rules) = &section.node else { continue };
             let mut seen: HashSet<String> = HashSet::new();
+            let mut ambiguous_seen: HashSet<String> = HashSet::new();
             for rule in &rules.rules {
                 let expr = match &rule.node {
                     Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => e,
+                    Rule::Let { value, .. } => value,
                     _ => continue,
                 };
+                // a bare `pack("o1")` when Orders and Warehouse both define
+                // `pack`: it used to pass check and pick a cell at random
+                visit_calls_expr(&expr.node, &mut |name, _argc, _| {
+                    let Some(definers) = index.handler_map.get(name) else { return };
+                    if definers.len() >= 2 && ambiguous_seen.insert(name.to_string()) {
+                        errors.push(DispatchFinding {
+                            message: format!(
+                                "ambiguous call '{name}' in test cell {test}: defined by cells {} — qualify it (`{}.{name}(…)`)",
+                                definers.join(" and "), definers[0], test = cell.name,
+                            ),
+                            span: rule.span,
+                        });
+                    }
+                });
                 visit_calls_expr(&expr.node, &mut |name, argc, _has_lambda| {
                     if !super::names::builtin_names().contains(name) {
                         return;
@@ -273,10 +289,36 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                     }
                 }
             }
+            // `emit nobody_listens(...)`: no cell handles it — a typo in an
+            // event name used to be a silently lost event
+            let mut emits: Vec<String> = Vec::new();
+            visit_emits(body, &mut emits);
+            for ev in emits {
+                if !index.handler_map.contains_key(&ev) && !index.known.contains(&ev) {
+                    warnings.push(DispatchFinding {
+                        message: format!(
+                            "emit {ev}(…) in {}.{handler_label}: no cell has `on {ev}(…)` — the event goes nowhere in this process (declare the handler, or fix the name)",
+                            cell.name
+                        ),
+                        span: section.span,
+                    });
+                }
+            }
         }
     }
 
     (errors, warnings)
+}
+
+fn visit_emits(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
+    for st in stmts {
+        match &st.node {
+            Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
+            Statement::If { then_body, else_body, .. } => { visit_emits(then_body, out); visit_emits(else_body, out); }
+            Statement::For { body, .. } | Statement::While { body, .. } => visit_emits(body, out),
+            _ => {}
+        }
+    }
 }
 
 /// Visit every FnCall (name, argument count) in a statement list, in

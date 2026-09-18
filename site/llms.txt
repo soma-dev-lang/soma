@@ -22,7 +22,7 @@ verified against it. Unknown URLs on this site return 404, never a page.
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
 - [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~12 KB, summaries, each program's verify verdict and soma.toml)
 - [corpus/index.json](https://soma-lang.dev/corpus/index.json): 300+ verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
-- [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md), [docs/spec.md](https://soma-lang.dev/docs/spec.md): raw markdown
+- [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md): raw markdown
 - [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry
 - [status](https://soma-lang.dev/status): maturity, version, MIT license, known limits, security contact
 - Source: https://github.com/soma-dev-lang/soma
@@ -171,6 +171,9 @@ names the Soma form for each of these when you get it wrong.
 
 ## Tests
 
+`every` / `after` blocks do not run under `soma test`: call the sweeper
+directly (`assert _sweep(5) == ["o4"]`) with `mock now` for the clock.
+
 ```soma
 cell test MyTests {                // a name and a `rules` block are required
     rules {
@@ -235,7 +238,20 @@ source, `file:line`, left/right, and the fields a value really has when
   beyond 64 bits stays an Int); a value that does not fit the slot's declared
   value type (`Map<String, Int>` given a String) is refused with kind `type`.
 - On a List slot: `rows.push(x)`, `rows[i] = x`, `rows.delete(i)` (by index),
-  `rows.get(i)`, `rows.len` — all invariant-checked.
+  `rows.get(i)`, `rows.len` — all invariant-checked. A Map slot's `.keys` /
+  `.values` / `.entries` come SORTED by key (every backend); a record's own
+  fields keep their insertion order.
+- A bare call to a name two cells define (`pack(id)` with `Orders.pack` and
+  `Warehouse.pack`) is a check error: qualify it (`Warehouse.pack(id)`).
+- `emit ev(data)` inside one process is a synchronous, atomic fan-out to
+  every cell with `on ev(data)`: a listener that raises fails the emitter,
+  and the emitter's rollback takes the listeners' writes with it. Only across
+  processes (the `[peers]` bus) is an emitted event an effect that is not
+  rolled back. `soma check` warns when nobody handles the event.
+- `verify --strict` bounds a write only from numbers it can bound: a number
+  read out of a record in a `Map<String, Map>` slot has no interval — keep
+  the guarded number in its own `Map<String, Int>` slot with an invariant
+  (the ⚠ line says `reads a slot with no interval invariant`).
 - `ensure cond` at the end of a handler raises kind `ensure` (422) when the
   postcondition is false — the whole handler is rolled back.
 - Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
@@ -395,7 +411,7 @@ cell agent Researcher {
 // [agent] mock = "echo" in soma.toml. Record/replay: --record, soma replay.
 ```
 
-## Top gotchas (full list: AGENT_GOTCHAS.md — all verified)
+## Top gotchas (full list: /docs/gotchas.md or /gotchas.json — all verified)
 
 1. `f(args)` calls YOUR handler `f` when one takes that many arguments, the
    builtin `f` otherwise (`on list() { return list(1, 2) }` reaches the

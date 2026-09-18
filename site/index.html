@@ -247,6 +247,7 @@ footer {
     <a href="/agents">For AI agents</a>
     <a href="#runtime">Runtime</a>
     <a href="#limits">Limits</a>
+    <a href="/status">Status</a>
     <a href="/paper">Paper</a>
     <a href="https://github.com/soma-dev-lang/soma">GitHub</a>
   </div>
@@ -424,7 +425,8 @@ soma serve app.cell -p 8080                   # then: curl -X POST localhost:808
 <section id="limits">
   <h2>Important Limits</h2>
   <ul>
-    <li>Soma is experimental. Expect rough edges in syntax, tooling, installer behavior, and deployment integrations.</li>
+    <li>Soma is experimental: one author, used for the demos in the repository and the author's own trading automata, <strong>not yet used in a system that other people depend on</strong> (<a href="/status">/status</a> has the full maturity table). Expect rough edges in syntax, tooling, installer behavior, and deployment integrations.</li>
+    <li>What is proven, what is only checked at runtime, and what is out of scope: <a href="/docs/guarantees.md">docs/guarantees.md</a>. What <code>soma serve</code> exposes and how errors map to statuses: <a href="/docs/serving.md">docs/serving.md</a>. What happens when it goes wrong in production: <a href="/docs/operations.md">docs/operations.md</a>.</li>
     <li>State-machine verification is over the declared finite graph. It does not exhaustively model runtime data values, external systems, or LLM outputs.</li>
     <li>Strong consistency in <code>scale</code> is currently a checked declaration, not a Raft/Paxos-backed runtime guarantee.</li>
     <li>The current cluster replication path is signal-bus broadcast and should be treated as eventual replication.</li>

@@ -244,7 +244,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
     eprintln!("soma serve v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("cell: {}", cell_name);
-    eprintln!("handlers: [{}]", handler_names.join(", "));
+    // the public endpoints (private `_x` handlers and the router are not routed)
+    let public: Vec<&String> = handler_names.iter().filter(|h| !h.starts_with('_') && h.as_str() != "request").collect();
+    eprintln!("endpoints: [{}]{}", public.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
+        if handler_names.iter().any(|h| h == "request") { " + request router" } else { "" });
     if scale_section.is_some() {
         eprintln!("scale: replicas={} shard={} consistency={}",
             scale_section.as_ref().unwrap().replicas,

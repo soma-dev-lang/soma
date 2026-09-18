@@ -39,12 +39,11 @@ cell GateSchedule {
         if hour < 0 || hour > 23 { return map("ok", false, "reason", "hour must be 0-23") }
         let key = slot_key(door, hour)
         let n = booked.get(key) ?? 0
-        // the second booking writes 2 into a <=1 slot: REFUSED by memory
-        let w = try { booked.set(key, n + 1) }
-        if w.error != () {
+        if n >= 1 {                                    // the early return narrows n: verify proves the write below
             let who = holder.get(key) ?? "?"
             return map("ok", false, "reason", "door {door} hour {hour} already booked by {who}")
         }
+        booked.set(key, n + 1)                         // a second booking can never reach here — and the invariant would refuse it anyway
         holder.set(key, carrier)
         return map("ok", true, "door", door, "hour", hour, "carrier", carrier)
     }

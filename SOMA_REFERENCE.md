@@ -577,7 +577,14 @@ publish("stream-name", data)              // push to SSE subscribers on a runtim
 
 On error, `http_get`/`http_post` return `map("error", message)` instead of throwing — check `resp.error`.
 
-## Inter-process signals
+## Events: `emit`
+
+In one process, `emit trade(data)` calls every cell that declares `on
+trade(data: Map)`, synchronously, inside the emitter's transaction (a
+listener that raises fails the emitter; the emitter's rollback undoes the
+listeners' writes). `soma check` warns when no cell handles the event. Across
+processes the same statement goes over the signal bus (`[peers]`), where it
+is fire-and-forget:
 
 ```soma
 // soma.toml

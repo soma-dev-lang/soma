@@ -60,7 +60,9 @@ sit in `authorized` until someone acts.
 - **Conservation / aggregate properties** ("the sum of balances never
   changes"). An invariant sees one written value at a time.
 - **Effects outside the process** are not rolled back: HTTP calls, `think()`,
-  emitted events, files.
+  files, events sent over the `[peers]` bus to another process. (An `emit`
+  handled by a cell of the same process IS inside the handler's transaction:
+  synchronous, and rolled back with it.)
 - **Untyped records.** A record is a map: a typo'd field name reads as `()`.
   Ordering against `()` raises, equality does not.
 - **Authentication, authorization, TLS, rate limiting**: `soma serve` has none.

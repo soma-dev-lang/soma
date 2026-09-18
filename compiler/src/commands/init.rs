@@ -215,7 +215,7 @@ cell Counter {
 
     memory {
         counts: Map<String, Int> [persistent]
-        invariant counts >= 0 && counts <= 1000000     // `>= 0` is PROVEN by verify (require n >= 0 below); `<= 1000000` is runtime-checked
+        invariant counts >= 0 && counts <= 1000000     // both halves PROVEN by verify: the two `require`s in add() narrow the write
     }
 
     state session {
@@ -228,7 +228,9 @@ cell Counter {
 
     on add(n: Int) {
         require n >= 0 else NegativeAmount              // refused before anything is written
-        counts.set("n", (counts.get("n") ?? 0) + n)     // provable by induction: the slot never goes below 0
+        let cur = counts.get("n") ?? 0                  // a stored value: verify knows it is in 0..1000000
+        require cur + n <= 1000000 else Full "counter would exceed 1000000"
+        counts.set("n", cur + n)                        // proven by induction — `soma verify --strict` is green
         return total()
     }
 

@@ -481,6 +481,8 @@ pub fn new_peer_bus() -> PeerBus {
 pub struct Interpreter {
     /// All cells in the program, by name
     pub(crate) cells: HashMap<String, CellDef>,
+    /// cell names in declaration order (dispatch of a bare call is deterministic)
+    pub(crate) cell_order: Vec<String>,
     /// Pre-computed handler lookup — avoids scanning sections on every call
     handler_cache: HashMap<HandlerKey, HandlerValue>,
     /// handler name → the parameter counts it is defined with (any cell).
@@ -591,6 +593,7 @@ pub enum VariantShape {
 impl Interpreter {
     pub fn new(program: &Program) -> Self {
         let mut cells = HashMap::new();
+        let cell_order: Vec<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
         let mut handler_cache = HashMap::new();
         let mut handler_arities: HashMap<String, Vec<usize>> = HashMap::new();
         let mut state_machines = HashMap::new();
@@ -682,6 +685,7 @@ impl Interpreter {
         Self {
             cells,
             handler_cache,
+            cell_order,
             handler_arities,
             max_depth: 512,
             current_depth: 0,
@@ -882,10 +886,15 @@ impl Interpreter {
     }
 
     pub fn find_and_call(&mut self, signal_name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        // Search handler cache for matching signal
-        let cell_name = self.handler_cache.keys()
-            .find(|(_, sig)| sig == signal_name)
-            .map(|(cell, _)| cell.clone());
+        // Search handler cache for matching signal — the FIRST cell in
+        // declaration order (a HashMap walk picked one at random when two
+        // cells defined the name; check now refuses that program)
+        let mut candidates: Vec<&String> = self.handler_cache.keys()
+            .filter(|(_, sig)| sig == signal_name)
+            .map(|(cell, _)| cell)
+            .collect();
+        candidates.sort_by_key(|c| self.cell_order.iter().position(|o| o == *c).unwrap_or(usize::MAX));
+        let cell_name = candidates.first().map(|c| (*c).clone());
 
         if let Some(cell) = cell_name {
             self.call_signal(&cell, signal_name, args)

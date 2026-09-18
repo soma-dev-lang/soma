@@ -385,6 +385,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     use checker::temporal::*;
 
     let mut all_results = Vec::new();
+    let mut all_cell_names: Vec<String> = Vec::new();
     let mut all_temporal = Vec::new();
     let mut total_cells: usize = 0;
 
@@ -437,6 +438,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             .collect();
 
         eprintln!("Verifying {}...", path.display());
+        all_cell_names.extend(program.cells.iter().map(|c| c.node.name.clone()));
         total_cells += program.cells.iter()
             .filter(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent))
             .count();
@@ -591,6 +593,20 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         return;
     }
 
+    // properties declared, no machine to check them against: an error, not
+    // "Temporal: 0 passed" (a renamed cell silently lost the gate)
+    let declares_props = verify_config.as_ref().map(|cfg| {
+        !cfg.eventually.is_empty() || !cfg.never.is_empty() || !cfg.always.is_empty()
+            || !cfg.after.is_empty() || !cfg.before.is_empty()
+    }).unwrap_or(false);
+    // a shared soma.toml scoped with `cells = [...]` to a cell this file
+    // does not contain is not an error (examples/ holds many programs)
+    let targeted_present = verify_config.as_ref().map(|cfg| {
+        cfg.cells.is_empty() || cfg.cells.iter().any(|c| all_cell_names.contains(c))
+    }).unwrap_or(false);
+    if declares_props && all_temporal.is_empty() && targeted_present {
+        unknown_states.push("[verify] declares properties but no state machine received them (no `state { }` in the targeted cells — check `cells = [...]`)".to_string());
+    }
     unknown_states.sort();
     unknown_states.dedup();
     // --strict: a proof that degraded to "runtime-checked" (a removed

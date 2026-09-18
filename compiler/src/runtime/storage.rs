@@ -162,23 +162,28 @@ impl StorageBackend for MemoryBackend {
             return log.clone();
         }
         // Fall back to map values when log is empty (data was added via set())
-        self.map.read().unwrap_or_else(|e| e.into_inner()).iter()
-            .filter(|(k, _)| !k.starts_with("__"))
-            .map(|(_, v)| v.clone())
+        // — sorted by key, like the SQLite backend (a HashMap walk gave a
+        // different order on every run)
+        let m = self.map.read().unwrap_or_else(|e| e.into_inner());
+        let mut ks: Vec<&String> = m.keys().filter(|k| !k.starts_with("__")).collect();
+        ks.sort();
+        ks.into_iter().map(|k| m[k].clone())
             .collect()
     }
 
     fn keys(&self) -> Vec<String> {
-        self.map.read().unwrap_or_else(|e| e.into_inner()).keys()
+        let mut ks: Vec<String> = self.map.read().unwrap_or_else(|e| e.into_inner()).keys()
             .filter(|k| !k.starts_with("__"))
-            .cloned().collect()
+            .cloned().collect();
+        ks.sort();
+        ks
     }
 
     fn values(&self) -> Vec<StoredValue> {
-        self.map.read().unwrap_or_else(|e| e.into_inner()).iter()
-            .filter(|(k, _)| !k.starts_with("__"))
-            .map(|(_, v)| v.clone())
-            .collect()
+        let m = self.map.read().unwrap_or_else(|e| e.into_inner());
+        let mut ks: Vec<&String> = m.keys().filter(|k| !k.starts_with("__")).collect();
+        ks.sort();
+        ks.into_iter().map(|k| m[k].clone()).collect()
     }
 
     fn has(&self, key: &str) -> bool {

@@ -428,6 +428,20 @@ impl RangeCtx<'_> {
         if let Some(k) = self.slot_read(expr) {
             return k;
         }
+        let computed = self.range_of_inner(expr);
+        // a `require` on this exact expression narrows it
+        if matches!(expr, Expr::BinaryOp { .. } | Expr::FnCall { .. }) {
+            if let Some(fact) = self.vars.get(&format!("__expr__{}", render_expr(expr))).copied().and_then(bounds) {
+                return match bounds(computed) {
+                    Some((l, h)) => mk(l.max(fact.0), h.min(fact.1)),
+                    None => mk(fact.0, fact.1),
+                };
+            }
+        }
+        computed
+    }
+
+    fn range_of_inner(&self, expr: &Expr) -> Known {
         match expr {
             Expr::Literal(Literal::Int(n)) => Known::Exact(*n as f64),
             Expr::Literal(Literal::Float(f)) => Known::Exact(*f),
@@ -617,9 +631,20 @@ fn local_ranges_at(
     // break/continue can skip its require: not narrowed.
     let mut unconditional: Vec<&Spanned<Statement>> = Vec::new();
     collect_unconditional_requires(&on.body, &mut unconditional);
+    // the facts: each `require` comparison, plus the NEGATION of an early
+    // exit `if n >= 1 { … return … }` / `if c { fail(…) }` (statements after
+    // it run only when the condition is false)
+    let mut facts: Vec<(&Expr, CmpOp, &Expr)> = Vec::new();
     for stmt in unconditional {
-        if let Statement::Require { constraint, .. } = &stmt.node {
-            for (left, op, right) in constraint_comparisons(&constraint.node) {
+        match &stmt.node {
+            Statement::Require { constraint, .. } => facts.extend(constraint_comparisons(&constraint.node)),
+            Statement::If { condition, .. } => facts.extend(negated_comparisons(&condition.node)),
+            _ => {}
+        }
+    }
+    {
+        {
+            for (left, op, right) in facts {
                 // `require b <= a` (two once-bound names): a - b >= 0 — kept
                 // as a fact the subtraction rule reads
                 if let (Expr::Ident(a), Expr::Ident(b)) = (left, right) {
@@ -660,7 +685,34 @@ fn local_ranges_at(
                     (Expr::Ident(n), Some(c)) => (n.as_str(), op, c),
                     _ => match (const_of(left), right) {
                         (Some(c), Expr::Ident(n)) => (n.as_str(), flip(op), c),
-                        _ => continue,
+                        // `require cur + n <= 1000000`: a fact about the whole
+                        // expression, matched later by its rendering when the
+                        // very same expression is written
+                        (_, _) => {
+                            let (e, op, c) = match (const_of(right), const_of(left)) {
+                                (Some(c), None) => (left, op, c),
+                                (None, Some(c)) => (right, flip(op), c),
+                                _ => continue,
+                            };
+                            // every name in it must be bound once (else the
+                            // written expression is not the required one)
+                            let mut used = HashSet::new();
+                            collect_idents(e, &mut used);
+                            if used.iter().any(|u| dup.contains(u.as_str()) || reassigned_param(u)) { continue; }
+                            let (lo, hi) = match op {
+                                CmpOp::Lt => (f64::NEG_INFINITY, if looks_int(e) && c.fract() == 0.0 { c - 1.0 } else { c }),
+                                CmpOp::Le => (f64::NEG_INFINITY, c),
+                                CmpOp::Gt => (if looks_int(e) && c.fract() == 0.0 { c + 1.0 } else { c }, f64::INFINITY),
+                                CmpOp::Ge => (c, f64::INFINITY),
+                                CmpOp::Eq => (c, c),
+                                CmpOp::Ne => continue,
+                            };
+                            let key = format!("__expr__{}", render_expr(e));
+                            let cur = vars.get(&key).copied().unwrap_or(Known::Unknown);
+                            let narrowed = match bounds(cur) { Some((cl, ch)) => mk(cl.max(lo), ch.min(hi)), None => mk(lo, hi) };
+                            vars.insert(key, narrowed);
+                            continue;
+                        }
                     },
                 };
                 if dup.contains(name) || reassigned_param(name) { continue; }
@@ -689,10 +741,43 @@ fn local_ranges_at(
     vars
 }
 
+/// `if a || b { return … }` after which ¬a ∧ ¬b holds: the negated leaves.
+/// `&&` cannot be split (¬(a ∧ b) is a disjunction) and yields nothing.
+fn negated_comparisons(c: &Expr) -> Vec<(&Expr, CmpOp, &Expr)> {
+    match c {
+        Expr::CmpOp { left, op, right } => {
+            let neg = match op {
+                CmpOp::Lt => CmpOp::Ge, CmpOp::Ge => CmpOp::Lt,
+                CmpOp::Le => CmpOp::Gt, CmpOp::Gt => CmpOp::Le,
+                CmpOp::Eq => CmpOp::Ne, CmpOp::Ne => CmpOp::Eq,
+            };
+            vec![(&left.node, neg, &right.node)]
+        }
+        Expr::BinaryOp { left, op: BinOp::Or, right } => {
+            let mut v = negated_comparisons(&left.node);
+            v.extend(negated_comparisons(&right.node));
+            v
+        }
+        _ => vec![],
+    }
+}
+
+/// Does this block leave the handler on every path (a trailing `return`
+/// or a bare `fail(…)`)?
+fn exits(stmts: &[Spanned<Statement>]) -> bool {
+    match stmts.last().map(|s| &s.node) {
+        Some(Statement::Return { .. }) => true,
+        Some(Statement::ExprStmt { expr }) => matches!(&expr.node, Expr::FnCall { name, .. } if name == "fail"),
+        _ => false,
+    }
+}
+
 fn collect_unconditional_requires<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e Spanned<Statement>>) {
     for st in stmts {
         match &st.node {
             Statement::Require { .. } => out.push(st),
+            // an early exit: the negated condition holds afterwards
+            Statement::If { then_body, else_body, .. } if else_body.is_empty() && exits(then_body) => out.push(st),
             Statement::For { body, .. } | Statement::While { body, .. } => {
                 if !has_break_or_continue(body) { collect_unconditional_requires(body, out); }
             }
