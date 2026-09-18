@@ -542,11 +542,34 @@ fn idiv_rewrite(src: &str, l_start: usize, l_end: usize, r_start: usize, r_end: 
     let start = eat_opens(l_text_start, before.matches(')').count())?;
     let end = eat_closes(r_text_end, after.matches('(').count())?;
 
-    let left = src.get(l_text_start..l_text_end)?.trim();
-    let right = src.get(r_text_start..r_text_end)?.trim();
+    let left = strip_outer_parens(src.get(l_text_start..l_text_end)?.trim());
+    let right = strip_outer_parens(src.get(r_text_start..r_text_end)?.trim());
     // last line of defense: never write unbalanced text
     if imbalance(left) != (0, 0) || imbalance(right) != (0, 0) {
         return None;
     }
     Some((start, end, format!("idiv({}, {})", left, right)))
+}
+
+/// `(lo + hi)` → `lo + hi` when ONE pair of parentheses wraps the whole
+/// text (an argument of idiv needs none); `(a) + (b)` is left alone.
+fn strip_outer_parens(text: &str) -> &str {
+    let t = text.trim();
+    if !(t.starts_with('(') && t.ends_with(')')) {
+        return t;
+    }
+    let mut depth = 0i64;
+    for (i, c) in t.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 && i + 1 < t.len() {
+                    return t; // the first paren closes before the end
+                }
+            }
+            _ => {}
+        }
+    }
+    strip_outer_parens(&t[1..t.len() - 1])
 }

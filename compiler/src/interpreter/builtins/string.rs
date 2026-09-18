@@ -168,9 +168,19 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             args.first().map(|arg| Ok(Value::String(format!("{}", arg))))
         }
         "to_int" => {
+            // a Float outside i64 (1e19, inf, NaN) used to saturate silently
+            let float_to_int = |n: f64| -> Result<Value, RuntimeError> {
+                if !n.is_finite() || n.abs() >= 9.223372036854775e18 {
+                    return Err(RuntimeError::Domain {
+                        kind: "range".to_string(),
+                        message: format!("range: to_int({}) is outside the Int range — use round() or keep it a Float", n),
+                    });
+                }
+                Ok(Value::Int(SomaInt::from_i64(n as i64)))
+            };
             args.first().map(|arg| match arg {
                 Value::Int(si) => Ok(Value::Int(si.clone())),
-                Value::Float(n) => Ok(Value::Int(SomaInt::from_i64(*n as i64))),
+                Value::Float(n) => float_to_int(*n),
                 Value::String(s) => {
                     if let Ok(n) = s.parse::<i64>() {
                         Ok(Value::Int(SomaInt::from_i64(n)))
@@ -178,7 +188,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         // integers beyond i64 stay exact instead of clamping
                         Ok(Value::Int(SomaInt::from_rug(big)))
                     } else if let Ok(f) = s.parse::<f64>() {
-                        Ok(Value::Int(SomaInt::from_i64(f as i64)))
+                        float_to_int(f)
                     } else {
                         Ok(Value::Unit)
                     }
@@ -228,7 +238,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 match arg {
                     // invalid JSON raises (kind "json") — it used to come back
                     // as the input string, so `try { from_json(s) }` never failed
-                    Value::String(s) if serde_json::from_str::<serde_json::Value>(s).is_err() && !s.trim().is_empty() => {
+                    Value::String(s) if serde_json::from_str::<serde_json::Value>(s).is_err() => {
                         let shown: String = s.chars().take(60).collect();
                         Err(RuntimeError::Domain {
                             kind: "json".to_string(),

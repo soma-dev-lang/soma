@@ -2183,17 +2183,13 @@ impl Parser {
                         start.merge(self.prev_span()),
                     ))
                 } else if self.check(&Token::LParen) {
-                    // fn_call(args) — treat as expression statement
-                    self.advance();
-                    let args = self.parse_arg_list()?;
-                    self.expect(Token::RParen)?;
+                    // fn_call(args) … — an expression statement; parsed as a
+                    // full expression so `f() + 1` / `f() |> g()` / `f().x`
+                    // as the last line of a block are its value
+                    self.pos = save_pos;
+                    let expr = self.parse_expr()?;
                     Ok(Spanned::new(
-                        Statement::ExprStmt {
-                            expr: Spanned::new(
-                                Expr::FnCall { name, args },
-                                start.merge(self.prev_span()),
-                            ),
-                        },
+                        Statement::ExprStmt { expr },
                         start.merge(self.prev_span()),
                     ))
                 } else {
@@ -3028,12 +3024,15 @@ impl Parser {
                 self.advance();
                 // Check for Unit literal: ()
                 if self.check(&Token::RParen) {
+                    let end = self.peek_span();
                     self.advance();
-                    return Ok(Spanned::new(Expr::Literal(Literal::Unit), start));
+                    return Ok(Spanned::new(Expr::Literal(Literal::Unit), start.merge(end)));
                 }
                 let expr = self.parse_expr()?;
+                let end = self.peek_span();
                 self.expect(Token::RParen)?;
-                Ok(expr)
+                // the span covers the parentheses: `(x |> f()) + 1` echoes whole
+                Ok(Spanned::new(expr.node, start.merge(end)))
             }
             _ => Err(ParseError::Expected {
                 expected: "expression".to_string(),

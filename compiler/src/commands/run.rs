@@ -104,7 +104,8 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
         if handler_names.contains(name) {
             (name.clone(), arg_values[1..].to_vec())
         } else {
-            (handler_names[0].clone(), arg_values)
+            let name = name.clone();
+            unknown_handler_or_default(&name, &handler_names, &handler_params, arg_values)
         }
     } else {
         // No explicit signal: dispatch by best match.
@@ -198,7 +199,8 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         if handler_names.contains(name) {
             (name.clone(), arg_values[1..].to_vec())
         } else {
-            (handler_names[0].clone(), arg_values)
+            let name = name.clone();
+            unknown_handler_or_default(&name, &handler_names, &handler_params, arg_values)
         }
     } else {
         // No explicit signal: dispatch by best match.
@@ -316,6 +318,39 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
             ));
             process::exit(1);
         }
+    }
+}
+
+/// `soma run app.cell nosuch 1`: a first token that looks like a handler
+/// name but is none is an error with the real names — it used to be fed
+/// silently to the first handler as its String argument. A token that is
+/// plainly data (`soma run app.cell hello` for `on greet(name: String)`)
+/// still goes to the handler whose arity matches.
+fn unknown_handler_or_default(
+    name: &str,
+    handler_names: &[String],
+    handler_params: &[(String, usize)],
+    arg_values: Vec<interpreter::Value>,
+) -> (String, Vec<interpreter::Value>) {
+    let n_args = arg_values.len();
+    let by_arity = handler_params.iter().find(|(h, p)| h == "run" && *p == n_args)
+        .or_else(|| handler_params.iter().find(|(_, p)| *p == n_args));
+    let identifier_like = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_');
+    // a handler takes the rest of the args → the token was meant as a name
+    let rest_fits = handler_params.iter().any(|(_, p)| *p + 1 == n_args);
+    if identifier_like && (by_arity.is_none() || rest_fits) {
+        let public: Vec<&String> = handler_names.iter().filter(|h| !h.starts_with('_')).collect();
+        let near = crate::checker::names::suggest(name, public.iter().copied())
+            .map(|h| format!(" (did you mean '{}'?)", h))
+            .unwrap_or_default();
+        eprintln!("error: no handler named '{}'{} — handlers: [{}]; usage: soma run app.cell <handler> [args…]",
+            name, near, public.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+        process::exit(1);
+    }
+    match by_arity {
+        Some((h, _)) => (h.clone(), arg_values),
+        None => (handler_names[0].clone(), arg_values),
     }
 }
 

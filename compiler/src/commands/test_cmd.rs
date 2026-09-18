@@ -231,7 +231,10 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                     }
                                     _ => {
                                         passed += 1;
-                                        println!("  ✓ assert_fails {} — raised {}", shown, e);
+                                        match wanted {
+                                            Some(text) => println!("  ✓ assert_fails {} matching \"{}\" — raised {}", shown, text, e),
+                                            None => println!("  ✓ assert_fails {} — raised {}", shown, e),
+                                        }
                                     }
                                 },
                                 Ok(v) => {
@@ -299,7 +302,15 @@ fn eval_test_assertion(
         }
         _ => {
             let val = eval_test_expr(interp, expr, env)?;
-            Ok((val.is_truthy(), Vec::new()))
+            // `assert "false"` and `assert some_map` used to pass (truthy):
+            // an assertion is a Bool or it is a mistake.
+            match val {
+                interpreter::Value::Bool(b) => Ok((b, Vec::new())),
+                other => Err(format!(
+                    "assert needs a Bool, got {} {} — compare it: `assert x == …`",
+                    interpreter::value_type_name(&other), other
+                )),
+            }
         }
     }
 }

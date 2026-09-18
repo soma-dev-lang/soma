@@ -406,6 +406,12 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             _ => Ok(Value::Int(SomaInt::from_i64(0))),
         };
     }
+    // a non-number in the list is an error, not a silent 0
+    if let Some(bad) = items.iter().find(|v| !matches!(v, Value::Int(_) | Value::Float(_))) {
+        return Err(RuntimeError::TypeError(format!(
+            "{}() needs numbers, found {} {}", op, super::super::value_type_name(bad), bad
+        )));
+    }
     let any_float = items.iter().any(|v| matches!(v, Value::Float(_)));
     let n = items.len() as i64;
     if any_float {

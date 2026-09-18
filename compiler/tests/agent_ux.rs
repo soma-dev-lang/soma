@@ -711,3 +711,53 @@ cell test T {
     assert!(status(&got[5]).contains("400") && got[5].contains("expects Int"), "{}", got[5]);
     assert!(got[6].contains("\"result\": 3") || got[6].contains("\"result\":3"), "the service must still answer after the overflow: {}", got[6]);
 }
+
+/// Cycle 3 (adversarial + porting agents): small lies fixed — `soma run`
+/// with a wrong handler name, builtin arity, `assert` on a non-Bool, `()`
+/// echoed whole, from_json(""), to_int out of range, sum on non-numbers,
+/// List slot methods, `f() + 1` as a statement.
+#[test]
+fn cycle3_small_lies() {
+    let d = dir("cycle3_small");
+    std::fs::write(d.join("app.cell"), r#"
+cell A {
+  memory { xs: List<Int> [persistent] }
+  on greet(name: String) { "hi {name}" }
+  on f() { 1 }
+  on plus() { f() + 1 }
+  on lens() {
+    xs.push(3)
+    xs.push(4)
+    map("len", xs.len, "g1", xs.get(1), "last", xs.last, "has", xs.has(3))
+  }
+  on nothing() { () }
+}
+cell test T {
+  rules {
+    assert plus() == 2
+    let l = lens()
+    assert l.len == 2
+    assert l.g1 == 4
+    assert l.last == 4
+    assert l.has == true
+    assert nothing() == ()
+    assert_fails len() matching "len(x: String|List|Map) -> Int — called with 0 arguments"
+    assert_fails from_json("") matching "not valid JSON"
+    assert_fails to_int(1e19) matching "outside the Int range"
+    assert_fails sum([1, "a"]) matching "needs numbers"
+    assert "false"
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("✓ assert nothing() == ()"), "{out}");
+    assert!(out.contains("assert needs a Bool, got String"), "{out}");
+    assert!(out.contains("11 tests: 10 passed, 1 failed"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "app.cell", "gret", "bob"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("no handler named 'gret' (did you mean 'greet'?)"), "{out}");
+    let (out, code) = soma_in(&d, &["docs", "guarantees"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("PROVEN") || out.contains("proven"), "{out}");
+}

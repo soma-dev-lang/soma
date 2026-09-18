@@ -52,6 +52,7 @@ soma describe app.cell --faces       # contract summary of every cell
 soma describe --builtins --json      # exact builtin signatures — never guess
 soma fix    app.cell                 # auto-repair common check errors
 soma docs agent                      # this file, offline, from the binary
+soma docs guarantees | serving       # proven/enforced/not covered; HTTP rules — offline too
 soma example invariant state_machine # verified programs with those features;
 soma example <id>                    #   …and the source of one
 soma init myapp                      # app.cell + soma.toml + AGENTS.md

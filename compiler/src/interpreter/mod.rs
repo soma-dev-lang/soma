@@ -118,7 +118,7 @@ impl RuntimeError {
 }
 
 /// Return a human-readable type name for a Value (e.g. "String", "Int").
-pub(crate) fn value_type_name(v: &Value) -> &'static str {
+pub fn value_type_name(v: &Value) -> &'static str {
     match v {
         Value::Int(si) => if si.is_small() { "Int" } else { "BigInt" },
         Value::Float(_) => "Float",
@@ -1821,6 +1821,18 @@ impl Interpreter {
                         self.call_signal(&target_cell, name, arg_vals)
                             .map_err(ExecError::Runtime)
                     } else {
+                        // A builtin that refused the call (wrong argument
+                        // count or kinds) is not "undefined": show its signature.
+                        if let Some(b) = builtins::registry::BUILTINS.iter()
+                            .find(|b| b.name == name && b.category != "reserved")
+                        {
+                            let kinds: Vec<&str> = arg_vals.iter().map(value_type_name).collect();
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "{} — called with {} argument{} ({})",
+                                b.signature, arg_vals.len(), if arg_vals.len() == 1 { "" } else { "s" },
+                                if kinds.is_empty() { "none".to_string() } else { kinds.join(", ") }
+                            ))));
+                        }
                         // Collect known names for "did you mean?" suggestion.
                         // Builtins come from the registry (single source of
                         // truth) so the suggester can never advertise a name
@@ -2316,6 +2328,35 @@ impl Interpreter {
         // Is this slot sharded across the cluster?
         let is_sharded = self.cluster.is_some()
             && (self.sharded_slots.contains_key(slot_name) || self.sharded_slots.contains_key(&prefixed));
+
+        // A List slot is its append log: len / values / get(i) / first /
+        // last read the log (the keyed map underneath is empty, so `.len`
+        // answered 0 after two pushes and `.get(0)` was `()`).
+        if self.slot_kind(cell_name, slot_name) == Some("List") && !is_sharded {
+            let items = || -> Vec<Value> {
+                backend.list().into_iter().map(|v| auto_deserialize(stored_to_value(v))).collect()
+            };
+            match method {
+                "len" | "size" | "count" => return Ok(Value::Int(SomaInt::from_i64(backend.list().len() as i64))),
+                "values" | "all" | "list" | "entries" | "items" => return Ok(Value::List(items())),
+                "first" => return Ok(items().into_iter().next().unwrap_or(Value::Unit)),
+                "last" => return Ok(items().into_iter().last().unwrap_or(Value::Unit)),
+                "get" | "at" | "nth" => {
+                    if let Some(Value::Int(i)) = args.first() {
+                        let xs = items();
+                        let raw = i.to_i64().unwrap_or(0);
+                        let idx = if raw < 0 { raw + xs.len() as i64 } else { raw };
+                        return Ok(if idx >= 0 && (idx as usize) < xs.len() { xs[idx as usize].clone() } else { Value::Unit });
+                    }
+                }
+                "has" | "contains" => {
+                    if let Some(x) = args.first() {
+                        return Ok(Value::Bool(items().iter().any(|v| deep_equal(v, x))));
+                    }
+                }
+                _ => {}
+            }
+        }
 
         match method {
             "get" => {

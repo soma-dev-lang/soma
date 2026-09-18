@@ -11,6 +11,8 @@ const AGENT_SUMMARY: &str = include_str!("../../../site/llms.txt");
 const REFERENCE: &str = include_str!("../../../SOMA_REFERENCE.md");
 const GOTCHAS: &str = include_str!("../../../AGENT_GOTCHAS.md");
 const AGENTS_MD: &str = include_str!("../../../site/agent.md");
+const GUARANTEES: &str = include_str!("../../../docs/site/guarantees.md");
+const SERVING: &str = include_str!("../../../docs/site/serving.md");
 
 const TOPICS: &[(&str, &str)] = &[
     ("agent", "working summary of the language for a model's context (start here)"),
@@ -18,7 +20,9 @@ const TOPICS: &[(&str, &str)] = &[
     ("gotchas", "mistakes models make, each with the real diagnostic and the fix"),
     ("builtins", "every builtin with its exact signature, generated from the compiler"),
     ("agents-md", "drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma"),
-    ("all", "agent + reference + gotchas + builtins, one stream"),
+    ("guarantees", "what is PROVEN, ENFORCED AT RUNTIME, or NOT COVERED — by command"),
+    ("serving", "soma serve: routing, exposure, body shape, error statuses, bind address"),
+    ("all", "agent + reference + gotchas + guarantees + serving + builtins, one stream"),
 ];
 
 pub fn cmd_docs(topic: &str) {
@@ -28,8 +32,10 @@ pub fn cmd_docs(topic: &str) {
         "reference" => print!("{}", REFERENCE),
         "gotchas" => print!("{}", GOTCHAS),
         "agents-md" => print!("{}", AGENTS_MD),
+        "guarantees" => print!("{}", GUARANTEES),
+        "serving" | "serve" | "http" => print!("{}", SERVING),
         "all" => {
-            print!("{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n", AGENT_SUMMARY, REFERENCE, GOTCHAS);
+            print!("{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n", AGENT_SUMMARY, REFERENCE, GOTCHAS, GUARANTEES, SERVING);
             print_builtins_markdown();
         }
         "" | "topics" => {

@@ -282,7 +282,10 @@ pub fn serde_json_to_value(v: &serde_json::Value) -> Value {
                 // arbitrary_precision, which preserves the raw digits)
                 Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(big))
             } else {
-                Value::Float(n.as_f64().unwrap_or(0.0))
+                // a number f64 cannot hold (1e400): infinity, not 0.0
+                Value::Float(n.as_f64().unwrap_or_else(|| {
+                    if n.to_string().starts_with('-') { f64::NEG_INFINITY } else { f64::INFINITY }
+                }))
             }
         }
         serde_json::Value::String(s) => Value::String(s.clone()),
