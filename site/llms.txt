@@ -349,10 +349,28 @@ re-run on YOUR toolchain: `soma test .soma_env/packages/matrix/matrix.cell`.
 
 Interpreter is the reference semantics. Annotate hot handlers `[native]`
 for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on numeric loops.
-Native vocabulary is restricted (numbers, buffers; no strings/maps/think).
-Same semantics as the interpreter: a native division by zero is an ordinary
-`try`-catchable error, and an Int slot refuses a non-exact `/` instead of
-truncating.
+`soma check` verifies the native vocabulary (every handler, every error at
+once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
+is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
+an Int slot refuses a non-exact `/` instead of truncating.
+
+What a `[native]` handler may use — nothing else:
+- parameters and locals: Int, Float, Bool, String (a List cannot cross the
+  boundary: keep the loop interpreted and make the per-element kernel native)
+- arithmetic, comparisons, `if`/`while`/`for i in range(a, b)`, `return`,
+  sqrt log exp pow abs min max floor ceil round sin cos random, idiv gcd
+  pow_mod sqrt_int, band bor bxor bnot shl shr bit_len bit_test bit_set
+  bit_clr bit_next, to_int to_float to_string, str_len str_at str_eq,
+  sibling `[native]` handlers
+- arrays: `buffer(n) -> Buf` (n Ints, zeroed), `buf_get(b, i) -> Int`,
+  `buf_set(b, i, v)`; `buffer_f(n)` / `buf_get_f` / `buf_set_f` for Floats
+- maps: `hashmap() -> HMap` (Int → Int), `hm_get(m, k)`, `hm_set(m, k, v)`,
+  `hm_inc(m, k)`, `hm_len(m)`, `hm_has(m, k)`
+- strings: `strbuf() -> SBuf`, `sb_push(b, s)`, `sb_push_int(b, n)`,
+  `sb_push_char(b, c)`, `sb_len(b)`, `sb_finish(b) -> String`;
+  `regex_count / regex_replace / regex_match`; `read_file read_stdin write_str`
+Not available natively: maps/lists/records, think(), memory slots, `try`,
+`match`, string interpolation — call an interpreted handler for those.
 
 ## Learn from working code
 

@@ -36,7 +36,7 @@ const fn nondet(name: &'static str, category: &'static str, signature: &'static 
 pub const CATEGORY_ORDER: &[&str] = &[
     "string", "types", "math", "collection", "pipeline", "lambda",
     "io", "template", "web", "http", "time", "state", "memory",
-    "agent", "linalg", "internal", "reserved",
+    "agent", "linalg", "native", "internal", "reserved",
 ];
 
 pub static BUILTINS: &[BuiltinDoc] = &[
@@ -443,6 +443,27 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Reserved nondeterministic name — tracked for replay divergence; not currently dispatched."),
     nondet("rand", "reserved", "rand() -> Float",
         "Reserved nondeterministic name — tracked for replay divergence; not currently dispatched."),
+
+    // ── [native] handlers only ──────────────────────────────────────
+    doc("buffer", "native", "buffer(n: Int) -> Buf   [native] only",
+        "Array of n Ints, zeroed. Random access with buf_get / buf_set. Not available in interpreted handlers."),
+    doc("buf_get", "native", "buf_get(b: Buf, i: Int) -> Int   [native] only", "Read b[i]."),
+    doc("buf_set", "native", "buf_set(b: Buf, i: Int, v: Int) -> ()   [native] only", "Write b[i] = v."),
+    doc("buffer_f", "native", "buffer_f(n: Int) -> BufF   [native] only", "Array of n Floats, zeroed (buf_get_f / buf_set_f)."),
+    doc("buf_get_f", "native", "buf_get_f(b: BufF, i: Int) -> Float   [native] only", "Read b[i]."),
+    doc("buf_set_f", "native", "buf_set_f(b: BufF, i: Int, v: Float) -> ()   [native] only", "Write b[i] = v."),
+    doc("hashmap", "native", "hashmap() -> HMap   [native] only", "Int → Int hash map (hm_get / hm_set / hm_inc / hm_len / hm_has)."),
+    doc("hm_get", "native", "hm_get(m: HMap, k: Int) -> Int   [native] only", "Value at k, 0 when absent."),
+    doc("hm_set", "native", "hm_set(m: HMap, k: Int, v: Int) -> ()   [native] only", "m[k] = v."),
+    doc("hm_inc", "native", "hm_inc(m: HMap, k: Int) -> ()   [native] only", "m[k] += 1 (inserting 1)."),
+    doc("hm_len", "native", "hm_len(m: HMap) -> Int   [native] only", "Number of keys."),
+    doc("hm_has", "native", "hm_has(m: HMap, k: Int) -> Bool   [native] only", "Whether k is present."),
+    doc("strbuf", "native", "strbuf() -> SBuf   [native] only", "Growable string builder (sb_push / sb_push_int / sb_push_char / sb_len / sb_finish)."),
+    doc("sb_push", "native", "sb_push(b: SBuf, s: String) -> ()   [native] only", "Append a string."),
+    doc("sb_push_int", "native", "sb_push_int(b: SBuf, n: Int) -> ()   [native] only", "Append an Int's decimal digits."),
+    doc("sb_push_char", "native", "sb_push_char(b: SBuf, c: Int) -> ()   [native] only", "Append one character by code point."),
+    doc("sb_len", "native", "sb_len(b: SBuf) -> Int   [native] only", "Bytes so far."),
+    doc("sb_finish", "native", "sb_finish(b: SBuf) -> String   [native] only", "The built String."),
 ];
 
 /// Look up a builtin by name.

@@ -32,10 +32,22 @@ pub type NativeSiblings = std::collections::HashSet<String>;
 /// Validate a [native] handler's parameter types.
 fn check_params(handler_name: &str, params: &[Param]) -> Result<(), NativeCheckError> {
     for p in params {
+        let is_list = matches!(&p.ty.node, TypeExpr::Generic { name, .. } | TypeExpr::Simple(name) if name == "List");
+        if is_list {
+            // the codegen lowered a List<Float> parameter to a bare f64 and
+            // the failure was a rustc dump — say what the boundary takes
+            return Err(NativeCheckError {
+                handler_name: handler_name.to_string(),
+                reason: format!(
+                    "parameter '{}' is a List — [native] parameters are Int, Float, Bool or String (a list cannot cross the boundary): keep the loop interpreted and make the per-element kernel [native], or build the data inside the handler with buffer(n) / buf_set / buf_get",
+                    p.name
+                ),
+            });
+        }
         if !is_native_type(&p.ty.node) {
             return Err(NativeCheckError {
                 handler_name: handler_name.to_string(),
-                reason: format!("uses unsupported parameter type '{:?}' for '{}'", p.ty.node, p.name),
+                reason: format!("parameter '{}' has type {} — [native] parameters are Int, Float, Bool or String", p.name, crate::commands::describe::format_type(&p.ty.node)),
             });
         }
     }

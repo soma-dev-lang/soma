@@ -597,6 +597,7 @@ impl<'a> Checker<'a> {
         // 1. Structural checks
         self.check_structure(cell);
         self.check_face_return_literals(cell);
+        self.check_native_vocabulary(cell);
 
         // 2. Property checks (data-driven from registry)
         let mut prop_checker = PropertyChecker::new(self.registry);
@@ -1196,6 +1197,30 @@ impl<'a> Checker<'a> {
             }
         }
         false
+    }
+
+    /// `[native]` bodies use a restricted vocabulary: report every handler
+    /// that steps outside it HERE, not one per `soma run` after a rustc
+    /// round-trip.
+    fn check_native_vocabulary(&mut self, cell: &CellDef) {
+        let natives: Vec<&OnSection> = cell.sections.iter().filter_map(|s| match &s.node {
+            Section::OnSignal(h) if h.properties.iter().any(|p| p == "native") => Some(h),
+            _ => None,
+        }).collect();
+        if natives.is_empty() { return; }
+        let siblings: native::NativeSiblings = natives.iter().map(|h| h.signal_name.clone()).collect();
+        for h in natives {
+            if let Err(e) = native::check_native_handler(&h.signal_name, &h.params, &h.body, &siblings) {
+                let span = cell.sections.iter().find_map(|s| match &s.node {
+                    Section::OnSignal(x) if x.signal_name == h.signal_name => Some(s.span),
+                    _ => None,
+                }).unwrap_or(Span { start: 0, end: 0 });
+                self.errors.push(CheckError::InterpolationUndefined {
+                    message: format!("handler '{}' is marked [native] but {} — the native vocabulary is numbers, buffer/hashmap/strbuf primitives and sibling [native] handlers (see `soma docs agent`, Performance); drop [native] or move the rest out", h.signal_name, e.reason),
+                    span,
+                });
+            }
+        }
     }
 
     /// `signal f() -> Int` with `return "text"` (or a trailing literal of
