@@ -335,7 +335,7 @@ previous tick. verify checks the `transition()` targets of these blocks too.
 
 A top-level handler invocation is all-or-nothing: if it raises, every memory
 write and every `transition()` it made is rolled back. A failing `try { }`
-block is rolled back to where it started, and the handler continues. Under
+block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their new value), and the handler continues. Under
 `soma serve` handlers run one at a time, so read-modify-write is safe
 (300 parallel payments of 10 against a balance of 1000 pay exactly 100).
 With persistent slots the handler IS one SQLite transaction: a process killed
@@ -548,7 +548,8 @@ Arguments are type-checked at the call like any handler; `random(n)` /
 (no negative indexes); an Int literal beyond 64 bits is refused (build it:
 `shl(1, 64) - 1`); `[loop_bound(N)]` is checked; recursion deeper than
 20,000 calls raises stack_overflow. Floats print with the shortest
-round-trip digits, never in exponent form (`1e-7` prints `0.0000001`).
+round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.0000001`), to_json and
+maps inside a value use JSON's shortest form (`1.18e21`).
 `soma check` verifies the native vocabulary (every handler, every error at
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and

@@ -500,7 +500,10 @@ pub struct BusEvent {
 }
 
 /// Shared broadcast bus for real-time event distribution
-pub type EventBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::Sender<BusEvent>>>>;
+/// Bounded per-client queues: a client that stops reading is dropped once
+/// its queue is full (a non-reading SSE client grew the server to 394 MB).
+pub type EventBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::SyncSender<BusEvent>>>>;
+pub const BUS_QUEUE: usize = 1024;
 
 /// TCP peer connections for inter-process signal bus
 pub type PeerBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::Sender<String>>>>;
@@ -991,6 +994,7 @@ impl Interpreter {
                 .unwrap_or_default();
             let table_set: std::collections::HashSet<&String> = tables.iter().collect();
             let mut orphans: Vec<String> = Vec::new();
+            let mut orphan_machines: Vec<String> = Vec::new();
             let mut gone_cells: Vec<String> = Vec::new();
             for t in &tables {
                 if t.ends_with("_log") || t.starts_with("sqlite_") || expected.contains(t) { continue; }
@@ -999,9 +1003,14 @@ impl Interpreter {
                 if rows == 0 { continue; }
                 match cells.iter().find(|cn| t.starts_with(&format!("{}_", cn))) {
                     Some(cell) if !t.contains("__sm_") => orphans.push(format!("{}.{} ({} row(s))", cell, &t[cell.len() + 1..], rows)),
-                    Some(_) => {}
+                    // a renamed state machine: its instances would silently
+                    // restart from the initial state (terminal ones included)
+                    Some(cell) => orphan_machines.push(format!("{}.{} ({} instance(s))", cell, t.split("__sm_").nth(1).unwrap_or(""), rows)),
                     None => gone_cells.push(format!("'{}' ({} row(s))", t, rows)),
                 }
+            }
+            if !orphan_machines.is_empty() && IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {
+                out.push(format!("state machine instances no machine declares any more: {} — a renamed or removed machine; under a new name every instance starts over from the initial state (terminal ones included): rename it back", orphan_machines.join(", ")));
             }
             if !orphans.is_empty() && IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {
                 out.push(format!("slot data no slot declares any more: {} — a renamed or removed slot; its rows are still in .soma_data/soma.db (rename the slot back to read them, or copy them over in a one-shot handler)", orphans.join(", ")));
@@ -2145,6 +2154,14 @@ impl Interpreter {
                     }
                 }
 
+                // raw sockets are outside a capability-scoped tool
+                if matches!(name.as_str(), "ws_connect" | "connect" | "subscribe") {
+                    if let Some(caps) = self.current_tool_caps.as_ref() {
+                        if !caps.iter().any(|c| c == "*") {
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!("capability denied: {}() is outside this tool's capabilities {:?}", name, caps))));
+                        }
+                    }
+                }
                 // WebSocket builtins — need &mut self
                 if name == "ws_connect" {
                     if let Some(Value::String(url)) = arg_vals.first() {
@@ -2866,6 +2883,13 @@ impl Interpreter {
                         return Ok(Value::Bool(items().iter().any(|v| deep_equal(v, x))));
                     }
                 }
+                // a List slot is indexed by position: rows.set("0", 7) wrote
+                // into an invisible keyed table and was lost
+                "set" | "put" if !matches!(args.first(), Some(Value::Int(_))) => {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.set(): '{}' is a List slot — index it by an Int position (rows.set(0, v)), got {}",
+                        slot_name, slot_name, args.first().map(value_type_name).unwrap_or("nothing")) }));
+                }
                 // rows[i] = v / rows.set(i, v): replace one element (was a
                 // silent no-op — the keyed map under the log took the write)
                 "set" | "put" if matches!(args.first(), Some(Value::Int(_))) && args.len() == 2 => {
@@ -3003,6 +3027,12 @@ impl Interpreter {
                 Ok(Value::Bool(removed))
             }
             "append" | "push" => {
+                // a Map slot has keys, not positions: push() wrote rows it
+                // never reads back (the value vanished)
+                if self.slot_kind(cell_name, slot_name) == Some("Map") {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.{}(): '{}' is a Map slot — write it by key ({}.set(key, value)), or declare it List<…>", slot_name, method, slot_name, slot_name) }));
+                }
                 let val = args.first()
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "append() requires a value argument".to_string()
@@ -4064,10 +4094,9 @@ impl Interpreter {
 
     fn send_bus_now(&self, event: BusEvent) {
         if let Some(ref bus) = self.event_bus {
-            if let Ok(senders) = bus.lock() {
-                for sender in senders.iter() {
-                    let _ = sender.send(event.clone());
-                }
+            if let Ok(mut senders) = bus.lock() {
+                // a full queue is a client that is not reading: drop it
+                senders.retain(|sender| sender.try_send(event.clone()).is_ok());
             }
         }
     }
@@ -4696,6 +4725,26 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
 /// accepted for Float (promoted); an integral Float for Int; `Any`,
 /// sum types and cell refs accept anything.
 pub(crate) fn check_param_type(param: &Param, val: Value) -> Result<Value, String> {
+    // the ELEMENT type of `List<Int>` / `Map<String, Int>` too (["x", "y"]
+    // entered `g(xs: List<Int>)` and failed deep in the body)
+    if let TypeExpr::Generic { name, args } = &param.ty.node {
+        let elem = args.last().and_then(|a| match &a.node { TypeExpr::Simple(t) => Some(t.as_str()), _ => None });
+        let fits = |t: &str, v: &Value| match (t, v) {
+            ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_)) | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) => true,
+            ("Int" | "Float" | "String" | "Bool", _) => false,
+            _ => true,
+        };
+        if let Some(t) = elem {
+            let bad = match (name.as_str(), &val) {
+                ("List", Value::List(xs)) => xs.iter().find(|x| !fits(t, x)).cloned(),
+                ("Map", Value::Map(m)) => m.iter().filter(|(k, _)| !k.starts_with('_')).map(|(_, v)| v).find(|x| !fits(t, x)).cloned(),
+                _ => None,
+            };
+            if let Some(b) = bad {
+                return Err(format!("parameter '{}' expects {}<…{}>, got an element {} {}", param.name, name, t, value_type_name(&b), { let s: String = format!("{}", b).chars().take(30).collect(); s }));
+            }
+        }
+    }
     let ty = match &param.ty.node {
         TypeExpr::Simple(t) => t.as_str(),
         TypeExpr::Generic { name, .. } => name.as_str(),

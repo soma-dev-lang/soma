@@ -323,6 +323,22 @@ pub fn generate_native_source_with_config(
     if any_rug {
         out.push_str("use rug::Integer;\n");
         out.push_str("use rug::Assign;\n\n");
+        // Integer → f64 rounded to NEAREST, ties to even (rug's to_f64
+        // truncates: 2^63 - 1 became 9223372036854774784.0)
+        out.push_str("#[allow(dead_code)] fn _soma_i2f(x: &Integer) -> f64 {\n");
+        out.push_str("    let bits = x.significant_bits();\n");
+        out.push_str("    if bits <= 53 { return x.to_f64(); }\n");
+        out.push_str("    let neg = *x < 0;\n");
+        out.push_str("    let a = Integer::from(x.abs_ref());\n");
+        out.push_str("    let shift = bits - 54;\n");
+        out.push_str("    let top = Integer::from(&a >> shift);\n");
+        out.push_str("    let sticky = a.find_one(0).map_or(false, |lo| lo < shift);\n");
+        out.push_str("    let mut m = top.to_u64().unwrap_or(0);\n");
+        out.push_str("    let round_bit = m & 1; m >>= 1;\n");
+        out.push_str("    if round_bit == 1 && (sticky || (m & 1) == 1) { m += 1; }\n");
+        out.push_str("    let v = (m as f64) * 2f64.powi((shift + 1) as i32);\n");
+        out.push_str("    if neg { -v } else { v }\n");
+        out.push_str("}\n\n");
     }
 
     if uses_random {
@@ -762,7 +778,7 @@ fn _soma_div_f_big(a: Integer, b: Integer) -> f64 {
             panic!("{}", _SOMA_BIG_QUOTIENT);
         }
     }
-    a.to_f64() / b.to_f64()
+    _soma_i2f(&a) / _soma_i2f(&b)
 }
 "#;
 
@@ -4045,7 +4061,7 @@ impl FnGenerator {
                 {
                     return match target_ty {
                         NativeType::Int => format!("({}.to_i64().expect(\"BigInt overflow\"))", name),
-                        NativeType::Float => format!("({}.to_f64())", name),
+                        NativeType::Float => format!("_soma_i2f(&{})", name),
                         NativeType::Bool => format!("({} != 0)", name),
                         NativeType::String => format!("{}.to_string()", name),
                     };
@@ -4447,7 +4463,7 @@ impl FnGenerator {
                         if self.small_int_vars.contains(name) {
                             return format!("({} as f64)", name);
                         }
-                        return format!("({}.to_f64())", name);
+                        return format!("_soma_i2f(&{})", name);
                     }
                     // Compound Int expr in Rug mode that involves only
                     // small_int_vars stays in i64 land — lower as direct.
@@ -4456,7 +4472,7 @@ impl FnGenerator {
                         return format!("(({}) as f64)", a);
                     }
                     let e = self.gen_expr_rug(&args[0].node);
-                    return format!("(({}).to_f64())", e);
+                    return format!("_soma_i2f(&({}))", e);
                 }
                 let a = self.gen_expr_direct(&args[0].node, a_ty);
                 format!("({} as f64)", a)

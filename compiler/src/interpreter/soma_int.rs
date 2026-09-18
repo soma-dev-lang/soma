@@ -53,7 +53,9 @@ impl SomaInt {
     pub fn to_f64(&self) -> f64 {
         match &self.0 {
             SomaIntInner::Small(n) => *n as f64,
-            SomaIntInner::Big(n) => n.to_f64(),
+            // round to NEAREST (rug's to_f64 truncates: 2^70 - 1 gave
+            // 1180591620717411172352.0, not 2^70)
+            SomaIntInner::Big(n) => rug::Float::with_val(53, &**n).to_f64(),
         }
     }
 

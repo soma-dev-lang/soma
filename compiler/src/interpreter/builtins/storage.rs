@@ -255,7 +255,14 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     }
                 }
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
-                interp.think_rounds = think_rounds(args);
+                interp.think_rounds = if cell_has_tools(interp, cell_name) { think_rounds(args) } else { 1 };
+                if let Some(Value::Map(m)) = args.last() {
+                    if let Some(v) = m.get("max_tokens") {
+                        if !matches!(v, Value::Int(n) if n.to_i64().map_or(false, |x| x > 0)) {
+                            return Some(Err(RuntimeError::TypeError(format!("think(): max_tokens must be a positive Int, got {} (a non-positive value sent the provider default of 2048)", v))));
+                        }
+                    }
+                }
                 Some(with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms)))
             } else {
                 Some(Err(RuntimeError::TypeError("think(prompt: String) requires a string argument".to_string())))
@@ -270,7 +277,14 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     }
                 }
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
-                interp.think_rounds = think_rounds(args);
+                interp.think_rounds = if cell_has_tools(interp, cell_name) { think_rounds(args) } else { 1 };
+                if let Some(Value::Map(m)) = args.last() {
+                    if let Some(v) = m.get("max_tokens") {
+                        if !matches!(v, Value::Int(n) if n.to_i64().map_or(false, |x| x > 0)) {
+                            return Some(Err(RuntimeError::TypeError(format!("think(): max_tokens must be a positive Int, got {} (a non-positive value sent the provider default of 2048)", v))));
+                        }
+                    }
+                }
                 Some(with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms)))
             } else {
                 Some(Err(RuntimeError::TypeError("think_json(prompt: String) requires a string argument".to_string())))
@@ -289,6 +303,14 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
 ///   think("prompt", "system", map("max_tokens", 500))
 /// `think(p, map("max_rounds", 1))`: at most N provider rounds (tool calls
 /// included) — 10 by default; the cost bound multiplies by it.
+/// An agent without `tool`s gets ONE provider round: a model that answers
+/// with tool calls anyway was asked again up to 10 times (a cost bound
+/// proven at ×1 spent ×6).
+fn cell_has_tools(interp: &Interpreter, cell_name: &str) -> bool {
+    interp.cells.get(cell_name).map_or(false, |c| c.sections.iter().any(|s| matches!(&s.node,
+        crate::ast::Section::Face(f) if f.declarations.iter().any(|d| matches!(d.node, crate::ast::FaceDecl::Tool(_))))))
+}
+
 pub(crate) fn think_rounds(args: &[Value]) -> usize {
     match args.last() {
         Some(Value::Map(m)) => match m.get("max_rounds") {
@@ -558,9 +580,16 @@ fn build_tool_definitions(interp: &Interpreter, cell_name: &str) -> Vec<serde_js
                         let mut properties = serde_json::Map::new();
                         let mut required = Vec::new();
                         for param in &tool.params {
-                            let param_type = match format!("{}", crate::commands::describe::format_type(&param.ty.node)).as_str() {
-                                "Int" | "Float" => "number",
+                            // the JSON-schema type the parameter really takes (a Map
+                            // advertised as "string" made the model send text the
+                            // type check then refused)
+                            let t = format!("{}", crate::commands::describe::format_type(&param.ty.node));
+                            let param_type = match t.as_str() {
+                                "Int" => "integer",
+                                "Float" => "number",
                                 "Bool" => "boolean",
+                                x if x == "Map" || x.starts_with("Map<") => "object",
+                                x if x == "List" || x.starts_with("List<") => "array",
                                 _ => "string",
                             };
                             properties.insert(param.name.clone(), serde_json::json!({

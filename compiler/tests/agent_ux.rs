@@ -1697,3 +1697,35 @@ cell C { face { signal go(q: String) -> String }  cost { tokens: 300 }  on go(q:
     let (out, _) = soma_in(&d, &["run", "n.cell", "id"]);
     assert!(!out.contains("no slot declares"), "{out}");
 }
+
+/// Cycle 17 (attack): max_tokens must be positive (cost and runtime);
+/// Map slots refuse push, List slots refuse non-Int set; List<Int>
+/// parameters check their elements; BigInt → Float rounds to nearest.
+#[test]
+fn cycle17_attack_findings() {
+    let d = dir("cycle17b");
+    std::fs::write(d.join("e.cell"), "cell agent E {\n cost { tokens: 100 }\n on go() { return think(\"go\", map(\"max_tokens\", 0)) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "e.cell"]);
+    assert_eq!(code, 1, "{out}");
+
+    std::fs::write(d.join("s.cell"), r#"
+cell A {
+  memory { m: Map<String, Int> [persistent]  rows: List<Int> [persistent] }
+  on p(v: Int) { m.push(v) }
+  on s() { rows.set("0", 7) }
+  on g(xs: List<Int>) { return sum(xs) }
+  on f() { return to_float(1180591620717411303423) }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["run", "--fresh", "s.cell", "p", "5"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("is a Map slot"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "s.cell", "s"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("is a List slot"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "s.cell", "g", "[\"x\",\"y\"]"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("got an element String"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "s.cell", "f"]);
+    assert!(out.contains("1180591620717411303424.0"), "{out}");
+}

@@ -1,3 +1,8 @@
+thread_local! {
+    /// set while a capability-scoped tool runs (see builtins/mod.rs)
+    pub(crate) static NO_REDIRECTS: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
 use super::super::{Value, RuntimeError, map_from_pairs};
 use super::serde_json_to_value;
 
@@ -91,7 +96,10 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
     });
     let timeout_ms = int_opt("timeout").unwrap_or(30_000);
     let max_bytes = int_opt("max_bytes").map(|v| v as usize);
-    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(timeout_ms)).build();
+    // inside a capability-scoped tool a redirect is NOT followed: a 302 to
+    // another host escaped the tool's URL capability
+    let redirects = if NO_REDIRECTS.with(|c| c.get()) { 0 } else { 5 };
+    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(timeout_ms)).redirects(redirects).build();
     let mut req = agent.request(method, url);
     if let Some(b) = &body {
         // a Map/List body was serialized to JSON; a String is sent as is

@@ -28,6 +28,15 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     // V1.6: tool-capability enforcement. If the LLM dispatched into a tool
     // with declared capabilities, the http/* builtins refuse URLs that do
     // not match any declared scope.
+    // a capability-scoped tool reaches only its URLs: no file access, no raw
+    // sockets (read_file / write_file / ws_connect bypassed the capability)
+    if interp.current_tool_caps.is_some() && matches!(name, "read_file" | "write_file" | "read_csv" | "write_csv" | "read_files" | "ws_connect" | "connect" | "subscribe" | "append_file") {
+        let caps = interp.current_tool_caps.clone().unwrap_or_default();
+        if !caps.iter().any(|c| c == "*") {
+            return Some(Err(RuntimeError::TypeError(format!("capability denied: {}() is outside this tool's capabilities {:?}", name, caps))));
+        }
+    }
+    http::NO_REDIRECTS.with(|c| c.set(interp.current_tool_caps.as_ref().map_or(false, |caps| !caps.iter().any(|c| c == "*"))));
     if matches!(name, "http_get" | "http_post" | "http_put" | "http_patch" | "http_delete") {
         if let Some(caps) = interp.current_tool_caps.clone() {
             if let Some(Value::String(url)) = args.first() {

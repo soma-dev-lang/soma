@@ -84,7 +84,9 @@ body (a non-JSON body → `400 {"kind": "json"}`). At start-up `serve` calls a
 zero-argument `start()` (or `init()`) handler when the cell has one; neither
 name is an HTTP endpoint (a request could re-run it). A handler that changes
 state — a slot write, a transition, an emit, a call into another cell —
-answers `GET`/`HEAD` with `405` (`Allow: POST`): with CORS open to every
+answers `GET`/`HEAD` with `405` (`Allow: POST`) — for the auto-exposed
+`/<handler>` endpoints; routes of your own `request` answer every method you
+match, so match on `method` for the ones that write: with CORS open to every
 origin, a GET that writes is writable by any web page (`<img src=…>`). A JSON
 body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
 `_values` is refused (400): a client cannot forge a record or a sum-type
@@ -101,7 +103,8 @@ variant.
   origin only when serving beyond loopback with `--host`).
 - `publish("stream", data)` and every `emit ev(data)` are pushed to every
   WebSocket client as `{"event": "stream", "data": …}` and to SSE clients
-  subscribed to that name — AT COMMIT: a handler that raises (or a `try`
+  subscribed to that name (a client that stops reading is dropped after 1024
+  queued events) — AT COMMIT: a handler that raises (or a `try`
   that rolls back) pushes nothing. There is no per-client routing: filter by
   the event data on the client.
 - SSE: a `request` route returns `sse("stream1", "ev")`; the first event is

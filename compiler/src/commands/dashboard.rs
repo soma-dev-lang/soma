@@ -20,7 +20,9 @@ pub fn render_dashboard(program: &Program) -> String {
         cells_json.push(cell_json);
     }
 
-    let data = format!("[{}]", cells_json.join(","));
+    // embedded in an inline <script>: `</` in author text (an invariant's
+    // string literal) closed the script
+    let data = format!("[{}]", cells_json.join(",")).replace("</", "<\\/");
     build_html(&data)
 }
 
@@ -111,8 +113,10 @@ fn cell_to_json(cell: &CellDef, report: &BudgetReport) -> String {
             for inv in &mem.invariants {
                 verifications.push(serde_json::json!({
                     "property": format!("invariant: {}", super::describe::format_expr_pub(&inv.node)),
-                    "status": "pass",
-                    "detail": "checked at runtime",
+                    // enforced at every write — NOT a proof (`soma verify`
+                    // says which writers are proven); shown as runtime-checked
+                    "status": "runtime",
+                    "detail": "enforced at run time on every write; see `soma verify` for proofs",
                 }));
             }
         }
@@ -421,7 +425,7 @@ function verdictBadge(v) {{
 }}
 
 function verdictIcon(v) {{
-  const sym = {{pass:"\u2713",fail:"\u2717",advisory:"!",no_budget:"\u2014"}};
+  const sym = {{pass:"\u2713",fail:"\u2717",advisory:"!",runtime:"\u26A0",no_budget:"\u2014"}};
   return '<span class="verif-icon '+v+'">'+(sym[v]||"?")+'</span>';
 }}
 

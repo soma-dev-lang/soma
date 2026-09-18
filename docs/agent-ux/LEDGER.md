@@ -496,3 +496,16 @@ exhaustion, approval parking and kill -9 recovery.
 - [ ] A slow think() holds the process-wide handler lock (9 s GET while a job researches).
 - [ ] No schema option for think_json; no way to script tool-call rounds with `mock think`.
 
+### Cycle 17 — attack (same binary)
+
+- [x] **False cost proofs**: a think() in an agent WITHOUT tools was costed at one round while a model answering with tool calls was asked again up to 10 times (proven 100, spent 300) — one round without tools; `max_tokens` 0 / negative was "peak 0" while 2048 was sent — refused at run time and not a bound.
+- [x] **Security**: a redirect escaped a tool's URL capability (no redirects inside a capability-scoped tool); `read_file` / `write_file` / `ws_connect` / `connect` / `subscribe` ignored capabilities (refused inside a scoped tool); `_type` as a request HEADER forged a record in a `headers: Map`.
+- [x] **Data**: `.push()` on a Map slot wrote rows it never read back (refused); `rows.set("0", 7)` on a List slot went into an invisible table (refused); a renamed state machine restarted every instance silently (serve warns now); a JSON `null` passed the Map/List parameter check under HTTP; List<Int> / Map<String, Int> parameters check their elements.
+- [x] **Wrong results**: BigInt → Float truncated (native and interpreter) — rounded to nearest now, so native BigInt mode matches the interpreter; tool JSON schema advertised Map/List as strings and Int as number; bus events reached only the router cell.
+- [x] **Crash / exhaustion**: `soma run` aborted on a 45,000-deep value (512 MB main stack now); a non-reading SSE client grew memory without bound (per-client queue of 1024, then dropped).
+- [x] Dashboard: invariants are "runtime-checked", not ✓, and author text cannot close its inline script; verify's verdict names an empty `[verify.before]` list correctly; docs: try keeps plain locals, float printing in JSON, request routes and GET, SSE queue.
+
+### Open
+- [ ] Storage tables can still collide ACROSS programs sharing one directory (check sees one program).
+- [ ] A variant whose FIELDS changed is not reported by the start-up audit.
+

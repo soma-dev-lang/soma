@@ -334,7 +334,8 @@ fn extract_think_opts(args: &[Spanned<Expr>]) -> (Option<i64>, Option<i64>) {
                 if let Expr::Literal(Literal::String(k)) = &kvs[i].node {
                     if let Expr::Literal(Literal::Int(v)) = &kvs[i + 1].node {
                         match k.as_str() {
-                            "max_tokens" => max_tokens = Some(*v),
+                            // 0 / negative is refused at run time (it sent 2048): not a bound
+                            "max_tokens" => max_tokens = if *v > 0 { Some(*v) } else { None },
                             "timeout" => timeout = Some(*v),
                             _ => {}
                         }

@@ -652,8 +652,16 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 interp.event_bus = Some(ebus.clone());
                                 interp.peer_bus = Some(pbus.clone());
                                 if let Some(ref c) = cluster_for_reader { interp.set_cluster(c.clone(), &sharded_for_reader); }
-                                if let Err(e) = interp.call_signal(&cname2, event_name, vec![data]) {
-                                    eprintln!("bus: event '{}' failed (rolled back): {}", event_name, e);
+                                // every cell with `on <event>` gets it, like an in-process
+                                // emit (only the router cell was tried: Ledger.paid was lost)
+                                let mut targets: Vec<String> = prog2.cells.iter()
+                                    .filter(|c| c.node.sections.iter().any(|s| matches!(&s.node, ast::Section::OnSignal(on) if on.signal_name == event_name)))
+                                    .map(|c| c.node.name.clone()).collect();
+                                if targets.is_empty() { targets.push(cname2.to_string()); }
+                                for target in targets {
+                                    if let Err(e) = interp.call_signal(&target, event_name, vec![data.clone()]) {
+                                        eprintln!("bus: event '{}' failed in {} (rolled back): {}", event_name, target, e);
+                                    }
                                 }
                             }
                         }
@@ -839,7 +847,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // Bus → WS broadcast thread
             {
                 let clients = ws_clients.clone();
-                let (bus_tx, bus_rx) = std::sync::mpsc::channel::<interpreter::BusEvent>();
+                let (bus_tx, bus_rx) = std::sync::mpsc::sync_channel::<interpreter::BusEvent>(interpreter::BUS_QUEUE);
                 if let Ok(mut senders) = bus.lock() {
                     senders.push(bus_tx);
                 }
@@ -1178,7 +1186,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             };
             let query_keys: Vec<String> = url.split_once('?').map(|(_, q)| q.split('&')
                 .map(|pair| urlencoding_decode(pair.split_once('=').map_or(pair, |(k, _)| k))).collect()).unwrap_or_default();
-            for k in form_keys.iter().chain(query_keys.iter()) {
+            // and header NAMES (`_type: Admin` reached a `headers: Map`)
+            let header_keys: Vec<String> = req_headers.iter().map(|(k, _)| k.clone()).collect();
+            for k in form_keys.iter().chain(query_keys.iter()).chain(header_keys.iter()) {
                 if let Some(r) = ["_type", "_variant", "_values"].into_iter().find(|r| k == r) { reserved_hit = Some(r); break; }
             }
         }
@@ -1542,7 +1552,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     .map(|(i, a)| coerce_to_type(types.get(i).map(|s| s.as_str()).unwrap_or("Any"), a)).collect();
                 // a Map/List parameter that still holds text: the body was
                 // not JSON → 400 kind json, before the handler (as for `request`)
-                if let Some(i) = out.iter().enumerate().position(|(i, v)| matches!(v, interpreter::Value::String(_)) && matches!(types.get(i).map(|s| s.as_str()), Some("Map" | "List"))) {
+                // text that is not JSON — or JSON `null` (it ran the body with ())
+                if let Some(i) = out.iter().enumerate().position(|(i, v)| matches!(v, interpreter::Value::String(_) | interpreter::Value::Unit) && matches!(types.get(i).map(|s| s.as_str()), Some("Map" | "List"))) {
                     let msg = format!("{}(): parameter '{}' expects {} — the request body must be JSON", signal_name,
                         handler_params.get(&signal_name).and_then(|p| p.get(i)).cloned().unwrap_or_default(), types[i]);
                     let resp = tiny_http::Response::from_string(error_body(&msg, "json"))
@@ -1585,7 +1596,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 if is_sse {
                     eprintln!("{} {} → SSE stream", method, url);
 
-                    let (tx, rx) = std::sync::mpsc::channel::<interpreter::BusEvent>();
+                    let (tx, rx) = std::sync::mpsc::sync_channel::<interpreter::BusEvent>(interpreter::BUS_QUEUE);
                     if let Ok(mut senders) = event_bus.lock() {
                         senders.push(tx);
                     }

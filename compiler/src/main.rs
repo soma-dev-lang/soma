@@ -292,7 +292,10 @@ enum Commands {
 fn main() {
     // Run on a thread with an 8 MB stack to prevent SIGABRT on deep recursion
     // before the interpreter's own depth guard (max_depth: 512) can fire.
-    let builder = std::thread::Builder::new().stack_size(16 * 1024 * 1024);
+    // 512 MB of (virtual, lazily committed) stack: a value nested 45,000
+    // deep aborted `soma run` in equality / to_json (exit 134), where serve
+    // (64 MB request threads) survived
+    let builder = std::thread::Builder::new().stack_size(512 * 1024 * 1024);
     let handler = builder.spawn(main_inner).expect("failed to spawn main thread");
     if let Err(e) = handler.join() {
         eprintln!("fatal: {:?}", e);
@@ -760,8 +763,10 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             if check_failed { why.push("soma check failed".to_string()); }
             if structural > 0 { why.push(format!("{} cell{} with failed checks — state machine or invariants (see ✗ lines)", structural, if structural == 1 { "" } else { "s" })); }
             if temporal > 0 { why.push(format!("{} temporal propert{} failed", temporal, if temporal == 1 { "y" } else { "ies" })); }
-            let bad_cells = unknown_states.iter().filter(|u| u.starts_with("soma.toml")).count();
-            let unknown = unknown_states.len() - bad_cells;
+            let bad_cells = unknown_states.iter().filter(|u| u.starts_with("soma.toml [verify] cells")).count();
+            let bad_before = unknown_states.iter().filter(|u| u.starts_with("soma.toml [verify.before")).count();
+            let unknown = unknown_states.len() - bad_cells - bad_before;
+            if bad_before > 0 { why.push("a [verify.before] entry lists no state".to_string()); }
             if unknown > 0 { why.push(format!("{} propert{} on unknown states", unknown, if unknown == 1 { "y" } else { "ies" })); }
             if bad_cells > 0 { why.push("soma.toml [verify] cells names no state machine of this file".to_string()); }
             if strict_warnings > 0 {
