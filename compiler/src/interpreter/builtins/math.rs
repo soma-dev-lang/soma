@@ -43,6 +43,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         // Ruby/Python-style floored division and modulo (the result of `mod`
         // has the divisor's sign; `%` keeps the dividend's sign like C/Rust)
+        // Int arguments only: mod(7.5, 2) truncated to 1 (Python: 1.5)
+        "floor_div" | "mod" | "divmod" | "div_round" | "idiv" if args.iter().any(|a| !matches!(a, Value::Int(_))) => {
+            let bad = args.iter().find(|a| !matches!(a, Value::Int(_))).unwrap();
+            Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                "{}() takes Ints, got {} {} — for Floats use `/`, floor() and `x - floor(x / y) * y`", name, super::super::value_type_name(bad), bad) }))
+        }
         "floor_div" | "mod" | "divmod" if args.len() == 2 => {
             let (a, b) = (big_of(&args[0]), big_of(&args[1]));
             if b == 0 {

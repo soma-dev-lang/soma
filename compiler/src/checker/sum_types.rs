@@ -385,11 +385,11 @@ fn check_match_exhaustiveness(
 
     for arm in arms {
         if arm.guard.is_some() {
-            // A guard might fail, so this arm doesn't actually exhaust
-            // its pattern's variant on its own.  Treat it as a catch-all
-            // for the exhaustiveness check (the value can still flow
-            // through).
-            has_wildcard = true;
+            // A guard might fail, so this arm does NOT cover its variant
+            // (`Sq(s) if s > 5.0` alone raised "variant 'Sq' not handled"
+            // at run time after a clean check) — it still names the type
+            let mut scratch: HashSet<String> = HashSet::new();
+            collect_variants(&arm.pattern, reg, &mut scratch, &mut inferred_type);
             continue;
         }
         if !collect_variants(&arm.pattern, reg, &mut covered, &mut inferred_type) {

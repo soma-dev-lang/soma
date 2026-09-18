@@ -705,6 +705,33 @@ impl<'a> Checker<'a> {
                 Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
                 _ => None,
             }).flatten().collect())).collect();
+            // a test rule naming `Store.config`: tests reach slots by their
+            // bare name (it raised "undefined variable: Store" after check ✓)
+            for cell in program.cells.iter().filter(|c| c.node.kind == CellKind::Test) {
+                for sec in &cell.node.sections {
+                    let Section::Rules(rules) = &sec.node else { continue };
+                    for rule in &rules.rules {
+                        let e = match &rule.node {
+                            Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => e,
+                            Rule::Let { value, .. } => value,
+                            _ => continue,
+                        };
+                        let mut hit: Option<(String, String)> = None;
+                        literals::for_each_in_expr(&e.node, &mut |x| if let Expr::FieldAccess { target, field } = x {
+                            if let Expr::Ident(c) = &target.node {
+                                if slots_of.get(c).map_or(false, |v| v.contains(field)) { hit = Some((c.clone(), field.clone())); }
+                            }
+                        });
+                        if let Some((c, f)) = hit {
+                            self.errors.push(CheckError::Static {
+                                kind: "foreign_slot",
+                                message: format!("in a test cell a slot is named without its cell: write `{}` (not `{}.{}`) — test rules read every cell's slots by their bare name", f, c, f),
+                                span: rule.span,
+                            });
+                        }
+                    }
+                }
+            }
             // (interpolation segments exposed: `"{Store.secret}"` too)
             let exposed = crate::checker::desugar::expose_for_analysis(program);
             for cell in &exposed.cells {
@@ -892,6 +919,27 @@ impl<'a> Checker<'a> {
                                     span: rule.span,
                                 });
                             }
+                        }
+                    }
+                }
+            }
+        }
+        // `on ws` is served only from the cell that owns `request` (another
+        // cell's ran never, port+1 was not even opened), and a frame is text
+        {
+            let owner = program.cells.iter().find(|c| c.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == "request"))).map(|c| c.node.name.clone());
+            for cell in program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent)) {
+                for sec in &cell.node.sections {
+                    let Section::OnSignal(on) = &sec.node else { continue };
+                    if on.signal_name != "ws" { continue; }
+                    if let Some(o) = &owner {
+                        if *o != cell.node.name {
+                            self.errors.push(CheckError::Static { kind: "ws_placement", message: format!("`on ws` of cell {} never runs: `soma serve` serves the cell that owns `request` ({}) — move `on ws` there", cell.node.name, o), span: sec.span });
+                        }
+                    }
+                    if let Some(p) = on.params.first() {
+                        if !matches!(&p.ty.node, TypeExpr::Simple(t) if t == "String" || t == "Any") {
+                            self.errors.push(CheckError::Static { kind: "ws_placement", message: "`on ws(msg: String)`: a WebSocket frame arrives as text — parse it with from_json(msg)".to_string(), span: sec.span });
                         }
                     }
                 }

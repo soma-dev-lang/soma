@@ -381,7 +381,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let bus_host = host.to_string();
 
         let natives = natives.clone();
-        std::thread::spawn(move || {
+        crate::interpreter::spawn_handler_thread(move || {
             let listener = match std::net::TcpListener::bind(format!("{}:{}", bus_host, bus_port)) {
                 Ok(l) => l,
                 Err(e) => {
@@ -419,7 +419,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 // Writer: peer bus → TCP lines to peer
                 let mut write_stream = stream;
                 let natives = natives.clone();
-                std::thread::spawn(move || {
+                crate::interpreter::spawn_handler_thread(move || {
                     use std::io::Write;
                     for line in rx {
                         if write_stream.write_all(line.as_bytes()).is_err() { return; }
@@ -438,7 +438,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let pbus = peer_bus_clone.clone();
 
                 let natives = natives.clone();
-                std::thread::spawn(move || {
+                crate::interpreter::spawn_handler_thread(move || {
                     use std::io::BufRead;
                     let reader = std::io::BufReader::new(read_stream);
                     eprintln!("bus: peer connected");
@@ -489,7 +489,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                             let pbus_back = pbus.clone();
                                             let pid = peer_id.clone();
                                             let natives = natives.clone();
-                                            std::thread::spawn(move || {
+                                            crate::interpreter::spawn_handler_thread(move || {
                                                 if let Ok(stream) = std::net::TcpStream::connect(&pid) {
                                                     stream.set_nodelay(true).ok();
                                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -740,7 +740,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         // Writer thread: peer bus → TCP
                         let mut writer = stream;
                         let natives = natives.clone();
-                        std::thread::spawn(move || {
+                        crate::interpreter::spawn_handler_thread(move || {
                             use std::io::Write;
                             for line in rx {
                                 if writer.write_all(line.as_bytes()).is_err() { return; }
@@ -761,7 +761,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let hb_cluster = cluster.clone();
         let hb_bus = peer_bus.clone();
         let natives = natives.clone();
-        std::thread::spawn(move || {
+        crate::interpreter::spawn_handler_thread(move || {
             let mut tick = 0u64;
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(3));
@@ -866,7 +866,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let loopback_bind = matches!(host, "127.0.0.1" | "localhost" | "::1");
 
         let natives = natives.clone();
-        std::thread::spawn(move || {
+        crate::interpreter::spawn_handler_thread(move || {
             let listener = match std::net::TcpListener::bind(format!("{}:{}", ws_host, ws_port)) {
                 Ok(l) => l,
                 Err(e) => {
@@ -876,8 +876,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             };
 
             // Track all WS client senders for broadcasting
-            let ws_clients: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<tungstenite::WebSocket<std::net::TcpStream>>>>>> =
+            // each client has its OWN bounded queue and writer thread: one
+            // client that stops reading used to stall the broadcast for all
+            // (and their events were then dropped silently); now it alone is
+            // dropped when its queue is full
+            let ws_clients: std::sync::Arc<std::sync::Mutex<Vec<(usize, std::sync::mpsc::SyncSender<String>)>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let next_client = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
             // Bus → WS broadcast thread
             {
@@ -887,25 +892,22 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     senders.push(bus_tx);
                 }
                 let natives = natives.clone();
-                std::thread::spawn(move || {
+                crate::interpreter::spawn_handler_thread(move || {
                     loop {
                         match bus_rx.recv() {
+                            Ok(event) if event.internal => {}
                             Ok(event) => {
                                 // the data as JSON: a String payload went in unquoted (a client's
                                 // `hi","event":"admin"` rewrote the envelope every client parsed)
                                 let json = format!("{{\"event\":{},\"data\":{}}}", serde_json::to_string(&event.stream).unwrap_or_default(), crate::interpreter::builtins::string::to_json_string(&event.data));
-                                let msg = tungstenite::Message::Text(json);
                                 if let Ok(mut clients) = clients.lock() {
-                                    clients.retain(|client| {
-                                        if let Ok(mut ws) = client.lock() {
-                                            if ws.send(msg.clone()).is_ok() {
-                                                ws.flush().is_ok()
-                                            } else {
-                                                false
-                                            }
-                                        } else {
+                                    clients.retain(|(_, tx)| match tx.try_send(json.clone()) {
+                                        Ok(()) => true,
+                                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                                            eprintln!("ws: a client stopped reading ({} events queued) — dropped", interpreter::BUS_QUEUE);
                                             false
                                         }
+                                        Err(_) => false,
                                     });
                                 }
                             }
@@ -926,9 +928,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let cname = cname.clone();
                 let bus = bus.clone();
                 let clients = ws_clients.clone();
+                let next_client = next_client.clone();
 
                 let natives = natives.clone();
-                std::thread::spawn(move || {
+                crate::interpreter::spawn_handler_thread(move || {
+                    // a client that stops reading: its send times out and it is
+                    // dropped (the blocking broadcast stalled every other client
+                    // behind it, whose queues then overflowed silently)
+                    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
                     // Clone the TCP stream BEFORE WS handshake
                     let read_stream = match stream.try_clone() {
                         Ok(s) => s,
@@ -963,12 +970,24 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         Err(_) => return,
                     };
 
-                    // The write side: used for broadcasting (Arc<Mutex>)
+                    // The write side: replies and this client's broadcast queue
                     let ws_write = std::sync::Arc::new(std::sync::Mutex::new(ws));
-
-                    // Register the write handle for broadcasting
+                    let my_id = next_client.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let (push_tx, push_rx) = std::sync::mpsc::sync_channel::<String>(interpreter::BUS_QUEUE);
+                    {
+                        let w = ws_write.clone();
+                        crate::interpreter::spawn_handler_thread(move || {
+                            for text in push_rx {
+                                let Ok(mut ws) = w.lock() else { break };
+                                if ws.send(tungstenite::Message::Text(text)).is_err() || ws.flush().is_err() { break; }
+                            }
+                            // dropped (or disconnected): close the socket so the
+                            // client knows to reconnect and re-fetch
+                            if let Ok(mut ws) = w.lock() { let _ = ws.close(None); let _ = ws.flush(); let _ = ws.get_mut().shutdown(std::net::Shutdown::Both); }
+                        });
+                    }
                     if let Ok(mut c) = clients.lock() {
-                        c.push(ws_write.clone());
+                        c.push((my_id, push_tx));
                     }
 
                     eprintln!("ws: client connected");
@@ -1022,7 +1041,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     }
 
                     if let Ok(mut c) = clients.lock() {
-                        c.retain(|client| !std::sync::Arc::ptr_eq(client, &ws_write));
+                        c.retain(|(id, _)| *id != my_id);
                     }
                 });
             }
@@ -1077,7 +1096,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 eprintln!("scheduler: every {}ms [{}]", interval, cname);
 
                 let natives = natives.clone();
-                std::thread::spawn(move || {
+                crate::interpreter::spawn_handler_thread(move || {
                     // Create interpreter ONCE and reuse across ticks
                     let mut interp = interpreter::Interpreter::new(&prog);
                     interp.native_handlers = (*natives).clone();
@@ -1128,7 +1147,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 eprintln!("scheduler: after {}ms [{}]", delay, cname);
 
                 let natives = natives.clone();
-                std::thread::spawn(move || {
+                crate::interpreter::spawn_handler_thread(move || {
                     std::thread::sleep(std::time::Duration::from_millis(delay));
                     let mut interp = interpreter::Interpreter::new(&prog);
                     interp.native_handlers = (*natives).clone();
@@ -1712,6 +1731,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         match rx.recv_timeout(std::time::Duration::from_secs(15)) {
                             Ok(event) => {
                                 if !streams.is_empty() && !streams.iter().any(|n| *n == event.stream) { continue; }
+                                // `sse()` with no name: the publish() streams, not internal emits
+                                if streams.is_empty() && event.internal { continue; }
                                 // JSON on ONE line: a String payload with a newline forged
                                 // `event:` / `data:` lines for the other subscribers
                                 let json = crate::interpreter::builtins::string::to_json_string(&event.data);

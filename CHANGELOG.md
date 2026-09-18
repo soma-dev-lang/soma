@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- serve: `emit` is not pushed to WebSocket clients (only `publish` is; SSE
+  clients get an emit only when they name it); each WebSocket client has its
+  own queue (a slow client is dropped instead of starving the others);
+  websocket, tick and bus threads have the 64 MB handler stack (deep
+  recursion there aborted the process).
+- `try { … }?` re-raises; a guarded match arm does not cover its variant;
+  `"{slot}"` works; `{…}` must be one expression.
+- `mod` / `idiv` / `floor_div` / `div_round` take Ints; `sum_by` / `avg_by`
+  refuse non-numbers; `distinct` keeps values of different kinds.
 - serve: a GET that calls into another cell's handler (bare, UFCS or pipe)
   is 405 like a qualified call.
 - Crypto builtins take Strings only (`secure_eq("null", ())` was true);

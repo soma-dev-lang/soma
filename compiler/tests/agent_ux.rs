@@ -2294,3 +2294,46 @@ fn cycle26_findings() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("several state machines"), "{out}");
 }
+
+/// Cycle 27: `Store.config` in a test rule is a check error (bare `config`
+/// works there).
+#[test]
+fn cycle27_findings() {
+    let d = dir("cycle27");
+    std::fs::write(d.join("b.cell"), "cell Store { memory { config: Map<String, Int> [persistent] } on put(k: String, v: Int) { config.set(k, v) } }\ncell test T { rules {\n  let _ = put(\"a\", 1)\n  assert Store.config.get(\"a\") == 1\n} }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "b.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("write `config`"), "{out}");
+    std::fs::write(d.join("ok.cell"), "cell Store { memory { config: Map<String, Int> [persistent] } on put(k: String, v: Int) { config.set(k, v) } }\ncell test T { rules {\n  let _ = put(\"a\", 1)\n  assert config.get(\"a\") == 1\n} }\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "ok.cell"]);
+    assert_eq!(code, 0, "{out}");
+}
+
+/// Cycle 27 (attack): `try {…}?` re-raises; a guarded arm does not cover its
+/// variant; `"{slot}"` reads the slot; `{a b}` is not one expression;
+/// mod/idiv take Ints; sum_by refuses non-numbers; distinct keeps "1" and 1.
+#[test]
+fn cycle27_attack_findings() {
+    let d = dir("cycle27a");
+    std::fs::write(d.join("q.cell"), "cell Q {\n  memory { m: Map<String, Int> [persistent] }\n  on risky() { fail(\"not_found\", \"nope\") }\n  on pay() {\n    m.set(\"written\", 1)\n    let v = try { risky() }?\n    return v\n  }\n  on peek() { return m.keys }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "--fresh", "q.cell", "pay"]);
+    assert_ne!(code, 0, "{out}");
+    let (out, _) = soma_in(&d, &["run", "q.cell", "peek"]);
+    assert!(out.contains("[]"), "the write before `?` committed: {out}");
+
+    std::fs::write(d.join("g.cell"), "cell type Sh { variants { Sq(Float)  Dot } }\ncell A { on area(s: Sh) { return match s {\n  Sq(x) if x > 5.0 -> x\n  Dot -> 0.0\n} } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("missing variant `Sq`"), "{out}");
+
+    std::fs::write(d.join("s.cell"), "cell S {\n  memory { counts: Map<String, Int> [persistent] }\n  on f() {\n    counts.set(\"a\", 1)\n    return \"{counts}\"\n  }\n  on g() { return [try { mod(7.5, 2) }.kind, try { sum_by([map(\"q\", \"abc\")], \"q\") }.kind, len(distinct([\"1\", 1]))] }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "s.cell", "f"]);
+    assert!(out.contains("\"a\": 1"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "s.cell", "g"]);
+    assert!(out.contains(r#"["type", "type", 2]"#), "{out}");
+
+    std::fs::write(d.join("i.cell"), "cell I { on f(total: Int) { return \"{total junk}\" } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "i.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("is not one expression"), "{out}");
+}

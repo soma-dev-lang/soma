@@ -748,3 +748,28 @@ lost only in-flight requests and the sha256 audit chain stayed intact across
 
 ### Open
 - [ ] Verify prints each property per machine (vacuous lines for machines without the state).
+
+## Cycle 27 (2026-09-18) — multiplayer card-game backend with an economy
+
+7/10: check, 76 tests, verify --strict (12 temporal properties, 0 ⚠) green;
+400 concurrent players trading and playing with two kill -9: currency
+conserved (175,000 minted = balances + escrow), 700/700 items unique, 695
+out-of-hand plays refused. No false proof.
+
+### Fixed
+- [x] **Data leak**: every `emit` (cell-to-cell) was pushed to every WebSocket client — an internal `emit secret_hand(…)` reached an unauthenticated client verbatim. An emit now reaches only SSE clients that name it; WebSocket clients and `sse()` without names get `publish` streams only.
+- [x] `Store.config.get(…)` in a test rule passed check and raised "undefined variable: Store" — a check error pointing at the bare `config`.
+
+### Cycle 27 — attack (same binary)
+
+- [x] **One WebSocket message or tick killed the process**: recursion ~250 deep in `on ws`, an `every`/`after` block or a bus listener overflowed the default thread stack (HTTP threads had 64 MB) — every thread that runs handlers gets the 64 MB stack; the 512-frame guard answers `stack_overflow`.
+- [x] **One slow WebSocket client starved all others**: the broadcast blocked behind it, then healthy clients silently lost events (1052/3000) — each client has its own bounded queue and writer; a client whose queue fills is dropped and its socket closed (3000/3000 delivered to the healthy client).
+- [x] `try { … }?` returned the error map as a 200 value, committing earlier writes — it re-raises the error (same kind).
+- [x] A guarded arm (`Sq(s) if s > 5.0`) counted as covering its variant — it does not (check error for the missing plain arm).
+- [x] `"{slot}"` passed check and raised "undefined variable" — interpolation reads slots like code; `"{a b}"` silently dropped `b` (and never checked it) — one expression per `{…}` (check and run).
+- [x] `mod(7.5, 2)` / `idiv` / `floor_div` / `div_round` truncated Floats — Int arguments only (kind type); `sum_by` / `avg_by` skipped non-numbers silently — kind type; `distinct(["1", 1])` dropped the Int — keyed by kind and value.
+- [x] `on ws` in a cell that does not own `request` (never runs) or typed other than String — check errors.
+
+### Open
+- [ ] A string literal on the line after `require … else Tag` becomes the require's detail (the parser does not see newlines).
+- [ ] `sort_by` with NaN keys does not sort; Int/Float `==` goes through f64.

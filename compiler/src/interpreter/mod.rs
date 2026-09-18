@@ -503,6 +503,10 @@ fn body_has_let(body: &[Spanned<Statement>]) -> bool {
 pub struct BusEvent {
     pub stream: String,
     pub data: Value,
+    /// an `emit` (cell-to-cell): delivered to SSE clients that NAME it, never
+    /// to every WebSocket client (an internal `emit secret_hand(…)` reached
+    /// an unauthenticated WS client); `publish` goes to both
+    pub internal: bool,
 }
 
 /// Shared broadcast bus for real-time event distribution
@@ -2026,7 +2030,7 @@ impl Interpreter {
                 let broadcast_data = if arg_vals.len() == 1 { arg_vals[0].clone() } else { Value::List(arg_vals) };
                 // Broadcast to event bus (SSE / WebSocket clients) — at commit
                 if self.event_bus.is_some() {
-                    self.send_bus(BusEvent { stream: sig.clone(), data: broadcast_data.clone() });
+                    self.send_bus(BusEvent { stream: sig.clone(), data: broadcast_data.clone(), internal: true });
                 }
                 // Send to peer bus (inter-process)
                 if let Some(ref peers) = self.peer_bus {
@@ -2499,8 +2503,12 @@ impl Interpreter {
                     Value::Map(entries) => {
                         if let Some(err) = entries.get("error") {
                             if !matches!(err, Value::Unit) {
-                                // Has an error — propagate by returning the error map
-                                return Err(ExecError::Return(val));
+                                // Has an error — RE-RAISE it (kind and detail kept):
+                                // returning the error map answered 200 and
+                                // committed the handler's earlier writes
+                                let kind = match entries.get("kind") { Some(Value::String(k)) => k.clone(), _ => "error".to_string() };
+                                let detail = match entries.get("detail") { Some(Value::String(d)) => d.clone(), _ => format!("{}", err) };
+                                return Err(ExecError::Runtime(RuntimeError::Domain { kind, message: detail }));
                             }
                         }
                         // No error — unwrap value
@@ -3457,9 +3465,12 @@ impl Interpreter {
     fn eval_interpolation_expr(&mut self, expr_str: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> InterpResult {
         // Fast path: simple variable name
         if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return match env.get(expr_str) {
-                Some(val) => InterpResult::Value(val.clone()),
-                None => InterpResult::Err(ExecError::Runtime(RuntimeError::UndefinedVar(expr_str.to_string()))),
+            if let Some(val) = env.get(expr_str) { return InterpResult::Value(val.clone()); }
+            // a memory slot, a variant, a state name: as in code (`"{counts}"`
+            // raised "undefined variable" after a clean check)
+            return match self.eval_expr(&Expr::Ident(expr_str.to_string()), env, cell_name, signal_name) {
+                Ok(v) => InterpResult::Value(v),
+                Err(e) => InterpResult::Err(e),
             };
         }
         // Fast path: var.field on a map (anything else falls through to the full evaluator)
@@ -3494,6 +3505,12 @@ impl Interpreter {
             None => return InterpResult::NotAnExpr,
         };
         if let crate::ast::Section::OnSignal(ref on) = section.node {
+            // `{total - fee junk}`: ONE expression — the trailing `junk` was
+            // dropped silently (and never checked)
+            if on.body.len() > 1 {
+                return InterpResult::Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                    "string interpolation `{{{}}}` is not one expression — the part after it would be dropped; bind it with a let first", expr_str))));
+            }
             if let Some(stmt) = on.body.first() {
                 if let crate::ast::Statement::Return { ref value } = stmt.node {
                     return match self.eval_expr(&value.node, env, cell_name, signal_name) {
@@ -3666,7 +3683,7 @@ impl Interpreter {
 
         // Writer thread: owns the WS, sends outgoing messages
         // Incoming messages are handled via SSE (separate channel)
-        std::thread::spawn(move || {
+        spawn_handler_thread(move || {
             let mut ws = ws;
             for msg in out_rx {
                 if ws.send(tungstenite::Message::Text(msg)).is_err() { break; }
@@ -3707,7 +3724,7 @@ impl Interpreter {
 
         // Writer thread
         let mut write_stream = stream;
-        std::thread::spawn(move || {
+        spawn_handler_thread(move || {
             use std::io::Write;
             for line in rx {
                 if write_stream.write_all(line.as_bytes()).is_err() { break; }
@@ -3725,7 +3742,7 @@ impl Interpreter {
         let ws_out = self.ws_out.clone();
         let cname = cell_name.to_string();
 
-        std::thread::spawn(move || {
+        spawn_handler_thread(move || {
             use std::io::BufRead;
             let reader = std::io::BufReader::new(read_stream);
             for line in bus_lines(reader) {
@@ -3818,7 +3835,7 @@ impl Interpreter {
         let cname = cell_name.to_string();
 
         let url_owned = url.to_string();
-        std::thread::spawn(move || {
+        spawn_handler_thread(move || {
             let mut ws = ws;
             eprintln!("subscribe: listening on {}", url_owned);
             loop {
@@ -5562,15 +5579,11 @@ mod tests {
                 }
             }
         "#;
-        // Division by zero causes try to wrap an error, then ? propagates it
-        // The result should be a map with an error field (returned via early return)
-        let result = run(source, "T", "run", vec![]).unwrap();
-        // ? propagates by returning the error map
-        assert!(matches!(result, Value::Map(_)));
-        if let Value::Map(ref entries) = result {
-            assert!(entries.get("error").is_some());
-            let err = entries.get("error").unwrap();
-            assert!(!matches!(err, Value::Unit));
+        // `?` RE-RAISES the error the try caught, with its kind (returning
+        // the error map answered 200 and committed earlier writes)
+        match run(source, "T", "run", vec![]) {
+            Err(RuntimeError::Domain { kind, .. }) => assert_eq!(kind, "division_by_zero"),
+            other => panic!("expected the division_by_zero to propagate, got {:?}", other),
         }
     }
 
@@ -6023,4 +6036,13 @@ fn and_or_err(e: RuntimeError, op: &str) -> RuntimeError {
         RuntimeError::TypeError(m) => RuntimeError::TypeError(format!("{} needs Bool operands: {}", op, m)),
         other => other,
     }
+}
+
+/// A thread that may run handlers: the 64 MB stack of the request threads,
+/// so the 512-frame recursion guard fires before the OS stack does (a
+/// websocket, tick or bus thread on the default stack aborted the whole
+/// process at ~250 frames).
+pub fn spawn_handler_thread<F>(f: F) -> std::thread::JoinHandle<()>
+where F: FnOnce() + Send + 'static {
+    std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(f).expect("spawn a handler thread")
 }

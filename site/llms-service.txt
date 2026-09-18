@@ -826,16 +826,17 @@ variant.
   like any other; `ws` is not an HTTP endpoint. A browser connection is
   accepted only from a localhost / 127.0.0.1 Origin (and from the Host's own
   origin only when serving beyond loopback with `--host`).
-- `publish("stream", data)` and every `emit ev(data)` are pushed to every
-  WebSocket client as `{"event": "stream", "data": …}` and to SSE clients
-  subscribed to that name (a client that stops reading is dropped after 1024
-  queued events) — AT COMMIT: a handler that raises (or a `try`
-  that rolls back) pushes nothing. WebSocket clients have no per-client
-  routing: EVERY one receives every event, so do not publish one user's or
-  tenant's data where others hold a WebSocket — give each an SSE stream of
-  its own.
+- `publish("stream", data)` is pushed to every WebSocket client as
+  `{"event": "stream", "data": …}` and to the SSE clients subscribed to that
+  name; an `emit ev(data)` is cell-to-cell: it reaches only SSE clients that
+  NAME it (`sse("ev")`), never WebSocket clients (a client that stops reading
+  is dropped after 1024 queued events). Both are sent AT COMMIT: a handler
+  that raises (or a `try` that rolls back) pushes nothing. WebSocket clients
+  have no per-client routing: EVERY one receives every `publish`, so do not
+  publish one user's or tenant's data where others hold a WebSocket — give
+  each an SSE stream of its own.
 - SSE: a `request` route returns `sse("stream1", "ev")`; the client receives
-  only the named streams (`sse()` with no name: all of them) — so per-tenant
+  only the named streams (`sse()` with no name: every `publish` stream) — so per-tenant
   streams (`sse("t_" + tenant)`) behind your own auth check in `request` keep
   tenants apart. The first event is `connected`. There is no replay — after
   a reconnect, re-fetch state.

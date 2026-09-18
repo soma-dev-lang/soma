@@ -739,6 +739,18 @@ impl<'a> Walker<'a> {
             Ok(p) => p,
             Err(_) => return false,
         };
+        // `{total - fee junk}` parses as TWO statements: the runtime refuses it
+        let several = program.cells.first().map_or(false, |cell| cell.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.body.len() > 1)));
+        if several {
+            self.issues.push(InterpolationIssue {
+                message: format!("string interpolation `{{{}}}` is not one expression — the part after it would be dropped; bind it with a let first", expr_str),
+                span,
+                warning: false,
+                habit: false,
+                kind: "interpolation_trailing",
+            });
+            return true;
+        }
         let expr = program.cells.first().and_then(|cell| {
             cell.node.sections.iter().find_map(|s| {
                 if let Section::OnSignal(ref on) = s.node {

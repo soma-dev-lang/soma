@@ -139,7 +139,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             let data = args[1].clone();
             if interp.event_bus.is_some() {
                 // held until the handler commits
-                interp.send_bus(crate::interpreter::BusEvent { stream, data });
+                interp.send_bus(crate::interpreter::BusEvent { stream, data, internal: false });
             }
             return Some(Ok(Value::Unit));
         }

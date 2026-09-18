@@ -151,6 +151,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
+                    if let Some(bad) = non_numeric(items, &field) {
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("sum_by(): field '{}' holds {} {} — not a number (it was skipped silently)", field, crate::interpreter::value_type_name(&bad), bad) }));
+                    }
                     let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
                     Some(Ok(num_value(num_sum(&xs))))
                 } else { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
@@ -162,6 +165,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
+                    if let Some(bad) = non_numeric(items, &field) {
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("avg_by(): field '{}' holds {} {} — not a number (it was skipped silently)", field, crate::interpreter::value_type_name(&bad), bad) }));
+                    }
                     let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
                     Some(Ok(num_avg(&xs)))
                 } else { Some(Ok(Value::Unit)) }
@@ -242,25 +248,22 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if let Some(Value::List(items)) = args.first() {
                 if let Some(field) = args.get(1) {
                     let field = format!("{}", field);
-                    let mut seen = Vec::new();
+                    // keyed by kind AND text: "1" and 1 (or () and "null") are
+                    // different values (the Int was dropped as a duplicate)
+                    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                     let mut result: Vec<Value> = Vec::new();
                     for item in items {
                         let v = if let Value::Map(e) = item {
                             e.get(&field).cloned().unwrap_or(Value::Unit)
                         } else { item.clone() };
-                        let key = format!("{}", v);
-                        if !seen.contains(&key) {
-                            seen.push(key);
+                        if seen.insert(distinct_key(&v)) {
                             result.push(v);
                         }
                     }
                     Some(Ok(Value::List(result)))
                 } else {
-                    let mut seen = Vec::new();
-                    let result: Vec<Value> = items.iter().filter(|item| {
-                        let v = format!("{}", item);
-                        if seen.contains(&v) { false } else { seen.push(v); true }
-                    }).cloned().collect();
+                    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    let result: Vec<Value> = items.iter().filter(|item| seen.insert(distinct_key(item))).cloned().collect();
                     Some(Ok(Value::List(result)))
                 }
             } else { Some(Ok(Value::List(vec![]))) }
@@ -342,4 +345,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         _ => None,
     }
+}
+
+/// The first present field value that is not a number (a numeric String
+/// counts as its number; an absent field or `()` is skipped).
+fn non_numeric(items: &[Value], field: &str) -> Option<Value> {
+    items.iter().find_map(|it| match it {
+        Value::Map(m) => m.get(field).filter(|v| !matches!(v, Value::Unit) && num_of(v).is_none()).cloned(),
+        _ => None,
+    })
+}
+
+fn distinct_key(v: &Value) -> String {
+    format!("{}\u{1f}{}", crate::interpreter::value_type_name(v), crate::interpreter::builtins::string::to_json_string(v))
 }

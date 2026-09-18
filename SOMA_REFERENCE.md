@@ -328,7 +328,7 @@ if result.error != () {
 }
 let value = result.value
 
-// Short form: ? operator propagates errors (returns early if error)
+// Short form: `try { … }?` re-raises the error (same kind; the handler is rolled back) or gives the value
 let value = try { risky_operation() }?
 // Equivalent to: if result has error, return error map; else unwrap value
 
