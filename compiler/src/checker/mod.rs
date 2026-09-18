@@ -1339,7 +1339,7 @@ impl<'a> Checker<'a> {
         } else if self.errors.is_empty() {
             if note_count > 0 && real_warning_count == 0 {
                 output.push_str(&format!(
-                    "✓ All checks passed ({} note{}).\n",
+                    "✓ All checks passed ({} note{} above).\n",
                     note_count,
                     if note_count == 1 { "" } else { "s" }
                 ));

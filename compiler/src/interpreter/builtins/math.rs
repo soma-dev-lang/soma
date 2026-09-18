@@ -110,6 +110,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "sum" => Some(numeric_reduce(args, "sum")),
         "product" => Some(numeric_reduce(args, "product")),
         "avg" => Some(numeric_reduce(args, "avg")),
+        "median" | "variance" | "pvariance" | "stddev" | "pstdev" | "stdev" => Some(stats_reduce(args, name)),
         "min" if args.len() == 1 && matches!(args.first(), Some(Value::List(_))) => {
             Some(numeric_reduce(args, "min"))
         }
@@ -395,6 +396,51 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
 /// Reduce a single list of numbers (or the variadic numeric args) with
 /// sum / product / min / max / avg. Stays Int-exact (BigInt-safe via
 /// SomaInt) when every element is an Int; promotes to Float if any
+/// median / variance / stddev of a list (or variadic numbers). Population
+/// variance (divide by n) like statistics.pvariance / pstdev; `median`
+/// answers an Int when the list is Ints and the middle is exact, the `/`
+/// rule.
+fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
+    let items: Vec<Value> = match args.first() {
+        Some(Value::List(xs)) if args.len() == 1 => xs.clone(),
+        _ => args.to_vec(),
+    };
+    if let Some(bad) = items.iter().find(|v| !matches!(v, Value::Int(_) | Value::Float(_))) {
+        return Err(RuntimeError::TypeError(format!(
+            "{}() needs numbers, found {} {}", op, super::super::value_type_name(bad), bad
+        )));
+    }
+    if items.is_empty() {
+        return Err(RuntimeError::Domain { kind: "empty".to_string(), message: format!("empty: {}() of no values", op) });
+    }
+    let all_int = items.iter().all(|v| matches!(v, Value::Int(_)));
+    let mut nums: Vec<f64> = items.iter().map(|v| match v {
+        Value::Float(f) => *f,
+        Value::Int(si) => si.to_f64(),
+        _ => 0.0,
+    }).collect();
+    let n = nums.len() as f64;
+    let as_value = |x: f64| -> Value {
+        if all_int && x.fract() == 0.0 && x.abs() < 9.0e15 { Value::Int(SomaInt::from_i64(x as i64)) } else { Value::Float(x) }
+    };
+    match op {
+        "median" => {
+            nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let m = nums.len() / 2;
+            let med = if nums.len() % 2 == 1 { nums[m] } else { (nums[m - 1] + nums[m]) / 2.0 };
+            Ok(as_value(med))
+        }
+        _ => {
+            let mean = nums.iter().sum::<f64>() / n;
+            let var = nums.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / n;
+            match op {
+                "variance" | "pvariance" => Ok(Value::Float(var)),
+                _ => Ok(Value::Float(var.sqrt())),
+            }
+        }
+    }
+}
+
 /// element is a Float.
 fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
     // accept either a single List arg or variadic numbers

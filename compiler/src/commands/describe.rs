@@ -83,7 +83,10 @@ fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
                         .map(|p| p.node.name().to_string())
                         .collect();
 
+                    // an invariant belongs to the slot it names (else to the
+                    // slot declared just before it) — not to every slot
                     let invariants: Vec<String> = mem.invariants.iter()
+                        .filter(|inv| invariant_slot(mem, inv).as_deref() == Some(slot.node.name.as_str()))
                         .map(|inv| format_expr(&inv.node))
                         .collect();
 
@@ -645,4 +648,25 @@ pub fn format_constraint_pub(c: &Constraint) -> String {
 /// Public re-export of `format_expr` for the dashboard.
 pub fn format_expr_pub(c: &Expr) -> String {
     format_expr(c)
+}
+
+/// The slot an `invariant` line is about: the one slot name it mentions,
+/// else the slot declared closest before it in the source.
+fn invariant_slot(mem: &crate::ast::MemorySection, inv: &crate::ast::Spanned<crate::ast::Expr>) -> Option<String> {
+    let text = format_expr(&inv.node);
+    let words: std::collections::HashSet<&str> = text
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let named: Vec<&crate::ast::Spanned<crate::ast::MemorySlot>> = mem.slots.iter()
+        .filter(|sl| words.contains(sl.node.name.as_str()))
+        .collect();
+    if named.len() == 1 {
+        return Some(named[0].node.name.clone());
+    }
+    mem.slots.iter()
+        .filter(|sl| sl.span.start <= inv.span.start)
+        .max_by_key(|sl| sl.span.start)
+        .or_else(|| mem.slots.first())
+        .map(|sl| sl.node.name.clone())
 }

@@ -1085,11 +1085,36 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         .collect()
                 };
                 if !query_string.is_empty() {
+                    // query values fill the parameters the path left open —
+                    // by name when the key is one, else in order; a key the
+                    // handler has no room for (?utm_source=…) is ignored
+                    // rather than a "expected 1 argument, got 2"
+                    let param_names = handler_params.get(sig).cloned().unwrap_or_default();
+                    let mut by_name: Vec<(usize, interpreter::Value)> = Vec::new();
+                    let mut positional: Vec<interpreter::Value> = Vec::new();
                     for pair in query_string.split('&') {
-                        if let Some((_, v)) = pair.split_once('=') {
+                        if let Some((k, v)) = pair.split_once('=') {
                             let decoded = urlencoding_decode(v).replace('+', " ");
-                            args.push(coerce_query_value(&decoded));
+                            let key = urlencoding_decode(k);
+                            match param_names.iter().position(|p| *p == key) {
+                                Some(i) if i >= args.len() => by_name.push((i, coerce_query_value(&decoded))),
+                                Some(_) => {}
+                                None => positional.push(coerce_query_value(&decoded)),
+                            }
                         }
+                    }
+                    let mut slots: Vec<Option<interpreter::Value>> = vec![None; param_names.len().saturating_sub(args.len())];
+                    for (i, v) in by_name {
+                        if let Some(slot) = slots.get_mut(i - args.len()) { *slot = Some(v); }
+                    }
+                    let mut positional = positional.into_iter();
+                    for slot in slots.iter_mut() {
+                        if slot.is_none() {
+                            if let Some(v) = positional.next() { *slot = Some(v); }
+                        }
+                    }
+                    for slot in slots.into_iter().flatten() {
+                        args.push(slot);
                     }
                 }
                 if method == "POST" && !body.is_empty() {

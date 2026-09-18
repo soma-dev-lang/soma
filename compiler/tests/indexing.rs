@@ -295,7 +295,7 @@ fn numeric_vector_plus_is_elementwise_concat_is_explicit() {
         "go",
     );
     assert_eq!(c, 0, "{o}");
-    assert!(o.contains("[4.0, 6.0]"), "numeric v+v must be elementwise: {o}");
+    assert!(o.contains("[4, 6]"), "numeric v+v must be elementwise (Int lists stay Int): {o}");
     // explicit concatenation is concat(a, b)
     let (o2, c2) = run(
         "cell T { face { signal go() -> List } on go() { return concat(list(1,2), list(3,4)) } }",

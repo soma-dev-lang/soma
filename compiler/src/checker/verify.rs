@@ -806,16 +806,20 @@ pub fn format_results(results: &[VerifyResult]) -> String {
             output.push_str("\n");
         }
 
+        // colour only for a person at a terminal: `soma verify | tee` used
+        // to get escape codes in the file
+        let tty = std::io::IsTerminal::is_terminal(&std::io::stderr()) && std::env::var_os("NO_COLOR").is_none();
+        let paint = |code: &str, mark: &str| if tty { format!("\x1b[{}m{}\x1b[0m", code, mark) } else { mark.to_string() };
         for check in &result.checks {
             match check {
                 VerifyCheck::Pass(msg) => {
-                    output.push_str(&format!("  \x1b[32m✓\x1b[0m {}\n", msg));
+                    output.push_str(&format!("  {} {}\n", paint("32", "✓"), msg));
                 }
                 VerifyCheck::Warning(msg) => {
-                    output.push_str(&format!("  \x1b[33m⚠\x1b[0m {}\n", msg));
+                    output.push_str(&format!("  {} {}\n", paint("33", "⚠"), msg));
                 }
                 VerifyCheck::Fail(msg, trace) => {
-                    output.push_str(&format!("  \x1b[31m✗\x1b[0m {}\n", msg));
+                    output.push_str(&format!("  {} {}\n", paint("31", "✗"), msg));
                     if let Some(trace) = trace {
                         output.push_str(&format!("    trace: {}\n", trace.join(" → ")));
                     }

@@ -192,8 +192,8 @@ source, `file:line`, left/right, and the fields a value really has when
 - `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
   `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
 - `"""…"""` is raw: no escapes AND no `{interpolation}`.
-- `[1, 2] + [10, 20]` is element-wise and yields Floats (`[11.0, 22.0]`);
-  `concat(a, b)` joins lists.
+- `[1, 2] + [10, 20]` is element-wise (`[11, 22]`; Floats when a value is
+  one); `concat(a, b)` joins lists.
 - Persistent data lives in `.soma_data/` beside the program (serve and run);
   `soma test` starts empty.
 

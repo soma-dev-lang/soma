@@ -93,6 +93,12 @@ pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value,
                  elementwise; to CONCATENATE lists use concat(a, b)", a.len(), b.len()))));
         }
         let out: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| f(*x, *y)).collect();
+        // Int lists stay Int lists ([1, 2] + [10, 20] is [11, 22], not
+        // [11.0, 22.0]) unless the op produced a fraction
+        let all_int = |v: &Value| matches!(v, Value::List(xs) if xs.iter().all(|x| matches!(x, Value::Int(_))));
+        if all_int(l) && all_int(r) && out.iter().all(|x| x.fract() == 0.0 && x.abs() < 9.0e15) {
+            return Some(Ok(Value::List(out.iter().map(|x| Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*x as i64))).collect())));
+        }
         return Some(Ok(vec_to_value(&out)));
     }
 
