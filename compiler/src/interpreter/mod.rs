@@ -953,9 +953,18 @@ impl Interpreter {
             )));
         }
 
-        // Bind parameters (BigInt type annotation is now a no-op since SomaInt handles both)
+        // Bind parameters, checking the declared type at the boundary: a
+        // String reaching an `Int` parameter used to surface deep inside the
+        // body ("cannot compare String and Int"), or not at all.
         let mut env = FxHashMap::with_capacity_and_hasher(params.len() + 4, Default::default());
         for (param, val) in params.iter().zip(args) {
+            let val = match check_param_type(param, val) {
+                Ok(v) => v,
+                Err(msg) => {
+                    self.current_depth -= 1;
+                    return Err(RuntimeError::TypeError(format!("{}(): {}", signal_name, msg)));
+                }
+            };
             env.insert(param.name.clone(), val);
         }
 
@@ -3787,6 +3796,37 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
             }
         }
         Value::Unit => StoredValue::Null,
+    }
+}
+
+/// Declared parameter type vs. the value actually passed. Ints are
+/// accepted for Float (promoted); an integral Float for Int; `Any`,
+/// sum types and cell refs accept anything.
+pub(crate) fn check_param_type(param: &Param, val: Value) -> Result<Value, String> {
+    let ty = match &param.ty.node {
+        TypeExpr::Simple(t) => t.as_str(),
+        TypeExpr::Generic { name, .. } => name.as_str(),
+        _ => return Ok(val),
+    };
+    let got = value_type_name(&val);
+    let shown = || {
+        let s = format!("{}", val);
+        let s: String = s.chars().take(40).collect();
+        s
+    };
+    match (ty, &val) {
+        ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_)) | ("String", Value::String(_))
+        | ("Bool", Value::Bool(_)) | ("Map", Value::Map(_)) | ("List", Value::List(_)) => Ok(val),
+        // `Map` is the corpus's spelling for "a record": variants, an absent
+        // record (`()`) and callbacks pass; `List` accepts an absent list.
+        ("Map", Value::Variant { .. } | Value::Unit | Value::Lambda { .. } | Value::LambdaBlock { .. })
+        | ("List", Value::Unit) => Ok(val),
+        ("Int", Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.0e15 => Ok(Value::Int(SomaInt::from_i64(*f as i64))),
+        ("Float", Value::Int(i)) => Ok(Value::Float(i.to_f64())),
+        ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => Err(format!(
+            "parameter '{}' expects {}, got {} {}", param.name, ty, got, shown()
+        )),
+        _ => Ok(val),
     }
 }
 

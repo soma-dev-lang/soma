@@ -85,6 +85,12 @@ enum Commands {
         /// Port to listen on (default: 8080)
         #[arg(short, long, default_value = "8080")]
         port: u16,
+        /// Address to bind (default: loopback only; 0.0.0.0 exposes the service to the network)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Serve even when `soma check` reports errors
+        #[arg(long)]
+        no_check: bool,
         /// Watch for changes and auto-reload
         #[arg(short, long)]
         watch: bool,
@@ -302,11 +308,11 @@ fn main_inner() {
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
         Commands::Run { file, args, jit, signal, record } => commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry),
-        Commands::Serve { file, port, watch, verbose, join } => {
+        Commands::Serve { file, port, host, no_check, watch, verbose, join } => {
             if watch {
                 commands::serve::cmd_serve_watch(&file, port, &mut registry);
             } else {
-                commands::serve::cmd_serve(&file, port, verbose, join.as_deref(), &mut registry);
+                commands::serve::cmd_serve(&file, port, &host, verbose, join.as_deref(), no_check, &mut registry);
             }
         }
         Commands::Test { file } => commands::test_cmd::cmd_test(&file, &mut registry),

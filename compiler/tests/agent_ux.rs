@@ -652,3 +652,62 @@ cell test T {
     assert!(out.contains("counter-example n = 57"), "forall must be exhaustive on 100 values:\n{out}");
     assert!(out.contains("9 tests: 8 passed, 1 failed") || out.contains("8 passed"), "{out}");
 }
+
+/// Site evaluator, cycle 3: a runaway recursion killed the whole service
+/// (thread stack overflow before the depth guard), errors were all 500s,
+/// `()` came back as `{}`, and a String reached an Int parameter untouched.
+#[test]
+fn serve_survives_recursion_maps_kinds_to_statuses_and_types_parameters() {
+    let d = dir("serve_kinds");
+    std::fs::write(d.join("app.cell"), r#"
+cell A {
+  memory { m: Map<String, Int>  invariant m >= 0 }
+  state s { initial: a  a -> b }
+  on rec(n: Int) { return rec(n + 1) }
+  on neg(x: Int) { m.set("k", x)  m.get("k") }
+  on twice(id: String) { transition(id, "b")  transition(id, "b") }
+  on find(id: String) { fail("not_found", "no {id}") }
+  on nothing() { () }
+  on add(n: Int) { n + 1 }
+}
+cell test T {
+  rules {
+    assert_fails add("ten") matching "parameter 'n' expects Int, got String"
+    assert add(2.0) == 3
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+
+    let port = 19950 + (std::process::id() % 40) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "-p", &port.to_string()])
+        .current_dir(&d)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("soma serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let mut got = Vec::new();
+    if up {
+        for path in ["/rec/0", "/neg/-5", "/twice/x", "/find/z", "/nothing", "/add/ten", "/add/2"] {
+            got.push(http(port, "GET", path));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    let status = |r: &String| r.lines().next().unwrap_or("").to_string();
+    assert!(status(&got[0]).contains("500") && got[0].contains("stack_overflow"), "{}", got[0]);
+    assert!(status(&got[1]).contains("422") && got[1].contains("\"kind\":\"invariant\""), "{}", got[1]);
+    assert!(status(&got[2]).contains("409") && got[2].contains("invalid_transition"), "{}", got[2]);
+    assert!(status(&got[3]).contains("404") && got[3].contains("\"kind\":\"not_found\""), "{}", got[3]);
+    assert!(status(&got[4]).contains("200") && got[4].trim_end().ends_with("null"), "{}", got[4]);
+    assert!(status(&got[5]).contains("400") && got[5].contains("expects Int"), "{}", got[5]);
+    assert!(got[6].contains("\"result\": 3") || got[6].contains("\"result\":3"), "the service must still answer after the overflow: {}", got[6]);
+}

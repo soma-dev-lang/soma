@@ -41,7 +41,7 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
     }
 }
 
-pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, registry: &mut Registry) {
+pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Option<&str>, no_check: bool, registry: &mut Registry) {
     crate::interpreter::IN_SERVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let source = read_source(path);
     let file_str = path.display().to_string();
@@ -49,6 +49,21 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
     let mut program = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut program, path);
     load_meta_cells_from_program(&program, registry, path);
+
+    // A program that fails `soma check` does not serve: an undefined
+    // function or a duplicate handler used to go live and fail per request.
+    if !no_check {
+        let mut chk = crate::checker::Checker::new(registry);
+        chk.source = Some((file_str.clone(), source.clone()));
+        chk.check(&program);
+        if chk.has_errors() {
+            eprintln!("{} fails `soma check` — fix these before serving (or pass --no-check):", path.display());
+            for line in chk.report().lines().filter(|l| !l.starts_with("warning") && !l.starts_with("advisory") && !l.starts_with("✓")) {
+                eprintln!("  {}", line);
+            }
+            process::exit(1);
+        }
+    }
 
     let cell = program
         .cells
@@ -181,7 +196,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         .unwrap_or_default();
     let sharded_slots = std::sync::Arc::new(sharded_slots);
 
-    let addr = format!("0.0.0.0:{}", port);
+    // Loopback by default: a fresh service is not on the network until
+    // asked (--host 0.0.0.0). SO_REUSEADDR lets a wildcard bind succeed
+    // beside a process that owns 127.0.0.1:port, so probe first.
+    let addr = format!("{}:{}", host, port);
+    let probe = if host == "0.0.0.0" { format!("127.0.0.1:{}", port) } else { addr.clone() };
+    if let Ok(sa) = probe.parse::<std::net::SocketAddr>() {
+        if std::net::TcpStream::connect_timeout(&sa, std::time::Duration::from_millis(200)).is_ok() {
+            eprintln!("error: port {} is already in use (something answers on {}) — pick another with -p", port, probe);
+            process::exit(1);
+        }
+    }
     let server = tiny_http::Server::http(&addr).unwrap_or_else(|e| {
         eprintln!("error: cannot start server on {}: {}", addr, e);
         process::exit(1);
@@ -198,8 +223,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
     }
     eprintln!("database: {}", std::path::Path::new(".soma_data/soma.db").canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(".soma_data/soma.db")).display());
-    eprintln!("listening on http://localhost:{}", port);
-    eprintln!("dashboard: http://localhost:{}/__soma/", port);
+    let shown_host = if host == "0.0.0.0" { "0.0.0.0 (all interfaces)".to_string() } else { host.to_string() };
+    eprintln!("listening on http://{}:{}", shown_host, port);
+    eprintln!("dashboard: http://{}:{}/__soma/", if host == "0.0.0.0" { "localhost" } else { host }, port);
     eprintln!("---");
 
     let program = std::sync::Arc::new(program);
@@ -227,9 +253,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         let cluster_for_bus = cluster_node.clone();
         let sharded_for_bus = sharded_slots.clone();
         let my_node_id = if is_cluster_mode { node_id.clone() } else { String::new() };
+        let bus_host = host.to_string();
 
         std::thread::spawn(move || {
-            let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{}", bus_port)) {
+            let listener = match std::net::TcpListener::bind(format!("{}:{}", bus_host, bus_port)) {
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!("bus: cannot bind port {}: {}", bus_port, e);
@@ -588,14 +615,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         interp.event_bus = Some(event_bus.clone());
         interp.peer_bus = Some(peer_bus.clone());
         if let Some(ref c) = cluster_node { interp.set_cluster(c.clone(), &sharded_slots); }
-        let _ = interp.call_signal(&cell_name, init_signal, vec![]);
+        let init_result = interp.call_signal(&cell_name, init_signal, vec![]);
         // Capture ws_out if ws_connect was called
         if let Some(ref out) = interp.ws_out {
             if let Ok(mut shared) = shared_ws_out.lock() {
                 *shared = Some(out.clone());
             }
         }
-        eprintln!("init: {} executed", init_signal);
+        match init_result {
+            Ok(_) => eprintln!("init: {}() ran", init_signal),
+            Err(e) => eprintln!("init: {}() failed — {} (the service is up, the handler did nothing)", init_signal, e),
+        }
     }
 
     // Auto-connect to peers declared in soma.toml
@@ -636,10 +666,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         let cname = cell_name.clone();
         let bus = event_bus.clone();
 
-        eprintln!("websocket: ws://localhost:{}", ws_port);
+        eprintln!("websocket: ws://{}:{}", if host == "0.0.0.0" { "localhost" } else { host }, ws_port);
+        let ws_host = host.to_string();
 
         std::thread::spawn(move || {
-            let listener = match std::net::TcpListener::bind(format!("0.0.0.0:{}", ws_port)) {
+            let listener = match std::net::TcpListener::bind(format!("{}:{}", ws_host, ws_port)) {
                 Ok(l) => l,
                 Err(e) => {
                     eprintln!("ws error: cannot bind port {}: {}", ws_port, e);
@@ -869,7 +900,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
         let agent_config = agent_config.clone();
         let agent_models = agent_models.clone();
 
-        std::thread::spawn(move || {
+        let spawned = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
         let method = request.method().to_string();
         let url = request.url().to_string();
 
@@ -1208,11 +1239,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                         }
                     } else {
                         match &body_val {
-                            interpreter::Value::Unit => "{}".to_string(),
+                            interpreter::Value::Unit => "null".to_string(),
                             interpreter::Value::Map(_) | interpreter::Value::List(_) => format!("{}", body_val),
                             interpreter::Value::String(s) => {
                                 if s.starts_with('{') || s.starts_with('[') { s.clone() }
-                                else { format!("{{\"result\": \"{}\"}}", s) }
+                                else { serde_json::json!({ "result": s }).to_string() }
                             }
                             other => format!("{{\"result\": {}}}", other),
                         }
@@ -1220,11 +1251,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                     (status, body_str, content_type, headers)
                 } else {
                     let body = match &val {
-                        interpreter::Value::Unit => "{}".to_string(),
+                        interpreter::Value::Unit => "null".to_string(),
                         interpreter::Value::List(_) | interpreter::Value::Map(_) => format!("{}", val),
                         interpreter::Value::String(s) => {
                             if s.starts_with('{') || s.starts_with('[') { s.clone() }
-                            else { format!("{{\"result\": \"{}\"}}", s) }
+                            else { serde_json::json!({ "result": s }).to_string() }
                         }
                         other => format!("{{\"result\": {}}}", other),
                     };
@@ -1253,9 +1284,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                 let _ = request.respond(resp);
             }
             Err(e) => {
-                let body = format!("{{\"error\": \"{}\"}}", format!("{}", e).replace('\\', "\\\\").replace('"', "\\\""));
+                let kind = e.kind();
+                let status = status_for_kind(&kind);
+                let body = serde_json::json!({ "error": format!("{}", e), "kind": kind }).to_string();
                 let mut resp = tiny_http::Response::from_string(body)
-                    .with_status_code(500)
+                    .with_status_code(status)
                     .with_header(
                         tiny_http::Header::from_bytes(
                             &b"Content-Type"[..], &b"application/json"[..]
@@ -1263,12 +1296,29 @@ pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, r
                     );
                 resp.add_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
                 let elapsed = start_time.elapsed();
-                eprintln!("{} {} → 500 {}ms {}", method, url, elapsed.as_millis(), e);
+                eprintln!("{} {} → {} {}ms {}", method, url, status, elapsed.as_millis(), e);
                 let _ = request.respond(resp);
             }
         }
 
         }); // end thread::spawn
+        if let Err(e) = spawned {
+            eprintln!("error: cannot spawn request thread: {}", e);
+        }
+    }
+}
+
+/// HTTP status for a handler error, by kind: refusals the program made on
+/// purpose are client errors, not 500s.
+pub(crate) fn status_for_kind(kind: &str) -> u16 {
+    match kind {
+        "not_found" => 404,
+        "guard_failed" | "forbidden" | "approval_required" => 403,
+        "invalid_transition" | "conflict" => 409,
+        "invariant" | "ensure" => 422,
+        "json" | "division_by_zero" | "type" => 400,
+        "stack_overflow" | "llm" | "budget" | "undefined_variable" | "undefined_function" | "no_handler" => 500,
+        _ => 400, // `require … else Tag`, fail("tag") — the program refused the request
     }
 }
 
