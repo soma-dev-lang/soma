@@ -143,7 +143,7 @@ pub fn value_type_name(v: &Value) -> &'static str {
         Value::Map(_) => "Map",
         Value::Lambda { .. } | Value::LambdaBlock { .. } => "Function",
         Value::Variant { .. } => "Variant",
-        Value::Unit => "Null",
+        Value::Unit => "Unit",
     }
 }
 
@@ -1291,7 +1291,12 @@ impl Interpreter {
         let result = match result {
             Ok(val) if signal_name == "request" => Ok(val),
             Ok(val) => match self.face_return_type(cell_name, signal_name) {
-                Some(ret) => check_return_type(signal_name, &ret, val).map_err(RuntimeError::TypeError),
+                Some(ret) => check_return_type(signal_name, &ret, val).and_then(|v| match &ret.node {
+                    // `-> List<Int>` returning ["a"]: the elements too, as for parameters
+                    TypeExpr::Generic { .. } => self.value_fits(&ret.node, &v)
+                        .map(|_| v).map_err(|m| format!("{}(): the face declares `-> {}` but the handler returned {}", signal_name, crate::commands::describe::format_type(&ret.node), m)),
+                    _ => Ok(v),
+                }).map_err(RuntimeError::TypeError),
                 None => Ok(val),
             },
             err => err,

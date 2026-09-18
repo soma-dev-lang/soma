@@ -99,6 +99,12 @@ Make `_migrate` idempotent (check before writing) and back up
 | `SOMA_APPROVE=always` \| `never` | answers `approve()` when no terminal is attached (`soma serve` fails closed otherwise: 403 `approval_required`) |
 | `PORT` | not read — pass `-p` |
 
+Other environment variables are not readable from a program. A secret or a
+config value (an admin token) goes in a file read once in `on start()`:
+`let t = read_file("secrets/admin_token.txt")`. Relative `read_file` /
+`write_file` paths resolve against the directory `soma` was started in, not
+the `.cell` file's — keep that file out of `static/`.
+
 ## Between processes
 
 `emit` reaches every cell of the same process synchronously. Across

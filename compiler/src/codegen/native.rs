@@ -4049,7 +4049,7 @@ impl FnGenerator {
             Expr::Literal(Literal::Float(f)) => format!("{}f64", f),
             Expr::Literal(Literal::Bool(b)) => format!("{}", b),
             Expr::Literal(Literal::String(s)) => {
-                format!("\"{}\".to_string()", s.replace('\\', "\\\\").replace('"', "\\\""))
+                format!("\"{}\".to_string()", unbrace(s).replace('\\', "\\\\").replace('"', "\\\""))
             }
             Expr::Ident(name) => {
                 let var_ty = self.var_types.get(name).copied().unwrap_or(NativeType::Float);
@@ -5598,7 +5598,7 @@ impl FnGenerator {
     fn gen_expr_rug_string(&self, expr: &Expr) -> String {
         match expr {
             Expr::Literal(Literal::String(s)) => {
-                format!("\"{}\".to_string()", s.replace('\\', "\\\\").replace('"', "\\\""))
+                format!("\"{}\".to_string()", unbrace(s).replace('\\', "\\\\").replace('"', "\\\""))
             }
             Expr::BinaryOp { left, op: BinOp::Add, right } => {
                 let l = self.gen_expr_rug_string(&left.node);
@@ -6274,4 +6274,16 @@ fn hm_i64(rug_expr: &str, what: &str) -> String {
         "{{ let _v: Integer = {}; _v.to_i64().unwrap_or_else(|| panic!(\"soma:range: a hashmap holds 64-bit Ints — {} {{}} does not fit (mask it, or keep it in a scalar, which promotes to BigInt)\", _v)) }}",
         rug_expr, what
     )
+}
+
+/// `{{` / `}}` in a Soma string literal are one brace, as in the
+/// interpreter (`"a{{b}}c"` printed `a{{b}}c` natively)
+fn unbrace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if (c == '{' || c == '}') && it.peek() == Some(&c) { it.next(); }
+        out.push(c);
+    }
+    out
 }

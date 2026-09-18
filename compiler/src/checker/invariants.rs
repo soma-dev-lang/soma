@@ -242,11 +242,17 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 continue;
             }
             let parts = conjuncts(inv);
+            // a handler that also sets the slot is judged on its sets: its
+            // delete is no "only deletes" ✓
+            let setters: HashSet<(&str, &str)> = relevant.iter()
+                .filter(|(_, _, v, _, _, _)| !matches!(v, Expr::Ident(n) if n == "<deleted entry>"))
+                .map(|(h, sl, _, _, _, _)| (h.as_str(), sl.as_str())).collect();
             let mut runtime_checked: Vec<String> = Vec::new();
             for (handler, slot, value_expr, in_try, wpath, wkey) in relevant {
                 // a delete removes an entry that already satisfied a VALUE
                 // invariant; only a `size` clause can flip on it
                 if matches!(value_expr, Expr::Ident(n) if n == "<deleted entry>") {
+                    if setters.contains(&(handler.as_str(), slot.as_str())) { continue; }
                     let mut names = HashSet::new();
                     collect_idents(inv, &mut names);
                     let mut fns = HashSet::new();
@@ -486,6 +492,10 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 // is exactly the fact that proves `room - amount` (a bound on the
                                 // parameter alone was the wrong advice for an upper bound)
                                 .map(|(c, _)| subst_render(c, slot, value_expr)).collect();
+                            if matches!(value_expr, Expr::FnCall { name, .. } if name == "map" || name == "with") {
+                                // a field of a built map: a require over it proves nothing
+                                return format!("`{n}` is a parameter and the invariant reads a field of a Map value — record-field invariants are checked at run time");
+                            }
                             format!("`{n}` is a parameter (narrow it: `require {} else …`)", open_txt.join(" && "))
                         } else {
                             let mut assigns: Vec<(&str, &Expr)> = Vec::new();
@@ -506,7 +516,10 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     why.sort();
                     // every name has SOME range, just not a tight enough one:
                     // say what is known and the require that would prove it
-                    if why.is_empty() {
+                    // a built map's field cannot be narrowed by a require
+                    // (the suggested `require map(…).taken <= …` changed nothing)
+                    let built = matches!(value_expr, Expr::FnCall { name, .. } if name == "map" || name == "with");
+                    if why.is_empty() && !built {
                         if let Some((lo, hi)) = bounds(ctx.range_of(value_expr)) {
                             let num = |x: f64| if x == f64::INFINITY { "∞".to_string() } else if x == f64::NEG_INFINITY { "-∞".to_string() } else { format!("{}", x) };
                             let open_txt: Vec<String> = parts.iter().zip(&verdicts)

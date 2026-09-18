@@ -151,6 +151,7 @@ m.k   m["size"]                    // a key; m.len / m.size / m.keys: the entry 
                                    // when the map has no such key (a record: () ) — m["size"] is always the key
 [1, 2, 3]     []                   // list literals
 x == ()       x ?? 0               // null is (); no null / None / undefined
+substring(s, i, i + 1)             // s[i] as a String; str_at(s, i) is a BYTE (Int)
 if c { a } else { b }              // is an expression; no ternary; && || !  (no and/or/not)
                                    // a condition (if, while, &&, ||, !, require, guards,
                                    // filter/any/all predicates, invariants) is a Bool — `()`
@@ -412,7 +413,8 @@ map("a", 1))`: a String argument there is a `type` error, not parsed. A raised e
 answers with its kind: not_found → 404, guard_failed → 403, invalid_transition
 → 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
 `{"error": message, "kind": tag}`. A plain return answers 200: a map/list as
-JSON, `()` as `null`, a String or number as `{"result": …}`. Path segments and
+JSON, `()` as `null`, a String or number as `{"result": …}` (a String
+that is valid JSON text, like `to_json(x)`, is sent as that JSON). Path segments and
 query values are coerced to the parameter's declared type (`/decide/x/true` →
 Bool). Every response carries `Access-Control-Allow-Origin: *`. `request` may
 be declared in `face` or not; its return type is not checked (a route answers
@@ -801,7 +803,7 @@ A handler may return:
 | Return value | HTTP |
 |---|---|
 | a Map or a List | `200`, JSON |
-| a String or a number | `200`, `{"result": …}` (JSON) |
+| a String or a number | `200`, `{"result": …}` (JSON); a String that is valid JSON text (`to_json(x)`) is sent as that JSON |
 | `()` | `200`, `null` |
 | `response(status, body)` | that status; the value is `{_status, _body}` — assert `r._status == 404` in tests |
 | `html(body)` / `html(status, body)` | HTML |
@@ -1018,6 +1020,12 @@ Make `_migrate` idempotent (check before writing) and back up
 | `SOMA_LLM_TIMEOUT_MS` | one provider round-trip cap (default 60 000) |
 | `SOMA_APPROVE=always` \| `never` | answers `approve()` when no terminal is attached (`soma serve` fails closed otherwise: 403 `approval_required`) |
 | `PORT` | not read — pass `-p` |
+
+Other environment variables are not readable from a program. A secret or a
+config value (an admin token) goes in a file read once in `on start()`:
+`let t = read_file("secrets/admin_token.txt")`. Relative `read_file` /
+`write_file` paths resolve against the directory `soma` was started in, not
+the `.cell` file's — keep that file out of `static/`.
 
 ## Between processes
 

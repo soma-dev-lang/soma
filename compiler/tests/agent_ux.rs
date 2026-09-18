@@ -2509,3 +2509,23 @@ fn cycle32_findings() {
     let (out, _) = soma_in(&d, &["run", "j.cell", "f", r#"{"_type":"Pay","_variant":"Charged"}"#]);
     assert!(out.contains("type"), "{out}");
 }
+
+#[test]
+fn cycle33_findings() {
+    let d = dir("cycle33");
+    // an unparseable segment is rescanned by the runtime: the inner `{…}`
+    // is seen by termination, cost and guard analyses
+    std::fs::write(d.join("t.cell"), "cell T {\n  on spin(n: Int) {\n    let s = \"{ { spin(n + 1) } }\"\n    return s\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "t.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("handler `spin`: recursive call"), "{out}");
+    std::fs::write(d.join("g.cell"), "cell App {\n  memory { n: Map<String, Int> [persistent] }\n  state flow {\n    initial: a\n    a -> b { guard { \"{ { _bump() } }\" != \"\" } }\n    b -> a\n  }\n  on _bump() { n.set(\"k\", 1) return 1 }\n  on go(id: String) { transition(id, \"b\") }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("calls the handler `_bump`"), "{out}");
+    // face return types are checked element-wise
+    std::fs::write(d.join("f.cell"), "cell M {\n  face { signal g() -> List<Int> }\n  on g() {\n    let x = [\"a\"]\n    return x\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "f.cell", "g"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("expected Int"), "{out}");
+}

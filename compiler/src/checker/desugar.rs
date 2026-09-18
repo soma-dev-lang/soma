@@ -244,7 +244,7 @@ fn fix_expr(e: &mut Spanned<Expr>, ctx: &Ctx, extra: &mut Vec<Spanned<Expr>>) {
 /// The `{…}` segments the runtime evaluates (same rules as
 /// `interpolate_string`: `{{`/`}}` escapes, CSS-like and regex-quantifier
 /// segments are literal text).
-fn segments(s: &str) -> Vec<String> {
+pub(crate) fn segments(s: &str) -> Vec<String> {
     let b = s.as_bytes();
     let mut out = Vec::new();
     let mut pos = 0;
@@ -255,7 +255,10 @@ fn segments(s: &str) -> Vec<String> {
             if let Some(end) = crate::interpreter::interp_segment_end(s, pos) {
                 let seg = &s[pos + 1..pos + 1 + end];
                 let quantifier = seg.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ');
-                if !(seg.is_empty() || seg.contains(':') || seg.contains(';') || quantifier) {
+                // a segment that does not parse is literal text and the
+                // runtime rescans from the next byte: `"{ { wipe() } }"`
+                // ran wipe() while every analysis skipped the whole thing
+                if !(seg.is_empty() || seg.contains(':') || seg.contains(';') || quantifier) && parse_segment(seg).is_some() {
                     out.push(seg.to_string());
                     pos = pos + 1 + end + 1;
                     continue;
@@ -267,7 +270,7 @@ fn segments(s: &str) -> Vec<String> {
     out
 }
 
-fn parse_segment(seg: &str) -> Option<Expr> {
+pub(crate) fn parse_segment(seg: &str) -> Option<Expr> {
     let wrapped = format!("cell _T {{ on _e() {{ return {} }} }}", seg);
     let tokens = crate::lexer::Lexer::new(&wrapped).tokenize().ok()?;
     let program = crate::parser::Parser::new(tokens).parse_program().ok()?;
@@ -278,4 +281,17 @@ fn parse_segment(seg: &str) -> Option<Expr> {
         }),
         _ => None,
     }))
+}
+
+/// Every sub-expression of `e`, including those inside the interpolation
+/// segments of its string literals (what the runtime evaluates).
+pub(crate) fn for_each_deep(e: &Expr, f: &mut dyn FnMut(&Expr)) {
+    let mut inner: Vec<Expr> = Vec::new();
+    crate::checker::literals::for_each_in_expr(e, &mut |x| {
+        f(x);
+        if let Expr::Literal(Literal::String(s)) = x {
+            inner.extend(segments(s).iter().filter_map(|seg| parse_segment(seg)));
+        }
+    });
+    for x in &inner { for_each_deep(x, f); }
 }

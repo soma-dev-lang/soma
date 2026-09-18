@@ -1832,7 +1832,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             interpreter::Value::Map(_) | interpreter::Value::List(_) | interpreter::Value::Variant { .. } =>
                                 interpreter::builtins::string::to_json_string(&body_val),
                             interpreter::Value::String(s) => {
-                                if s.starts_with('{') || s.starts_with('[') { s.clone() }
+                                if (s.starts_with('{') || s.starts_with('[')) && serde_json::from_str::<serde_json::Value>(s).is_ok() { s.clone() }
                                 else { serde_json::json!({ "result": s }).to_string() }
                             }
                             other => format!("{{\"result\": {}}}", other),
@@ -1845,7 +1845,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         interpreter::Value::List(_) | interpreter::Value::Map(_) | interpreter::Value::Variant { .. } =>
                             interpreter::builtins::string::to_json_string(&val),
                         interpreter::Value::String(s) => {
-                            if s.starts_with('{') || s.starts_with('[') { s.clone() }
+                            if (s.starts_with('{') || s.starts_with('[')) && serde_json::from_str::<serde_json::Value>(s).is_ok() { s.clone() }
                             else { serde_json::json!({ "result": s }).to_string() }
                         }
                         other => format!("{{\"result\": {}}}", other),
@@ -1863,6 +1863,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             &b"Content-Type"[..], content_type.as_bytes()
                         ).unwrap()
                     );
+                // a JSON answer echoing client text is never sniffed as HTML
+                if content_type.contains("json") {
+                    resp.add_header(tiny_http::Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap());
+                }
                 for (key, val) in &extra_headers {
                     // a header name is a token; a value has no CR/LF or other
                     // control character (`filename={name}` with %0d%0a split

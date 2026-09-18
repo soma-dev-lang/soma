@@ -58,7 +58,7 @@ A handler may return:
 | Return value | HTTP |
 |---|---|
 | a Map or a List | `200`, JSON |
-| a String or a number | `200`, `{"result": …}` (JSON) |
+| a String or a number | `200`, `{"result": …}` (JSON); a String that is valid JSON text (`to_json(x)`) is sent as that JSON |
 | `()` | `200`, `null` |
 | `response(status, body)` | that status; the value is `{_status, _body}` — assert `r._status == 404` in tests |
 | `html(body)` / `html(status, body)` | HTML |

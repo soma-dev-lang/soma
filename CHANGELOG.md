@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Interpolation segments are analysed exactly where the runtime finds them:
+  `"{ { expr } }"` ran `expr` unseen by route ownership, termination, cost,
+  GET→405, guard and invariant checks.
+- A returned String is sent raw only when it is valid JSON text; JSON
+  answers carry `nosniff`. `[native]` string literals unescape `{{`/`}}`.
+  Face return types are checked element-wise.
 - An interpolation segment holding a block (`"{if c { 1 } else { 2 }}"`)
   ends at its matching brace; `.size` on a record without that field is `()`;
   `from_json` checks a declared variant's shape (a missing or mistyped field

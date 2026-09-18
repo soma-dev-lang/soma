@@ -787,7 +787,7 @@ impl<'a> Checker<'a> {
                     for t in &sm.transitions {
                         let Some(g) = &t.node.guard else { continue };
                         let mut bad: Option<String> = None;
-                        literals::for_each_in_expr(&g.node, &mut |e| {
+                        desugar::for_each_deep(&g.node, &mut |e| {
                             if bad.is_some() { return; }
                             match e {
                                 Expr::FnCall { name, .. } if handlers.contains(name) => bad = Some(format!("calls the handler `{}`", name)),

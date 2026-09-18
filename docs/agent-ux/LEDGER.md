@@ -899,3 +899,20 @@ JSON): no HIGH — every guarantee attacked held.
 
 ### Open
 - [ ] Runtime errors inside an imported file report the importer's path.
+
+### Cycle 33 — realistic port (ticketing) + attack
+
+Ticketing port 8/10: holds expiring via `every`, waitlist promotion, 50
+parallel requests for the last seat → exactly one 201, verify --strict green.
+
+### Fixed
+- [x] **Every analysis skipped `"{ { expr } }"`**: an unparseable segment is literal text and the runtime rescans from the next byte, running the inner `{ expr }` — the analyses skipped the whole segment. Auth bypass through request (`"{ { wipe() } }"`), false termination and cost proofs, a GET that wrote, a guard that wrote, a false invariant ✓. Segments are now found exactly as the runtime finds them; guards are walked through their strings.
+- [x] A returned String starting with `{`/`[` was sent raw as JSON even when it was not JSON (`[x`, `{<script>`) — only valid JSON text is sent as is; JSON answers carry `X-Content-Type-Options: nosniff`.
+- [x] `[native]` kept `{{` / `}}` literally (`a{{b}}c`, str_len 6 vs 4).
+- [x] `-> List<Int>` returning `["a"]` passed — face return types are checked element-wise.
+- [x] verify printed "only deletes from 'm'" for a handler that also sets it; suggested a `require map(…).taken <= …` that cannot prove anything; type errors said "Null" (`type_of(())` is "Unit").
+- [x] Docs: secrets come from a file read in `on start()`, relative paths resolve against the start directory, `substring(s, i, i + 1)` vs `str_at` (a byte).
+
+### Open
+- [ ] Errors inside an imported file are reported at the importer's path.
+- [ ] Invariants cannot relate two slots; no CSV-to-String builtin.
