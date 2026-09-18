@@ -665,6 +665,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     let shared_ws_out: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Sender<String>>>>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
 
+    // Audit what .soma_data holds against THIS program (instances in
+    // removed states, values an added invariant refuses) — one line each,
+    // nothing changed
+    {
+        let mut interp = interpreter::Interpreter::new(&program);
+        interp.set_storage_raw(&storage_slots);
+        interp.ensure_state_machine_storage();
+        for line in interp.audit_stored_data() {
+            eprintln!("warning: stored data: {}", line);
+        }
+    }
+
     // Run init() handler if it exists (may call connect/ws_connect)
     if handler_names.contains(&"init".to_string()) || handler_names.contains(&"start".to_string()) {
         let init_signal = if handler_names.contains(&"init".to_string()) { "init" } else { "start" };

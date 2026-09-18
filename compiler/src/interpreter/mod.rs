@@ -802,6 +802,64 @@ impl Interpreter {
         }
     }
 
+    /// Start-up audit of persistent data against the CURRENT program:
+    /// instances stored in a state the machine no longer declares, and
+    /// slot values that violate an invariant added since. Nothing is
+    /// changed; each problem is one line for the operator.
+    pub fn audit_stored_data(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        // state-machine instances
+        for ((cell_name, sm_name), sm) in self.state_machines.clone() {
+            let key = format!("__sm_{}_{}", cell_name, sm_name);
+            let Some(backend) = self.storage.get(&key).cloned() else { continue };
+            let mut declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+            declared.insert(sm.initial.clone());
+            for t in &sm.transitions {
+                if t.node.from != "*" { declared.insert(t.node.from.clone()); }
+                declared.insert(t.node.to.clone());
+            }
+            let mut stuck = 0usize;
+            let mut sample = String::new();
+            for id in backend.keys() {
+                if let Some(StoredValue::String(st)) = backend.get(&id) {
+                    if !declared.contains(&st) {
+                        stuck += 1;
+                        if sample.is_empty() { sample = format!("'{}' in '{}'", id, st); }
+                    }
+                }
+            }
+            if stuck > 0 {
+                out.push(format!("{} instance(s) of state machine '{}' are stored in a state the program no longer declares (e.g. {}): they can take no transition — migrate or delete .soma_data/", stuck, sm_name, sample));
+            }
+        }
+        // slot invariants over stored values
+        let mut invs: Vec<(String, Vec<Expr>)> = self.invariants.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        invs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut seen_slots: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (key, exprs) in invs {
+            let slot_only = key.rsplit('.').next().unwrap_or(&key).to_string();
+            if !seen_slots.insert(slot_only) { continue; }
+            let (cell_name, slot_name) = match key.split_once('.') { Some((c, s)) => (c.to_string(), s.to_string()), None => (String::new(), key.clone()) };
+            let Some(backend) = self.storage.get(&key).or_else(|| self.storage.get(&slot_name)).cloned() else { continue };
+            let mut bad = 0usize;
+            let mut sample = String::new();
+            for k in backend.keys().into_iter().take(10_000) {
+                let Some(stored) = backend.get(&k) else { continue };
+                let val = auto_deserialize(stored_to_value(stored));
+                let size = backend.len() as i64;
+                if self.check_invariants(&cell_name, &slot_name, &k, &val, size, "read").is_err() {
+                    bad += 1;
+                    if sample.is_empty() { sample = format!("key \"{}\" = {}", k, val); }
+                }
+            }
+            if bad > 0 {
+                let _ = exprs;
+                out.push(format!("{} stored value(s) of slot '{}' violate its invariant today (e.g. {}): verify proves the invariant for future writes only — fix the data or the invariant", bad, slot_name, sample));
+            }
+        }
+        out
+    }
+
     /// Fresh in-memory state-machine storage (test isolation between cells).
     pub fn reset_state_machine_storage(&mut self) {
         for ((cell_name, sm_name), _) in self.state_machines.clone() {

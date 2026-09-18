@@ -214,7 +214,7 @@ Scores: tickets-with-expiry 23/40, 65/65 first try, 40-way race → exactly 3 wi
 
 ### Open
 - [x] Guard binding: a guard local bound only inside a branch is a check error (it was `undefined_variable` at runtime).
-- [ ] `.soma_data` evolution is silent (documented): no start-up scan for re-typed slots, invariant-violating stored values, instances in removed states.
+- [x] `.soma_data` evolution: `soma serve` audits at start-up (instances in removed states, stored values violating an invariant) and warns; a re-typed slot is documented as undetected.
 - [ ] No per-request time limit (documented).
 - [ ] `soma example` on the live site still serves the previous corpus until the site is deployed (the landing block's 6th line depends on it).
 - [ ] Parser: `-10..-2` range patterns, non-ASCII identifiers.
