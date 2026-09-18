@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 2.5.1 — 2026-09-18
+
+A hardening release: seventeen more fresh-agent cycles (realistic ports —
+billing, support agents, reservations, analytics, safety interlocks, kanban,
+eMAR, a game economy, a WMS — each paired with an adversarial round). Every
+finding is fixed or listed as open in docs/agent-ux/LEDGER.md. Highlights:
+false proofs closed (require/guards/while conditions in cost and termination,
+NaN on Float slots, deletes, shadowed builtins), security fixes in serve
+(route ownership, CSRF through cross-cell calls, SSE/WebSocket isolation and
+injection, slow-client and flood DoS, capability SSRF, private slots, record
+forgery), crypto builtins for authentication, and exact BigInt arithmetic
+across builtins.
 
 - Cost: think() in a while condition counts per iteration; the last
   `max_rounds` wins. Route ownership sees UFCS, interpolation and delegate
