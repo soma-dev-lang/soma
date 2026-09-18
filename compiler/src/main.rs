@@ -77,6 +77,9 @@ enum Commands {
         /// Default off — no perf overhead unless asked.
         #[arg(long)]
         record: bool,
+        /// Start from empty storage: delete `.soma_data/` beside the program first
+        #[arg(long)]
+        fresh: bool,
     },
     /// Start HTTP server: soma serve app.cell [-p 8080] [--join host:port]
     Serve {
@@ -322,8 +325,23 @@ fn main_inner() {
         Commands::Build { file, output } => commands::build::cmd_build(&file, output.as_deref(), &mut registry),
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
-        Commands::Run { file, args, jit, signal, record } => commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry),
+        Commands::Run { file, args, jit, signal, record, fresh } => {
+            runtime::storage::set_data_dir_beside(&file);
+            if fresh {
+                // the database lives beside the program (see operations.md)
+                let data = runtime::storage::data_dir();
+                if data.exists() {
+                    if let Err(e) = std::fs::remove_dir_all(&data) {
+                        eprintln!("error: --fresh: cannot remove {}: {}", data.display(), e);
+                        std::process::exit(1);
+                    }
+                    eprintln!("fresh: removed {}", data.display());
+                }
+            }
+            commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry)
+        }
         Commands::Serve { file, port, host, no_check, no_schedule, watch, verbose, join } => {
+            runtime::storage::set_data_dir_beside(&file);
             if watch {
                 commands::serve::cmd_serve_watch(&file, port, &mut registry);
             } else {
@@ -681,7 +699,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         if has_failures {
             let mut why: Vec<String> = Vec::new();
             if check_failed { why.push("soma check failed".to_string()); }
-            if structural > 0 { why.push(format!("{} state machine{} with failed checks (see ✗ lines)", structural, if structural == 1 { "" } else { "s" })); }
+            if structural > 0 { why.push(format!("{} cell{} with failed checks — state machine or invariants (see ✗ lines)", structural, if structural == 1 { "" } else { "s" })); }
             if temporal > 0 { why.push(format!("{} temporal propert{} failed", temporal, if temporal == 1 { "y" } else { "ies" })); }
             if !unknown_states.is_empty() { why.push(format!("{} propert{} on unknown states", unknown_states.len(), if unknown_states.len() == 1 { "y" } else { "ies" })); }
             if strict_warnings > 0 { why.push(format!("--strict: {} ⚠ line{} (runtime-checked or unprovable)", strict_warnings, if strict_warnings == 1 { "" } else { "s" })); }

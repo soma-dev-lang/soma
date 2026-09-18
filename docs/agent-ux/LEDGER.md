@@ -241,3 +241,23 @@ Scores: Ruby port (invoice/ledger with dates and money formatting) 17 invocation
 - [ ] `soma fix` repairs missing handlers and `--native-idiv` only (documented as such).
 - [x] Variants round-trip through `to_json` / `from_json` as `{"_type", "_variant", …}` (they used to be a JSON string); `soma serve` renders every body with the same JSON writer (a returned variant is an object, not `{"result": Charged { … }}`).
 - [ ] `trace()` omits the system prompt.
+
+## Cycle 7 (2026-09-18, morning) — 5 fresh agents on the cycle-6 binary
+
+Scores: warehouse inventory (2 cells + router) 6 invocations to check+verify --strict+42/42 green, cross-cell atomic rollback and serialization held under 50 parallel confirms, 7/10; Java `Loan` port (BigDecimal HALF_UP, LocalDate, enum → machine) 15 invocations, first `soma run` byte-identical to Java, 7/10; pandas-style CSV job (20k rows) correct in 2 invocations but 104 s — `|> map` and `xs[i]` were O(n) per element — 4/10; LLM inbox assistant green at invocation 3, 34/34, cage claims held (validation, cost proof, approval gate, cross-cell rollback), 6.5/10; adversarial c7: two unsound findings — scheduled blocks kept their writes when they raised, and `kill -9` mid-handler left a half-committed handler on disk (writes were committed one statement at a time).
+
+### Fixed
+- [x] **Atomicity**: `every` / `after` ticks run through the same atomic path as handlers (rolled back when they raise); with persistent slots a top-level handler is ONE SQLite transaction on a process-wide connection (`BEGIN IMMEDIATE … COMMIT`, which also serializes processes) — a `kill -9` mid-handler leaves nothing. `.soma_data/` now lives beside the program regardless of the working directory; `soma run --fresh`.
+- [x] **Performance**: lambdas capture only the names they use (the closure used to copy the whole environment — the 20k-row list — once per element); `xs[i]` / `m[k]` on a local index in place. `rows |> map(r => …)` over 20k rows: 104 s → 0.1 s.
+- [x] `request` is never an endpoint (`GET /request/POST/%2Fcredit/x` ran a POST-only route); path segments reach `request` percent-decoded; every `soma serve` body and `soma run` output goes through the JSON writer (NaN/inf → null, variants as tagged objects).
+- [x] Slot value types: a whole Float is not an Int (`1.0` into `Map<String, Int>` → kind `type`); an Int into a `Float` slot is stored as a Float; `Map<String, Pay>` takes only `Pay` variants; `match` with variant arms on a non-variant value raises instead of answering `()`.
+- [x] A bare state name is that state at runtime (`transition(id, CLOSED)` — check and verify already accepted it); `div_round` (HALF_UP integer division, exact money), `months_between`, `chr`/`ord`; `stdev` / `variance` are sample statistics like Python's, `pstdev` / `pvariance` population; `think_json` raises kind `json` on a non-object reply (```json fences tolerated); mocked `think` costs ~4 chars/token so `budget` is testable; `trace()` under serve keeps the last 1000 steps process-wide; guard failures name the condition; `assert_fails … matching` failure names kind and message; the test runner echoes string literals with their spaces.
+- [x] Prover: `require` directly inside a loop body narrows (no break/continue), sibling handler calls with arguments are followed for their return range, and each ⚠ says WHY (`because `x` is a parameter (narrow it: …)`, `… reassigned 2 times (a loop accumulator?)`).
+- [x] `[native]`: `strbuf()` without a capacity compiles; `if hm_has(m, k)` and `let ok = hm_has(…)  if ok` compile in BigInt mode; `soma fix` mends `;`, `=>` in match arms, `-> T` on handlers, `null`/`None`/`True`/`False`; `if s == Pending { … }` parses (a unit variant before a block is not a record literal).
+- [x] Docs: llms.txt (transactions, `--fresh`, money recipe, dates, data builtins, think_json/tokens/trace), operations.md (SIGTERM, ticks, transaction), serving.md (`request` not routable, decoding, error body shape), reference.md Storage rewritten around `Map<String, Map>` (no `to_json` advice); corpus: loan_amortization rounds HALF_UP, triage_agent header truthful.
+
+### Open
+- [ ] Relational invariants across slots (`reserved <= on_hand`) — restructure the schema so the property is single-slot (documented).
+- [ ] No auth hook, no per-request timeout, no header access under serve (proxy's job; documented).
+- [ ] Native boundary takes scalars only (a List cannot cross) — documented; the interpreter is now linear, which removes most of the pressure.
+- [ ] Dashboard shows verification, not live traces or token totals.

@@ -1,6 +1,22 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+/// Where `.soma_data/` lives: beside the program (set once by run / serve
+/// from the program's path), else the working directory. It used to be the
+/// working directory always, so `soma run dir/app.cell` from elsewhere read
+/// a different database than `cd dir && soma run app.cell`.
+static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_data_dir_beside(program: &std::path::Path) {
+    let dir = program.parent().filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.join(".soma_data")).unwrap_or_else(|| std::path::PathBuf::from(".soma_data"));
+    let _ = DATA_DIR.set(dir);
+}
+
+pub fn data_dir() -> std::path::PathBuf {
+    DATA_DIR.get().cloned().unwrap_or_else(|| std::path::PathBuf::from(".soma_data"))
+}
+
 /// A value stored in a memory slot
 #[derive(Debug, Clone)]
 pub enum StoredValue {
@@ -188,7 +204,7 @@ pub struct FileBackend {
 
 impl FileBackend {
     pub fn new(cell_name: &str, slot_name: &str) -> Self {
-        let path = format!(".soma_data/{}_{}.json", cell_name, slot_name);
+        let path = data_dir().join(format!("{}_{}.json", cell_name, slot_name)).to_string_lossy().to_string();
 
         // Load existing data if present, preserving types
         let (map, log) = if let Ok(data) = std::fs::read_to_string(&path) {
@@ -221,7 +237,7 @@ impl FileBackend {
     }
 
     fn persist(&self) {
-        let _ = std::fs::create_dir_all(".soma_data");
+        let _ = std::fs::create_dir_all(data_dir());
 
         let map: HashMap<String, serde_json::Value> = self.map.read().unwrap()
             .iter()
@@ -313,16 +329,33 @@ impl StorageBackend for FileBackend {
 /// SQLite storage — real ACID database. Used for [persistent, consistent].
 /// Zero config: creates a .soma.db file automatically.
 pub struct SqliteBackend {
-    conn: std::sync::Mutex<rusqlite::Connection>,
+    conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
     table: String,
+}
+
+/// ONE connection per process for `soma.db`, shared by every slot: a
+/// handler's writes then sit in one SQLite transaction (`BEGIN IMMEDIATE` …
+/// `COMMIT` around the handler, see `Interpreter::atomically`), so a process
+/// killed mid-handler leaves nothing behind — with a connection per slot the
+/// writes were committed one statement at a time.
+static SHARED_CONN: std::sync::OnceLock<Arc<std::sync::Mutex<rusqlite::Connection>>> = std::sync::OnceLock::new();
+
+/// The shared connection, if any persistent slot opened the database.
+pub fn shared_connection() -> Option<Arc<std::sync::Mutex<rusqlite::Connection>>> {
+    SHARED_CONN.get().cloned()
 }
 
 impl SqliteBackend {
     pub fn new(cell_name: &str, slot_name: &str) -> Self {
-        let _ = std::fs::create_dir_all(".soma_data");
-        let db_path = ".soma_data/soma.db";
-        let conn = rusqlite::Connection::open(db_path)
-            .expect("failed to open SQLite database");
+        let _ = std::fs::create_dir_all(data_dir());
+        let db_path = data_dir().join("soma.db");
+        let shared = SHARED_CONN.get_or_init(|| {
+            let c = rusqlite::Connection::open(&db_path).expect("failed to open SQLite database");
+            let _ = c.busy_timeout(std::time::Duration::from_secs(120));
+            c.execute_batch("PRAGMA journal_mode=WAL;").ok();
+            Arc::new(std::sync::Mutex::new(c))
+        }).clone();
+        let conn = shared.lock().unwrap_or_else(|e| e.into_inner());
 
         let table = format!("{}_{}", cell_name, slot_name);
 
@@ -340,11 +373,9 @@ impl SqliteBackend {
             );"
         )).expect("failed to create tables");
 
-        // Enable WAL mode for concurrent readers
-        conn.execute_batch("PRAGMA journal_mode=WAL;").ok();
-
+        drop(conn);
         Self {
-            conn: std::sync::Mutex::new(conn),
+            conn: shared,
             table,
         }
     }

@@ -1104,3 +1104,112 @@ cell test T {
     let (out, _) = soma_in(&d, &["describe", "ty.cell", "--json"]);
     assert!(out.contains("\"Charged\""), "{out}");
 }
+
+/// Cycle 7 (inventory / Java / data / adversarial / LLM assistant): ticks
+/// were not rolled back, a kill mid-handler left a partial commit, `request`
+/// was itself an endpoint, `|> map` was quadratic, a bare state name failed
+/// at runtime, `think_json` handed back a String, path segments were not
+/// decoded, whole Floats slipped into Int slots, `match` on a non-variant
+/// gave `()`, the prover ignored `require` inside loops and handler returns.
+#[test]
+fn cycle7_findings() {
+    let d = dir("cycle7");
+    std::fs::write(d.join("app.cell"), r#"
+cell type Pay { variants { Charged { tx: String }  Cash } }
+cell Shop {
+  face { signal go(id: String) -> String  signal big(n: Int) -> Int  signal pick(p: Map) -> String
+         signal money(c: Int) -> Int  signal months() -> Int  signal js() -> Map  signal tokens() -> Int
+         signal fl() -> Int  signal drain(keys: List) -> Int  signal one(k: String) -> Int  signal rel(k: String) -> Int }
+  memory {
+    bal: Map<String, Int> [persistent]
+    invariant bal >= 0
+    pays: Map<String, Pay> [persistent]
+    fs: Map<String, Float> [persistent]
+  }
+  state st { initial: OPEN  OPEN -> CLOSED }
+  on go(id: String) { transition(id, CLOSED)  return get_status(id) }
+  on big(n: Int) {
+    let xs = range(0, n)
+    let ys = xs |> map(x => x * 2)
+    let i = 0  let acc = 0
+    while i < n { acc += xs[i]  i += 1 }
+    return len(ys) + acc
+  }
+  on pick(p: Map) { return match p { Charged { tx } -> tx  Cash -> "cash" } }
+  on money(c: Int) { return div_round(c * 600, 120000) }
+  on months() { return months_between("2026-01-15", "2026-04-20") }
+  on js() { return think_json("q", map("max_tokens", 20)) }
+  on tokens() { set_budget(1000)  think("hello world")  return tokens_used() }
+  on fl() { fs.set("k", 1)  bal.set("k", 1.0)  return 1 }
+  on drain(keys: List) {
+    let n = 0
+    for k in keys { let cur = bal.get(k) ?? 0  require cur >= 1 else Empty  bal.set(k, cur - 1)  n += 1 }
+    return n
+  }
+  on one(k: String) { let cur = bal.get(k) ?? 0  require cur >= 1 else Empty  bal.set(k, cur - 1)  return cur }
+  on rel(k: String) { let q = one(k)  bal.set("other", (bal.get("other") ?? 0) + q)  return q }
+}
+cell test T {
+  rules {
+    assert go("a") == "CLOSED"
+    assert big(4000) == 4000 + 7998000
+    assert_fails pick(map("a", 1)) matching "no arm can match"
+    assert money(1010025) == 5050
+    assert money(10125) == 51
+    assert months() == 3
+    mock think "I think it is billing"
+    assert_fails js() matching "json"
+    mock think "```json\n{\"category\": \"billing\"}\n```"
+    assert js().category == "billing"
+    mock think "reply"
+    assert tokens() > 0
+    assert_fails fl() matching "type"
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("10 passed, 0 failed"), "{out}");
+    let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+    assert!(out.contains("writer 'drain' proven by induction"), "{out}");
+    assert!(out.contains("writer 'rel' proven"), "{out}");
+
+    // a raising tick is rolled back; `request` is never an endpoint; paths are decoded
+    std::fs::write(d.join("srv.cell"), r#"
+cell Api {
+  face { signal state() -> Map  signal credit() -> Int }
+  memory { seq: List<String> [persistent] }
+  every 1s { seq.push("tick")  fail("boom", "tick failed") }
+  on credit() { seq.push("credit")  return seq.len }
+  on state() { return map("seq", seq) }
+  on request(method: String, path: String, body: String) {
+    match map("method", method, "path", path) {
+      {method: "GET", path: "/state"} -> state()
+      {method: "GET", path: "/echo/" + rest} -> map("rest", rest)
+      {method: "POST", path: "/credit"} -> credit()
+      _ -> response(404, map("error", "nf"))
+    }
+  }
+}
+"#).unwrap();
+    let port = 20990 + (std::process::id() % 5) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "srv.cell", "-p", &port.to_string()])
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("soma serve");
+    let mut up = false;
+    for _ in 0..150 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    let (st, spoof, echo) = if up {
+        (http(port, "GET", "/state"), http(port, "GET", "/request/POST/%2Fcredit/x"), http(port, "GET", "/echo/a%20b"))
+    } else { (String::new(), String::new(), String::new()) };
+    let _ = child.kill(); let _ = child.wait();
+    assert!(up);
+    assert!(st.contains("\"seq\":[]"), "{st}");
+    assert!(spoof.contains("404"), "{spoof}");
+    assert!(echo.contains("\"rest\":\"a b\""), "{echo}");
+    let (out, _) = soma_in(&d, &["run", "srv.cell", "state"]);
+    assert!(out.contains("\"seq\": []"), "{out}");
+}

@@ -3,7 +3,7 @@ pub mod native_ffi;
 pub mod soma_int;
 pub mod record_log;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use rustc_hash::FxHashMap;
 use indexmap::IndexMap;
@@ -765,7 +765,10 @@ impl Interpreter {
 
     /// Execute an `every` block's body
     pub fn exec_every(&mut self, body: &[Spanned<Statement>], env: &mut Env, cell_name: &str) -> Result<Value, RuntimeError> {
-        match self.exec_body(body, env, cell_name, "_every") {
+        // a tick is a handler invocation: serialized with requests AND
+        // rolled back when it raises (its writes used to stay committed)
+        let outcome = self.atomically(|s| s.exec_body(body, env, cell_name, "_every"));
+        match outcome {
             Ok(val) => Ok(val),
             Err(ExecError::Return(val)) => Ok(val),
             Err(ExecError::Break) => {
@@ -1786,6 +1789,13 @@ impl Interpreter {
                             )),
                         )),
                     }
+                } else if let Some(state) = self.find_state_machine_for(cell_name)
+                    .filter(|(sm, _)| sm.initial == *name || sm.transitions.iter().any(|t| t.node.from == *name || t.node.to == *name))
+                    .map(|_| name.clone())
+                {
+                    // `transition(id, CLOSED)`: a bare state name of this cell's
+                    // machine is that state (check and verify already read it so)
+                    Ok(Value::String(state))
                 } else {
                     Err(ExecError::Runtime(RuntimeError::UndefinedVar(name.clone())))
                 }
@@ -2092,8 +2102,15 @@ impl Interpreter {
             }
 
             Expr::Lambda { param, body } => {
-                // Capture current environment (convert FxHashMap → HashMap for storage in Value)
-                let captured: HashMap<String, Value> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                // Capture only the names the body mentions: capturing the
+                // whole environment made `rows |> map(r => …)` copy `rows`
+                // (20 000 maps) into the closure AND once per element (the
+                // closure env is cloned for each call) — 104 s for 20k rows.
+                let mut names: HashSet<String> = HashSet::new();
+                free_names_expr(&body.node, &mut names);
+                let captured: HashMap<String, Value> = env.iter()
+                    .filter(|(k, _)| names.contains(k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone())).collect();
                 Ok(Value::Lambda {
                     param: param.clone(),
                     body: body.clone(),
@@ -2102,8 +2119,13 @@ impl Interpreter {
             }
 
             Expr::LambdaBlock { param, stmts, result } => {
-                // Capture current environment + statements
-                let captured: HashMap<String, Value> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                // Capture current environment + statements (only the names used)
+                let mut names: HashSet<String> = HashSet::new();
+                free_names_stmts(stmts, &mut names);
+                free_names_expr(&result.node, &mut names);
+                let captured: HashMap<String, Value> = env.iter()
+                    .filter(|(k, _)| names.contains(k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone())).collect();
                 Ok(Value::LambdaBlock {
                     param: param.clone(),
                     stmts: stmts.clone(),
@@ -2169,6 +2191,16 @@ impl Interpreter {
                 if let Value::Variant { type_name, variant, .. } = &val {
                     return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
                         "non-exhaustive match on '{}': variant '{}' not handled", type_name, variant
+                    ))));
+                }
+                // every arm is a variant pattern and the subject is not a
+                // variant at all: `()` would hide a wrong value (a plain map
+                // where a Pay was expected)
+                if !arms.is_empty() && arms.iter().all(|a| matches!(a.pattern, MatchPattern::Variant { .. })) {
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                        "match expects a variant ({}), got {} {} — no arm can match it",
+                        arms.iter().map(|a| match &a.pattern { MatchPattern::Variant { name, .. } => name.as_str(), _ => "?" }).collect::<Vec<_>>().join(" / "),
+                        value_type_name(&val), { let t: String = format!("{}", val).chars().take(40).collect(); t }
                     ))));
                 }
                 Ok(Value::Unit)
@@ -2305,8 +2337,30 @@ impl Interpreter {
                         return self.call_storage_method(cell_name, slot_name, "get", &[key]);
                     }
                 }
-                let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
                 let idx_val = self.eval_expr(&index.node, env, cell_name, signal_name)?;
+                // `xs[i]` on a local: index in place — evaluating `xs` cloned
+                // the whole list per read (a `while i < n { xs[i] }` loop
+                // over 20k rows took 112 s)
+                if let Expr::Ident(ref name) = target.node {
+                    match env.get(name) {
+                        Some(Value::List(items)) => {
+                            let raw = idx_val.as_int().map_err(ExecError::Runtime)?;
+                            let i = if raw < 0 { raw + items.len() as i64 } else { raw };
+                            if i < 0 || i as usize >= items.len() {
+                                return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                    "list index {} out of bounds (length {})", raw, items.len()
+                                ))));
+                            }
+                            return Ok(items[i as usize].clone());
+                        }
+                        Some(Value::Map(entries)) => {
+                            let key = format!("{}", idx_val);
+                            return Ok(entries.get(&key).cloned().unwrap_or(Value::Unit));
+                        }
+                        _ => {}
+                    }
+                }
+                let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
                 match target_val {
                     Value::List(ref items) => {
                         let raw = idx_val.as_int().map_err(ExecError::Runtime)?;
@@ -2492,8 +2546,7 @@ impl Interpreter {
                         return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
                             "{}[{}]: index out of bounds (the List slot has {} items) — push() appends", slot_name, raw, xs.len()))));
                     }
-                    let val = args[1].clone();
-                    self.check_slot_value_type(cell_name, slot_name, &val)?;
+                    let val = self.check_slot_value_type(cell_name, slot_name, &args[1])?;
                     self.check_invariants(cell_name, slot_name, &raw.to_string(), &val, xs.len() as i64, "write")?;
                     let prev = backend.list();
                     if let Some(j) = self.journal.as_mut() {
@@ -2567,7 +2620,8 @@ impl Interpreter {
                 let key_str = format!("{}", key);
                 let val_str = format!("{}", val);
 
-                self.check_slot_value_type(cell_name, slot_name, val)?;
+                let coerced = self.check_slot_value_type(cell_name, slot_name, val)?;
+                let val = &coerced;
                 // V1.8: invariants are checked BEFORE the write commits —
                 // a violated invariant must leave the slot untouched.
                 let exists = backend.get(&key_str).is_some();
@@ -2623,7 +2677,8 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "append() requires a value argument".to_string()
                     )))?;
-                self.check_slot_value_type(cell_name, slot_name, val)?;
+                let coerced = self.check_slot_value_type(cell_name, slot_name, val)?;
+                let val = &coerced;
                 let size_after = backend.len() as i64 + 1;
                 self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
                 if let Some(j) = self.journal.as_mut() {
@@ -3639,16 +3694,26 @@ impl Interpreter {
         }
         let _serial = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Across PROCESSES too: two `soma run` on one .soma_data used to
-        // lose updates (3000 + 3000 = 3082). The lock is a SQLite
-        // transaction on a file of its own, so it never waits on the
-        // program's own writes.
-        let _cross = CrossProcessLock::acquire();
+        // lose updates (3000 + 3000 = 3082). With persistent slots the
+        // handler IS a SQLite transaction on soma.db (`BEGIN IMMEDIATE`
+        // serializes processes; a kill mid-handler leaves nothing — the
+        // per-statement commits used to survive it); without them, a lock
+        // on a file of its own.
+        let txn = crate::runtime::storage::shared_connection().filter(|c| {
+            let c = c.lock().unwrap_or_else(|e| e.into_inner());
+            c.execute_batch("BEGIN IMMEDIATE").is_ok()
+        });
+        let _cross = if txn.is_none() { Some(CrossProcessLock::acquire()) } else { None };
         self.journal = Some(Vec::new());
         let result = f(self);
         if result.is_err() {
             self.rollback_to(0);
         }
         self.journal = None;
+        if let Some(c) = txn {
+            let c = c.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = c.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" });
+        }
         result
     }
 
@@ -3733,9 +3798,10 @@ impl Interpreter {
             match result {
                 Value::Bool(true) => {} // guard passed
                 Value::Bool(false) => {
+                    // name the condition: "condition is false" told nobody which
                     return Err(RuntimeError::RequireFailed(format!(
-                        "guard failed for transition {} → {}: condition is false",
-                        current, target
+                        "guard failed for transition {} → {}: `{}` is false",
+                        current, target, crate::ast::render_expr(&guard_expr)
                     )));
                 }
                 _ => {
@@ -3836,17 +3902,23 @@ impl Interpreter {
     /// `Map<String, Int>` used to be stored silently). Same rules as a
     /// parameter: Int fits Float, a whole Float fits Int, `Map` also takes a
     /// record/variant, unknown type names are not checked.
-    fn check_slot_value_type(&self, cell_name: &str, slot_name: &str, val: &Value) -> Result<(), ExecError> {
-        let Some(ty) = self.slot_value_type(cell_name, slot_name) else { return Ok(()) };
+    /// Returns the value to store: an Int written to a `Float` slot is
+    /// stored as a Float; everything else must already be of the type (a
+    /// whole Float is NOT an Int — `1.0` in `Map<String, Int>` is refused;
+    /// a declared sum type takes only its variants).
+    fn check_slot_value_type(&self, cell_name: &str, slot_name: &str, val: &Value) -> Result<Value, ExecError> {
+        let Some(ty) = self.slot_value_type(cell_name, slot_name) else { return Ok(val.clone()) };
         let ok = match (ty.as_str(), val) {
-            ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_))
+            ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_))
             | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) | ("List", Value::List(_))
             | ("Map", Value::Map(_) | Value::Variant { .. }) => true,
-            ("Int", Value::Float(f)) => f.fract() == 0.0,
+            ("Float", Value::Int(i)) => return Ok(Value::Float(i.to_f64())),
             ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => false,
+            (t, Value::Variant { type_name, .. }) if self.type_variants.contains_key(t) => type_name == t,
+            (t, _) if self.type_variants.contains_key(t) => false,
             _ => true,
         };
-        if ok { return Ok(()); }
+        if ok { return Ok(val.clone()); }
         let shown: String = format!("{}", val).chars().take(40).collect();
         Err(ExecError::Runtime(RuntimeError::Domain {
             kind: "type".to_string(),
@@ -4144,10 +4216,11 @@ struct CrossProcessLock(Option<rusqlite::Connection>);
 
 impl CrossProcessLock {
     fn acquire() -> Self {
-        if !std::path::Path::new(".soma_data").is_dir() {
+        let dir = crate::runtime::storage::data_dir();
+        if !dir.is_dir() {
             return CrossProcessLock(None);
         }
-        let conn = match rusqlite::Connection::open(".soma_data/lock.db") {
+        let conn = match rusqlite::Connection::open(dir.join("lock.db")) {
             Ok(c) => c,
             Err(_) => return CrossProcessLock(None),
         };
@@ -4919,8 +4992,10 @@ mod tests {
                 }
             }
         "#;
+        // a mocked think() costs an estimate (~4 chars per token) so
+        // budgets are testable offline: "test" + "test" = 8 chars → 2
         let result3 = run(source3, "Bot3", "run", vec![]).unwrap();
-        assert_eq!(result3.as_int().unwrap(), 0);
+        assert_eq!(result3.as_int().unwrap(), 2);
 
         // Trace records think calls
         let source4 = r#"
@@ -4975,5 +5050,76 @@ mod tests {
         "#;
         let result = run(source, "T", "run", vec![]).unwrap();
         assert_eq!(result.to_string(), "done");
+    }
+}
+
+/// Every name a lambda body could read — an over-approximation on purpose
+/// (identifiers, call names, `{name…}` inside string literals): capturing
+/// a name the body never uses costs a clone, missing one is a runtime error.
+pub(crate) fn free_names_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Literal(Literal::String(s)) => {
+            // "{total} of {r.units}": the word after each `{`
+            let mut rest = s.as_str();
+            while let Some(i) = rest.find('{') {
+                rest = &rest[i + 1..];
+                let word: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if !word.is_empty() { out.insert(word); }
+            }
+        }
+        Expr::Literal(_) => {}
+        Expr::Ident(n) => { out.insert(n.clone()); }
+        Expr::FieldAccess { target, .. } => free_names_expr(&target.node, out),
+        Expr::Index { target, index } => { free_names_expr(&target.node, out); free_names_expr(&index.node, out); }
+        Expr::MethodCall { target, args, .. } => { free_names_expr(&target.node, out); for a in args { free_names_expr(&a.node, out); } }
+        Expr::FnCall { name, args } => { out.insert(name.clone()); for a in args { free_names_expr(&a.node, out); } }
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => {
+            free_names_expr(&left.node, out); free_names_expr(&right.node, out);
+        }
+        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => free_names_expr(&i.node, out),
+        Expr::Record { fields, .. } => { for (_, v) in fields { free_names_expr(&v.node, out); } }
+        Expr::Match { subject, arms } => {
+            free_names_expr(&subject.node, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard { free_names_expr(&g.node, out); }
+                free_names_stmts(&arm.body, out);
+                free_names_expr(&arm.result.node, out);
+            }
+        }
+        Expr::Lambda { body, .. } => free_names_expr(&body.node, out),
+        Expr::LambdaBlock { stmts, result, .. } => { free_names_stmts(stmts, out); free_names_expr(&result.node, out); }
+        Expr::ListLiteral(items) => { for i in items { free_names_expr(&i.node, out); } }
+        Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
+            free_names_expr(&condition.node, out);
+            free_names_stmts(then_body, out); free_names_expr(&then_result.node, out);
+            free_names_stmts(else_body, out); free_names_expr(&else_result.node, out);
+        }
+    }
+}
+
+pub(crate) fn free_names_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+    for st in stmts {
+        match &st.node {
+            Statement::Let { name, value } | Statement::Assign { name, value } => { out.insert(name.clone()); free_names_expr(&value.node, out); }
+            Statement::Return { value } | Statement::Ensure { condition: value } | Statement::ExprStmt { expr: value } => free_names_expr(&value.node, out),
+            Statement::If { condition, then_body, else_body } => { free_names_expr(&condition.node, out); free_names_stmts(then_body, out); free_names_stmts(else_body, out); }
+            Statement::For { var, iter, body, .. } => { out.insert(var.clone()); free_names_expr(&iter.node, out); free_names_stmts(body, out); }
+            Statement::While { condition, body, .. } => { free_names_expr(&condition.node, out); free_names_stmts(body, out); }
+            Statement::Emit { args, .. } => { for a in args { free_names_expr(&a.node, out); } }
+            Statement::Require { constraint, .. } => free_names_constraint(&constraint.node, out),
+            Statement::MethodCall { target, args, .. } => { out.insert(target.clone()); for a in args { free_names_expr(&a.node, out); } }
+            Statement::IndexSet { name, index, value } => { out.insert(name.clone()); free_names_expr(&index.node, out); free_names_expr(&value.node, out); }
+            Statement::Break | Statement::Continue => {}
+        }
+    }
+}
+
+fn free_names_constraint(c: &Constraint, out: &mut HashSet<String>) {
+    match c {
+        Constraint::Comparison { left, right, .. } => { free_names_expr(&left.node, out); free_names_expr(&right.node, out); }
+        Constraint::Predicate { args, .. } => { for a in args { free_names_expr(&a.node, out); } }
+        Constraint::And(a, b) | Constraint::Or(a, b) => { free_names_constraint(&a.node, out); free_names_constraint(&b.node, out); }
+        Constraint::Not(i) => free_names_constraint(&i.node, out),
+        Constraint::Descriptive(_) => {}
     }
 }

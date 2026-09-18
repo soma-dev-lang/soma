@@ -251,8 +251,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             scale_section.as_ref().unwrap().shard.as_deref().unwrap_or("none"),
             scale_section.as_ref().unwrap().consistency);
     }
-    eprintln!("database: {}", std::path::Path::new(".soma_data/soma.db").canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from(".soma_data/soma.db")).display());
+    let db = crate::runtime::storage::data_dir().join("soma.db");
+    eprintln!("database: {}", db.canonicalize().unwrap_or(db).display());
     let shown_host = if host == "0.0.0.0" { "0.0.0.0 (all interfaces)".to_string() } else { host.to_string() };
     eprintln!("listening on http://{}:{}", shown_host, port);
     eprintln!("dashboard: http://{}:{}/__soma/", if host == "0.0.0.0" { "localhost" } else { host }, port);
@@ -1147,7 +1147,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let (sig, rest) = path.split_once('/').unwrap_or((path, ""));
             // a path `request` matches explicitly is `request`'s, even when a
             // handler has the same name as its first segment
-            if handler_names.contains(&sig.to_string()) && !sig.starts_with('_') && !request_routes.matches(url_path) {
+            // `request` itself is the router, never an endpoint: `GET
+            // /request/POST/%2Fcredit/x` used to run a POST-only route
+            if handler_names.contains(&sig.to_string()) && !sig.starts_with('_') && sig != "request" && !request_routes.matches(url_path) {
                 let mut args: Vec<interpreter::Value> = if rest.is_empty() {
                     vec![]
                 } else {
@@ -1262,7 +1264,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
                 let mut req_args = vec![
                     interpreter::Value::String(method.clone()),
-                    interpreter::Value::String(req_path.to_string()),
+                    // percent-decoded per segment (`/stock/a%20b` reaches the
+                    // handler as "/stock/a b"; an encoded slash stays one segment)
+                    interpreter::Value::String(req_path.split('/').map(|seg| urlencoding_decode(seg).replace('/', "%2F")).collect::<Vec<_>>().join("/")),
                     body_arg,
                 ];
                 // The query map is the optional 4th parameter of `request`.
@@ -1333,7 +1337,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
         let start_time = std::time::Instant::now();
 
-        match interp.call_signal(&cell_name, &signal_name, args) {
+        let outcome = interp.call_signal(&cell_name, &signal_name, args);
+        // the trace outlives the request (one interpreter per request):
+        // `trace()` in a later request sees the last 1000 steps
+        interpreter::builtins::storage::serve_trace_extend(&interp.agent_trace);
+        match outcome {
             Ok(val) => {
                 // Check for SSE response
                 let is_sse = if let interpreter::Value::Map(ref entries) = val {

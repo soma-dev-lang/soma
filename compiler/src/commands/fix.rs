@@ -146,7 +146,72 @@ fn detect_indent(source: &str, cell_name: &str) -> String {
     "    ".to_string()
 }
 
+/// Syntax habits the parser names with a fix-it, applied to the text before
+/// anything else can run: `;` between statements, `=>` in match arms, `-> T`
+/// on a handler. Each round re-lexes / re-parses; stops at the first error
+/// it cannot mend. Returns the descriptions of what changed.
+fn syntax_fixes(source: &mut String) -> Vec<String> {
+    let mut done: Vec<String> = Vec::new();
+    for _ in 0..40 {
+        let mut lex = crate::lexer::Lexer::new(source);
+        let tokens = match lex.tokenize() {
+            Ok(t) => t,
+            Err(e) => {
+                let Some(pos) = super::lex_error_position(&e) else { break };
+                if matches!(e, crate::lexer::LexError::UnexpectedChar { .. }) && source[pos..].starts_with(';') {
+                    // `a = 1; b = 2` — two spaces separate statements on one line
+                    let (line, _) = crate::interpreter::span_to_location(source, pos);
+                    source.replace_range(pos..pos + 1, "  ");
+                    done.push(format!("line {}: removed ';' (one statement per line, or two spaces between statements)", line));
+                    continue;
+                }
+                break;
+            }
+        };
+        let mut parser = crate::parser::Parser::new(tokens);
+        match parser.parse_program() {
+            Ok(_) => break,
+            Err(e) => {
+                let msg = e.to_string();
+                let Some(span) = e.span() else { break };
+                let (line, _) = crate::interpreter::span_to_location(source, span.start);
+                if msg.starts_with("match arms use '->'") && source[span.start..].starts_with("=>") {
+                    source.replace_range(span.start..span.start + 2, "->");
+                    done.push(format!("line {}: match arm `=>` → `->`", line));
+                    continue;
+                }
+                if msg.starts_with("handlers do not declare return types") && source[span.start..].starts_with("->") {
+                    // drop ` -> T` up to the opening brace
+                    if let Some(rel) = source[span.start..].find('{') {
+                        let mut start = span.start;
+                        while start > 0 && source.as_bytes()[start - 1] == b' ' { start -= 1; }
+                        source.replace_range(start..span.start + rel, " ");
+                        done.push(format!("line {}: removed the return type from the handler (it belongs on the face signal)", line));
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    done
+}
+
 pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
+    // 0. Syntax fix-its first: nothing else runs on a file that does not parse
+    {
+        let mut src = read_source(path);
+        let done = syntax_fixes(&mut src);
+        if !done.is_empty() {
+            std::fs::write(path, &src).unwrap_or_else(|e| {
+                eprintln!("error: cannot write '{}': {}", path.display(), e);
+                std::process::exit(1);
+            });
+            if !json {
+                for d in &done { println!("  \u{2713} {}", d); }
+            }
+        }
+    }
     // 1. Run checker to find errors
     let errors = run_checker(path, registry);
 
@@ -180,6 +245,31 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     }
 
     let mut actions: Vec<FixAction> = Vec::new();
+
+    // `null` / `None` / `True` … : the checker names the Soma spelling; the
+    // identifier's span is exact, so the rewrite is mechanical (applied
+    // last-to-first so offsets stay valid)
+    let mut idiom_edits: Vec<(usize, usize, &str, String)> = Vec::new();
+    for error in &errors {
+        if let CheckError::Static { kind: "foreign_idiom", message, span } = error {
+            let word = source[span.start..span.end.min(source.len())].to_string();
+            let to = match word.as_str() {
+                "null" | "None" | "nil" | "undefined" | "NULL" => "()",
+                "True" | "TRUE" => "true",
+                "False" | "FALSE" => "false",
+                _ => continue,
+            };
+            if message.starts_with(&format!("'{}'", word)) {
+                idiom_edits.push((span.start, span.end, to, word));
+            }
+        }
+    }
+    idiom_edits.sort_by(|a, b| b.0.cmp(&a.0));
+    idiom_edits.dedup_by(|a, b| a.0 == b.0);
+    for (start, end, to, word) in idiom_edits {
+        source.replace_range(start..end, to);
+        fixes.push(AppliedFix { description: format!("`{}` → `{}`", word, to) });
+    }
 
     for error in &errors {
         match error {

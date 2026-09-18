@@ -46,7 +46,7 @@ cell Loan {
     on monthly_interest(id: String) {
         let p = principal.get(id) ?? 0
         let r = rate.get(id) ?? 0
-        return idiv(p * r, 120000)      // bps annual -> one month, truncated
+        return div_round(p * r, 120000) // bps annual -> one month, rounded HALF_UP (BigDecimal style)
     }
 
     on make_payment(id: String, amount: Int) {

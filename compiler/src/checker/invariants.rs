@@ -286,11 +286,37 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         .filter(|(_, v)| **v != Proof::Holds)
                         .map(|(c, _)| render_expr(c))
                         .collect();
+                    // say WHY: the names in the written value the prover
+                    // could not bound, and where each comes from
+                    let mut names: HashSet<String> = HashSet::new();
+                    collect_idents(value_expr, &mut names);
+                    let on = handlers.get(handler);
+                    let mut why: Vec<String> = names.iter().filter(|n| bounds(ctx.range_of(&Expr::Ident((*n).clone()))).is_none()).map(|n| {
+                        let params: Vec<&str> = on.map(|o| o.params.iter().map(|p| p.name.as_str()).collect()).unwrap_or_default();
+                        if params.contains(&n.as_str()) {
+                            format!("`{n}` is a parameter (narrow it: `require {n} >= 0 else …`)")
+                        } else {
+                            let mut assigns: Vec<(&str, &Expr)> = Vec::new();
+                            if let Some(o) = on { collect_assigns(&o.body, &mut assigns); }
+                            let bound: Vec<&&Expr> = assigns.iter().filter(|(m, _)| *m == n.as_str()).map(|(_, e)| e).collect();
+                            match bound.as_slice() {
+                                [] => format!("`{n}` has no known range"),
+                                [one] => match one {
+                                    Expr::FnCall { name: f, .. } if !handlers.contains_key(f) => format!("`{n}` = {}() — a builtin the prover does not bound", f),
+                                    Expr::MethodCall { .. } | Expr::Index { .. } => format!("`{n}` reads a slot with no interval invariant"),
+                                    _ => format!("`{n}` = {} — not bounded", render_expr(one)),
+                                },
+                                _ => format!("`{n}` is reassigned {} times (a loop accumulator?) — bind it once, or read the slot", bound.len()),
+                            }
+                        }
+                    }).collect();
+                    why.sort();
                     let tag = if open.len() == parts.len() {
                         format!("{handler} → {slot}")
                     } else {
                         format!("{handler} → {slot} [{}]", open.join(" && "))
                     };
+                    let tag = if why.is_empty() { tag } else { format!("{tag} because {}", why.join("; ")) };
                     if !runtime_checked.contains(&tag) {
                         runtime_checked.push(tag);
                     }
@@ -461,8 +487,10 @@ impl RangeCtx<'_> {
                     None => mk(0.0, f64::INFINITY),
                 },
                 ("len", 1) => mk(0.0, f64::INFINITY),
-                // a small accessor handler: `on total() { return counts.get("n") ?? 0 }`
-                (_, 0) if self.depth < 3 => match self.handlers.get(name) {
+                // a sibling handler: `on total() { return counts.get("n") ?? 0 }`,
+                // or `_drop_hold(id, sku)` returning a slot read — its
+                // parameters are unknown inside, its returns are joined
+                (_, _) if self.depth < 3 && self.handlers.contains_key(name) => match self.handlers.get(name) {
                     Some(on) => {
                         let inner = RangeCtx {
                             hyp: self.hyp,
@@ -582,7 +610,14 @@ fn local_ranges_at(
         .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt"))
         .map(|p| p.name.as_str()).collect();
     let reassigned_param = |n: &str| params.contains(n) && assigns.iter().any(|(m, _)| *m == n);
-    for stmt in &on.body {
+    // requires that always run when the handler commits: the top-level
+    // ones, and those directly inside a loop body (a per-iteration `let`
+    // narrowed by a per-iteration `require` — the handler is atomic, so a
+    // require failing in ANY iteration rolls every write back). A loop with
+    // break/continue can skip its require: not narrowed.
+    let mut unconditional: Vec<&Spanned<Statement>> = Vec::new();
+    collect_unconditional_requires(&on.body, &mut unconditional);
+    for stmt in unconditional {
         if let Statement::Require { constraint, .. } = &stmt.node {
             for (left, op, right) in constraint_comparisons(&constraint.node) {
                 // `require b <= a` (two once-bound names): a - b >= 0 — kept
@@ -652,6 +687,27 @@ fn local_ranges_at(
         }
     }
     vars
+}
+
+fn collect_unconditional_requires<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e Spanned<Statement>>) {
+    for st in stmts {
+        match &st.node {
+            Statement::Require { .. } => out.push(st),
+            Statement::For { body, .. } | Statement::While { body, .. } => {
+                if !has_break_or_continue(body) { collect_unconditional_requires(body, out); }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn has_break_or_continue(stmts: &[Spanned<Statement>]) -> bool {
+    stmts.iter().any(|st| match &st.node {
+        Statement::Break | Statement::Continue => true,
+        Statement::If { then_body, else_body, .. } => has_break_or_continue(then_body) || has_break_or_continue(else_body),
+        Statement::For { body, .. } | Statement::While { body, .. } => has_break_or_continue(body),
+        _ => false,
+    })
 }
 
 /// The comparison leaves of a require constraint (only the `&&` spine —

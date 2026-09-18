@@ -147,7 +147,7 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
         // the handler's value is the command's output; `()` prints nothing
         // (a `main` that only prints used to end with a stray `null`)
         Ok(interpreter::Value::Unit) => {}
-        Ok(val) => println!("{}", val),
+        Ok(val) => println!("{}", run_output(&val)),
         Err(e) => { eprintln!("vm error: {}", e); process::exit(1); }
     }
 }
@@ -314,7 +314,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         // the handler's value is the command's output; `()` prints nothing
         // (a `main` that only prints used to end with a stray `null`)
         Ok(interpreter::Value::Unit) => {}
-        Ok(val) => println!("{}", val),
+        Ok(val) => println!("{}", run_output(&val)),
         Err(e) => {
             eprintln!("{}", interpreter::format_runtime_error(
                 &e,
@@ -469,5 +469,16 @@ fn run_with_runtime(program: ast::Program, args: &[interpreter::Value]) {
         for entry in &rt.signal_log {
             eprintln!("  {}", entry);
         }
+    }
+}
+
+/// What `soma run` prints for a handler's value: valid JSON for maps, lists
+/// and variants (NaN/inf → null, a variant → `{"_type", "_variant", …}`,
+/// same writer as `to_json` and `soma serve`); scalars as themselves.
+fn run_output(val: &interpreter::Value) -> String {
+    match val {
+        interpreter::Value::Map(_) | interpreter::Value::List(_) | interpreter::Value::Variant { .. } =>
+            interpreter::builtins::string::to_json_string_spaced(val),
+        other => format!("{}", other),
     }
 }

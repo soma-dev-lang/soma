@@ -54,6 +54,19 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 _ => Value::List(vec![Value::Int(SomaInt::from_rug(q)), Value::Int(SomaInt::from_rug(r))]),
             }))
         }
+        // exact integer division rounded to nearest, half away from zero
+        // (BigDecimal HALF_UP on cents: div_round(cents * bps, 120000))
+        "div_round" if args.len() == 2 => {
+            let (a, b) = (big_of(&args[0]), big_of(&args[1]));
+            if b == 0 {
+                return Some(Err(RuntimeError::TypeError("div_round(): division by zero".to_string())));
+            }
+            let (q, r) = a.clone().div_rem(b.clone());
+            let twice: rug::Integer = rug::Integer::from(&r * 2i32).abs();
+            let bump = twice >= b.clone().abs();
+            let q = if bump { if (a < 0) != (b < 0) { q - 1i32 } else { q + 1i32 } } else { q };
+            Some(Ok(Value::Int(SomaInt::from_rug(q))))
+        }
         "to_fixed" if args.len() == 2 => {
             let x = match &args[0] { Value::Float(f) => *f, Value::Int(i) => i.to_f64(), _ => return Some(Err(RuntimeError::TypeError("to_fixed(x, digits)".to_string()))) };
             let d = match &args[1] { Value::Int(i) => i.to_i64().unwrap_or(0).clamp(0, 15) as usize, _ => 2 };
@@ -100,6 +113,16 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Int(si) => Ok(Value::Int(si.clone())),
                 _ => Ok(Value::Int(SomaInt::from_i64(0))),
             })
+        }
+        "chr" if args.len() == 1 => {
+            let n = val_to_i64(&args[0]);
+            Some(char::from_u32(n as u32).map(|c| Value::String(c.to_string()))
+                .ok_or_else(|| RuntimeError::TypeError(format!("chr({}): not a Unicode scalar value", n))))
+        }
+        "ord" if args.len() == 1 => {
+            let Value::String(t) = &args[0] else { return Some(Err(RuntimeError::TypeError("ord(s: String) — the first character's code point".to_string()))) };
+            Some(t.chars().next().map(|c| Value::Int(SomaInt::from_i64(c as i64)))
+                .ok_or_else(|| RuntimeError::TypeError("ord(\"\"): empty string".to_string())))
         }
         "sin" | "cos" | "tan" | "atan" | "atan2" => {
             let f = |v: &Value| match v { Value::Float(n) => Some(*n), Value::Int(si) => Some(si.to_f64()), _ => None };
@@ -468,8 +491,15 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             Ok(as_value(med))
         }
         _ => {
+            // Python's statistics: stdev / variance are SAMPLE (n - 1),
+            // pstdev / pvariance population (n); stddev stays population
+            let sample = matches!(op, "stdev" | "variance");
+            if sample && nums.len() < 2 {
+                return Err(RuntimeError::Domain { kind: "empty".to_string(), message: format!("{}() needs at least two values (sample statistics); use p{} for the population form", op, op) });
+            }
             let mean = nums.iter().sum::<f64>() / n;
-            let var = nums.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / n;
+            let denom = if sample { n - 1.0 } else { n };
+            let var = nums.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / denom;
             match op {
                 "variance" | "pvariance" => Ok(Value::Float(var)),
                 _ => Ok(Value::Float(var.sqrt())),

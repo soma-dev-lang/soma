@@ -349,11 +349,23 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
 /// The JSON `to_json` writes (used by `soma serve` for response bodies).
 pub fn to_json_string(v: &Value) -> String {
     let mut out = String::new();
-    write_json(v, &mut out);
+    write_json_with(v, &mut out, false);
     out
 }
 
-fn write_json(v: &Value, out: &mut String) {
+/// Same JSON, laid out like the interpreter's Display (`{"k": v}`, `[a, b]`)
+/// — what `soma run` prints.
+pub fn to_json_string_spaced(v: &Value) -> String {
+    let mut out = String::new();
+    write_json_with(v, &mut out, true);
+    out
+}
+
+fn write_json(v: &Value, out: &mut String) { write_json_with(v, out, false) }
+
+fn write_json_with(v: &Value, out: &mut String, spaced: bool) {
+    let sep = if spaced { ", " } else { "," };
+    let colon = if spaced { ": " } else { ":" };
     match v {
         Value::Unit => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -369,40 +381,40 @@ fn write_json(v: &Value, out: &mut String) {
         Value::List(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {
-                if i > 0 { out.push(','); }
-                write_json(item, out);
+                if i > 0 { out.push_str(sep); }
+                write_json_with(item, out, spaced);
             }
             out.push(']');
         }
         Value::Map(entries) => {
             out.push('{');
             for (i, (k, val)) in entries.iter().enumerate() {
-                if i > 0 { out.push(','); }
+                if i > 0 { out.push_str(sep); }
                 out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
-                out.push(':');
-                write_json(val, out);
+                out.push_str(colon);
+                write_json_with(val, out, spaced);
             }
             out.push('}');
         }
         // a variant is a tagged object (it used to be its Display text as a
         // JSON string, which from_json could not bring back)
         Value::Variant { type_name, variant, fields } => {
-            out.push_str("{\"_type\":");
+            out.push_str("{\"_type\""); out.push_str(colon);
             out.push_str(&serde_json::to_string(type_name).unwrap_or_default());
-            out.push_str(",\"_variant\":");
+            out.push_str(sep); out.push_str("\"_variant\""); out.push_str(colon);
             out.push_str(&serde_json::to_string(variant).unwrap_or_default());
             match fields {
                 VariantValue::Unit => {}
                 VariantValue::Tuple(items) => {
-                    out.push_str(",\"_values\":");
-                    write_json(&Value::List(items.clone()), out);
+                    out.push_str(sep); out.push_str("\"_values\""); out.push_str(colon);
+                    write_json_with(&Value::List(items.clone()), out, spaced);
                 }
                 VariantValue::Struct(entries) => {
                     for (k, val) in entries {
-                        out.push(',');
+                        out.push_str(sep);
                         out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
-                        out.push(':');
-                        write_json(val, out);
+                        out.push_str(colon);
+                        write_json_with(val, out, spaced);
                     }
                 }
             }

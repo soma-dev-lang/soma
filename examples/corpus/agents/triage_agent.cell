@@ -1,7 +1,8 @@
 // Support-ticket triage agent.
-// Demonstrates: a verified lifecycle state machine, set_budget cap,
-// think_json() for structured LLM output, and a test cell that exercises
-// the deterministic tool handlers without any network (SOMA_LLM_MOCK).
+// Demonstrates: a verified lifecycle state machine, set_budget cap, tool
+// handlers with deterministic keyword classification (no LLM call — see
+// services/refund_agent.cell for think() + validated JSON output), and a
+// test cell that runs without any network.
 //
 // Run:  SOMA_LLM_MOCK=echo soma run triage_agent.cell --signal triage "login broken"
 // Test: SOMA_LLM_MOCK=echo soma test triage_agent.cell

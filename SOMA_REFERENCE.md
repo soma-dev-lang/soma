@@ -434,8 +434,9 @@ on withdraw(balance: Int, amount: Int) {
 
 ```soma
 memory {
-    data: Map<String, String> [persistent, consistent]   // → SQLite
+    accounts: Map<String, Map> [persistent, consistent]  // → SQLite; records as values
     cache: Map<String, String> [ephemeral, local]        // → in-memory
+    rows: List<Map> [persistent]                         // an append log: push / rows[i] = v / rows.delete(i)
     balance: Map<String, Int> [persistent]
     invariant balance >= 0 && balance <= 1000   // checked BEFORE every .set()/.push() commits
     invariant size <= 10000                     // entry-count bound (all slots in this section)
@@ -452,16 +453,20 @@ memory {
 // Invariants may call builtins only.
 
 // In handlers:
-data.set("key", "value")
-let val = data.get("key")           // returns () if missing
-data.delete("key")
-let keys = data.keys                 // list of keys
-let vals = data.values               // list of values
-let n = data.len                     // count
+accounts.set("a1", map("owner", "ada", "cents", 100))
+let a = accounts.get("a1")          // returns () if missing
+a.cents = a.cents + 5               // edit the copy, write it back:
+accounts.set("a1", a)               // (or accounts["a1"].cents = 105 in one step)
+accounts.delete("a1")
+let keys = accounts.keys             // list of keys
+let vals = accounts.values           // list of values
+let n = accounts.len                 // count
+// The value type is enforced on every write: Map<String, Int> refuses a
+// String or 1.5 (kind `type`); an Int written to a Float slot becomes a
+// Float; Map<String, Pay> takes only Pay variants. Ints of any size,
+// Floats (NaN, inf), (), variants and nested maps/lists round-trip exactly.
 
-// JSON roundtrip for complex values:
-data.set("user", to_json(map("name", "Alice", "age", 30)))
-let user = from_json(data.get("user"))
+// No to_json needed for values: a map stored is a map read back.
 ```
 
 ## State machines

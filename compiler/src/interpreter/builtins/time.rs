@@ -70,6 +70,16 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Int(SomaInt::from_i64(days_from_civil(b.0, b.1, b.2) - days_from_civil(a.0, a.1, a.2)))
             })))
         }
+        // java.time ChronoUnit.MONTHS.between / dateutil relativedelta:
+        // whole months from a to b (negative when b < a), day-of-month aware
+        "months_between" if args.len() == 2 => {
+            Some(date_arg(&args[0], "months_between").and_then(|a| date_arg(&args[1], "months_between").map(|b| {
+                let mut m = (b.0 - a.0) * 12 + (b.1 - a.1);
+                if m > 0 && b.2 < a.2 { m -= 1; }
+                if m < 0 && b.2 > a.2 { m += 1; }
+                Value::Int(SomaInt::from_i64(m))
+            })))
+        }
         "days_in_month" if args.len() == 2 => {
             Some(Ok(Value::Int(SomaInt::from_i64(days_in_month(val_to_i64(&args[0]), val_to_i64(&args[1]))))))
         }

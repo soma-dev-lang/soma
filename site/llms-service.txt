@@ -136,6 +136,9 @@ match r {
 }
 // typed state machines: state order: OrderState { initial: Placed ... }
 // transition(id, Variant) is compile-checked against the type
+// to_json(Charged { tx: "t1" }) == '{"_type":"Pay","_variant":"Charged","tx":"t1"}'
+// (a tuple variant carries "_values"); from_json brings the variant back; HTTP
+// answers a returned variant the same way. Slots store variants as variants.
 ```
 
 ## Coming from Python / TypeScript
@@ -162,7 +165,8 @@ floor_div(-7, 2) == -4   mod(-7, 2) == 1   // Python's // and %
 A `class` with private fields is a `cell` with `memory` slots: one instance,
 no `new`, no `this` — `this.hits.get(u)` is `hits.get(u)`; `constructor(a, b)`
 is a `configure(a, b)` handler writing a `config` slot. `soma run` persists
-slots in `.soma_data/` between runs; `soma test` starts empty. `soma check`
+slots in `.soma_data/` between runs (`soma run --fresh` starts empty; a `main`
+that creates records is otherwise a one-shot); `soma test` starts empty. `soma check`
 names the Soma form for each of these when you get it wrong.
 
 ## Tests
@@ -226,7 +230,20 @@ source, `file:line`, left/right, and the fields a value really has when
 - `ensure cond` at the end of a handler raises kind `ensure` (422) when the
   postcondition is false — the whole handler is rolled back.
 - Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
-  `add_days`, `add_months`, `days_between`, `days_in_month`, `format_date(ts)`.
+  `add_days`, `add_months`, `days_between`, `months_between`, `days_in_month`,
+  `format_date(ts)`; ISO strings compare with `<`.
+- Money: Ints in cents (any size, exact); `div_round(n, d)` is HALF_UP
+  division (`div_round(cents * bps, 120000)` = BigDecimal interest at scale 2);
+  `format("%10.2f", …)` only for display, `money = "{idiv(c, 100)}.{…}"` for exact text.
+- Data: `read_csv(path)` → List<Map> (auto-typed cells); `agg`, `sort_by`,
+  `top`, `median`, `pstdev`; `stdev` / `variance` are SAMPLE (n − 1) like
+  Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`
+  and `xs[i]` are linear (20k rows in 0.1 s).
+- `think_json()` raises kind `json` when the model does not answer a JSON
+  object (catch it with `try`); a ```json fence around the object is fine.
+  A mocked `think` costs ~4 characters per token, so `set_budget` exhaustion
+  (kind `budget`) is testable offline. Under `soma serve`, `trace()` keeps the
+  last 1000 steps process-wide.
 
 ## Scheduled work
 
@@ -246,8 +263,11 @@ write and every `transition()` it made is rolled back. A failing `try { }`
 block is rolled back to where it started, and the handler continues. Under
 `soma serve` handlers run one at a time, so read-modify-write is safe
 (300 parallel payments of 10 against a balance of 1000 pay exactly 100).
-You do not write compensation code. Not rolled back: effects outside the
-process (http calls, think(), emitted events).
+With persistent slots the handler IS one SQLite transaction: a process killed
+mid-handler (`kill -9`) leaves nothing of it on disk. `every` / `after` ticks
+are handler invocations too (same rollback). You do not write compensation
+code. Not rolled back: effects outside the process (http calls, think(),
+emitted events).
 
 ## Errors
 
@@ -409,8 +429,11 @@ re-run on YOUR toolchain: `soma test .soma_env/packages/matrix/matrix.cell`.
 
 ## Performance
 
-Interpreter is the reference semantics. Annotate hot handlers `[native]`
-for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on numeric loops.
+Interpreter is the reference semantics (linear-time `map`/`filter`/indexing;
+a 20k-row CSV aggregation runs in ~0.3 s interpreted). Annotate hot handlers
+`[native]` for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on
+numeric loops; a native compile failure aborts the run (there is no silent
+fall-back to the interpreter).
 `soma check` verifies the native vocabulary (every handler, every error at
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
@@ -544,7 +567,8 @@ soma run   app.cell request GET /stats ""     # call the router with no server
    form posts to `/add`. Anything else goes to `request` (or 404 without one).
 
 **Every public handler of the request-owning cell is therefore an HTTP
-endpoint.** A handler is private when its name starts with `_`
+endpoint** — except `request` itself, which is only ever the router. A
+handler is private when its name starts with `_`
 (`on _debit(account, amount)`), or when it lives in another cell. Put domain
 logic in its own cell and keep the HTTP cell thin. `soma check` warns when a
 handler and one of `request`'s routes share a name.
@@ -576,7 +600,7 @@ A handler may return:
 | `redirect(url)` | `302` |
 
 An error the handler does not catch is answered by its kind, as
-`{"error": message, "kind": kind}`: `not_found` → 404; `guard_failed`,
+`{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `guard_failed`,
 `forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
 409; `invariant`, `ensure` → 422; `json`, `type`, `division_by_zero` and your
 own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
@@ -589,6 +613,7 @@ if r.kind == "invalid_transition" { return response(410, map("error", r.detail))
 if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers
 ```
 
+Path segments reach `request` percent-decoded (`/stock/a%20b` → `"/stock/a b"`).
 Path patterns hold ONE variable, at the end (`"/loans/" + rest`); split
 `rest` for more segments, or take the rest from the body or query. Public
 handlers (no `_` prefix, `request` aside) are also reachable directly at
@@ -640,9 +665,9 @@ program has no such route).
 | Runaway recursion in a handler | Answered `500 {"kind": "stack_overflow"}` at depth 512; request threads have a 64 MB stack so the guard fires before the OS does; the process stays up |
 | A `[native]` handler panics (a `buf_get` past the end, an `idiv` by zero) | Caught at the boundary: an ordinary `try`-catchable error with the same kind the interpreter would raise (`index` → 400, `division_by_zero` → 400); the process stays up. Int overflow does not panic: it promotes to BigInt exactly as interpreted code does |
 | `think()` fails or times out | Kind `llm`, rolled back like any error; the request is answered, not hung: one provider round-trip is capped at 60 s (`timeout_ms` in the options map, or `SOMA_LLM_TIMEOUT_MS`), retried up to 3 times on 429/5xx |
-| A scheduled `every` handler raises | Logged, rolled back, next tick runs |
+| A scheduled `every` / `after` block raises | Logged, rolled back (writes and transitions — it is a handler invocation), next tick runs |
 | Port already answering, `soma check` errors, an unreadable file | `soma serve` refuses to start and exits 1 — it never serves a program that does not check (`--no-check` overrides) |
-| Out of memory, SIGKILL, `kill -9` | The process dies; committed writes are in `.soma_data/soma.db` (SQLite); a request in flight is lost as a whole (atomic) |
+| Out of memory, SIGKILL, `kill -9`, SIGTERM | The process dies at once (no draining: an in-flight client gets an empty reply); committed handlers are in `.soma_data/soma.db` (SQLite); the handler in flight is lost as a whole — its writes sat in one uncommitted SQLite transaction |
 | Disk full while writing | Expected (not exercised): the SQLite write fails, the request is rolled back and answered 500 |
 | A slow handler (a quadratic loop, a huge `to_json`, a loop of 100 000 `slot.set`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. A persistent slot write costs about 1 ms (each is an SQLite statement): a 100 000-key rebuild in one handler holds the process for ~2 minutes. Keep handlers short; batch bulk loads outside the request path; put a proxy timeout in front |
 | The program changed and `.soma_data/` is older | A renamed slot is a new empty slot; a slot whose TYPE changed (List → Map) reads as empty while the old rows stay in the database; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares is stuck (`valid_transitions(id) == []`). `soma serve` audits the database at start-up and prints one `warning: stored data: …` line per problem (instances in undeclared states, values an invariant refuses); a re-typed slot is not detected. Migrate the data or delete `.soma_data/` |
@@ -715,7 +740,7 @@ is the experimental corner of Soma; single-process is the supported shape.
 
 ## Persistence
 
-`[persistent]` slots and state-machine instances live in `.soma_data/soma.db` next to the `.cell` file, shared by `soma serve` and `soma run` in that directory. `soma test` starts from empty storage every run. Back up the file; there is no migration tool — a renamed slot is a new, empty slot. Values round-trip exactly: an Int beyond 64 bits comes back as that Int, a variant as a variant, `()` as `()`. A write that does not fit the slot's declared value type (`Map<String, Int>` given a String) is refused with kind `type` before it commits.
+`[persistent]` slots and state-machine instances live in `.soma_data/soma.db` next to the `.cell` file (wherever the command is run from), shared by `soma serve` and `soma run`; `soma run --fresh` deletes it first. `soma test` starts from empty storage every run. Back up the file; there is no migration tool — a renamed slot is a new, empty slot. Values round-trip exactly: an Int beyond 64 bits comes back as that Int, a variant as a variant, `()` as `()`. A write that does not fit the slot's declared value type (`Map<String, Int>` given a String or `1.0`; `Map<String, Pay>` given a plain map) is refused with kind `type` before it commits; an Int written to a `Float` slot is stored as a Float. One process holds one connection to the database and each handler runs inside `BEGIN IMMEDIATE … COMMIT`, which also serializes handlers across processes.
 
 ## Deploying on Linux
 

@@ -89,7 +89,28 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
     let text_of = |span: ast::Span, fallback: String| -> String {
         if span.end > span.start && span.end <= src_chars.len() {
             let raw: String = src_chars[span.start..span.end].iter().collect();
-            raw.split_whitespace().collect::<Vec<_>>().join(" ")
+            // collapse whitespace OUTSIDE string literals only — an assertion
+            // about padding must be echoed with its padding
+            let mut out = String::new();
+            let mut in_str = false;
+            let mut prev_space = false;
+            let mut chars = raw.chars().peekable();
+            while let Some(c) = chars.next() {
+                if in_str {
+                    out.push(c);
+                    if c == '\\' { if let Some(n) = chars.next() { out.push(n); } }
+                    else if c == '"' { in_str = false; }
+                    prev_space = false;
+                } else if c == '"' {
+                    in_str = true; out.push(c); prev_space = false;
+                } else if c.is_whitespace() {
+                    if !prev_space && !out.is_empty() { out.push(' '); }
+                    prev_space = true;
+                } else {
+                    out.push(c); prev_space = false;
+                }
+            }
+            out.trim_end().to_string()
         } else {
             fallback
         }
@@ -315,8 +336,8 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                                 Err((e, kind)) => match wanted {
                                     Some(text) if !e.contains(text) && kind != text => {
                                         failed += 1;
-                                        say!(out_lines, json, "  ✗ {}  assert_fails {} matching \"{}\" — FAILED: it raised something else: {}",
-                                                 at, shown, text, e);
+                                        say!(out_lines, json, "  ✗ {}  assert_fails {} matching \"{}\" — FAILED: it raised kind `{}` with message {:?} — neither the kind equals nor the message contains \"{}\"",
+                                                 at, shown, text, kind, e, text);
                                     }
                                     _ => {
                                         passed += 1;

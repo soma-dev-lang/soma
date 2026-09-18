@@ -3803,8 +3803,8 @@ impl FnGenerator {
                 }
                 if self.sb_vars.contains(name) {
                     if let Expr::FnCall { name: fname, args } = &value.node {
-                        if fname == "strbuf" && args.len() == 1 {
-                            let cap = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                        if fname == "strbuf" && args.len() <= 1 {
+                            let cap = args.first().map(|a| self.gen_expr_direct(&a.node, NativeType::Int)).unwrap_or_else(|| "64i64".to_string());
                             return format!(
                                 "{}let mut {}: String = String::with_capacity(({}) as usize);\n",
                                 ind, name, cap
@@ -4721,8 +4721,8 @@ impl FnGenerator {
                 }
                 if self.sb_vars.contains(name) {
                     if let Expr::FnCall { name: fname, args } = value.node.clone() {
-                        if fname == "strbuf" && args.len() == 1 {
-                            let cap = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                        if fname == "strbuf" && args.len() <= 1 {
+                            let cap = args.first().map(|a| self.gen_expr_direct(&a.node, NativeType::Int)).unwrap_or_else(|| "64i64".to_string());
                             return format!(
                                 "{}let mut {}: String = String::with_capacity(({}) as usize);\n",
                                 ind, name, cap
@@ -5461,10 +5461,16 @@ impl FnGenerator {
                 format!("({} {} {})", l, op_str, r)
             }
             Expr::Literal(Literal::Bool(b)) => format!("{}", b),
+            // a bound Int (`let ok = hm_has(m, k)`) is an Integer here: test it
+            Expr::Ident(name) if self.var_types.get(name) == Some(&NativeType::Int) => format!("({} != 0)", name),
             Expr::Ident(name) => name.clone(),
             // `if is_prime(i) { … }`: a Bool-returning sibling or builtin call
             Expr::FnCall { .. } if self.infer_expr_type(expr) == NativeType::Bool => {
                 self.gen_expr_direct(expr, NativeType::Bool)
+            }
+            // `if hm_has(m, k) { … }`: an Int-valued call (0 / 1) as a condition
+            Expr::FnCall { .. } if self.infer_expr_type(expr) == NativeType::Int => {
+                format!("({} != 0)", self.gen_expr_rug(expr))
             }
             other => {
                 self.err(format!("unsupported boolean condition in [native] BigInt mode: {} — bind it first: `let ok = …` then `if ok`", crate::ast::render_expr(other)));

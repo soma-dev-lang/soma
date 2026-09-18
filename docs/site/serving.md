@@ -18,7 +18,8 @@ soma run   app.cell request GET /stats ""     # call the router with no server
    form posts to `/add`. Anything else goes to `request` (or 404 without one).
 
 **Every public handler of the request-owning cell is therefore an HTTP
-endpoint.** A handler is private when its name starts with `_`
+endpoint** — except `request` itself, which is only ever the router. A
+handler is private when its name starts with `_`
 (`on _debit(account, amount)`), or when it lives in another cell. Put domain
 logic in its own cell and keep the HTTP cell thin. `soma check` warns when a
 handler and one of `request`'s routes share a name.
@@ -50,7 +51,7 @@ A handler may return:
 | `redirect(url)` | `302` |
 
 An error the handler does not catch is answered by its kind, as
-`{"error": message, "kind": kind}`: `not_found` → 404; `guard_failed`,
+`{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `guard_failed`,
 `forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
 409; `invariant`, `ensure` → 422; `json`, `type`, `division_by_zero` and your
 own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
@@ -63,6 +64,7 @@ if r.kind == "invalid_transition" { return response(410, map("error", r.detail))
 if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers
 ```
 
+Path segments reach `request` percent-decoded (`/stock/a%20b` → `"/stock/a b"`).
 Path patterns hold ONE variable, at the end (`"/loans/" + rest`); split
 `rest` for more segments, or take the rest from the body or query. Public
 handlers (no `_` prefix, `request` aside) are also reachable directly at

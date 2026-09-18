@@ -165,7 +165,8 @@ floor_div(-7, 2) == -4   mod(-7, 2) == 1   // Python's // and %
 A `class` with private fields is a `cell` with `memory` slots: one instance,
 no `new`, no `this` — `this.hits.get(u)` is `hits.get(u)`; `constructor(a, b)`
 is a `configure(a, b)` handler writing a `config` slot. `soma run` persists
-slots in `.soma_data/` between runs; `soma test` starts empty. `soma check`
+slots in `.soma_data/` between runs (`soma run --fresh` starts empty; a `main`
+that creates records is otherwise a one-shot); `soma test` starts empty. `soma check`
 names the Soma form for each of these when you get it wrong.
 
 ## Tests
@@ -229,7 +230,20 @@ source, `file:line`, left/right, and the fields a value really has when
 - `ensure cond` at the end of a handler raises kind `ensure` (422) when the
   postcondition is false — the whole handler is rolled back.
 - Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
-  `add_days`, `add_months`, `days_between`, `days_in_month`, `format_date(ts)`.
+  `add_days`, `add_months`, `days_between`, `months_between`, `days_in_month`,
+  `format_date(ts)`; ISO strings compare with `<`.
+- Money: Ints in cents (any size, exact); `div_round(n, d)` is HALF_UP
+  division (`div_round(cents * bps, 120000)` = BigDecimal interest at scale 2);
+  `format("%10.2f", …)` only for display, `money = "{idiv(c, 100)}.{…}"` for exact text.
+- Data: `read_csv(path)` → List<Map> (auto-typed cells); `agg`, `sort_by`,
+  `top`, `median`, `pstdev`; `stdev` / `variance` are SAMPLE (n − 1) like
+  Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`
+  and `xs[i]` are linear (20k rows in 0.1 s).
+- `think_json()` raises kind `json` when the model does not answer a JSON
+  object (catch it with `try`); a ```json fence around the object is fine.
+  A mocked `think` costs ~4 characters per token, so `set_budget` exhaustion
+  (kind `budget`) is testable offline. Under `soma serve`, `trace()` keeps the
+  last 1000 steps process-wide.
 
 ## Scheduled work
 
@@ -249,8 +263,11 @@ write and every `transition()` it made is rolled back. A failing `try { }`
 block is rolled back to where it started, and the handler continues. Under
 `soma serve` handlers run one at a time, so read-modify-write is safe
 (300 parallel payments of 10 against a balance of 1000 pay exactly 100).
-You do not write compensation code. Not rolled back: effects outside the
-process (http calls, think(), emitted events).
+With persistent slots the handler IS one SQLite transaction: a process killed
+mid-handler (`kill -9`) leaves nothing of it on disk. `every` / `after` ticks
+are handler invocations too (same rollback). You do not write compensation
+code. Not rolled back: effects outside the process (http calls, think(),
+emitted events).
 
 ## Errors
 
@@ -412,8 +429,11 @@ re-run on YOUR toolchain: `soma test .soma_env/packages/matrix/matrix.cell`.
 
 ## Performance
 
-Interpreter is the reference semantics. Annotate hot handlers `[native]`
-for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on numeric loops.
+Interpreter is the reference semantics (linear-time `map`/`filter`/indexing;
+a 20k-row CSV aggregation runs in ~0.3 s interpreted). Annotate hot handlers
+`[native]` for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on
+numeric loops; a native compile failure aborts the run (there is no silent
+fall-back to the interpreter).
 `soma check` verifies the native vocabulary (every handler, every error at
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and

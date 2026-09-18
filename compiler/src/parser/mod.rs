@@ -2829,8 +2829,15 @@ impl Parser {
             Token::TypeIdent(name) => {
                 let name = name.clone();
                 self.advance();
-                // Check for record literal: User { name: "Alice", age: 30 }
-                if self.check(&Token::LBrace) {
+                // Check for record literal: User { name: "Alice", age: 30 }.
+                // `if s == Pending { return 1 }` is NOT one: the brace opens
+                // the block — a record literal starts with `field:` or is `{}`
+                let record_follows = self.check(&Token::LBrace) && (
+                    matches!(self.peek_at(1), Token::RBrace)
+                    || ((matches!(self.peek_at(1), Token::Ident(_)) || keyword_as_name(self.peek_at(1)).is_some())
+                        && matches!(self.peek_at(2), Token::Colon))
+                );
+                if record_follows {
                     self.advance();
                     let mut fields = Vec::new();
                     while !self.check(&Token::RBrace) && !self.is_at_end() {

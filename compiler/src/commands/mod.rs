@@ -105,7 +105,7 @@ pub fn read_source(path: &PathBuf) -> String {
     }
 }
 
-fn lex_error_position(e: &lexer::LexError) -> Option<usize> {
+pub(crate) fn lex_error_position(e: &lexer::LexError) -> Option<usize> {
     match e {
         lexer::LexError::UnexpectedChar { pos, .. } => Some(*pos),
         lexer::LexError::UnterminatedString { pos } => Some(*pos),

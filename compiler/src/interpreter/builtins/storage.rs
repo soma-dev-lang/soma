@@ -160,10 +160,18 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         // ── Agent: trace() — get execution log ──────────────────────
         "trace" => {
+            if crate::interpreter::IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut all: Vec<Value> = SERVE_TRACE.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
+                all.extend(interp.agent_trace.iter().cloned());
+                return Some(Ok(Value::List(all)));
+            }
             Some(Ok(Value::List(interp.agent_trace.clone())))
         }
         "clear_trace" => {
             interp.agent_trace.clear();
+            if crate::interpreter::IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {
+                SERVE_TRACE.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            }
             Some(Ok(Value::Unit))
         }
         // ── Agent: context() — get/clear conversation history ───────
@@ -363,17 +371,19 @@ fn agent_think(
                 std::process::exit(2);
             }
         };
-        // V1.6: TraceStep::Think variant (mock mode: fixed token=0)
-        interp.agent_trace.push(super::llm::trace_think(0, prompt, 0, 0, "stop"));
+        // a mocked call still costs: ~4 characters per token, prompt and
+        // reply, so `set_budget` exhaustion (kind `budget`) is testable offline
+        let est = ((prompt.chars().count() + response.chars().count()) as i64 + 3) / 4;
+        let est = est.max(1);
+        interp.agent_tokens_used += est;
+        interp.agent_trace.push(super::llm::trace_think(0, prompt, est, interp.agent_tokens_used, "stop"));
         if interp.agent_conversation.is_empty() {
             interp.agent_conversation.push(serde_json::json!({"role": "system", "content": "mock"}));
         }
         interp.agent_conversation.push(serde_json::json!({"role": "user", "content": prompt}));
         interp.agent_conversation.push(serde_json::json!({"role": "assistant", "content": &response}));
         if json_mode {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {
-                return Ok(super::super::json_to_value(&parsed));
-            }
+            return json_object_reply(&response);
         }
         return Ok(Value::String(response));
     }
@@ -466,9 +476,7 @@ fn agent_think(
         if !resp.content.is_empty() {
             interp.agent_conversation.push(serde_json::json!({"role": "assistant", "content": &resp.content}));
             if json_mode {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&resp.content) {
-                    return Ok(super::super::json_to_value(&parsed));
-                }
+                return json_object_reply(&resp.content);
             }
             return Ok(Value::String(resp.content));
         }
@@ -587,4 +595,41 @@ fn resolve_env_vars(s: &str) -> String {
         }
     }
     result
+}
+
+/// `think_json` promises a Map: a reply that is not a JSON object is an
+/// error of kind `json` (it used to hand back the raw String, and a
+/// classifier read `answer.category` as `()` without noticing). A ```json
+/// fence or prose around the object is tolerated.
+/// Under `soma serve` each request has its own interpreter: the trace of a
+/// request used to vanish with it. The last 1000 steps, process-wide.
+static SERVE_TRACE: std::sync::Mutex<std::collections::VecDeque<Value>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+pub fn serve_trace_extend(steps: &[Value]) {
+    if steps.is_empty() { return; }
+    let mut t = SERVE_TRACE.lock().unwrap_or_else(|e| e.into_inner());
+    for s in steps { t.push_back(s.clone()); }
+    while t.len() > 1000 { t.pop_front(); }
+}
+
+fn json_object_reply(text: &str) -> Result<Value, RuntimeError> {
+    let candidates: Vec<&str> = {
+        let mut v = vec![text.trim()];
+        if let (Some(a), Some(b)) = (text.find('{'), text.rfind('}')) {
+            if a < b { v.push(&text[a..=b]); }
+        }
+        v
+    };
+    for c in candidates {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(c) {
+            if parsed.is_object() {
+                return Ok(super::super::json_to_value(&parsed));
+            }
+        }
+    }
+    let shown: String = text.chars().take(80).collect();
+    Err(RuntimeError::Domain {
+        kind: "json".to_string(),
+        message: format!("think_json(): the model did not answer a JSON object — got {:?}; catch it with `try`, or use think() and parse the text yourself", shown),
+    })
 }
