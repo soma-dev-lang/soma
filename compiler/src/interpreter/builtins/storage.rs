@@ -4,32 +4,40 @@ use crate::interpreter::soma_int::SomaInt;
 pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     match name {
         "next_id" => {
-            // The counter lives in the cell's FIRST declared memory slot
-            // (declaration order — never HashMap order, which differs per
-            // thread under `soma serve` and handed the same id out twice),
-            // and the write is journaled: a refused request burns no id.
-            let counter_key = "__next_id";
-            let backend = interp.next_id_backend(cell_name);
-            if let Some(backend) = backend {
-                let current = backend.get(counter_key)
-                    .and_then(|v| match v {
-                        crate::runtime::storage::StoredValue::Int(n) => Some(n),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let next = current + 1;
-                if let Some(j) = interp.journal.as_mut() {
-                    j.push(crate::interpreter::UndoOp::Restore {
-                        backend: backend.clone(),
-                        key: counter_key.to_string(),
-                        prev: backend.get(counter_key),
-                    });
-                }
-                backend.set(counter_key, crate::runtime::storage::StoredValue::Int(next));
-                Some(Ok(Value::Int(SomaInt::from_i64(next))))
-            } else {
-                Some(Ok(Value::Int(SomaInt::from_i64(1))))
+            // the cell's own counter table (it lived in the user's first Map
+            // slot under "__next_id": a user key of that name reset it, and a
+            // List first slot answered 1 forever); journaled, so a refused
+            // request burns no id. The legacy counter is carried over once.
+            let counter_key = "next_id";
+            let slot_key = format!("{}.__counters", cell_name);
+            if !interp.storage.contains_key(&slot_key) {
+                let persistent = crate::interpreter::PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)
+                    || interp.storage.values().any(|b| b.backend_name() == "sqlite");
+                let backend: std::sync::Arc<dyn crate::runtime::storage::StorageBackend> = if persistent {
+                    std::sync::Arc::new(crate::runtime::storage::SqliteBackend::new(cell_name, "_counters"))
+                } else {
+                    std::sync::Arc::new(crate::runtime::storage::MemoryBackend::new())
+                };
+                interp.storage.insert(slot_key.clone(), backend);
             }
+            let backend = interp.storage.get(&slot_key).cloned().unwrap();
+            let as_int = |v: Option<crate::runtime::storage::StoredValue>| v.and_then(|v| match v {
+                crate::runtime::storage::StoredValue::Int(n) => Some(n),
+                _ => None,
+            });
+            let current = as_int(backend.get(counter_key)).unwrap_or_else(|| {
+                interp.next_id_backend(cell_name).and_then(|legacy| as_int(legacy.get("__next_id"))).unwrap_or(0)
+            });
+            let next = current + 1;
+            if let Some(j) = interp.journal.as_mut() {
+                j.push(crate::interpreter::UndoOp::Restore {
+                    backend: backend.clone(),
+                    key: counter_key.to_string(),
+                    prev: backend.get(counter_key),
+                });
+            }
+            backend.set(counter_key, crate::runtime::storage::StoredValue::Int(next));
+            Some(Ok(Value::Int(SomaInt::from_i64(next))))
         }
         "transition" => {
             if args.len() >= 2 {
@@ -477,7 +485,16 @@ fn agent_think(
 
         let body = llm::build_request_body(&config, &interp.agent_conversation, &tools, json_mode, max_tokens);
         let raw_json = llm::send_with_retry(&config, &body)?;
-        let resp = llm::parse_response(&config, &raw_json);
+        let mut resp = llm::parse_response(&config, &raw_json);
+        // a provider that omits `usage` (or reports a negative count) spent
+        // tokens all the same: estimate ~4 characters per token, as the mock
+        // does — the budget was never charged
+        if resp.tokens <= 0 {
+            let chars = prompt.chars().count() + resp.content.chars().count()
+                + resp.tool_calls.iter().map(|t| t.arguments_json.len() + t.name.len()).sum::<usize>();
+            resp.tokens = ((chars as i64) + 3) / 4;
+            resp.tokens = resp.tokens.max(1);
+        }
 
         interp.agent_tokens_used += resp.tokens;
         interp.agent_trace.push(llm::trace_think_with(
@@ -554,8 +571,12 @@ fn build_tool_definitions(interp: &Interpreter, cell_name: &str) -> Vec<serde_js
 
 /// Dispatch a tool call from the LLM to the cell's handler
 fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str, args_json: &str) -> Value {
-    // Parse the JSON arguments
-    let args_val: serde_json::Value = serde_json::from_str(args_json).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    // Parse the JSON arguments: an object, or the call is refused (garbage
+    // ran the tool with "" for every parameter)
+    let args_val: serde_json::Value = match serde_json::from_str::<serde_json::Value>(args_json) {
+        Ok(v @ serde_json::Value::Object(_)) => v,
+        _ => return Value::String(format!("tool error: the arguments of '{}' are not a JSON object", tool_name)),
+    };
 
     // Convert JSON args to Soma Value args (positional, matching handler params)
     let mut arg_values = Vec::new();
@@ -575,16 +596,27 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
             if let crate::ast::Section::OnSignal(on) = &section.node {
                 if on.signal_name == tool_name {
                     for param in &on.params {
-                        let val = args_val.get(&param.name);
-                        arg_values.push(match val {
-                            Some(serde_json::Value::String(s)) => Value::String(s.clone()),
-                            Some(serde_json::Value::Number(n)) => {
-                                if let Some(i) = n.as_i64() { Value::Int(SomaInt::from_i64(i)) }
-                                else { Value::Float(n.as_f64().unwrap_or(0.0)) }
+                        // declared types are enforced like any call; a missing
+                        // argument, a forged record/variant or a wrong type is
+                        // a tool error the model sees (not a silent "")
+                        let Some(val) = args_val.get(&param.name) else {
+                            return Value::String(format!("tool error: '{}' needs the argument '{}'", tool_name, param.name));
+                        };
+                        fn forged(v: &serde_json::Value) -> bool {
+                            match v {
+                                serde_json::Value::Object(m) => m.contains_key("_type") || m.contains_key("_variant") || m.contains_key("_values") || m.values().any(forged),
+                                serde_json::Value::Array(xs) => xs.iter().any(forged),
+                                _ => false,
                             }
-                            Some(serde_json::Value::Bool(b)) => Value::Bool(*b),
-                            _ => Value::String(val.map(|v| v.to_string()).unwrap_or_default()),
-                        });
+                        }
+                        if forged(val) {
+                            return Value::String(format!("tool error: argument '{}' carries _type / _variant", param.name));
+                        }
+                        let v = super::serde_json_to_value(val);
+                        match crate::interpreter::check_param_type(param, v) {
+                            Ok(v) => arg_values.push(v),
+                            Err(m) => return Value::String(format!("tool error: {}(): {}", tool_name, m)),
+                        }
                     }
                 }
             }
@@ -605,7 +637,14 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
     // a tool call that raises leaves nothing behind (its writes were kept
     // while the model was told it failed)
     let mark = interp.journal.as_ref().map(|j| j.len());
-    let result = match interp.call_signal(cell_name, tool_name, arg_values) {
+    // a think() inside the tool is its own conversation (it inserted a user
+    // message between the assistant's tool_calls and the tool results)
+    let saved_conversation = std::mem::take(&mut interp.agent_conversation);
+    let saved_rounds = interp.think_rounds;
+    let outcome = interp.call_signal(cell_name, tool_name, arg_values);
+    interp.agent_conversation = saved_conversation;
+    interp.think_rounds = saved_rounds;
+    let result = match outcome {
         Ok(val) => val,
         Err(e) => {
             if let Some(m) = mark { interp.rollback_to(m); }

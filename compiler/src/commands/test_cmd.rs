@@ -193,6 +193,8 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
         // and an empty LLM trace / conversation (trace() carried over)
         interp.agent_trace.clear();
         interp.agent_conversation.clear();
+        // remember() memory and next_id counters are per test cell too
+        interp.storage.retain(|k, _| !k.ends_with(".__agent_memory") && !k.ends_with(".__counters"));
         if cell_idx > 0 {
             for cell in &program.cells {
                 if matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
@@ -434,14 +436,14 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
             if let Some(name) = t.strip_prefix("test ").and_then(|r| r.strip_suffix(" ...")) {
                 cell = name.to_string();
             } else if let Some(rest) = t.strip_prefix("  ✓ ") {
-                let (rule, message) = rest.split_once(" — ").unwrap_or((rest, ""));
+                let (rule, message) = split_rule(rest);
                 records.push(serde_json::json!({"cell": cell, "status": "pass", "rule": rule, "message": message}));
             } else if let Some(rest) = t.strip_prefix("  ✗ ") {
                 let (loc, msg) = rest.split_once("  ").unwrap_or(("", rest));
                 let line_no = loc.rsplit(':').next().and_then(|n| n.parse::<usize>().ok());
                 // "assert x == y — FAILED" / "assert f() — ERROR: <message>":
                 // the rule, what went wrong, and whether the rule RAISED
-                let (rule, message) = msg.split_once(" — ").unwrap_or((msg, ""));
+                let (rule, message) = split_rule(msg);
                 let raised = message.starts_with("ERROR") || rule.starts_with("assert_fails");
                 let message = message.strip_prefix("ERROR: ").unwrap_or(message);
                 records.push(serde_json::json!({"cell": cell, "status": "fail", "line": line_no, "rule": rule, "message": message, "raised": raised}));
@@ -663,4 +665,19 @@ fn describe_error(e: &interpreter::ExecError) -> String {
         interpreter::ExecError::Runtime(r) => r.to_string(),
         other => format!("{:?}", other),
     }
+}
+
+/// "rule — message" at the first " — " OUTSIDE parentheses (a sampled
+/// property's rule text holds one: "(… fixed seed — NOT a proof)")
+fn split_rule(s: &str) -> (&str, &str) {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ' ' if depth <= 0 && s[i..].starts_with(" — ") => return (&s[..i], &s[i + " — ".len()..]),
+            _ => {}
+        }
+    }
+    (s, "")
 }

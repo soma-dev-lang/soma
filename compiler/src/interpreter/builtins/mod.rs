@@ -60,9 +60,32 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
 ///   "net:host/prefix"   — host + path prefix
 ///   "net:*"             — any network
 ///   "net:https://..."   — match prefix against full URL
+/// `*` matches any run of characters (a URL pattern like the docs'
+/// `https://api.x.com/*`, which was denied for every URL: only `net:` was read)
+fn glob_match(pat: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pat.split('*').collect();
+    if parts.len() == 1 { return pat == text; }
+    let mut rest = text;
+    for (i, part) in parts.iter().enumerate() {
+        if i == 0 {
+            if !rest.starts_with(part) { return false; }
+            rest = &rest[part.len()..];
+        } else if i == parts.len() - 1 {
+            return rest.ends_with(part);
+        } else {
+            match rest.find(part) { Some(p) => rest = &rest[p + part.len()..], None => return false }
+        }
+    }
+    true
+}
+
 fn url_matches_any(url: &str, caps: &[String]) -> bool {
     for cap in caps {
-        if cap == "net:*" { return true; }
+        if cap == "net:*" || cap == "*" { return true; }
+        if !cap.starts_with("net:") {
+            if glob_match(cap, url) { return true; }
+            continue;
+        }
         if let Some(rest) = cap.strip_prefix("net:") {
             // Direct URL prefix match (cap looks like a URL itself)
             if rest.starts_with("http://") || rest.starts_with("https://") {

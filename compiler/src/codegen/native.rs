@@ -313,6 +313,10 @@ pub fn generate_native_source_with_config(
     out.push_str("thread_local! { static _SOMA_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0); }\n");
     out.push_str("struct _SomaDepth;\n");
     out.push_str("impl _SomaDepth { #[inline(always)] fn enter() -> _SomaDepth { _SOMA_DEPTH.with(|d| { let n = d.get() + 1; d.set(n); if n > 20_000 { panic!(\"soma:stack_overflow: native recursion deeper than 20000 calls\") } }); _SomaDepth } }\n");
+    // a bit index: 0 ≤ i ≤ 2^24 (a negative one became a 4-billion-bit set_bit: a hang)
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_bit_index(k: i64) -> i64 { if k < 0 || k > (1i64 << 24) { panic!(\"soma:type: bit index {} out of range\", k) } k }\n");
+    // a Float prints like the interpreter's (an integral Float as "8.0")
+    out.push_str("#[inline] #[allow(dead_code)] fn _soma_fmt_f(f: f64) -> String { if f.fract() == 0.0 && f.is_finite() { format!(\"{:.1}\", f) } else { format!(\"{}\", f) } }\n");
     out.push_str("impl Drop for _SomaDepth { #[inline(always)] fn drop(&mut self) { _SOMA_DEPTH.with(|d| d.set(d.get().saturating_sub(1))); } }\n\n");
     let _ = all_direct_originally; // kept for future per-handler decisions
 
@@ -3847,6 +3851,7 @@ impl FnGenerator {
                                         let arg_ty = self.infer_expr_type(&args[0].node);
                                         if matches!(arg_ty, NativeType::Int | NativeType::Float | NativeType::Bool) {
                                             let arg = self.gen_expr_direct(&args[0].node, arg_ty);
+                                            let arg = if arg_ty == NativeType::Float { format!("_soma_fmt_f({})", arg) } else { arg };
                                             return format!(
                                                 "{}{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); }}\n",
                                                 ind, name, arg
@@ -4533,7 +4538,7 @@ impl FnGenerator {
             // surrounding small_int_var consumer skip the Integer wrap.
             "bit_test" if args.len() == 2 => {
                 let b_expr = &args[1].node;
-                let b = self.gen_expr_direct(b_expr, NativeType::Int);
+                let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
                 // Big literal shift → fast path can't handle it; bail out
                 // via panic so the dispatch wrapper falls back to Rug.
                 if let Expr::Literal(Literal::Int(k)) = b_expr {
@@ -4561,7 +4566,7 @@ impl FnGenerator {
                     }
                 }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(b_expr, NativeType::Int);
+                let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
                 format!("(({}) | (1i64 << {}))", a, b)
             }
             "bit_clr" if args.len() == 2 => {
@@ -4572,11 +4577,11 @@ impl FnGenerator {
                     }
                 }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(b_expr, NativeType::Int);
+                let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
                 format!("(({}) & !(1i64 << {}))", a, b)
             }
             "bit_next" if args.len() == 2 => {
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                let b = format!("_soma_bit_index({})", self.gen_expr_direct(&args[1].node, NativeType::Int));
                 // Mixed mode: big-Integer source in Rug mode → use GMP scan.
                 if self.mode == Mode::Rug {
                     if let Expr::Ident(name) = &args[0].node {
@@ -5632,6 +5637,9 @@ impl FnGenerator {
                         let a = self.gen_expr_rug(&args[0].node);
                         format!("{}.to_string()", a)
                     }
+                } else if arg_ty == NativeType::Float {
+                    let a = self.gen_expr_direct(&args[0].node, arg_ty);
+                    format!("_soma_fmt_f({})", a)
                 } else {
                     let a = self.gen_expr_direct(&args[0].node, arg_ty);
                     format!("format!(\"{{}}\", {})", a)
@@ -5947,7 +5955,7 @@ impl FnGenerator {
                 // an Integer ident. For small_int_var idents (i64), use a
                 // pure-i64 shift. For non-idents, fall through to building
                 // an Integer.
-                let b = self.gen_int_to_i64_rug(&args[1].node);
+                let b = format!("_soma_bit_index({})", self.gen_int_to_i64_rug(&args[1].node));
                 if let Expr::Ident(name) = &args[0].node {
                     if self.small_int_vars.contains(name) {
                         return format!("Integer::from({{ let _k: i64 = {}; let _a: i64 = {}; if _k >= 64 {{ if _a < 0 {{ 1i64 }} else {{ 0i64 }} }} else {{ (_a >> _k) & 1i64 }} }})", b, name);
@@ -5965,19 +5973,19 @@ impl FnGenerator {
                 // new value (for non-self-assign uses; self-assign goes
                 // through try_inplace_bit and never reaches here).
                 let a = self.gen_expr_rug(&args[0].node);
-                let b = self.gen_int_to_i64_rug(&args[1].node);
+                let b = format!("_soma_bit_index({})", self.gen_int_to_i64_rug(&args[1].node));
                 format!("{{ let mut _t = {}.clone(); _t.set_bit(({}) as u32, true); _t }}", a, b)
             }
             "bit_clr" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);
-                let b = self.gen_int_to_i64_rug(&args[1].node);
+                let b = format!("_soma_bit_index({})", self.gen_int_to_i64_rug(&args[1].node));
                 format!("{{ let mut _t = {}.clone(); _t.set_bit(({}) as u32, false); _t }}", a, b)
             }
             // bit_next(x, start) — find the next 1-bit at position ≥ start
             // (or -1 if none). Maps to rug's find_one which uses GMP's
             // mpz_scan1 — O(1) amortized over the limbs.
             "bit_next" if args.len() == 2 => {
-                let b = self.gen_int_to_i64_rug(&args[1].node);
+                let b = format!("_soma_bit_index({})", self.gen_int_to_i64_rug(&args[1].node));
                 if let Expr::Ident(name) = &args[0].node {
                     if self.small_int_vars.contains(name) {
                         // i64 path: mask off bits below b, then trailing_zeros

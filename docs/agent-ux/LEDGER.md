@@ -467,3 +467,14 @@ mid-job. The native backend disagreed with the interpreter in four places.
 - [ ] Native errors carry no line number.
 - [ ] Interpreted numeric loops are 4-8x slower than CPython.
 
+### Cycle 16 — attack (same binary)
+
+- [x] **False proofs**: a size proof accepted a key whose value changed between the require and the set (`p.k = j`, `ids[0] = j`, `cur.get("k")`, `to_string(random(2))`) — keys must be pure texts over unchanged names; recursion placed before the base case; `delegate()` to a computed handler name.
+- [x] **Data corruption / forgery**: storage tables `<Cell>_<slot>` collide (case-insensitive SQLite, `_` joins, `_log` tables, machine tables `__sm_`) — slots `acct`/`Acct`, cell `User` slot `pass_hash` vs cell `User_pass` slot `hash`, a slot rewriting machine states, a `_log` collision crashing every command: a check error now.
+- [x] `next_id()` lived in the user's first Map slot under `"__next_id"` (a user key of that name reset it; a List first slot answered 1 forever): its own table now (legacy value carried over once), reset per test cell like `remember()`.
+- [x] Values nested past 100 levels are refused (they came back as a String); nested generic slot types are enforced (`Map<String, List<Int>>` took `["x"]`); an invariant over a List value holds for every element and a List in an `if`/`while` condition is an error (a non-empty 0/1 mask read as true).
+- [x] **Security**: `_type` in a FORM body or the QUERY string forged records; a GET reached state changes through an LLM tool or `next_id()` (think and next_id count as state changes); the bus refuses `request`/`ws`/`start`/`init` (an EVENT bypassed the WebSocket origin check); on a loopback bind only localhost origins open a WebSocket (DNS rebinding had Origin == Host); `html()` injects htmx only for a real `hx-` attribute.
+- [x] **LLM**: tool capabilities with URL patterns (`https://api.x.com/*`) never matched — `*` patterns work; tool arguments are type-checked (garbage ran the tool with ""); a think() inside a tool has its own conversation and makes a cost bound unprovable; the budget is charged when a provider omits `usage`; cost takes the max over if/else and match branches.
+- [x] **Native**: a negative `bit_set` index hung serve (and `bit_clr` / `bit_next` differed); BigInt-mode `to_string` of an integral Float printed `8`, not `8.0`.
+- [x] Guard names bound only after `transition()` are a check error; `soma test --json` keeps a sampled property's text whole.
+

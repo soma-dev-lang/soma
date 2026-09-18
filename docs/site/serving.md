@@ -97,7 +97,8 @@ variant.
   a String as-is, a Map/List as JSON, `()` sends nothing. A raise answers
   `{"error": …, "kind": …}` like HTTP. The handler is atomic and rolled back
   like any other; `ws` is not an HTTP endpoint. A browser connection is
-  accepted only from this machine's Origin (localhost / 127.0.0.1 / the Host).
+  accepted only from a localhost / 127.0.0.1 Origin (and from the Host's own
+  origin only when serving beyond loopback with `--host`).
 - `publish("stream", data)` and every `emit ev(data)` are pushed to every
   WebSocket client as `{"event": "stream", "data": …}` and to SSE clients
   subscribed to that name — AT COMMIT: a handler that raises (or a `try`

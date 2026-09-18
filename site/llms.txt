@@ -477,7 +477,9 @@ cell agent Researcher {
 // latency:, usd:) to the cell and soma check PROVES the bound when every
 // think() has a literal max_tokens and runs a known number of times.
 // The model may call only the face's `tool`s (never a private or other
-// handler), within their capabilities; a tool call that raises is rolled
+// handler), with typed arguments, within their capabilities (URL patterns with
+// `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
+// tool that calls think() makes a `cost` bound unprovable); a tool call that raises is rolled
 // back. `map("max_rounds", N)` caps the tool-call rounds of one think().
 // approve(msg) is a gate a PERSON answers: tests script it (mock approve),
 // serve raises approval_required unless SOMA_APPROVE says otherwise.

@@ -427,7 +427,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         // the process (only the `_cluster_*` replication ones)
                         if let Some(rest) = line.strip_prefix("EVENT ") {
                             let name = rest.split(' ').next().unwrap_or("");
-                            if name.starts_with('_') && !name.starts_with("_cluster_") {
+                            // nor the router, the start-up hooks or `ws` (whose
+                            // WebSocket origin check an EVENT bypassed)
+                            if (name.starts_with('_') && !name.starts_with("_cluster_")) || matches!(name, "request" | "ws" | "start" | "init") {
                                 eprintln!("bus: refused event '{}' (private handler)", name);
                                 continue;
                             }
@@ -814,6 +816,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
         eprintln!("websocket: ws://{}:{}", if host == "0.0.0.0" { "localhost" } else { host }, ws_port);
         let ws_host = host.to_string();
+        let loopback_bind = matches!(host, "127.0.0.1" | "localhost" | "::1");
 
         let natives = natives.clone();
         std::thread::spawn(move || {
@@ -893,7 +896,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             None => true, // not a browser (a script, a peer)
                             Some(o) => {
                                 let oh = o.split("://").nth(1).unwrap_or("").split(['/', ':']).next().unwrap_or("").to_string();
-                                oh == "localhost" || oh == "127.0.0.1" || oh == "[::1]" || (!host.is_empty() && oh == host)
+                                let local = oh == "localhost" || oh == "127.0.0.1" || oh == "[::1]";
+                                // Origin == Host only when serving beyond loopback:
+                                // on 127.0.0.1 a DNS-rebinding page has Origin == Host
+                                local || (!loopback_bind && !host.is_empty() && oh == host)
                             }
                         };
                         if ok { Ok(resp) } else {
@@ -1159,6 +1165,19 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // a returned map with `_status` IS an HTTP response (its other plain
         // keys become headers): a handler echoing a client object would let
         // the client pick the status and inject headers — refuse the key
+        // the same keys in a FORM body or the QUERY string (`_type=Account`
+        // made is_a(body, "Account") true)
+        if reserved_hit.is_none() {
+            let form_keys: Vec<String> = match &body_value {
+                Some(interpreter::Value::Map(m)) => m.keys().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let query_keys: Vec<String> = url.split_once('?').map(|(_, q)| q.split('&')
+                .map(|pair| urlencoding_decode(pair.split_once('=').map_or(pair, |(k, _)| k))).collect()).unwrap_or_default();
+            for k in form_keys.iter().chain(query_keys.iter()) {
+                if let Some(r) = ["_type", "_variant", "_values"].into_iter().find(|r| k == r) { reserved_hit = Some(r); break; }
+            }
+        }
         if let Some(key) = reserved_hit {
             let msg = format!("the request body may not carry `{}` (reserved: it marks {})", key,
                 if key == "_status" { "a returned map as an HTTP response" } else { "a record or a sum-type variant — a client cannot forge one" });
@@ -1932,7 +1951,7 @@ fn mutating_handlers(cell: &ast::CellDef) -> std::collections::HashSet<String> {
         let mut callees = Vec::new();
         crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
             Expr::FnCall { name, .. } => {
-                if matches!(name.as_str(), "transition" | "remember" | "delegate" | "publish" | "write_file") { writes = true; }
+                if matches!(name.as_str(), "transition" | "remember" | "delegate" | "publish" | "write_file" | "next_id" | "think" | "think_json" | "http_post" | "http_put" | "http_delete") { writes = true; }
                 callees.push(name.clone());
             }
             Expr::MethodCall { target, method, .. } => {

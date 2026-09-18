@@ -78,6 +78,13 @@ impl<'a> CostWalk<'a> {
         }
     }
 
+    /// Keep the costlier branch in `worst`; unbounded sites of any branch count.
+    fn absorb_branch(&mut self, worst: &mut CostWalk<'a>, branch: CostWalk<'a>) {
+        worst.tokens = worst.tokens.max(branch.tokens);
+        worst.latency_ms = worst.latency_ms.max(branch.latency_ms);
+        self.unbounded_sites.extend(branch.unbounded_sites);
+    }
+
     fn spends(&self) -> bool {
         self.tokens > 0 || self.latency_ms > 0 || !self.unbounded_sites.is_empty()
     }
@@ -91,11 +98,16 @@ impl<'a> CostWalk<'a> {
             Statement::ExprStmt { expr } => self.visit_expr(&expr.node, handler_name),
             Statement::If { condition, then_body, else_body } => {
                 self.visit_expr(&condition.node, handler_name);
-                // Conservative: assume both branches taken (max).
-                // For MVP we take the union — same as summing — to stay
-                // sound for the worst case.
-                for s in then_body { self.visit_stmt(&s.node, handler_name); }
-                for s in else_body { self.visit_stmt(&s.node, handler_name); }
+                // one branch runs: the peak is the max of the two
+                let mut worst = self.child();
+                let mut t = self.child();
+                for s in then_body { t.visit_stmt(&s.node, handler_name); }
+                self.absorb_branch(&mut worst, t);
+                let mut e = self.child();
+                for s in else_body { e.visit_stmt(&s.node, handler_name); }
+                self.absorb_branch(&mut worst, e);
+                self.tokens += worst.tokens;
+                self.latency_ms += worst.latency_ms;
             }
             Statement::While { condition, body, bound, .. } => {
                 self.visit_expr(&condition.node, handler_name);
@@ -260,20 +272,35 @@ impl<'a> CostWalk<'a> {
                 self.latency_ms += inner.latency_ms;
                 self.unbounded_sites.extend(inner.unbounded_sites);
             }
+            // one arm / branch runs: the peak is the MAX over them (two
+            // think() in the two branches of an if were summed: a correct
+            // 100-token handler "exceeded" 100)
             Expr::Match { subject, arms } => {
                 self.visit_expr(&subject.node, handler_name);
+                let mut worst = self.child();
                 for arm in arms {
                     if let Some(g) = &arm.guard { self.visit_expr(&g.node, handler_name); }
-                    for s in &arm.body { self.visit_stmt(&s.node, handler_name); }
-                    self.visit_expr(&arm.result.node, handler_name);
+                    let mut w = self.child();
+                    for s in &arm.body { w.visit_stmt(&s.node, handler_name); }
+                    w.visit_expr(&arm.result.node, handler_name);
+                    self.absorb_branch(&mut worst, w);
                 }
+                self.tokens += worst.tokens;
+                self.latency_ms += worst.latency_ms;
             }
             Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
                 self.visit_expr(&condition.node, handler_name);
-                for s in then_body { self.visit_stmt(&s.node, handler_name); }
-                self.visit_expr(&then_result.node, handler_name);
-                for s in else_body { self.visit_stmt(&s.node, handler_name); }
-                self.visit_expr(&else_result.node, handler_name);
+                let mut worst = self.child();
+                let mut t = self.child();
+                for s in then_body { t.visit_stmt(&s.node, handler_name); }
+                t.visit_expr(&then_result.node, handler_name);
+                self.absorb_branch(&mut worst, t);
+                let mut e = self.child();
+                for s in else_body { e.visit_stmt(&s.node, handler_name); }
+                e.visit_expr(&else_result.node, handler_name);
+                self.absorb_branch(&mut worst, e);
+                self.tokens += worst.tokens;
+                self.latency_ms += worst.latency_ms;
             }
             Expr::Record { fields, .. } => {
                 for (_, v) in fields { self.visit_expr(&v.node, handler_name); }
@@ -393,8 +420,24 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         };
         {
             let mut walk = CostWalk::new(&handlers);
-            if cell.sections.iter().any(|s| matches!(&s.node, Section::Face(f) if f.declarations.iter().any(|d| matches!(d.node, FaceDecl::Tool(_))))) {
+            let tool_names: Vec<String> = cell.sections.iter().filter_map(|s| match &s.node {
+                Section::Face(f) => Some(f.declarations.iter().filter_map(|d| match &d.node { FaceDecl::Tool(t) => Some(t.name.clone()), _ => None }).collect::<Vec<_>>()),
+                _ => None,
+            }).flatten().collect();
+            if !tool_names.is_empty() {
                 walk.rounds = 10;
+                // the MODEL decides how often a tool runs: a tool that itself
+                // spends tokens makes any bound unprovable
+                for t in &tool_names {
+                    if let Some(body) = handlers.get(t.as_str()).copied() {
+                        let mut probe = CostWalk::new(&handlers);
+                        probe.stack.push(t.clone());
+                        for st in body { probe.visit_stmt(&st.node, t); }
+                        if probe.tokens > 0 || !probe.unbounded_sites.is_empty() {
+                            walk.unbounded_sites.push(format!("tool '{}' calls think() — the model may call it any number of times", t));
+                        }
+                    }
+                }
             }
             walk.stack.push(hname.clone());
             for s in body {

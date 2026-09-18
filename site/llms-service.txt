@@ -477,7 +477,9 @@ cell agent Researcher {
 // latency:, usd:) to the cell and soma check PROVES the bound when every
 // think() has a literal max_tokens and runs a known number of times.
 // The model may call only the face's `tool`s (never a private or other
-// handler), within their capabilities; a tool call that raises is rolled
+// handler), with typed arguments, within their capabilities (URL patterns with
+// `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
+// tool that calls think() makes a `cost` bound unprovable); a tool call that raises is rolled
 // back. `map("max_rounds", N)` caps the tool-call rounds of one think().
 // approve(msg) is a gate a PERSON answers: tests script it (mock approve),
 // serve raises approval_required unless SOMA_APPROVE says otherwise.
@@ -770,7 +772,8 @@ variant.
   a String as-is, a Map/List as JSON, `()` sends nothing. A raise answers
   `{"error": …, "kind": …}` like HTTP. The handler is atomic and rolled back
   like any other; `ws` is not an HTTP endpoint. A browser connection is
-  accepted only from this machine's Origin (localhost / 127.0.0.1 / the Host).
+  accepted only from a localhost / 127.0.0.1 Origin (and from the Host's own
+  origin only when serving beyond loopback with `--host`).
 - `publish("stream", data)` and every `emit ev(data)` are pushed to every
   WebSocket client as `{"event": "stream", "data": …}` and to SSE clients
   subscribed to that name — AT COMMIT: a handler that raises (or a `try`

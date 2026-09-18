@@ -306,7 +306,24 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let single_for = |w: &str| for_counts.get(w) == Some(&1) && !non_for.contains(w)
                         && !on.params.iter().any(|p| p.name == w)
                         && !assigns.iter().any(|(m, e)| *m == w && !std::ptr::eq(*e, &UNKNOWN_EXPR));
-                    if k.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| !w.is_empty() && (rebound(w) || (shadow.contains(w) && !single_for(w)))) { return false; }
+                    // the key must be a PURE text over names: no call (random),
+                    // no field / index read (`p.k`, `ids[0]`, `cur.get("k")` —
+                    // their value can change between the require and the set)
+                    let unquoted: String = { let mut out = String::new(); let mut q = false; for ch in k.chars() { if ch == '"' { q = !q; continue; } if !q { out.push(ch); } } out };
+                    if unquoted.contains('(') || unquoted.contains('.') || unquoted.contains('[') { return false; }
+                    fn index_sets(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+                        for st in stmts {
+                            match &st.node {
+                                Statement::IndexSet { name, .. } => { out.insert(name.clone()); }
+                                Statement::If { then_body, else_body, .. } => { index_sets(then_body, out); index_sets(else_body, out); }
+                                Statement::For { body, .. } | Statement::While { body, .. } => index_sets(body, out),
+                                _ => {}
+                            }
+                        }
+                    }
+                    let mut mutated: HashSet<String> = HashSet::new();
+                    index_sets(&on.body, &mut mutated);
+                    if unquoted.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| !w.is_empty() && (rebound(w) || mutated.contains(w) || (shadow.contains(w) && !single_for(w)))) { return false; }
                     // `let r = rows.get(k)` bound once: `r != ()` says k exists
                     let aliases: HashMap<String, String> = assigns.iter()
                         .filter(|(n, _)| assigns.iter().filter(|(m, _)| m == n).count() == 1 && !shadow.contains(*n))

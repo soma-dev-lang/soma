@@ -80,7 +80,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             };
             // Only inject HTMX on full pages, not fragments
             let inject_htmx = body.contains("<html") || body.contains("<!DOCTYPE") || body.contains("<!doctype");
-            if inject_htmx && body.contains("hx-") && !body.contains("htmx.org") {
+            // an hx- ATTRIBUTE inside a tag, not the text "hx-" (escaped user
+            // content "say hx-get please" loaded a third-party script)
+            let uses_htmx = regex::Regex::new(r#"<[a-zA-Z][^<>]*\shx-[a-z-]+\s*="#).map(|r| r.is_match(&body)).unwrap_or(false);
+            if inject_htmx && uses_htmx && !body.contains("htmx.org") {
                 let htmx_tag = "<script src=\"https://unpkg.com/htmx.org@2.0.4\"></script>";
                 if let Some(pos) = body.find("</head>") {
                     body.insert_str(pos, htmx_tag);

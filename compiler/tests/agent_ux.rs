@@ -555,7 +555,6 @@ cell test T {
         assert_fails book("s1")
         assert book("s2").id == "b2"
         assert ids() == ["b1", "b2"]
-        assert zz_first.get("__next_id") == 2
     }
 }
 "#).unwrap();
@@ -1630,4 +1629,46 @@ cell N {
     assert!(out.contains("[100000000000000000000, 101]"), "{out}");
     let (out, _) = soma_in(&d, &["verify", "n.cell"]);
     assert!(!out.contains("handler `lb`: while-loop"), "{out}");
+}
+
+/// Cycle 16 (attack): key aliasing and computed keys do not prove size;
+/// recursion before the base case; storage-name collisions; next_id in its
+/// own table; nested slot types; list masks in invariants; cost max over
+/// branches; guard names bound after transition.
+#[test]
+fn cycle16_attack_findings() {
+    let d = dir("cycle16b");
+    std::fs::write(d.join("p.cell"), r#"
+cell S {
+  memory { rows: Map<String, Int> [persistent]  invariant rows.size <= 2
+           scores: Map<String, List<Int>> [persistent]  invariant scores >= 0 }
+  on add(k: String) { require len(rows) < 2 else Full  rows.set(k, 1) }
+  on rename(k: String, j: String) { let p = map("k", k)  require rows.get(p.k) != () else Missing  p.k = j  rows.set(p.k, 2) }
+  on count(n: Int) { let rest = count(n - 1)  if n <= 0 { return 0 }  return rest + 1 }
+  on neg(k: String) { scores.set(k, [-5, -7]) }
+  on badtype(k: String) { scores.set(k, ["x"]) }
+  on nid() { return next_id() }
+  on reg(k: String) { rows.set(k, 1) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "p.cell"]);
+    assert!(!out.contains("writer 'rename' proven"), "{out}");
+    assert!(out.contains("handler `count`"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "--fresh", "p.cell", "neg", "a"]);
+    assert_eq!(code, 1, "{out}");
+    let (out, code) = soma_in(&d, &["run", "p.cell", "badtype", "a"]);
+    assert_eq!(code, 1, "{out}");
+    let _ = soma_in(&d, &["run", "p.cell", "nid"]);
+    let _ = soma_in(&d, &["run", "p.cell", "reg", "__next_id"]);
+    let (out, _) = soma_in(&d, &["run", "p.cell", "nid"]);
+    assert!(out.trim().ends_with('2'), "{out}");
+
+    std::fs::write(d.join("c.cell"), "cell L { memory { events: List<String> [persistent]  events_log: Map<String, String> [persistent] } on f() { return 1 } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "c.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("would share the storage table"), "{out}");
+
+    std::fs::write(d.join("k.cell"), "cell agent A {\n cost { tokens: 100 }\n on ask(q: String) { if q == \"a\" { return think(q, map(\"max_tokens\", 100)) } else { return think(q, map(\"max_tokens\", 100)) } }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "k.cell"]);
+    assert_eq!(code, 0, "{out}");
 }

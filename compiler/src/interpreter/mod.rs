@@ -273,6 +273,26 @@ enum InterpResult {
     Err(ExecError),
 }
 
+/// A condition's truth (`if`, `while`, if-expressions): a List is refused —
+/// `[-5] >= 0` gives the 0/1 mask `[0]`, which read as true.
+fn cond_truth(val: &Value) -> Result<bool, ExecError> {
+    if let Value::List(_) = val {
+        return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+            "a condition got a List ({}) — a comparison on a list gives a 0/1 list per element: use all(...) / any(...)",
+            { let t: String = format!("{}", val).chars().take(30).collect(); t }))));
+    }
+    Ok(is_truthy(val))
+}
+
+/// An invariant over a List value holds for EVERY element (the 0/1 mask of
+/// `[-5, -7] >= 0` is [0, 0], which read as true because it is non-empty).
+fn invariant_holds(val: &Value) -> bool {
+    match val {
+        Value::List(mask) => mask.iter().all(is_truthy),
+        other => is_truthy(other),
+    }
+}
+
 pub fn is_truthy(val: &Value) -> bool {
     match val {
         Value::Bool(b) => *b,
@@ -1514,7 +1534,7 @@ impl Interpreter {
             } => {
                 self.last_span = Some(condition.span);
                 let cond = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
-                if is_truthy(&cond) {
+                if cond_truth(&cond)? {
                     self.exec_body_scoped(then_body, env, cell_name, signal_name)
                 } else if !else_body.is_empty() {
                     self.exec_body_scoped(else_body, env, cell_name, signal_name)
@@ -1856,7 +1876,7 @@ impl Interpreter {
                 // General path
                 loop {
                     let cond = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
-                    if !is_truthy(&cond) {
+                    if !cond_truth(&cond)? {
                         break;
                     }
                     match self.exec_body_scoped(body, env, cell_name, signal_name) {
@@ -2397,7 +2417,7 @@ impl Interpreter {
 
             Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
                 let cond_val = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
-                if cond_val.is_truthy() {
+                if cond_truth(&cond_val)? {
                     for stmt in then_body {
                         self.last_span = Some(stmt.span);
                         self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
@@ -3747,7 +3767,7 @@ impl Interpreter {
             env.insert("_slot_name".to_string(), Value::String(slot_name.to_string()));
             env.insert("_key".to_string(), Value::String(key_str.to_string()));
             match self.eval_expr(inv, &mut env, cell_name, "") {
-                Ok(v) if is_truthy(&v) => {}
+                Ok(v) if invariant_holds(&v) => {}
                 Ok(_) => {
                     return Err(ExecError::Runtime(RuntimeError::RequireFailed(format!(
                         "memory invariant violated on '{}': {} — rejected {} of {} (key \"{}\"); the slot is unchanged",
@@ -4306,6 +4326,55 @@ impl Interpreter {
         if matches!(self.slot_value_type(cell_name, slot_name).as_deref(), Some("String")) { v } else { auto_deserialize(v) }
     }
 
+    /// The declared VALUE type of a slot as a type expression (the last
+    /// generic argument: `V` of `Map<K, V>`, `T` of `List<T>`).
+    fn slot_inner_type(&self, cell_name: &str, name: &str) -> Option<TypeExpr> {
+        let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
+            Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name).and_then(|sl| match &sl.node.ty.node {
+                TypeExpr::Generic { args, .. } => args.last().map(|a| a.node.clone()),
+                _ => None,
+            }),
+            _ => None,
+        });
+        self.cells.get(cell_name).and_then(declared)
+    }
+
+    /// Does `v` fit the (possibly nested) type `ty`? Only the generic
+    /// structure is checked here; the scalar rules are check_slot_value_type's.
+    fn value_fits(&self, ty: &TypeExpr, v: &Value) -> Result<(), String> {
+        match ty {
+            TypeExpr::Generic { name, args } if name == "List" => match v {
+                Value::List(xs) => {
+                    if let Some(t) = args.first() { for (i, x) in xs.iter().enumerate() { self.value_fits(&t.node, x).map_err(|m| format!("element {}: {}", i, m))?; } }
+                    Ok(())
+                }
+                Value::Unit => Ok(()),
+                other => Err(format!("expected a List, got {}", value_type_name(other))),
+            },
+            TypeExpr::Generic { name, args } if name == "Map" => match v {
+                Value::Map(m) => {
+                    if let Some(t) = args.last() { for (k, x) in m.iter() { if k.starts_with('_') { continue; } self.value_fits(&t.node, x).map_err(|e| format!("key {:?}: {}", k, e))?; } }
+                    Ok(())
+                }
+                Value::Variant { .. } | Value::Unit => Ok(()),
+                other => Err(format!("expected a Map, got {}", value_type_name(other))),
+            },
+            TypeExpr::Simple(t) => {
+                let ok = match (t.as_str(), v) {
+                    ("Any", _) | (_, Value::Unit) => true,
+                    ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_)) | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) => true,
+                    ("List", Value::List(_)) | ("Map", Value::Map(_) | Value::Variant { .. }) => true,
+                    ("Int" | "Float" | "String" | "Bool" | "List" | "Map", _) => false,
+                    (t, Value::Variant { type_name, variant, .. }) if self.type_variants.contains_key(t) => type_name == t && self.type_variants[t].iter().any(|x| x == variant),
+                    (t, _) if self.type_variants.contains_key(t) => false,
+                    _ => true,
+                };
+                if ok { Ok(()) } else { Err(format!("expected {}, got {} {}", t, value_type_name(v), { let s: String = format!("{}", v).chars().take(30).collect(); s })) }
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn slot_value_type(&self, cell_name: &str, name: &str) -> Option<String> {
         let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
             Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name).and_then(|sl| {
@@ -4348,6 +4417,29 @@ impl Interpreter {
                 kind: "type".to_string(),
                 message: format!("slot '{}': a function (lambda) cannot be stored — store the data it works on", slot_name),
             }));
+        }
+        // stored values are JSON: past ~126 levels they came back as a String
+        fn depth(v: &Value) -> usize {
+            match v {
+                Value::List(xs) => 1 + xs.iter().map(depth).max().unwrap_or(0),
+                Value::Map(m) => 1 + m.values().map(depth).max().unwrap_or(0),
+                _ => 0,
+            }
+        }
+        if depth(val) > 100 {
+            return Err(ExecError::Runtime(RuntimeError::Domain {
+                kind: "type".to_string(),
+                message: format!("slot '{}': a value nested deeper than 100 levels cannot be stored — flatten it", slot_name),
+            }));
+        }
+        // the NESTED declared types too (`Map<String, List<Int>>` took ["x"])
+        if let Some(inner) = self.slot_inner_type(cell_name, slot_name) {
+            if let Err(m) = self.value_fits(&inner, val) {
+                return Err(ExecError::Runtime(RuntimeError::Domain {
+                    kind: "type".to_string(),
+                    message: format!("slot '{}': {}", slot_name, m),
+                }));
+            }
         }
         let Some(ty) = self.slot_value_type(cell_name, slot_name) else { return Ok(val.clone()) };
         let ok = match (ty.as_str(), val) {

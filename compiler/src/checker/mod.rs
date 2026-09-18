@@ -635,6 +635,52 @@ impl<'a> Checker<'a> {
             }).collect();
             (c.node.name.clone(), hs)
         }).collect();
+        // storage tables are named `<Cell>_<slot>` (and `<table>_log`,
+        // `<Cell>__sm_<machine>`, `<Cell>__agent_memory`), case-insensitive
+        // in SQLite: two names that meet share data (`acct`/`Acct`, cell
+        // `User` slot `pass_hash` vs cell `User_pass` slot `hash`, a slot
+        // `_sm_flow` rewriting machine instances)
+        {
+            let mut owners: std::collections::HashMap<String, (String, Span)> = std::collections::HashMap::new();
+            let mut reported: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            for cell in &program.cells {
+                if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
+                let c = &cell.node.name;
+                let mut names: Vec<(String, String)> = vec![
+                    (format!("{}__agent_memory", c), format!("{}'s agent memory", c)),
+                    (format!("{}__counters", c), format!("{}'s next_id counter", c)),
+                ];
+                for sec in &cell.node.sections {
+                    match &sec.node {
+                        Section::Memory(m) => for sl in &m.slots {
+                            let t = format!("{}_{}", c, sl.node.name);
+                            names.push((t.clone(), format!("slot {}.{}", c, sl.node.name)));
+                            names.push((format!("{}_log", t), format!("slot {}.{}", c, sl.node.name)));
+                        },
+                        Section::State(sm) => {
+                            let t = format!("{}__sm_{}", c, sm.name);
+                            names.push((t.clone(), format!("state machine {}.{}", c, sm.name)));
+                            names.push((format!("{}_log", t), format!("state machine {}.{}", c, sm.name)));
+                        }
+                        _ => {}
+                    }
+                }
+                for (t, what) in names {
+                    let key = t.to_lowercase();
+                    match owners.get(&key) {
+                        Some((other, _)) if *other != what && reported.insert((other.clone(), what.clone())) => {
+                            self.errors.push(CheckError::Static {
+                                kind: "storage_collision",
+                                message: format!("{} and {} would share the storage table \"{}\" (table names ignore case and `_` joins cell and slot names) — rename one of them", other, what, t),
+                                span: cell.span,
+                            });
+                        }
+                        Some(_) => {}
+                        None => { owners.insert(key, (what, cell.span)); }
+                    }
+                }
+            }
+        }
         for cell in &program.cells {
             // `cell test T { }` ran "0 tests: 0 passed" and exited 0
             if cell.node.kind == CellKind::Test && !cell.node.sections.iter().any(|s| matches!(s.node, Section::Rules(_))) {

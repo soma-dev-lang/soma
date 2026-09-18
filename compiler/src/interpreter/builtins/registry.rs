@@ -362,7 +362,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
 
     // ── state machines ──────────────────────────────────────────────
     doc("next_id", "state", "next_id() -> Int",
-        "Monotonic per-cell counter; REQUIRES a memory slot — without one it returns 1 on every call."),
+        "Monotonic per-cell counter, in its own table (persistent under run/serve; per test cell in tests); journaled — a refused request burns no id."),
     doc("transition", "state", "transition(id, target_state: String) -> {id, from, to}",
         "Move instance `id` to `target_state` (read the new state with get_status(id)); raises kind \"invalid_transition\" with the valid targets, or \"guard_failed\". Rolled back if the handler later fails."),
     doc("get_status", "state", "get_status(id) -> String",

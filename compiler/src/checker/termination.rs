@@ -106,6 +106,20 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                     ));
                 }
             }
+            // `delegate("T", name, n)` with a computed handler name may call
+            // anything, this handler included — not measured
+            {
+                let mut computed = false;
+                crate::checker::literals::for_each_expr(&on.body, &mut |e| {
+                    if let Expr::FnCall { name, args } = e {
+                        if name == "delegate" && !matches!((args.get(0).map(|a| &a.node), args.get(1).map(|a| &a.node)),
+                            (Some(Expr::Literal(Literal::String(_))), Some(Expr::Literal(Literal::String(_))))) { computed = true; }
+                    }
+                });
+                if computed {
+                    reasons.push(format!("handler `{}`: delegate() to a computed cell/handler name — a call the termination proof cannot follow (write the names as literals)", on.signal_name));
+                }
+            }
             // `(n + 1) |> up()` / `A.up2(n + 1)`: a self-call the
             // decreasing-argument rule does not see — not measured
             if hidden_self_call(&on.body, &on.signal_name) {
@@ -657,6 +671,10 @@ fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str, handler: &str)
         }
     }
     for st in body {
+        // a self-call BEFORE any base case runs unconditionally: `let rest =
+        // count(n - 1)  if n <= 0 { return 0 }` never reaches the base case
+        let is_base_if = matches!(&st.node, Statement::If { .. });
+        if !is_base_if && calls_self(std::slice::from_ref(st), handler) { return false; }
         match &st.node {
             Statement::If { condition, then_body, .. } => {
                 let exits = matches!(then_body.last().map(|s| &s.node), Some(Statement::Return { .. }))

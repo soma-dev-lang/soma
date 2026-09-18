@@ -88,8 +88,16 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                     // bound only inside a branch (`if big { let amount = 50 }`)
                     // is not bound on every path to the transition: the
                     // runtime raised undefined_variable, not guard_failed
+                    // …and only the top-level lets BEFORE the statement that
+                    // calls transition() (`transition(…)  let amount = 5`
+                    // passed check and raised undefined_variable)
                     let mut unconditional: HashSet<String> = on.params.iter().map(|p| p.name.clone()).collect();
                     for st in &on.body {
+                        let mut has_transition = false;
+                        super::termination::walk_stmt(&st.node, &mut |e| {
+                            if matches!(e, Expr::FnCall { name, .. } if name == "transition") { has_transition = true; }
+                        });
+                        if has_transition { break; }
                         if let Statement::Let { name, .. } | Statement::Assign { name, .. } = &st.node {
                             unconditional.insert(name.clone());
                         }
@@ -98,7 +106,7 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                         if bound.contains(*n) && !unconditional.contains(*n) {
                             issues.push(GuardIssue {
                                 message: format!(
-                                    "guard on `{} -> {}` reads '{}', which handler `{}` binds only inside a branch —                                      bind `let {} = …` at the top level of the handler, before transition(), so every path defines it",
+                                    "guard on `{} -> {}` reads '{}', which handler `{}` binds only inside a branch or after transition() — bind `let {} = …` at the top level of the handler, before transition(), so every path defines it",
                                     tr.node.from, tr.node.to, n, on.signal_name, n
                                 ),
                                 span: guard.span,
