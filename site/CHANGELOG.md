@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- A bare call inside a cell to a handler name another cell also defines runs
+  the calling cell's own handler (it ran the other cell's).
+- `soma serve` no longer exposes the start-up hook (`init` / `start`) as an
+  HTTP endpoint; static text files get real content types.
+- `soma verify` always ends with a verdict line, prints check errors on
+  stdout, and says which `require` would prove an open invariant.
+- Native: a buffer passed to a sibling is a check error; Int-valued calls in
+  Float expressions compile; a constant overflow is the `range` error.
+- Hints for `require` without `else`, `and`/`or`/`not`, a quote inside `{…}`;
+  CI builds Linux and Intel macOS binaries for every release tag.
+
 ## 2.5.0 — 2026-09-18
 
 The agent-experience release. Nine cycles of fresh AI agents (none had seen
