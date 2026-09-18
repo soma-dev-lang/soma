@@ -1943,7 +1943,15 @@ impl Parser {
         match self.peek() {
             Token::Let => {
                 self.advance();
-                let (name, _) = self.expect_ident()?;
+                let (name, name_span) = self.expect_ident()?;
+                // `match` reads fine as a field (`x.match`) but a variable of
+                // that name can never be read back: `match + 1` starts a match
+                if name == "match" {
+                    return Err(ParseError::FixIt {
+                        message: "`match` cannot name a variable (it starts a match expression when read) — pick another name, e.g. `m` or `found`".to_string(),
+                        span: name_span,
+                    });
+                }
                 self.expect(Token::Eq)?;
                 let value = self.parse_expr()?;
                 Ok(Spanned::new(Statement::Let { name, value }, start.merge(self.prev_span())))

@@ -293,4 +293,4 @@ Scores: day-two migration of `warehouse_reservations` (added fields, renamed sta
 ### Open
 - [ ] Outbound HTTP holds the process-wide handler lock (documented; timeouts bound it).
 - [ ] No migration command or schema version (a documented recipe instead).
-- [ ] `let match = 1` parses then fails; `cell test` without `rules` is accepted.
+- [x] `let match = 1` is refused with a fix; `cell test` without `rules` is a check error.

@@ -630,6 +630,14 @@ impl<'a> Checker<'a> {
             (c.node.name.clone(), hs)
         }).collect();
         for cell in &program.cells {
+            // `cell test T { }` ran "0 tests: 0 passed" and exited 0
+            if cell.node.kind == CellKind::Test && !cell.node.sections.iter().any(|s| matches!(s.node, Section::Rules(_))) {
+                self.errors.push(CheckError::Static {
+                    kind: "empty_test_cell",
+                    message: format!("test cell '{}' has no `rules {{ }}` block — it would run zero assertions and pass", cell.node.name),
+                    span: cell.span,
+                });
+            }
             // Skip meta-cells (they define the language, not the program)
             if cell.node.kind != CellKind::Cell && cell.node.kind != CellKind::Agent {
                 continue;
