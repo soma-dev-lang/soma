@@ -405,7 +405,14 @@ fn check_stmt_termination(
             // 3. Its iterator is a variable (collection — bounded by capacity)
             let is_bounded = bound.is_some()
                 || is_literal_range(&iter.node)
-                || is_collection_iter(&iter.node);
+                || is_collection_iter(&iter.node)
+                // `for l in [[0,1,2],[3,4,5]]`: a literal list has a length
+                || matches!(iter.node, Expr::ListLiteral(_));
+            if let (Some(b), Expr::ListLiteral(items)) = (bound, &iter.node) {
+                if items.len() as u64 > *b {
+                    reasons.push(format!("handler `{}`: `for [loop_bound({})]` over a literal list of {} items — the bound is too small (it raises loop_bound at run time)", handler_name, b, items.len()));
+                }
+            }
 
             if !is_bounded {
                 reasons.push(format!(

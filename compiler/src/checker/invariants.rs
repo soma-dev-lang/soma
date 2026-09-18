@@ -257,6 +257,16 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         )));
                         continue;
                     }
+                    // `size <= K` cannot break on a delete either: it shrinks
+                    // (the bounded-queue pop was "may grow past 64")
+                    let sized = |c: &Expr| { let mut n = HashSet::new(); collect_idents(c, &mut n); let mut f = HashSet::new(); collect_fn_names(c, &mut f);
+                        n.contains("size") || n.contains("len") || f.contains("len") || f.contains("size") };
+                    if conjuncts(inv).iter().all(|c| !sized(c) || size_upper_bound(c, slot).is_some()) {
+                        result.checks.push(VerifyCheck::Pass(format!(
+                            "invariant {inv_text} — writer '{handler}' only deletes from '{slot}' (a delete cannot grow it)"
+                        )));
+                        continue;
+                    }
                 }
                 let hyp_h = handlers.get(handler).map(|on| hyp_for(on, &hyp)).unwrap_or_else(|| hyp.clone());
                 let ctx = RangeCtx {

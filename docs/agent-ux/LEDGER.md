@@ -413,3 +413,22 @@ limit PROVEN (7 mutants all rejected), kill -9 and 50-way concurrency exact.
 - [ ] A guard reads a loop/lambda/match binding that shadows the handler's local of the same name.
 - [ ] verify's reason for an invariant that does not name the slot ("`1` is only known to lie in [1, 1]").
 
+## Cycle 15 (2026-09-18) — a realtime tic-tac-toe arena ported from TypeScript
+
+7/10: identical results to the TS reference on 5 scripts (up to 2,670 ops) and a live
+run with WebSocket, SSE, concurrent moves, kill -9 restarts and timeouts; 33 temporal
+properties and all invariants proven — after routing around B1.
+
+### Fixed
+- [x] A `delete` on a slot with `size <= K` fell back to "runtime-checked" (a bounded queue could not pass --strict): a delete cannot grow a slot.
+- [x] `[loop_bound(N)]` was trusted: a `cost` bound "proven" at 100 tokens spent 300. More iterations now raise kind `loop_bound`; a literal list longer than the bound is a ⚠ and the cost uses the real length. A loop over a literal list counts as bounded.
+- [x] `index_of(xs, x)` works on Lists (it answered -1 for everything); a non-String/List argument raises.
+- [x] `publish` / `emit` pushes reached SSE and WebSocket clients from handlers that were rolled back — pushes now leave at commit.
+- [x] WebSocket: cross-origin browser connections are refused; a raise answers `{"error", "kind"}`; messages are logged; `ws` is not an HTTP endpoint.
+- [x] Event listeners (targets of an `emit`) are not HTTP endpoints; `publish` counts as a state change (GET → 405).
+- [x] Docs: a Realtime section (on ws, publish, sse, commit-time pushes).
+
+### Open
+- [ ] No per-client / per-stream WebSocket routing; no SSE replay ids.
+- [ ] Serve log lines have no timestamps.
+

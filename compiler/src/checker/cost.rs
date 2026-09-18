@@ -116,7 +116,12 @@ impl<'a> CostWalk<'a> {
                 // Anything else (a list, a computed range) is unknown: the
                 // x100 figure below is then an ESTIMATE, and a body that
                 // spends makes the whole bound advisory, not proven.
-                let known = bound.map(|b| b as i64).or_else(|| literal_range_len(&iter.node));
+                // a literal list / range longer than the declared bound: the
+                // real count (the loop raises at run time anyway)
+                let known = match (bound.map(|b| b as i64), literal_range_len(&iter.node)) {
+                    (Some(b), Some(l)) => Some(b.max(l)),
+                    (b, l) => b.or(l),
+                };
                 if known.is_none() && inner.spends() {
                     self.unbounded_sites.push(format!(
                         "{}::for-loop over a collection of unknown size (write `for [loop_bound(N)] x in xs`)",
@@ -452,6 +457,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
 
 /// Iteration count of `range(n)` / `range(lo, hi)` with literal bounds.
 fn literal_range_len(iter: &Expr) -> Option<i64> {
+    if let Expr::ListLiteral(items) = iter { return Some(items.len() as i64); }
     let Expr::FnCall { name, args } = iter else { return None };
     if name != "range" {
         return None;

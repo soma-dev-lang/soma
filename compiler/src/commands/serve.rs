@@ -84,6 +84,29 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
     let request_routes = std::sync::Arc::new(crate::checker::routes::explicit_routes(&cell.node));
     let mutating = std::sync::Arc::new(mutating_handlers(&cell.node));
+    {
+        let mut ev: std::collections::HashSet<String> = std::collections::HashSet::new();
+        fn emits(stmts: &[ast::Spanned<ast::Statement>], out: &mut std::collections::HashSet<String>) {
+            for st in stmts {
+                match &st.node {
+                    ast::Statement::Emit { signal_name, .. } => { out.insert(signal_name.clone()); }
+                    ast::Statement::If { then_body, else_body, .. } => { emits(then_body, out); emits(else_body, out); }
+                    ast::Statement::For { body, .. } | ast::Statement::While { body, .. } => emits(body, out),
+                    _ => {}
+                }
+            }
+        }
+        for c in &program.cells {
+            for sec in &c.node.sections {
+                match &sec.node {
+                    ast::Section::OnSignal(on) => emits(&on.body, &mut ev),
+                    ast::Section::Every(e) | ast::Section::After(e) => emits(&e.body, &mut ev),
+                    _ => {}
+                }
+            }
+        }
+        let _ = EVENT_LISTENERS.set(ev);
+    }
     let zero_arg_hooks: Vec<&'static str> = ["start", "init"].into_iter().filter(|h| cell.node.sections.iter().any(|s| matches!(&s.node,
         ast::Section::OnSignal(on) if on.signal_name == *h && crate::ast::accepted_arities(&on.params).contains(&0)))).collect();
     let handler_names: Vec<String> = cell.node.sections.iter()
@@ -802,7 +825,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     loop {
                         match bus_rx.recv() {
                             Ok(event) => {
-                                let json = format!("{{\"event\":\"{}\",\"data\":{}}}", event.stream, event.data);
+                                let json = format!("{{\"event\":{},\"data\":{}}}", serde_json::to_string(&event.stream).unwrap_or_default(), event.data);
                                 let msg = tungstenite::Message::Text(json);
                                 if let Ok(mut clients) = clients.lock() {
                                     clients.retain(|client| {
@@ -844,7 +867,27 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         Err(_) => return,
                     };
 
-                    let ws = match tungstenite::accept(stream) {
+                    // a page on ANY site could open this socket and run `on ws`
+                    // (cross-site WebSocket hijacking): a browser's Origin must
+                    // be this machine (localhost / 127.0.0.1 / the Host header)
+                    let check_origin = |req: &tungstenite::handshake::server::Request, resp: tungstenite::handshake::server::Response| {
+                        let origin = req.headers().get("origin").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+                        let host = req.headers().get("host").and_then(|v| v.to_str().ok()).unwrap_or("").split(':').next().unwrap_or("").to_string();
+                        let ok = match origin {
+                            None => true, // not a browser (a script, a peer)
+                            Some(o) => {
+                                let oh = o.split("://").nth(1).unwrap_or("").split(['/', ':']).next().unwrap_or("").to_string();
+                                oh == "localhost" || oh == "127.0.0.1" || oh == "[::1]" || (!host.is_empty() && oh == host)
+                            }
+                        };
+                        if ok { Ok(resp) } else {
+                            eprintln!("ws: refused a connection from a foreign Origin");
+                            let mut r = tungstenite::handshake::server::ErrorResponse::new(Some("cross-origin WebSocket refused".to_string()));
+                            *r.status_mut() = tungstenite::http::StatusCode::FORBIDDEN;
+                            Err(r)
+                        }
+                    };
+                    let ws = match tungstenite::accept_hdr(stream, check_origin) {
                         Ok(ws) => ws,
                         Err(_) => return,
                     };
@@ -877,8 +920,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 interp.event_bus = Some(bus.clone());
 
                                 let args = vec![interpreter::Value::String(text)];
+                                let started = std::time::Instant::now();
                                 match interp.call_signal(&cname, "ws", args) {
                                     Ok(val) => {
+                                        eprintln!("ws: message → ok {}ms", started.elapsed().as_millis());
                                         if !matches!(val, interpreter::Value::Unit) {
                                             let response = format!("{}", val);
                                             if let Ok(mut ws_w) = ws_write.lock() {
@@ -888,7 +933,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                         }
                                     }
                                     Err(e) => {
-                                        let err_msg = format!("{{\"error\":\"{}\"}}", format!("{}", e).replace('\\', "\\\\").replace('"', "\\\""));
+                                        // the same shape as an HTTP error: {"error", "kind"}
+                                        eprintln!("ws: message → error ({}) {}", e.kind(), e);
+                                        let err_msg = error_body(&format!("{}", e), &e.kind());
                                         if let Ok(mut ws_w) = ws_write.lock() {
                                             let _ = ws_w.send(tungstenite::Message::Text(err_msg));
                                         }
@@ -1834,11 +1881,17 @@ fn lifecycle_hook(names: &[String]) -> Option<&'static str> {
 
 /// A handler reachable over HTTP as `/<name>/…`: not private (`_x`), not the
 /// `request` router, not the start-up hook.
+/// Handlers that are the target of an `emit` somewhere in the program: event
+/// listeners, not endpoints (`POST /moved` forged the event)
+static EVENT_LISTENERS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+
 fn routable(names: &[String], h: &str) -> bool {
+    if EVENT_LISTENERS.get().map_or(false, |e| e.contains(h)) { return false; }
     // `start` and `init` are both start-up names: neither is an endpoint
     // (with both declared, `start` was served and re-ran on every POST)
     let _ = lifecycle_hook(names);
-    !h.starts_with('_') && h != "request" && h != "init" && h != "start"
+    // `ws` answers WebSocket frames on port+1, not HTTP requests
+    !h.starts_with('_') && h != "request" && h != "init" && h != "start" && h != "ws"
 }
 
 /// Handlers that change state: a slot write, a transition, an emit, a call
@@ -1859,7 +1912,7 @@ fn mutating_handlers(cell: &ast::CellDef) -> std::collections::HashSet<String> {
         let mut callees = Vec::new();
         crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
             Expr::FnCall { name, .. } => {
-                if matches!(name.as_str(), "transition" | "remember" | "delegate") { writes = true; }
+                if matches!(name.as_str(), "transition" | "remember" | "delegate" | "publish" | "write_file") { writes = true; }
                 callees.push(name.clone());
             }
             Expr::MethodCall { target, method, .. } => {

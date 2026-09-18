@@ -192,8 +192,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         }
                         None => Value::Int(SomaInt::from_i64(-1)),
                     }))
+                } else if let Value::List(xs) = &args[0] {
+                    // position of the first element equal to x (-1 if absent)
+                    // — on a list it answered -1 for everything
+                    let pos = xs.iter().position(|v| crate::interpreter::deep_equal(v, &args[1]) || match (v, &args[1]) {
+                        (Value::Int(a), Value::Float(b)) => a.to_f64() == *b,
+                        (Value::Float(a), Value::Int(b)) => *a == b.to_f64(),
+                        _ => false,
+                    });
+                    Some(Ok(Value::Int(SomaInt::from_i64(pos.map_or(-1, |p| p as i64)))))
                 } else {
-                    Some(Ok(Value::Int(SomaInt::from_i64(-1))))
+                    Some(Err(RuntimeError::TypeError(format!("index_of(s: String, sub: String) or index_of(xs: List, x) — got {} as the first argument", crate::interpreter::value_type_name(&args[0])))))
                 }
             } else {
                 Some(Err(RuntimeError::TypeError("index_of(string, substring)".to_string())))

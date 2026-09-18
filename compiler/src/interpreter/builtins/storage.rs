@@ -116,13 +116,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             }
             let stream = format!("{}", args[0]);
             let data = args[1].clone();
-            if let Some(ref bus) = interp.event_bus {
-                let event = crate::interpreter::BusEvent { stream, data };
-                if let Ok(senders) = bus.lock() {
-                    for sender in senders.iter() {
-                        let _ = sender.send(event.clone());
-                    }
-                }
+            if interp.event_bus.is_some() {
+                // held until the handler commits
+                interp.send_bus(crate::interpreter::BusEvent { stream, data });
             }
             return Some(Ok(Value::Unit));
         }

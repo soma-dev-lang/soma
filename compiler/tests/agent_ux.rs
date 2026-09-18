@@ -1535,3 +1535,30 @@ cell N {
     let (out, _) = soma_in(&d, &["run", "n.cell", "u", "3"]);
     assert!(out.contains("8"), "{out}");
 }
+
+/// Cycle 15: deletes keep size proofs; loop_bound is enforced; literal
+/// list loops are bounded; index_of on lists.
+#[test]
+fn cycle15_findings() {
+    let d = dir("cycle15");
+    std::fs::write(d.join("q.cell"), r#"
+cell Q {
+  memory { queue: List<String> [persistent]  invariant queue.size <= 64 }
+  on add(p: String) { require len(queue) < 64 else full  queue.push(p) }
+  on pop() { require len(queue) > 0 else empty  queue.delete(0) }
+  on grid() { let t = 0  for l in [[0, 1, 2], [3, 4, 5]] { t = t + len(l) }  return t }
+  on pos() { return index_of(["a", "bob", "c"], "bob") }
+  on lb() { let n = 0  for [loop_bound(1)] x in ["a", "b", "c"] { n = n + 1 }  return n }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "q.cell"]);
+    assert_eq!(code, 1, "{out}"); // lb's bound is too small: a ⚠
+    assert!(out.contains("writer 'pop' only deletes"), "{out}");
+    assert!(!out.contains("handler `grid`"), "{out}");
+    assert!(out.contains("loop_bound(1)]` over a literal list of 3 items"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "q.cell", "pos"]);
+    assert!(out.trim().ends_with('1'), "{out}");
+    let (out, code) = soma_in(&d, &["run", "q.cell", "lb"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("loop_bound"), "{out}");
+}

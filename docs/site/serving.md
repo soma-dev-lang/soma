@@ -90,6 +90,25 @@ body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
 `_values` is refused (400): a client cannot forge a record or a sum-type
 variant.
 
+## Realtime: WebSocket, SSE, events
+
+- `on ws(msg: String)` receives each text frame on port+1
+  (`ws://127.0.0.1:<port+1>`). Its return value is sent back to that client:
+  a String as-is, a Map/List as JSON, `()` sends nothing. A raise answers
+  `{"error": …, "kind": …}` like HTTP. The handler is atomic and rolled back
+  like any other; `ws` is not an HTTP endpoint. A browser connection is
+  accepted only from this machine's Origin (localhost / 127.0.0.1 / the Host).
+- `publish("stream", data)` and every `emit ev(data)` are pushed to every
+  WebSocket client as `{"event": "stream", "data": …}` and to SSE clients
+  subscribed to that name — AT COMMIT: a handler that raises (or a `try`
+  that rolls back) pushes nothing. There is no per-client routing: filter by
+  the event data on the client.
+- SSE: a `request` route returns `sse("stream1", "ev")`; the first event is
+  `connected`. There is no replay — after a reconnect, re-fetch state.
+- A handler that some `emit` targets is an event listener, not an HTTP
+  endpoint (a client could forge the event); `publish` counts as a state
+  change (GET → 405).
+
 ## Concurrency and atomicity
 
 Each request runs on its own thread, and **top-level handler invocations are

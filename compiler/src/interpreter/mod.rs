@@ -24,6 +24,10 @@ pub(crate) enum UndoOp {
     Unappend { backend: Arc<dyn StorageBackend> },
     /// `rows[i] = v` / `rows.delete(i)` on a List slot: put the old log back
     RestoreList { backend: Arc<dyn StorageBackend>, prev: Vec<crate::runtime::storage::StoredValue> },
+    /// a `publish` / `emit` push to SSE and WebSocket clients: held until the
+    /// handler commits (a rolled-back handler told clients about a move
+    /// that never happened); undoing it is dropping it
+    Push(BusEvent),
 }
 
 /// One handler at a time. `soma serve` runs each request on its own thread
@@ -1492,7 +1496,20 @@ impl Interpreter {
                 }
             }
 
-            Statement::For { var, iter, body, bound: _ } => {
+            Statement::For { var, iter, body, bound } => {
+                let bound = *bound;
+                // `[loop_bound(N)]` is part of a cost / termination proof:
+                // more iterations than declared is an error, not a silent
+                // overrun (a "proven" 100-token bound spent 300)
+                let over = |n: usize| -> Result<(), ExecError> {
+                    match bound {
+                        Some(b) if n as u64 > b => Err(ExecError::Runtime(RuntimeError::Domain {
+                            kind: "loop_bound".to_string(),
+                            message: format!("for [loop_bound({})] would run {} times — the declared bound is part of the cost/termination proof: raise it or bound the data", b, n),
+                        })),
+                        _ => Ok(()),
+                    }
+                };
                 // The loop variable shadows any outer binding of the same name;
                 // restore it (rather than just removing) when the loop ends.
                 let shadowed = env.get(var).cloned();
@@ -1511,6 +1528,7 @@ impl Interpreter {
                         let start_val = self.eval_expr(&fn_args[0].node, env, cell_name, signal_name)?;
                         let end_val = self.eval_expr(&fn_args[1].node, env, cell_name, signal_name)?;
                         if let (Some(start), Some(end)) = (start_val.as_int().ok(), end_val.as_int().ok()) {
+                            over(if end > start { (end - start) as usize } else { 0 })?;
                             let mut last = Value::Unit;
                             let mut i = start;
                             let needs_scope = body_has_let(body);
@@ -1560,6 +1578,7 @@ impl Interpreter {
                     }
                     other => vec![other],
                 };
+                over(items.len())?;
 
                 let mut last = Value::Unit;
                 for item in items {
@@ -1575,6 +1594,30 @@ impl Interpreter {
                 Ok(last)
             }
 
+            Statement::While { condition, body, bound: Some(b) } => {
+                // a declared bound is checked: iteration N+1 raises
+                let b = *b;
+                let mut n: u64 = 0;
+                let mut last = Value::Unit;
+                loop {
+                    let c = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
+                    if !c.as_bool().map_err(ExecError::Runtime)? { break; }
+                    if n == b {
+                        return Err(ExecError::Runtime(RuntimeError::Domain {
+                            kind: "loop_bound".to_string(),
+                            message: format!("while [loop_bound({})] is still true after {} iterations — the declared bound is part of the cost/termination proof", b, b),
+                        }));
+                    }
+                    n += 1;
+                    match self.exec_body_scoped(body, env, cell_name, signal_name) {
+                        Ok(v) => last = v,
+                        Err(ExecError::Break) => break,
+                        Err(ExecError::Continue) => continue,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(last)
+            }
             Statement::While { condition, body, .. } => {
                 // Ultra-fast path: while i < N { ... i += K ... }
                 // Detect: condition is i < literal, body is all Assign with += on ints
@@ -1848,19 +1891,9 @@ impl Interpreter {
                 self.emitted_signals.push((sig.clone(), arg_vals.clone()));
                 // Prepare data for broadcast
                 let broadcast_data = if arg_vals.len() == 1 { arg_vals[0].clone() } else { Value::List(arg_vals) };
-                // Broadcast to event bus (SSE clients)
-                if let Some(ref bus) = self.event_bus {
-                    let event = BusEvent {
-                        stream: sig.clone(),
-                        data: broadcast_data.clone(),
-                    };
-                    if let Ok(senders) = bus.lock() {
-                        if !senders.is_empty() {
-                        }
-                        for sender in senders.iter() {
-                            let _ = sender.send(event.clone());
-                        }
-                    }
+                // Broadcast to event bus (SSE / WebSocket clients) — at commit
+                if self.event_bus.is_some() {
+                    self.send_bus(BusEvent { stream: sig.clone(), data: broadcast_data.clone() });
                 }
                 // Send to peer bus (inter-process)
                 if let Some(ref peers) = self.peer_bus {
@@ -3945,6 +3978,24 @@ impl Interpreter {
     }
 
     /// Undo journaled effects back to `mark` (newest first).
+    /// A push to SSE / WebSocket clients: sent at commit (now, outside one)
+    pub(crate) fn send_bus(&mut self, event: BusEvent) {
+        match self.journal.as_mut() {
+            Some(j) => j.push(UndoOp::Push(event)),
+            None => self.send_bus_now(event),
+        }
+    }
+
+    fn send_bus_now(&self, event: BusEvent) {
+        if let Some(ref bus) = self.event_bus {
+            if let Ok(senders) = bus.lock() {
+                for sender in senders.iter() {
+                    let _ = sender.send(event.clone());
+                }
+            }
+        }
+    }
+
     pub(crate) fn rollback_to(&mut self, mark: usize) {
         let Some(journal) = self.journal.as_mut() else { return };
         while journal.len() > mark {
@@ -3957,6 +4008,7 @@ impl Interpreter {
                 },
                 Some(UndoOp::Unappend { backend }) => backend.unappend(),
                 Some(UndoOp::RestoreList { backend, prev }) => backend.replace_list(prev),
+                Some(UndoOp::Push(_)) => {}
                 None => break,
             }
         }
@@ -3988,12 +4040,17 @@ impl Interpreter {
         }
         // how many writes / transitions the invocation committed (a
         // scheduler tick logs it — ticks were invisible in the serve log)
-        self.last_commit_writes = if result.is_ok() { self.journal.as_ref().map_or(0, |j| j.len()) } else { 0 };
+        self.last_commit_writes = if result.is_ok() { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_))).count()) } else { 0 };
+        let pushes: Vec<BusEvent> = if result.is_ok() {
+            self.journal.take().unwrap_or_default().into_iter().filter_map(|u| match u { UndoOp::Push(e) => Some(e), _ => None }).collect()
+        } else { Vec::new() };
         self.journal = None;
         if let Some(c) = txn {
             let c = c.lock().unwrap_or_else(|e| e.into_inner());
             let _ = c.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" });
         }
+        // committed: now the clients may hear about it
+        for e in pushes { self.send_bus_now(e); }
         result
     }
 

@@ -102,7 +102,7 @@ g.board[0] = 7              xs[i][j] = v      // nested lvalues
 let y = m["nope"] ?? 0                        // null-coalescing; () is null
 for i in range(0, 10) { }   range(9, -1, -1)  // stepped/descending ranges
 sum(xs) avg(xs) min(xs) max(xs) product(xs)   // reductions over lists
-contains(xs, x)  slice(xs, 1, -1)  keys(m) values(m) entries(m)   // membership, slices, map views
+contains(xs, x)  index_of(xs, x)  slice(xs, 1, -1)  keys(m) values(m) entries(m)   // membership, slices, map views
 sort_by(rows, "field")   sort_by(rows, r => [0 - r.total, r.name])   // stable; list key = several keys
 xs = push(xs, x)            concat(a, b)      // push/concat RETURN a new list; `+` on numeric
                                               // lists adds element-wise — it does not concatenate
@@ -376,7 +376,10 @@ record or a variant). Only a map built by `response()` / `html()` / `redirect()`
 is an HTTP response: a returned map with `_status` keys from client data is
 plain JSON. Response header values with CR/LF are dropped. A handler that
 calls `from_json` on client text builds whatever declared variant it names —
-validate it. `NaN`/`inf` in a path
+validate it. Realtime: `on ws(msg: String)` (port+1, same-origin browsers
+only), `publish(stream, data)`, `sse(...)` routes — pushes (publish and emit)
+leave AT COMMIT, never from a rolled-back handler; an `emit` target is not an
+HTTP endpoint (`soma docs serving`, Realtime). `NaN`/`inf` in a path
 or query stay Strings. `soma check` warns when a
 handler and a route share a name unless the route delegates to that handler. `body: String` is the raw text
 (`from_json(body)`); `body: Map` is the parsed JSON (a non-JSON body is a 400
@@ -505,7 +508,8 @@ cell agent Researcher {
     integer quotient (truncates toward zero, BigInt-exact).
 12. One memory invariant names one slot; `size` invariants also guard
     `delete`. A cost bound is *proven* only when every `think()` runs a
-    known number of times (literal `range`, or an annotated loop: `for [loop_bound(50)] x in xs { … }`, `while [loop_bound(50)] cond { … }`); a declared
+    known number of times (literal `range`, or an annotated loop: `for [loop_bound(50)] x in xs { … }`, `while [loop_bound(50)] cond { … }` — checked: more iterations raise kind
+    `loop_bound`); a declared
     bound that cannot be proven is a check ERROR.
 
 ## Packages
