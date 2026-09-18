@@ -1269,3 +1269,53 @@ cell test T { rules {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("no base case bounds it from below"), "{out}");
 }
+
+/// Cycle 11: a local named like a slot read and wrote the SLOT through
+/// `x[i]`; size proofs credited growth through siblings / emits / lambdas /
+/// re-bound keys; `request(…, headers: Map)` with 4 parameters got the
+/// query; List-slot `rows[i]` answered () out of range; emit skipped the
+/// emitting cell.
+#[test]
+fn cycle11_findings() {
+    let d = dir("cycle11");
+    std::fs::write(d.join("app.cell"), r#"
+cell C {
+  face { signal seed() -> List  signal w() -> List  signal idx() -> List  signal h(x: Int) -> Int  signal hit() -> Int }
+  memory { rows: List<Int> [persistent]  n: Map<String, Int> [persistent] }
+  on seed() { rows.push(10)  rows.push(20)  return rows }
+  on w() { let rows = [1, 2]  rows[0] = 99  return rows }
+  on idx() { let r = try { rows[5] }  return [rows[-1], r.kind] }
+  on h(x: Int) { emit grew(x)  return n.get("g") ?? 0 }
+  on grew(x: Int) { n.set("g", (n.get("g") ?? 0) + x) }
+  on hit() { return 1 }
+}
+cell test T { rules {
+  assert seed() == [10, 20]
+  assert w() == [99, 2]
+  assert rows.len == 2
+  assert idx() == [20, "index"]
+  assert h(5) == 5
+} }
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("5 passed, 0 failed"), "{out}");
+    let (out, _) = soma_in(&d, &["check", "app.cell"]);
+    assert!(out.contains("hides the memory slot `rows`"), "{out}");
+
+    // size proofs: a sibling that also pushes, a push in a lambda
+    std::fs::write(d.join("sz.cell"), r#"
+cell S {
+  face { signal h(x: Int) -> Int  signal l(x: Int) -> Int  signal ok(x: Int) -> Int }
+  memory { rows: List<Int> [persistent]  invariant rows.size <= 3 }
+  on h(x: Int) { require len(rows) < 3 else Full  _add(x)  rows.push(x)  return len(rows) }
+  on _add(x: Int) { require len(rows) < 3 else Full  rows.push(x) }
+  on l(x: Int) { require len(rows) < 3 else Full  let r = [1, 2] |> map(i => rows.push(i))  return len(rows) }
+  on ok(x: Int) { require len(rows) < 3 else Full  rows.push(x)  return len(rows) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "sz.cell"]);
+    assert!(out.contains("writer 'ok' proven"), "{out}");
+    assert!(!out.contains("writer 'h' proven"), "{out}");
+    assert!(!out.contains("writer 'l' proven"), "{out}");
+}

@@ -249,14 +249,20 @@ source, `file:line`, left/right, and the fields a value really has when
   fields keep their insertion order.
 - A bare call to a name two cells define (`pack(id)` with `Orders.pack` and
   `Warehouse.pack`) is a check error: qualify it (`Warehouse.pack(id)`).
+- `xs[i]` is the same everywhere (local list, List slot, string): negative
+  from the end, kind `index` out of range, kind `type` for a non-Int;
+  `nth(xs, i)` and `rows.get(i)` answer `()` out of range instead. A `let`
+  named like a memory slot hides the slot (check warns).
 - `emit ev(data)` inside one process is a synchronous, atomic fan-out to
-  every cell with `on ev(data)`: a listener that raises fails the emitter,
+  every cell with `on ev(data)`, the emitting cell included: a listener that raises fails the emitter,
   and the emitter's rollback takes the listeners' writes with it. Only across
   processes (the `[peers]` bus) is an emitted event an effect that is not
   rolled back. `soma check` warns when nobody handles the event.
-- `invariant len(rows) <= 500` is proven when the handler's ONE write that
+- `invariant rows.size <= 500` (or `size <= 500`; NOT `len(rows)`, which
+  in an invariant measures the value being written) is proven when the handler's ONE write that
   can add an entry (a `push`, or a `set` of a key not known to exist) comes
-  after `require len(rows) < 500` and is not in a loop; a `set` after
+  after `require len(rows) < 500`, is not in a loop or a lambda, and no
+  handler it calls (or event it emits) adds to the slot too; a `set` after
   `require rows.get(k) != ()` (or in the `else` of `if rows.get(k) == ()`)
   cannot grow the slot.
 - A `require` counts for the writes of its own block and the blocks nested
@@ -268,8 +274,11 @@ source, `file:line`, left/right, and the fields a value really has when
   `headers: Map` parameter (lower-case names).
 - HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
   "headers", map(...)))` never raise; non-2xx is `{error, kind, status, body}`
-  (kind `http_status` | `timeout` | `refused` | `network`); default timeout
-  30 s; `mock http_post …` in tests.
+  (kind `http_status` — a redirect that was not followed too — | `timeout` —
+  also a body that stalls — | `too_large` over `max_bytes` | `refused` |
+  `network`); default timeout 30 s; invalid option values are refused;
+  a String body is sent as text/plain unless it is JSON; `mock http_post …`
+  in tests.
 - `verify --strict` bounds a write only from numbers it can bound: a number
   read out of a record in a `Map<String, Map>` slot has no interval — keep
   the guarded number in its own `Map<String, Int>` slot with an invariant
@@ -645,9 +654,11 @@ it by calling their handlers by name.
 ## Requests and responses
 
 `request` receives `(method, path, body)` — plus `query: Map` and
-`headers: Map` when it declares them: `on request(method: String, path:
-String, body: Map, query: Map, headers: Map)`. Header names are lower-case
-(`headers.authorization`). A trailing `Map` parameter may be left out by a
+`headers: Map` when it declares them, bound BY NAME (a 4th parameter called
+`headers` gets the headers, anything else the query): `on request(method:
+String, path: String, body: Map, query: Map, headers: Map)`. Header names
+are lower-case (`headers.authorization`); a repeated header is one entry,
+its values joined with ", ". A trailing `Map` parameter may be left out by a
 caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
 The declared type of `body` decides its shape, identically under
 `soma serve`, `soma test` and `soma run`:
@@ -744,7 +755,7 @@ program has no such route).
 | Disk full while writing | Expected (not exercised): the SQLite write fails, the request is rolled back and answered 500 |
 | A slow upstream (`http_post` to a service that hangs) | The handler holds the process-wide lock for the whole call: every other request waits. Every http builtin has a timeout (default 30 s; pass `map("timeout", ms)`) — keep it short; the upstream is not cancelled |
 | A slow handler (a quadratic loop, a huge `to_json`, a loop of 100 000 `slot.set`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. A persistent slot write costs about 1 ms (each is an SQLite statement): a 100 000-key rebuild in one handler holds the process for ~2 minutes. Keep handlers short; batch bulk loads outside the request path; put a proxy timeout in front |
-| The program changed and `.soma_data/` is older | A renamed slot is a new empty slot (the old rows stay in the file); a slot whose value TYPE changed gives back the old values with their old type; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares takes no transition, `*` edges included. `soma serve` and `soma run` audit the database at start-up and print one `warning: stored data: …` line per problem: instances in undeclared states, values an invariant refuses, values of another type than declared, slot data no slot declares any more (renamed/removed). Migrate (below) or delete `.soma_data/` |
+| The program changed and `.soma_data/` is older | A renamed slot is a new empty slot (the old rows stay in the file); a slot whose value TYPE changed gives back the old values with their old type; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares takes no transition, `*` edges included. `soma serve` and `soma run` audit the database at start-up and print one `warning: stored data: …` line per problem: instances in undeclared states, values an invariant refuses (List slots and `size` clauses included), values of another type than declared, a slot re-declared List ↔ Map. `soma serve` (which owns its data directory) also reports slot data no slot declares any more and tables of cells the program no longer declares (renamed/removed) — `soma run` does not, since several programs often share one directory. Migrate (below) or delete `.soma_data/` |
 
 ## Addresses and ports
 

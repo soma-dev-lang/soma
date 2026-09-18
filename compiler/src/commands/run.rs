@@ -381,6 +381,12 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
     let Some(params) = params else { return args };
     args.into_iter().enumerate().map(|(i, arg)| {
         let Some(param) = params.get(i) else { return arg };
+        // `request`'s headers map: lower-case names, as `soma serve` gives them
+        if signal_name == "request" && param.name == "headers" {
+            if let interpreter::Value::Map(m) = &arg {
+                return interpreter::Value::Map(m.iter().map(|(k, v)| (k.to_ascii_lowercase(), v.clone())).collect());
+            }
+        }
         let ty: String = match param.ty.node {
             ast::TypeExpr::Simple(ref ty) => ty.clone(),
             ast::TypeExpr::Generic { ref name, .. } => name.clone(),

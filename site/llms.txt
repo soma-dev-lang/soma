@@ -249,8 +249,12 @@ source, `file:line`, left/right, and the fields a value really has when
   fields keep their insertion order.
 - A bare call to a name two cells define (`pack(id)` with `Orders.pack` and
   `Warehouse.pack`) is a check error: qualify it (`Warehouse.pack(id)`).
+- `xs[i]` is the same everywhere (local list, List slot, string): negative
+  from the end, kind `index` out of range, kind `type` for a non-Int;
+  `nth(xs, i)` and `rows.get(i)` answer `()` out of range instead. A `let`
+  named like a memory slot hides the slot (check warns).
 - `emit ev(data)` inside one process is a synchronous, atomic fan-out to
-  every cell with `on ev(data)`: a listener that raises fails the emitter,
+  every cell with `on ev(data)`, the emitting cell included: a listener that raises fails the emitter,
   and the emitter's rollback takes the listeners' writes with it. Only across
   processes (the `[peers]` bus) is an emitted event an effect that is not
   rolled back. `soma check` warns when nobody handles the event.
@@ -270,8 +274,11 @@ source, `file:line`, left/right, and the fields a value really has when
   `headers: Map` parameter (lower-case names).
 - HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
   "headers", map(...)))` never raise; non-2xx is `{error, kind, status, body}`
-  (kind `http_status` | `timeout` | `refused` | `network`); default timeout
-  30 s; `mock http_post …` in tests.
+  (kind `http_status` — a redirect that was not followed too — | `timeout` —
+  also a body that stalls — | `too_large` over `max_bytes` | `refused` |
+  `network`); default timeout 30 s; invalid option values are refused;
+  a String body is sent as text/plain unless it is JSON; `mock http_post …`
+  in tests.
 - `verify --strict` bounds a write only from numbers it can bound: a number
   read out of a record in a `Map<String, Map>` slot has no interval — keep
   the guarded number in its own `Map<String, Int>` slot with an invariant

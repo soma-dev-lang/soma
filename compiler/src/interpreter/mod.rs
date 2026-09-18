@@ -905,29 +905,77 @@ impl Interpreter {
             }
         }
         // tables no slot reads any more (a renamed slot is a NEW empty slot;
-        // the old rows stay in the file, invisible)
+        // the old rows stay in the file, invisible), tables of cells the
+        // program no longer declares, and slots whose KIND changed
+        // (List ↔ Map: the rows sit in the other table and read as empty)
         if let Some(conn) = crate::runtime::storage::shared_connection() {
-            let expected: std::collections::HashSet<String> = self.storage.keys()
+            let mut expected: std::collections::HashSet<String> = self.storage.keys()
                 .filter_map(|k| k.split_once('.').map(|(c, s)| format!("{}_{}", c, s)))
                 .collect();
-            let cells: Vec<String> = self.cells.keys().cloned().collect();
+            for (cell, sm) in self.state_machines.keys() { expected.insert(format!("{}__sm_{}", cell, sm)); }
+            let mut cells: Vec<String> = self.cells.keys().cloned().collect();
+            cells.sort_by_key(|c| std::cmp::Reverse(c.len()));   // OrderLine before Order
+            let slot_keys: Vec<String> = { let mut v: Vec<String> = self.storage.keys().filter(|k| k.contains('.') && !k.starts_with("__")).cloned().collect(); v.sort(); v };
+            let kinds: Vec<(String, String, Option<&'static str>)> = slot_keys.iter()
+                .map(|k| { let (c, sl) = k.split_once('.').unwrap(); (c.to_string(), sl.to_string(), self.slot_kind(c, sl)) }).collect();
             let c = conn.lock().unwrap_or_else(|e| e.into_inner());
+            let count = |t: &str| -> i64 { c.query_row(&format!("SELECT COUNT(*) FROM \"{}\"", t), [], |r| r.get(0)).unwrap_or(0) };
             let tables: Vec<String> = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
                 .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(|r| r.ok()).collect()))
                 .unwrap_or_default();
+            let table_set: std::collections::HashSet<&String> = tables.iter().collect();
             let mut orphans: Vec<String> = Vec::new();
-            for t in tables {
-                if t.ends_with("_log") || t.contains("__sm_") || t.starts_with("sqlite_") || expected.contains(&t) { continue; }
-                let Some(cell) = cells.iter().find(|c| t.starts_with(&format!("{}_", c))) else { continue };
-                let rows: i64 = c.query_row(&format!("SELECT (SELECT COUNT(*) FROM \"{0}\") + (SELECT COUNT(*) FROM \"{0}_log\")", t), [], |r| r.get(0))
-                    .or_else(|_| c.query_row(&format!("SELECT COUNT(*) FROM \"{}\"", t), [], |r| r.get(0)))
-                    .unwrap_or(0);
-                if rows > 0 {
-                    orphans.push(format!("'{}' ({} row(s))", &t[cell.len() + 1..], rows));
+            let mut gone_cells: Vec<String> = Vec::new();
+            for t in &tables {
+                if t.ends_with("_log") || t.starts_with("sqlite_") || expected.contains(t) { continue; }
+                let log = format!("{}_log", t);
+                let rows = count(t) + if table_set.contains(&log) { count(&log) } else { 0 };
+                if rows == 0 { continue; }
+                match cells.iter().find(|cn| t.starts_with(&format!("{}_", cn))) {
+                    Some(cell) if !t.contains("__sm_") => orphans.push(format!("{}.{} ({} row(s))", cell, &t[cell.len() + 1..], rows)),
+                    Some(_) => {}
+                    None => gone_cells.push(format!("'{}' ({} row(s))", t, rows)),
                 }
             }
-            if !orphans.is_empty() {
+            if !orphans.is_empty() && IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {
                 out.push(format!("slot data no slot declares any more: {} — a renamed or removed slot; its rows are still in .soma_data/soma.db (rename the slot back to read them, or copy them over in a one-shot handler)", orphans.join(", ")));
+            }
+            // only a SERVICE owns its data directory: under `soma run`
+            // several programs often share one (examples/), and their
+            // tables are not "gone"
+            if !gone_cells.is_empty() && IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {
+                out.push(format!("data of cells this program no longer declares: tables {} — a renamed or removed cell (its slots and state-machine instances are still in .soma_data/soma.db)", gone_cells.join(", ")));
+            }
+            for (cell, slot, kind) in kinds {
+                let t = format!("{}_{}", cell, slot);
+                let log = format!("{}_log", t);
+                let (kv, lg) = (if table_set.contains(&t) { count(&t) } else { 0 }, if table_set.contains(&log) { count(&log) } else { 0 });
+                match kind {
+                    Some("List") if kv > 0 && lg == 0 => out.push(format!("slot '{}' is declared a List but holds {} keyed entries written when it was a Map — they read back as a list of values; migrate them", slot, kv)),
+                    Some("Map") if lg > 0 && kv == 0 => out.push(format!("slot '{}' is declared a Map but holds {} list entries written when it was a List — it reads as empty; migrate them", slot, lg)),
+                    _ => {}
+                }
+            }
+        }
+        // a `size` invariant over a List slot (the keyed pass above sees no keys)
+        let list_invs: Vec<String> = self.invariants.keys().filter(|k| k.contains('.')).cloned().collect();
+        for key in list_invs {
+            let (cell_name, slot_name) = key.split_once('.').map(|(c, s)| (c.to_string(), s.to_string())).unwrap();
+            if self.slot_kind(&cell_name, &slot_name) != Some("List") { continue; }
+            let Some(backend) = self.storage.get(&key).cloned() else { continue };
+            let items: Vec<StoredValue> = backend.list().into_iter().take(10_000).collect();
+            let size = items.len() as i64;
+            let mut bad = 0usize;
+            let mut sample = String::new();
+            for (i, v) in items.into_iter().enumerate() {
+                let val = auto_deserialize(stored_to_value(v));
+                if self.check_invariants(&cell_name, &slot_name, "", &val, size, "read").is_err() {
+                    bad += 1;
+                    if sample.is_empty() { sample = format!("#{} = {}", i, short_value(&val)); }
+                }
+            }
+            if bad > 0 {
+                out.push(format!("{} stored entr(ies) of List slot '{}' violate its invariant today (e.g. {}, size {}): fix the data or the invariant", bad, slot_name, sample, size));
             }
         }
         out
@@ -1142,13 +1190,14 @@ impl Interpreter {
         // Check arity
         if args.len() != params.len() {
             self.current_depth -= 1;
-            return Err(RuntimeError::TypeError(format!(
-                "{}() expected {} argument{}, got {}",
-                signal_name,
-                params.len(),
-                if params.len() == 1 { "" } else { "s" },
-                args.len()
-            )));
+            let ok = crate::ast::accepted_arities(params);
+            let expected = if ok.len() > 1 {
+                let mut v = ok.clone(); v.sort();
+                format!("{} to {} arguments (trailing Map parameters are optional)", v[0], v[v.len() - 1])
+            } else {
+                format!("{} argument{}", params.len(), if params.len() == 1 { "" } else { "s" })
+            };
+            return Err(RuntimeError::TypeError(format!("{}() expected {}, got {}", signal_name, expected, args.len())));
         }
 
         // Bind parameters, checking the declared type at the boundary: a
@@ -1796,10 +1845,15 @@ impl Interpreter {
                     }
                 }
                 // Dispatch to sibling cells with matching handler (intra-process)
-                let matching_cells: Vec<String> = self.handler_cache.keys()
-                    .filter(|(c, s)| s == sig && c != cell_name)
+                // every cell with `on sig(…)`, the emitting cell included
+                // (it used to be skipped) — except the handler that is
+                // itself running `on sig` (an echo would recurse forever);
+                // in declaration order, so the fan-out is deterministic
+                let mut matching_cells: Vec<String> = self.handler_cache.keys()
+                    .filter(|(c, s)| s == sig && !(c == cell_name && signal_name == sig))
                     .map(|(c, _)| c.clone())
                     .collect();
+                matching_cells.sort_by_key(|c| self.cell_order.iter().position(|o| o == c).unwrap_or(usize::MAX));
                 for target_cell in matching_cells {
                     self.call_signal(&target_cell, sig, dispatch_args.clone())
                         .map_err(ExecError::Runtime)?;
@@ -1937,8 +1991,9 @@ impl Interpreter {
                         if name == "nth" && args.len() == 2 && matches!(env.get(local), Some(Value::List(_))) {
                             let idx = self.eval_expr(&args[1].node, env, cell_name, signal_name)?;
                             if let (Some(Value::List(xs)), Value::Int(i)) = (env.get(local), &idx) {
-                                // same answer as the builtin: out of range (or negative) is ()
-                                let k = i.to_i64().unwrap_or(-1);
+                                // like the builtin: negative from the end, () out of range
+                                let raw = i.to_i64().unwrap_or(i64::MAX);
+                                let k = if raw < 0 { raw + xs.len() as i64 } else { raw };
                                 return Ok(if k >= 0 && (k as usize) < xs.len() { xs[k as usize].clone() } else { Value::Unit });
                             }
                         }
@@ -2457,6 +2512,15 @@ impl Interpreter {
                         || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name)))
                     {
                         let key = self.eval_expr(&index.node, env, cell_name, signal_name)?;
+                        // `rows[i]` on a List slot raises like `xs[i]` on a list
+                        // (it answered () out of range, and for `rows["1"]`)
+                        if self.slot_kind(cell_name, slot_name) == Some("List") {
+                            let backend = self.storage.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| self.storage.get(slot_name.as_str())).cloned();
+                            if let Some(b) = backend {
+                                let i = list_position(&key, b.list_len(), "list").map_err(ExecError::Runtime)?;
+                                return Ok(b.list_get(i).map(|v| auto_deserialize(stored_to_value(v))).unwrap_or(Value::Unit));
+                            }
+                        }
                         return self.call_storage_method(cell_name, slot_name, "get", &[key]);
                     }
                 }
@@ -2467,14 +2531,8 @@ impl Interpreter {
                 if let Expr::Ident(ref name) = target.node {
                     match env.get(name) {
                         Some(Value::List(items)) => {
-                            let raw = idx_val.as_int().map_err(ExecError::Runtime)?;
-                            let i = if raw < 0 { raw + items.len() as i64 } else { raw };
-                            if i < 0 || i as usize >= items.len() {
-                                return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                                    "list index {} out of bounds (length {})", raw, items.len()
-                                ))));
-                            }
-                            return Ok(items[i as usize].clone());
+                            let i = list_position(&idx_val, items.len(), "list").map_err(ExecError::Runtime)?;
+                            return Ok(items[i].clone());
                         }
                         Some(Value::Map(entries)) => {
                             let key = format!("{}", idx_val);
@@ -2486,29 +2544,17 @@ impl Interpreter {
                 let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
                 match target_val {
                     Value::List(ref items) => {
-                        let raw = idx_val.as_int().map_err(ExecError::Runtime)?;
-                        // xs[-1] is the last element, like slice(xs, -1)
-                        let i = if raw < 0 { raw + items.len() as i64 } else { raw };
-                        if i < 0 || i as usize >= items.len() {
-                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                                "list index {} out of bounds (length {})", raw, items.len()
-                            ))));
-                        }
-                        Ok(items[i as usize].clone())
+                        let i = list_position(&idx_val, items.len(), "list").map_err(ExecError::Runtime)?;
+                        Ok(items[i].clone())
                     }
                     Value::Map(ref entries) => {
                         let key = format!("{}", idx_val);
                         Ok(entries.get(&key).cloned().unwrap_or(Value::Unit))
                     }
                     Value::String(ref s) => {
-                        let i = idx_val.as_int().map_err(ExecError::Runtime)?;
                         let chars: Vec<char> = s.chars().collect();
-                        if i < 0 || i as usize >= chars.len() {
-                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                                "string index {} out of bounds (length {})", i, chars.len()
-                            ))));
-                        }
-                        Ok(Value::String(chars[i as usize].to_string()))
+                        let i = list_position(&idx_val, chars.len(), "string").map_err(ExecError::Runtime)?;
+                        Ok(Value::String(chars[i].to_string()))
                     }
                     other => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
                         "cannot index {} with [{}]", value_type_name(&other), idx_val
@@ -5327,4 +5373,21 @@ fn free_names_constraint(c: &Constraint, out: &mut HashSet<String>) {
 pub(crate) fn short_value(v: &Value) -> String {
     let t = match v { Value::String(s) => format!("{:?}", s), other => format!("{}", other) };
     if t.chars().count() > 40 { format!("{}…", t.chars().take(40).collect::<String>()) } else { t }
+}
+
+/// `xs[i]` on a list or a string: an Int, negative from the end (`xs[-1]`
+/// is the last), else kind `index` (out of range, a BigInt) or `type` (not
+/// an Int) — the same answer for a local, a List slot and a string.
+pub(crate) fn list_position(idx: &Value, len: usize, what: &str) -> Result<usize, RuntimeError> {
+    let Value::Int(si) = idx else {
+        return Err(RuntimeError::TypeError(format!("{} index must be an Int, got {} {}", what, value_type_name(idx), short_value(idx))));
+    };
+    let Some(raw) = si.to_i64() else {
+        return Err(RuntimeError::TypeError(format!("{} index {} out of bounds (length {})", what, si, len)));
+    };
+    let i = if raw < 0 { raw + len as i64 } else { raw };
+    if i < 0 || i as usize >= len {
+        return Err(RuntimeError::TypeError(format!("{} index {} out of bounds (length {})", what, raw, len)));
+    }
+    Ok(i as usize)
 }

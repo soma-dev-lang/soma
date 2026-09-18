@@ -311,3 +311,20 @@ Scores: all 25 fixes held on their reported path; six defects in neighbouring va
 ### Open
 - [ ] Passing a large list to a handler copies it (value semantics; documented). Structural sharing would remove it.
 - [ ] Invariants over two slots / record fields (`used <= limit`): model as one slot (headroom) — documented.
+
+## Cycle 11 (2026-09-18) — the public install path, and an attack on the newest features
+
+Scores: public path on Apple silicon 9/10 (4 s install, checksum matches, versions and docs agree, service green on the first write), 7/10 overall because Linux agents fall back to a source build. Attack: one data-corruption bug and four false size proofs.
+
+### Fixed
+- [x] **Data corruption**: `x[i]` on a local, parameter, loop or lambda variable named like a memory slot read AND wrote the slot (`let rows = [1, 2]  rows[0] = 99` rewrote the persistent `rows`); the local now wins everywhere, `rows.push(x)` on such a local is refused, and check warns when a `let` hides a slot.
+- [x] **Prover**: a size proof no longer credits a write when a called handler or an emitted event also adds to the slot, when the write is inside a lambda, or when the "existing key" was re-bound; `len(slot)` in an invariant is the written value's length, not a size (docs said the opposite — `rows.size <= K` is the form).
+- [x] **Security**: `request` parameters 4 and 5 are bound by name (a 4-parameter `request(…, headers: Map)` received the query — `?authorization=` forged a header); repeated headers are joined; `soma run` lower-cases header names like serve.
+- [x] **HTTP client**: a body that stalls is `timeout`, an unfollowed 3xx is `http_status`, a body over `max_bytes` is `too_large` (all three returned a success), option values are validated, a String body is text/plain.
+- [x] **Audit**: List↔Map re-declaration, `size` invariants over List slots, removed cells (serve only — `soma run` shares directories), the cell named in orphan warnings.
+- [x] One indexing rule for local lists, List slots and strings; `nth` counts negative from the end; `emit` reaches the emitting cell's own listener (deterministic order); `/add/1?step=7` fills a trailing `opts: Map`; the arity message mentions optional Map parameters.
+- [x] Installer: version from the latest release (not `main`), SHA256 verified, no `sudo`, source build at the release tag; `verify`'s verdict on stdout; `lint` knows `for k in slot.keys { slot.get(k) }`; serve logs ticks that commit writes.
+
+### Open
+- [ ] Release binaries for Linux (x86_64, aarch64) and Intel macOS — needs a CI build (GMP); the installer builds from source there.
+- [ ] A non-ASCII header value is dropped by the HTTP library before Soma sees it.

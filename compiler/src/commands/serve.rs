@@ -1007,9 +1007,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let url = request.url().to_string();
         // request headers, names lower-cased (the optional 5th parameter of
         // `request`: `on request(method, path, body, query: Map, headers: Map)`)
-        let req_headers: Vec<(String, interpreter::Value)> = request.headers().iter()
-            .map(|h| (h.field.as_str().as_str().to_ascii_lowercase(), interpreter::Value::String(h.value.as_str().to_string())))
-            .collect();
+        // a repeated header is ONE entry, its values joined with ", " (HTTP
+        // list semantics — the last one used to win silently)
+        let req_headers: Vec<(String, interpreter::Value)> = {
+            let mut acc: indexmap::IndexMap<String, String> = indexmap::IndexMap::new();
+            for h in request.headers() {
+                let k = h.field.as_str().as_str().to_ascii_lowercase();
+                let v = h.value.as_str().to_string();
+                acc.entry(k).and_modify(|e| { e.push_str(", "); e.push_str(&v); }).or_insert(v);
+            }
+            acc.into_iter().map(|(k, v)| (k, interpreter::Value::String(v))).collect()
+        };
 
         let mut body_raw = String::new();
         let _ = request.as_reader().read_to_string(&mut body_raw);
@@ -1183,6 +1191,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     // handler has no room for (?utm_source=…) is ignored
                     // rather than a "expected 1 argument, got 2"
                     let param_names = handler_params.get(sig).cloned().unwrap_or_default();
+                    // a trailing `opts: Map` the path did not fill collects the
+                    // query keys that name no parameter (`/add/1?step=7` →
+                    // opts.step == 7; it used to be fed positionally)
+                    let opts_idx = handler_types.get(sig).and_then(|t| {
+                        let last = t.len().checked_sub(1)?;
+                        (t[last] == "Map" && last >= args.len()).then_some(last)
+                    });
+                    let mut opts_map: Vec<(String, interpreter::Value)> = Vec::new();
                     let mut by_name: Vec<(usize, interpreter::Value)> = Vec::new();
                     let mut positional: Vec<interpreter::Value> = Vec::new();
                     for pair in query_string.split('&') {
@@ -1192,8 +1208,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             match param_names.iter().position(|p| *p == key) {
                                 Some(i) if i >= args.len() => by_name.push((i, coerce_query_value(&decoded))),
                                 Some(_) => {}
+                                None if opts_idx.is_some() => opts_map.push((key, coerce_query_value(&decoded))),
                                 None => positional.push(coerce_query_value(&decoded)),
                             }
+                        }
+                    }
+                    if let Some(oi) = opts_idx {
+                        if !opts_map.is_empty() && !by_name.iter().any(|(i, _)| *i == oi) {
+                            by_name.push((oi, interpreter::map_from_pairs(opts_map)));
                         }
                     }
                     let mut slots: Vec<Option<interpreter::Value>> = vec![None; param_names.len().saturating_sub(args.len())];
@@ -1286,14 +1308,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 // Passing it to a 3-parameter handler made ANY url with a
                 // query string (?utm_source=…, a cache-buster) a 500:
                 // "request() expected 3 arguments, got 4".
-                let wants_query = handler_params.get("request").is_some_and(|p| p.len() >= 4);
-                if wants_query {
-                    req_args.push(interpreter::map_from_pairs(query_map));
-                }
-                // the headers are the optional 5th parameter (an API key in
-                // `Authorization` used to be unreadable)
-                if handler_params.get("request").is_some_and(|p| p.len() >= 5) {
-                    req_args.push(interpreter::map_from_pairs(req_headers.clone()));
+                // parameters 4 and 5 are bound BY NAME: one called `headers`
+                // gets the headers, any other the query (a 4-parameter
+                // `request(…, headers: Map)` used to receive the query — a
+                // `?authorization=` could forge a header)
+                let extra: Vec<String> = handler_params.get("request").map(|p| p.iter().skip(3).take(2).cloned().collect()).unwrap_or_default();
+                for name in &extra {
+                    if name == "headers" {
+                        req_args.push(interpreter::map_from_pairs(req_headers.clone()));
+                    } else {
+                        req_args.push(interpreter::map_from_pairs(query_map.clone()));
+                    }
                 }
                 (
                     "request".to_string(),

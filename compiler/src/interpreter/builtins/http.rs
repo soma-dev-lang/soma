@@ -69,22 +69,35 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
 /// `network`. The default timeout is 30 s (a hung upstream used to hang the
 /// caller forever — and under `soma serve` every other request with it).
 fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexmap::IndexMap<String, Value>>) -> Result<Value, RuntimeError> {
-    let int_opt = |k: &str| opts.and_then(|m| m.get(k)).and_then(|v| match v {
-        Value::Int(n) => n.to_i64().filter(|v| *v > 0).map(|v| v as u64),
-        _ => None,
-    });
     if let Some(m) = opts {
-        for k in m.keys() {
-            if !matches!(k.as_str(), "timeout" | "max_bytes" | "headers") {
-                return Err(RuntimeError::TypeError(format!("http: unknown option '{}' — the options are timeout (ms), max_bytes, headers", k)));
+        for (k, v) in m.iter() {
+            let ok = match (k.as_str(), v) {
+                ("timeout" | "max_bytes", Value::Int(n)) => n.to_i64().is_some_and(|x| x > 0),
+                ("headers", Value::Map(h)) => h.values().all(|x| matches!(x, Value::String(_) | Value::Int(_) | Value::Float(_) | Value::Bool(_))),
+                ("timeout" | "max_bytes" | "headers", _) => false,
+                _ => return Err(RuntimeError::TypeError(format!("http: unknown option '{}' — the options are timeout (ms), max_bytes, headers", k))),
+            };
+            if !ok {
+                return Err(RuntimeError::TypeError(format!(
+                    "http: option '{}' must be {}, got {} {}", k,
+                    if k == "headers" { "a map of header name → text" } else { "a positive Int" },
+                    super::super::value_type_name(v), v)));
             }
         }
     }
+    let int_opt = |k: &str| opts.and_then(|m| m.get(k)).and_then(|v| match v {
+        Value::Int(n) => n.to_i64().map(|v| v as u64),
+        _ => None,
+    });
     let timeout_ms = int_opt("timeout").unwrap_or(30_000);
     let max_bytes = int_opt("max_bytes").map(|v| v as usize);
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(timeout_ms)).build();
     let mut req = agent.request(method, url);
-    if body.is_some() { req = req.set("Content-Type", "application/json"); }
+    if let Some(b) = &body {
+        // a Map/List body was serialized to JSON; a String is sent as is
+        let is_json = serde_json::from_str::<serde_json::Value>(b.trim()).is_ok();
+        req = req.set("Content-Type", if is_json { "application/json" } else { "text/plain; charset=utf-8" });
+    }
     if let Some(Value::Map(h)) = opts.and_then(|m| m.get("headers")) {
         for (k, v) in h {
             let v = match v { Value::String(s) => s.clone(), other => format!("{}", other) };
@@ -92,8 +105,7 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
         }
     }
     let result = match &body { Some(b) => req.send_string(b), None => req.call() };
-    let parse = |mut text: String| -> Value {
-        if let Some(mb) = max_bytes { if text.len() > mb { text.truncate(mb); } }
+    let parse = |text: String| -> Value {
         let t = text.trim_start();
         if t.starts_with('{') || t.starts_with('[') {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) { return serde_json_to_value(&v); }
@@ -108,10 +120,37 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
             ("body".to_string(), body),
         ])
     };
+    // read the whole body (bounded by max_bytes): a body that stalls after
+    // the headers is a timeout, one larger than max_bytes is `too_large` —
+    // both used to come back as a (truncated or empty) success
+    let read_body = |resp: ureq::Response| -> Result<String, (String, String)> {
+        use std::io::Read;
+        let limit = max_bytes.unwrap_or(64 * 1024 * 1024);
+        let mut buf = Vec::new();
+        let mut reader = resp.into_reader().take(limit as u64 + 1);
+        match reader.read_to_end(&mut buf) {
+            Ok(_) if buf.len() > limit => Err(("too_large".to_string(), format!("{} {}: the body is larger than max_bytes ({})", method, url, limit))),
+            Ok(_) => Ok(String::from_utf8_lossy(&buf).into_owned()),
+            Err(e) => {
+                let m = e.to_string().to_lowercase();
+                let kind = if m.contains("timed out") || m.contains("timeout") || m.contains("would block") { "timeout" } else { "network" };
+                Err((kind.to_string(), format!("{} {}: reading the body failed: {}", method, url, e)))
+            }
+        }
+    };
     Ok(match result {
-        Ok(resp) => parse(resp.into_string().unwrap_or_default()),
+        Ok(resp) => {
+            let status = resp.status();
+            match read_body(resp) {
+                Err((kind, msg)) => err(&kind, msg, status as i64, Value::Unit),
+                // a 3xx that was not followed (a 307 to a POST) is not a success
+                Ok(text) if !(200..300).contains(&status) =>
+                    err("http_status", format!("{} {}: status code {}", method, url, status), status as i64, parse(text)),
+                Ok(text) => parse(text),
+            }
+        }
         Err(ureq::Error::Status(code, resp)) => {
-            let b = parse(resp.into_string().unwrap_or_default());
+            let b = read_body(resp).map(parse).unwrap_or(Value::Unit);
             err("http_status", format!("{} {}: status code {}", method, url, code), code as i64, b)
         }
         Err(ureq::Error::Transport(t)) => {

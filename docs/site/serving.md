@@ -30,9 +30,11 @@ it by calling their handlers by name.
 ## Requests and responses
 
 `request` receives `(method, path, body)` — plus `query: Map` and
-`headers: Map` when it declares them: `on request(method: String, path:
-String, body: Map, query: Map, headers: Map)`. Header names are lower-case
-(`headers.authorization`). A trailing `Map` parameter may be left out by a
+`headers: Map` when it declares them, bound BY NAME (a 4th parameter called
+`headers` gets the headers, anything else the query): `on request(method:
+String, path: String, body: Map, query: Map, headers: Map)`. Header names
+are lower-case (`headers.authorization`); a repeated header is one entry,
+its values joined with ", ". A trailing `Map` parameter may be left out by a
 caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
 The declared type of `body` decides its shape, identically under
 `soma serve`, `soma test` and `soma run`:

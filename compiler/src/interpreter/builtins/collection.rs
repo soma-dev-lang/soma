@@ -452,12 +452,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "nth" => {
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
-                    let idx = match &args[1] {
-                        Value::Int(si) => si.to_i64().unwrap_or(0) as usize,
+                    // negative from the end, like xs[-1]; () out of range
+                    let raw = match &args[1] {
+                        Value::Int(si) => si.to_i64().unwrap_or(i64::MAX),
                         _ => return Some(Err(RuntimeError::TypeError("nth: index must be Int".to_string()))),
                     };
-                    if idx < items.len() {
-                        Some(Ok(items[idx].clone()))
+                    let k = if raw < 0 { raw + items.len() as i64 } else { raw };
+                    if k >= 0 && (k as usize) < items.len() {
+                        Some(Ok(items[k as usize].clone()))
                     } else {
                         Some(Ok(Value::Unit)) // out of bounds -> null
                     }
