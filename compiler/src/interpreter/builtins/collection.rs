@@ -399,6 +399,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 // DOWN from start (exclusive of end), so `range(12, -1, -1)`
                 // yields 12,11,…,0 without a reverse().
                 let step = args.get(2).map(as_i64).unwrap_or(1);
+                let count = if step == 0 { 0 } else { ((end as i128 - start as i128) / step as i128).max(0) };
+                if count > crate::interpreter::MAX_BUILT_LEN as i128 {
+                    return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range({}, {}): {} elements is past the limit of {} — iterate with a while loop", start, end, count, crate::interpreter::MAX_BUILT_LEN) }));
+                }
                 let mut result = Vec::new();
                 if step > 0 {
                     let mut i = start;

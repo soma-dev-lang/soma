@@ -20,6 +20,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "sleep" => {
             if let Some(ms) = args.first().map(|a| val_to_i64(a)) {
+                // sleep(-1) became u64::MAX ms: the handler (and the global
+                // handler lock) never came back
+                if ms < 0 || ms > 86_400_000 {
+                    return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("sleep({}): the duration is 0 to 86400000 ms (one day)", ms) }));
+                }
                 std::thread::sleep(std::time::Duration::from_millis(ms as u64));
                 Some(Ok(Value::Unit))
             } else {
@@ -51,7 +56,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }))
         }
         "add_days" if args.len() == 2 => {
-            let n = val_to_i64(&args[1]);
+            let n = match date_count(&args[1], "add_days", "a number of days") { Ok(n) => n, Err(e) => return Some(Err(e)) };
             Some(date_arg(&args[0], "add_days").and_then(|(y, m, d)| {
                 // a date outside 0000-01-01..9999-12-31 is not a date parse_date
                 // reads back (an i64 day count wrapped to year -25252734927764529)
@@ -65,11 +70,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "add_months" if args.len() == 2 => {
             // Ruby's `Date >> n`: same day, clamped to the month's length
-            let n = val_to_i64(&args[1]);
-            Some(date_arg(&args[0], "add_months").map(|(y, m, d)| {
+            let n = match date_count(&args[1], "add_months", "a number of months") { Ok(n) => n, Err(e) => return Some(Err(e)) };
+            Some(date_arg(&args[0], "add_months").and_then(|(y, m, d)| {
                 let idx = y * 12 + (m - 1) + n;
                 let (y2, m2) = (idx.div_euclid(12), idx.rem_euclid(12) + 1);
-                Value::String(iso(y2, m2, d.min(days_in_month(y2, m2))))
+                if !(0..=9999).contains(&y2) { return Err(out_of_years("add_months")); }
+                Ok(Value::String(iso(y2, m2, d.min(days_in_month(y2, m2)))))
             }))
         }
         "days_between" if args.len() == 2 => {
@@ -96,8 +102,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "format_date" => {
             if let Some(ts) = args.first() {
-                let secs = val_to_i64(ts);
-                Some(Ok(Value::String(format_unix_date(secs))))
+                Some(date_arg(ts, "format_date").map(|(y, m, d)| Value::String(iso(y, m, d))))
             } else {
                 Some(Ok(Value::String("".to_string())))
             }
@@ -148,7 +153,8 @@ pub fn days_in_month(y: i64, m: i64) -> i64 {
 
 /// "YYYY-MM-DD" → (y, m, d), strictly.
 pub fn parse_iso_date(s: &str) -> Option<(i64, i64, i64)> {
-    let parts: Vec<&str> = s.trim().split('-').collect();
+    // no surrounding spaces either: " 2026-01-01" is not an ISO date
+    let parts: Vec<&str> = s.split('-').collect();
     // strict YYYY-MM-DD: "2026-3-1" is not accepted
     if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2
         || !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) { return None; }
@@ -159,6 +165,19 @@ pub fn parse_iso_date(s: &str) -> Option<(i64, i64, i64)> {
     Some((y, m, d))
 }
 
+/// An Int count for a date builtin: a BigInt wrapped to 0 and a Float was
+/// truncated (add_days(d, 2^64 + 1) answered d itself).
+fn date_count(v: &Value, what: &str, is: &str) -> Result<i64, RuntimeError> {
+    match v {
+        Value::Int(si) => si.to_i64().filter(|n| n.abs() < 1_000_000_000_000_000).ok_or_else(|| out_of_years(what)),
+        other => Err(RuntimeError::TypeError(format!("{}: expected an Int ({}), got {} {}", what, is, crate::interpreter::value_type_name(other), other))),
+    }
+}
+
+fn out_of_years(what: &str) -> RuntimeError {
+    RuntimeError::Domain { kind: "date".to_string(), message: format!("date: {} goes outside years 0000–9999", what) }
+}
+
 fn iso(y: i64, m: i64, d: i64) -> String { format!("{:04}-{:02}-{:02}", y, m, d) }
 
 fn date_arg(v: &Value, what: &str) -> Result<(i64, i64, i64), RuntimeError> {
@@ -166,7 +185,12 @@ fn date_arg(v: &Value, what: &str) -> Result<(i64, i64, i64), RuntimeError> {
         Value::String(s) => parse_iso_date(s).ok_or_else(|| RuntimeError::Domain {
             kind: "date".to_string(), message: format!("date: {} is not a YYYY-MM-DD date: {}", what, s),
         }),
-        Value::Int(si) => Ok(civil_from_days(val_to_i64(&Value::Int(si.clone())).div_euclid(86400))),
+        Value::Int(_) => {
+            let secs = date_count(v, what, "a Unix time in seconds")?;
+            let (y, m, d) = civil_from_days(secs.div_euclid(86400));
+            if !(0..=9999).contains(&y) { return Err(out_of_years(what)); }
+            Ok((y, m, d))
+        }
         other => Err(RuntimeError::TypeError(format!("{}: expected a \"YYYY-MM-DD\" String, got {}", what, other))),
     }
 }

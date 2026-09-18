@@ -338,7 +338,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     // program can use it (a cluster join, a `scale` section, or `emit`);
     // a plain service used to open an extra socket nobody asked for
     let uses_emit = source.contains("emit ");
-    let bus_wanted = is_cluster_mode || uses_emit;
+    // a receiver that only ACCEPTS events (`[bus] accept`) needs the port too
+    let bus_wanted = is_cluster_mode || uses_emit || BUS_ACCEPT.get().map_or(false, |a| !a.is_empty());
     if bus_port > 0 && !bus_wanted {
         eprintln!("bus: not started (no emit / scale / --join; port {} stays closed)", bus_port);
     }
@@ -416,7 +417,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     let reader = std::io::BufReader::new(read_stream);
                     eprintln!("bus: peer connected");
                     let mut first = true;
-                    for line in reader.lines() {
+                    for line in crate::interpreter::bus_lines(reader) {
                         let line = match line { Ok(l) => l, Err(_) => break };
                         // a browser page can POST to the bus port (a cross-
                         // protocol request whose body carries `EVENT …`): an
@@ -1358,7 +1359,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let (signal_name, args) = if url.starts_with("/signal/") {
             let signal = url.trim_start_matches("/signal/");
             let (sig_name, query) = signal.split_once('?').unwrap_or((signal, ""));
-            if !routable(&handler_names, sig_name) || request_routes.first_segments().iter().any(|f| f == sig_name) {
+            if !handler_names.iter().any(|h| h == sig_name) || !routable(&handler_names, sig_name) || request_routes.first_segments().iter().any(|f| f == sig_name) {
                 let resp = tiny_http::Response::from_string(
                     format!("{{\"error\": \"no handler for '{}'\"}}", url)
                 )
@@ -1970,12 +1971,13 @@ fn lifecycle_hook(names: &[String]) -> Option<&'static str> {
 /// `request` router, not the start-up hook.
 /// Handlers that are the target of an `emit` somewhere in the program: event
 /// listeners, not endpoints (`POST /moved` forged the event)
-static EVENT_LISTENERS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
-/// soma.toml `[bus] accept`: events other processes may send
-static BUS_ACCEPT: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+use crate::interpreter::{EVENT_LISTENERS, BUS_ACCEPT};
 
 fn routable(names: &[String], h: &str) -> bool {
+    // an event listener — emitted here or accepted from other processes — is
+    // not an HTTP endpoint (POST /ping forged the peer's event)
     if EVENT_LISTENERS.get().map_or(false, |e| e.contains(h)) { return false; }
+    if BUS_ACCEPT.get().map_or(false, |a| a.iter().any(|x| x == h)) { return false; }
     // `start` and `init` are both start-up names: neither is an endpoint
     // (with both declared, `start` was served and re-ran on every POST)
     let _ = lifecycle_hook(names);

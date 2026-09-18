@@ -120,7 +120,7 @@ let M = [1, 0, 0, 1].reshape(2, 2)    // matrices = List<List<Float>>, first-cla
 A * B          // matmul        A + B / A - B   elementwise
 A + 10  A / 2  // scalar broadcast (both orders)
 v * v  v + v   // numeric vectors: + * / - elementwise
-A > 2  v >= 1.0                       // comparison masks (0/1)
+A > 2  v >= 1.0                       // comparison masks (0.0/1.0 Floats); Int vectors compare and + - * exactly, [6] / 3 is [2] (the `/` rule per element)
 A.T    A.shape    det(A)    matrix("1 2; 3 4")
 concat(a, b)   // EXPLICIT list concatenation (+ on non-numeric lists concats)
 ```
@@ -149,7 +149,7 @@ map("k", v)   map()                // no {k: v} literal;   record: Name { k: v }
 x == ()       x ?? 0               // null is (); no null / None / undefined
 if c { a } else { b }              // is an expression; no ternary; && || !  (no and/or/not)
 x => x + 1                         // lambdas take ONE parameter
-for x in xs { }   for k in keys(m) { m[k] }   for e in entries(m) { e.key  e.value }
+for x in xs { }   for k in keys(m) { m[k] }   for e in entries(m) { e.key  e.value }   // for over () runs 0 times, over a String its lines, over a number: type error
 slice(xs, 1, 3)  slice(xs, -2)     // no xs[a:b]
 xs = push(xs, x)                   // push / concat / sort / with RETURN new values
 on f(n: Int) [native] { … }        // annotations go AFTER the parameter list; no @decorator
@@ -310,6 +310,11 @@ source, `file:line`, left/right, and the fields a value really has when
 - Data: `read_csv(path)` → List<Map>: RFC 4180 (quoted `"a, b"`, `""`, multi-line
   cells); unquoted cells auto-typed (`1.00` → 1.0), quoted cells and `007` stay
   Strings; `read_csv(path, map("raw", true))` keeps all text (exact money).
+  `write_csv` quotes what a reader would change (a String "12" stays a String;
+  a List cell is its JSON text). One builtin call builds at most 100,000,000
+  characters / elements / matrix cells (`pad_left`, `format` widths, `range`,
+  `zeros`…): past that it raises kind `range`. Map slot keys are text
+  (`m.set(1, …)` and `m.set("1", …)` are one entry).
   `use helper` imports helper.cell beside the program, `use lib::m`
   lib/m.cell; imported handlers are callable by name; an imported file's
   test cells run only under `soma test lib/m.cell`. `agg`, `sort_by`,
@@ -456,6 +461,11 @@ Guards (`a -> b { guard { cond } }`) are enforced at runtime and read the
 locals of the handler that calls `transition()` — so EVERY handler whose
 `transition()` targets the guarded state must bind those names (check error
 otherwise), even one meant for another edge; the model keeps guarded edges.
+A guard is a pure condition: calling a handler, think(), next_id() or a slot
+write (`.set`/`.delete`/`.push`) inside it is a check error — compute the value
+in the handler before `transition()` and test that local. The calls in a
+`require` condition and in its `else` detail are part of the termination,
+cost and invariant analyses like any other statement.
 A `cost { tokens: N }` bounds the REPLY tokens (the sum of the max_tokens
 caps of the think() calls a handler can make — ×10 provider rounds in an
 agent with tools, or × `map("max_rounds", N)`); prompt tokens are not in it —
@@ -561,7 +571,11 @@ maps inside a value use JSON's shortest form (`1.18e21`).
 `soma check` verifies the native vocabulary (every handler, every error at
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
-an Int slot refuses a non-exact `/` instead of truncating.
+an Int slot refuses a non-exact `/` instead of truncating. One difference:
+native code is statically typed, so `a / b` on two Ints is ALWAYS a Float
+there (`-7 / 1` is -7.0; the interpreter answers the Int -7) — `soma check`
+warns; write idiv(a, b) for an integer quotient. A native local keeps the
+type of its `let` (assigning a String to a number local is a check error).
 
 What a `[native]` handler may use — nothing else:
 - parameters and locals: Int, Float, Bool, String (a List cannot cross the
@@ -653,7 +667,7 @@ sit in `authorized` until someone acts.
 
 | Mechanism | Guarantee |
 |---|---|
-| Memory invariants | checked **before** every `set`, bracket write, `push` and `delete` (for `size`). A violating write raises (`kind "invariant"`) and the slot is unchanged. `soma verify` lists each write it could not prove as *runtime-checked*. |
+| Memory invariants | checked **before** every `set`, bracket write, `push` and `delete` (for `size`). A violating write raises (`kind "invariant"`) and the slot is unchanged. `soma verify` lists each write it could not prove as *runtime-checked*. On a Float slot a computed value may be NaN (`sqrt(-1.0)`, `inf - inf`), which fails every comparison: such writes are runtime-checked, never "proven". |
 | Transitions | `transition()` to an undeclared edge raises `invalid_transition` with the valid targets. Guards raise `guard_failed`. |
 | **Atomic handlers** | a handler that raises leaves nothing behind: its memory writes and transitions are rolled back. A failing `try { }` block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their value). Consequence: an error means "nothing happened" — to *record* a refusal (a reservation moved to `rejected`), return it as a value instead of raising. |
 | **Serialized handlers** | under `soma serve`, top-level handler invocations run one at a time: read-modify-write needs no lock. |
@@ -700,21 +714,27 @@ soma run   app.cell request GET /stats ""     # call the router with no server
    directory (`..` cannot escape it).
 2. A path that the cell's `request(method, path, body)` handler **matches
    explicitly** — a literal (`"/stats"`) or a prefix pattern (`"/hold/" + id`)
-   in one of its `match` arms — goes to `request`.
+   in one of its `match` arms, or a path it tests (`path == "/reset"`,
+   `starts_with(path, "/wipe/")`) — goes to `request`.
 3. Otherwise, if the first path segment is the name of a **public handler** of
    the request-owning cell, that handler is called with the remaining segments
    and query values as arguments: `POST /add/5` → `add(5)`. This is how an HTML
    form posts to `/add`. Anything else goes to `request` (or 404 without one).
 
 **Every public handler of the request-owning cell is therefore an HTTP
-endpoint** — except `request` itself, which is only ever the router. A
-handler is private when its name starts with `_`
+endpoint** — except `request` itself, which is only ever the router, and
+the handlers `request` calls (directly or through its own helpers): those
+are reachable ONLY through `request`, so the checks it makes before calling
+them (an Authorization header, a method) cannot be walked around with
+`POST /wipe/a`. A handler is private when its name starts with `_`
 (`on _debit(account, amount)`), or when it lives in another cell. Put domain
 logic in its own cell and keep the HTTP cell thin. `soma check` warns when a
 handler and one of `request`'s routes share a name.
 
 Only the cell that defines `request` is routed. Other cells are reachable from
-it by calling their handlers by name.
+it by calling their handlers by name — not by reading their slots:
+`Store.config.get(k)` from another cell is a check error (a cell's memory is
+its own; add a handler to Store that returns the value).
 
 ## Requests and responses
 
@@ -770,7 +790,7 @@ handlers (no `_` prefix, `request` aside) are also reachable directly at
 `/<handler>/<arg>/…`: arguments are coerced to the declared parameter types
 (`/decide/x/true` → Bool), a trailing `Map`/`List` parameter takes the JSON
 body (a non-JSON body → `400 {"kind": "json"}`). At start-up `serve` calls a
-zero-argument `start()` (or `init()`) handler when the cell has one; neither
+zero-argument `start()` and `init()` handler (each one the cell has); neither
 name is an HTTP endpoint (a request could re-run it). A handler that changes
 state — a slot write, a transition, an emit, a call into another cell —
 answers `GET`/`HEAD` with `405` (`Allow: POST`) — for the auto-exposed
@@ -821,8 +841,15 @@ uses fresh in-memory storage every time.
 No TLS, no built-in authentication (read `headers.authorization` in
 `request` and refuse), no rate limiting.
 It binds 127.0.0.1 (`--host 0.0.0.0` to expose it). `PORT + 2` (the signal
-bus) is opened only when a cell uses `emit`, declares `scale`, or `--join` is
-given — the start-up log says `bus: listening` or `bus: not started`; `PORT +
+bus) is opened only when a cell uses `emit`, declares `scale`, lists events
+in `[bus] accept`, or `--join` is given — the start-up log says `bus:
+listening` or `bus: not started`. The bus speaks one line per event,
+`EVENT <name> <json>\n` (a line past 16 MB closes the connection); a
+receiver runs only the events its program emits itself or lists in
+`[bus] accept = ["reading"]` in soma.toml, and never `request`, `ws`,
+`start`/`init` or a `_private` handler. An `emit` goes to every connected
+peer AT COMMIT (a handler that raises sends nothing). A peer that restarts is
+not reconnected: restart the sender too, or re-`--join`; `PORT +
 1` only when a cell declares `on ws`. Every response, static files, the
 dashboard and the pre-handler 400s included, carries
 `Access-Control-Allow-Origin: *` (browsers on any origin may call it; put a

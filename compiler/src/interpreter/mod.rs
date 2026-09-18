@@ -20,6 +20,10 @@ use thiserror::Error;
 pub(crate) enum UndoOp {
     /// `set` / `delete`: restore the previous value, or remove the key
     Restore { backend: Arc<dyn StorageBackend>, key: String, prev: Option<crate::runtime::storage::StoredValue> },
+    /// `next_id()`: undone with the whole handler, NOT by a failing `try`
+    /// (the id had already escaped into a local: the next call handed out
+    /// the same id and one record overwrote another)
+    Counter { backend: Arc<dyn StorageBackend>, key: String, prev: Option<crate::runtime::storage::StoredValue> },
     /// `append` / `push`
     Unappend { backend: Arc<dyn StorageBackend> },
     /// `rows[i] = v` / `rows.delete(i)` on a List slot: put the old log back
@@ -28,6 +32,8 @@ pub(crate) enum UndoOp {
     /// handler commits (a rolled-back handler told clients about a move
     /// that never happened); undoing it is dropping it
     Push(BusEvent),
+    /// a cross-process `emit` line for the [peers] bus, sent at commit
+    PeerSend(String),
 }
 
 /// One handler at a time. `soma serve` runs each request on its own thread
@@ -656,6 +662,41 @@ pub fn http_marker() -> Value {
 
 pub fn is_http_response(v: &Value) -> bool {
     matches!(v, Value::Map(m) if matches!(m.get("_response"), Some(Value::Lambda { param, .. }) if param == HTTP_MARK))
+}
+
+/// Handlers some `emit` of this program targets (set by `soma serve`).
+/// The most elements (characters, list items, matrix cells) one builtin call
+/// builds: a single absurd size in a request aborted the whole process
+/// ("memory allocation of 4611686018427387903 bytes failed").
+pub const MAX_BUILT_LEN: usize = 100_000_000;
+
+pub static EVENT_LISTENERS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+/// soma.toml `[bus] accept`: events other processes may send.
+pub static BUS_ACCEPT: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// May an event arriving from ANOTHER process run here? Only an event this
+/// program emits or `[bus] accept` lists; never a private `_` handler, the
+/// router, a start-up hook or `ws`; never data forging a record / variant.
+pub fn bus_event_allowed(name: &str, data: Option<&serde_json::Value>) -> Result<(), String> {
+    if name.starts_with('_') || matches!(name, "request" | "ws" | "start" | "init") {
+        return Err(format!("refused event '{}' (a private or reserved handler)", name));
+    }
+    let accepted = EVENT_LISTENERS.get().map_or(false, |e| e.contains(name))
+        || BUS_ACCEPT.get().map_or(false, |a| a.iter().any(|x| x == name));
+    if !accepted {
+        return Err(format!("refused event '{}' — not emitted by this program nor listed in soma.toml [bus] accept", name));
+    }
+    fn forged(v: &serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Object(m) => m.contains_key("_type") || m.contains_key("_variant") || m.contains_key("_values") || m.values().any(forged),
+            serde_json::Value::Array(xs) => xs.iter().any(forged),
+            _ => false,
+        }
+    }
+    if data.map_or(false, forged) {
+        return Err(format!("refused event '{}' (its data carries _type / _variant)", name));
+    }
+    Ok(())
 }
 
 /// The process's `[agent]` / `[models]` config (set by `soma serve`): the
@@ -1309,7 +1350,7 @@ impl Interpreter {
         // body ("cannot compare String and Int"), or not at all.
         let mut env = FxHashMap::with_capacity_and_hasher(params.len() + 4, Default::default());
         for (param, val) in params.iter().zip(args) {
-            let val = match check_param_type(param, val) {
+            let val = match check_param_type(param, val).and_then(|v| self.check_sum_param(param, v)) {
                 Ok(v) => v,
                 Err(msg) => {
                     self.current_depth -= 1;
@@ -1649,7 +1690,12 @@ impl Interpreter {
                             vec![Value::String(s)]
                         }
                     }
-                    other => vec![other],
+                    // an absent value (`slot.get(missing)`) has no elements
+                    // (the body ran once with `()`); a number is not a
+                    // sequence (`for x in 5` ran once with 5)
+                    Value::Unit => Vec::new(),
+                    other => return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "for {} in …: {} {} is not a List, Map or String — for a count write `for i in range(0, n)`", var, value_type_name(&other), { let t: String = format!("{}", other).chars().take(30).collect(); t }) })),
                 };
                 over(items.len())?;
 
@@ -1973,10 +2019,13 @@ impl Interpreter {
                     // valid JSON on the wire (`{"inf": inf}` made the peer
                     // drop the whole event, silently): NaN / inf travel as null
                     let line = format!("EVENT {} {}\n", sig, builtins::string::to_json_string(&broadcast_data));
-                    if let Ok(senders) = peers.lock() {
-                        for sender in senders.iter() {
-                            let _ = sender.send(line.clone());
-                        }
+                    // at COMMIT, like SSE / WebSocket pushes: a handler that
+                    // then raised had already told the other process
+                    match self.journal.as_mut() {
+                        Some(j) => j.push(UndoOp::PeerSend(line)),
+                        None => if let Ok(senders) = peers.lock() {
+                            for sender in senders.iter() { let _ = sender.send(line.clone()); }
+                        },
                     }
                 }
                 // Dispatch to sibling cells with matching handler (intra-process)
@@ -2120,7 +2169,15 @@ impl Interpreter {
                                 Some(Value::List(xs)) => return Ok(Value::Int(SomaInt::from_i64(xs.len() as i64))),
                                 Some(Value::Map(m)) => return Ok(Value::Int(SomaInt::from_i64(m.len() as i64))),
                                 Some(Value::String(t)) => return Ok(Value::Int(SomaInt::from_i64(t.chars().count() as i64))),
-                                _ => {}
+                                Some(_) => {}
+                                // `len(slot)`: counted by the backend — reading
+                                // the bare name materialized every row
+                                None => if let Some(kind) = self.slot_kind(cell_name, local) {
+                                    if let Some(b) = self.storage.get(&format!("{}.{}", cell_name, local)).or_else(|| self.storage.get(local.as_str())) {
+                                        let n = if kind == "List" { b.list_len() } else { b.len() };
+                                        return Ok(Value::Int(SomaInt::from_i64(n as i64)));
+                                    }
+                                },
                             }
                         }
                         if name == "nth" && args.len() == 2 && matches!(env.get(local), Some(Value::List(_))) {
@@ -2151,10 +2208,14 @@ impl Interpreter {
                                 arg_vals.len()
                             ))));
                         }
+                        let fields = VariantValue::Tuple(arg_vals);
+                        if let Err(m) = self.variant_ok(&vtype, name, &fields) {
+                            return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: m }));
+                        }
                         return Ok(Value::Variant {
                             type_name: vtype,
                             variant: name.clone(),
-                            fields: VariantValue::Tuple(arg_vals),
+                            fields,
                         });
                     }
                 }
@@ -2353,10 +2414,16 @@ impl Interpreter {
                                 ))));
                             }
                         }
+                        // the declared field types: `Charged { tx: 1 }` for
+                        // `tx: String` was built and handed around
+                        let fields = VariantValue::Struct(entries);
+                        if let Err(m) = self.variant_ok(&vtype, type_name, &fields) {
+                            return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: m }));
+                        }
                         return Ok(Value::Variant {
                             type_name: vtype,
                             variant: type_name.clone(),
-                            fields: VariantValue::Struct(entries),
+                            fields,
                         });
                     }
                 }
@@ -2376,7 +2443,7 @@ impl Interpreter {
                 let savepoint = self.journal.as_ref().map(|j| j.len());
                 let outcome = self.eval_expr(&inner.node, env, cell_name, signal_name);
                 if let (Err(ExecError::Runtime(_)), Some(mark)) = (&outcome, savepoint) {
-                    self.rollback_to(mark);
+                    self.rollback_savepoint(mark);
                 }
                 match outcome {
                     Ok(val) => Ok(map_from_pairs(vec![
@@ -2983,9 +3050,12 @@ impl Interpreter {
                 let val = &coerced;
                 // V1.8: invariants are checked BEFORE the write commits —
                 // a violated invariant must leave the slot untouched.
-                let exists = backend.get(&key_str).is_some();
-                let size_after = backend.len() as i64 + if exists { 0 } else { 1 };
-                self.check_invariants(cell_name, slot_name, &key_str, val, size_after, "write")?;
+                // (the COUNT is paid only by a slot that has invariants)
+                if self.slot_has_invariants(cell_name, slot_name) {
+                    let exists = backend.get(&key_str).is_some();
+                    let size_after = backend.len() as i64 + if exists { 0 } else { 1 };
+                    self.check_invariants(cell_name, slot_name, &key_str, val, size_after, "write")?;
+                }
 
                 // Write locally (journaled: a failing handler is rolled back)
                 if let Some(j) = self.journal.as_mut() {
@@ -3012,7 +3082,8 @@ impl Interpreter {
                 // slot value is bound to the entry being removed (it already
                 // satisfied the invariant when written, so only size/key
                 // clauses can flip). Deleting a missing key is a no-op.
-                if let Some(stored) = backend.get(&key_str) {
+                if !self.slot_has_invariants(cell_name, slot_name) {
+                } else if let Some(stored) = backend.get(&key_str) {
                     let old = self.from_slot(cell_name, slot_name, stored_to_value(stored));
                     let size_after = backend.len() as i64 - 1;
                     self.check_invariants(cell_name, slot_name, &key_str, &old, size_after, "delete")?;
@@ -3046,8 +3117,10 @@ impl Interpreter {
                 let val = &coerced;
                 // a List lives in the log table: `len()` counts the MAP rows
                 // (0 on SQLite), so `rows.size <= N` never refused a push
-                let size_after = backend.list_len() as i64 + 1;
-                self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
+                if self.slot_has_invariants(cell_name, slot_name) {
+                    let size_after = backend.list_len() as i64 + 1;
+                    self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
+                }
                 if let Some(j) = self.journal.as_mut() {
                     j.push(UndoOp::Unappend { backend: backend.clone() });
                 }
@@ -3618,7 +3691,7 @@ impl Interpreter {
         std::thread::spawn(move || {
             use std::io::BufRead;
             let reader = std::io::BufReader::new(read_stream);
-            for line in reader.lines() {
+            for line in bus_lines(reader) {
                 let line = match line {
                     Ok(l) => l,
                     Err(_) => break,
@@ -3630,10 +3703,16 @@ impl Interpreter {
                         let event_name = &rest[..space];
                         let json_data = &rest[space+1..];
 
-                        let data = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
-                            builtins::serde_json_to_value(&parsed)
-                        } else {
-                            Value::String(json_data.to_string())
+                        // the same filter as the inbound bus port (this outbound link
+                        // ran private handlers and anything not accepted)
+                        let parsed_json = serde_json::from_str::<serde_json::Value>(json_data).ok();
+                        if let Err(why) = bus_event_allowed(event_name, parsed_json.as_ref()) {
+                            eprintln!("bus: {}", why);
+                            continue;
+                        }
+                        let data = match &parsed_json {
+                            Some(parsed) => builtins::serde_json_to_value(parsed),
+                            None => Value::String(json_data.to_string()),
                         };
 
                         // Dispatch to on event_name(data) handler
@@ -3789,6 +3868,26 @@ impl Interpreter {
     ///   size        — the slot's entry count AFTER the write would commit
     /// Returns Err — and the caller must NOT commit — if any invariant is
     /// false or cannot be evaluated. Errors are `try`-catchable.
+    /// `on f(p: Pay)`: p is a Pay variant (a String naming a unit variant of
+    /// Pay — `soma run app.cell f Cash` — is that variant). Anything else ran
+    /// the body and failed later at a `match`, or not at all.
+    fn check_sum_param(&self, param: &Param, val: Value) -> Result<Value, String> {
+        let TypeExpr::Simple(t) = &param.ty.node else { return Ok(val) };
+        let Some(variants) = self.type_variants.get(t) else { return Ok(val) };
+        match &val {
+            Value::Variant { type_name, variant, fields } if type_name == t => self.variant_ok(type_name, variant, fields).map(|_| val.clone())
+                .map_err(|m| format!("parameter '{}': {}", param.name, m)),
+            Value::String(s) if variants.contains(s) && matches!(self.variant_registry.get(s), Some((ty, VariantShape::Unit)) if ty == t) =>
+                Ok(Value::Variant { type_name: t.clone(), variant: s.clone(), fields: VariantValue::Unit }),
+            _ => Err(format!("parameter '{}' expects a {} variant ({}), got {} {}", param.name, t, variants.join(" | "), value_type_name(&val),
+                { let x: String = format!("{}", val).chars().take(40).collect(); x })),
+        }
+    }
+
+    fn slot_has_invariants(&self, cell_name: &str, slot_name: &str) -> bool {
+        self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| self.invariants.get(slot_name)).map_or(false, |v| !v.is_empty())
+    }
+
     fn check_invariants(
         &mut self,
         cell_name: &str,
@@ -3895,23 +3994,7 @@ impl Interpreter {
                 BinOp::Add => Ok(Value::Int(a.clone().add(b.clone()))),
                 BinOp::Sub => Ok(Value::Int(a.clone().sub(b.clone()))),
                 BinOp::Mul => Ok(Value::Int(a.clone().mul(b.clone()))),
-                BinOp::Div => {
-                    if b.to_i64() == Some(0) {
-                        Err(RuntimeError::TypeError("division by zero".to_string()))
-                    } else if let (Some(ai), Some(bi)) = (a.to_i64(), b.to_i64()) {
-                        // checked_rem: i64::MIN % -1 overflows; that division is
-                        // exact, so it takes the Int path (which promotes to big)
-                        match ai.checked_rem(bi) {
-                            Some(0) | None => Ok(Value::Int(a.clone().div(b.clone()))),
-                            Some(_) => Ok(Value::Float(ai as f64 / bi as f64)),
-                        }
-                    } else if a.clone().modulo(b.clone()).to_i64() == Some(0) {
-                        // exact big division stays an Int — same rule as small ints
-                        Ok(Value::Int(a.clone().div(b.clone())))
-                    } else {
-                        Ok(Value::Float(a.to_f64() / b.to_f64()))
-                    }
-                }
+                BinOp::Div => int_div_value(a, b),
                 BinOp::Mod => {
                     if b.to_i64() == Some(0) {
                         Err(RuntimeError::TypeError("modulo by zero".to_string()))
@@ -4106,10 +4189,31 @@ impl Interpreter {
         }
     }
 
+    /// A failing `try`: undo its writes, keep the ids it drew.
+    pub(crate) fn rollback_savepoint(&mut self, mark: usize) {
+        let Some(journal) = self.journal.as_mut() else { return };
+        let mut kept: Vec<UndoOp> = Vec::new();
+        let mut rest: Vec<UndoOp> = Vec::new();
+        while journal.len() > mark {
+            match journal.pop() {
+                Some(op @ UndoOp::Counter { .. }) => kept.push(op),
+                Some(op) => rest.push(op),
+                None => break,
+            }
+        }
+        for op in rest { undo(op); }
+        kept.reverse();
+        if let Some(journal) = self.journal.as_mut() { journal.extend(kept); }
+    }
+
     pub(crate) fn rollback_to(&mut self, mark: usize) {
         let Some(journal) = self.journal.as_mut() else { return };
         while journal.len() > mark {
             match journal.pop() {
+                Some(UndoOp::Counter { backend, key, prev }) => match prev {
+                    Some(v) => backend.set(&key, v),
+                    None => { backend.delete(&key); }
+                },
                 Some(UndoOp::Restore { backend, key, prev }) => match prev {
                     Some(v) => backend.set(&key, v),
                     None => {
@@ -4118,7 +4222,7 @@ impl Interpreter {
                 },
                 Some(UndoOp::Unappend { backend }) => backend.unappend(),
                 Some(UndoOp::RestoreList { backend, prev }) => backend.replace_list(prev),
-                Some(UndoOp::Push(_)) => {}
+                Some(UndoOp::Push(_)) | Some(UndoOp::PeerSend(_)) => {}
                 None => break,
             }
         }
@@ -4150,17 +4254,29 @@ impl Interpreter {
         }
         // how many writes / transitions the invocation committed (a
         // scheduler tick logs it — ticks were invisible in the serve log)
-        self.last_commit_writes = if result.is_ok() { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_))).count()) } else { 0 };
+        self.last_commit_writes = if result.is_ok() { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_) | UndoOp::PeerSend(_))).count()) } else { 0 };
+        let mut peer_lines: Vec<String> = Vec::new();
         let pushes: Vec<BusEvent> = if result.is_ok() {
-            self.journal.take().unwrap_or_default().into_iter().filter_map(|u| match u { UndoOp::Push(e) => Some(e), _ => None }).collect()
+            self.journal.take().unwrap_or_default().into_iter().filter_map(|u| match u {
+                UndoOp::Push(e) => Some(e),
+                UndoOp::PeerSend(l) => { peer_lines.push(l); None }
+                _ => None,
+            }).collect()
         } else { Vec::new() };
         self.journal = None;
         if let Some(c) = txn {
             let c = c.lock().unwrap_or_else(|e| e.into_inner());
             let _ = c.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" });
         }
-        // committed: now the clients may hear about it
+        // committed: now the clients (and the other processes) may hear about it
         for e in pushes { self.send_bus_now(e); }
+        if !peer_lines.is_empty() {
+            if let Some(ref peers) = self.peer_bus {
+                if let Ok(senders) = peers.lock() {
+                    for l in &peer_lines { for sender in senders.iter() { let _ = sender.send(l.clone()); } }
+                }
+            }
+        }
         result
     }
 
@@ -4443,7 +4559,8 @@ impl Interpreter {
                     (t, _) if self.type_variants.contains_key(t) => false,
                     _ => true,
                 },
-                _ => true,
+                // `xs: List<Int>` / `m: Map<String, Int>` fields: their elements too
+                (other, v) => self.value_fits(other, v).is_ok(),
             }
         };
         match (decl, fields) {
@@ -5801,4 +5918,59 @@ pub(crate) fn list_position(idx: &Value, len: usize, what: &str) -> Result<usize
         return Err(RuntimeError::TypeError(format!("{} index {} out of bounds (length {})", what, raw, len)));
     }
     Ok(i as usize)
+}
+
+fn undo(op: UndoOp) {
+    match op {
+        UndoOp::Restore { backend, key, prev } | UndoOp::Counter { backend, key, prev } => match prev {
+            Some(v) => backend.set(&key, v),
+            None => { backend.delete(&key); }
+        },
+        UndoOp::Unappend { backend } => backend.unappend(),
+        UndoOp::RestoreList { backend, prev } => backend.replace_list(prev),
+        UndoOp::Push(_) | UndoOp::PeerSend(_) => {}
+    }
+}
+
+/// Int / Int: an exact quotient is an Int (BigInt-exact), else a Float.
+pub(crate) fn int_div_value(a: &SomaInt, b: &SomaInt) -> Result<Value, RuntimeError> {
+    if b.to_i64() == Some(0) {
+        Err(RuntimeError::TypeError("division by zero".to_string()))
+    } else if let (Some(ai), Some(bi)) = (a.to_i64(), b.to_i64()) {
+        // checked_rem: i64::MIN % -1 overflows; that division is
+        // exact, so it takes the Int path (which promotes to big)
+        match ai.checked_rem(bi) {
+            Some(0) | None => Ok(Value::Int(a.clone().div(b.clone()))),
+            Some(_) => Ok(Value::Float(ai as f64 / bi as f64)),
+        }
+    } else if a.clone().modulo(b.clone()).to_i64() == Some(0) {
+        // exact big division stays an Int — same rule as small ints
+        Ok(Value::Int(a.clone().div(b.clone())))
+    } else {
+        Ok(Value::Float(a.to_f64() / b.to_f64()))
+    }
+}
+
+/// The longest line the signal bus reads (a peer that sent 300 MB with no
+/// newline grew the receiver by 300 MB): a longer one ends the connection.
+pub const BUS_MAX_LINE: u64 = 16 * 1024 * 1024;
+
+/// `lines()` with a length cap, for the bus sockets.
+pub fn bus_lines<R: std::io::BufRead>(mut r: R) -> impl Iterator<Item = std::io::Result<String>> {
+    std::iter::from_fn(move || {
+        use std::io::{BufRead, Read};
+        let mut buf = Vec::new();
+        match (&mut r).take(BUS_MAX_LINE + 1).read_until(b'\n', &mut buf) {
+            Ok(0) => None,
+            Ok(_) if buf.len() as u64 > BUS_MAX_LINE => {
+                eprintln!("bus: a line longer than {} bytes — connection closed", BUS_MAX_LINE);
+                Some(Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bus line too long")))
+            }
+            Ok(_) => {
+                if buf.last() == Some(&b'\n') { buf.pop(); if buf.last() == Some(&b'\r') { buf.pop(); } }
+                Some(String::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+            }
+            Err(e) => Some(Err(e)),
+        }
+    })
 }

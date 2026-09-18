@@ -427,8 +427,9 @@ on withdraw(balance: Int, amount: Int) {
 }
 
 // try catches: division by zero, type errors, stack overflow, invalid
-// transitions, require/invariant/ensure failures, fail(). Undefined
-// variables and functions are `soma check` errors: they never reach try.
+// transitions, require/invariant/ensure failures, fail(). An undefined
+// function is a `soma check` error; an undefined variable inside a `try`
+// is a check warning and raises kind undefined_variable (catchable).
 ```
 
 ## Storage

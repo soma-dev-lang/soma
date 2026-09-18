@@ -298,6 +298,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             };
             let fill = args.get(2).map(|f| format!("{}", f)).filter(|f| !f.is_empty()).unwrap_or_else(|| " ".to_string());
             let have = text.chars().count();
+            // one request asking for pad_left("x", 2^62) aborted the process
+            if width > crate::interpreter::MAX_BUILT_LEN {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("{name}(): width {width} is past the limit of {} characters", crate::interpreter::MAX_BUILT_LEN) }));
+            }
             if have >= width {
                 return Some(Ok(Value::String(text)));
             }
@@ -460,7 +464,7 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
             i += 1;
             let mut p = String::new();
             while i < chars.len() && chars[i].is_ascii_digit() { p.push(chars[i]); i += 1; }
-            prec = Some(p.parse().unwrap_or(0));
+            prec = Some(if p.is_empty() { 0 } else { p.parse().unwrap_or(usize::MAX) });
         }
         let Some(&conv) = chars.get(i) else {
             return Err(RuntimeError::TypeError("format(): the format ends inside a % directive".to_string()));
@@ -469,6 +473,10 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         let arg = args.get(next).cloned().ok_or_else(|| RuntimeError::TypeError(format!(
             "format(): directive %{} needs argument {} but only {} were given", conv, next + 1, args.len())))?;
         next += 1;
+        let w: usize = if width.is_empty() { 0 } else { width.parse().unwrap_or(usize::MAX) };
+        if w > crate::interpreter::MAX_BUILT_LEN || prec.map_or(false, |p| p > crate::interpreter::MAX_BUILT_LEN) {
+            return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("format(): a width or precision past {} characters", crate::interpreter::MAX_BUILT_LEN) });
+        }
         let body = match conv {
             'd' => match &arg {
                 Value::Int(n) => n.to_string(),
@@ -485,7 +493,6 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
             }
             other => return Err(RuntimeError::TypeError(format!("format(): unsupported directive %{} (supported: %d %s %f %.Nf, widths, - and 0 flags)", other))),
         };
-        let w: usize = width.parse().unwrap_or(0);
         let len = body.chars().count();
         if len >= w { out.push_str(&body); continue; }
         let pad = w - len;

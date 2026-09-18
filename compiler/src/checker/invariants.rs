@@ -284,8 +284,34 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // …and only for the handler's ONE adding write to this slot,
                 // outside any loop (two pushes after one require add two)
                 // a set on a key the handler knows exists does not grow the slot
+                // a delete of this slot in the handler (or in a handler it
+                // reaches) can remove the required key before the write:
+                // `require m.get(k) != ()  m.delete(k)  m.set(k, 2)` grew it
+                let deletes_reached = {
+                    let me = cell.node.name.clone();
+                    let mut seen: HashSet<(String, String)> = HashSet::new();
+                    let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
+                    let mut hit = false;
+                    while let Some((c, h)) = stack.pop() {
+                        if hit || !seen.insert((c.clone(), h.clone())) { continue; }
+                        if c == me && writes.iter().any(|(wh, sl, e, _, _, _)| *wh == h && sl == slot && matches!(e, Expr::Ident(n) if n == "<deleted entry>")) { hit = true; break; }
+                        let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
+                        for (target, name) in calls_of(&on.body, &cell_names) {
+                            match target {
+                                None => {
+                                    if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) { stack.push((c.clone(), name)); }
+                                    else { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                }
+                                Some(t) if t == "*" => { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                Some(t) => stack.push((t, name)),
+                            }
+                        }
+                    }
+                    hit
+                };
                 let key_exists = |path: &Vec<usize>, key: &Option<String>| -> bool {
                     let Some(k) = key else { return false };
+                    if deletes_reached { return false; }
                     let Some(on) = handlers.get(handler) else { return false };
                     // the key expression must name only once-bound values:
                     // `let key = k  require m.get(key) != ()  key = k2  m.set(key, …)`
@@ -390,6 +416,19 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         .fold(f64::INFINITY, f64::min);
                     if before + 1.0 <= k { *v = Proof::Holds; }
                 }
+                // a Float slot: NaN (sqrt(-1.0), 0.0 / 0.0, inf - inf) fails
+                // every comparison, and no interval says a value is not NaN —
+                // `x >= 0.0` "proven" for `abs(v)` rejected abs(sqrt(-1.0))
+                let float_slot = cell.node.sections.iter().any(|s| match &s.node {
+                    Section::Memory(m) => m.slots.iter().any(|sl| sl.node.name == *slot && type_mentions_float(&sl.node.ty.node)),
+                    _ => false,
+                });
+                let mut nan_open = false;
+                if float_slot && !matches!(known, Known::Exact(_)) && !is_int_valued(value_expr) && !nan_free_float(value_expr, slot) {
+                    for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
+                        if *v == Proof::Holds && size_upper_bound(c, slot).is_none() { *v = Proof::Unknown; nan_open = true; }
+                    }
+                }
                 let how = if inductive { "proven by induction" } else { "proven" };
 
                 if verdicts.iter().any(|v| *v == Proof::Violated) && *in_try {
@@ -477,6 +516,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             why.push(format!("`{}` is only known to lie in {}{}, {}{} — narrow it: `require {} else …`",
                                 render_expr(value_expr), l, num(lo), num(hi), r, open_txt.join(" && ")));
                         }
+                    }
+                    if nan_open {
+                        why = vec![format!("'{}' holds Floats and `{}` may be NaN (sqrt(-1.0), 0.0 / 0.0, inf - inf), which fails every comparison — the write is checked at run time", slot, render_expr(value_expr))];
                     }
                     let tag = if open.len() == parts.len() {
                         format!("{handler} → {slot}")
@@ -1920,4 +1962,38 @@ fn subst_render(c: &Expr, slot: &str, value: &Expr) -> String {
         }
     }
     render_expr(&go(c, slot, &shown))
+}
+
+fn type_mentions_float(t: &TypeExpr) -> bool {
+    match t {
+        TypeExpr::Simple(n) => n == "Float",
+        TypeExpr::Generic { args, .. } => args.iter().any(|a| type_mentions_float(&a.node)),
+        _ => false,
+    }
+}
+
+/// No Float can come out of it: Int literals, and `+ - * %` over them and
+/// over names (a Float slot written from an Int expression stays NaN-free
+/// only when its names are Ints — the conservative case is a literal).
+fn is_int_valued(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => true,
+        Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod, right } => is_int_valued(&left.node) && is_int_valued(&right.node),
+        _ => false,
+    }
+}
+
+/// Cannot be NaN: a literal, a read of the slot itself (a stored value passed
+/// the invariant, and NaN passes no comparison), `a ?? b` of those, and a
+/// literal added to or subtracted from one of those.
+fn nan_free_float(e: &Expr, slot: &str) -> bool {
+    let lit = |x: &Expr| matches!(x, Expr::Literal(Literal::Int(_) | Literal::Float(_)));
+    match e {
+        _ if lit(e) => true,
+        Expr::MethodCall { target, method, args } => method == "get" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == slot),
+        Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => nan_free_float(&args[0].node, slot) && nan_free_float(&args[1].node, slot),
+        Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub, right } =>
+            (lit(&left.node) && nan_free_float(&right.node, slot)) || (lit(&right.node) && nan_free_float(&left.node, slot)),
+        _ => false,
+    }
 }

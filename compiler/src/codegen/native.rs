@@ -4555,13 +4555,6 @@ impl FnGenerator {
             "bit_test" if args.len() == 2 => {
                 let b_expr = &args[1].node;
                 let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
-                // Big literal shift → fast path can't handle it; bail out
-                // via panic so the dispatch wrapper falls back to Rug.
-                if let Expr::Literal(Literal::Int(k)) = b_expr {
-                    if *k < 0 || *k >= 60 {
-                        return "{ panic!(\"bit_test shift out of i64 range\") }".to_string();
-                    }
-                }
                 if self.mode == Mode::Rug {
                     if let Expr::Ident(name) = &args[0].node {
                         if !self.small_int_vars.contains(name) {
@@ -4576,11 +4569,6 @@ impl FnGenerator {
             }
             "bit_set" if args.len() == 2 => {
                 let b_expr = &args[1].node;
-                if let Expr::Literal(Literal::Int(k)) = b_expr {
-                    if *k < 0 || *k >= 60 {
-                        return "{ panic!(\"bit_set shift out of i64 range\") }".to_string();
-                    }
-                }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
                 // bit 63 and above do not fit an i64: the BigInt variant computes it
@@ -4588,11 +4576,6 @@ impl FnGenerator {
             }
             "bit_clr" if args.len() == 2 => {
                 let b_expr = &args[1].node;
-                if let Expr::Literal(Literal::Int(k)) = b_expr {
-                    if *k < 0 || *k >= 60 {
-                        return "{ panic!(\"bit_clr shift out of i64 range\") }".to_string();
-                    }
-                }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
                 format!("({{ let _k: i64 = {}; if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} ({}) & !(1i64 << _k) }})", b, a)

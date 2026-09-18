@@ -71,6 +71,73 @@ pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value,
             _ => {}
         }
     }
+    // Int vector / Int: each element like the scalar `/` — an exact quotient
+    // is an Int, else the nearest Float ([6] / 3 gave [2.0]; past 2^53 it
+    // lost digits, past 2^63 it raised)
+    if op == BinOp::Div {
+        let int_vec = |v: &Value| matches!(v, Value::List(xs) if !xs.is_empty() && xs.iter().all(|x| matches!(x, Value::Int(_))));
+        let q = |a: &SomaInt, b: &SomaInt| -> Result<Value, RuntimeError> {
+            crate::interpreter::int_div_value(a, b)
+        };
+        let pairs: Option<Vec<(SomaInt, SomaInt)>> = match (l, r) {
+            (Value::List(xs), Value::List(ys)) if int_vec(l) && int_vec(r) && xs.len() == ys.len() =>
+                Some(xs.iter().zip(ys).map(|(x, y)| match (x, y) { (Value::Int(a), Value::Int(b)) => (a.clone(), b.clone()), _ => unreachable!() }).collect()),
+            (Value::List(xs), Value::Int(k)) if int_vec(l) => Some(xs.iter().map(|x| match x { Value::Int(a) => (a.clone(), k.clone()), _ => unreachable!() }).collect()),
+            (Value::Int(k), Value::List(ys)) if int_vec(r) => Some(ys.iter().map(|y| match y { Value::Int(b) => (k.clone(), b.clone()), _ => unreachable!() }).collect()),
+            _ => None,
+        };
+        if let Some(ps) = pairs {
+            return Some(ps.iter().map(|(a, b)| q(a, b)).collect::<Result<Vec<_>, _>>().map(Value::List));
+        }
+    }
+    // Int matrix with an Int scalar (+ - *): exact, element by element
+    if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+        let (m, k, flip) = match (l, r) {
+            (Value::List(_), Value::Int(k)) if is_matrix(l) => (l, k, false),
+            (Value::Int(k), Value::List(_)) if is_matrix(r) => (r, k, true),
+            _ => (l, &SomaInt::from_i64(0), false),
+        };
+        if let (Value::List(rows), true) = (m, is_matrix(m) && matches!((l, r), (Value::Int(_), _) | (_, Value::Int(_)))) {
+            if rows.iter().all(|row| matches!(row, Value::List(xs) if xs.iter().all(|x| matches!(x, Value::Int(_))))) {
+                let k = k.to_rug();
+                let f = |x: &rug::Integer| -> Value {
+                    let (a, b) = if flip { (&k, x) } else { (x, &k) };
+                    Value::Int(SomaInt::from_rug(match op { BinOp::Add => rug::Integer::from(a + b), BinOp::Sub => rug::Integer::from(a - b), _ => rug::Integer::from(a * b) }))
+                };
+                return Some(Ok(Value::List(rows.iter().map(|row| match row {
+                    Value::List(xs) => Value::List(xs.iter().map(|x| match x { Value::Int(i) => f(&i.to_rug()), other => other.clone() }).collect()),
+                    other => other.clone(),
+                }).collect())));
+            }
+        }
+    }
+    // Int matrices: + - and the matrix product stay exact Ints
+    if is_matrix(l) && is_matrix(r) && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+        let int_mat = |v: &Value| -> Option<Vec<Vec<rug::Integer>>> {
+            let Value::List(rows) = v else { return None };
+            rows.iter().map(|row| match row {
+                Value::List(xs) if !xs.is_empty() => xs.iter().map(|x| match x { Value::Int(i) => Some(i.to_rug()), _ => None }).collect(),
+                _ => None,
+            }).collect()
+        };
+        if let (Some(a), Some(b)) = (int_mat(l), int_mat(r)) {
+            let n = a[0].len();
+            if a.iter().all(|r| r.len() == n) && b.iter().all(|r| r.len() == b[0].len()) {
+                let out: Option<Vec<Vec<rug::Integer>>> = match op {
+                    BinOp::Add | BinOp::Sub if a.len() == b.len() && n == b[0].len() => Some(a.iter().zip(&b).map(|(ra, rb)| ra.iter().zip(rb).map(|(x, y)| if op == BinOp::Add { rug::Integer::from(x + y) } else { rug::Integer::from(x - y) }).collect()).collect()),
+                    BinOp::Mul if n == b.len() => Some(a.iter().map(|ra| (0..b[0].len()).map(|j| {
+                        let mut acc = rug::Integer::new();
+                        for (k, x) in ra.iter().enumerate() { acc += rug::Integer::from(x * &b[k][j]); }
+                        acc
+                    }).collect()).collect()),
+                    _ => None,
+                };
+                if let Some(m) = out {
+                    return Some(Ok(Value::List(m.into_iter().map(|row| Value::List(row.into_iter().map(|x| Value::Int(SomaInt::from_rug(x))).collect())).collect())));
+                }
+            }
+        }
+    }
     let opf: Option<fn(f64, f64) -> f64> = match op {
         BinOp::Add => Some(|a, b| a + b),
         BinOp::Sub => Some(|a, b| a - b),
@@ -155,6 +222,20 @@ pub fn try_tensor_cmpop(l: &Value, op: crate::ast::CmpOp, r: &Value) -> Option<R
         return Some(mat_map(l, |x| cmp(x, k)));
     }
     if is_vector(l) && is_scalar(r) {
+        // Ints compare exactly ([2^53 + 1] > 2^53 was [0.0])
+        if let (Value::List(xs), Value::Int(k)) = (l, r) {
+            if xs.iter().all(|x| matches!(x, Value::Int(_))) {
+                return Some(Ok(Value::List(xs.iter().map(|x| {
+                    let Value::Int(a) = x else { unreachable!() };
+                    let o = a.to_rug().cmp(&k.to_rug());
+                    let b = match op {
+                        CmpOp::Lt => o.is_lt(), CmpOp::Gt => o.is_gt(), CmpOp::Le => o.is_le(),
+                        CmpOp::Ge => o.is_ge(), CmpOp::Eq => o.is_eq(), CmpOp::Ne => o.is_ne(),
+                    };
+                    Value::Float(if b { 1.0 } else { 0.0 })
+                }).collect())));
+            }
+        }
         let k = arg_f64(r);
         return Some(vec_map(l, |x| cmp(x, k)));
     }
@@ -1371,9 +1452,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let flat = match flatten_nums(&args[0]) { Ok(f) => f, Err(e) => return Some(Err(e)) };
             let r = arg_usize(&args[1]);
             let c = arg_usize(&args[2]);
-            if r * c != flat.len() {
+            if r.checked_mul(c) != Some(flat.len()) {
                 return Some(Err(RuntimeError::TypeError(format!(
-                    "reshape: {} values cannot fill a {}x{} matrix ({} cells)", flat.len(), r, c, r * c))));
+                    "reshape: {} values cannot fill a {}x{} matrix ({} cells)", flat.len(), r, c, r as u128 * c as u128))));
             }
             let m: Vec<Vec<f64>> = (0..r).map(|i| flat[i * c..(i + 1) * c].to_vec()).collect();
             Some(Ok(matrix_to_value(&m)))
@@ -1624,6 +1705,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Ok(v) => v,
                 Err(e) => return Some(Err(e)),
             };
+            if let Err(e) = check_cells(r, c) { return Some(Err(e)); }
             Some(Ok(matrix_to_value(&vec![vec![0.0; c]; r])))
         }
         // ones(r, c) — r×c matrix of ones.
@@ -1641,6 +1723,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Ok(v) => v,
                 Err(e) => return Some(Err(e)),
             };
+            if let Err(e) = check_cells(r, c) { return Some(Err(e)); }
             Some(Ok(matrix_to_value(&vec![vec![1.0; c]; r])))
         }
         // diag(list(d_1, ..., d_n)) — n×n diagonal matrix.
@@ -1718,6 +1801,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Ok(v) => v,
                 Err(e) => return Some(Err(e)),
             };
+            if let Err(e) = check_cells(n, n) { return Some(Err(e)); }
             let mut rows: Vec<Vec<f64>> = vec![vec![0.0; n]; n];
             for i in 0..n {
                 rows[i][i] = 1.0;
@@ -2308,5 +2392,13 @@ mod tests {
             rel,
             x
         );
+    }
+}
+
+/// zeros(2^62, 2^62) panicked (capacity overflow) past every `try`
+fn check_cells(r: usize, c: usize) -> Result<(), RuntimeError> {
+    match r.checked_mul(c) {
+        Some(n) if n <= crate::interpreter::MAX_BUILT_LEN => Ok(()),
+        _ => Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("a {}x{} matrix is past the limit of {} cells", r, c, crate::interpreter::MAX_BUILT_LEN) }),
     }
 }

@@ -537,3 +537,37 @@ No false proof found. Fixed:
 - [ ] Native `/` answers a Float where the interpreter answers an exact Int (`to_string(n / 3)`, quotients past 2^53).
 - [ ] `to_int` of a big Float into a `let` in a Direct-only native handler raises instead of promoting.
 
+
+## Cycle 19 (2026-09-18) — an IoT telemetry pipeline across processes (`[peers]` bus)
+
+### Fixed
+- [x] **Bus**: an outbound `--join` link dispatched any incoming event, `[bus] accept` included or not — the same filter as the listening side; an accept-only receiver did not open the bus; a handler listed in `[bus] accept` was also an HTTP endpoint (forgeable) — hidden from routing; a cross-process `emit` left before the handler committed (sent by a handler that then raised) — journaled and sent at COMMIT like SSE/WS pushes; a line with no newline grew the receiver without limit — 16 MB cap.
+- [x] `Store.config.get(k)` from another cell passed check and raised "undefined variable: Store" — a check error naming the accessor handler to write.
+- [x] Performance: every `set` counted the slot even without invariants (COUNT only when the slot has invariants); `len(slot)` materialized every row (counted by the backend).
+- [x] Native: `x = to_string(x)` on a number local blamed "BigInt mode" — says the local keeps the type of its `let`.
+- [x] Docs: the bus wire format, broadcast to every peer at commit, no reconnect after a peer restarts, `[bus] accept` in the start-up rule.
+
+### Open
+- [ ] A peer that restarts is not reconnected (documented; restart the sender or re-join).
+
+### Cycle 19 — attack (same binary)
+
+False proofs found and fixed:
+- [x] **`require` was invisible to every analysis**: `require r(n) > 0`, `require think(p) != ""`, `require … else Big "{r3(n)}"`, `require rows.set(k, 1) == ()` gave "structurally terminate", "bound proven — peak 0" and "no handler writes to guarded slots" — the calls in the condition and the detail are exposed to termination, cost and the invariant prover.
+- [x] **Transition guards with effects** (a handler call, think(), a slot write) ran on every `transition()` unseen by the proofs, and an undefined function in a guard passed check — a guard is a pure condition (check error).
+- [x] **Size proof after a delete**: `require m.get(k) != ()  m.delete(k)  …  m.set(k, 2)` was "proven" — a delete in the handler (or a handler it reaches) drops the key-exists fact.
+- [x] **NaN on Float slots**: `x >= 0.0` "proven" for `abs(v)` and `(x.get(k) ?? 0.0) + abs(v)` — a computed Float may be NaN: runtime-checked unless it is a constant or a slot read ± a literal.
+
+Other fixes:
+- [x] **Security**: routes written as `if starts_with(path, "/wipe/")`, `path == "/reset"`, guard arms or `split()` did not own the handler — `POST /wipe/a` skipped `request`'s auth. A public handler `request` calls (directly or through its helpers) is reachable only through `request`; tested literal paths are routes. `/signal/<not a handler>` is 404 (was 500).
+- [x] **One request killed or wedged serve**: `pad_left("x", 2^62)` and `format("%{w}d")` aborted the process, `zeros`/`eye`/`ones`/`reshape` with huge sizes panicked past `try`, `range(0, 2^62)` grew without bound, `sleep(-1)` never returned (holding the handler lock) — one builtin call builds at most 10^8 elements (kind `range`); sleep is 0..86,400,000 ms.
+- [x] **Data**: `next_id()` handed out the same id twice when a failing `try` rolled it back after the id escaped into a local — ids drawn in a failing try are kept (a failing handler still burns none); a sum-typed parameter took any value — `on f(p: Pay)` takes a Pay variant (a unit variant's name from the CLI); variant constructors and slots check `List<Int>` / `Map<…>` / nested variant fields; `write_csv` wrote Lists unquoted (the row shifted), headers unquoted, and numeric Strings came back as numbers — quoted.
+- [x] **Exactness**: Int vector comparisons, `/` (the scalar rule per element), Int matrix `+ - *` and matrix × Int, and `median` of Ints are exact past 2^53.
+- [x] **Dates**: `add_months` past year 9999 / with 2^63 months, BigInt day counts wrapping, `format_date` of a Float or past 9999, `parse_date(" 2026-01-01")` — errors of kind `date`.
+- [x] **Native**: `bit_test(a, 63)` with a literal index raised in a Direct handler and `to_string(bit_test(a, 62))` did not compile — the literal bail-out removed.
+- [x] Smaller: `for x in ()` runs zero times and `for x in 5` is a type error (both ran once); `every 0ms` is a check error; docs: native Int / Int is a Float, masks are 0.0/1.0, Map slot keys are text, both `start` and `init` run, an undefined variable in `try` is catchable, `sum_by` coerces numeric Strings.
+
+### Open
+- [ ] Native `/` on two Ints is always a Float (documented, warned) — unchanged.
+- [ ] Map slot key types are not enforced (`Map<Int, …>` takes "abc"; `1` and `"1"` are one key) — documented.
+- [ ] Misleading messages remain for `rows[k].x = 1` on a missing key and for a think() exceeding max_rounds (points at the tool body).

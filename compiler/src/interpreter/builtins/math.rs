@@ -483,6 +483,18 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
         if all_int && x.fract() == 0.0 && x.abs() < 9.0e15 { Value::Int(SomaInt::from_i64(x as i64)) } else { Value::Float(x) }
     };
     match op {
+        "median" if all_int => {
+            // exact: sort the Ints themselves, the middle pair by the `/` rule
+            let mut xs: Vec<rug::Integer> = items.iter().map(|v| match v { Value::Int(i) => i.to_rug(), _ => rug::Integer::new() }).collect();
+            xs.sort();
+            let m = xs.len() / 2;
+            if xs.len() % 2 == 1 {
+                Ok(Value::Int(SomaInt::from_rug(xs[m].clone())))
+            } else {
+                let sum = SomaInt::from_rug(rug::Integer::from(&xs[m - 1] + &xs[m]));
+                crate::interpreter::int_div_value(&sum, &SomaInt::from_i64(2))
+            }
+        }
         "median" => {
             nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let m = nums.len() / 2;

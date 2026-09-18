@@ -17,6 +17,11 @@ use crate::ast::*;
 pub struct ExplicitRoutes {
     pub exact: Vec<String>,
     pub prefixes: Vec<String>,
+    /// public handlers `request` calls itself (directly or through its own
+    /// helpers): `request` is their gatekeeper, so they are not also exposed
+    /// at /<handler> — `if starts_with(path, "/wipe/") { <auth>  wipe(…) }`
+    /// left POST /wipe/a open without the auth check
+    pub owned: Vec<String>,
 }
 
 impl ExplicitRoutes {
@@ -32,6 +37,7 @@ impl ExplicitRoutes {
             .chain(self.prefixes.iter())
             .filter_map(|p| p.trim_start_matches('/').split('/').next().map(str::to_string))
             .filter(|s| !s.is_empty())
+            .chain(self.owned.iter().cloned())
             .collect();
         out.sort();
         out.dedup();
@@ -54,6 +60,42 @@ pub fn explicit_routes(cell: &CellDef) -> ExplicitRoutes {
                     }
                 }
             });
+        }
+        // routes written as tests: `path == "/reset"`, `starts_with(path, "/wipe/")`
+        // (a literal a redirect() or a link names is not a route of `request`)
+        let mut tested: Vec<String> = Vec::new();
+        let lit = |x: &Expr, out: &mut Vec<String>| if let Expr::Literal(Literal::String(s)) = x {
+            if s.len() > 1 && s.starts_with('/') && !s.contains(|c: char| c.is_whitespace() || c == '{') { out.push(s.clone()); }
+        };
+        super::literals::for_each_expr(&on.body, &mut |e| match e {
+            Expr::CmpOp { left, right, .. } => { lit(&left.node, &mut tested); lit(&right.node, &mut tested); }
+            Expr::FnCall { name, args } if matches!(name.as_str(), "starts_with" | "contains") => { for a in args { lit(&a.node, &mut tested); } }
+            Expr::MethodCall { method, args, .. } if matches!(method.as_str(), "starts_with" | "contains") => { for a in args { lit(&a.node, &mut tested); } }
+            _ => {}
+        });
+        for s in tested {
+            if s.ends_with('/') { routes.prefixes.push(s); } else { routes.exact.push(s); }
+        }
+        // the handlers `request` reaches through this cell's calls
+        let local: std::collections::HashMap<&str, &OnSection> = cell.sections.iter().filter_map(|s| match &s.node {
+            Section::OnSignal(h) => Some((h.signal_name.as_str(), h)),
+            _ => None,
+        }).collect();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut todo: Vec<&OnSection> = vec![on];
+        while let Some(h) = todo.pop() {
+            let mut called: Vec<String> = Vec::new();
+            super::literals::for_each_call(&h.body, &mut |n, _, _| called.push(n.to_string()));
+            super::literals::for_each_expr(&h.body, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
+                if matches!(&target.node, Expr::Ident(t) if *t == cell.name) { called.push(method.clone()); }
+            });
+            for n in called {
+                if n == "request" || !seen.insert(n.clone()) { continue; }
+                if let Some(next) = local.get(n.as_str()) {
+                    if !n.starts_with('_') { routes.owned.push(n.clone()); }
+                    todo.push(next);
+                }
+            }
         }
     }
     routes

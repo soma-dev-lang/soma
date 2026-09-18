@@ -120,7 +120,7 @@ let M = [1, 0, 0, 1].reshape(2, 2)    // matrices = List<List<Float>>, first-cla
 A * B          // matmul        A + B / A - B   elementwise
 A + 10  A / 2  // scalar broadcast (both orders)
 v * v  v + v   // numeric vectors: + * / - elementwise
-A > 2  v >= 1.0                       // comparison masks (0/1)
+A > 2  v >= 1.0                       // comparison masks (0.0/1.0 Floats); Int vectors compare and + - * exactly, [6] / 3 is [2] (the `/` rule per element)
 A.T    A.shape    det(A)    matrix("1 2; 3 4")
 concat(a, b)   // EXPLICIT list concatenation (+ on non-numeric lists concats)
 ```
@@ -149,7 +149,7 @@ map("k", v)   map()                // no {k: v} literal;   record: Name { k: v }
 x == ()       x ?? 0               // null is (); no null / None / undefined
 if c { a } else { b }              // is an expression; no ternary; && || !  (no and/or/not)
 x => x + 1                         // lambdas take ONE parameter
-for x in xs { }   for k in keys(m) { m[k] }   for e in entries(m) { e.key  e.value }
+for x in xs { }   for k in keys(m) { m[k] }   for e in entries(m) { e.key  e.value }   // for over () runs 0 times, over a String its lines, over a number: type error
 slice(xs, 1, 3)  slice(xs, -2)     // no xs[a:b]
 xs = push(xs, x)                   // push / concat / sort / with RETURN new values
 on f(n: Int) [native] { … }        // annotations go AFTER the parameter list; no @decorator
@@ -310,6 +310,11 @@ source, `file:line`, left/right, and the fields a value really has when
 - Data: `read_csv(path)` → List<Map>: RFC 4180 (quoted `"a, b"`, `""`, multi-line
   cells); unquoted cells auto-typed (`1.00` → 1.0), quoted cells and `007` stay
   Strings; `read_csv(path, map("raw", true))` keeps all text (exact money).
+  `write_csv` quotes what a reader would change (a String "12" stays a String;
+  a List cell is its JSON text). One builtin call builds at most 100,000,000
+  characters / elements / matrix cells (`pad_left`, `format` widths, `range`,
+  `zeros`…): past that it raises kind `range`. Map slot keys are text
+  (`m.set(1, …)` and `m.set("1", …)` are one entry).
   `use helper` imports helper.cell beside the program, `use lib::m`
   lib/m.cell; imported handlers are callable by name; an imported file's
   test cells run only under `soma test lib/m.cell`. `agg`, `sort_by`,
@@ -456,6 +461,11 @@ Guards (`a -> b { guard { cond } }`) are enforced at runtime and read the
 locals of the handler that calls `transition()` — so EVERY handler whose
 `transition()` targets the guarded state must bind those names (check error
 otherwise), even one meant for another edge; the model keeps guarded edges.
+A guard is a pure condition: calling a handler, think(), next_id() or a slot
+write (`.set`/`.delete`/`.push`) inside it is a check error — compute the value
+in the handler before `transition()` and test that local. The calls in a
+`require` condition and in its `else` detail are part of the termination,
+cost and invariant analyses like any other statement.
 A `cost { tokens: N }` bounds the REPLY tokens (the sum of the max_tokens
 caps of the think() calls a handler can make — ×10 provider rounds in an
 agent with tools, or × `map("max_rounds", N)`); prompt tokens are not in it —
@@ -561,7 +571,11 @@ maps inside a value use JSON's shortest form (`1.18e21`).
 `soma check` verifies the native vocabulary (every handler, every error at
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
-an Int slot refuses a non-exact `/` instead of truncating.
+an Int slot refuses a non-exact `/` instead of truncating. One difference:
+native code is statically typed, so `a / b` on two Ints is ALWAYS a Float
+there (`-7 / 1` is -7.0; the interpreter answers the Int -7) — `soma check`
+warns; write idiv(a, b) for an integer quotient. A native local keeps the
+type of its `let` (assigning a String to a number local is a check error).
 
 What a `[native]` handler may use — nothing else:
 - parameters and locals: Int, Float, Bool, String (a List cannot cross the

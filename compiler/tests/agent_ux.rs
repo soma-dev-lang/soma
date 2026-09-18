@@ -539,11 +539,9 @@ cell Booking {
     on ids() { return sort(bookings.keys()) }
     on request(method: String, path: String, body: String) {
         match map("method", method, "path", path) {
-            {method: "POST", path: "/book/" + slot} -> {
-                let r = try { book(slot) }
-                if r.error != () { return response(409, map("error", r.kind)) }
-                r.value
-            }
+            // (a raise rolls the whole request back, its id included; a
+            // `try` keeps the ids drawn inside it — they may have escaped)
+            {method: "POST", path: "/book/" + slot} -> book(slot)
             {method: "GET", path: "/ids"} -> ids()
             _ -> response(404, map("error", "not found"))
         }
@@ -1779,4 +1777,146 @@ cell A {
     let (out, code) = soma_in(&d, &["check", "r.cell"]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("zundef"), "{out}");
+}
+
+/// Cycle 19: the analyses see `require` conditions and details; guards are
+/// pure; a handler `request` calls is route-owned; absurd sizes raise;
+/// a failing try keeps its ids; sum-type parameters and generic variant
+/// fields are checked; CSV round trip; cross-cell slot reads are errors.
+#[test]
+fn cycle19_findings() {
+    let d = dir("cycle19");
+    std::fs::write(d.join("r.cell"), r#"
+cell agent R {
+  cost { tokens: 10 }
+  on c(p: String) {
+    require think(p) != "" else Empty
+    return 1
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "r.cell"]);
+    assert_ne!(code, 0, "think() in a require condition must count: {out}");
+    std::fs::write(d.join("t.cell"), r#"
+cell T {
+  on r(n: Int) {
+    require n < 3 else Big "{r(n)}"
+    return n
+  }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "t.cell"]);
+    assert!(!out.contains("structurally terminate"), "{out}");
+    std::fs::write(d.join("g.cell"), r#"
+cell G {
+  memory { rows: Map<String, Int> [persistent] }
+  state s { initial: a  a -> b { guard { rows.set(_id, 1) == () } } }
+  on go(_id: String) { transition(_id, "b") }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("a guard is a condition"), "{out}");
+    std::fs::write(d.join("x.cell"), r#"
+cell Store { memory { config: Map<String, String> [persistent] } on put(k: String, v: String) { config.set(k, v) } }
+cell App { on get(k: String) { return Store.config.get(k) } }
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "x.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("reads the memory of another cell"), "{out}");
+    std::fs::write(d.join("e.cell"), "cell E { every 0ms { print(1) } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "e.cell"]);
+    assert_ne!(code, 0, "{out}");
+
+    std::fs::write(d.join("a.cell"), r#"
+cell type Pay { variants { Charged { tx: String }  Cash } }
+cell type Wrap { variants { W { xs: List<Int> } } }
+cell A {
+  memory { m: Map<String, Int> [persistent] }
+  on f(p: Pay) { return p }
+  on sizes() {
+    let big = shl(1, 62)
+    return [try { pad_left("x", big) }.kind, try { zeros(big, big) }.kind, try { range(0, big) }.kind, try { sleep(0 - 1) }.kind]
+  }
+  on ids() {
+    let id = 0
+    let r = try {
+      id = next_id()
+      fail("boom", "x")
+    }
+    return [id, next_id()]
+  }
+  on types() {
+    let sx = "x"
+    let one = 1
+    return [try { f(sx) }.kind, try { Charged { tx: one } }.kind, try { W { xs: ["a"] } }.kind, f(Cash) == Cash]
+  }
+  on csv() {
+    write_csv("t.csv", [map("tags", ["a", "b"], "qty", 5, "code", "12")])
+    return read_csv("t.csv")
+  }
+  on loops() {
+    let n = 0
+    for x in m.get("missing") { n = n + 1 }
+    return [n, try { for x in 5 { n = n + 1 } }.kind]
+  }
+  on vec() {
+    let p = shl(1, 53)
+    return [[p + 1] > p, [6] / 3, median([p + 1, p + 1])]
+  }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "a.cell", "sizes"]);
+    assert!(out.contains(r#"["range", "range", "range", "range"]"#), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "ids"]);
+    assert!(out.contains("[1, 2]"), "ids drawn in a failed try are kept: {out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "types"]);
+    assert!(out.contains(r#"["type", "type", "type", true]"#), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "csv"]);
+    assert!(out.contains(r#""tags": "[\"a\",\"b\"]""#) && out.contains(r#""qty": 5"#) && out.contains(r#""code": "12""#), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "loops"]);
+    assert!(out.contains(r#"[0, "type"]"#), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "vec"]);
+    assert!(out.contains("[[1.0], [2], 9007199254740993]"), "{out}");
+}
+
+/// Cycle 19 (attack): a public handler `request` reaches after its own
+/// checks is not also a direct endpoint.
+#[test]
+fn cycle19_route_owned_by_calls() {
+    let d = dir("cycle19r");
+    std::fs::write(d.join("app.cell"), r#"
+cell App {
+  memory { log: Map<String, String> [persistent] }
+  on wipe(id: String) {
+    log.set(id, "wiped")
+    return "wiped"
+  }
+  on request(method: String, path: String, body: String, headers: Map) {
+    if starts_with(path, "/wipe/") {
+      if headers.authorization != "Bearer ok" { return response(401, map("error", "auth")) }
+      return wipe(substring(path, 6, len(path)))
+    }
+    return response(404, map("error", "nf"))
+  }
+}
+"#).unwrap();
+    let port = 20100 + (std::process::id() % 150) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "-p", &port.to_string()])
+        .current_dir(&d)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("soma serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let r = if up { http(port, "POST", "/wipe/a") } else { String::new() };
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    assert!(r.contains("401") && r.contains("auth"), "the direct /wipe endpoint bypassed request's auth: {r}");
 }

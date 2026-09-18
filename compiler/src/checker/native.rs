@@ -174,6 +174,48 @@ pub fn check_native_handler(
             }
         });
     }
+    // `let x = n + 1  …  x = to_string(x)`: a native local keeps the Rust
+    // type of its `let` (the error blamed to_string's "BigInt mode")
+    if problem.is_none() {
+        fn kind(e: &Expr, kinds: &std::collections::HashMap<String, char>) -> Option<char> {
+            match e {
+                Expr::Literal(Literal::String(_)) => Some('s'),
+                Expr::Literal(Literal::Int(_) | Literal::BigInt(_) | Literal::Float(_)) => Some('n'),
+                Expr::Literal(Literal::Bool(_)) => Some('b'),
+                Expr::FnCall { name, .. } if matches!(name.as_str(), "to_string" | "concat" | "format" | "substring" | "upper" | "lower" | "trim") => Some('s'),
+                Expr::BinaryOp { op: BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. } => Some('n'),
+                Expr::BinaryOp { op: BinOp::Add, left, right } => kind(&left.node, kinds).filter(|k| *k == 'n').or_else(|| kind(&right.node, kinds).filter(|k| *k == 'n')),
+                Expr::Ident(n) => kinds.get(n).copied(),
+                _ => None,
+            }
+        }
+        fn walk(stmts: &[Spanned<Statement>], kinds: &mut std::collections::HashMap<String, char>) -> Option<String> {
+            for st in stmts {
+                let hit = match &st.node {
+                    Statement::Let { name, value } => { match kind(&value.node, kinds) { Some(k) => { kinds.insert(name.clone(), k); } None => { kinds.remove(name); } } None }
+                    Statement::Assign { name, value } => match (kinds.get(name), kind(&value.node, kinds)) {
+                        (Some(a), Some(b)) if *a != b => {
+                            let w = |k: char| match k { 's' => "a String", 'n' => "a number", _ => "a Bool" };
+                            Some(format!("the local `{}` is bound to {} by its `let`, then assigned {} — a native local keeps the type of its `let`; give the new value its own name (`let {}_text = …`)", name, w(*a), w(b), name))
+                        }
+                        _ => None,
+                    },
+                    Statement::If { then_body, else_body, .. } => walk(then_body, kinds).or_else(|| walk(else_body, kinds)),
+                    Statement::For { body, .. } | Statement::While { body, .. } => walk(body, kinds),
+                    _ => None,
+                };
+                if hit.is_some() { return hit; }
+            }
+            None
+        }
+        let mut kinds: std::collections::HashMap<String, char> = params.iter().filter_map(|p| match &p.ty.node {
+            TypeExpr::Simple(t) if t == "String" => Some((p.name.clone(), 's')),
+            TypeExpr::Simple(t) if t == "Int" || t == "Float" => Some((p.name.clone(), 'n')),
+            TypeExpr::Simple(t) if t == "Bool" => Some((p.name.clone(), 'b')),
+            _ => None,
+        }).collect();
+        problem = walk(body, &mut kinds);
+    }
     if let Some(reason) = problem {
         return Err(NativeCheckError { handler_name: handler_name.to_string(), reason });
     }

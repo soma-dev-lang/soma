@@ -11,21 +11,27 @@ soma run   app.cell request GET /stats ""     # call the router with no server
    directory (`..` cannot escape it).
 2. A path that the cell's `request(method, path, body)` handler **matches
    explicitly** — a literal (`"/stats"`) or a prefix pattern (`"/hold/" + id`)
-   in one of its `match` arms — goes to `request`.
+   in one of its `match` arms, or a path it tests (`path == "/reset"`,
+   `starts_with(path, "/wipe/")`) — goes to `request`.
 3. Otherwise, if the first path segment is the name of a **public handler** of
    the request-owning cell, that handler is called with the remaining segments
    and query values as arguments: `POST /add/5` → `add(5)`. This is how an HTML
    form posts to `/add`. Anything else goes to `request` (or 404 without one).
 
 **Every public handler of the request-owning cell is therefore an HTTP
-endpoint** — except `request` itself, which is only ever the router. A
-handler is private when its name starts with `_`
+endpoint** — except `request` itself, which is only ever the router, and
+the handlers `request` calls (directly or through its own helpers): those
+are reachable ONLY through `request`, so the checks it makes before calling
+them (an Authorization header, a method) cannot be walked around with
+`POST /wipe/a`. A handler is private when its name starts with `_`
 (`on _debit(account, amount)`), or when it lives in another cell. Put domain
 logic in its own cell and keep the HTTP cell thin. `soma check` warns when a
 handler and one of `request`'s routes share a name.
 
 Only the cell that defines `request` is routed. Other cells are reachable from
-it by calling their handlers by name.
+it by calling their handlers by name — not by reading their slots:
+`Store.config.get(k)` from another cell is a check error (a cell's memory is
+its own; add a handler to Store that returns the value).
 
 ## Requests and responses
 
@@ -81,7 +87,7 @@ handlers (no `_` prefix, `request` aside) are also reachable directly at
 `/<handler>/<arg>/…`: arguments are coerced to the declared parameter types
 (`/decide/x/true` → Bool), a trailing `Map`/`List` parameter takes the JSON
 body (a non-JSON body → `400 {"kind": "json"}`). At start-up `serve` calls a
-zero-argument `start()` (or `init()`) handler when the cell has one; neither
+zero-argument `start()` and `init()` handler (each one the cell has); neither
 name is an HTTP endpoint (a request could re-run it). A handler that changes
 state — a slot write, a transition, an emit, a call into another cell —
 answers `GET`/`HEAD` with `405` (`Allow: POST`) — for the auto-exposed
@@ -132,8 +138,15 @@ uses fresh in-memory storage every time.
 No TLS, no built-in authentication (read `headers.authorization` in
 `request` and refuse), no rate limiting.
 It binds 127.0.0.1 (`--host 0.0.0.0` to expose it). `PORT + 2` (the signal
-bus) is opened only when a cell uses `emit`, declares `scale`, or `--join` is
-given — the start-up log says `bus: listening` or `bus: not started`; `PORT +
+bus) is opened only when a cell uses `emit`, declares `scale`, lists events
+in `[bus] accept`, or `--join` is given — the start-up log says `bus:
+listening` or `bus: not started`. The bus speaks one line per event,
+`EVENT <name> <json>\n` (a line past 16 MB closes the connection); a
+receiver runs only the events its program emits itself or lists in
+`[bus] accept = ["reading"]` in soma.toml, and never `request`, `ws`,
+`start`/`init` or a `_private` handler. An `emit` goes to every connected
+peer AT COMMIT (a handler that raises sends nothing). A peer that restarts is
+not reconnected: restart the sender too, or re-`--join`; `PORT +
 1` only when a cell declares `on ws`. Every response, static files, the
 dashboard and the pre-handler 400s included, carries
 `Access-Control-Allow-Origin: *` (browsers on any origin may call it; put a

@@ -698,6 +698,90 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // `Store.config.get(k)` from another cell passed check and raised
+        // "undefined variable: Store" at run time: a cell's memory is its own
+        {
+            let slots_of: std::collections::HashMap<String, Vec<String>> = program.cells.iter().map(|c| (c.node.name.clone(), c.node.sections.iter().filter_map(|s| match &s.node {
+                Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
+                _ => None,
+            }).flatten().collect())).collect();
+            for cell in &program.cells {
+                for sec in &cell.node.sections {
+                    let body = match &sec.node {
+                        Section::OnSignal(on) => &on.body,
+                        Section::Every(e) | Section::After(e) => &e.body,
+                        _ => continue,
+                    };
+                    let mut hits: Vec<(String, String)> = Vec::new();
+                    literals::for_each_expr(body, &mut |e| if let Expr::FieldAccess { target, field } = e {
+                        if let Expr::Ident(c) = &target.node {
+                            if *c != cell.node.name && slots_of.get(c).map_or(false, |v| v.contains(field)) && !hits.contains(&(c.clone(), field.clone())) {
+                                hits.push((c.clone(), field.clone()));
+                            }
+                        }
+                    });
+                    for (c, f) in hits {
+                        self.errors.push(CheckError::Static {
+                            kind: "foreign_slot",
+                            message: format!("`{}.{}` reads the memory of another cell — a cell's slots are private to it (this raises \"undefined variable: {}\" at run time); add a handler to {} that returns what you need (`on get_{}(k: String) {{ return {}.get(k) }}`) and call `{}.get_{}(k)`", c, f, c, c, f, f, c, f),
+                            span: sec.span,
+                        });
+                    }
+                }
+            }
+        }
+        // a transition guard is a CONDITION: a think(), a slot write or a
+        // handler call in it ran on every transition() and no analysis saw
+        // it (false termination / cost / invariant proofs); an undefined
+        // function in it passed check
+        {
+            let handlers: std::collections::HashSet<String> = program.cells.iter().flat_map(|c| c.node.sections.iter().filter_map(|s| match &s.node {
+                Section::OnSignal(on) => Some(on.signal_name.clone()),
+                _ => None,
+            })).collect();
+            let builtins = names::builtin_names();
+            for cell in &program.cells {
+                for sec in &cell.node.sections {
+                    let Section::State(sm) = &sec.node else { continue };
+                    for t in &sm.transitions {
+                        let Some(g) = &t.node.guard else { continue };
+                        let mut bad: Option<String> = None;
+                        literals::for_each_in_expr(&g.node, &mut |e| {
+                            if bad.is_some() { return; }
+                            match e {
+                                Expr::FnCall { name, .. } if handlers.contains(name) => bad = Some(format!("calls the handler `{}`", name)),
+                                Expr::FnCall { name, .. } if matches!(name.as_str(), "think" | "think_json" | "transition" | "publish" | "remember" | "delegate" | "next_id" | "write_file" | "http_get" | "http_post" | "http_put" | "http_delete" | "set_budget" | "sleep") => bad = Some(format!("calls {}()", name)),
+                                Expr::FnCall { name, .. } if !builtins.contains(name.as_str()) && !name.starts_with(|c: char| c.is_uppercase()) => bad = Some(format!("calls `{}`, which is not a builtin (undefined function)", name)),
+                                Expr::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") || handlers.contains(method) =>
+                                    bad = Some(format!("calls .{}()", method)),
+                                _ => {}
+                            }
+                        });
+                        if let Some(what) = bad {
+                            self.errors.push(CheckError::Static {
+                                kind: "guard_effect",
+                                message: format!("the guard of {} -> {} {} — a guard is a condition over the calling handler's locals: it cannot call handlers, think(), or write slots (it would run on every transition(), unseen by termination, cost and invariant proofs); compute the value in the handler before transition() and test that local in the guard", t.node.from, t.node.to, what),
+                                span: g.span,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        // `every 0ms` ran its body back to back (77,865 commits in 3 s)
+        for cell in &program.cells {
+            for sec in &cell.node.sections {
+                if let Section::Every(e) = &sec.node {
+                    if e.interval_ms == 0 {
+                        self.errors.push(CheckError::Static {
+                            kind: "every_zero",
+                            message: "`every 0ms` would run its body back to back, forever — give it a period of at least 1ms".to_string(),
+                            span: sec.span,
+                        });
+                    }
+                }
+            }
+        }
         for cell in &program.cells {
             // `cell test T { }` ran "0 tests: 0 passed" and exited 0
             if cell.node.kind == CellKind::Test && !cell.node.sections.iter().any(|s| matches!(s.node, Section::Rules(_))) {

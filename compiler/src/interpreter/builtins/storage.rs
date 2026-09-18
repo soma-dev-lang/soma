@@ -30,7 +30,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             });
             let next = current + 1;
             if let Some(j) = interp.journal.as_mut() {
-                j.push(crate::interpreter::UndoOp::Restore {
+                j.push(crate::interpreter::UndoOp::Counter {
                     backend: backend.clone(),
                     key: counter_key.to_string(),
                     prev: backend.get(counter_key),

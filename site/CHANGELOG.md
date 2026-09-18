@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Prover soundness: calls in `require` conditions and details are analysed
+  (termination, cost, invariants); transition guards must be pure; a delete
+  voids a key-exists size proof; Float-slot writes that may be NaN are
+  runtime-checked.
+- serve: a handler `request` calls is reachable only through `request`
+  (auth checks written as `if`/`starts_with` were bypassable); one builtin
+  call builds at most 10^8 elements (a single request aborted the process);
+  `sleep` bounded; bus lines capped at 16 MB; cross-process `emit` sent at
+  commit; `[bus] accept` filters outbound links too.
+- Data: `next_id()` ids stay unique across a failing `try`; sum-typed
+  parameters and generic variant fields are checked; `write_csv` quotes
+  Lists, headers and numeric Strings; exact Int vectors, matrices and
+  `median`; date builtins bounded; `for` over `()` runs zero times.
+- Check: reading another cell's slot, `every 0ms`, and a native local
+  reassigned to another type are errors with a fix.
 - A bare call inside a cell to a handler name another cell also defines runs
   the calling cell's own handler (it ran the other cell's).
 - `soma serve` no longer exposes the start-up hook (`init` / `start`) as an

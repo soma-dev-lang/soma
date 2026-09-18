@@ -86,6 +86,31 @@ fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {
                 }
             }
             Statement::Emit { args, .. } => { for a in args.iter_mut() { fix_expr(a, ctx, &mut extra); } }
+            // `require r(n) > 0 else Neg` / `require … else Big "{think(x)}"`:
+            // the condition (and, when it fails, the detail) runs here — a
+            // call written there was invisible to termination, cost and the
+            // invariant prover
+            Statement::Require { constraint, else_signal } => {
+                let mut operands: Vec<Spanned<Expr>> = Vec::new();
+                constraint_operands(&constraint.node, st.span, &mut operands);
+                for mut o in operands {
+                    let mut segs = Vec::new();
+                    fix_expr(&mut o, ctx, &mut segs);
+                    if !segs.is_empty() || has_effect(&o.node, ctx) {
+                        extra.extend(segs);
+                        extra.push(o);
+                    }
+                }
+                let detail = match else_signal.split_once('\u{1f}') {
+                    Some((_, d)) => Some(d.to_string()),
+                    None if !else_signal.chars().all(|c| c.is_alphanumeric() || c == '_') => Some(else_signal.clone()),
+                    None => None,
+                };
+                if let Some(d) = detail {
+                    let mut lit = Spanned::new(Expr::Literal(Literal::String(d)), st.span);
+                    fix_expr(&mut lit, ctx, &mut extra);
+                }
+            }
             _ => {}
         }
         if let Some(r) = replace { st.node = r; }
@@ -95,6 +120,30 @@ fn fix_stmts(stmts: &mut Vec<Spanned<Statement>>, ctx: &Ctx) {
         }
         stmts.push(st);
     }
+}
+
+fn constraint_operands(c: &Constraint, span: Span, out: &mut Vec<Spanned<Expr>>) {
+    match c {
+        Constraint::Comparison { left, right, .. } => { out.push(left.clone()); out.push(right.clone()); }
+        Constraint::Predicate { name, args } => out.push(Spanned::new(Expr::FnCall { name: name.clone(), args: args.clone() }, span)),
+        Constraint::And(a, b) | Constraint::Or(a, b) => { constraint_operands(&a.node, span, out); constraint_operands(&b.node, span, out); }
+        Constraint::Not(i) => constraint_operands(&i.node, span, out),
+        Constraint::Descriptive(_) => {}
+    }
+}
+
+/// A call an analysis must see: a handler, an effect builtin, a slot write
+/// or a pipe / method form of one.
+fn has_effect(e: &Expr, ctx: &Ctx) -> bool {
+    let mut hit = false;
+    crate::checker::literals::for_each_in_expr(e, &mut |x| match x {
+        Expr::FnCall { name, .. } if ctx.handlers.contains(name.as_str()) || EFFECT_BUILTINS.contains(&name.as_str()) || name == "next_id" => hit = true,
+        Expr::MethodCall { method, .. } if ctx.handlers.contains(method.as_str()) || EFFECT_BUILTINS.contains(&method.as_str())
+            || matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") => hit = true,
+        Expr::Pipe { .. } => hit = true,
+        _ => {}
+    });
+    hit
 }
 
 fn as_stmts(exprs: Vec<Spanned<Expr>>) -> Vec<Spanned<Statement>> {

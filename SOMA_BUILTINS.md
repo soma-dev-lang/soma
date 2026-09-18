@@ -6,7 +6,8 @@
 232 builtins. ✗ marks the nondeterministic set (random, now, now_ms, today) — calls to these
 are tracked by `soma replay` as potential sources of replay divergence.
 `deterministic` is membership in that replay set, not a purity claim:
-think/http_*/read_*/next_id have effects but are replayed via the log itself.
+think/http_*/read_*/next_id are NOT in the log: replay calls them again (think needs a key or
+SOMA_LLM_MOCK, files are re-read) — pass their results in as handler arguments to replay exactly.
 The `native` section is usable inside `[native]` handlers only.
 
 ## string
@@ -26,7 +27,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `trim` | `trim(s: String) -> String \| trim(s: String, chars: String) -> String` | Strip leading and trailing whitespace — or any of the characters in `chars` (Go's strings.Trim(s, cutset)). |
 | `format` | `format(fmt: String, args...) -> String` | printf subset: %d %s %f %.2f %8.2f %3d %-8s %05d %% — widths, precision (rounded half away from zero on the decimal text), left-align with '-', zero-pad with '0'. |
 | `fields` | `fields(s: String) -> List<String>` | Split on any run of whitespace, no empty pieces (Go's strings.Fields; split(s, " ") keeps empties). |
-| `index_of` | `index_of(s: String, sub: String) -> Int` | Character index of the first occurrence of `sub`, or -1 if absent. |
+| `index_of` | `index_of(s: String, sub: String) -> Int  \|  index_of(xs: List, x) -> Int` | Character index of the first occurrence of `sub` in a String, or the position of the first element equal to `x` in a List; -1 if absent. |
 | `substring` | `substring(s: String, start: Int, end: Int) -> String` | Character-based slice [start, end) — end is exclusive and clamped. |
 | `escape_html` | `escape_html(s: String) -> String` | Escape &, <, >, double and single quotes for safe HTML embedding. |
 | `str_len` | `str_len(s: String) -> Int` | Byte length of a string (cf. len(), which counts characters). |
@@ -62,7 +63,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `floor_div` | `floor_div(a: Int, b: Int) -> Int` | Division rounded toward -∞ (Ruby/Python `//`): floor_div(-150, 100) = -2. `idiv` truncates toward zero; `/` is exact. |
 | `mod` | `mod(a: Int, b: Int) -> Int` | Modulo with the DIVISOR's sign (Ruby/Python `%`): mod(-150, 100) = 50. The `%` operator keeps the dividend's sign (C/Rust): -150 % 100 = -50. |
 | `divmod` | `divmod(a: Int, b: Int) -> [q, r]` | [floor_div(a, b), mod(a, b)] — q * b + r == a with 0 <= r < \|b\|. |
-| `abs` | `abs(x: Int\|Float) -> Int\|Float` | Absolute value; errors on i64::MIN overflow. |
+| `abs` | `abs(x: Int\|Float) -> Int\|Float` | Absolute value, arbitrary precision (abs(-9223372036854775808) is 9223372036854775808). |
 | `round` | `round(x: Float) -> Int \| round(x: Float, digits: Int) -> Float` | Round half away from zero to the nearest integer, or keep `digits` decimals: round(2.345, 2) = 2.35. |
 | `floor` | `floor(x: Float) -> Int` | Largest integer <= x. |
 | `ceil` | `ceil(x: Float) -> Int` | Smallest integer >= x. |
@@ -94,7 +95,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `bor` | `bor(a: Int, b: Int) -> Int` | Bitwise OR. |
 | `bxor` | `bxor(a: Int, b: Int) -> Int` | Bitwise XOR. |
 | `bnot` | `bnot(a: Int) -> Int` | Bitwise NOT. |
-| `shl` | `shl(a: Int, n: Int) -> Int` | Exact left shift (a * 2^n), arbitrary precision like every Int op. For a 64-bit wrapping shift (xorshift), mask: band(shl(x, 13), 18446744073709551615). |
+| `shl` | `shl(a: Int, n: Int) -> Int` | Exact left shift (a * 2^n), arbitrary precision like every Int op. For a 64-bit wrapping shift (xorshift), mask: band(shl(x, 13), M) with M = shl(1, 64) - 1 bound once (a literal beyond 64 bits is not allowed in [native]); values past 2^63 run [native] code in BigInt mode — prefer 32-bit xorshift masks for speed. |
 | `shr` | `shr(a: Int, n: Int) -> Int` | Arithmetic shift right by n bits (wrapping). |
 | `bit_test` | `bit_test(a: Int, i: Int) -> Int` | 1 if bit i of a is set, else 0. |
 | `bit_set` | `bit_set(a: Int, i: Int) -> Int` | a with bit i set. |
@@ -139,7 +140,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `sort_by` | `sort_by(rows: List<Map>, field, order?: "desc") -> List<Map> \| sort_by(list, x => key, order?: "desc") -> List` | Stable sort by a field (numbers by value, strings lexicographically) or by a key function; a list key sorts on several keys: sort_by(rows, r => [0 - r.total, r.name]). |
 | `top` | `top(rows: List, n: Int) -> List` | First n elements. |
 | `bottom` | `bottom(rows: List, n: Int) -> List` | Last n elements. |
-| `sum_by` | `sum_by(rows: List<Map>, field) -> Int` | Sum of a field across rows (integer arithmetic). |
+| `sum_by` | `sum_by(rows: List<Map>, field) -> Int \| Float` | Sum of a field across rows: exact Int when every value is an Int, else a Float; a numeric String ("5") counts as its number. |
 | `avg_by` | `avg_by(rows: List<Map>, field) -> Int\|Float` | Mean of a field; Int when whole, () on an empty list. |
 | `min_by` | `min_by(rows: List<Map>, field) -> Map` | Row with the smallest integer value of `field`, or (). |
 | `max_by` | `max_by(rows: List<Map>, field) -> Map` | Row with the largest integer value of `field`, or (). |
@@ -171,8 +172,8 @@ The `native` section is usable inside `[native]` handlers only.
 | `print` | `print(args...) -> ()` | Print arguments space-separated, then a newline. |
 | `read_file` | `read_file(path: String) -> String \| {error}` | Read a file as a string; returns {error: ...} on failure. |
 | `write_file` | `write_file(path: String, content) -> Bool \| {error}` | Write content (stringified) to a file; true on success. |
-| `read_csv` | `read_csv(path: String) -> List<Map> \| {error}` | Parse a CSV with header row into maps; cells auto-typed to Int/Float/String. |
-| `write_csv` | `write_csv(path: String, rows: List<Map>) -> Bool \| {error}` | Write rows as CSV using the first row's keys as the header. |
+| `read_csv` | `read_csv(path: String, opts: Map?) -> List<Map> \| {error}` | Parse an RFC 4180 CSV (quoted fields, "" escapes, multi-line quoted cells, CRLF) with a header row into maps. Unquoted cells are auto-typed Int/Float/String; a quoted cell and a leading-zero id (007) stay Strings; a short row is padded with "", extra fields are dropped. map("raw", true) keeps every cell as text (exact money: "1.00"). |
+| `write_csv` | `write_csv(path: String, rows: List<Map>) -> Bool \| {error}` | Write rows as CSV using the first row's keys as the header. A cell read_csv would split, trim or re-type is quoted (separators, quotes, newlines, edge spaces, and a String that reads as a number: "12" comes back "12"); a List/Map is its JSON text, () an empty cell; true comes back as the String "true". |
 | `read_files` | `read_files(dir: String, count: Int) -> List<{path, content}>` | Read up to `count` files from a directory. |
 | `par_read_files` | `par_read_files(dir: String, count: Int) -> List<{path, content}>` | Thread-parallel variant of read_files. |
 | `word_count` | `word_count(text: String \| docs: List) -> Map<String, Int>` | Lowercased word frequency of a string or of {content} docs (Rust-speed). |
@@ -228,13 +229,13 @@ The `native` section is usable inside `[native]` handlers only.
 | `now_ms` ✗ | `now_ms() -> Int` | Current Unix timestamp in milliseconds. |
 | `today` ✗ | `today() -> String` | Today's date as "YYYY-MM-DD" (UTC). |
 | `format_date` | `format_date(ts: Int) -> String` | Format a Unix-seconds timestamp as "YYYY-MM-DD" (UTC). |
-| `sleep` | `sleep(ms: Int) -> ()` | Block the current handler for `ms` milliseconds. |
+| `sleep` | `sleep(ms: Int) -> ()` | Block the current handler for `ms` milliseconds (0 to 86400000; anything else raises kind range). Under serve it holds the handler lock the whole time. |
 
 ## state
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `next_id` | `next_id() -> Int` | Monotonic per-cell counter; REQUIRES a memory slot — without one it returns 1 on every call. |
+| `next_id` | `next_id() -> Int` | Monotonic per-cell counter, in its own table (persistent under run/serve; per test cell in tests); journaled — a refused request burns no id; the ids drawn inside a `try` that fails are kept (they may have escaped into a local), so ids are unique, not always dense. |
 | `transition` | `transition(id, target_state: String) -> {id, from, to}` | Move instance `id` to `target_state` (read the new state with get_status(id)); raises kind "invalid_transition" with the valid targets, or "guard_failed". Rolled back if the handler later fails. |
 | `get_status` | `get_status(id) -> String` | Current state of instance `id` — the INITIAL state when `id` was never transitioned (an unknown id looks like a fresh instance; use has_state(id) to tell them apart). |
 | `has_state` | `has_state(id) -> Bool` | True when instance `id` was transitioned at least once (a recorded state exists). get_status(id) alone cannot distinguish an unknown id from a fresh one. |
@@ -252,7 +253,7 @@ The `native` section is usable inside `[native]` handlers only.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `think` | `think(prompt: String, system?: String, opts?: {max_tokens, timeout}) -> String` | Call the configured LLM with tool-calling, multi-turn context, and budget enforcement. |
+| `think` | `think(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds}) -> String` | Call the configured LLM with tool-calling, multi-turn context, and budget enforcement. |
 | `think_json` | `think_json(prompt: String, system?: String, opts?: {max_tokens, timeout}) -> Map` | Like think(), but parses the response as JSON into a Map. |
 | `delegate` | `delegate(cell: String, signal: String, args...) -> Any` | Invoke another cell's handler and return its result. |
 | `set_budget` | `set_budget(max_tokens: Int) -> ()` | Hard cap on LLM tokens; think() fails once exhausted. |

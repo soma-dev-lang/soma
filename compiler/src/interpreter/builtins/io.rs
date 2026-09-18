@@ -200,6 +200,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                     Value::String(val.to_string())
                                 } else if let Ok(n) = val.parse::<i64>() {
                                     Value::Int(SomaInt::from_i64(n))
+                                } else if val.len() > 1 && val.trim_start_matches('-').len() == val.len() - usize::from(val.starts_with('-')) && val.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()) && !val.trim_start_matches('-').is_empty() {
+                                    // an Int past i64 (shl(1, 70)) came back a Float
+                                    Value::Int(SomaInt::from_decimal_str(val))
                                 } else if let Some(n) = val.parse::<f64>().ok().filter(|f| f.is_finite()) {
                                     Value::Float(n)
                                 } else {
@@ -228,9 +231,22 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let (Value::String(path), Value::List(items)) = (&args[0], &args[1]) {
                     let mut output = String::new();
                     // Extract headers from first row
+                    // a cell a reader would split, trim or re-type is quoted:
+                    // separators, quotes, newlines, edge spaces — and a String
+                    // that reads as a number ("12", "1e5", "-0") — and a List or
+                    // Map is its JSON text (["a", "b"] shifted the row)
+                    let quote = |s: &str, text: bool| -> String {
+                        let numeric = text && !s.is_empty() && (s.parse::<f64>().is_ok() || s.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()));
+                        if numeric || s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
+                            || s.starts_with(char::is_whitespace) || s.ends_with(char::is_whitespace) {
+                            format!("\"{}\"", s.replace('"', "\"\""))
+                        } else {
+                            s.to_string()
+                        }
+                    };
                     if let Some(Value::Map(first)) = items.first() {
                         let headers: Vec<&str> = first.keys().map(|k| k.as_str()).collect();
-                        output.push_str(&headers.join(","));
+                        output.push_str(&headers.iter().map(|h| quote(h, false)).collect::<Vec<_>>().join(","));
                         output.push('\n');
                         // Write rows
                         for item in items {
@@ -238,19 +254,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                 let vals: Vec<String> = headers.iter().map(|h| {
                                     entries.get(*h)
                                         .map(|v| match v {
-                                            Value::String(s) => {
-                                                // quoted when a reader would change it: separators,
-                                                // quotes, newlines, and edge spaces (trimmed otherwise)
-                                                if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
-                                                    || s.starts_with(char::is_whitespace) || s.ends_with(char::is_whitespace) {
-                                                    format!("\"{}\"", s.replace('"', "\"\""))
-                                                } else {
-                                                    s.clone()
-                                                }
-                                            }
+                                            Value::String(s) => quote(s, true),
                                             // `()` is an empty cell (it was the text "null")
                                             Value::Unit => String::new(),
-                                            other => format!("{}", other),
+                                            Value::List(_) | Value::Map(_) | Value::Variant { .. } => quote(&super::string::to_json_string(v), false),
+                                            other => quote(&format!("{}", other), false),
                                         })
                                         .unwrap_or_default()
                                 }).collect();
