@@ -253,8 +253,8 @@ The `native` section is usable inside `[native]` handlers only.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `think` | `think(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds}) -> String` | Call the configured LLM with tool-calling, multi-turn context, and budget enforcement. |
-| `think_json` | `think_json(prompt: String, system?: String, opts?: {max_tokens, timeout}) -> Map` | Like think(), but parses the response as JSON into a Map. |
+| `think` | `think(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds, tools_allowed, requires}) -> String` | Call the configured LLM with tool-calling, multi-turn context, and budget enforcement. A think() offers the model every tool of the cell's face, or only those named in map("tools_allowed", ["lookup"]) (a call to another is refused and told to the model); `requires` lists model capabilities checked by `soma check`. A timeout is not retried (429/5xx are, up to 3 times). |
+| `think_json` | `think_json(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds, tools_allowed, requires}) -> Map` | Like think(), but parses the response as JSON into a Map (tools are offered too: pass max_rounds 1 to keep the cost bound at one round). There is no schema option — check the fields yourself. |
 | `delegate` | `delegate(cell: String, signal: String, args...) -> Any` | Invoke another cell's handler and return its result. |
 | `set_budget` | `set_budget(max_tokens: Int) -> ()` | Hard cap on LLM tokens; think() fails once exhausted. |
 | `tokens_used` | `tokens_used() -> Int` | LLM tokens consumed since the budget was set. |

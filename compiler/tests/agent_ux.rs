@@ -1687,8 +1687,8 @@ cell C { face { signal go(q: String) -> String }  cost { tokens: 300 }  on go(q:
     assert!(out.contains("computed 600 tokens > declared 300"), "{out}");
 
     std::fs::write(d.join("t.cell"), "cell agent A { on ask(q: String) { let r = try { think(q, map(\"max_token\", 5)) }  return r.detail } }\n").unwrap();
-    let (out, _) = soma_in(&d, &["run", "t.cell", "ask", "hi"]);
-    assert!(out.contains("unknown option 'max_token'"), "{out}");
+    let (out, _) = soma_in(&d, &["check", "t.cell"]);
+    assert!(out.contains("\"max_token\" is not a think() option"), "{out}");
 
     std::fs::write(d.join("n.cell"), "cell N { memory { m: Map<String, Int> [persistent] } on id() { return next_id() } }\n").unwrap();
     let _ = soma_in(&d, &["run", "--fresh", "n.cell", "id"]);
@@ -1982,4 +1982,90 @@ cell App {
     assert!(up, "server did not start");
     assert!(got.contains("event: b"), "{got}");
     assert!(!got.contains("event: a"), "an SSE client got a stream it did not subscribe to: {got}");
+}
+
+/// Cycle 21: `&&` / `||` / ensure / match guards take Bools (a comparison
+/// mask passed compound invariants, guards and asserts); replay runs only
+/// top-level calls; recall works in a new process; a function is not a
+/// value; () is not a key; native Bool arithmetic and Rust keywords are
+/// check errors; think options are checked.
+#[test]
+fn cycle21_findings() {
+    let d = dir("cycle21");
+    std::fs::write(d.join("a.cell"), r#"
+cell A {
+  memory { m: Map<String, Any> [persistent]  invariant m >= 0 && m <= 100
+           w: Map<String, List<Int>> [persistent] }
+  on put(k: String) { m.set(k, [5000]) }
+  on both(xs: List<Int>) { return xs >= 0 && true }
+  on post(s: String) {
+    ensure s
+    return 1
+  }
+  on nullkey() { w.set((), [1]) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "a.cell", "put", "k"]);
+    assert!(out.contains("could not be evaluated") || out.contains("needs Bool"), "a mask passed a compound invariant: {out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "both", "[-5]"]);
+    assert!(out.contains("&& needs Bool operands"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "post", "false"]);
+    assert!(out.contains("expected Bool"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "nullkey"]);
+    assert!(out.contains("the key is ()"), "{out}");
+
+    std::fs::write(d.join("rp.cell"), r#"
+cell C {
+  memory { m: Map<String, Int> [persistent] }
+  on outer(k: String) {
+    _inner(k)
+    return m.get(k)
+  }
+  on _inner(k: String) {
+    require m.get(k) == () else Dup
+    m.set(k, 1)
+  }
+}
+"#).unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "--record", "--signal", "outer", "rp.cell", "a"]);
+    let (out, _) = soma_in(&d, &["replay", "rp.cell"]);
+    assert!(out.contains("1 ok, 0 diverged"), "{out}");
+
+    std::fs::write(d.join("r.cell"), r#"
+cell agent R {
+  memory { x: Map<String, Int> [persistent] }
+  on w(k: String) { remember(k, "mine") }
+  on go(k: String) { return recall(k) }
+}
+"#).unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "r.cell", "w", "k1"]);
+    let (out, _) = soma_in(&d, &["run", "r.cell", "go", "k1"]);
+    assert!(out.contains("mine"), "recall lost the value across runs: {out}");
+
+    std::fs::write(d.join("f.cell"), "cell F { on a() { let f = len  return f([1, 2]) } on b() { return [1, 2] |> len } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "f.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("`len` is a function, not a value"), "{out}");
+    assert_eq!(out.matches("is a function, not a value").count(), 1, "`|> len` is a call: {out}");
+
+    std::fs::write(d.join("n.cell"), r#"
+cell N {
+  on f(n: Int) [native] {
+    let b = n > 2
+    return b * 10 + 1
+  }
+  on g(n: Int) [native] {
+    let fn = n + 1
+    return fn
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "n.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("arithmetic on a Bool") && out.contains("a word Rust reserves"), "{out}");
+
+    std::fs::write(d.join("t.cell"), "cell agent T { on a(q: String) { return think(q, map(\"max_tokens\", 5, \"schema\", 1)) } on b(q: String) { return think(q, map(\"max_tokens\", 5, \"tools_allowed\", [])) } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "t.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("\"schema\" is not a think() option") && !out.contains("\"tools_allowed\" is not"), "{out}");
 }

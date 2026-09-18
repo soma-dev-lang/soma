@@ -424,6 +424,21 @@ impl<'a> Walker<'a> {
             // bound NOWHERE — a typo or an incomplete rename, which would
             // otherwise only fail at runtime, on the path that reads it.
             Expr::Ident(name) => {
+                // `let f = len`, `|> map(dbl)`: a function is not a value
+                // (it raised "undefined variable" at run time)
+                let is_fn = self.index.handler_map.contains_key(name) || super::names::builtin_names().contains(name.as_str());
+                if is_fn && !self.scope.contains(name) && !self.index.slots.contains(name) && !self.index.variants.contains(name) && !self.index.cells.contains(name)
+                    && !matches!(name.as_str(), "true" | "false" | "_" | "self" | "value" | "key" | "size")
+                {
+                    self.issues.push(InterpolationIssue {
+                        message: format!("`{name}` is a function, not a value — pass a lambda (`x => {name}(x)`) or call it (`{name}(…)`)"),
+                        span,
+                        warning: self.try_depth > 0,
+                        habit: false,
+                        kind: "function_as_value",
+                    });
+                    return;
+                }
                 if !self.known(name)
                     && !super::names::builtin_names().contains(name.as_str())
                     && !matches!(name.as_str(), "true" | "false" | "_" | "self" | "value" | "key" | "size")
@@ -518,7 +533,10 @@ impl<'a> Walker<'a> {
                     });
                 }
                 self.walk_expr(left);
-                self.walk_expr(right);
+                // `xs |> len`: a bare function name on the right is a call
+                if !matches!(&right.node, Expr::Ident(n) if self.index.handler_map.contains_key(n) || super::names::builtin_names().contains(n.as_str())) {
+                    self.walk_expr(right);
+                }
             }
             Expr::Record { fields, .. } => {
                 for (_, v) in fields {

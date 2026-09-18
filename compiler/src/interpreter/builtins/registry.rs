@@ -381,10 +381,10 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Memory-slot method: append a value to a list-backed slot (alias: slot.push)."),
 
     // ── agent ───────────────────────────────────────────────────────
-    doc("think", "agent", "think(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds}) -> String",
-        "Call the configured LLM with tool-calling, multi-turn context, and budget enforcement."),
-    doc("think_json", "agent", "think_json(prompt: String, system?: String, opts?: {max_tokens, timeout}) -> Map",
-        "Like think(), but parses the response as JSON into a Map."),
+    doc("think", "agent", "think(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds, tools_allowed, requires}) -> String",
+        "Call the configured LLM with tool-calling, multi-turn context, and budget enforcement. A think() offers the model every tool of the cell's face, or only those named in map(\"tools_allowed\", [\"lookup\"]) (a call to another is refused and told to the model); `requires` lists model capabilities checked by `soma check`. A timeout is not retried (429/5xx are, up to 3 times)."),
+    doc("think_json", "agent", "think_json(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds, tools_allowed, requires}) -> Map",
+        "Like think(), but parses the response as JSON into a Map (tools are offered too: pass max_rounds 1 to keep the cost bound at one round). There is no schema option — check the fields yourself."),
     doc("delegate", "agent", "delegate(cell: String, signal: String, args...) -> Any",
         "Invoke another cell's handler and return its result."),
     doc("set_budget", "agent", "set_budget(max_tokens: Int) -> ()",

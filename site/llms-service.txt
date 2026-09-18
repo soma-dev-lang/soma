@@ -499,6 +499,10 @@ cell agent Researcher {
 // `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
 // tool that calls think() makes a `cost` bound unprovable); a tool call that raises is rolled
 // back. `map("max_rounds", N)` caps the tool-call rounds of one think();
+// `map("tools_allowed", ["lookup"])` offers only those tools to that call
+// (classify with no refund tool in reach); a `*` in a capability stays in
+// its part of the URL (host or path), `..` segments and userinfo are
+// refused, and a tool's scope holds for the tools of any agent it calls;
 // an unknown option is an error. Each agent cell keeps its OWN multi-turn
 // context (clear_context() resets it); every/after ticks use the same
 // [agent] config as requests. `soma test` mocks think() only when no key is
@@ -508,7 +512,10 @@ cell agent Researcher {
 // serve raises approval_required unless SOMA_APPROVE says otherwise.
 // think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.
 // Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT, or
-// [agent] mock = "echo" in soma.toml. Record/replay: --record, soma replay.
+// [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level
+// call; `soma replay` re-runs them from EMPTY storage with the soma.toml
+// [agent], calls think() again (replies are not recorded) and compares the
+// RESULTS — a state difference shows only in a later result.
 ```
 
 ## Top gotchas (full list: /docs/gotchas.md or /gotchas.json — all verified)
@@ -572,9 +579,10 @@ maps inside a value use JSON's shortest form (`1.18e21`).
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
 an Int slot refuses a non-exact `/` instead of truncating. One difference:
-native code is statically typed, so `a / b` on two Ints is ALWAYS a Float
-there (`-7 / 1` is -7.0; the interpreter answers the Int -7) — `soma check`
-warns; write idiv(a, b) for an integer quotient. A native local keeps the
+native code is statically typed: a quotient returned or stored as an Int
+is the exact Int (`return a / b` gives -7 for -7 / 1), but inside an
+expression that needs its type — `to_string(a / b)` — it is a Float
+("-7.0") — `soma check` warns; write idiv(a, b) for an integer quotient. A native local keeps the
 type of its `let` (assigning a String to a number local is a check error).
 
 What a `[native]` handler may use — nothing else:
@@ -879,7 +887,7 @@ program has no such route).
 | A handler raises (require, invariant, transition, `fail`, division by zero, a String reaching an `Int` parameter) | That request is answered with a 4xx/5xx JSON body (table below); every write and transition of the request is rolled back; the process stays up |
 | Runaway recursion in a handler | Answered `500 {"kind": "stack_overflow"}` at depth 512; request threads have a 64 MB stack so the guard fires before the OS does; the process stays up |
 | A `[native]` handler panics (a `buf_get` past the end, an `idiv` by zero) | Caught at the boundary: an ordinary `try`-catchable error with the same kind the interpreter would raise (`index` → 400, `division_by_zero` → 400); the process stays up. Int overflow does not panic: it promotes to BigInt exactly as interpreted code does |
-| `think()` fails or times out | Kind `llm`, rolled back like any error; the request is answered, not hung: one provider round-trip is capped at 60 s (`timeout_ms` in the options map, or `SOMA_LLM_TIMEOUT_MS`), retried up to 3 times on 429/5xx |
+| `think()` fails or times out | Kind `llm`, rolled back like any error; the request is answered, not hung: one provider round-trip is capped at 60 s (`timeout_ms` in the options map, or `SOMA_LLM_TIMEOUT_MS`), retried up to 3 times on 429/5xx — never after a timeout (the provider may still be generating and billing that reply); `timeout` and `timeout_ms` are the same option |
 | A scheduled `every` / `after` block raises | Logged, rolled back (writes and transitions — it is a handler invocation), next tick runs |
 | Port already answering, `soma check` errors, an unreadable file | `soma serve` refuses to start and exits 1 — it never serves a program that does not check (`--no-check` overrides) |
 | Out of memory, SIGKILL, `kill -9`, SIGTERM | The process dies at once (no draining: an in-flight client gets an empty reply); committed handlers are in `.soma_data/soma.db` (SQLite); the handler in flight is lost as a whole — its writes sat in one uncommitted SQLite transaction |

@@ -499,6 +499,10 @@ cell agent Researcher {
 // `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
 // tool that calls think() makes a `cost` bound unprovable); a tool call that raises is rolled
 // back. `map("max_rounds", N)` caps the tool-call rounds of one think();
+// `map("tools_allowed", ["lookup"])` offers only those tools to that call
+// (classify with no refund tool in reach); a `*` in a capability stays in
+// its part of the URL (host or path), `..` segments and userinfo are
+// refused, and a tool's scope holds for the tools of any agent it calls;
 // an unknown option is an error. Each agent cell keeps its OWN multi-turn
 // context (clear_context() resets it); every/after ticks use the same
 // [agent] config as requests. `soma test` mocks think() only when no key is
@@ -508,7 +512,10 @@ cell agent Researcher {
 // serve raises approval_required unless SOMA_APPROVE says otherwise.
 // think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.
 // Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT, or
-// [agent] mock = "echo" in soma.toml. Record/replay: --record, soma replay.
+// [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level
+// call; `soma replay` re-runs them from EMPTY storage with the soma.toml
+// [agent], calls think() again (replies are not recorded) and compares the
+// RESULTS — a state difference shows only in a later result.
 ```
 
 ## Top gotchas (full list: /docs/gotchas.md or /gotchas.json — all verified)
@@ -572,9 +579,10 @@ maps inside a value use JSON's shortest form (`1.18e21`).
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
 an Int slot refuses a non-exact `/` instead of truncating. One difference:
-native code is statically typed, so `a / b` on two Ints is ALWAYS a Float
-there (`-7 / 1` is -7.0; the interpreter answers the Int -7) — `soma check`
-warns; write idiv(a, b) for an integer quotient. A native local keeps the
+native code is statically typed: a quotient returned or stored as an Int
+is the exact Int (`return a / b` gives -7 for -7 / 1), but inside an
+expression that needs its type — `to_string(a / b)` — it is a Float
+("-7.0") — `soma check` warns; write idiv(a, b) for an integer quotient. A native local keeps the
 type of its `let` (assigning a String to a number local is a check error).
 
 What a `[native]` handler may use — nothing else:

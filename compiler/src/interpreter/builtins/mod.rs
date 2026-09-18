@@ -32,7 +32,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     // sockets (read_file / write_file / ws_connect bypassed the capability)
     if interp.current_tool_caps.is_some() && matches!(name, "read_file" | "write_file" | "read_csv" | "write_csv" | "read_files" | "ws_connect" | "connect" | "subscribe" | "append_file") {
         let caps = interp.current_tool_caps.clone().unwrap_or_default();
-        if !caps.iter().any(|c| c == "*") {
+        if !caps.iter().any(|c| c == "*") || interp.outer_tool_caps.iter().any(|o| !o.iter().any(|c| c == "*")) {
             return Some(Err(RuntimeError::TypeError(format!("capability denied: {}() is outside this tool's capabilities {:?}", name, caps))));
         }
     }
@@ -40,7 +40,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     if matches!(name, "http_get" | "http_post" | "http_put" | "http_patch" | "http_delete") {
         if let Some(caps) = interp.current_tool_caps.clone() {
             if let Some(Value::String(url)) = args.first() {
-                if !url_matches_any(url, &caps) {
+                if !url_matches_any(url, &caps) || interp.outer_tool_caps.iter().any(|o| !url_matches_any(url, o)) {
                     return Some(Err(RuntimeError::TypeError(format!(
                         "capability denied: '{}' does not match any of {:?}", url, caps
                     ))));
@@ -88,25 +88,54 @@ fn glob_match(pat: &str, text: &str) -> bool {
     true
 }
 
+/// `scheme://authority` and the rest (path, query) of a URL a tool may
+/// fetch — None for one no capability can allow: userinfo (`a@b`), a
+/// fragment, a backslash, whitespace, or a `.` / `..` path segment (plain or
+/// percent-encoded): `/public/../admin` left a `/public/*` scope, and a `*`
+/// used to match across the host (`http://127.0.0.1/a.x.com/` passed
+/// `http://*.x.com/*`).
+fn split_url(u: &str) -> Option<(&str, &str, String)> {
+    let (scheme, after) = u.split_once("://")?;
+    if u.contains('#') || u.contains('\\') || u.chars().any(|c| c.is_whitespace() || c.is_control()) { return None; }
+    let end = after.find(|c| c == '/' || c == '?').unwrap_or(after.len());
+    let (authority, rest) = after.split_at(end);
+    if authority.is_empty() || authority.contains('@') || authority.contains('%') { return None; }
+    let path = rest.split('?').next().unwrap_or("");
+    let decoded = path.replace("%2e", ".").replace("%2E", ".").replace("%2f", "/").replace("%2F", "/").replace("%5c", "/").replace("%5C", "/");
+    if decoded.split('/').any(|seg| seg == "." || seg == "..") { return None; }
+    Some((scheme, authority, rest.to_string()))
+}
+
 fn url_matches_any(url: &str, caps: &[String]) -> bool {
+    let Some((scheme, authority, rest)) = split_url(url) else {
+        return caps.iter().any(|c| c == "net:*" || c == "*");
+    };
+    let host = authority.to_ascii_lowercase();
     for cap in caps {
         if cap == "net:*" || cap == "*" { return true; }
-        if !cap.starts_with("net:") {
-            if glob_match(cap, url) { return true; }
+        let pattern = cap.strip_prefix("net:").unwrap_or(cap);
+        if let Some((pscheme, pauth, prest)) = pattern.split_once("://").map(|(s, a)| {
+            let end = a.find(|c| c == '/' || c == '?').unwrap_or(a.len());
+            (s, &a[..end], &a[end..])
+        }) {
+            // the host part and the path part are matched SEPARATELY: a `*`
+            // in the host cannot reach into the path, and the reverse
+            if pscheme.eq_ignore_ascii_case(scheme) && glob_match(&pauth.to_ascii_lowercase(), &host) {
+                let ok = if cap.starts_with("net:") && !prest.contains('*') {
+                    rest.starts_with(prest) || prest.is_empty()
+                } else if prest.is_empty() {
+                    rest.is_empty() || rest == "/"
+                } else {
+                    glob_match(prest, &rest)
+                };
+                if ok { return true; }
+            }
             continue;
         }
-        if let Some(rest) = cap.strip_prefix("net:") {
-            // Direct URL prefix match (cap looks like a URL itself)
-            if rest.starts_with("http://") || rest.starts_with("https://") {
-                if url.starts_with(rest) { return true; }
-                continue;
-            }
-            // Otherwise: match against the URL's host (and optional path prefix)
-            let url_no_scheme = url
-                .strip_prefix("https://")
-                .or_else(|| url.strip_prefix("http://"))
-                .unwrap_or(url);
-            if url_no_scheme.starts_with(rest) { return true; }
+        // `net:host` / `net:host/prefix`
+        if cap.starts_with("net:") {
+            let (phost, ppath) = match pattern.find('/') { Some(k) => (&pattern[..k], &pattern[k..]), None => (pattern, "") };
+            if glob_match(&phost.to_ascii_lowercase(), &host) && rest.starts_with(ppath) { return true; }
         }
     }
     false

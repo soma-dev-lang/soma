@@ -93,18 +93,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 // the cell's own agent memory (it used to be written into
                 // whichever user slot a HashMap walk found first — past its
                 // type and invariants — and was never rolled back)
-                let slot_key = format!("{}.__agent_memory", cell_name);
-                if !interp.storage.contains_key(&slot_key) {
-                    let persistent = crate::interpreter::PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)
-                        || interp.storage.values().any(|b| b.backend_name() == "sqlite");
-                    let backend: std::sync::Arc<dyn crate::runtime::storage::StorageBackend> = if persistent {
-                        std::sync::Arc::new(crate::runtime::storage::SqliteBackend::new(cell_name, "_agent_memory"))
-                    } else {
-                        std::sync::Arc::new(crate::runtime::storage::MemoryBackend::new())
-                    };
-                    interp.storage.insert(slot_key.clone(), backend);
-                }
-                let backend = interp.storage.get(&slot_key).cloned().unwrap();
+                let backend = agent_memory(interp, cell_name);
                 if let Some(j) = interp.journal.as_mut() {
                     j.push(crate::interpreter::UndoOp::Restore { backend: backend.clone(), key: key.clone(), prev: backend.get(&key) });
                 }
@@ -116,8 +105,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         "recall" => {
             if let Some(Value::String(key)) = args.first() {
-                let own = format!("{}.__agent_memory", cell_name);
-                if let Some(v) = interp.storage.get(&own).and_then(|b| b.get(key)) {
+                // opened here too: a recall in a new process (or another
+                // serve thread) found no table and answered null
+                if let Some(v) = agent_memory(interp, cell_name).get(key) {
                     return Some(Ok(super::super::auto_deserialize(super::super::stored_to_value(v))));
                 }
                 // legacy: values an older version wrote into a user slot
@@ -263,8 +253,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             if let Some(Value::String(prompt)) = args.first() {
                 if let Some(Value::Map(m)) = args.last() {
                     // a typo'd option (`max_token`) was ignored: 2048 tokens were sent
-                    if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds")) {
-                        return Some(Err(RuntimeError::TypeError(format!("think(): unknown option '{}' — the options are max_tokens, timeout (ms), max_rounds", k))));
+                    if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires")) {
+                        return Some(Err(RuntimeError::TypeError(format!("think(): unknown option '{}' — the options are max_tokens, timeout (ms), max_rounds, tools_allowed, requires", k))));
                     }
                 }
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
@@ -276,7 +266,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                         }
                     }
                 }
-                Some(with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms)))
+                let allowed = match tools_allowed(args) { Ok(a) => a, Err(e) => return Some(Err(e)) };
+                Some(with_tools_allowed(interp, allowed, |interp| with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms))))
             } else {
                 Some(Err(RuntimeError::TypeError("think(prompt: String) requires a string argument".to_string())))
             }
@@ -285,8 +276,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             if let Some(Value::String(prompt)) = args.first() {
                 if let Some(Value::Map(m)) = args.last() {
                     // a typo'd option (`max_token`) was ignored: 2048 tokens were sent
-                    if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds")) {
-                        return Some(Err(RuntimeError::TypeError(format!("think(): unknown option '{}' — the options are max_tokens, timeout (ms), max_rounds", k))));
+                    if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires")) {
+                        return Some(Err(RuntimeError::TypeError(format!("think(): unknown option '{}' — the options are max_tokens, timeout (ms), max_rounds, tools_allowed, requires", k))));
                     }
                 }
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
@@ -298,7 +289,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                         }
                     }
                 }
-                Some(with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms)))
+                let allowed = match tools_allowed(args) { Ok(a) => a, Err(e) => return Some(Err(e)) };
+                Some(with_tools_allowed(interp, allowed, |interp| with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms))))
             } else {
                 Some(Err(RuntimeError::TypeError("think_json(prompt: String) requires a string argument".to_string())))
             }
@@ -579,11 +571,24 @@ fn agent_think(
         return Ok(Value::String(serde_json::to_string(&raw_json).unwrap_or_default()));
     }
 
+    if tools.is_empty() {
+        // no tool to call: the reply was a tool call the cell cannot serve
+        return Err(RuntimeError::TypeError("think(): the model answered with a tool call, but this cell declares no tools (face { tool … }) — the reply has no text".to_string()));
+    }
     Err(RuntimeError::TypeError(format!("think() exceeded max rounds ({}) of tool calls — raise map(\"max_rounds\", N) (≤ 10) or give the model fewer steps", rounds)))
 }
 
 /// Build OpenAI function-calling tool definitions from a cell's face tool declarations
 fn build_tool_definitions(interp: &Interpreter, cell_name: &str) -> Vec<serde_json::Value> {
+    let mut tools = build_all_tool_definitions(interp, cell_name);
+    // `map("tools_allowed", ["lookup"])`: only those are offered
+    if let Some(allowed) = &interp.think_tools_allowed {
+        tools.retain(|t| t["function"]["name"].as_str().map_or(false, |n| allowed.iter().any(|a| a == n)));
+    }
+    tools
+}
+
+fn build_all_tool_definitions(interp: &Interpreter, cell_name: &str) -> Vec<serde_json::Value> {
     let mut tools = Vec::new();
     if let Some(cell) = interp.cells.get(cell_name) {
         for section in &cell.sections {
@@ -693,9 +698,20 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
     if !declared {
         return Value::String(format!("tool error: '{}' is not a tool of this agent", tool_name));
     }
+    if let Some(allowed) = &interp.think_tools_allowed {
+        if !allowed.iter().any(|a| a == tool_name) {
+            return Value::String(format!("tool error: '{}' is not allowed in this step (tools_allowed: {:?})", tool_name, allowed));
+        }
+    }
     // Scope the capability set for the duration of the call.
     let prev_caps = interp.current_tool_caps.take();
-    interp.current_tool_caps = tool_caps;
+    let nested = prev_caps.is_some();
+    if let Some(p) = prev_caps.clone() {
+        interp.outer_tool_caps.push(p.clone());
+        interp.current_tool_caps = Some(tool_caps.unwrap_or(p));
+    } else {
+        interp.current_tool_caps = tool_caps;
+    }
     // a tool call that raises leaves nothing behind (its writes were kept
     // while the model was told it failed)
     let mark = interp.journal.as_ref().map(|j| j.len());
@@ -713,6 +729,7 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
             Value::String(format!("tool error: {}", e))
         }
     };
+    if nested { interp.outer_tool_caps.pop(); }
     interp.current_tool_caps = prev_caps;
     result
 }
@@ -789,4 +806,40 @@ fn with_cell_conversation(interp: &mut Interpreter, cell_name: &str, f: impl FnO
     let own = std::mem::replace(&mut interp.agent_conversation, outer);
     interp.agent_conversations.insert(cell_name.to_string(), own);
     result
+}
+
+/// The cell's own agent-memory table (persistent under run/serve).
+fn agent_memory(interp: &mut Interpreter, cell_name: &str) -> std::sync::Arc<dyn crate::runtime::storage::StorageBackend> {
+    let slot_key = format!("{}.__agent_memory", cell_name);
+    if !interp.storage.contains_key(&slot_key) {
+        let persistent = crate::interpreter::PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)
+            || interp.storage.values().any(|b| b.backend_name() == "sqlite");
+        let backend: std::sync::Arc<dyn crate::runtime::storage::StorageBackend> = if persistent {
+            std::sync::Arc::new(crate::runtime::storage::SqliteBackend::new(cell_name, "_agent_memory"))
+        } else {
+            std::sync::Arc::new(crate::runtime::storage::MemoryBackend::new())
+        };
+        interp.storage.insert(slot_key.clone(), backend);
+    }
+    interp.storage.get(&slot_key).cloned().unwrap()
+}
+
+/// `map("tools_allowed", ["t1", …])` of a think() call.
+fn tools_allowed(args: &[Value]) -> Result<Option<Vec<String>>, RuntimeError> {
+    let Some(Value::Map(m)) = args.last() else { return Ok(None) };
+    match m.get("tools_allowed") {
+        None => Ok(None),
+        Some(Value::List(xs)) if xs.iter().all(|x| matches!(x, Value::String(_))) =>
+            Ok(Some(xs.iter().map(|x| format!("{}", x)).collect())),
+        Some(other) => Err(RuntimeError::TypeError(format!("think(): tools_allowed must be a List of tool names, got {}", other))),
+    }
+}
+
+/// Run a think() with its tool list narrowed (restored after: a tool's own
+/// think() has its own list).
+fn with_tools_allowed<T>(interp: &mut Interpreter, allowed: Option<Vec<String>>, f: impl FnOnce(&mut Interpreter) -> T) -> T {
+    let prev = std::mem::replace(&mut interp.think_tools_allowed, allowed);
+    let out = f(interp);
+    interp.think_tools_allowed = prev;
+    out
 }

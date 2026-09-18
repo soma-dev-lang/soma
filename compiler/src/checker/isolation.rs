@@ -175,26 +175,11 @@ pub fn check_isolation(
         return IsolationFinding::NoStateMachine;
     }
 
-    // Check 2: no tool handler calls transition().
-    // Tools are declared in `face { tool X(...) "desc" }`. The LLM
-    // can invoke them during think(). If a tool's handler calls
-    // transition(), the LLM controls state-machine transitions.
-    let tool_names = collect_tool_names(cell);
-    for tool_name in &tool_names {
-        // Find the handler for this tool.
-        for section in &cell.sections {
-            if let Section::OnSignal(on) = &section.node {
-                if on.signal_name == *tool_name {
-                    if handler_has_transition(&on.body) {
-                        reasons.push(format!(
-                            "tool `{}` has a handler that calls transition() — LLM can trigger state changes via tool calling during think()",
-                            tool_name
-                        ));
-                    }
-                }
-            }
-        }
-    }
+    // Tools that call transition() with a LITERAL target are still bound
+    // to the declared edges: the model picks when (and for which id) one
+    // fires, which the graph properties already cover. (Flagging them made
+    // every transitioning tool fail --strict; a computed target is caught
+    // by check 1.)
 
     if reasons.is_empty() {
         IsolationFinding::ThinkIsolated {

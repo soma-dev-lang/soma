@@ -593,3 +593,33 @@ No false proof found (termination, intervals, cost composition, temporal propert
 
 ### Open
 - [ ] Connections are still one thread each (the exit is a clean death, not a limit).
+
+## Cycle 21 (2026-09-18) — customer-support triage agent (tools, approvals, budgets)
+
+7/10: check (cost bound 1900 proven), 48 tests, verify --strict (7 temporal
+properties) green; 1,000 tickets with a scripted fake model (malformed JSON,
+unknown tools, wrong argument types, SSRF, tool loops, slow replies) and three
+kill -9: no double refund, no refund past the thresholds, budgets held.
+
+### Fixed
+- [x] **Cost / budget**: a timed-out provider round was retried up to 3 times — one think() could make the provider generate (and bill) 4 × max_tokens past the proven bound while tokens_used() stayed 0, holding the handler lock 4 × timeout. Timeouts are not retried (429/5xx still are).
+- [x] **Replay**: nested handler calls were recorded and replayed as well as their caller (`_inner` ran twice: "1 diverged") — only top-level calls are recorded; replay ignored soma.toml [agent] and sent prompts and the key to api.openai.com — it reads [agent] like run/serve.
+- [x] `map("tools_allowed", [...])` was read by `soma verify` ("can dispatch [vault_read]") but REFUSED at run time as an unknown option, so a think() had no per-call tool list (a classifier could call `issue_refund`) — enforced at run time (only those tools are offered; another is refused to the model); `requires` accepted. Unknown think() options in a literal map are check errors.
+- [x] A tool whose handler transitions to a LITERAL state failed `--strict` ("computed at run time") — it is one of the declared edges; think-isolation holds.
+- [x] A tool call from a model to a cell without tools said "exceeded max rounds (1)" — says the cell has no tools.
+- [x] Docs: timeouts, `tools_allowed`, think_json's `max_rounds` and no schema option, what record/replay covers.
+
+### Cycle 21 — attack (same binary)
+
+- [x] **`&&` / `||` took any value**: a comparison mask (`xs >= 0` on a list) or the String "false" counted as true, so `invariant m >= 0 && m <= 100` stored `[5000000]` over HTTP, `guard { amount > 0 && amount <= 1000 }` let `{"amount": [5000000]}` through, and `assert scores() >= 0 && true` PASSED with negative scores. Both operands must be Bools (a type error otherwise — an invariant that cannot be evaluated refuses the write); `ensure`, match guards and `forall` properties too.
+- [x] **Capability SSRF**: `http://*.x.com/*` matched `http://127.0.0.1/a.x.com/b` (the `*` crossed the host), and `/public/../admin` left a `/public/*` scope — host and path are matched separately; userinfo, fragments, backslashes and `.`/`..` segments (encoded too) are refused.
+- [x] **Scope lost across agents**: a scoped tool calling another agent whose own tool is unscoped fetched anything — nested tools answer to every enclosing scope.
+- [x] `recall` in a new process (or another serve thread) answered null — the memory table is opened on read.
+- [x] **Native**: Bool arithmetic returned a Bool (the interpreter raises); Rust keywords as names, and handlers `f` + `f_fast`, passed check and failed in rustc — check errors.
+- [x] Check: a function used as a value (`let f = len`, `map(dbl)`) is an error (`xs |> len` stays a call); `m.set((), v)` wrote the key "null" — refused. Docs: native `/` precisely (an Int result stays Int, `to_string(a / b)` is "-7.0").
+
+### Open
+- [ ] Replay starts from empty storage and compares results only: a state divergence shows only in a later result (documented).
+- [ ] Native BigInt mixed with Float (`abs(x) + min(x, 2.5)` with x past i64) overflows where the interpreter answers.
+- [ ] Int/Float `==` compares through f64 (`2^53 + 1 == 2^53 as Float` is true).
+- [ ] `assert_fails … matching ""` matches everything; the max-rounds error points at the tool body.

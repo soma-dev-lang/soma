@@ -107,7 +107,12 @@ pub fn send_with_retry(
             }
             Err(e) => {
                 last_error = format!("{}", e);
-                let retryable = ["429", "500", "502", "503", "529", "timeout"]
+                // not a timeout: the provider may still be generating (and
+                // billing) that reply — a retry made one think() cost up to
+                // 4 × max_tokens past the proven bound, and held the handler
+                // lock 4 × timeout
+                let timed_out = { let l = last_error.to_lowercase(); l.contains("timed out") || l.contains("timeout") };
+                let retryable = !timed_out && ["429", "500", "502", "503", "529"]
                     .iter().any(|code| last_error.contains(code));
                 if retryable && retry < config.max_retries {
                     let delay = std::time::Duration::from_millis(500 * (1 << retry));

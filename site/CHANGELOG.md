@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Security: `&&`/`||`, `ensure`, match guards and properties take Bools (a
+  list mask or a String passed compound invariants, guards and asserts);
+  tool capabilities match host and path separately and refuse `..`,
+  userinfo and fragments; a tool's scope holds inside the agents it calls.
+- Agents: `map("tools_allowed", [...])` restricts the tools one think()
+  offers; a timeout is not retried (it billed up to 4 × max_tokens past the
+  proven bound); a literal transition in a tool keeps think-isolation;
+  `recall` works across processes; unknown think() options are check errors.
+- Replay records only top-level calls and uses soma.toml [agent].
+- Check: a function used as a value, `()` as a slot key, Bool arithmetic and
+  Rust keywords in `[native]` code.
 - serve: an SSE client receives only the streams it subscribed to (every
   client received every publish); a connection flood that broke the HTTP
   worker pool exits the process (status 70) instead of leaving it alive and

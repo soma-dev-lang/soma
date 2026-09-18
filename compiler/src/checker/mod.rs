@@ -805,6 +805,36 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // `think(p, map("schema", …))`: an unknown option in a literal map
+        // passed check and raised at run time
+        for cell in &program.cells {
+            for sec in &cell.node.sections {
+                let body = match &sec.node {
+                    Section::OnSignal(on) => &on.body,
+                    Section::Every(e) | Section::After(e) => &e.body,
+                    _ => continue,
+                };
+                let mut bad: Vec<String> = Vec::new();
+                literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
+                    if matches!(name.as_str(), "think" | "think_json") {
+                        for a in args {
+                            if let Expr::FnCall { name: m, args: kv } = &a.node {
+                                if m == "map" {
+                                    for k in kv.iter().step_by(2) {
+                                        if let Expr::Literal(Literal::String(k)) = &k.node {
+                                            if !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires") && !bad.contains(k) { bad.push(k.clone()); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                for k in bad {
+                    self.errors.push(CheckError::Static { kind: "think_option", message: format!("\"{}\" is not a think() option — the options are max_tokens, max_rounds, timeout (ms), tools_allowed and requires; a JSON shape is checked by your own code after think_json()", k), span: sec.span });
+                }
+            }
+        }
         // `every 0ms` ran its body back to back (77,865 commits in 3 s)
         for cell in &program.cells {
             for sec in &cell.node.sections {
@@ -1461,6 +1491,18 @@ impl<'a> Checker<'a> {
         if natives.is_empty() { return; }
         let siblings: native::NativeSiblings = natives.iter().map(|h| h.signal_name.clone()).collect();
         let errors_before = self.errors.len();
+        // `f` and `f_fast`: the generated `inner_handler_f_fast` of each
+        // collided (rustc E0428)
+        for h in natives.iter() {
+            let twin = format!("{}_fast", h.signal_name);
+            if natives.iter().any(|o| o.signal_name == twin) {
+                self.errors.push(CheckError::Static {
+                    kind: "native_vocabulary",
+                    message: format!("[native] handlers '{}' and '{}' collide in the generated code (the first one's fast path is named '{}') — rename one", h.signal_name, twin, twin),
+                    span: Span { start: 0, end: 0 },
+                });
+            }
+        }
         for h in natives.iter().copied() {
             if let Err(e) = native::check_native_handler(&h.signal_name, &h.params, &h.body, &siblings) {
                 let span = cell.sections.iter().find_map(|s| match &s.node {

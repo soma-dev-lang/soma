@@ -629,8 +629,11 @@ fn run_property(
         env.insert(var.to_string(), interpreter::Value::Int(interpreter::SomaInt::from_i64(r)));
         let v = interp.eval_expr_with_env(body, &env, "", "")
             .map_err(|e| describe_error(&e))?;
-        if !v.is_truthy() {
-            return Ok((Some(r.to_string()), coverage));
+        // a property is a Bool (a mask or "false" read as true)
+        match v {
+            interpreter::Value::Bool(true) => {}
+            interpreter::Value::Bool(false) => return Ok((Some(r.to_string()), coverage)),
+            other => return Err(format!("the property is not a Bool: {} for {} = {}", other, var, r)),
         }
     }
     Ok((None, coverage))

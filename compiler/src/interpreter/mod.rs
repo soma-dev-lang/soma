@@ -589,6 +589,12 @@ pub struct Interpreter {
     /// V1.6: tool-capability scope. Set when the LLM dispatches into a tool
     /// with declared capabilities; the http/* builtins consult it.
     pub(crate) current_tool_caps: Option<Vec<String>>,
+    /// the scopes of the tools this one runs inside: a nested agent's tool
+    /// answers to every one of them (its own unscoped tool reset the scope)
+    pub(crate) outer_tool_caps: Vec<Vec<String>>,
+    /// `map("tools_allowed", [...])` of the running think(): the only tools
+    /// offered to (and dispatched for) the model
+    pub(crate) think_tools_allowed: Option<Vec<String>>,
     /// Loaded [native] handler FFI function pointers, keyed by (cell_name, signal_name)
     pub native_handlers: HashMap<(String, String), native_ffi::LoadedNative>,
     /// Cluster node for distributed storage (None = standalone mode)
@@ -829,6 +835,8 @@ impl Interpreter {
             frozen_now: None,
             auto_mock_noted: false,
             current_tool_caps: None,
+            outer_tool_caps: Vec::new(),
+            think_tools_allowed: None,
             native_handlers: HashMap::new(),
             cluster: None,
             sharded_slots: HashMap::new(),
@@ -1184,7 +1192,9 @@ impl Interpreter {
             }
         }
         // V1: [record] mode — set up nondet tracking before invoking the handler.
-        let is_recorded = self.record_handlers.contains(&(cell_name.to_string(), signal_name.to_string()));
+        // only the TOP-LEVEL invocation: a nested call is re-executed by its
+        // caller during replay (recording it too ran it twice — "1 diverged")
+        let is_recorded = self.current_depth == 0 && self.record_handlers.contains(&(cell_name.to_string(), signal_name.to_string()));
         let recorded_args = if is_recorded { Some(args.clone()) } else { None };
         if is_recorded {
             self.record_nondet_called.clear();
@@ -1585,7 +1595,8 @@ impl Interpreter {
                 // For now, evaluate eagerly — if false at this point, fail.
                 // This is useful for pre+post style: ensure at end of handler body.
                 let val = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
-                if !val.is_truthy() {
+                // a Bool, like `if` (a mask or "false" passed)
+                if !val.as_bool().map_err(ExecError::Runtime)? {
                     Err(ExecError::Runtime(RuntimeError::RequireFailed(
                         format!("ensure postcondition failed")
                     )))
@@ -2133,19 +2144,22 @@ impl Interpreter {
                 // Short-circuit for logical And/Or
                 if *op == BinOp::And {
                     let l = self.eval_expr(&left.node, env, cell_name, signal_name)?;
-                    if !is_truthy(&l) {
+                    // `&&` / `||` take Bools: a comparison MASK (`xs >= 0` on a
+                    // list) or a String counted as true, so a compound
+                    // invariant, guard or assert let `[5000000]` through
+                    if !l.as_bool().map_err(|e| ExecError::Runtime(and_or_err(e, "&&")))? {
                         return Ok(Value::Bool(false));
                     }
                     let r = self.eval_expr(&right.node, env, cell_name, signal_name)?;
-                    return Ok(Value::Bool(is_truthy(&r)));
+                    return Ok(Value::Bool(r.as_bool().map_err(|e| ExecError::Runtime(and_or_err(e, "&&")))?));
                 }
                 if *op == BinOp::Or {
                     let l = self.eval_expr(&left.node, env, cell_name, signal_name)?;
-                    if is_truthy(&l) {
+                    if l.as_bool().map_err(|e| ExecError::Runtime(and_or_err(e, "||")))? {
                         return Ok(Value::Bool(true));
                     }
                     let r = self.eval_expr(&right.node, env, cell_name, signal_name)?;
-                    return Ok(Value::Bool(is_truthy(&r)));
+                    return Ok(Value::Bool(r.as_bool().map_err(|e| ExecError::Runtime(and_or_err(e, "||")))?));
                 }
                 let l = self.eval_expr(&left.node, env, cell_name, signal_name)?;
                 let r = self.eval_expr(&right.node, env, cell_name, signal_name)?;
@@ -2563,7 +2577,11 @@ impl Interpreter {
                                 Ok(v) => v,
                                 Err(e) => { restore(env, saved); return Err(e); }
                             };
-                            if !guard_val.is_truthy() {
+                            let ok = match guard_val.as_bool() {
+                                Ok(b) => b,
+                                Err(e) => { restore(env, saved); return Err(ExecError::Runtime(e)); }
+                            };
+                            if !ok {
                                 restore(env, saved);
                                 continue;
                             }
@@ -3043,6 +3061,12 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "set() requires key and value arguments".to_string()
                     )))?;
+                // `()` became the key "null" (the same entry as "null"): a
+                // mistyped field used as a key wrote silently
+                if matches!(key, Value::Unit) {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.set((), …): the key is () — an absent value (a mistyped field?) cannot be a key", slot_name) }));
+                }
                 let key_str = format!("{}", key);
                 let val_str = format!("{}", val);
 
@@ -5973,4 +5997,11 @@ pub fn bus_lines<R: std::io::BufRead>(mut r: R) -> impl Iterator<Item = std::io:
             Err(e) => Some(Err(e)),
         }
     })
+}
+
+fn and_or_err(e: RuntimeError, op: &str) -> RuntimeError {
+    match e {
+        RuntimeError::TypeError(m) => RuntimeError::TypeError(format!("{} needs Bool operands: {}", op, m)),
+        other => other,
+    }
 }

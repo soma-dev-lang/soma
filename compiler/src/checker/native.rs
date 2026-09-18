@@ -174,6 +174,59 @@ pub fn check_native_handler(
             }
         });
     }
+    // names Rust reserves: `let fn = 1` / `on f(loop: Int)` passed check and
+    // rustc refused the generated code
+    if problem.is_none() {
+        const RUST_WORDS: &[&str] = &["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield", "try", "gen", "union", "None", "Some", "Ok", "Err", "Vec", "String", "Option", "Result", "Box"];
+        let mut names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+        fn binders(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
+            for st in stmts {
+                match &st.node {
+                    Statement::Let { name, .. } => out.push(name.clone()),
+                    Statement::For { var, body, .. } => { out.push(var.clone()); binders(body, out); }
+                    Statement::If { then_body, else_body, .. } => { binders(then_body, out); binders(else_body, out); }
+                    Statement::While { body, .. } => binders(body, out),
+                    _ => {}
+                }
+            }
+        }
+        binders(body, &mut names);
+        if let Some(n) = names.iter().find(|n| RUST_WORDS.contains(&n.as_str())) {
+            problem = Some(format!("names a value `{}`, a word Rust reserves — rename it (`{}_`)", n, n));
+        }
+    }
+    // a Bool in arithmetic: native code turned `b * 10 + 1` into a Bool
+    // (true), the interpreter raises "cannot add Bool and Int"
+    if problem.is_none() {
+        let mut bools: HashSet<String> = params.iter().filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Bool")).map(|p| p.name.clone()).collect();
+        fn is_bool(e: &Expr, bools: &HashSet<String>) -> bool {
+            match e {
+                Expr::CmpOp { .. } | Expr::Not(_) | Expr::Literal(Literal::Bool(_)) => true,
+                Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => true,
+                Expr::Ident(n) => bools.contains(n),
+                _ => false,
+            }
+        }
+        fn lets(stmts: &[Spanned<Statement>], bools: &mut HashSet<String>) {
+            for st in stmts {
+                match &st.node {
+                    Statement::Let { name, value } => { if is_bool(&value.node, bools) { bools.insert(name.clone()); } else { bools.remove(name); } }
+                    Statement::If { then_body, else_body, .. } => { lets(then_body, bools); lets(else_body, bools); }
+                    Statement::For { body, .. } | Statement::While { body, .. } => lets(body, bools),
+                    _ => {}
+                }
+            }
+        }
+        lets(body, &mut bools);
+        crate::checker::literals::for_each_expr(body, &mut |e| {
+            if problem.is_some() { return; }
+            if let Expr::BinaryOp { left, op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, right } = e {
+                if is_bool(&left.node, &bools) || is_bool(&right.node, &bools) {
+                    problem = Some("does arithmetic on a Bool (the interpreter raises \"cannot add Bool and Int\"; native code gave a Bool) — write `if b { 1 } else { 0 }`".to_string());
+                }
+            }
+        });
+    }
     // `let x = n + 1  …  x = to_string(x)`: a native local keeps the Rust
     // type of its `let` (the error blamed to_string's "BigInt mode")
     if problem.is_none() {
