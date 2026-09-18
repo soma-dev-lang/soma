@@ -55,7 +55,7 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
             let named = if all_handlers.iter().any(|(_, h)| h == first) {
                 Some(first.clone())
             } else if let Some((c, h)) = first.split_once('.') {
-                all_handlers.iter().any(|(cn, hn)| cn == c && hn == h).then(|| h.to_string())
+                all_handlers.iter().any(|(cn, hn)| cn == c && hn == h).then(|| first.clone())
             } else { None };
             if let Some(h) = named { signal_owned = Some(h); args = &args[1..]; }
         }
@@ -101,7 +101,7 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
     if has_interior || has_runtime {
         run_with_runtime(program, &arg_values);
     } else if use_jit {
-        run_with_vm(program, arg_values, registry, &source, signal_flag);
+        run_with_vm(program, arg_values, registry, &source, signal_flag.map(|s| s.rsplit('.').next().unwrap_or(s)));
     } else {
         run_single_cell(program, arg_values, registry, signal_flag, record_all, path, &source);
     }
@@ -196,14 +196,25 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
 }
 
 fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, registry: &Registry, signal_flag: Option<&str>, record_all: bool, source_path: &PathBuf, source: &str) {
-    let requested_signal = arg_values.first().and_then(|v| {
+    // `Cell.handler` names the cell; a handler name picks the first cell
+    // that defines it
+    let (preferred_cell, signal_flag): (Option<String>, Option<String>) = match signal_flag {
+        Some(sf) => match sf.split_once('.') {
+            Some((c, h)) => (Some(c.to_string()), Some(h.to_string())),
+            None => (None, Some(sf.to_string())),
+        },
+        None => (None, None),
+    };
+    let signal_flag: Option<&str> = signal_flag.as_deref();
+    let requested_signal = signal_flag.map(|s| s.to_string()).or_else(|| arg_values.first().and_then(|v| {
         if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None }
-    });
-    let cell = requested_signal.as_ref().and_then(|sig| {
+    }));
+    let cell = preferred_cell.as_ref().and_then(|pc| program.cells.iter().find(|c| &c.node.name == pc))
+    .or_else(|| requested_signal.as_ref().and_then(|sig| {
         program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
             if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == *sig } else { false }
         }))
-    })
+    }))
     .or_else(|| program.cells.iter().find(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) && c.node.sections.iter().any(|s| {
         if let ast::Section::OnSignal(ref on) = s.node { on.signal_name == "run" } else { false }
     })))
