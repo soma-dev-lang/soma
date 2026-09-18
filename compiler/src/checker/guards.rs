@@ -85,7 +85,26 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                     callers += 1;
                     let mut bound: HashSet<String> = on.params.iter().map(|p| p.name.clone()).collect();
                     super::dispatch::bind_all(&on.body, &mut bound);
+                    // bound only inside a branch (`if big { let amount = 50 }`)
+                    // is not bound on every path to the transition: the
+                    // runtime raised undefined_variable, not guard_failed
+                    let mut unconditional: HashSet<String> = on.params.iter().map(|p| p.name.clone()).collect();
+                    for st in &on.body {
+                        if let Statement::Let { name, .. } | Statement::Assign { name, .. } = &st.node {
+                            unconditional.insert(name.clone());
+                        }
+                    }
                     for n in &free {
+                        if bound.contains(*n) && !unconditional.contains(*n) {
+                            issues.push(GuardIssue {
+                                message: format!(
+                                    "guard on `{} -> {}` reads '{}', which handler `{}` binds only inside a branch —                                      bind `let {} = …` at the top level of the handler, before transition(), so every path defines it",
+                                    tr.node.from, tr.node.to, n, on.signal_name, n
+                                ),
+                                span: guard.span,
+                            });
+                            continue;
+                        }
                         if !bound.contains(*n) {
                             issues.push(GuardIssue {
                                 message: format!(

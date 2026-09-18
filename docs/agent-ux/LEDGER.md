@@ -213,7 +213,7 @@ Scores: tickets-with-expiry 23/40, 65/65 first try, 40-way race → exactly 3 wi
 - [x] serving.md rewritten (statuses by kind, String → `{"result"}`, one path variable per pattern, auto-route coercion, `start()` hook, CORS); llms.txt: scheduler section, `has_state` caveat, `mock now`, `--strict`, `test --json`, one variable per pattern, bare calls in `rules`; sizes/counts no longer hard-coded; operations.md: slow handlers, `.soma_data` after a program change.
 
 ### Open
-- [ ] Guard binding is flow-insensitive: a guard local bound only in one branch passes check and is `undefined_variable` at runtime.
+- [x] Guard binding: a guard local bound only inside a branch is a check error (it was `undefined_variable` at runtime).
 - [ ] `.soma_data` evolution is silent (documented): no start-up scan for re-typed slots, invariant-violating stored values, instances in removed states.
 - [ ] No per-request time limit (documented).
 - [ ] `soma example` on the live site still serves the previous corpus until the site is deployed (the landing block's 6th line depends on it).
