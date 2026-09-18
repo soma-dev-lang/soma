@@ -10,16 +10,15 @@ Write the file, run `soma check app.cell`, fix what it reports, repeat.
 
 ---
 
-## 1. Nested string literals inside `{...}` interpolation
+## 1. Quotes inside `{...}` interpolation
 
 ```soma
-// WRONG — a string literal inside an interpolation segment
-return "len: {len(\"hi\")}"
-// error: string interpolation cannot evaluate a nested string literal
-//        in '{len("hi")}' — bind the value with a let first
+// WRONG — an unescaped `"` ends the string: `{len(` is left dangling
+return "len: {len("hi")}"
 ```
 ```soma
-// RIGHT — bind it, then interpolate the variable
+// RIGHT — escape it (`"len: {len(\"hi\")}"` prints len: 2), or, clearer,
+// bind the value first and interpolate the variable
 let n = len("hi")
 return "len: {n}"
 ```
@@ -224,7 +223,8 @@ assert_fails 1 == 2          // FAILS the test: 1==2 is just `false`, no error
 ```
 ```soma
 assert_fails xs[99]          // passes: out-of-bounds RAISES
-assert_fails transition(id, "illegal")   // passes: invalid transition raises
+assert_fails transition(id, "illegal") matching "invalid_transition"   // passes for THAT reason
+// (with several state machines, call a handler of the owning cell instead)
 assert !(1 == 2)             // for a falsy predicate, use plain assert + !
 ```
 

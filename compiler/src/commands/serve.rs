@@ -88,7 +88,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // GET handler wrote state
         let analysis = crate::checker::desugar::expose_for_analysis(&program);
         let acell = analysis.cells.iter().find(|c| c.node.name == cell.node.name).map(|c| c.node.clone()).unwrap_or_else(|| cell.node.clone());
-        std::sync::Arc::new(mutating_handlers(&acell))
+        // a bare / UFCS / pipe call reaching ANOTHER cell's handler may
+        // write there (only the `Other.h()` spelling counted: GET 200 + write)
+        let foreign: std::collections::HashSet<String> = analysis.cells.iter()
+            .filter(|c| c.node.name != cell.node.name)
+            .flat_map(|c| c.node.sections.iter().filter_map(|s| match &s.node { ast::Section::OnSignal(on) => Some(on.signal_name.clone()), _ => None }))
+            .collect();
+        std::sync::Arc::new(mutating_handlers(&acell, &foreign))
     };
     {
         let mut ev: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2050,7 +2056,7 @@ fn routable(names: &[String], h: &str) -> bool {
 
 /// Handlers that change state: a slot write, a transition, an emit, a call
 /// into another cell — or a call to a sibling that does (transitively).
-fn mutating_handlers(cell: &ast::CellDef) -> std::collections::HashSet<String> {
+fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections::HashSet<String>) -> std::collections::HashSet<String> {
     use ast::{Expr, Section, Statement};
     use std::collections::{HashMap, HashSet};
     let slots: HashSet<String> = cell.sections.iter().filter_map(|s| match &s.node {
@@ -2067,6 +2073,8 @@ fn mutating_handlers(cell: &ast::CellDef) -> std::collections::HashSet<String> {
         crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
             Expr::FnCall { name, .. } => {
                 if matches!(name.as_str(), "transition" | "remember" | "delegate" | "publish" | "write_file" | "next_id" | "think" | "think_json" | "http_post" | "http_put" | "http_delete") { writes = true; }
+                let own = cell.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if o.signal_name == *name));
+                if !own && foreign.contains(name) { writes = true; }
                 callees.push(name.clone());
             }
             Expr::MethodCall { target, method, .. } => {

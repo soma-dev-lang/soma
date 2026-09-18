@@ -67,7 +67,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "SHA-256 of the text, as 64 hex characters (store `sha256(salt + password)` or better an hmac_sha256 with a server secret, never the password)."),
     doc("hmac_sha256", "string", "hmac_sha256(key: String, message: String) -> String",
         "HMAC-SHA-256 as hex: sign a session cookie or a webhook payload with a server secret."),
-    doc("random_token", "string", "random_token(bytes?: Int) -> String",
+    nondet("random_token", "string", "random_token(bytes?: Int) -> String",
         "Cryptographically secure random bytes from the OS, as hex (default 32 bytes = 64 characters): session tokens, API keys, salts. random() is NOT for secrets."),
     doc("secure_eq", "string", "secure_eq(a: String, b: String) -> Bool",
         "Constant-time equality for secrets (tokens, signatures): `==` returns early and leaks a prefix by timing."),
@@ -561,7 +561,7 @@ mod tests {
         // replay divergence detection.
         let expected: &[&str] = &[
             "now", "now_ms", "timestamp", "today", "date_now",
-            "random", "rand",
+            "random", "rand", "random_token",
         ];
         for name in expected {
             let doc = lookup(name)

@@ -726,3 +726,25 @@ lost none of 120 acknowledged versions; real Chrome saw peers' moves in 0.5 s.
 - [ ] Errors inside an imported file are reported with the importer's file name and lines (parse errors are right).
 - [ ] The replay source hash ignores imported files; `soma add` rewrites soma.toml without its comments; a package shadows a same-named local file silently.
 - [ ] A machine-less cell calling transition() drives the program's only machine; an import that adds a second machine makes it fail at run time after a clean check.
+
+## Cycle 26 (2026-09-18) — hospital medication administration (eMAR)
+
+7.5/10: check, 117 tests, verify --strict (58 temporal properties, 0 ⚠) green;
+"never administered twice", "no controlled dose without a witness", "nothing
+after stop" proven; a 3-nurse race gave exactly-once administration; kill -9
+lost only in-flight requests and the sha256 audit chain stayed intact across
+1,968 entries. The verifier's ✓s held under mutation.
+
+### Fixed
+- [x] **False green**: `assert_fails transition(id, "illegal")` in a program with several machines passed on the "which machine?" error (kind type), not on the invalid transition — a test rule calling transition()/get_status() there is a check error; gotcha 12 now writes `matching "invalid_transition"`. delivery/app.cell had exactly this test (and a face `-> String` on handlers returning responses, so every 409 was a 500) — both fixed.
+- [x] Docs: gotcha 1 (escaped quotes inside `{…}` work; an unescaped `"` ends the string); test-cell helpers are private to their test cell.
+
+### Cycle 26 — attack (same binary)
+
+- [x] **CSRF**: a GET to a handler calling another cell's handler by bare name, UFCS or pipe answered 200 and wrote (only `Store.bump()` was 405) — any call into another cell's handler counts as a write.
+- [x] **Auth bypass through coercion**: `secure_eq("null", ())` was true (a missing token stringified to "null"), so `secure_eq(provided, tokens.get(user))` let an unknown user in with the text "null" — sha256 / hmac_sha256 / secure_eq take Strings only (kind type).
+- [x] `random_token` was classed deterministic (replay could not attribute its divergence) — nondeterministic.
+- [x] `Store["secret"]` and `"{Store.secret}"` escaped the foreign-slot check — caught.
+
+### Open
+- [ ] Verify prints each property per machine (vacuous lines for machines without the state).

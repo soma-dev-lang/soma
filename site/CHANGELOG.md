@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- serve: a GET that calls into another cell's handler (bare, UFCS or pipe)
+  is 405 like a qualified call.
+- Crypto builtins take Strings only (`secure_eq("null", ())` was true);
+  `random_token` is nondeterministic for replay.
+- Check: a test rule calling transition() in a multi-machine program; foreign
+  slots through `Cell["slot"]` and interpolation.
 - Security: a cell's slots are private (reading another cell's slot by bare
   name is a check error); another cell's handler never replaces a builtin
   (a library's `escape_html` disabled escaping); `soma install` refuses

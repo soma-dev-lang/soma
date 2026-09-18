@@ -182,7 +182,8 @@ directly (`assert _sweep(5) == ["o4"]`) with `mock now` for the clock.
 
 ```soma
 cell test MyTests {                // a name and a `rules` block are required; it may also
-                                    // hold its own helpers (`on _walk(n: Int) { … }`)
+                                    // hold its own helpers (`on _walk(n: Int) { … }`),
+                                    // private to that test cell (shared ones go in a plain cell)
     rules {
         let orders = fixture()                   // shared by the rules below; a bare call
                                                  // is not a rule: bind it (let _ = f())
@@ -532,7 +533,7 @@ cell agent Researcher {
    initial state for an unknown id — `has_state(id)` tells them apart.
 2. `match` arms use `->` (`=>` is lambdas). Handlers don't declare return
    types (face signals do).
-3. No nested string literals inside `{...}` interpolation — bind a let first.
+3. An unescaped `"` inside `{...}` ends the string — escape it (`{m[\"k\"]}`) or bind a let first.
 4. `==` is structural on lists, maps and variants (`[] == []`, key order
    irrelevant). `null`/`None` do not exist: null is `()`, test with `x == ()`
    or default with `x ?? 0`.

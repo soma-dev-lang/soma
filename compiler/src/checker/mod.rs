@@ -705,7 +705,9 @@ impl<'a> Checker<'a> {
                 Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
                 _ => None,
             }).flatten().collect())).collect();
-            for cell in &program.cells {
+            // (interpolation segments exposed: `"{Store.secret}"` too)
+            let exposed = crate::checker::desugar::expose_for_analysis(program);
+            for cell in &exposed.cells {
                 for sec in &cell.node.sections {
                     let body = match &sec.node {
                         Section::OnSignal(on) => &on.body,
@@ -713,10 +715,19 @@ impl<'a> Checker<'a> {
                         _ => continue,
                     };
                     let mut hits: Vec<(String, String)> = Vec::new();
-                    literals::for_each_expr(body, &mut |e| if let Expr::FieldAccess { target, field } = e {
-                        if let Expr::Ident(c) = &target.node {
-                            if *c != cell.node.name && slots_of.get(c).map_or(false, |v| v.contains(field)) && !hits.contains(&(c.clone(), field.clone())) {
-                                hits.push((c.clone(), field.clone()));
+                    literals::for_each_expr(body, &mut |e| {
+                        let pair = match e {
+                            Expr::FieldAccess { target, field } => match &target.node { Expr::Ident(c) => Some((c.clone(), field.clone())), _ => None },
+                            // `Store["secret"]`
+                            Expr::Index { target, index } => match (&target.node, &index.node) {
+                                (Expr::Ident(c), Expr::Literal(Literal::String(f))) => Some((c.clone(), f.clone())),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some((c, field)) = pair {
+                            if c != cell.node.name && slots_of.get(&c).map_or(false, |v| v.contains(&field)) && !hits.contains(&(c.clone(), field.clone())) {
+                                hits.push((c, field));
                             }
                         }
                     });
@@ -851,6 +862,37 @@ impl<'a> Checker<'a> {
                             message: format!("a handler cannot be named `{}`: it would replace the builtin {}() for every bare call in the program (state machines, approvals and errors included) — rename it (`on {}_{}(…)`)", on.signal_name, on.signal_name, on.signal_name, cell.node.name.to_lowercase()),
                             span: sec.span,
                         });
+                    }
+                }
+            }
+        }
+        // `assert_fails transition(id, "x")` in a program with several
+        // machines raised "which machine?" (kind type) and passed for the
+        // wrong reason; a test names the machine by calling its cell's handler
+        {
+            let machines = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
+            if machines > 1 {
+                for cell in program.cells.iter().filter(|c| c.node.kind == CellKind::Test) {
+                    for sec in &cell.node.sections {
+                        let Section::Rules(rules) = &sec.node else { continue };
+                        for rule in &rules.rules {
+                            let e = match &rule.node {
+                                Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => e,
+                                Rule::Let { value, .. } => value,
+                                _ => continue,
+                            };
+                            let mut hit = false;
+                            literals::for_each_in_expr(&e.node, &mut |x| if let Expr::FnCall { name, .. } = x {
+                                if matches!(name.as_str(), "transition" | "get_status" | "has_state" | "valid_transitions") { hit = true; }
+                            });
+                            if hit {
+                                self.errors.push(CheckError::Static {
+                                    kind: "test_machine_ambiguous",
+                                    message: "a test rule calls transition() / get_status() directly, but the program has several state machines — it cannot tell which one (and `assert_fails` would pass on that error): call a handler of the cell that owns the machine, and write `assert_fails … matching \"invalid_transition\"`".to_string(),
+                                    span: rule.span,
+                                });
+                            }
+                        }
                     }
                 }
             }

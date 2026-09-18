@@ -182,7 +182,7 @@ cell Orders {
         signal cook_order(id: String) -> String
         signal ready_order(id: String) -> String
         signal pickup_order(id: String, courier: String) -> String
-        signal deliver_order(id: String) -> String
+        signal deliver_order(id: String) -> Map
         signal cancel_order(id: String) -> String
         signal track_order(id: String) -> Map
         signal order_board() -> List
@@ -473,7 +473,7 @@ cell Mesa {
         signal cook(id: String) -> String
         signal ready(id: String) -> String
         signal pickup(id: String, courier: String) -> String
-        signal deliver(id: String) -> String
+        signal deliver(id: String) -> Map
         signal cancel(id: String) -> String
         signal track(id: String) -> Map
         signal board() -> List
@@ -728,7 +728,9 @@ cell test LifecycleTests {
 
         // deliver before pickup MUST fail — the machine pins the order
         // of operations, not just the set of states
-        assert_fails transition("1", "Delivered")
+        // (through the Orders cell: with two machines a bare transition()
+        // in a test cannot tell which one it means)
+        assert deliver_order("1")._status == 409
 
         // the happy path still advances after the rejected move
         assert accept_order("1") != ()

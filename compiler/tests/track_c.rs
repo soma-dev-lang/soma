@@ -128,7 +128,7 @@ fn test_delivery_app_tests_pass() {
     let (out, _, code) = soma(&["test", "../delivery/app.cell"]);
     assert_eq!(code, 0, "out: {}", out);
     assert!(out.contains("19 tests: 19 passed, 0 failed"), "out: {}", out);
-    assert!(out.contains("✓ assert_fails transition(\"1\", \"Delivered\")"), "out: {}", out);
+    assert!(out.contains("✓ assert deliver_order(\"1\")._status == 409"), "out: {}", out);
 }
 
 #[test]

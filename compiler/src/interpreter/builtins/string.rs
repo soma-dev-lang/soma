@@ -152,6 +152,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         // ── crypto for authentication (session tokens, password hashes,
         // signed cookies): `random()` is a time-seeded PRNG ──
+        // Strings only: a missing token (`()`) became the text "null", so
+        // secure_eq("null", tokens.get(unknown_user)) was true
+        "sha256" | "hmac_sha256" | "secure_eq" if args.iter().any(|a| !matches!(a, Value::String(_))) => {
+            let bad = args.iter().find(|a| !matches!(a, Value::String(_))).unwrap();
+            Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("{}() takes Strings, got {} {} — an absent value (`()`) is not a secret: check it first", name, crate::interpreter::value_type_name(bad), bad) }))
+        }
         "sha256" if args.len() == 1 => {
             use sha2::Digest;
             let data = format!("{}", args[0]);

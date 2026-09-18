@@ -2241,3 +2241,56 @@ fn cycle25_findings() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(serde_json::from_str::<serde_json::Value>(stdout.trim()).is_ok(), "{stdout}");
 }
+
+/// Cycle 26 (attack): a bare / UFCS / pipe call into another cell counts
+/// as a write for GET → 405; crypto builtins refuse non-Strings (`()` was
+/// "null": secure_eq("null", ()) was true); `Store["s"]` and
+/// `"{Store.s}"` are foreign-slot check errors.
+#[test]
+fn cycle26_attack_findings() {
+    let d = dir("cycle26a");
+    std::fs::write(d.join("c.cell"), "cell C { on main() { return [try { secure_eq(\"null\", ()) }.kind, try { sha256(5) }.kind, secure_eq(\"a\", \"a\")] } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "c.cell", "main"]);
+    assert!(out.contains(r#"["type", "type", true]"#), "{out}");
+    std::fs::write(d.join("x.cell"), "cell Store { memory { secret: Map<String, String> [persistent] } on put(k: String) { secret.set(k, \"s\") } }\ncell Api { on a() { return Store[\"secret\"] } on b() { return \"{Store.secret}\" } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "x.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("reads the memory of another cell"), "{out}");
+
+    std::fs::write(d.join("g.cell"), r#"
+cell Store {
+  memory { n: Map<String, Int> [persistent] }
+  on bump(k: String) { n.set(k, (n.get(k) ?? 0) + 1) }
+}
+cell Api {
+  on c_bare(k: String) { bump(k)  return "ok" }
+  on c_ufcs(k: String) { k.bump()  return "ok" }
+  on request(method: String, path: String, body: String) { return response(404, map("e", 1)) }
+}
+"#).unwrap();
+    let port = 20700 + (std::process::id() % 150) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "g.cell", "-p", &port.to_string()])
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("soma serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let (a, b) = if up { (http(port, "GET", "/c_bare/x"), http(port, "GET", "/c_ufcs/x")) } else { (String::new(), String::new()) };
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    assert!(a.contains("405") && b.contains("405"), "a GET wrote through a cross-cell call: {a} / {b}");
+}
+
+/// Cycle 26: a test rule calling transition() in a program with several
+/// machines is a check error (assert_fails passed on the ambiguity error).
+#[test]
+fn cycle26_findings() {
+    let d = dir("cycle26");
+    std::fs::write(d.join("m.cell"), "cell A { state s { initial: a1  a1 -> a2 } on go(id: String) { transition(id, \"a2\") } }\ncell B { state t { initial: b1  b1 -> b2 } on go2(id: String) { transition(id, \"b2\") } }\ncell test T { rules { assert_fails transition(\"x\", \"a1\") } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "m.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("several state machines"), "{out}");
+}
