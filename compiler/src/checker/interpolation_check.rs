@@ -173,7 +173,7 @@ impl<'a> Walker<'a> {
                             Expr::Ident(w) if w == "and" => " — Soma writes `a && b`".to_string(),
                             Expr::Ident(w) if w == "or" => " — Soma writes `a || b`".to_string(),
                             Expr::Ident(w) if w == "not" => " — Soma writes `!a`".to_string(),
-                            _ if prev_open => " — a `\"` inside `{…}` ends the string: bind the value first (`let v = m[\"k\"]`, then `\"{v}\"`)".to_string(),
+                            _ if prev_open => " — an unescaped `\"` inside `{…}` ends the string: escape it (`\"{m[\\\"k\\\"]}\"`) or bind the value first (`let v = m[\"k\"]`, then `\"{v}\"`)".to_string(),
                             _ => " — a value that is not the last statement of its block is thrown away (a missing operator between two values? `let x = a b` is two statements)".to_string(),
                         };
                         self.issues.push(InterpolationIssue {
@@ -549,13 +549,18 @@ impl<'a> Walker<'a> {
                     });
                 }
                 self.walk_expr(subject);
+                // an arm's bindings end with the arm (the runtime scopes them)
                 for arm in arms {
-                    bind_pattern(&arm.pattern, &mut self.scope);
-                    if let Some(g) = &arm.guard {
-                        self.walk_expr(g);
-                    }
-                    self.walk_stmts(&arm.body);
-                    self.walk_expr(&arm.result);
+                    let mut bound: HashSet<String> = HashSet::new();
+                    bind_pattern(&arm.pattern, &mut bound);
+                    let bound: Vec<String> = bound.into_iter().collect();
+                    self.scoped(&bound, |w| {
+                        if let Some(g) = &arm.guard {
+                            w.walk_expr(g);
+                        }
+                        w.walk_stmts(&arm.body);
+                        w.walk_expr(&arm.result);
+                    });
                 }
             }
             Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
@@ -636,23 +641,8 @@ impl<'a> Walker<'a> {
             return true;
         }
 
-        // The runtime's segment evaluator cannot handle nested string
-        // literals — `{len("xy")}` errors at runtime even though the
-        // outer parser accepts it. (Colon/semicolon segments never get
-        // here: they are skipped as CSS, matching the runtime.)
-        if expr_str.contains('"') {
-            self.issues.push(InterpolationIssue {
-                message: format!(
-                    "string interpolation cannot evaluate a nested string literal in '{{{expr_str}}}' — \
-                     bind the value with a let first, then interpolate the variable"
-                ),
-                span,
-                warning: self.try_depth > 0 || self.blessed,
-                habit: false,
-                kind: "undefined_variable",
-            });
-            return true;
-        }
+        // Nested string literals (`{m[\"k\"]}`, escaped in the source)
+        // are evaluated by the runtime: the parser mirror below judges them.
 
         // Full path mirror: parse the wrapped segment with the real
         // parser. Failure to parse means it renders literally.

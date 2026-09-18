@@ -17,6 +17,15 @@
   100–599, 400 for a non-UTF-8 body, and keeps `%ZZ` literal.
 - The prover narrows by `if` branches and accepts update loops over a
   slot's keys; `cost { tokens }` is stated as reply tokens.
+- Data safety: persistent List slots enforce `size` invariants on push;
+  state machines persist without a persistent slot; match arms are scopes
+  (a failed guard deleted the outer variable).
+- Prover soundness: NaN, shadowing by match/lambda/nested lets, growth and
+  cost through other cells and emits, termination with re-bound parameters.
+- serve: GET/HEAD to a state-changing handler is 405; `_type`/`_variant`
+  in client JSON is refused; neither `start` nor `init` is an endpoint.
+- `soma run` refuses a program that fails check; native check runs the code
+  generator; native shifts, sqrt_int, sb_push_char fixed.
 - Hints for `require` without `else`, `and`/`or`/`not`, a quote inside `{…}`;
   CI builds Linux and Intel macOS binaries for every release tag.
 

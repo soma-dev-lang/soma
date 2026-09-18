@@ -364,3 +364,21 @@ correct under serve. Eight bugs, two of them in the HTTP layer.
 - [ ] `eventually` has no fairness option (a legitimate assigned ↔ waiting cycle fails it).
 - [ ] `response()` with a bad status raises kind `type` (answered 400) — a server bug that reads as a client error.
 
+### Cycle 13 — attack (same binary)
+
+Six false proofs, two data-corruption bugs, one data-loss bug, four security issues.
+
+- [x] **Data corruption**: a persistent List slot never enforced `rows.size <= N` on `push` (the size came from the map table: 0); match-arm bindings overwrote the enclosing variable — and a failed guard DELETED it (a guard read the wrong `amount` and was bypassed); arms are now scopes, in check too.
+- [x] **Data loss**: a state machine in a program with no persistent slot kept its instances in memory — every transition forgotten after the handler (`soma run` / `serve` now persist them in .soma_data).
+- [x] **False proofs**: NaN passes an early-return narrowing on a Float (`if x > 10.0 { return }`) — negated comparisons now only narrow NaN-free values; a match binding / lambda parameter / nested `let` shadowing a slot or a local; growth through another cell (`B.relay` → `A.extra`) and through emit listeners; termination with a re-assigned or re-bound parameter, and call cycles through other cells and emits; a cost bound ignoring emit listeners.
+- [x] **Security**: a GET reached state-changing handlers (CORS `*`: any page could write) — 405 now; clients could forge records and sum-type variants with `_type`/`_variant` (body, path, query) — refused; with both `start` and `init`, `start` was an endpoint; private handlers listed in the dashboard.
+- [x] **Wrong results**: `transition()` from a cell without a machine moved a random other cell's machine (now only when the program has exactly one); `NaN`/`inf` path and CLI arguments; big Ints in paths; `+` in paths; a trailing slash argument; `soma run z.cell nan` called another handler; `soma run` ran programs failing check.
+- [x] **Native**: negative shift counts hung (4-billion-bit shift) or returned 0; `sqrt_int` of a negative returned 0 and was inexact past 2^52; `round(x, 2)` dropped the digits; `sb_push_char` took the low byte; check now runs the native code generator and reports its refusals, and refuses an Int variable later given a Float.
+- [x] Check no longer refuses escaped string literals inside `{…}` (the runtime evaluates them).
+
+### Open
+- [ ] `emit` inside a listener for the SAME event is not delivered (documented now; a queue with a depth bound would be the real fix).
+- [ ] Native `/` answers a Float where the interpreter answers an exact Int.
+- [ ] Deep (100k) nesting in `to_json` overflows the stack; nested-map construction is quadratic.
+- [ ] `from_json` of a String body can still build variants a type does not declare.
+

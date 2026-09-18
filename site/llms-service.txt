@@ -259,7 +259,9 @@ source, `file:line`, left/right, and the fields a value really has when
   negative `i` still counts from the end: `nth(xs, -1)` is the last). A `let`
   named like a memory slot hides the slot (check warns).
 - `emit ev(data)` inside one process is a synchronous, atomic fan-out to
-  every cell with `on ev(data)`, the emitting cell included: a listener that raises fails the emitter,
+  every cell with `on ev(data)`, the emitting cell included (a handler does not
+  receive its OWN event: `on ping` emitting `ping` does not re-enter itself —
+  recurse with a call): a listener that raises fails the emitter,
   and the emitter's rollback takes the listeners' writes with it. Only across
   processes (the `[peers]` bus) is an emitted event an effect that is not
   rolled back. `soma check` warns when nobody handles the event.
@@ -360,7 +362,12 @@ a server; `soma serve app.cell -p 8080` serves it. Static files: `static/`.
 `soma serve` ALSO exposes every public handler of the request-owning cell at
 `/<handler>/<arg>/<arg>` (that is how forms post to `/add`). A path that
 `request` matches explicitly goes to `request`; prefix handlers that must not
-be reachable over HTTP with `_` (`on _debit(…)`). `soma check` warns when a
+be reachable over HTTP with `_` (`on _debit(…)`); `start`/`init` are never
+endpoints. A handler that changes state (a slot write, a transition, an emit,
+a call into another cell) answers GET/HEAD with 405 — POST to it. A request
+body may not carry `_type`/`_variant`/`_values` (a client cannot forge a
+record or a variant) nor a top-level `_status` (400). `NaN`/`inf` in a path
+or query stay Strings. `soma check` warns when a
 handler and a route share a name unless the route delegates to that handler. `body: String` is the raw text
 (`from_json(body)`); `body: Map` is the parsed JSON (a non-JSON body is a 400
 before the handler runs, kind json; `soma run` parses its text argument the
@@ -721,8 +728,14 @@ handlers (no `_` prefix, `request` aside) are also reachable directly at
 `/<handler>/<arg>/…`: arguments are coerced to the declared parameter types
 (`/decide/x/true` → Bool), a trailing `Map`/`List` parameter takes the JSON
 body (a non-JSON body → `400 {"kind": "json"}`). At start-up `serve` calls a
-zero-argument `start()` (or `init()`) handler when the cell has one; that
-start-up hook is not an HTTP endpoint (a GET could re-run it).
+zero-argument `start()` (or `init()`) handler when the cell has one; neither
+name is an HTTP endpoint (a request could re-run it). A handler that changes
+state — a slot write, a transition, an emit, a call into another cell —
+answers `GET`/`HEAD` with `405` (`Allow: POST`): with CORS open to every
+origin, a GET that writes is writable by any web page (`<img src=…>`). A JSON
+body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
+`_values` is refused (400): a client cannot forge a record or a sum-type
+variant.
 
 ## Concurrency and atomicity
 

@@ -133,8 +133,34 @@ fn is_buffer_ctor(e: &Expr) -> bool {
     matches!(e, Expr::FnCall { name, .. } if matches!(name.as_str(), "buffer" | "buffer_f" | "hashmap" | "strbuf"))
 }
 
+fn has_float_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Literal(Literal::Float(_)) => true,
+        Expr::BinaryOp { left, right, .. } => has_float_literal(&left.node) || has_float_literal(&right.node),
+        Expr::FnCall { name, args } => matches!(name.as_str(), "sqrt" | "to_float" | "sin" | "cos" | "exp" | "log") || args.iter().any(|a| has_float_literal(&a.node)),
+        _ => false,
+    }
+}
+
 fn check_codegen_limits(handler_name: &str, body: &[Spanned<Statement>], bufs: &mut HashSet<String>) -> Result<(), NativeCheckError> {
     let err = |reason: String| Err(NativeCheckError { handler_name: handler_name.to_string(), reason });
+    // `let x = 0 … x = 1.5`: one native variable has one type (rustc
+    // "mismatched types" used to be the message)
+    let int_lets: HashSet<String> = body.iter().filter_map(|st| match &st.node {
+        Statement::Let { name, value } if matches!(value.node, Expr::Literal(Literal::Int(_))) => Some(name.clone()),
+        _ => None,
+    }).collect();
+    fn assigns_float(stmts: &[Spanned<Statement>], ints: &HashSet<String>) -> Option<String> {
+        stmts.iter().find_map(|st| match &st.node {
+            Statement::Assign { name, value } if ints.contains(name) && has_float_literal(&value.node) => Some(name.clone()),
+            Statement::If { then_body, else_body, .. } => assigns_float(then_body, ints).or_else(|| assigns_float(else_body, ints)),
+            Statement::For { body, .. } | Statement::While { body, .. } => assigns_float(body, ints),
+            _ => None,
+        })
+    }
+    if let Some(n) = assigns_float(body, &int_lets) {
+        return err(format!("`{n}` starts as an Int and is later given a Float — a native variable has one type: start it as a Float (`let {n} = 0.0`)"));
+    }
     for st in body {
         match &st.node {
             Statement::Let { name, value } => {

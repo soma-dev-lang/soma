@@ -606,6 +606,10 @@ pub enum VariantShape {
     Struct(Vec<String>),  // field names
 }
 
+/// Set by `soma run` and `soma serve`: state-machine instances live in
+/// .soma_data/soma.db whatever the slots of the program.
+pub static PERSIST_MACHINES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 impl Interpreter {
     pub fn new(program: &Program) -> Self {
         let mut cells = HashMap::new();
@@ -807,7 +811,11 @@ impl Interpreter {
     /// Ensure state machine storage slots exist
     /// Uses persistent backend (SQLite) if any existing slot is persistent, otherwise memory
     pub fn ensure_state_machine_storage(&mut self) {
-        let has_persistent = self.storage.values().any(|b| b.backend_name() == "sqlite" || b.backend_name() == "file");
+        // `soma run` / `soma serve` persist machine instances even when the
+        // program has no [persistent] slot (they were kept in memory then:
+        // every transition forgotten when the handler returned)
+        let has_persistent = PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)
+            || self.storage.values().any(|b| b.backend_name() == "sqlite" || b.backend_name() == "file");
         for ((cell_name, sm_name), _) in self.state_machines.clone() {
             // Use cell-scoped key to prevent collisions between agents
             let key = format!("__sm_{}_{}", cell_name, sm_name);
@@ -2328,33 +2336,52 @@ impl Interpreter {
                 for arm in arms {
                     let (matches, bindings) = self.match_pattern(&arm.pattern, &val);
                     if matches {
-                        // Bind all variables captured by the pattern
+                        // the arm is a scope: its pattern bindings and `let`s
+                        // hide outer names only inside it (they overwrote the
+                        // outer variable — and a failed guard DELETED it)
+                        let mut saved: Vec<(String, Option<Value>)> = Vec::new();
+                        let remember = |name: &str, env: &Env, saved: &mut Vec<(String, Option<Value>)>| {
+                            if !saved.iter().any(|(n, _)| n == name) { saved.push((name.to_string(), env.get(name).cloned())); }
+                        };
+                        for (name, _) in &bindings { remember(name, env, &mut saved); }
+                        for stmt in &arm.body {
+                            if let Statement::Let { name, .. } = &stmt.node { remember(name, env, &mut saved); }
+                        }
+                        let restore = |env: &mut Env, saved: Vec<(String, Option<Value>)>| {
+                            for (name, prev) in saved {
+                                match prev { Some(v) => { env.insert(name, v); } None => { env.remove(&name); } }
+                            }
+                        };
                         for (name, bound_val) in &bindings {
                             env.insert(name.clone(), bound_val.clone());
                         }
                         // Evaluate guard clause if present
                         if let Some(ref guard) = arm.guard {
-                            let guard_val = self.eval_expr(&guard.node, env, cell_name, signal_name)?;
+                            let guard_val = match self.eval_expr(&guard.node, env, cell_name, signal_name) {
+                                Ok(v) => v,
+                                Err(e) => { restore(env, saved); return Err(e); }
+                            };
                             if !guard_val.is_truthy() {
-                                // Guard failed — unbind and try next arm
-                                for (name, _) in &bindings {
-                                    env.remove(name);
-                                }
+                                restore(env, saved);
                                 continue;
                             }
                         }
-                        // Execute body statements, capturing last value
-                        let mut last_val = Value::Unit;
-                        for stmt in &arm.body {
-                            self.last_span = Some(stmt.span);
-                            last_val = self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
-                        }
-                        // If the result expression is Unit (parser couldn't extract it),
-                        // use the last body statement's value instead
-                        if matches!(arm.result.node, Expr::Literal(Literal::Unit)) && !arm.body.is_empty() {
-                            return Ok(last_val);
-                        }
-                        return self.eval_expr(&arm.result.node, env, cell_name, signal_name);
+                        let outcome = (|| -> Result<Value, ExecError> {
+                            // Execute body statements, capturing last value
+                            let mut last_val = Value::Unit;
+                            for stmt in &arm.body {
+                                self.last_span = Some(stmt.span);
+                                last_val = self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
+                            }
+                            // If the result expression is Unit (parser couldn't extract it),
+                            // use the last body statement's value instead
+                            if matches!(arm.result.node, Expr::Literal(Literal::Unit)) && !arm.body.is_empty() {
+                                return Ok(last_val);
+                            }
+                            self.eval_expr(&arm.result.node, env, cell_name, signal_name)
+                        })();
+                        restore(env, saved);
+                        return outcome;
                     }
                 }
                 // No match found. For sum-type variants this is a hole the
@@ -2853,7 +2880,9 @@ impl Interpreter {
                     )))?;
                 let coerced = self.check_slot_value_type(cell_name, slot_name, val)?;
                 let val = &coerced;
-                let size_after = backend.len() as i64 + 1;
+                // a List lives in the log table: `len()` counts the MAP rows
+                // (0 on SQLite), so `rows.size <= N` never refused a push
+                let size_after = backend.list_len() as i64 + 1;
                 self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
                 if let Some(j) = self.journal.as_mut() {
                     j.push(UndoOp::Unappend { backend: backend.clone() });
@@ -3997,7 +4026,9 @@ impl Interpreter {
 
     pub(crate) fn do_transition_for(&mut self, cell_name: &str, id: &str, target: &str) -> Result<Value, RuntimeError> {
         let (sm, status_slot) = self.find_state_machine_for(cell_name)
-            .ok_or_else(|| RuntimeError::TypeError("no state machine found".to_string()))?;
+            .ok_or_else(|| RuntimeError::TypeError(format!(
+                "transition(): cell '{}' has no state machine{} — a transition moves the machine of the calling cell: call a handler of the cell that owns it",
+                cell_name, if self.state_machines.len() > 1 { " and the program has several" } else { "" })))?;
 
         // Get current state
         let current = status_slot.get(id)
@@ -4291,15 +4322,15 @@ impl Interpreter {
                 }
             }
         }
-        // Fallback: any state machine (backwards compat)
-        for ((cn, sm_name), sm) in &self.state_machines {
+        // Fallback (a cell without a machine, a test cell): only when the
+        // program has exactly ONE machine — with two, a HashMap walk picked
+        // one at random and moved some other cell's instance
+        let candidates: Vec<_> = self.state_machines.iter().filter_map(|((cn, sm_name), sm)| {
             let scoped_key = format!("__sm_{}_{}", cn, sm_name);
             let legacy_key = format!("__sm_{}", sm_name);
-            if let Some(backend) = self.storage.get(&scoped_key).or_else(|| self.storage.get(&legacy_key)) {
-                return Some((sm, backend));
-            }
-        }
-        None
+            self.storage.get(&scoped_key).or_else(|| self.storage.get(&legacy_key)).map(|b| (sm, b))
+        }).collect();
+        if candidates.len() == 1 { candidates.into_iter().next() } else { None }
     }
 }
 

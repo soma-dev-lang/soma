@@ -4306,7 +4306,8 @@ impl FnGenerator {
             "sb_push_char" if args.len() == 2 => {
                 if let Expr::Ident(sb) = &args[0].node {
                     let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                    return format!("{{ {}.push((({}) as u8) as char); 0i64 }}", sb, v);
+                    // by code point (it took the low byte: 1000 became 'è')
+                    return format!("{{ let _c: i64 = {}; match u32::try_from(_c).ok().and_then(char::from_u32) {{ Some(ch) => {}.push(ch), None => panic!(\"soma:type: sb_push_char: {{}} is not a Unicode code point\", _c) }}; 0i64 }}", v, sb);
                 }
                 self.err("sb_push_char: first arg must be an identifier");
                 "0i64".to_string()
@@ -4373,6 +4374,11 @@ impl FnGenerator {
                 } else {
                     format!("std::cmp::{}({}, {})", name, a, b)
                 }
+            }
+            "round" if args.len() == 2 => {
+                // the digits argument was silently dropped (round(2.675, 2) → 3)
+                self.err("round(x, digits) is not in the native vocabulary — round in an interpreted handler, or scale: `round(x * 100.0)` then divide");
+                "0i64".to_string()
             }
             "floor" | "ceil" | "round" => {
                 // NaN / ±inf / beyond i64 raise, as the interpreter does —
@@ -4470,13 +4476,13 @@ impl FnGenerator {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
                 // exact: a lost bit is an overflow → the BigInt fallback runs
-                format!("({{ let _a: i64 = {}; let _k: i64 = {}; match (_k < 64).then(|| _a.checked_shl(_k as u32)).flatten() {{ Some(r) if (r >> (_k as u32)) == _a => r, _ => panic!(\"attempt to shift left with overflow\") }} }})", a, b)
+                format!("({{ let _a: i64 = {}; let _k: i64 = {}; if _k < 0 {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} match (_k < 64).then(|| _a.checked_shl(_k as u32)).flatten() {{ Some(r) if (r >> (_k as u32)) == _a => r, _ => panic!(\"attempt to shift left with overflow\") }} }})", a, b)
             }
             "shr" if args.len() == 2 => {
                 // arithmetic shift; a count ≥ 64 saturates (0 or -1)
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                format!("({{ let _a: i64 = {}; let _k: i64 = {}; if _k >= 64 {{ if _a < 0 {{ -1i64 }} else {{ 0i64 }} }} else {{ _a >> _k }} }})", a, b)
+                format!("({{ let _a: i64 = {}; let _k: i64 = {}; if _k < 0 {{ panic!(\"soma:type: shr(): shift count {{}} out of range\", _k) }} if _k >= 64 {{ if _a < 0 {{ -1i64 }} else {{ 0i64 }} }} else {{ _a >> _k }} }})", a, b)
             }
             "bit_len" if args.len() == 1 => {
                 // of the magnitude, like the interpreter (bit_len(-1) is 1)
@@ -4566,7 +4572,9 @@ impl FnGenerator {
             }
             "sqrt_int" if args.len() == 1 => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                format!("(({} as f64).sqrt() as i64)", a)
+                // exact integer root (the f64 root is off past 2^52), and a
+                // negative argument raises like the interpreter (it gave 0)
+                format!("({{ let _a: i64 = {}; if _a < 0 {{ panic!(\"soma:type: sqrt_int: negative argument\") }} let mut _r: i128 = (_a as f64).sqrt() as i128; let _n = _a as i128; while _r * _r > _n {{ _r -= 1; }} while (_r + 1) * (_r + 1) <= _n {{ _r += 1; }} _r as i64 }})", a)
             }
             "pow_mod" if args.len() == 3 => {
                 // Direct mode pow_mod: square-and-multiply on i64
@@ -5725,7 +5733,7 @@ impl FnGenerator {
             "sb_push_char" if args.len() == 2 => {
                 if let Expr::Ident(sb) = &args[0].node {
                     let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                    return format!("{{ {}.push((({}) as u8) as char); Integer::from(0i64) }}", sb, v);
+                    return format!("{{ let _c: i64 = {}; match u32::try_from(_c).ok().and_then(char::from_u32) {{ Some(ch) => {}.push(ch), None => panic!(\"soma:type: sb_push_char: {{}} is not a Unicode code point\", _c) }}; Integer::from(0i64) }}", v, sb);
                 }
                 self.err("sb_push_char: first arg must be an identifier");
                 "Integer::from(0i64)".to_string()
@@ -5816,6 +5824,10 @@ impl FnGenerator {
                     format!("({{ let _f: f64 = {} as f64; if !_f.is_finite() {{ panic!(\"soma:range: to_int({{}}) is outside the Int range — use round() or keep it a Float\", _f) }} Integer::from_f64(_f.trunc()).unwrap() }})", a)
                 }
             }
+            "round" if args.len() == 2 => {
+                self.err("round(x, digits) is not in the native vocabulary — round in an interpreted handler, or scale: `round(x * 100.0)` then divide");
+                "Integer::from(0i64)".to_string()
+            }
             "floor" | "ceil" | "round" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
                 format!("({{ let _f: f64 = ({}).{}(); if !_f.is_finite() {{ panic!(\"soma:{}: {{}} is out of integer range\", _f) }} Integer::from_f64(_f).unwrap() }})", a, name, name)
@@ -5869,12 +5881,12 @@ impl FnGenerator {
                 // (u32 << u32 in plain Rust would panic for shift > 31).
                 let a = self.gen_expr_rug(&args[0].node);
                 let b = self.gen_int_to_i64_rug(&args[1].node);
-                format!("Integer::from(({}) << (({}) as u32))", a, b)
+                format!("{{ let _k: i64 = {}; if _k < 0 || _k > u32::MAX as i64 {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} Integer::from(({}) << (_k as u32)) }}", b, a)
             }
             "shr" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);
                 let b = self.gen_int_to_i64_rug(&args[1].node);
-                format!("Integer::from(({}) >> (({}) as u32))", a, b)
+                format!("{{ let _k: i64 = {}; if _k < 0 || _k > u32::MAX as i64 {{ panic!(\"soma:type: shr(): shift count {{}} out of range\", _k) }} Integer::from(({}) >> (_k as u32)) }}", b, a)
             }
             "bit_len" if args.len() == 1 => {
                 let a = self.gen_expr_rug(&args[0].node);
@@ -5959,7 +5971,7 @@ impl FnGenerator {
             }
             "sqrt_int" if args.len() == 1 => {
                 let a = self.gen_expr_rug(&args[0].node);
-                format!("({}).sqrt()", a)
+                format!("{{ let _v = Integer::from({}); if _v < 0 {{ panic!(\"soma:type: sqrt_int: negative argument\") }} _v.sqrt() }}", a)
             }
             other => {
                 // Sibling call from Rug mode — return type Integer

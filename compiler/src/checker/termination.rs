@@ -71,6 +71,25 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                     }
                 });
             }
+            // a decreasing argument over a parameter the body re-binds is no measure
+            if self_recursive && reasons.is_empty() {
+                let mut measured = false;
+                for stmt in &on.body {
+                    walk_stmt(&stmt.node, &mut |e| {
+                        if let Expr::FnCall { name, args } = e {
+                            if name == &on.signal_name && args.iter().enumerate().any(|(i, a)|
+                                on.params.get(i).map_or(false, |p| is_decreasing_arg(&a.node, &p.name) && !rebinds(&on.body, &p.name)))
+                            { measured = true; }
+                        }
+                    });
+                }
+                if !measured {
+                    reasons.push(format!(
+                        "handler `{}`: recursive call without provable decreasing argument (the parameter is re-assigned or re-bound in the body)",
+                        on.signal_name
+                    ));
+                }
+            }
             if self_recursive && reasons.is_empty() && !has_conditional(&on.body) {
                 reasons.push(format!(
                     "handler `{}`: recursion has no base case (no conditional branch can stop the descent)",
@@ -146,17 +165,42 @@ fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
         }
     }
     let names: HashSet<&str> = handlers.iter().map(|h| h.signal_name.as_str()).collect();
+    let cells: HashSet<&str> = program.cells.iter().map(|c| c.node.name.as_str()).collect();
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
     for on in handlers {
         let mut calls = Vec::new();
         for stmt in &on.body {
             walk_stmt(&stmt.node, &mut |e| {
-                if let Expr::FnCall { name, .. } = e {
+                let callee = match e {
+                    Expr::FnCall { name, .. } => Some(name),
+                    // `Other.o1(n)`: a call into another cell
+                    Expr::MethodCall { target, method, .. } if matches!(&target.node, Expr::Ident(c) if cells.contains(c.as_str())) => Some(method),
+                    _ => None,
+                };
+                if let Some(name) = callee {
                     if names.contains(name.as_str()) && name != &on.signal_name && !calls.contains(name) {
                         calls.push(name.clone());
                     }
                 }
             });
+        }
+        // `Other.o1(n)` as a statement, and `emit ev(…)` (every `on ev` runs;
+        // a handler's own event does not re-enter it)
+        fn stmt_edges(stmts: &[Spanned<Statement>], cells: &HashSet<&str>, out: &mut Vec<String>) {
+            for st in stmts {
+                match &st.node {
+                    Statement::MethodCall { target, method, .. } if cells.contains(target.as_str()) => out.push(method.clone()),
+                    Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
+                    Statement::If { then_body, else_body, .. } => { stmt_edges(then_body, cells, out); stmt_edges(else_body, cells, out); }
+                    Statement::For { body, .. } | Statement::While { body, .. } => stmt_edges(body, cells, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut extra = Vec::new();
+        stmt_edges(&on.body, &cells, &mut extra);
+        for name in extra {
+            if names.contains(name.as_str()) && name != on.signal_name && !calls.contains(&name) { calls.push(name); }
         }
         graph.entry(on.signal_name.clone()).or_default().extend(calls);
     }
@@ -600,4 +644,35 @@ fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str) -> bool {
         }
     }
     false
+}
+
+/// Is `name` assigned, re-`let`, or re-bound (a loop variable, a lambda
+/// parameter, a match binding) anywhere in the body? Then `rec(name - 1)`
+/// does not measure the parameter: `n = n + 5  rec(n - 1)` never ends.
+fn rebinds(stmts: &[Spanned<Statement>], name: &str) -> bool {
+    fn st_walk(stmts: &[Spanned<Statement>], name: &str) -> bool {
+        stmts.iter().any(|st| match &st.node {
+            Statement::Let { name: n, .. } | Statement::Assign { name: n, .. } => n == name,
+            Statement::For { var, body, .. } => var == name || st_walk(body, name),
+            Statement::While { body, .. } => st_walk(body, name),
+            Statement::If { then_body, else_body, .. } => st_walk(then_body, name) || st_walk(else_body, name),
+            _ => false,
+        })
+    }
+    if st_walk(stmts, name) { return true; }
+    let mut hit = false;
+    crate::checker::literals::for_each_expr(stmts, &mut |e| match e {
+        Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } if param == name => hit = true,
+        Expr::LambdaBlock { stmts, .. } => { if st_walk(stmts, name) { hit = true; } }
+        Expr::IfExpr { then_body, else_body, .. } => { if st_walk(then_body, name) || st_walk(else_body, name) { hit = true; } }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                let mut b = HashSet::new();
+                crate::checker::invariants::pattern_binders(&arm.pattern, &mut b);
+                if b.contains(name) || st_walk(&arm.body, name) { hit = true; }
+            }
+        }
+        _ => {}
+    });
+    hit
 }

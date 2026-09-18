@@ -81,8 +81,14 @@ handlers (no `_` prefix, `request` aside) are also reachable directly at
 `/<handler>/<arg>/…`: arguments are coerced to the declared parameter types
 (`/decide/x/true` → Bool), a trailing `Map`/`List` parameter takes the JSON
 body (a non-JSON body → `400 {"kind": "json"}`). At start-up `serve` calls a
-zero-argument `start()` (or `init()`) handler when the cell has one; that
-start-up hook is not an HTTP endpoint (a GET could re-run it).
+zero-argument `start()` (or `init()`) handler when the cell has one; neither
+name is an HTTP endpoint (a request could re-run it). A handler that changes
+state — a slot write, a transition, an emit, a call into another cell —
+answers `GET`/`HEAD` with `405` (`Allow: POST`): with CORS open to every
+origin, a GET that writes is writable by any web page (`<img src=…>`). A JSON
+body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
+`_values` is refused (400): a client cannot forge a record or a sum-type
+variant.
 
 ## Concurrency and atomicity
 

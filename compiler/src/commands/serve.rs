@@ -45,6 +45,7 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
 pub static NO_SCHEDULE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Option<&str>, no_check: bool, registry: &mut Registry) {
+    crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::interpreter::IN_SERVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let source = read_source(path);
     let file_str = path.display().to_string();
@@ -82,6 +83,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     let cell_name = cell.node.name.clone();
 
     let request_routes = std::sync::Arc::new(crate::checker::routes::explicit_routes(&cell.node));
+    let mutating = std::sync::Arc::new(mutating_handlers(&cell.node));
     let handler_names: Vec<String> = cell.node.sections.iter()
         .filter_map(|s| {
             if let ast::Section::OnSignal(ref on) = s.node {
@@ -987,6 +989,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let program = program.clone();
         let storage_slots = storage_slots.clone();
         let handler_names = handler_names.clone();
+        let mutating = mutating.clone();
         let request_routes = request_routes.clone();
         let handler_params = handler_params.clone();
         let request_body_type = request_body_type.clone();
@@ -1037,8 +1040,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
         // leading whitespace is JSON too (a pretty-printing client): trim
         let body_raw = body_raw.trim_start().to_string();
+        // `_type` / `_variant` / `_values` anywhere in a client's JSON would
+        // forge a record or a sum-type variant (a `Refund` that `Pay` does
+        // not declare, stored and matched later); `_status` at the top would
+        // make an echoed body an HTTP response
+        let mut reserved_hit: Option<&'static str> = None;
         let body_value = if body_raw.starts_with('{') || body_raw.starts_with('[') {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_raw) {
+                reserved_hit = reserved_json_key(&parsed, true);
                 Some(json_request_to_value(&parsed))
             } else {
                 None
@@ -1062,15 +1071,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // a returned map with `_status` IS an HTTP response (its other plain
         // keys become headers): a handler echoing a client object would let
         // the client pick the status and inject headers — refuse the key
-        if let Some(interpreter::Value::Map(m)) = &body_value {
-            if m.contains_key("_status") {
-                let resp = tiny_http::Response::from_string(error_body("the request body may not carry `_status` (reserved: a returned map with `_status` is an HTTP response)", "json"))
-                    .with_status_code(400)
-                    .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
-                eprintln!("{} {} → 400 0ms body carries reserved `_status`", method, url);
-                let _ = request.respond(cors(resp));
-                return;
-            }
+        if let Some(key) = reserved_hit {
+            let msg = format!("the request body may not carry `{}` (reserved: it marks {})", key,
+                if key == "_status" { "a returned map as an HTTP response" } else { "a record or a sum-type variant — a client cannot forge one" });
+            let resp = tiny_http::Response::from_string(error_body(&msg, "json"))
+                .with_status_code(400)
+                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+            eprintln!("{} {} → 400 0ms body carries reserved `{}`", method, url, key);
+            let _ = request.respond(cors(resp));
+            return;
         }
 
         if method == "OPTIONS" {
@@ -1172,6 +1181,28 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             interp.ws_out = ws_guard.clone();
         }
 
+        // a handler that changes state is not reachable by GET / HEAD: an
+        // `<img src=…/put/z>` on any page (CORS is `*`) used to overwrite data
+        if method == "GET" || method == "HEAD" {
+            let url_path = url.split('?').next().unwrap_or(&url);
+            let target: Option<&str> = if let Some(sig) = url_path.strip_prefix("/signal/") {
+                Some(sig)
+            } else {
+                let sig = url_path.trim_start_matches('/').split('/').next().unwrap_or("");
+                if handler_names.iter().any(|h| h == sig) && routable(&handler_names, sig) && !request_routes.matches(url_path) { Some(sig) } else { None }
+            };
+            if let Some(sig) = target.filter(|s| mutating.contains(*s)) {
+                let msg = format!("{}() changes state: call it with POST (a GET must not write)", sig);
+                let resp = tiny_http::Response::from_string(error_body(&msg, "method_not_allowed"))
+                    .with_status_code(405)
+                    .with_header(tiny_http::Header::from_bytes(&b"Allow"[..], &b"POST"[..]).unwrap())
+                    .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                eprintln!("{} {} → 405 0ms {}", method, url, msg);
+                let _ = request.respond(cors(resp));
+                return;
+            }
+        }
+
         let (signal_name, args) = if url.starts_with("/signal/") {
             let signal = url.trim_start_matches("/signal/");
             let (sig_name, query) = signal.split_once('?').unwrap_or((signal, ""));
@@ -1211,9 +1242,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let mut args: Vec<interpreter::Value> = if rest.is_empty() {
                     vec![]
                 } else {
-                    rest.split('/')
+                    // a trailing slash is not an empty argument; `+` in a
+                    // PATH is a plus sign (only a query encodes spaces so)
+                    rest.trim_end_matches('/').split('/')
                         .map(|s| {
-                            let decoded = urlencoding_decode(s);
+                            let decoded = urlencoding_decode(&s.replace('+', "%2B"));
                             if let Ok(n) = decoded.parse::<i64>() {
                                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
                             } else {
@@ -1668,14 +1701,19 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
         ("Bool", Value::String(s)) if s == "true" || s == "false" => Value::Bool(s == "true"),
         ("String", Value::Int(_) | Value::Float(_) | Value::Bool(_)) => Value::String(format!("{}", v)),
         ("Float", Value::Int(i)) => Value::Float(i.to_f64()),
-        ("Float", Value::String(s)) if s.parse::<f64>().is_ok() => Value::Float(s.parse().unwrap()),
+        // "NaN" / "inf" are not numbers a handler can compare: left a String
+        ("Float", Value::String(s)) if s.parse::<f64>().map_or(false, |f| f.is_finite()) => Value::Float(s.parse().unwrap()),
         ("Int", Value::String(s)) if s.parse::<i64>().is_ok() => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(s.parse().unwrap())),
+        // Int is arbitrary precision: 99999999999999999999999 is an Int
+        ("Int", Value::String(s)) if s.parse::<rug::Integer>().is_ok() => Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(s.parse::<rug::Integer>().unwrap())),
         ("Int", Value::Float(f)) if f.fract() == 0.0 => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
         ("Map" | "List", Value::String(s)) => {
             if s.trim().is_empty() {
                 return if ty == "Map" { Value::Map(Default::default()) } else { Value::List(vec![]) };
             }
             match serde_json::from_str::<serde_json::Value>(s) {
+                // `_type` / `_variant` would forge a record or a variant
+                Ok(j) if reserved_json_key(&j, false).is_some() => v,
                 Ok(j) => crate::interpreter::builtins::serde_json_to_value(&j),
                 Err(_) => v,
             }
@@ -1687,7 +1725,7 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
 fn coerce_query_value(decoded: &str) -> interpreter::Value {
     if let Ok(n) = decoded.parse::<i64>() {
         interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
-    } else if let Ok(f) = decoded.parse::<f64>() {
+    } else if let Some(f) = decoded.parse::<f64>().ok().filter(|f| f.is_finite()) {
         interpreter::Value::Float(f)
     } else if decoded == "true" {
         interpreter::Value::Bool(true)
@@ -1731,6 +1769,20 @@ fn hex_val(b: u8) -> u8 {
 /// One JSON → Value conversion for the whole toolchain (big integers stay
 /// exact, 1e400 is infinity, never a silent 0.0) — this file had its own
 /// copy that lost both.
+fn reserved_json_key(v: &serde_json::Value, top: bool) -> Option<&'static str> {
+    match v {
+        serde_json::Value::Object(m) => {
+            if top && m.contains_key("_status") { return Some("_status"); }
+            for k in ["_type", "_variant", "_values"] {
+                if m.contains_key(k) { return Some(k); }
+            }
+            m.values().find_map(|x| reserved_json_key(x, false))
+        }
+        serde_json::Value::Array(xs) => xs.iter().find_map(|x| reserved_json_key(x, false)),
+        _ => None,
+    }
+}
+
 fn json_request_to_value(v: &serde_json::Value) -> interpreter::Value {
     crate::interpreter::builtins::serde_json_to_value(v)
 }
@@ -1746,5 +1798,62 @@ fn lifecycle_hook(names: &[String]) -> Option<&'static str> {
 /// A handler reachable over HTTP as `/<name>/…`: not private (`_x`), not the
 /// `request` router, not the start-up hook.
 fn routable(names: &[String], h: &str) -> bool {
-    !h.starts_with('_') && h != "request" && lifecycle_hook(names) != Some(h)
+    // `start` and `init` are both start-up names: neither is an endpoint
+    // (with both declared, `start` was served and re-ran on every POST)
+    let _ = lifecycle_hook(names);
+    !h.starts_with('_') && h != "request" && h != "init" && h != "start"
+}
+
+/// Handlers that change state: a slot write, a transition, an emit, a call
+/// into another cell — or a call to a sibling that does (transitively).
+fn mutating_handlers(cell: &ast::CellDef) -> std::collections::HashSet<String> {
+    use ast::{Expr, Section, Statement};
+    use std::collections::{HashMap, HashSet};
+    let slots: HashSet<String> = cell.sections.iter().filter_map(|s| match &s.node {
+        Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
+        _ => None,
+    }).flatten().collect();
+    const WRITES: [&str; 8] = ["set", "push", "append", "delete", "remove", "clear", "update", "pop"];
+    let mut direct: HashSet<String> = HashSet::new();
+    let mut calls: HashMap<String, Vec<String>> = HashMap::new();
+    for sec in &cell.sections {
+        let Section::OnSignal(on) = &sec.node else { continue };
+        let mut writes = false;
+        let mut callees = Vec::new();
+        crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
+            Expr::FnCall { name, .. } => {
+                if matches!(name.as_str(), "transition" | "remember" | "delegate") { writes = true; }
+                callees.push(name.clone());
+            }
+            Expr::MethodCall { target, method, .. } => {
+                if let Expr::Ident(t) = &target.node {
+                    if slots.contains(t) && WRITES.contains(&method.as_str()) { writes = true; }
+                    // `Other.h(…)`: another cell may write
+                    if t.chars().next().map_or(false, |c| c.is_uppercase()) && !slots.contains(t) { writes = true; }
+                }
+            }
+            _ => {}
+        });
+        fn stmts_write(stmts: &[ast::Spanned<Statement>], slots: &HashSet<String>) -> bool {
+            stmts.iter().any(|st| match &st.node {
+                Statement::MethodCall { target, method, .. } => (slots.contains(target) && WRITES.contains(&method.as_str()))
+                    || target.chars().next().map_or(false, |c| c.is_uppercase()),
+                Statement::IndexSet { name, .. } => slots.contains(name),
+                Statement::Emit { .. } => true,
+                Statement::If { then_body, else_body, .. } => stmts_write(then_body, slots) || stmts_write(else_body, slots),
+                Statement::For { body, .. } | Statement::While { body, .. } => stmts_write(body, slots),
+                _ => false,
+            })
+        }
+        if writes || stmts_write(&on.body, &slots) { direct.insert(on.signal_name.clone()); }
+        calls.insert(on.signal_name.clone(), callees);
+    }
+    loop {
+        let before = direct.len();
+        for (h, cs) in &calls {
+            if !direct.contains(h) && cs.iter().any(|c| direct.contains(c)) { direct.insert(h.clone()); }
+        }
+        if direct.len() == before { break; }
+    }
+    direct
 }

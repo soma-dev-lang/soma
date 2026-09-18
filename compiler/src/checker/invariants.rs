@@ -186,6 +186,15 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             .iter()
             .filter_map(|s| if let Section::OnSignal(on) = &s.node { Some((on.signal_name.clone(), on)) } else { None })
             .collect();
+        // every handler of the program, for growth that goes through
+        // another cell (`B.relay(x)` → `A.extra(x)`, which pushes)
+        let all_handlers: Vec<(String, &OnSection)> = program.cells.iter()
+            .flat_map(|c| c.node.sections.iter().filter_map(move |s| match &s.node {
+                Section::OnSignal(on) => Some((c.node.name.clone(), on)),
+                _ => None,
+            }))
+            .collect();
+        let cell_names: HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
 
         // every write site in every handler: (handler, slot, value expr)
         let mut writes: Vec<(String, String, Expr, bool, Vec<usize>, Option<String>)> = Vec::new();
@@ -199,7 +208,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         let mut locals: HashMap<(String, Vec<usize>), HashMap<String, Known>> = HashMap::new();
         for (name, _, _, _, path, _) in &writes {
             if let Some(on) = handlers.get(name) {
-                locals.entry((name.clone(), path.clone())).or_insert_with(|| local_ranges(on, &hyp, &handlers, path));
+                locals.entry((name.clone(), path.clone())).or_insert_with(|| local_ranges(on, &hyp_for(on, &hyp), &handlers, path));
             }
         }
 
@@ -240,8 +249,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         continue;
                     }
                 }
+                let hyp_h = handlers.get(handler).map(|on| hyp_for(on, &hyp)).unwrap_or_else(|| hyp.clone());
                 let ctx = RangeCtx {
-                    hyp: &hyp,
+                    hyp: &hyp_h,
                     vars: locals.get(&(handler.clone(), wpath.clone())).cloned().unwrap_or_default(),
                     handlers: &handlers,
                     depth: 0,
@@ -295,32 +305,38 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 }
                 let mut adds_here = writes.iter().filter(|(h, sl, e, _, p, k)| h == handler && sl == slot
                     && !matches!(e, Expr::Ident(n) if n == "<deleted entry>") && !key_exists(p, k)).count();
-                // a sibling handler called from here that also adds to the
-                // slot grows it past the one require (transitively)
-                if let Some(on) = handlers.get(handler) {
-                    let mut seen: HashSet<String> = HashSet::new();
-                    let mut stack: Vec<String> = Vec::new();
-                    crate::checker::literals::for_each_call(&on.body, &mut |n, _, _| stack.push(n.to_string()));
-                    // `emit ev(…)` runs every `on ev` of the process: a call too
-                    fn emits(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
-                        for st in stmts {
-                            match &st.node {
-                                Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
-                                Statement::If { then_body, else_body, .. } => { emits(then_body, out); emits(else_body, out); }
-                                Statement::For { body, .. } | Statement::While { body, .. } => emits(body, out),
-                                _ => {}
-                            }
-                        }
-                    }
-                    emits(&on.body, &mut stack);
-                    while let Some(callee) = stack.pop() {
-                        if callee == *handler || !seen.insert(callee.clone()) { continue; }
-                        let Some(c_on) = handlers.get(&callee) else { continue };
-                        if writes.iter().any(|(h, sl, e, _, _, _)| *h == callee && sl == slot && !matches!(e, Expr::Ident(n) if n == "<deleted entry>")) {
+                // a handler reachable from here (a sibling, another cell's
+                // handler that calls back, an `emit` listener) that also adds
+                // to the slot grows it past the one require (transitively)
+                {
+                    let me = cell.node.name.clone();
+                    let mut seen: HashSet<(String, String)> = HashSet::new();
+                    let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
+                    while let Some((c, h)) = stack.pop() {
+                        if !seen.insert((c.clone(), h.clone())) { continue; }
+                        let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
+                        if (c != me || h != *handler) && c == me
+                            && writes.iter().any(|(wh, sl, e, _, _, _)| *wh == h && sl == slot && !matches!(e, Expr::Ident(n) if n == "<deleted entry>"))
+                        {
                             adds_here += 1;
                         }
-                        crate::checker::literals::for_each_call(&c_on.body, &mut |n, _, _| stack.push(n.to_string()));
-                        emits(&c_on.body, &mut stack);
+                        for (target, name) in calls_of(&on.body, &cell_names) {
+                            match target {
+                                // a bare call: the calling cell's own handler, else any definer
+                                None => {
+                                    if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) {
+                                        stack.push((c.clone(), name));
+                                    } else {
+                                        for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } }
+                                    }
+                                }
+                                // `emit ev` reaches every `on ev` of the program
+                                Some(t) if t == "*" => {
+                                    for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } }
+                                }
+                                Some(t) => stack.push((t, name)),
+                            }
+                        }
                     }
                 }
                 // a loop body, or a lambda (`xs |> map(i => rows.push(i))`) may
@@ -700,6 +716,15 @@ fn collect_return_values<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e 
     }
 }
 
+/// The slot bounds a handler may use: none for a slot whose name the
+/// handler also binds (a match binding, a lambda parameter, a `let` in an
+/// expression block) — `c.get(..)` may read that binding, not the slot.
+fn hyp_for(on: &OnSection, hyp: &HashMap<String, (f64, f64)>) -> HashMap<String, (f64, f64)> {
+    let mut binders: HashSet<String> = HashSet::new();
+    collect_binders_stmts(&on.body, &mut binders);
+    hyp.iter().filter(|(k, _)| !binders.contains(k.as_str())).map(|(k, v)| (k.clone(), *v)).collect()
+}
+
 fn local_ranges(
     on: &OnSection,
     hyp: &HashMap<String, (f64, f64)>,
@@ -785,20 +810,32 @@ fn local_ranges_at(
     // enclosing one (on that path it has run, or will — the handler is
     // atomic), plus the NEGATION of an early exit `if n >= 1 { … return … }`
     // for the statements after it (never for writes inside its branch)
-    let mut facts: Vec<(&Expr, CmpOp, &Expr, Option<HashSet<String>>)> = Vec::new();
+    // (left, op, right, scope, negated): a NEGATED comparison (`if x > 10.0
+    // { return }` → x <= 10.0) is false for NaN, which fails every
+    // comparison — it only narrows values that cannot be NaN
+    let mut facts: Vec<(&Expr, CmpOp, &Expr, Option<HashSet<String>>, bool)> = Vec::new();
     for f in &collected {
         if !write_path.starts_with(&f.path) { continue; }
         if let Some(ex) = &f.exclude { if write_path.starts_with(ex) { continue; } }
         match &f.stmt.node {
-            Statement::Require { constraint, .. } => facts.extend(constraint_comparisons(&constraint.node).into_iter().map(|(l, o, r)| (l, o, r, None))),
-            Statement::If { condition, .. } if f.branch == 1 => facts.extend(positive_comparisons(&condition.node).into_iter().map(|(l, o, r)| (l, o, r, None))),
-            Statement::If { condition, .. } => facts.extend(negated_comparisons(&condition.node).into_iter().map(|(l, o, r)| (l, o, r, None))),
+            Statement::Require { constraint, .. } => facts.extend(constraint_comparisons(&constraint.node).into_iter().map(|(l, o, r)| (l, o, r, None, false))),
+            Statement::If { condition, .. } if f.branch == 1 => facts.extend(positive_comparisons(&condition.node).into_iter().map(|(l, o, r)| (l, o, r, None, false))),
+            Statement::If { condition, .. } => facts.extend(negated_comparisons(&condition.node).into_iter().map(|(l, o, r)| (l, o, r, None, true))),
             _ => {}
         }
     }
     {
         {
-            for (left, op, right, scope) in facts {
+            for (left, op, right, scope, negated) in facts {
+                if negated {
+                    // NaN-free: a constant, an Int parameter, or a local whose
+                    // range is already known (it came from a bounded source)
+                    let nan_free = |e: &Expr, vars: &HashMap<String, Known>| const_of(e).is_some() || match e {
+                        Expr::Ident(n) => int_params.contains(n.as_str()) || vars.get(n.as_str()).copied().and_then(bounds).is_some(),
+                        _ => false,
+                    };
+                    if !nan_free(left, &vars) || !nan_free(right, &vars) { continue; }
+                }
                 // inside a loop: every name the fact mentions must be a
                 // per-iteration local of that loop
                 if let Some(scope) = &scope {
@@ -915,6 +952,11 @@ fn local_ranges_at(
         };
         vars.insert((*name).to_string(), merged);
     }
+    // a name ALSO bound by a lambda / match / nested block may be that
+    // binding at the write (`let v = …  xs |> map(v => c.set(k, v))`)
+    let mut binders: HashSet<String> = HashSet::new();
+    collect_binders_stmts(&on.body, &mut binders);
+    for b in &binders { vars.insert(b.clone(), Known::Unknown); }
     vars
 }
 
@@ -1550,7 +1592,22 @@ fn collect_binders_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<String>
     }
 }
 
+/// `let`s of a block nested INSIDE an expression (an if-expression, a match
+/// arm, a lambda block): they shadow outer names — a slot included — for
+/// the rest of that block.
+fn nested_lets(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+    for st in stmts {
+        if let Statement::Let { name, .. } = &st.node { out.insert(name.clone()); }
+    }
+}
+
 fn collect_binders_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::LambdaBlock { stmts, .. } => nested_lets(stmts, out),
+        Expr::Match { arms, .. } => for arm in arms { nested_lets(&arm.body, out) },
+        Expr::IfExpr { then_body, else_body, .. } => { nested_lets(then_body, out); nested_lets(else_body, out); }
+        _ => {}
+    }
     match e {
         Expr::Lambda { param, body } => { out.insert(param.clone()); collect_binders_expr(&body.node, out); }
         Expr::LambdaBlock { param, stmts, result } => { out.insert(param.clone()); collect_binders_stmts(stmts, out); collect_binders_expr(&result.node, out); }
@@ -1582,7 +1639,7 @@ fn collect_binders_expr(e: &Expr, out: &mut HashSet<String>) {
     }
 }
 
-fn pattern_binders(p: &MatchPattern, out: &mut HashSet<String>) {
+pub(crate) fn pattern_binders(p: &MatchPattern, out: &mut HashSet<String>) {
     match p {
         MatchPattern::Variable(n) => { out.insert(n.clone()); }
         MatchPattern::Or(ps) => { for q in ps { pattern_binders(q, out); } }
@@ -1690,5 +1747,31 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, 
             _ => {}
         }
     }
+    out
+}
+
+/// The handlers a body can call: `f(..)` (cell None), `Cell.h(..)` (Some(cell)),
+/// `emit ev(..)` (Some("*")).
+fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>) -> Vec<(Option<String>, String)> {
+    let mut out: Vec<(Option<String>, String)> = Vec::new();
+    crate::checker::literals::for_each_expr(stmts, &mut |e| match e {
+        Expr::FnCall { name, .. } => out.push((None, name.clone())),
+        Expr::MethodCall { target, method, .. } => {
+            if let Expr::Ident(c) = &target.node { if cells.contains(c) { out.push((Some(c.clone()), method.clone())); } }
+        }
+        _ => {}
+    });
+    fn stmts_walk(stmts: &[Spanned<Statement>], cells: &HashSet<String>, out: &mut Vec<(Option<String>, String)>) {
+        for st in stmts {
+            match &st.node {
+                Statement::MethodCall { target, method, .. } if cells.contains(target) => out.push((Some(target.clone()), method.clone())),
+                Statement::Emit { signal_name, .. } => out.push((Some("*".to_string()), signal_name.clone())),
+                Statement::If { then_body, else_body, .. } => { stmts_walk(then_body, cells, out); stmts_walk(else_body, cells, out); }
+                Statement::For { body, .. } | Statement::While { body, .. } => stmts_walk(body, cells, out),
+                _ => {}
+            }
+        }
+    }
+    stmts_walk(stmts, cells, &mut out);
     out
 }

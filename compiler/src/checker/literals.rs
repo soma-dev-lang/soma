@@ -176,3 +176,60 @@ fn walk_expr(e: &Spanned<Expr>, f: &mut dyn FnMut(&str, &[Spanned<Expr>], Span))
         _ => {}
     }
 }
+
+/// Every expression in a body (nested blocks, lambdas and arms included),
+/// pre-order — for walkers that need more than `f(args)` calls
+/// (`Cell.handler(…)` is a MethodCall).
+pub fn for_each_expr(stmts: &[Spanned<Statement>], f: &mut dyn FnMut(&Expr)) {
+    fn ex(e: &Spanned<Expr>, f: &mut dyn FnMut(&Expr)) {
+        f(&e.node);
+        match &e.node {
+            Expr::FnCall { args, .. } => { for a in args { ex(a, f); } }
+            Expr::MethodCall { target, args, .. } => { ex(target, f); for a in args { ex(a, f); } }
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => { ex(left, f); ex(right, f); }
+            Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => ex(i, f),
+            Expr::FieldAccess { target, .. } => ex(target, f),
+            Expr::Index { target, index } => { ex(target, f); ex(index, f); }
+            Expr::ListLiteral(items) => { for it in items { ex(it, f); } }
+            Expr::Record { fields, .. } => { for (_, v) in fields { ex(v, f); } }
+            Expr::Lambda { body, .. } => ex(body, f),
+            Expr::LambdaBlock { stmts, result, .. } => { for_each_expr(stmts, f); ex(result, f); }
+            Expr::Match { subject, arms } => {
+                ex(subject, f);
+                for arm in arms {
+                    if let Some(g) = &arm.guard { ex(g, f); }
+                    for_each_expr(&arm.body, f);
+                    ex(&arm.result, f);
+                }
+            }
+            Expr::IfExpr { condition, then_body, then_result, else_body, else_result, .. } => {
+                ex(condition, f);
+                for_each_expr(then_body, f); ex(then_result, f);
+                for_each_expr(else_body, f); ex(else_result, f);
+            }
+            _ => {}
+        }
+    }
+    fn con(c: &Constraint, f: &mut dyn FnMut(&Expr)) {
+        match c {
+            Constraint::Comparison { left, right, .. } => { ex(left, f); ex(right, f); }
+            Constraint::And(a, b) | Constraint::Or(a, b) => { con(&a.node, f); con(&b.node, f); }
+            Constraint::Not(i) => con(&i.node, f),
+            _ => {}
+        }
+    }
+    for st in stmts {
+        match &st.node {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value }
+            | Statement::Ensure { condition: value } => ex(value, f),
+            Statement::ExprStmt { expr } => ex(expr, f),
+            Statement::IndexSet { index, value, .. } => { ex(index, f); ex(value, f); }
+            Statement::If { condition, then_body, else_body } => { ex(condition, f); for_each_expr(then_body, f); for_each_expr(else_body, f); }
+            Statement::For { iter, body, .. } => { ex(iter, f); for_each_expr(body, f); }
+            Statement::While { condition, body, .. } => { ex(condition, f); for_each_expr(body, f); }
+            Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => { for a in args { ex(a, f); } }
+            Statement::Require { constraint, .. } => con(&constraint.node, f),
+            Statement::Break | Statement::Continue => {}
+        }
+    }
+}

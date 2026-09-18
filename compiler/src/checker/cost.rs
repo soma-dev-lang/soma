@@ -127,8 +127,26 @@ impl<'a> CostWalk<'a> {
                 self.latency_ms += inner.latency_ms.saturating_mul(mult);
                 self.unbounded_sites.extend(inner.unbounded_sites);
             }
-            Statement::MethodCall { args, .. } | Statement::Emit { args, .. } => {
+            Statement::MethodCall { args, .. } => {
                 for a in args { self.visit_expr(&a.node, handler_name); }
+            }
+            // `emit ev(…)` runs every `on ev` of the process, synchronously:
+            // their think() calls are this handler's spend too
+            Statement::Emit { signal_name, args } => {
+                for a in args { self.visit_expr(&a.node, handler_name); }
+                let suffix = format!(".{}", signal_name);
+                let mut listeners: Vec<String> = self.handlers.keys().filter(|k| k.ends_with(&suffix)).cloned().collect();
+                listeners.sort();
+                for key in listeners {
+                    let Some(body) = self.handlers.get(key.as_str()).copied() else { continue };
+                    if self.stack.iter().any(|h| h == &key) { continue; }
+                    let mut callee = self.child();
+                    callee.stack.push(key.clone());
+                    for s in body { callee.visit_stmt(&s.node, &key); }
+                    self.tokens += callee.tokens;
+                    self.latency_ms += callee.latency_ms;
+                    self.unbounded_sites.extend(callee.unbounded_sites);
+                }
             }
             _ => {}
         }

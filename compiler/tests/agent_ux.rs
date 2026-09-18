@@ -396,7 +396,7 @@ cell Bank {
     let mut stats = String::new();
     let mut one = String::new();
     if up {
-        let _ = http(port, "GET", "/seed/1000");
+        let _ = http(port, "POST", "/seed/1000");
         one = http(port, "POST", "/pay/first");
         let workers: Vec<_> = (0..30)
             .map(|w| std::thread::spawn(move || {
@@ -697,7 +697,7 @@ cell test T {
     let mut got = Vec::new();
     if up {
         for path in ["/rec/0", "/neg/-5", "/twice/x", "/find/z", "/nothing", "/add/ten", "/add/2"] {
-            got.push(http(port, "GET", path));
+            got.push(http(port, "POST", path));
         }
     }
     let _ = child.kill();
@@ -1417,4 +1417,49 @@ cell Q {
     let (out, code) = soma_in(&d, &["check", "b.cell"]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("answers an Int (1 or 0)"), "{out}");
+}
+
+/// Cycle 13 (attack): persistent List size invariants, machines without
+/// slots persist, match arms are scopes, NaN / shadowing / cross-cell /
+/// termination / emit-cost false proofs, run refuses a failing program.
+#[test]
+fn cycle13_attack_findings() {
+    let d = dir("cycle13b");
+    std::fs::write(d.join("lst.cell"), "cell Log { memory { rows: List<Int> [persistent]  invariant rows.size <= 2 }\n on add(x: Int) { rows.push(x)  return len(rows) } }\n").unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "lst.cell", "add", "1"]);
+    let _ = soma_in(&d, &["run", "lst.cell", "add", "2"]);
+    let (out, code) = soma_in(&d, &["run", "lst.cell", "add", "3"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("size <= 2"), "{out}");
+
+    std::fs::write(d.join("sm.cell"), "cell D {\n state deal { initial: open  open -> funded  funded -> released }\n on fund(id: String) { transition(id, \"funded\")  return get_status(id) }\n on release(id: String) { transition(id, \"released\")  return get_status(id) }\n}\n").unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "sm.cell", "fund", "d1"]);
+    let (out, code) = soma_in(&d, &["run", "sm.cell", "release", "d1"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("released"), "{out}");
+
+    std::fs::write(d.join("m.cell"), "cell M { on f(amount: Int, fee: Int) { let t = match fee { amount if amount > 10 -> \"p\"  _ -> \"b\" }  return amount } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "m.cell", "f", "5000", "1"]);
+    assert!(out.contains("5000"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "m.cell", "f", "5000", "50"]);
+    assert!(out.contains("5000"), "{out}");
+
+    std::fs::write(d.join("p.cell"), r#"
+cell G {
+  memory { level: Map<String, Float> [persistent]  invariant level >= 0.0 && level <= 10.0
+           c: Map<String, Int> [persistent]  invariant c <= 100 }
+  on set_level(k: String, x: Float) { if x > 10.0 { return "hi" }  if x < 0.0 { return "lo" }  level.set(k, x) }
+  on lam(k: String) { let v = c.get(k) ?? 0  let out = [1000] |> map(v => { c.set(k, v)  v })  return out }
+  on cnt(n: Int) { if n <= 0 { return 0 }  n = n + 5  return cnt(n - 1) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "p.cell"]);
+    assert!(!out.contains("writer 'set_level' proven"), "{out}");
+    assert!(!out.contains("writer 'lam' proven"), "{out}");
+    assert!(out.contains("handler `cnt`: recursive call without provable decreasing argument"), "{out}");
+
+    std::fs::write(d.join("bad.cell"), "cell A { on f() { return undefined_thing } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "bad.cell", "f"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("fails `soma check`"), "{out}");
 }

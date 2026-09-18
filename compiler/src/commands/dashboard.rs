@@ -65,7 +65,8 @@ fn cell_to_json(cell: &CellDef, report: &BudgetReport) -> String {
     }
 
     // Budget breakdown
-    let handler_breakdown: Vec<serde_json::Value> = report.handler_breakdown.iter().map(|(name, cost)| {
+    // private `_x` handlers are not part of the public surface
+    let handler_breakdown: Vec<serde_json::Value> = report.handler_breakdown.iter().filter(|(name, _)| !name.starts_with('_')).map(|(name, cost)| {
         serde_json::json!({
             "name": name,
             "cost": cost_to_bytes(cost),

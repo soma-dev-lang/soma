@@ -23,6 +23,45 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
 
     load_meta_cells_from_program(&program, registry, path);
 
+    // a program that fails `soma check` does not run (operations.md): two
+    // state machines in one cell, an undefined name… used to run anyway
+    {
+        let mut chk = crate::checker::Checker::new(registry);
+        chk.source = Some((file_str.clone(), source.clone()));
+        chk.check(&program);
+        if chk.has_errors() {
+            eprintln!("{} fails `soma check` — fix these before running it:", path.display());
+            let mut in_error = false;
+            for l in chk.report().lines() {
+                if l.starts_with("error") { in_error = true; }
+                else if l.starts_with("warning") || l.starts_with("advisory") || l.starts_with("✓") || l.starts_with("✗") || l.starts_with("note") { in_error = false; }
+                if in_error { eprintln!("  {}", l); }
+            }
+            std::process::exit(1);
+        }
+    }
+
+    // the handler name is matched on the RAW first token, before numeric
+    // parsing: `soma run z.cell nan` called another handler with NaN, and
+    // `soma run app.cell Cell.handler` passed "Cell.handler" as an argument
+    let all_handlers: Vec<(String, String)> = program.cells.iter().flat_map(|c| c.node.sections.iter().filter_map(move |s| match &s.node {
+        ast::Section::OnSignal(on) => Some((c.node.name.clone(), on.signal_name.clone())),
+        _ => None,
+    })).collect();
+    let mut signal_owned: Option<String> = None;
+    let mut args: &[String] = args;
+    if signal_flag.is_none() {
+        if let Some(first) = args.first() {
+            let named = if all_handlers.iter().any(|(_, h)| h == first) {
+                Some(first.clone())
+            } else if let Some((c, h)) = first.split_once('.') {
+                all_handlers.iter().any(|(cn, hn)| cn == c && hn == h).then(|| h.to_string())
+            } else { None };
+            if let Some(h) = named { signal_owned = Some(h); args = &args[1..]; }
+        }
+    }
+    let signal_flag: Option<&str> = signal_flag.or(signal_owned.as_deref());
+
     let arg_values: Vec<interpreter::Value> = args
         .iter()
         .map(|a| {
@@ -31,7 +70,8 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
             } else if let Ok(big) = a.parse::<rug::Integer>() {
                 // 99999999999999999999 is an Int, not a Float saturated to i64
                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(big))
-            } else if let Ok(n) = a.parse::<f64>() {
+            } else if let Some(n) = a.parse::<f64>().ok().filter(|n| n.is_finite()) {
+                // "NaN" / "inf" stay Strings: a NaN passes no comparison
                 interpreter::Value::Float(n)
             } else if a == "true" {
                 interpreter::Value::Bool(true)
@@ -264,7 +304,9 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
             }
         }
     }
-    // Always ensure state machine storage exists (even without memory section)
+    // Always ensure state machine storage exists (even without memory
+    // section) — on disk: an instance must survive the run
+    crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
     interp.ensure_state_machine_storage();
 
     interp.source_file = Some(source_path.display().to_string());

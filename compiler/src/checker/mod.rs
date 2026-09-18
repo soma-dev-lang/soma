@@ -1269,7 +1269,8 @@ impl<'a> Checker<'a> {
         }).collect();
         if natives.is_empty() { return; }
         let siblings: native::NativeSiblings = natives.iter().map(|h| h.signal_name.clone()).collect();
-        for h in natives {
+        let errors_before = self.errors.len();
+        for h in natives.iter().copied() {
             if let Err(e) = native::check_native_handler(&h.signal_name, &h.params, &h.body, &siblings) {
                 let span = cell.sections.iter().find_map(|s| match &s.node {
                     Section::OnSignal(x) if x.signal_name == h.signal_name => Some(s.span),
@@ -1278,6 +1279,38 @@ impl<'a> Checker<'a> {
                 self.errors.push(CheckError::Static {
                     kind: "native_vocabulary",
                     message: format!("handler '{}' is marked [native] but {} — the native vocabulary is numbers, buffer/hashmap/strbuf primitives and sibling [native] handlers (see `soma docs agent`, Performance); drop [native] or move the rest out", h.signal_name, e.reason),
+                    span,
+                });
+            }
+        }
+        // the vocabulary is fine: run the code generator itself (no rustc)
+        // and report what IT refuses — a mixed Int/Float, an if-expression…
+        // used to pass check and fail at `soma run` time
+        if self.errors.len() == errors_before {
+            let handlers: Vec<crate::codegen::native::NativeHandler> = natives.iter().map(|h| crate::codegen::native::NativeHandler {
+                cell_name: cell.name.clone(),
+                signal_name: h.signal_name.clone(),
+                params: h.params.clone(),
+                body: h.body.clone(),
+                properties: h.properties.clone(),
+            }).collect();
+            let (src, _) = crate::codegen::native::generate_native_source(&handlers);
+            let mut seen_msgs: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for line in src.lines() {
+                if !seen_msgs.insert(line.trim().to_string()) { continue; }
+                let Some(rest) = line.trim().strip_prefix("compile_error!(\"[soma codegen] ") else { continue };
+                let msg = rest.trim_end_matches("\");").replace("\\\"", "\"").replace("\\\\", "\\");
+                let (hname, text) = match msg.strip_prefix('[').and_then(|m| m.split_once("] ")) {
+                    Some((h, t)) => (h.to_string(), t.to_string()),
+                    None => (String::new(), msg.clone()),
+                };
+                let span = cell.sections.iter().find_map(|s| match &s.node {
+                    Section::OnSignal(x) if x.signal_name == hname => Some(s.span),
+                    _ => None,
+                }).unwrap_or(Span { start: 0, end: 0 });
+                self.errors.push(CheckError::Static {
+                    kind: "native_vocabulary",
+                    message: format!("handler '{}' is marked [native] but the native compiler refuses it: {} — drop [native] or rewrite that part", hname, text),
                     span,
                 });
             }
