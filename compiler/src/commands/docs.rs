@@ -62,8 +62,11 @@ fn md_cell(s: &str) -> String {
 }
 
 fn print_builtins_markdown() {
-    let total = registry::BUILTINS.len();
-    let nondet: Vec<&str> = registry::BUILTINS.iter()
+    // "reserved" names are tracked for replay but NOT callable — they used
+    // to be listed here and an agent wrote `timestamp()` from this table
+    let listed: Vec<&registry::BuiltinDoc> = registry::BUILTINS.iter().filter(|b| b.category != "reserved").collect();
+    let total = listed.len();
+    let nondet: Vec<&str> = listed.iter()
         .filter(|b| !b.deterministic)
         .map(|b| b.name)
         .collect();
@@ -77,14 +80,16 @@ fn print_builtins_markdown() {
     println!("are tracked by `soma replay` as potential sources of replay divergence.");
     println!("`deterministic` is membership in that replay set, not a purity claim:");
     println!("think/http_*/read_*/next_id have effects but are replayed via the log itself.");
+    println!("The `native` section is usable inside `[native]` handlers only.");
 
     for cat in registry::categories() {
+        if cat == "reserved" { continue; }
         println!();
         println!("## {}", cat);
         println!();
         println!("| Builtin | Signature | Description |");
         println!("|---|---|---|");
-        for b in registry::BUILTINS.iter().filter(|b| b.category == cat) {
+        for b in listed.iter().filter(|b| b.category == cat) {
             let marker = if b.deterministic { "" } else { " ✗" };
             println!("| `{}`{} | `{}` | {} |",
                 b.name, marker, md_cell(b.signature), md_cell(b.brief));

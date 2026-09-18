@@ -13,7 +13,7 @@ cell agent Treasurer {
     }
 
     memory {
-        ledger: Map<String, String> [persistent]
+        ledger: Map<String, Map> [persistent]
         limit:  Map<String, Int>    [persistent]
         // Invariant scoped to `limit`: any stored cap stays in [1, 1000].
         invariant limit >= 1 && limit <= 1000

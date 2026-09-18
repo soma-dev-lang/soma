@@ -125,6 +125,20 @@ pub struct Parser {
 
 const MAX_EXPR_DEPTH: usize = 400;
 
+/// Keywords that double as field / variable names.
+fn keyword_as_name(t: &Token) -> Option<String> {
+    Some(match t {
+        Token::State => "state", Token::Type => "type", Token::Effect => "effect",
+        Token::Guard => "guard", Token::Initial => "initial", Token::Start => "start",
+        Token::Test => "test", Token::Backend => "backend", Token::Builtin => "builtin",
+        Token::Signal => "signal", Token::Emit => "emit", Token::Check => "check", Token::Memory => "memory",
+        Token::Face => "face", Token::Property => "property", Token::Rules => "rules",
+        Token::Runtime => "runtime", Token::Matches => "matches", Token::Native => "native",
+        Token::Checker => "checker", Token::Scale => "scale", Token::Cost => "cost", Token::Protocol => "protocol",
+        _ => return None,
+    }.to_string())
+}
+
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
         Self { tokens, pos: 0, depth: 0 }
@@ -1005,7 +1019,7 @@ impl Parser {
                     return Ok(Spanned::new(Rule::MockHandler { name, reply, is_error }, start.merge(self.prev_span())));
                 }
                 return Err(ParseError::Expected {
-                    expected: "think, approve or a handler name (mock think \"reply\" | mock think error \"msg\" | mock approve false | mock price_check 42 | mock fetch error \"down\")".to_string(),
+                    expected: "think, approve, now, a handler name or Cell.handler (mock think \"reply\" | mock think error \"msg\" | mock approve false | mock now 1700000000 | mock price_check 42 | mock Prices.fetch error \"not_found: down\")".to_string(),
                     found: self.peek().clone(),
                     span: self.peek_span(),
                 });
@@ -1168,7 +1182,7 @@ impl Parser {
                 ))
             }
             _ => Err(ParseError::Expected {
-                expected: "assert, assert_fails, let, mock think, or property (a test cell's rules hold assertions — put logic in a handler)".to_string(),
+                expected: "assert, assert_fails [matching \"text\"], let, mock think | mock approve | mock now | mock <handler> | mock Cell.handler, or property (a test cell's rules hold assertions — put logic in a handler)".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -2115,7 +2129,12 @@ impl Parser {
                             self.advance();
                             accessors.push(idx);
                         } else if self.check(&Token::Dot) {
-                            if let Token::Ident(f) = self.peek_at(1).clone() {
+                            // a keyword is a fine field name here (`j.state = …`)
+                            let field = match self.peek_at(1).clone() {
+                                Token::Ident(f) => Some(f),
+                                other => keyword_as_name(&other),
+                            };
+                            if let Some(f) = field {
                                 if !matches!(self.peek_at(2), Token::LParen) {
                                     let fspan = self.peek_span();
                                     self.advance(); // '.'

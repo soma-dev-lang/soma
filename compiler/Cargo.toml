@@ -13,6 +13,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 num-bigint = "0.4"
+regex = "1"
 num-traits = "0.2"
 rug = "1"
 tiny_http = "0.12"

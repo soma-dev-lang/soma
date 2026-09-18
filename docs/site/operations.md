@@ -1,6 +1,8 @@
 # Operating a Soma service — what happens when it goes wrong
 
-Tested facts about the process, not intentions. Version: see `/version.json`.
+Tested facts about the process, not intentions. Version: `soma --version`
+(the website's `/version.json` says which release is published; a served
+program has no such route).
 
 ## What kills the process, what does not
 
@@ -8,13 +10,13 @@ Tested facts about the process, not intentions. Version: see `/version.json`.
 |---|---|
 | A handler raises (require, invariant, transition, `fail`, division by zero, a String reaching an `Int` parameter) | That request is answered with a 4xx/5xx JSON body (table below); every write and transition of the request is rolled back; the process stays up |
 | Runaway recursion in a handler | Answered `500 {"kind": "stack_overflow"}` at depth 512; request threads have a 64 MB stack so the guard fires before the OS does; the process stays up |
-| A `[native]` handler panics (overflow in a pure-i64 cell, index out of range) | Caught at the boundary: an ordinary `try`-catchable error, `500` over HTTP; the process stays up |
+| A `[native]` handler panics (a `buf_get` past the end, an `idiv` by zero) | Caught at the boundary: an ordinary `try`-catchable error with the same kind the interpreter would raise (`index` → 400, `division_by_zero` → 400); the process stays up. Int overflow does not panic: it promotes to BigInt exactly as interpreted code does |
 | `think()` fails or times out | Kind `llm`, rolled back like any error; the request is answered, not hung: one provider round-trip is capped at 60 s (`timeout_ms` in the options map, or `SOMA_LLM_TIMEOUT_MS`), retried up to 3 times on 429/5xx |
 | A scheduled `every` handler raises | Logged, rolled back, next tick runs |
 | Port already answering, `soma check` errors, an unreadable file | `soma serve` refuses to start and exits 1 — it never serves a program that does not check (`--no-check` overrides) |
 | Out of memory, SIGKILL, `kill -9` | The process dies; committed writes are in `.soma_data/soma.db` (SQLite); a request in flight is lost as a whole (atomic) |
 | Disk full while writing | Expected (not exercised): the SQLite write fails, the request is rolled back and answered 500 |
-| A slow handler (a quadratic loop, a huge `to_json`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. Keep handlers short; put a proxy timeout in front |
+| A slow handler (a quadratic loop, a huge `to_json`, a loop of 100 000 `slot.set`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. A persistent slot write costs about 1 ms (each is an SQLite statement): a 100 000-key rebuild in one handler holds the process for ~2 minutes. Keep handlers short; batch bulk loads outside the request path; put a proxy timeout in front |
 | The program changed and `.soma_data/` is older | A renamed slot is a new empty slot; a slot whose TYPE changed (List → Map) reads as empty while the old rows stay in the database; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares is stuck (`valid_transitions(id) == []`). `soma serve` audits the database at start-up and prints one `warning: stored data: …` line per problem (instances in undeclared states, values an invariant refuses); a re-typed slot is not detected. Migrate the data or delete `.soma_data/` |
 
 ## Addresses and ports
@@ -48,7 +50,7 @@ Body: `{"error": "<message>", "kind": "<kind>"}`.
 | `guard_failed`, `forbidden`, `approval_required` | 403 | a transition guard; `fail("forbidden")`; `approve()` with nobody to answer |
 | `invalid_transition`, `conflict` | 409 | `transition()` off the machine; `fail("conflict")` |
 | `invariant`, `ensure` | 422 | a memory invariant refusing a write; `ensure` |
-| `json`, `division_by_zero`, `type` | 400 | a non-JSON body for `body: Map`; arithmetic; a wrong-typed argument |
+| `json`, `division_by_zero`, `type`, `index` | 400 | a non-JSON body for `body: Map`; arithmetic; a wrong-typed argument or a value that does not fit the slot's declared type; a list index out of range (also from a `[native]` buffer) |
 | your own `require … else Tag` / `fail("tag", …)` | 400 | the program refused the request |
 | `stack_overflow`, `llm`, `budget`, `undefined_variable`, `undefined_function`, `no_handler` | 500 | the program itself is wrong or the world failed |
 
@@ -63,9 +65,29 @@ A handler that returns normally answers 200 with its value as JSON (`()` is `nul
 - `forall` properties in tests walk every value up to 20 000, then sample with a fixed seed.
 - One process, one SQLite file (`.soma_data/soma.db`, created beside the program); no replication unless a `scale` section and a bus join are configured (experimental).
 
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `SOMA_LLM_KEY` (or `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) | the provider key for `think()`; without one `soma test` mocks and `soma serve` raises kind `llm` |
+| `SOMA_LLM_MOCK=echo` \| `fixed:<text>` | `think()` never reaches a provider (overrides `[agent] mock` in soma.toml); `soma serve` prints `llm: MOCK …` at start-up when the program calls think |
+| `SOMA_LLM_TIMEOUT_MS` | one provider round-trip cap (default 60 000) |
+| `SOMA_APPROVE=always` \| `never` | answers `approve()` when no terminal is attached (`soma serve` fails closed otherwise: 403 `approval_required`) |
+| `PORT` | not read — pass `-p` |
+
+## Between processes
+
+`emit` reaches every cell of the same process synchronously. Across
+processes it needs the bus: a `[peers]` table in soma.toml
+(`other = "host:PORT+2"`) on the sending side. `--join host:bus-port`
+registers a node for `scale` sharding; it does not by itself forward `emit`.
+A peer that is down when the process starts is logged as
+`peer: … failed` and not retried — start the receiving process first. This
+is the experimental corner of Soma; single-process is the supported shape.
+
 ## Persistence
 
-`[persistent]` slots and state-machine instances live in `.soma_data/soma.db` next to the `.cell` file, shared by `soma serve` and `soma run` in that directory. `soma test` starts from empty storage every run. Back up the file; there is no migration tool — a renamed slot is a new, empty slot.
+`[persistent]` slots and state-machine instances live in `.soma_data/soma.db` next to the `.cell` file, shared by `soma serve` and `soma run` in that directory. `soma test` starts from empty storage every run. Back up the file; there is no migration tool — a renamed slot is a new, empty slot. Values round-trip exactly: an Int beyond 64 bits comes back as that Int, a variant as a variant, `()` as `()`. A write that does not fit the slot's declared value type (`Map<String, Int>` given a String) is refused with kind `type` before it commits.
 
 ## Deploying on Linux
 

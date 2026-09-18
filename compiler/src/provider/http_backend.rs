@@ -52,6 +52,7 @@ impl HttpBackend {
     fn encode_value(v: &StoredValue) -> serde_json::Value {
         match v {
             StoredValue::Int(n) => serde_json::json!({"type": "int", "value": n}),
+            StoredValue::BigInt(d) => serde_json::json!({"type": "bigint", "value": d}),
             StoredValue::Float(n) => serde_json::json!({"type": "float", "value": n}),
             StoredValue::String(s) => serde_json::json!({"type": "string", "value": s}),
             StoredValue::Bool(b) => serde_json::json!({"type": "bool", "value": b}),
@@ -96,6 +97,7 @@ impl HttpBackend {
         let val = v.get("value");
         match typ {
             "int" => StoredValue::Int(val.and_then(|v| v.as_i64()).unwrap_or(0)),
+            "bigint" => StoredValue::BigInt(val.and_then(|v| v.as_str()).unwrap_or("0").to_string()),
             "float" => StoredValue::Float(val.and_then(|v| v.as_f64()).unwrap_or(0.0)),
             "string" => StoredValue::String(val.and_then(|v| v.as_str()).unwrap_or("").to_string()),
             "bool" => StoredValue::Bool(val.and_then(|v| v.as_bool()).unwrap_or(false)),

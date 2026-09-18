@@ -26,7 +26,7 @@ pub fn builtin_names() -> &'static HashSet<&'static str> {
     SET.get_or_init(|| {
         crate::interpreter::builtins::registry::BUILTINS
             .iter()
-            .filter(|b| b.category != "reserved")
+            .filter(|b| b.category != "reserved" && b.category != "native")
             .map(|b| b.name)
             .chain(INLINE_BUILTIN_NAMES.iter().copied())
             .collect()

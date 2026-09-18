@@ -5,6 +5,9 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone)]
 pub enum StoredValue {
     Int(i64),
+    /// An Int beyond i64, kept as its decimal digits so a slot gives back the
+    /// Int it accepted (it used to come back as a String).
+    BigInt(String),
     Float(f64),
     String(String),
     Bool(bool),
@@ -30,6 +33,7 @@ pub enum StoredVariantFields {
 impl std::fmt::Display for StoredValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            StoredValue::BigInt(d) => write!(f, "{}", d),
             StoredValue::Int(n) => write!(f, "{}", n),
             StoredValue::Float(n) => write!(f, "{}", n),
             StoredValue::String(s) => write!(f, "{}", s),
@@ -84,6 +88,12 @@ pub trait StorageBackend: Send + Sync {
     /// Remove the most recently appended entry — the undo of `append`,
     /// used to roll a failed handler back.
     fn unappend(&self);
+    /// Replace the whole append log (`rows[i] = v`, `rows.delete(i)` on a
+    /// List slot). Default: pop everything, append the new items.
+    fn replace_list(&self, items: Vec<StoredValue>) {
+        while !self.list().is_empty() { self.unappend(); }
+        for it in items { self.append(it); }
+    }
     fn list(&self) -> Vec<StoredValue>;
     fn keys(&self) -> Vec<String>;
     fn values(&self) -> Vec<StoredValue>;
@@ -342,6 +352,7 @@ impl SqliteBackend {
     fn store_typed(value: &StoredValue) -> (String, &'static str) {
         match value {
             StoredValue::Int(n) => (n.to_string(), "int"),
+            StoredValue::BigInt(d) => (d.clone(), "bigint"),
             StoredValue::Float(n) => (n.to_string(), "float"),
             StoredValue::Bool(b) => (b.to_string(), "bool"),
             StoredValue::String(s) => (s.clone(), "string"),
@@ -360,6 +371,7 @@ impl SqliteBackend {
     fn load_typed(value: &str, type_tag: &str) -> StoredValue {
         match type_tag {
             "int" => value.parse::<i64>().map(StoredValue::Int).unwrap_or(StoredValue::String(value.to_string())),
+            "bigint" => StoredValue::BigInt(value.to_string()),
             "float" => value.parse::<f64>().map(StoredValue::Float).unwrap_or(StoredValue::String(value.to_string())),
             "bool" => StoredValue::Bool(value == "true"),
             "null" => StoredValue::Null,
@@ -424,6 +436,14 @@ impl StorageBackend for SqliteBackend {
             ),
             [],
         ).ok();
+    }
+
+    fn replace_list(&self, items: Vec<StoredValue>) {
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute(&format!("DELETE FROM \"{}_log\"", self.table), []).ok();
+        }
+        for it in items { self.append(it); }
     }
 
     fn list(&self) -> Vec<StoredValue> {
@@ -571,6 +591,9 @@ fn json_to_stored(v: &serde_json::Value) -> StoredValue {
             StoredValue::List(arr.iter().map(json_to_stored).collect())
         }
         serde_json::Value::Object(obj) => {
+            if let (1, Some(serde_json::Value::String(d))) = (obj.len(), obj.get("__bigint__")) {
+                return StoredValue::BigInt(d.clone());
+            }
             // V1.6: decode tagged variants
             if let (Some(serde_json::Value::String(tn)),
                     Some(serde_json::Value::String(vn))) =
@@ -615,6 +638,7 @@ fn json_to_stored(v: &serde_json::Value) -> StoredValue {
 fn stored_to_json(v: &StoredValue) -> serde_json::Value {
     match v {
         StoredValue::Int(n) => serde_json::Value::Number((*n).into()),
+        StoredValue::BigInt(d) => serde_json::json!({"__bigint__": d}),
         StoredValue::Float(n) => serde_json::json!(*n),
         StoredValue::String(s) => serde_json::Value::String(s.clone()),
         StoredValue::Bool(b) => serde_json::Value::Bool(*b),

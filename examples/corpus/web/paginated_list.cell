@@ -10,7 +10,7 @@ cell Catalog {
     }
 
     memory {
-        products: Map<String, String> [persistent, consistent]
+        products: Map<String, Map> [persistent, consistent]
     }
 
     on seed(n: Int) {

@@ -50,8 +50,18 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
         chk.check(&program);
         if chk.has_errors() {
             eprintln!("{} fails `soma check` — fix these before running its tests:", path.display());
-            for line in chk.report().lines().filter(|l| !l.starts_with("warning") && !l.starts_with("advisory") && !l.starts_with("✓")) {
-                eprintln!("  {}", line);
+            let lines: Vec<String> = chk.report().lines()
+                .filter(|l| !l.starts_with("warning") && !l.starts_with("advisory") && !l.starts_with("✓"))
+                .map(|l| l.to_string()).collect();
+            for line in &lines { eprintln!("  {}", line); }
+            if json {
+                // stdout stays machine-readable even when nothing ran
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "file": file_str, "total": 0, "passed": 0, "failed": 0, "ok": false,
+                    "error": "the program fails `soma check`",
+                    "check_errors": lines.iter().filter(|l| l.starts_with("error")).collect::<Vec<_>>(),
+                    "results": [],
+                })).unwrap());
             }
             process::exit(1);
         }
@@ -64,6 +74,12 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
 
     if test_cells.is_empty() {
         eprintln!("no test cells found (use `cell test MyTests {{ ... }}`)");
+        if json {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "file": file_str, "total": 0, "passed": 0, "failed": 0, "ok": false,
+                "error": "no test cells found", "results": [],
+            })).unwrap());
+        }
         process::exit(1);
     }
 
@@ -279,19 +295,25 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                             let shown = text_of(expr.span, format_expr(&expr.node));
                             let at = format!("{}:{}", file_name, line_of(expr.span));
 
-                            match eval_test_expr(&mut interp, &expr.node, &test_env) {
+                            // `matching "text"` matches the message OR the error kind
+                            // (`matching "not_found"` on a `fail("not_found", "no such id")`)
+                            let outcome = interp.eval_expr_with_env(&expr.node, &test_env, "", "").map_err(|e| {
+                                let kind = match &e { interpreter::ExecError::Runtime(r) => r.kind(), _ => String::new() };
+                                (describe_error(&e), kind)
+                            });
+                            match outcome {
                                 // A typo'd name is NOT the failure under test —
                                 // a vacuously green assert_fails would hide it
                                 // forever. Undefined functions and variables
                                 // are bugs (`soma check` reports both), never
                                 // the domain error a test means to prove.
-                                Err(e) if e.starts_with("undefined function") || e.starts_with("undefined variable") => {
+                                Err((e, _)) if e.starts_with("undefined function") || e.starts_with("undefined variable") => {
                                     failed += 1;
                                     say!(out_lines, json, "  ✗ {}  assert_fails {} — FAILED: it raised {}, a bug rather than the failure under test (run `soma check`)",
                                              at, shown, e);
                                 }
-                                Err(e) => match wanted {
-                                    Some(text) if !e.contains(text) => {
+                                Err((e, kind)) => match wanted {
+                                    Some(text) if !e.contains(text) && kind != text => {
                                         failed += 1;
                                         say!(out_lines, json, "  ✗ {}  assert_fails {} matching \"{}\" — FAILED: it raised something else: {}",
                                                  at, shown, text, e);
@@ -369,11 +391,26 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
             if let Some(name) = t.strip_prefix("test ").and_then(|r| r.strip_suffix(" ...")) {
                 cell = name.to_string();
             } else if let Some(rest) = t.strip_prefix("  ✓ ") {
-                records.push(serde_json::json!({"cell": cell, "status": "pass", "rule": rest}));
+                let (rule, message) = rest.split_once(" — ").unwrap_or((rest, ""));
+                records.push(serde_json::json!({"cell": cell, "status": "pass", "rule": rule, "message": message}));
             } else if let Some(rest) = t.strip_prefix("  ✗ ") {
                 let (loc, msg) = rest.split_once("  ").unwrap_or(("", rest));
                 let line_no = loc.rsplit(':').next().and_then(|n| n.parse::<usize>().ok());
-                records.push(serde_json::json!({"cell": cell, "status": "fail", "line": line_no, "rule": msg}));
+                // "assert x == y — FAILED" / "assert f() — ERROR: <message>":
+                // the rule, what went wrong, and whether the rule RAISED
+                let (rule, message) = msg.split_once(" — ").unwrap_or((msg, ""));
+                let raised = message.starts_with("ERROR") || rule.starts_with("assert_fails");
+                let message = message.strip_prefix("ERROR: ").unwrap_or(message);
+                records.push(serde_json::json!({"cell": cell, "status": "fail", "line": line_no, "rule": rule, "message": message, "raised": raised}));
+            } else if let Some(detail) = t.strip_prefix("         ") {
+                // left:/right:/note: lines belong to the failure above
+                if let Some(last) = records.last_mut() {
+                    if let Some((k, v)) = detail.split_once(':') {
+                        if matches!(k, "left" | "right" | "note") {
+                            last[k] = serde_json::Value::String(v.trim().to_string());
+                        }
+                    }
+                }
             } else if let Some(rest) = t.strip_prefix("  note: ") {
                 records.push(serde_json::json!({"cell": cell, "status": "note", "rule": rest}));
             }
@@ -457,6 +494,16 @@ fn eval_side(
     };
     if let Some(v) = entries.get(field) {
         return Ok((v.clone(), None));
+    }
+    // the map pseudo-fields (`m.keys`, `m.len`) answer here as anywhere else
+    if matches!(field.as_str(), "keys" | "values" | "len" | "length" | "size") {
+        let mut scope = env.clone();
+        scope.insert("__test_base".to_string(), base.clone());
+        let rebuilt = ast::Expr::FieldAccess {
+            target: Box::new(ast::Spanned::new(ast::Expr::Ident("__test_base".to_string()), target.span)),
+            field: field.clone(),
+        };
+        return Ok((eval_test_expr(interp, &rebuilt, &scope)?, None));
     }
     let keys: Vec<String> = entries.keys().cloned().collect();
     let near = keys

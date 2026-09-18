@@ -11,7 +11,7 @@ cell AddressBook {
     }
 
     memory {
-        contacts: Map<String, String> [persistent, consistent]
+        contacts: Map<String, Map> [persistent, consistent]
     }
 
     on add(name: String, email: String, city: String) {

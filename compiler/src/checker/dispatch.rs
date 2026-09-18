@@ -175,6 +175,20 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                         // without handlers are already reported by the
                         // face-contract check — stay silent for those.
                         if index.known.contains(&name) {
+                            // buffer/hashmap/strbuf… exist only inside a
+                            // [native] handler: an interpreted one used to
+                            // pass check and raise "undefined function".
+                            if !caller_native
+                                && super::native::ALLOWED_BUILTINS.contains(&name.as_str())
+                                && !super::names::builtin_names().contains(&name.as_str())
+                            {
+                                errors.push(DispatchFinding {
+                                    message: format!(
+                                        "'{name}' is a [native]-only primitive — it exists inside `on h(...) [native] {{ }}` handlers only; in an interpreted handler use a Map/List (or mark the handler [native])"
+                                    ),
+                                    span: section.span,
+                                });
+                            }
                             continue;
                         }
                         // keys/values/entries/… exist only as METHODS on

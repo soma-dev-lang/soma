@@ -32,7 +32,7 @@ cell agent Drafter {
 
 cell agent Editor {
     face { signal produce(topic: String) -> Map }
-    memory { articles: Map<String, String> [persistent] }
+    memory { articles: Map<String, Map> [persistent] }
     state pipeline {
         initial: idle
         idle      -> outlining

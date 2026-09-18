@@ -850,6 +850,7 @@ fn stored_to_value(stored: StoredValue) -> Value {
     use crate::interpreter::VariantValue;
     match stored {
         StoredValue::Int(n) => Value::Int(SomaInt::from_i64(n)),
+        StoredValue::BigInt(d) => Value::Int(SomaInt::from_decimal_str(&d)),
         StoredValue::Float(n) => Value::Float(n),
         StoredValue::String(s) => Value::String(s),
         StoredValue::Bool(b) => Value::Bool(b),

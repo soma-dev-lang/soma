@@ -38,8 +38,26 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Int(i) => i.to_i64().unwrap_or(0).clamp(0, 15) as i32,
                 _ => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be an Int".to_string()))),
             };
-            let p = 10f64.powi(d);
-            Some(Ok(Value::Float((x * p).round() / p)))
+            Some(Ok(Value::Float(round_decimal(x, d))))
+        }
+        // Ruby/Python-style floored division and modulo (the result of `mod`
+        // has the divisor's sign; `%` keeps the dividend's sign like C/Rust)
+        "floor_div" | "mod" | "divmod" if args.len() == 2 => {
+            let (a, b) = (big_of(&args[0]), big_of(&args[1]));
+            if b == 0 {
+                return Some(Err(RuntimeError::TypeError(format!("{}(): division by zero", name))));
+            }
+            let (q, r) = a.div_rem_floor(b);
+            Some(Ok(match name {
+                "floor_div" => Value::Int(SomaInt::from_rug(q)),
+                "mod" => Value::Int(SomaInt::from_rug(r)),
+                _ => Value::List(vec![Value::Int(SomaInt::from_rug(q)), Value::Int(SomaInt::from_rug(r))]),
+            }))
+        }
+        "to_fixed" if args.len() == 2 => {
+            let x = match &args[0] { Value::Float(f) => *f, Value::Int(i) => i.to_f64(), _ => return Some(Err(RuntimeError::TypeError("to_fixed(x, digits)".to_string()))) };
+            let d = match &args[1] { Value::Int(i) => i.to_i64().unwrap_or(0).clamp(0, 15) as usize, _ => 2 };
+            Some(Ok(Value::String(fixed_string(x, d))))
         }
         "round" => {
             args.first().map(|a| match a {
@@ -82,6 +100,16 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Int(si) => Ok(Value::Int(si.clone())),
                 _ => Ok(Value::Int(SomaInt::from_i64(0))),
             })
+        }
+        "sin" | "cos" | "tan" | "atan" | "atan2" => {
+            let f = |v: &Value| match v { Value::Float(n) => Some(*n), Value::Int(si) => Some(si.to_f64()), _ => None };
+            let Some(x) = args.first().and_then(f) else {
+                return Some(Err(RuntimeError::TypeError(format!("{}(x: Float) needs a number", name))));
+            };
+            Some(Ok(Value::Float(match name {
+                "sin" => x.sin(), "cos" => x.cos(), "tan" => x.tan(), "atan" => x.atan(),
+                _ => { let Some(y) = args.get(1).and_then(f) else { return Some(Err(RuntimeError::TypeError("atan2(y, x)".to_string()))) }; x.atan2(y) }
+            })))
         }
         "sqrt" => { args.first().map(|a| Ok(Value::Float(match a { Value::Float(n) => n.sqrt(), Value::Int(si) => si.to_f64().sqrt(), _ => 0.0 }))) }
         "log" | "ln" => {
@@ -528,4 +556,42 @@ fn big_of(v: &Value) -> rug::Integer {
         Value::Int(si) => si.to_rug(),
         other => rug::Integer::from(val_to_i64(other)),
     }
+}
+
+/// Round half away from zero on the DECIMAL representation (the shortest
+/// round-trip text), like Ruby and Python's decimal-aware `round`:
+/// round(1.005, 2) is 1.01, not 1.0.
+pub fn round_decimal(x: f64, digits: i32) -> f64 {
+    if !x.is_finite() { return x; }
+    let text = format!("{}", x.abs());
+    let (int_part, frac) = match text.split_once('.') { Some((i, f)) => (i.to_string(), f.to_string()), None => (text.clone(), String::new()) };
+    if text.contains('e') { let p = 10f64.powi(digits); return (x * p).round() / p; }
+    let d = digits as usize;
+    if frac.len() <= d { return x; }
+    let mut digits_all: Vec<u8> = int_part.bytes().chain(frac.bytes()).map(|b| b - b'0').collect();
+    let keep = int_part.len() + d;
+    let round_up = digits_all[keep] >= 5;
+    digits_all.truncate(keep);
+    if round_up {
+        let mut i = keep;
+        loop {
+            if i == 0 { digits_all.insert(0, 1); break; }
+            i -= 1;
+            if digits_all[i] == 9 { digits_all[i] = 0; } else { digits_all[i] += 1; break; }
+        }
+    }
+    let int_len = digits_all.len() - d;
+    let s: String = digits_all.iter().map(|b| (b + b'0') as char).collect();
+    let (ip, fp) = s.split_at(int_len);
+    let rebuilt = if fp.is_empty() { ip.to_string() } else { format!("{}.{}", ip, fp) };
+    let v: f64 = rebuilt.parse().unwrap_or(x.abs());
+    if x < 0.0 { -v } else { v }
+}
+
+/// `x` with exactly `digits` decimals, rounded half away from zero on the
+/// decimal text (printf's %.Nf, minus its banker's quirks).
+pub fn fixed_string(x: f64, digits: usize) -> String {
+    let r = round_decimal(x, digits as i32);
+    let t = format!("{:.*}", digits, r);
+    if t.starts_with("-0") && t.trim_start_matches('-').chars().all(|c| c == '0' || c == '.') { t[1..].to_string() } else { t }
 }

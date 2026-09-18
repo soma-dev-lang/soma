@@ -89,7 +89,9 @@ pub static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 pub fn read_source(path: &PathBuf) -> String {
     validate_manifest_beside(path);
     match fs::read_to_string(path) {
-        Ok(source) => source,
+        // a UTF-8 BOM (some editors on Windows) used to be "unexpected
+        // character" at 1:1 — an invisible one
+        Ok(source) => source.strip_prefix('\u{feff}').map(|s| s.to_string()).unwrap_or(source),
         Err(e) => {
             eprintln!("error: cannot read '{}': {}", path.display(), e);
             if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {

@@ -1374,6 +1374,18 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // `assert` / `property` rules run under `soma test` for
+                // `cell test` only: in an ordinary cell they never run
+                Section::Rules(rules) if cell.kind == CellKind::Cell && !rules.rules.is_empty() => {
+                    self.errors.push(CheckError::Static {
+                        kind: "rules_outside_test",
+                        message: format!(
+                            "cell '{}' has {} test rule(s) (assert / property) but is not a test cell — they would never run: move them to `cell test {}Tests {{ rules {{ … }} }}`",
+                            cell.name, rules.rules.len(), cell.name
+                        ),
+                        span: section.span,
+                    });
+                }
                 Section::Memory(mem) => {
                     for slot in &mem.slots {
                         if slot_names.iter().any(|(n, _)| n == &slot.node.name) {

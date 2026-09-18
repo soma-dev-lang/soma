@@ -22,6 +22,8 @@ pub(crate) enum UndoOp {
     Restore { backend: Arc<dyn StorageBackend>, key: String, prev: Option<crate::runtime::storage::StoredValue> },
     /// `append` / `push`
     Unappend { backend: Arc<dyn StorageBackend> },
+    /// `rows[i] = v` / `rows.delete(i)` on a List slot: put the old log back
+    RestoreList { backend: Arc<dyn StorageBackend>, prev: Vec<crate::runtime::storage::StoredValue> },
 }
 
 /// One handler at a time. `soma serve` runs each request on its own thread
@@ -120,7 +122,7 @@ impl RuntimeError {
 /// Return a human-readable type name for a Value (e.g. "String", "Int").
 pub fn value_type_name(v: &Value) -> &'static str {
     match v {
-        Value::Int(si) => if si.is_small() { "Int" } else { "BigInt" },
+        Value::Int(_) => "Int",
         Value::Float(_) => "Float",
         Value::String(_) => "String",
         Value::Bool(_) => "Bool",
@@ -2480,6 +2482,47 @@ impl Interpreter {
                         return Ok(Value::Bool(items().iter().any(|v| deep_equal(v, x))));
                     }
                 }
+                // rows[i] = v / rows.set(i, v): replace one element (was a
+                // silent no-op — the keyed map under the log took the write)
+                "set" | "put" if matches!(args.first(), Some(Value::Int(_))) && args.len() == 2 => {
+                    let xs = items();
+                    let raw = match &args[0] { Value::Int(i) => i.to_i64().unwrap_or(0), _ => 0 };
+                    let idx = if raw < 0 { raw + xs.len() as i64 } else { raw };
+                    if idx < 0 || idx as usize >= xs.len() {
+                        return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                            "{}[{}]: index out of bounds (the List slot has {} items) — push() appends", slot_name, raw, xs.len()))));
+                    }
+                    let val = args[1].clone();
+                    self.check_slot_value_type(cell_name, slot_name, &val)?;
+                    self.check_invariants(cell_name, slot_name, &raw.to_string(), &val, xs.len() as i64, "write")?;
+                    let prev = backend.list();
+                    if let Some(j) = self.journal.as_mut() {
+                        j.push(UndoOp::RestoreList { backend: backend.clone(), prev });
+                    }
+                    let mut stored = backend.list();
+                    stored[idx as usize] = value_to_stored(&val);
+                    backend.replace_list(stored);
+                    return Ok(Value::Unit);
+                }
+                // rows.delete(i): remove one element by index
+                "delete" | "remove" if matches!(args.first(), Some(Value::Int(_))) => {
+                    let xs = items();
+                    let raw = match &args[0] { Value::Int(i) => i.to_i64().unwrap_or(0), _ => 0 };
+                    let idx = if raw < 0 { raw + xs.len() as i64 } else { raw };
+                    if idx < 0 || idx as usize >= xs.len() {
+                        return Ok(Value::Bool(false));
+                    }
+                    let old = xs[idx as usize].clone();
+                    self.check_invariants(cell_name, slot_name, &raw.to_string(), &old, xs.len() as i64 - 1, "delete")?;
+                    let prev = backend.list();
+                    if let Some(j) = self.journal.as_mut() {
+                        j.push(UndoOp::RestoreList { backend: backend.clone(), prev });
+                    }
+                    let mut stored = backend.list();
+                    stored.remove(idx as usize);
+                    backend.replace_list(stored);
+                    return Ok(Value::Bool(true));
+                }
                 _ => {}
             }
         }
@@ -2524,6 +2567,7 @@ impl Interpreter {
                 let key_str = format!("{}", key);
                 let val_str = format!("{}", val);
 
+                self.check_slot_value_type(cell_name, slot_name, val)?;
                 // V1.8: invariants are checked BEFORE the write commits —
                 // a violated invariant must leave the slot untouched.
                 let exists = backend.get(&key_str).is_some();
@@ -2579,6 +2623,7 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "append() requires a value argument".to_string()
                     )))?;
+                self.check_slot_value_type(cell_name, slot_name, val)?;
                 let size_after = backend.len() as i64 + 1;
                 self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
                 if let Some(j) = self.journal.as_mut() {
@@ -3579,6 +3624,7 @@ impl Interpreter {
                     }
                 },
                 Some(UndoOp::Unappend { backend }) => backend.unappend(),
+                Some(UndoOp::RestoreList { backend, prev }) => backend.replace_list(prev),
                 None => break,
             }
         }
@@ -3766,6 +3812,48 @@ impl Interpreter {
             .or(Some("Map"))
     }
 
+    /// `Map<String, Int>` / `List<Map>`: the declared value type of a slot
+    /// (the last type argument), when it is a plain name.
+    fn slot_value_type(&self, cell_name: &str, name: &str) -> Option<String> {
+        let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
+            Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name).and_then(|sl| {
+                match &sl.node.ty.node {
+                    TypeExpr::Generic { args, .. } => args.last().and_then(|a| match &a.node {
+                        TypeExpr::Simple(t) => Some(t.clone()),
+                        TypeExpr::Generic { name, .. } => Some(name.clone()),
+                        _ => None,
+                    }),
+                    _ => None,
+                }
+            }),
+            _ => None,
+        });
+        self.cells.get(cell_name).and_then(declared)
+            .or_else(|| self.cells.values().find_map(declared))
+    }
+
+    /// A write into a slot must match its declared value type (a String in a
+    /// `Map<String, Int>` used to be stored silently). Same rules as a
+    /// parameter: Int fits Float, a whole Float fits Int, `Map` also takes a
+    /// record/variant, unknown type names are not checked.
+    fn check_slot_value_type(&self, cell_name: &str, slot_name: &str, val: &Value) -> Result<(), ExecError> {
+        let Some(ty) = self.slot_value_type(cell_name, slot_name) else { return Ok(()) };
+        let ok = match (ty.as_str(), val) {
+            ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_))
+            | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) | ("List", Value::List(_))
+            | ("Map", Value::Map(_) | Value::Variant { .. }) => true,
+            ("Int", Value::Float(f)) => f.fract() == 0.0,
+            ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => false,
+            _ => true,
+        };
+        if ok { return Ok(()); }
+        let shown: String = format!("{}", val).chars().take(40).collect();
+        Err(ExecError::Runtime(RuntimeError::Domain {
+            kind: "type".to_string(),
+            message: format!("slot '{}' holds {} values, got {} {} — convert the value or change the slot's declared type", slot_name, ty, value_type_name(val), shown),
+        }))
+    }
+
     /// The whole content of a slot, for a bare-name read.
     fn materialize_slot(&mut self, cell_name: &str, name: &str) -> Option<Value> {
         let kind = self.slot_kind(cell_name, name)?;
@@ -3947,7 +4035,7 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
             if let Some(n) = si.to_i64() {
                 StoredValue::Int(n)
             } else {
-                StoredValue::String(format!("{}", si))
+                StoredValue::BigInt(format!("{}", si))
             }
         }
         Value::Float(n) => StoredValue::Float(*n),
@@ -4095,6 +4183,7 @@ pub(crate) fn stored_to_value(stored: StoredValue) -> Value {
     use crate::runtime::storage::StoredVariantFields;
     match stored {
         StoredValue::Int(n) => Value::Int(SomaInt::from_i64(n)),
+        StoredValue::BigInt(d) => Value::Int(SomaInt::from_decimal_str(&d)),
         StoredValue::Float(n) => Value::Float(n),
         StoredValue::String(s) => Value::String(s),
         StoredValue::Bool(b) => Value::Bool(b),

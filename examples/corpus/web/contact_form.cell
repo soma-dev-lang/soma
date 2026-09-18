@@ -10,7 +10,7 @@ cell ContactForm {
     }
 
     memory {
-        submissions: Map<String, String> [persistent, consistent]
+        submissions: Map<String, Map> [persistent, consistent]
     }
 
     on validate(data: Map) {

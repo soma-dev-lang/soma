@@ -998,3 +998,109 @@ cell test Second {
     assert_eq!(code, 1, "must be an error, not an abort: {out}");
     assert!(out.contains("nested more than"), "{out}");
 }
+
+/// Cycle 6 (adversarial c5 + docs audit + Ruby / job-queue ports): a BigInt
+/// stored in a slot came back as a String, `rows[0] = v` on a List slot was
+/// silently dropped, slot value types were advisory, native-only primitives
+/// passed check in interpreted handlers, `format` did not exist, `j.state =`
+/// did not parse, `assert_fails … matching` ignored the kind, the prover did
+/// not chain one slot's invariant into another's proof.
+#[test]
+fn cycle6_findings() {
+    let d = dir("cycle6");
+    std::fs::write(d.join("app.cell"), r#"
+cell Store {
+  face { signal bump() -> Map  signal rows_edit() -> List  signal typed() -> Int
+         signal fmt() -> String  signal kw() -> Map  signal rx() -> Int  signal boom() -> Int }
+  memory {
+    n: Map<String, Int> [persistent]
+    invariant n >= 0
+    rows: List<Map> [persistent]
+    ints: Map<String, Int> [persistent]
+    attempts: Map<String, Int> [persistent]
+    invariant attempts >= 0 && attempts <= 5
+    limits: Map<String, Int> [persistent]
+    invariant limits >= 1 && limits <= 5
+  }
+  on bump() {
+    let cur = n.get("c") ?? 9223372036854775807
+    n.set("c", cur + 1)
+    let back = n.get("c")
+    return map("t", type_of(back), "v", back, "ok", back > cur)
+  }
+  on rows_edit() {
+    rows.push(map("id", 1))
+    rows.push(map("id", 2))
+    rows[0].id = 42
+    rows[1] = map("id", 43)
+    rows.delete(0)
+    return rows
+  }
+  on typed() { ints.set("s", "not an int")  return 1 }
+  on fmt() { return format("%5d|%-4s|%05d|%.2f|%%", 42, "hi", -7, 7/2) }
+  on kw() { let j = map("id", 1)  j.state = "done"  return j }
+  on rx() { return regex_count("a1b22c333", "[0-9]+") + regex_match("abc", "^a") }
+  on boom() { fail("not_found", "no such id") }
+  on run_one(id: String) {
+    let x = (attempts.get(id) ?? 0) + 1
+    let limit = limits.get(id) ?? 1
+    require x <= limit else Exceeded "too many"
+    attempts.set(id, x)
+    return x
+  }
+  on clear(id: String) { attempts.delete(id) }
+}
+cell test T {
+  rules {
+    assert bump().t == "Int"
+    assert bump().ok == true
+    assert rows_edit() == [map("id", 43)]
+    assert_fails typed() matching "type"
+    assert fmt() == "   42|hi  |-0007|3.50|%"
+    assert kw().state == "done"
+    assert rx() == 4
+    assert_fails boom() matching "not_found"
+    assert map("a", 1).keys == ["a"]
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("9 passed, 0 failed"), "{out}");
+
+    // one slot's invariant chained into another's proof, delete ignored
+    let (out, code) = soma_in(&d, &["verify", "app.cell", "--strict"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("writer 'run_one' proven by induction"), "{out}");
+    assert!(out.contains("only deletes"), "{out}");
+
+    // native-only primitives are a check error in interpreted handlers;
+    // rules outside a test cell are an error; a slot indexed then assigned
+    std::fs::write(d.join("bad.cell"), "cell B {\n  memory { rows: List<Map> [persistent] }\n  on f() { let b = buffer(4)  return buf_get(b, 0) }\n  on g() { rows[0] = map()  rows = [] }\n  property \"p\" forall n: Int in 0..3 ensures n >= 0\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "bad.cell"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("[native]-only primitive"), "{out}");
+    assert!(out.contains("is a memory slot, not a variable"), "{out}");
+    assert!(out.contains("not a test cell"), "{out}");
+
+    // a BOM is not an "unexpected character"
+    std::fs::write(d.join("bom.cell"), "\u{feff}cell C { on f() { 1 } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "bom.cell"]);
+    assert_eq!(code, 0, "{out}");
+
+    // test --json carries left/right and a JSON body even when check fails
+    let (out, _) = soma_in(&d, &["test", "app.cell", "--json"]);
+    assert!(out.contains("\"passed\": 9"), "{out}");
+    let (out, code) = soma_in(&d, &["test", "bad.cell", "--json"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("\"check_errors\""), "{out}");
+
+    // verify ends with a verdict even when check fails
+    let (out, _) = soma_in(&d, &["verify", "bad.cell"]);
+    assert!(out.contains("VERIFY FAILED"), "{out}");
+
+    // describe --json lists sum types
+    std::fs::write(d.join("ty.cell"), "cell type Pay { variants { Charged { tx: String }  Cash } }\ncell D { on f() { 1 } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["describe", "ty.cell", "--json"]);
+    assert!(out.contains("\"Charged\""), "{out}");
+}

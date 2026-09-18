@@ -11,7 +11,7 @@ cell Blog {
     }
 
     memory {
-        posts: Map<String, String> [persistent, consistent]
+        posts: Map<String, Map> [persistent, consistent]
     }
 
     on create_post(data: Map) {

@@ -91,6 +91,9 @@ enum Commands {
         /// Serve even when `soma check` reports errors
         #[arg(long)]
         no_check: bool,
+        /// Do not run `every` / `after` blocks (HTTP handlers only — for tests and debugging)
+        #[arg(long)]
+        no_schedule: bool,
         /// Watch for changes and auto-reload
         #[arg(short, long)]
         watch: bool,
@@ -320,10 +323,11 @@ fn main_inner() {
         Commands::Ast { file } => cmd_ast(&file),
         Commands::Tokens { file } => cmd_tokens(&file),
         Commands::Run { file, args, jit, signal, record } => commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry),
-        Commands::Serve { file, port, host, no_check, watch, verbose, join } => {
+        Commands::Serve { file, port, host, no_check, no_schedule, watch, verbose, join } => {
             if watch {
                 commands::serve::cmd_serve_watch(&file, port, &mut registry);
             } else {
+                if no_schedule { commands::serve::NO_SCHEDULE.store(true, std::sync::atomic::Ordering::Relaxed); }
                 commands::serve::cmd_serve(&file, port, &host, verbose, join.as_deref(), no_check, &mut registry);
             }
         }
@@ -541,6 +545,12 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     }
 
     if all_results.is_empty() && check_failed {
+        // still ONE verdict line, the one every caller greps for
+        if json {
+            println!("{}", serde_json::json!({"ok": false, "verdict": "VERIFY FAILED — soma check failed", "cells": []}));
+        } else {
+            eprintln!("VERIFY FAILED — soma check failed (fix the errors above, then verify)");
+        }
         std::process::exit(1);
     }
     if all_results.is_empty() {

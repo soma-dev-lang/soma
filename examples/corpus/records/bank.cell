@@ -11,7 +11,7 @@ cell Bank {
     }
 
     memory {
-        accounts: Map<String, String> [persistent, consistent]
+        accounts: Map<String, Map> [persistent, consistent]
     }
 
     on open(owner: String, initial: Int) {

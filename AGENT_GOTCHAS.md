@@ -232,7 +232,7 @@ assert !(1 == 2)             // for a falsy predicate, use plain assert + !
 
 ```soma
 let seen = map()
-seen.set("k", 1)             // error: 'seen' is not a memory slot
+seen.set("k", 1)             // error: `.set()` is a memory-slot method and 'seen' is a local — a local map is written with brackets: `seen[k] = v`
 ```
 ```soma
 let seen = map()
@@ -249,7 +249,7 @@ It can't be a parameter name or a map field read as `.on`. Use `enabled`,
 ## 15. No semicolons; statements are newline-separated
 
 ```soma
-{ a = 1; b = 2 }             // lex error
+{ a = 1; b = 2 }             // error: unexpected character ';' — Soma has no semicolons, one statement per line
 ```
 ```soma
 {
@@ -261,7 +261,7 @@ It can't be a parameter name or a map field read as `.on`. Use `enabled`,
 ## 16. `given` is reserved (like `on`)
 
 It's a face-declaration keyword — can't be a state name, param, or
-identifier. `error: expected name, found Given`. Use `granted`, `input`, etc.
+identifier. `error: expected identifier, found Given`. Use `granted`, `input`, etc.
 
 ## 17. What a test cell's `rules { }` accepts
 
@@ -306,8 +306,11 @@ division by zero is an ordinary, `try`-catchable runtime error.
 ## 20. A cost bound is only *proven* when every `think()` count is known
 
 `think()` reached through a loop over a list, a lambda (`map(xs, x => think(..))`)
-or a recursive helper makes the bound **advisory**. Give the loop a literal
-`range(0, N)` or `[loop_bound(N)]` to get `bound proven` back. Calls to sibling
+or a recursive helper makes the bound unprovable — and an unprovable declared
+bound is a `soma check` **error** (the message reads `cost: 'tokens' bound is
+advisory — …`, exit 1), not a note: a bound nobody can prove is a lie in the
+program's own words. Give the loop a literal `range(0, N)` or `[loop_bound(N)]`
+to get `bound proven` back, or remove the `cost` block. Calls to sibling
 handlers are composed: `for i in range(0, 3) { helper() }` costs 3 × helper.
 
 ## 21. Habits from Python / TypeScript that `soma check` now redirects

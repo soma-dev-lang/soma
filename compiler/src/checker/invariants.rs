@@ -223,6 +223,20 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             let parts = conjuncts(inv);
             let mut runtime_checked: Vec<String> = Vec::new();
             for (handler, slot, value_expr, in_try) in relevant {
+                // a delete removes an entry that already satisfied a VALUE
+                // invariant; only a `size` clause can flip on it
+                if matches!(value_expr, Expr::Ident(n) if n == "<deleted entry>") {
+                    let mut names = HashSet::new();
+                    collect_idents(inv, &mut names);
+                    let mut fns = HashSet::new();
+                    collect_fn_names(inv, &mut fns);
+                    if !names.contains("size") && !names.contains("len") && !fns.contains("len") && !fns.contains("size") {
+                        result.checks.push(VerifyCheck::Pass(format!(
+                            "invariant {inv_text} — writer '{handler}' only deletes from '{slot}' (a value invariant cannot break on a delete)"
+                        )));
+                        continue;
+                    }
+                }
                 let ctx = RangeCtx {
                     hyp: &hyp,
                     vars: locals.get(handler).cloned().unwrap_or_default(),
@@ -580,6 +594,28 @@ fn local_ranges_at(
                         match op {
                             CmpOp::Le | CmpOp::Lt => { vars.insert(format!("__le__{}__{}", a, b), Known::Exact(1.0)); }
                             CmpOp::Ge | CmpOp::Gt => { vars.insert(format!("__le__{}__{}", b, a), Known::Exact(1.0)); }
+                            _ => {}
+                        }
+                        // `require n <= limit` where limit came out of a
+                        // guarded slot (`limits.get(id) ?? 1`, invariant
+                        // limits <= 5): n inherits that slot's bound —
+                        // one slot's invariant chained into another's proof
+                        let narrow = |vars: &mut HashMap<String, Known>, name: &str, lo: f64, hi: f64| {
+                            let cur = vars.get(name).copied().unwrap_or(Known::Unknown);
+                            let n = match bounds(cur) { Some((cl, ch)) => mk(cl.max(lo), ch.min(hi)), None => mk(lo, hi) };
+                            vars.insert(name.to_string(), n);
+                        };
+                        let ra = vars.get(a.as_str()).copied().and_then(bounds);
+                        let rb = vars.get(b.as_str()).copied().and_then(bounds);
+                        match op {
+                            CmpOp::Le | CmpOp::Lt => {
+                                if let Some((_, bh)) = rb { narrow(&mut vars, a, f64::NEG_INFINITY, bh); }
+                                if let Some((al, _)) = ra { narrow(&mut vars, b, al, f64::INFINITY); }
+                            }
+                            CmpOp::Ge | CmpOp::Gt => {
+                                if let Some((bl, _)) = rb { narrow(&mut vars, a, bl, f64::INFINITY); }
+                                if let Some((_, ah)) = ra { narrow(&mut vars, b, f64::NEG_INFINITY, ah); }
+                            }
                             _ => {}
                         }
                     }

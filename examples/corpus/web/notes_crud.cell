@@ -14,7 +14,7 @@ cell Notes {
     }
 
     memory {
-        notes: Map<String, String> [persistent, consistent]
+        notes: Map<String, Map> [persistent, consistent]
     }
 
     on create(data: Map) {

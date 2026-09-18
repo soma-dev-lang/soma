@@ -11,7 +11,7 @@ cell Kanban {
     }
 
     memory {
-        cards: Map<String, String> [persistent, consistent]
+        cards: Map<String, Map> [persistent, consistent]
     }
 
     on add(title: String, col: String) {

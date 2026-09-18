@@ -17,7 +17,7 @@ cell TodoService {
     }
 
     memory {
-        todos: Map<String, String> [persistent, consistent]
+        todos: Map<String, Map> [persistent, consistent]
     }
 
     state todo: TodoStatus {

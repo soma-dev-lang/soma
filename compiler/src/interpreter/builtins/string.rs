@@ -114,6 +114,47 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 }
             })
         }
+        // Same functions the [native] backend compiles to the `regex` crate.
+        "regex_count" | "regex_match" | "regex_replace" => {
+            let (Some(Value::String(text)), Some(Value::String(pat))) = (args.first(), args.get(1)) else {
+                return Some(Err(RuntimeError::TypeError(format!("{}(text: String, pattern: String{})", name, if name == "regex_replace" { ", replacement: String" } else { "" }))));
+            };
+            let rx = match regex::Regex::new(pat) {
+                Ok(r) => r,
+                Err(e) => return Some(Err(RuntimeError::TypeError(format!("{}: invalid pattern {:?}: {}", name, pat, e)))),
+            };
+            Some(Ok(match name {
+                "regex_count" => Value::Int(SomaInt::from_i64(rx.find_iter(text).count() as i64)),
+                "regex_match" => Value::Int(SomaInt::from_i64(if rx.is_match(text) { 1 } else { 0 })),
+                _ => {
+                    let Some(Value::String(rep)) = args.get(2) else {
+                        return Some(Err(RuntimeError::TypeError("regex_replace(text, pattern, replacement)".to_string())));
+                    };
+                    Value::String(rx.replace_all(text, rep.as_str()).into_owned())
+                }
+            }))
+        }
+        "read_stdin" => {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf).ok();
+            Some(Ok(Value::String(buf)))
+        }
+        "write_str" => {
+            use std::io::Write;
+            let text = args.first().map(|v| format!("{}", v)).unwrap_or_default();
+            let mut out = std::io::stdout();
+            out.write_all(text.as_bytes()).ok();
+            out.flush().ok();
+            Some(Ok(Value::Int(SomaInt::from_i64(text.len() as i64))))
+        }
+        // printf subset: %d %s %f %.Nf %Nd %-Ns %0Nd %%
+        "format" if !args.is_empty() => {
+            let Value::String(fmt) = &args[0] else {
+                return Some(Err(RuntimeError::TypeError("format(fmt: String, args...) — the first argument is the format".to_string())));
+            };
+            Some(printf_subset(fmt, &args[1..]))
+        }
         // strings.Fields: split on any run of whitespace, no empty pieces
         "fields" => {
             args.first().map(|arg| match arg {
@@ -272,7 +313,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "type_of" => {
             args.first().map(|arg| {
                 let t = match arg {
-                    Value::Int(si) => if si.is_small() { "Int" } else { "BigInt" },
+                    Value::Int(_) => "Int",
                     Value::Float(_) => "Float",
                     Value::String(_) => "String",
                     Value::Bool(_) => "Bool",
@@ -338,4 +379,67 @@ fn write_json(v: &Value, out: &mut String) {
         }
         other => out.push_str(&serde_json::to_string(&format!("{}", other)).unwrap_or_else(|_| "\"\"".to_string())),
     }
+}
+
+/// `%[-0][width][.prec](d|s|f|%)`; other letters are an error naming them.
+fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+    let chars: Vec<char> = fmt.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    let mut next = 0usize;
+    while i < chars.len() {
+        if chars[i] != '%' { out.push(chars[i]); i += 1; continue; }
+        i += 1;
+        if i < chars.len() && chars[i] == '%' { out.push('%'); i += 1; continue; }
+        let mut left = false; let mut zero = false;
+        while i < chars.len() && (chars[i] == '-' || chars[i] == '0') {
+            if chars[i] == '-' { left = true } else { zero = true }
+            i += 1;
+        }
+        let mut width = String::new();
+        while i < chars.len() && chars[i].is_ascii_digit() { width.push(chars[i]); i += 1; }
+        let mut prec: Option<usize> = None;
+        if i < chars.len() && chars[i] == '.' {
+            i += 1;
+            let mut p = String::new();
+            while i < chars.len() && chars[i].is_ascii_digit() { p.push(chars[i]); i += 1; }
+            prec = Some(p.parse().unwrap_or(0));
+        }
+        let Some(&conv) = chars.get(i) else {
+            return Err(RuntimeError::TypeError("format(): the format ends inside a % directive".to_string()));
+        };
+        i += 1;
+        let arg = args.get(next).cloned().ok_or_else(|| RuntimeError::TypeError(format!(
+            "format(): directive %{} needs argument {} but only {} were given", conv, next + 1, args.len())))?;
+        next += 1;
+        let body = match conv {
+            'd' => match &arg {
+                Value::Int(n) => n.to_string(),
+                Value::Float(f) => format!("{}", f.trunc() as i64),
+                other => return Err(RuntimeError::TypeError(format!("format(): %d needs an Int, got {}", super::super::value_type_name(other)))),
+            },
+            'f' => {
+                let x = match &arg { Value::Float(f) => *f, Value::Int(n) => n.to_f64(), other => return Err(RuntimeError::TypeError(format!("format(): %f needs a number, got {}", super::super::value_type_name(other)))) };
+                super::math::fixed_string(x, prec.unwrap_or(6))
+            }
+            's' => {
+                let t = format!("{}", arg);
+                match prec { Some(p) => t.chars().take(p).collect(), None => t }
+            }
+            other => return Err(RuntimeError::TypeError(format!("format(): unsupported directive %{} (supported: %d %s %f %.Nf, widths, - and 0 flags)", other))),
+        };
+        let w: usize = width.parse().unwrap_or(0);
+        let len = body.chars().count();
+        if len >= w { out.push_str(&body); continue; }
+        let pad = w - len;
+        if left {
+            out.push_str(&body); out.push_str(&" ".repeat(pad));
+        } else if zero && conv != 's' {
+            let (sign, digits) = if body.starts_with('-') { ("-", &body[1..]) } else { ("", body.as_str()) };
+            out.push_str(sign); out.push_str(&"0".repeat(pad)); out.push_str(digits);
+        } else {
+            out.push_str(&" ".repeat(pad)); out.push_str(&body);
+        }
+    }
+    Ok(Value::String(out))
 }

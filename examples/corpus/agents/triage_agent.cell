@@ -14,7 +14,7 @@ cell agent Triage {
     }
 
     memory {
-        tickets: Map<String, String> [persistent]
+        tickets: Map<String, Map> [persistent]
     }
 
     state lifecycle {

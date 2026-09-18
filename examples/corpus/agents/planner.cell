@@ -13,7 +13,7 @@ cell agent Planner {
     }
 
     memory {
-        runs: Map<String, String> [persistent]
+        runs: Map<String, Map> [persistent]
     }
 
     state flow {

@@ -117,6 +117,8 @@ pub fn cmd_example(terms: &[String], json: bool, all: bool) {
 
     if json {
         println!("{}", serde_json::to_string(&hits).unwrap_or_else(|_| "[]".to_string()));
+        // same exit code as the text form: no match is 1
+        if hits.is_empty() { std::process::exit(1); }
         return;
     }
     if hits.is_empty() {

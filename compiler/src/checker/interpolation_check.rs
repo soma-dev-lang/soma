@@ -206,7 +206,11 @@ impl<'a> Walker<'a> {
             }
             Statement::ExprStmt { expr } => self.walk_expr(expr),
             Statement::IndexSet { name, index, value } => {
-                self.scope.insert(name.clone());
+                // `rows[0] = v` on a slot is a slot write, not a local:
+                // it must not hide a later `rows = …` from the check above
+                if !self.index.slots.contains(name) || self.scope.contains(name) {
+                    self.scope.insert(name.clone());
+                }
                 self.walk_expr(index);
                 self.walk_expr(value);
             }

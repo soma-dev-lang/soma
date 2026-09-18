@@ -20,7 +20,7 @@ verified against it. Unknown URLs on this site return 404, never a page.
 - [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same knowledge packaged as an agent skill
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
-- [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~1 KB) → one domain's index (~12 KB, summaries, each program's verify verdict and soma.toml)
+- [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~12 KB, summaries, each program's verify verdict and soma.toml)
 - [corpus/index.json](https://soma-lang.dev/corpus/index.json): 300+ verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
 - [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md), [docs/spec.md](https://soma-lang.dev/docs/spec.md): raw markdown
 - [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry
@@ -151,8 +151,13 @@ slice(xs, 1, 3)  slice(xs, -2)     // no xs[a:b]
 xs = push(xs, x)                   // push / concat / sort / with RETURN new values
 on f(n: Int) [native] { … }        // annotations go AFTER the parameter list; no @decorator
 fail("bad_kind", "bad kind: {k}")  // throw new Error(msg); catch: let r = try { … }  r.detail == msg
-parse_int(s) ?? parse_float(s)     // Number(s); to_float("5") prints 5.0; round(x) is an Int
+parse_int(s) ?? parse_float(s)     // Number(s); to_float("5") prints 5.0; round(x) is an Int, round(x, 2) a Float
 m["k"] = v   m.get("k")            // a LOCAL map has no .set — .set/.delete/.push are slot methods
+f(opts: Map) … opts.x ?? 10        // keyword arguments / defaults: pass a map, read with ??
+Name { k: v }   is_a(r, "Name")    // struct / dataclass / interface: a record literal (no class)
+format("%5.2f|%-8s|%03d", x, s, n) // printf / f-string widths (%d %s %f %.Nf, - and 0 flags)
+7 / 2 == 3.5   idiv(-7, 2) == -3   // `/` is exact; idiv truncates toward zero, % follows the dividend's sign
+floor_div(-7, 2) == -4   mod(-7, 2) == 1   // Python's // and %
 ```
 A `class` with private fields is a `cell` with `memory` slots: one instance,
 no `new`, no `this` — `this.hits.get(u)` is `hits.get(u)`; `constructor(a, b)`
@@ -213,7 +218,15 @@ source, `file:line`, left/right, and the fields a value really has when
 - `[1, 2] + [10, 20]` is element-wise (`[11, 22]`; Floats when a value is
   one); `concat(a, b)` joins lists.
 - Persistent data lives in `.soma_data/` beside the program (serve and run);
-  `soma test` starts empty.
+  `soma test` starts empty. A slot gives back exactly what it accepted (an Int
+  beyond 64 bits stays an Int); a value that does not fit the slot's declared
+  value type (`Map<String, Int>` given a String) is refused with kind `type`.
+- On a List slot: `rows.push(x)`, `rows[i] = x`, `rows.delete(i)` (by index),
+  `rows.get(i)`, `rows.len` — all invariant-checked.
+- `ensure cond` at the end of a handler raises kind `ensure` (422) when the
+  postcondition is false — the whole handler is rolled back.
+- Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
+  `add_days`, `add_months`, `days_between`, `days_in_month`, `format_date(ts)`.
 
 ## Scheduled work
 
@@ -247,8 +260,10 @@ if r.kind == "not_found" { return response(404, map("error", r.detail)) }
 if r.error != () { fail(r) }               // re-raise unchanged
 ```
 Kinds raised by the runtime: `invalid_transition`, `guard_failed`, `invariant`,
-`ensure`, `division_by_zero`, `index`, `llm`, `budget`, `type`. Branch on
-`r.kind`, never on substrings of `r.error`.
+`ensure`, `division_by_zero`, `index`, `llm`, `budget`, `type`, `json` (a body
+that is not JSON), `stack_overflow`, `approval_required` (`approve()` with
+nobody to answer). Branch on `r.kind`, never on substrings of `r.error`; in
+tests `assert_fails f() matching "not_found"` matches the kind or the message.
 
 ## HTTP
 
@@ -260,7 +275,7 @@ a server; `soma serve app.cell -p 8080` serves it. Static files: `static/`.
 `/<handler>/<arg>/<arg>` (that is how forms post to `/add`). A path that
 `request` matches explicitly goes to `request`; prefix handlers that must not
 be reachable over HTTP with `_` (`on _debit(…)`). `soma check` warns when a
-handler and a route share a name. `body: String` is the raw text
+handler and a route share a name unless the route delegates to that handler. `body: String` is the raw text
 (`from_json(body)`); `body: Map` is the parsed JSON (a non-JSON body is a 400
 before the handler runs) — the same under serve, test and run. A raised error
 answers with its kind: not_found → 404, guard_failed → 403, invalid_transition
@@ -278,7 +293,10 @@ handler's runaway recursion (500 `stack_overflow`; the process stays up).
 
 `soma verify` proves, for every cell with a state machine: reachability,
 deadlock-freedom, liveness (every state can reach a terminal), refinement (each
-handler's `transition()` targets are declared edges), and termination of every
+handler's `transition()` targets are declared states — the SOURCE of a
+transition is the instance's runtime state, so a removed edge is caught at
+runtime as `invalid_transition`, not by verify; declare `[verify.before.X]
+requires` for the edges you care about), and termination of every
 handler whose recursion has a decreasing argument — a handler it cannot prove
 (`while true`, `rec(n + 1)`) is a ⚠ warning, not a proof, and the runtime
 depth guard is what stops it. `property … forall n in a..b` in tests walks
@@ -288,6 +306,7 @@ the program (`[package]` is optional; an unknown key is an error):
 ```toml
 [verify]
 cells = ["Expense"]                 # optional: which cells these apply to
+deadlock_free = true                # (always on; the key is accepted)
 eventually = ["paid", "rejected"]   # every path reaches one of these (AF)
 never = ["corrupt"]                 # unreachable states (AG not)
 always = ["a", "b", "c"]            # the machine is only ever in one of these
@@ -374,7 +393,8 @@ cell agent Researcher {
     integer quotient (truncates toward zero, BigInt-exact).
 12. One memory invariant names one slot; `size` invariants also guard
     `delete`. A cost bound is *proven* only when every `think()` runs a
-    known number of times (literal `range`, `[loop_bound(N)]`).
+    known number of times (literal `range`, `[loop_bound(N)]`); a declared
+    bound that cannot be proven is a check ERROR.
 
 ## Packages
 
@@ -412,7 +432,10 @@ What a `[native]` handler may use — nothing else:
   `sb_push_char(b, c)`, `sb_len(b)`, `sb_finish(b) -> String`;
   `regex_count / regex_replace / regex_match`; `read_file read_stdin write_str`
 Not available natively: maps/lists/records, think(), memory slots, `try`,
-`match`, string interpolation — call an interpreted handler for those.
+`match`, string interpolation — call an interpreted handler for those. The
+buffer / hashmap / strbuf primitives exist ONLY in `[native]` handlers
+(`soma check` refuses them elsewhere); everything else in the list, `sin`,
+`regex_*`, `read_stdin` included, works in interpreted handlers too.
 
 ## Learn from working code
 

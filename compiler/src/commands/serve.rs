@@ -41,6 +41,9 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
     }
 }
 
+/// `--no-schedule`: HTTP handlers only, no `every` / `after` threads.
+pub static NO_SCHEDULE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Option<&str>, no_check: bool, registry: &mut Registry) {
     crate::interpreter::IN_SERVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let source = read_source(path);
@@ -253,6 +256,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     let shown_host = if host == "0.0.0.0" { "0.0.0.0 (all interfaces)".to_string() } else { host.to_string() };
     eprintln!("listening on http://{}:{}", shown_host, port);
     eprintln!("dashboard: http://{}:{}/__soma/", if host == "0.0.0.0" { "localhost" } else { host }, port);
+    if let Some(line) = llm_status_line(&program) { eprintln!("llm: {}", line); }
     eprintln!("---");
 
     // [native] handlers are compiled ONCE here and shared by every request
@@ -879,7 +883,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
     // Spawn scheduler threads for `every` sections
     // In cluster mode, only the leader runs `every` blocks
+    let no_schedule = NO_SCHEDULE.load(std::sync::atomic::Ordering::Relaxed);
+    if no_schedule { eprintln!("scheduler: disabled (--no-schedule) — every/after blocks do not run"); }
     for cell_spanned in &program.cells {
+        if no_schedule { break; }
         if !matches!(cell_spanned.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }
         for section in &cell_spanned.node.sections {
             if let ast::Section::Every(ref every) = section.node {
@@ -1025,7 +1032,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, DELETE, OPTIONS"[..]).unwrap())
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type, Authorization"[..]).unwrap())
                 .with_header(tiny_http::Header::from_bytes(&b"Access-Control-Max-Age"[..], &b"86400"[..]).unwrap());
-            let _ = request.respond(resp);
+            let _ = request.respond(cors(resp));
             return;
         }
 
@@ -1039,7 +1046,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 Err(_) => {
                     let resp = tiny_http::Response::from_string("not found")
                         .with_status_code(404);
-                    let _ = request.respond(resp);
+                    let _ = request.respond(cors(resp));
                     return;
                 }
             };
@@ -1052,7 +1059,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             if !canonical.starts_with(&base_canonical) {
                 let resp = tiny_http::Response::from_string("forbidden")
                     .with_status_code(403);
-                let _ = request.respond(resp);
+                let _ = request.respond(cors(resp));
                 return;
             }
             if file_path.exists() && file_path.is_file() {
@@ -1073,12 +1080,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     .with_header(
                         tiny_http::Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap()
                     );
-                let _ = request.respond(resp);
+                let _ = request.respond(cors(resp));
                 return;
             } else {
                 let resp = tiny_http::Response::from_string("not found")
                     .with_status_code(404);
-                let _ = request.respond(resp);
+                let _ = request.respond(cors(resp));
                 return;
             }
         }
@@ -1090,7 +1097,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 .with_header(
                     tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap()
                 );
-            let _ = request.respond(resp);
+            let _ = request.respond(cors(resp));
             return;
         }
 
@@ -1120,7 +1127,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         &b"Content-Type"[..], &b"application/json"[..]
                     ).unwrap()
                 );
-                let _ = request.respond(resp);
+                let _ = request.respond(cors(resp));
                 return;
             }
             let args: Vec<interpreter::Value> = if query.is_empty() {
@@ -1246,7 +1253,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 .with_status_code(400)
                                 .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
                             eprintln!("{} {} → 400 0ms {}", method, url, msg);
-                            let _ = request.respond(resp);
+                            let _ = request.respond(cors(resp));
                             return;
                         }
                     },
@@ -1286,7 +1293,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         &b"Content-Type"[..], &b"application/json"[..]
                     ).unwrap()
                 );
-                let _ = request.respond(resp);
+                let _ = request.respond(cors(resp));
                 return;
             }
         };
@@ -1307,7 +1314,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         .with_status_code(400)
                         .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
                     eprintln!("{} {} → 400 0ms {}", method, url, msg);
-                    let _ = request.respond(resp);
+                    let _ = request.respond(cors(resp));
                     return;
                 }
                 // an absent body for a trailing Map/List parameter is an empty one
@@ -1445,7 +1452,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 if let Some(ref vb) = verbose_body {
                     eprintln!("  response body: {}", vb);
                 }
-                let _ = request.respond(resp);
+                let _ = request.respond(cors(resp));
             }
             Err(e) => {
                 let kind = e.kind();
@@ -1461,7 +1468,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 resp.add_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
                 let elapsed = start_time.elapsed();
                 eprintln!("{} {} → {} {}ms {}", method, url, status, elapsed.as_millis(), e);
-                let _ = request.respond(resp);
+                let _ = request.respond(cors(resp));
             }
         }
 
@@ -1474,6 +1481,53 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
 /// `{"error": …, "kind": …}` rendered like every other Soma map (same
 /// spacing as a handler's own `response(404, map("error", …))`).
+/// What `think()` will talk to, said once at start-up: an agent ran a
+/// pipeline for an hour against the echo mock without knowing.
+fn llm_status_line(program: &ast::Program) -> Option<String> {
+    let uses_think = program.cells.iter().any(|c| c.node.sections.iter().any(|s| {
+        let body: &[ast::Spanned<ast::Statement>] = match &s.node {
+            ast::Section::OnSignal(h) => &h.body,
+            ast::Section::Every(e) | ast::Section::After(e) => &e.body,
+            _ => return false,
+        };
+        let mut found = false;
+        crate::checker::literals::for_each_call(body, &mut |name, _, _| {
+            if matches!(name, "think" | "think_json" | "delegate") { found = true; }
+        });
+        found
+    }));
+    if !uses_think { return None; }
+    if let Ok(m) = std::env::var("SOMA_LLM_MOCK") {
+        return Some(format!("MOCK `{}` (SOMA_LLM_MOCK) — think() never reaches a provider", m));
+    }
+    let toml = std::fs::read_to_string("soma.toml").ok()
+        .and_then(|t| toml::from_str::<crate::pkg::manifest::Manifest>(&t).ok());
+    let agent = toml.as_ref().map(|m| m.agent.clone());
+    if let Some(a) = &agent {
+        if !a.mock.is_empty() {
+            return Some(format!("MOCK `{}` ([agent] mock in soma.toml) — think() never reaches a provider", a.mock));
+        }
+    }
+    let key_env = ["SOMA_LLM_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"].iter()
+        .find(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
+    let provider = agent.as_ref().map(|a| a.provider.clone()).filter(|p| !p.is_empty());
+    let model = agent.as_ref().map(|a| a.model.clone()).filter(|m| !m.is_empty());
+    match (provider, model, key_env) {
+        (p, m, Some(k)) => Some(format!("provider {} model {} (key from {})", p.unwrap_or_else(|| "default".into()), m.unwrap_or_else(|| "default".into()), k)),
+        (p, m, None) if agent.as_ref().is_some_and(|a| !a.key.is_empty()) => Some(format!("provider {} model {} (key from soma.toml)", p.unwrap_or_else(|| "default".into()), m.unwrap_or_else(|| "default".into()))),
+        _ => Some("NO KEY and no mock — every think() will raise kind `llm` (set SOMA_LLM_KEY, or SOMA_LLM_MOCK=echo)".to_string()),
+    }
+}
+
+/// Every response carries the CORS header — the documented rule (it used to
+/// be missing on `/static/*`, the dashboard and the pre-handler 400s).
+fn cors<R: std::io::Read>(mut r: tiny_http::Response<R>) -> tiny_http::Response<R> {
+    if !r.headers().iter().any(|h| h.field.equiv("Access-Control-Allow-Origin")) {
+        r.add_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+    }
+    r
+}
+
 fn error_body(message: &str, kind: &str) -> String {
     format!("{}", interpreter::map_from_pairs(vec![
         ("error".to_string(), interpreter::Value::String(message.to_string())),

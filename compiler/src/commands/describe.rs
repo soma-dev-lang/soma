@@ -23,9 +23,30 @@ pub fn cmd_describe(path: &PathBuf) {
 
     let imports: Vec<&str> = program.imports.iter().map(|s| s.as_str()).collect();
 
+    // `cell type Pay { variants { … } }` — the sum types, with their variants
+    let mut types = Vec::new();
+    for cell in &program.cells {
+        if cell.node.kind != CellKind::Type { continue; }
+        let mut variants = Vec::new();
+        for section in &cell.node.sections {
+            if let Section::Variants(vs) = &section.node {
+                for v in &vs.variants {
+                    let (kind, fields): (&str, serde_json::Value) = match &v.node.fields {
+                        VariantFields::Unit => ("unit", serde_json::json!([])),
+                        VariantFields::Tuple(ts) => ("tuple", serde_json::json!(ts.iter().map(|t| format_type(&t.node)).collect::<Vec<_>>())),
+                        VariantFields::Struct(fs) => ("struct", serde_json::json!(fs.iter().map(|(n, t)| serde_json::json!({"name": n, "type": format_type(&t.node)})).collect::<Vec<_>>())),
+                    };
+                    variants.push(serde_json::json!({"name": v.node.name, "kind": kind, "fields": fields}));
+                }
+            }
+        }
+        types.push(serde_json::json!({"name": cell.node.name, "variants": variants}));
+    }
+
     let output = serde_json::json!({
         "file": file_str,
         "imports": imports,
+        "types": types,
         "cells": cells,
     });
 

@@ -574,14 +574,16 @@ impl<'a> LintPass<'a> {
             if name.starts_with('_') {
                 continue;
             }
-            // Is this handler referenced in routing?
+            // Not referenced by `request`: still an endpoint at /<name>/…
+            // (that is the documented rule 3, and how HTML forms post).
+            // Say what it is; renaming it would REMOVE the endpoint.
             if !routed.iter().any(|r| r == name) {
                 self.warn(
                     "private_helper",
                     Severity::Info,
                     *line,
-                    &format!("handler '{}' is not referenced in request routing", name),
-                    &format!("consider renaming to '_{}'", name),
+                    &format!("handler '{}' is not referenced by `request` — it is still reachable as POST /{}/<args>", name, name),
+                    &format!("intended? fine. Internal only? rename it '_{}' (private handlers are never routed)", name),
                 );
             }
         }

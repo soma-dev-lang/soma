@@ -352,6 +352,11 @@ def main():
         "CHANGELOG.md": "CHANGELOG.md",
         "LICENSE": "LICENSE",
     }
+    # SOMA_BUILTINS.md is generated: refresh it from the binary first (the
+    # committed copy said "181 builtins" while the binary had 207)
+    r = soma("docs", "builtins")
+    with open(os.path.join(ROOT, "SOMA_BUILTINS.md"), "w") as f:
+        f.write(r.stdout)
     for dst, src in docs.items():
         write(dst, read(src))
     stale = os.path.join(SITE, "docs", "spec.md")  # SOMA_SPEC.md says "Version: 2.2.1"
