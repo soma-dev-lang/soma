@@ -281,7 +281,9 @@ machine declares is an error, and verify ends with one verdict line
 (`VERIFY OK` / `VERIFY FAILED — …`). `soma verify` and `soma test` refuse a
 program that fails `soma check`. Invariants on computed values are proven by
 induction when interval reasoning suffices (`(counts.get(k) ?? 0) + 1` keeps
-`counts >= 0`); the rest is reported per conjunct as runtime-checked.
+`counts >= 0`; `let open = …  require open < 3 …  set(k, open + 1)` keeps
+`<= 3` — an unconditional `require` on a once-bound local counts); the rest
+is reported per conjunct as runtime-checked.
 A failed property prints a counter-example path and is an error. What verify
 does NOT prove: data-dependent rules inside handlers, and invariants on computed
 values (those are runtime-checked — reported as such, never as "proven").

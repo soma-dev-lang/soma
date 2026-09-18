@@ -914,3 +914,18 @@ cell test T {
     assert!(sq.contains("144"), "{sq}");
     assert!(dec.contains("\"ok\": true"), "{dec}");
 }
+
+/// Two agents wanted this proven: `require open < 3` then `open + 1`
+/// keeps `open_count <= 3` — a once-bound local narrowed by an
+/// unconditional require (the handler is atomic, so the write only commits
+/// when the require held).
+#[test]
+fn prover_uses_require_facts_on_locals() {
+    let d = dir("prover_require");
+    std::fs::write(d.join("app.cell"), "cell A {\n  memory { open_count: Map<String, Int>\n invariant open_count >= 0 && open_count <= 3 }\n  on lend(m: String) {\n    let open = open_count.get(m) ?? 0\n    require open < 3 else LoanLimit\n    open_count.set(m, open + 1)\n    open + 1\n  }\n  on twice(m: String) {\n    let open = open_count.get(m) ?? 0\n    require open < 3 else LoanLimit\n    open = open + 5\n    open_count.set(m, open)\n    open\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("writer 'lend' proven by induction (writes open + 1)"), "{out}");
+    // a reassigned local is NOT narrowed by the require
+    assert!(out.contains("twice → open_count"), "{out}");
+}

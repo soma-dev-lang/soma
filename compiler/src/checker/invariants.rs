@@ -547,7 +547,92 @@ fn local_ranges_at(
         }
         vars = next;
     }
+    // `require open < 3 else …` narrows a local that is bound ONCE (a
+    // `let`, never reassigned): the handler is atomic, so a write it makes
+    // only commits when every unconditional require held. Two agents
+    // wanted `open_count <= 3` proven from exactly this shape.
+    let mut single: HashMap<&str, &Expr> = HashMap::new();
+    for (name, value) in &assigns {
+        if params.contains(name) { continue; }
+        single.insert(*name, value);
+    }
+    let dup: HashSet<&str> = assigns.iter().map(|(n, _)| *n).filter(|n| assigns.iter().filter(|(m, _)| m == n).count() > 1).collect();
+    for stmt in &on.body {
+        if let Statement::Require { constraint, .. } = &stmt.node {
+            for (left, op, right) in constraint_comparisons(&constraint.node) {
+                let (name, op, bound) = match (left, const_of(right)) {
+                    (Expr::Ident(n), Some(c)) => (n.as_str(), op, c),
+                    _ => match (const_of(left), right) {
+                        (Some(c), Expr::Ident(n)) => (n.as_str(), flip(op), c),
+                        _ => continue,
+                    },
+                };
+                if dup.contains(name) { continue; }
+                let Some(value) = single.get(name) else { continue };
+                let integral = bound.fract() == 0.0 && looks_int(value);
+                let (lo, hi) = match op {
+                    CmpOp::Lt => (f64::NEG_INFINITY, if integral { bound - 1.0 } else { bound }),
+                    CmpOp::Le => (f64::NEG_INFINITY, bound),
+                    CmpOp::Gt => (if integral { bound + 1.0 } else { bound }, f64::INFINITY),
+                    CmpOp::Ge => (bound, f64::INFINITY),
+                    CmpOp::Eq => (bound, bound),
+                    CmpOp::Ne => continue,
+                };
+                let cur = vars.get(name).copied().unwrap_or(Known::Unknown);
+                let narrowed = match bounds(cur) {
+                    Some((cl, ch)) => mk(cl.max(lo), ch.min(hi)),
+                    None => mk(lo, hi),
+                };
+                vars.insert(name.to_string(), narrowed);
+            }
+        }
+    }
     vars
+}
+
+/// The comparison leaves of a require constraint (only the `&&` spine —
+/// an `||` branch constrains nothing on its own).
+fn constraint_comparisons(c: &Constraint) -> Vec<(&Expr, CmpOp, &Expr)> {
+    // the parser wraps a bare boolean expression as `expr == true`
+    fn from_expr(e: &Expr) -> Vec<(&Expr, CmpOp, &Expr)> {
+        match e {
+            Expr::CmpOp { left, op, right } => vec![(&left.node, *op, &right.node)],
+            Expr::BinaryOp { left, op: BinOp::And, right } => {
+                let mut v = from_expr(&left.node);
+                v.extend(from_expr(&right.node));
+                v
+            }
+            _ => Vec::new(),
+        }
+    }
+    match c {
+        Constraint::Comparison { left, op: CmpOp::Eq, right }
+            if matches!(right.node, Expr::Literal(Literal::Bool(true))) => from_expr(&left.node),
+        Constraint::Comparison { left, op, right } => vec![(&left.node, *op, &right.node)],
+        Constraint::And(a, b) => {
+            let mut v = constraint_comparisons(&a.node);
+            v.extend(constraint_comparisons(&b.node));
+            v
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// An expression that cannot produce a fraction: no Float literal, no `/`,
+/// no float-producing builtin. Used to tighten strict bounds on integers.
+fn looks_int(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => true,
+        Expr::Literal(Literal::Float(_)) => false,
+        Expr::Literal(_) => true,
+        Expr::Ident(_) => true,
+        Expr::BinaryOp { left, op, right } => !matches!(op, BinOp::Div) && looks_int(&left.node) && looks_int(&right.node),
+        Expr::FnCall { name, args } => !matches!(name.as_str(), "to_float" | "avg" | "sqrt" | "pow" | "log" | "exp" | "sin" | "cos" | "quantile" | "median" | "pstdev" | "variance")
+            && args.iter().all(|a| looks_int(&a.node)),
+        Expr::MethodCall { args, .. } => args.iter().all(|a| looks_int(&a.node)),
+        Expr::FieldAccess { .. } | Expr::Index { .. } => true,
+        _ => true,
+    }
 }
 
 fn collect_assigns<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<(&'e str, &'e Expr)>) {
