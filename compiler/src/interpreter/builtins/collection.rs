@@ -406,10 +406,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let mut result = Vec::new();
                 if step > 0 {
                     let mut i = start;
-                    while i < end { result.push(Value::Int(SomaInt::from_i64(i))); i += step; }
+                    // checked: `i += step` near i64::MAX wrapped negative and
+                    // the loop never ended (range(-5, 2^63 - 1, 2^63 - 1))
+                    while i < end { result.push(Value::Int(SomaInt::from_i64(i))); match i.checked_add(step) { Some(n) => i = n, None => break } }
                 } else if step < 0 {
                     let mut i = start;
-                    while i > end { result.push(Value::Int(SomaInt::from_i64(i))); i += step; }
+                    while i > end { result.push(Value::Int(SomaInt::from_i64(i))); match i.checked_add(step) { Some(n) => i = n, None => break } }
                 } // step == 0 → empty (avoid an infinite loop)
                 Some(Ok(Value::List(result)))
             } else {

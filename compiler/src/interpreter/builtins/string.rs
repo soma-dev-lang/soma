@@ -474,6 +474,10 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
             "format(): directive %{} needs argument {} but only {} were given", conv, next + 1, args.len())))?;
         next += 1;
         let w: usize = if width.is_empty() { 0 } else { width.parse().unwrap_or(usize::MAX) };
+        // %.Nf past Rust's formatting limit panicked past every `try`
+        if conv == 'f' && prec.map_or(false, |p| p > 1000) {
+            return Err(RuntimeError::Domain { kind: "range".to_string(), message: "format(): %.Nf takes at most 1000 decimals".to_string() });
+        }
         if w > crate::interpreter::MAX_BUILT_LEN || prec.map_or(false, |p| p > crate::interpreter::MAX_BUILT_LEN) {
             return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("format(): a width or precision past {} characters", crate::interpreter::MAX_BUILT_LEN) });
         }

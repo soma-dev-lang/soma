@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- serve: WebSocket and SSE pushes carry the data as one-line JSON (a String
+  payload could forge envelope fields and SSE events for other clients).
+- `range` near i64::MAX ends (the step wrapped); `format("%.Nf")` past 1000
+  decimals is a `range` error, not a crash; `round`/`floor`/`ceil` of 2^63.
+- `soma test`: a test cell's own helpers win its bare calls.
 - Security: `&&`/`||`, `ensure`, match guards and properties take Bools (a
   list mask or a String passed compound invariants, guards and asserts);
   tool capabilities match host and path separately and refuse `..`,

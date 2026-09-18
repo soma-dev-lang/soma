@@ -2069,3 +2069,64 @@ cell N {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("\"schema\" is not a think() option") && !out.contains("\"tools_allowed\" is not"), "{out}");
 }
+
+/// Cycle 22: a test cell's own helper wins a bare call in its rules (a
+/// same-named helper of another test cell ran silently).
+#[test]
+fn cycle22_findings() {
+    let d = dir("cycle22");
+    std::fs::write(d.join("tt.cell"), "cell test A { on _who() { return \"A\" }  rules { assert _who() == \"A\" } }\ncell test B { on _who() { return \"B\" }  rules { assert _who() == \"B\" } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "tt.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("2 passed"), "{out}");
+
+    // range() near i64::MAX ended (the step wrapped and it ran out of memory);
+    // round() of 2^63 is 2^63; %.99999f is a catchable range error
+    std::fs::write(d.join("r.cell"), r#"
+cell R {
+  on n() {
+    let big = 9223372036854775807
+    return [len(range(0 - 5, big, big)), round(9223372036854775808.0), try { format("%.99999f", 1.5) }.kind]
+  }
+  on pub(m: String) {
+    publish("room", m)
+    return "ok"
+  }
+  on request(method: String, path: String, body: String) {
+    match path {
+      "/s" -> sse("room")
+      _ -> response(404, map("e", 1))
+    }
+  }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "r.cell", "n"]);
+    assert!(out.contains(r#"[2, 9223372036854775808, "range"]"#), "{out}");
+    let port = 20500 + (std::process::id() % 150) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "r.cell", "-p", &port.to_string()])
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("soma serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let mut got = String::new();
+    if up {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_millis(1500))).unwrap();
+        s.write_all(b"GET /s HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = http(port, "POST", "/pub/legit%0Aevent%3A%20forged");
+        let mut buf = [0u8; 4096];
+        loop {
+            match s.read(&mut buf) { Ok(0) | Err(_) => break, Ok(n) => got.push_str(&String::from_utf8_lossy(&buf[..n])) }
+            if got.contains("legit") { break; }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    assert!(got.contains(r#"data: "legit\nevent: forged""#) && !got.contains("\nevent: forged"), "{got}");
+}

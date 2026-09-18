@@ -182,6 +182,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
 
     for (cell_idx, test_cell) in test_cells.iter().enumerate() {
         say!(out_lines, json, "test {} ...", test_cell.name);
+        interp.current_test_cell = Some(test_cell.name.clone());
         // `let` rules bind here; every later rule of the cell sees them
         let mut test_env: std::collections::HashMap<String, interpreter::Value> = std::collections::HashMap::new();
         // every test cell starts clean: fresh slots and state-machine

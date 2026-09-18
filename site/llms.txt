@@ -303,7 +303,10 @@ source, `file:line`, left/right, and the fields a value really has when
   postcondition is false — the whole handler is rolled back.
 - Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
   `add_days`, `add_months`, `days_between`, `months_between`, `days_in_month`,
-  `format_date(ts)`; ISO strings compare with `<`.
+  `format_date(ts)`; ISO strings compare with `<`. Dates are UTC and there
+  are no time zones or time-of-day builtins: keep a fixed offset per place
+  (`let local_min = floor_div(now(), 60000) + offset_min`) and parse "HH:MM"
+  yourself (`split(t, ":")`); `every` / `after` run in any cell, `request` or not.
 - Money: Ints in cents (any size, exact); `div_round(n, d)` is HALF_UP
   division (`div_round(cents * bps, 120000)` = BigDecimal interest at scale 2);
   `format("%10.2f", …)` only for display, `money = "{idiv(c, 100)}.{…}"` for exact text.
@@ -573,8 +576,10 @@ Arguments are type-checked at the call like any handler; `random(n)` /
 (no negative indexes); an Int literal beyond 64 bits is refused (build it:
 `shl(1, 64) - 1`); `[loop_bound(N)]` is checked; recursion deeper than
 20,000 calls raises stack_overflow. Floats print with the shortest
-round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.0000001`), to_json and
-maps inside a value use JSON's shortest form (`1.18e21`).
+round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.0000001`, a Float inside
+a printed map or list too); to_json — HTTP bodies included — uses JSON's shortest form (`1.18e21`).
+An SSE `data:` line and a WebSocket push carry the value as JSON on one line
+(a String payload is quoted, so a client cannot forge another event).
 `soma check` verifies the native vocabulary (every handler, every error at
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and

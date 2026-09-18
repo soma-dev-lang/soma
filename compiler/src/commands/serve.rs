@@ -885,7 +885,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     loop {
                         match bus_rx.recv() {
                             Ok(event) => {
-                                let json = format!("{{\"event\":{},\"data\":{}}}", serde_json::to_string(&event.stream).unwrap_or_default(), event.data);
+                                // the data as JSON: a String payload went in unquoted (a client's
+                                // `hi","event":"admin"` rewrote the envelope every client parsed)
+                                let json = format!("{{\"event\":{},\"data\":{}}}", serde_json::to_string(&event.stream).unwrap_or_default(), crate::interpreter::builtins::string::to_json_string(&event.data));
                                 let msg = tungstenite::Message::Text(json);
                                 if let Ok(mut clients) = clients.lock() {
                                     clients.retain(|client| {
@@ -1682,8 +1684,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         match rx.recv_timeout(std::time::Duration::from_secs(15)) {
                             Ok(event) => {
                                 if !streams.is_empty() && !streams.iter().any(|n| *n == event.stream) { continue; }
-                                let json = format!("{}", event.data);
-                                let msg = format!("event: {}\ndata: {}\n\n", event.stream, json);
+                                // JSON on ONE line: a String payload with a newline forged
+                                // `event:` / `data:` lines for the other subscribers
+                                let json = crate::interpreter::builtins::string::to_json_string(&event.data);
+                                let msg = format!("event: {}\ndata: {}\n\n", event.stream.replace(['\n', '\r'], " "), json);
                                 if write!(writer, "{}", msg).is_err() { break; }
                                 if writer.flush().is_err() { break; }
                             }

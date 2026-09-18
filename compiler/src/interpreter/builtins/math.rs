@@ -83,7 +83,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             args.first().map(|a| match a {
                 Value::Float(n) => {
                     let r = n.round();
-                    if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
+                    if r.is_finite() && r >= i64::MIN as f64 && r < 9223372036854775808.0 {  // (i64::MAX as f64 is 2^63: it saturated to 2^63 - 1)
                         Ok(Value::Int(SomaInt::from_i64(r as i64)))
                     } else if r.is_finite() {
                         // Int is arbitrary precision: 1e300 has an exact integer value
@@ -100,7 +100,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             args.first().map(|a| match a {
                 Value::Float(n) => {
                     let r = n.floor();
-                    if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
+                    if r.is_finite() && r >= i64::MIN as f64 && r < 9223372036854775808.0 {  // (i64::MAX as f64 is 2^63: it saturated to 2^63 - 1)
                         Ok(Value::Int(SomaInt::from_i64(r as i64)))
                     } else if r.is_finite() {
                         // Int is arbitrary precision: 1e300 has an exact integer value
@@ -117,7 +117,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             args.first().map(|a| match a {
                 Value::Float(n) => {
                     let r = n.ceil();
-                    if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
+                    if r.is_finite() && r >= i64::MIN as f64 && r < 9223372036854775808.0 {  // (i64::MAX as f64 is 2^63: it saturated to 2^63 - 1)
                         Ok(Value::Int(SomaInt::from_i64(r as i64)))
                     } else if r.is_finite() {
                         // Int is arbitrary precision: 1e300 has an exact integer value

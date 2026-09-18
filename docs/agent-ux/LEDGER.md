@@ -623,3 +623,26 @@ kill -9: no double refund, no refund past the thresholds, budgets held.
 - [ ] Native BigInt mixed with Float (`abs(x) + min(x, 2.5)` with x past i64) overflows where the interpreter answers.
 - [ ] Int/Float `==` compares through f64 (`2^53 + 1 == 2^53 as Float` is true).
 - [ ] `assert_fails … matching ""` matches everything; the max-rounds error points at the tool body.
+
+## Cycle 22 (2026-09-18) — restaurant reservations and table inventory
+
+8/10: check, 64 tests, verify --strict (25 invariant proofs, 7 temporal
+properties) green; "no double booking" proven through a per-slot claim
+invariant; 3,000 concurrent bookings for one slot gave one winner per table;
+two kill -9 under 30k–50k requests: every acknowledged booking present, holds
+expired after restart. No false proof.
+
+### Fixed
+- [x] A helper of one `cell test` ran for a same-named helper call in another test cell's rules (a second `_setup` silently ran the first) — the running test cell's own helper wins.
+- [x] Docs: a Float inside a printed map prints its digits (only to_json uses `1.5e21`); dates are UTC, no time zones or time-of-day builtins — the fixed-offset recipe; `every` runs in any cell.
+
+### Cycle 22 — attack (same binary)
+
+No false proof found.
+- [x] **DoS**: `range(-5, 2^63 - 1, 2^63 - 1)` passed the 10^8 cap (2 elements) and then the `i += step` wrapped negative: 9 GB before the kill — the step is checked.
+- [x] **Cross-client injection**: a String payload of `publish` / `emit` went into the WebSocket envelope unquoted (`hi","event":"admin",…` rewrote it for every client) and into the SSE `data:` line raw (a newline forged `event:` lines for every subscriber) — both carry the value as one-line JSON.
+- [x] `format("%.99999f", x)` panicked past `try` (Rust's precision limit) — at most 1000 decimals, kind `range`.
+- [x] `round` / `floor` / `ceil` of 2^63 answered 2^63 − 1 in the interpreter (native was right).
+
+### Open
+- [ ] `x % 0` says "modulo by zero" interpreted, "division by zero" native (same kind).

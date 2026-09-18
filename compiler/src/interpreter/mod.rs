@@ -595,6 +595,8 @@ pub struct Interpreter {
     /// `map("tools_allowed", [...])` of the running think(): the only tools
     /// offered to (and dispatched for) the model
     pub(crate) think_tools_allowed: Option<Vec<String>>,
+    /// the `cell test` whose rules are running (its helpers win bare calls)
+    pub current_test_cell: Option<String>,
     /// Loaded [native] handler FFI function pointers, keyed by (cell_name, signal_name)
     pub native_handlers: HashMap<(String, String), native_ffi::LoadedNative>,
     /// Cluster node for distributed storage (None = standalone mode)
@@ -837,6 +839,7 @@ impl Interpreter {
             current_tool_caps: None,
             outer_tool_caps: Vec::new(),
             think_tools_allowed: None,
+            current_test_cell: None,
             native_handlers: HashMap::new(),
             cluster: None,
             sharded_slots: HashMap::new(),
@@ -2334,8 +2337,13 @@ impl Interpreter {
                     let defines = |cn: &str| self.cells.get(cn).map_or(false, |c| c.sections.iter().any(|s| {
                         matches!(&s.node, Section::OnSignal(on) if on.signal_name == *name)
                     }));
+                    // a rule of a test cell: that test cell's own helper (a
+                    // same-named helper of another test cell ran instead)
+                    let test_cell = if cell_name.is_empty() { self.current_test_cell.clone().filter(|t| defines(t)) } else { None };
                     let found_cell = if defines(cell_name) {
                         Some(cell_name.to_string())
+                    } else if let Some(t) = test_cell {
+                        Some(t)
                     } else {
                         let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn)).collect();
                         all.sort_by_key(|c| self.cell_order.iter().position(|o| o == *c).unwrap_or(usize::MAX));
