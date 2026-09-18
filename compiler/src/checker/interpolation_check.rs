@@ -218,7 +218,25 @@ impl<'a> Walker<'a> {
             Statement::Require { constraint, .. } => {
                 self.walk_constraint(&constraint.node);
             }
-            Statement::MethodCall { args, .. } => {
+            Statement::MethodCall { target, method, args } => {
+                // statement position: `xs.push(x)` on a local does nothing
+                // (push returns a new list) and `m.set(k, v)` raises
+                if matches!(method.as_str(), "set" | "put" | "delete" | "push" | "append")
+                    && self.scope.contains(target) && !self.index.slots.contains(target)
+                {
+                    let fix = match method.as_str() {
+                        "push" | "append" => format!("a local list is rebuilt: `{target} = push({target}, x)`"),
+                        "delete" => format!("a local map is rebuilt: `{target} = without({target}, k)`"),
+                        _ => format!("a local map is written with brackets: `{target}[k] = v`"),
+                    };
+                    self.issues.push(InterpolationIssue {
+                        message: format!("`.{method}()` is a memory-slot method and '{target}' is a local — {fix}"),
+                        span: stmt.span,
+                        warning: false,
+                        habit: false,
+                        kind: "slot_method_on_local",
+                    });
+                }
                 for a in args {
                     self.walk_expr(a);
                 }
@@ -264,6 +282,26 @@ impl<'a> Walker<'a> {
             Expr::FieldAccess { target, .. } => self.walk_expr(target),
             Expr::Index { target, index } => { self.walk_expr(target); self.walk_expr(index); }
             Expr::MethodCall { target, method, args } => {
+                // `.set/.delete/.push` are slot methods: on a LOCAL map or
+                // list they were a runtime error ("not a memory slot")
+                if let Expr::Ident(name) = &target.node {
+                    if matches!(method.as_str(), "set" | "put" | "delete")
+                        && self.scope.contains(name) && !self.index.slots.contains(name)
+                    {
+                        let fix = match method.as_str() {
+                            "push" | "append" => format!("a local list is rebuilt: `{name} = push({name}, x)`"),
+                            "delete" => format!("a local map is rebuilt: `{name} = without({name}, k)`"),
+                            _ => format!("a local map is written with brackets: `{name}[k] = v`"),
+                        };
+                        self.issues.push(InterpolationIssue {
+                            message: format!("`.{method}()` is a memory-slot method and '{name}' is a local — {fix}"),
+                            span: expr.span,
+                            warning: false,
+                            habit: false,
+                            kind: "slot_method_on_local",
+                        });
+                    }
+                }
                 // `Ledger.deposit(a, n)` — a call into another cell: the
                 // handler must exist there (the runtime resolves it by name)
                 if let Expr::Ident(cell) = &target.node {

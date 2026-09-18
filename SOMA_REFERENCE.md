@@ -279,7 +279,7 @@ lowercase("HELLO")              // "hello"
 substring("hello", 1, 3)        // "el"
 index_of("hello", "ll")         // 2
 escape_html("<b>x</b>")         // "&lt;b&gt;x&lt;/b&gt;"
-to_json(map("a", 1))            // "{\"a\": 1}"
+to_json(map("a", 1))            // {"a":1}  (compact, like JSON.stringify; print(m) shows {"a": 1})
 from_json("{\"a\": 1}")         // map
 ```
 
@@ -320,10 +320,10 @@ is_type(rec, "User") // true if rec's _type field is "User" (alias: is_a)
 ## Error handling
 
 ```soma
-let result = try { risky_operation() }
+let result = try { risky_operation() }     // {value, error, kind, detail}
 if result.error != () {
-    print("Error: {result.error}")
-    return response(500, map("error", result.error))
+    print("Error: {result.detail}")        // detail = the message alone (Error.message); error = "kind: detail"
+    return response(500, map("error", result.detail, "kind", result.kind))
 }
 let value = result.value
 

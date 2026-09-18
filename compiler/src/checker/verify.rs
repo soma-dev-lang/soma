@@ -756,9 +756,16 @@ fn find_cycle(states: &[String], adj: &HashMap<String, Vec<String>>) -> Option<V
     for start in states {
         let mut visited = HashSet::new();
         let mut path = Vec::new();
-        if dfs_cycle(start, &state_set, adj, &mut visited, &mut path) {
-            path.push(start.clone()); // complete the cycle
-            return Some(path);
+        let mut closer: Option<String> = None;
+        if dfs_cycle(start, &state_set, adj, &mut visited, &mut path, &mut closer) {
+            // the trace is the cycle itself: from the node that closed it
+            // (it used to be printed from the DFS start, showing an edge
+            // that does not exist)
+            let node = closer.unwrap_or_else(|| start.clone());
+            let from = path.iter().position(|p| *p == node).unwrap_or(0);
+            let mut cycle: Vec<String> = path[from..].to_vec();
+            cycle.push(node);
+            return Some(cycle);
         }
     }
     None
@@ -770,16 +777,21 @@ fn dfs_cycle(
     adj: &HashMap<String, Vec<String>>,
     visited: &mut HashSet<String>,
     path: &mut Vec<String>,
+    closer: &mut Option<String>,
 ) -> bool {
     if !visited.insert(current.to_string()) {
-        return path.contains(&current.to_string());
+        if path.contains(&current.to_string()) {
+            *closer = Some(current.to_string());
+            return true;
+        }
+        return false;
     }
     path.push(current.to_string());
 
     if let Some(neighbors) = adj.get(current) {
         for next in neighbors {
             if valid.contains(next) {
-                if dfs_cycle(next, valid, adj, visited, path) {
+                if dfs_cycle(next, valid, adj, visited, path, closer) {
                     return true;
                 }
             }

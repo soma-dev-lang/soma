@@ -2365,7 +2365,7 @@ impl Interpreter {
             Some(b) => b.clone(),
             None => {
                 return Err(ExecError::Runtime(RuntimeError::TypeError(
-                    format!("'{}' is not a memory slot (no storage backend)", slot_name),
+                    format!("'{}' is not a memory slot — `.{}()` is a slot method; a local map is written with brackets (`{}[k] = v`), a local list is rebuilt (`{} = push({}, x)`)", slot_name, method, slot_name, slot_name, slot_name),
                 )));
             }
         };

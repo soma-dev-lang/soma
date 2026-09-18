@@ -288,8 +288,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     // Create peer bus for inter-process signal delivery
     let peer_bus = interpreter::new_peer_bus();
 
-    // TCP bus listener: accepts incoming peer connections
-    if bus_port > 0 {
+    // TCP bus listener: accepts incoming peer connections — only when the
+    // program can use it (a cluster join, a `scale` section, or `emit`);
+    // a plain service used to open an extra socket nobody asked for
+    let uses_emit = source.contains("emit ");
+    let bus_wanted = is_cluster_mode || uses_emit;
+    if bus_port > 0 && !bus_wanted {
+        eprintln!("bus: not started (no emit / scale / --join; port {} stays closed)", bus_port);
+    }
+    if bus_port > 0 && bus_wanted {
         let peer_bus_clone = peer_bus.clone();
         let event_bus_clone = event_bus.clone();
         let prog = program.clone();

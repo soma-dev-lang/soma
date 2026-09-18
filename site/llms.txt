@@ -150,8 +150,15 @@ for x in xs { }   for k in keys(m) { m[k] }   for e in entries(m) { e.key  e.val
 slice(xs, 1, 3)  slice(xs, -2)     // no xs[a:b]
 xs = push(xs, x)                   // push / concat / sort / with RETURN new values
 on f(n: Int) [native] { … }        // annotations go AFTER the parameter list; no @decorator
+fail("bad_kind", "bad kind: {k}")  // throw new Error(msg); catch: let r = try { … }  r.detail == msg
+parse_int(s) ?? parse_float(s)     // Number(s); to_float("5") prints 5.0; round(x) is an Int
+m["k"] = v   m.get("k")            // a LOCAL map has no .set — .set/.delete/.push are slot methods
 ```
-`soma check` names the Soma form for each of these when you get it wrong.
+A `class` with private fields is a `cell` with `memory` slots: one instance,
+no `new`, no `this` — `this.hits.get(u)` is `hits.get(u)`; `constructor(a, b)`
+is a `configure(a, b)` handler writing a `config` slot. `soma run` persists
+slots in `.soma_data/` between runs; `soma test` starts empty. `soma check`
+names the Soma form for each of these when you get it wrong.
 
 ## Tests
 

@@ -143,6 +143,12 @@ fn foreign_syntax_hint(message: &str, source: &str, offset: usize) -> Option<Str
         "Soma has no `{k: v}` literal — a map is `map(\"k\", v)` (empty: `map()`), a record is `Name { k: v }`"
     } else if at.starts_with("=>") && has("match") || (message.contains("'=>'") && has("->") == false && has("match")) {
         "match arms use `->`; `=>` is for lambdas"
+    } else if has("===") || has("!==") {
+        "no `===` — Soma's `==` is already structural (`!=` for not-equal)"
+    } else if t.starts_with("throw ") || has(" throw ") {
+        "no `throw` — raise with `fail(\"kind\", \"detail\")`; catch with `let r = try { … }` and read `r.kind` / `r.detail`"
+    } else if t.starts_with("new ") || has(" new ") || t.starts_with("class ") {
+        "no classes or `new` — a `cell` is a singleton service: its fields are `memory` slots, its methods are `on` handlers, a constructor is a `configure(…)` handler writing a `config` slot"
     } else if has(" ? ") && has(" : ") && message.contains("expected") {
         "no ternary — `if` is an expression: `let x = if cond { a } else { b }`"
     } else if (has(" and ") || has(" or ") || t.starts_with("not ") || has(" not ")) && message.contains("expected") {

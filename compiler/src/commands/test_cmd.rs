@@ -397,8 +397,8 @@ enum Coverage { Exhaustive(u64), Sampled(u32, u64) }
 impl std::fmt::Display for Coverage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Coverage::Exhaustive(n) => write!(f, "all {} values", n),
-            Coverage::Sampled(k, n) => write!(f, "{} of {} values sampled, both bounds included, fixed seed — NOT a proof", k, n),
+            Coverage::Exhaustive(n) => write!(f, "all {} values, end exclusive", n),
+            Coverage::Sampled(k, n) => write!(f, "{} of {} values sampled (first and last included), fixed seed — NOT a proof", k, n),
         }
     }
 }

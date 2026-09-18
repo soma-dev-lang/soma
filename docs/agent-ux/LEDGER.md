@@ -165,3 +165,32 @@ Scores before fixes: booking 16/40 invocations, first check/verify/test green, c
 
 ### Smaller (fixed)
 - `soma docs guarantees | serving` offline; `mock approve` documented; `soma verify` always ends with a verdict (vacuous when no machine); `assert` needs a Bool; `()` and `matching` echoed whole in test output; from_json("") raises; to_int out of range raises; sum() on a non-number raises; List slot `.len/.get(i)/.last/.has`; `f() + 1` as a statement; nested quote inside `{…}` named; `final:` in a state block named; `r.after` (verify words as field names); starter uses request routes only, a provable invariant and maps refusals to 400; `soma example --all` and the terms that narrow; landing page leads with why, status below, reproduce section works after install; `/examples/` dead links removed; `--jit` no longer claims 200x; llms.txt: HTTP rules, verify wording (termination proven only with a decreasing argument), forall sampling, the facts agents had to guess.
+
+## Cycle 4 (2026-09-18, night) — 5 fresh agents on the cycle-3 binary
+
+Scores: library service 12/40 invocations, first check/verify/test green, confidence 8/10 (cycle 3: 16, 7/10, one blocker); TS port 26/35, byte-identical to node first run, obviousness 7/10; purchase-order agent 33/40, 66/66 first try, trust 7/10; site: credibility 7, completeness 7, agent-friendliness 8, desirability 5 (24 of 34 claims exact); adversarial: "enforced" held everything (rollback across cells + transitions + next_id + mocked think, 50-way races, restart), 3 unsound findings.
+
+### Fixed
+- [x] `soma serve` never compiled `[native]` handlers (interpreted: buffer() answered 400, native/interpreted results differed). Compiled once at start, shared by every request; `soma test` now refuses natives that do not compile instead of running them interpreted.
+- [x] Two `soma run` processes on one `.soma_data` lost updates (3082 of 6000). A cross-process lock (SQLite `BEGIN IMMEDIATE` on `.soma_data/lock.db`) is held per handler.
+- [x] `never = ["shipped"]` with `cells = ["Ticket"]` passed vacuously (shipped belongs to Order). Unknown-state check is per targeted cell.
+- [x] `"v {n}"` in a `[native]` body returned the literal with check ✓ → check error. Native `String` parameters did not compile (`&str`/`String`), `min(Int, Float)` did not compile, `to_string(1.0)` was "1" natively, `sqrt_int` of a BigInt was 0 in the interpreter — all fixed; 7 corpus programs with native String params run again.
+- [x] `check --json` reported the new errors as `interpolation_undefined` with an unrelated fix text, and older ones as `other`. Every error now has a stable kind (`CheckError::Static`), the fix is the clause after the dash.
+- [x] Literal checks at check time: `transition(id, "c")` to an undeclared state, `takes_int("s")` against `n: Int`, a slot declared `n: Int` (scalar), a declared `cost` bound that cannot be proven (was a note with exit 0).
+- [x] `require open < 3 else LoanLimit` then `open + 1` is now PROVEN to keep `open_count <= 3` (unconditional require on a once-bound local narrows its interval).
+- [x] `require cond else Tag "detail {x}"`: a kind and an interpolated detail.
+- [x] `mock price_check 42` / `mock price_check error "down"`: any handler (a tool, an http wrapper) can be scripted in tests.
+- [x] serve: path segments and query values coerced to the declared parameter type (`/decide/x/true` → Bool, `/f/1.5` → Float, `/sval/123` → String); a trailing Map/List parameter with no body is empty; `soma run app.cell request GET /x ""` with `body: Map` gets `map()`; raised errors and `response(...)` maps share one JSON style; the 404 lists public handlers as a JSON array; JSON bodies keep big integers exact and 1e400 is infinity (serve had its own lossy converter); the bus port is opened only for programs that can use it (emit / scale / --join).
+- [x] verify's liveness counter-example named an edge that does not exist (printed from the DFS start, not the cycle); Temporal section had colour codes when piped.
+- [x] `.set()`/`.push()` on a LOCAL map/list is a check error naming `m[k] = v` / `xs = push(xs, x)`; `throw` / `===` / `new` / `class` get hints; llms.txt: classes → cells, `Number()`, `.soma_data`, guard syntax and scoping, `"""` (escapes raw, `{x}` interpolated), forall end-exclusive, `{"result": …}` for scalars, CORS `*`, `request` in face optional; serving.md no longer claims all interfaces; `soma docs` index says `all` includes operations; fly.toml app name falls back to the cell name; `distinct_by`; `stddev`/`stdev` registered; reference's `to_json` example and `r.detail`.
+- [x] `think()` with no key prints one stderr note even when the program catches the error.
+
+### Not reproducible / by design
+- `soma run run.cell second y` running `first("second y")`: not reproducible with the same binary (both "second" and "third" resolve; likely a shell wrapper quoting `"$*"`). `GET` on a mutating handler: documented, auto-routes take any method.
+
+### Open
+- [ ] Slot VALUE types are not enforced (`Map<String, Int>` stores 2.5). Considered; the corpus writes Floats into Int maps in places — needs a sweep-driven decision.
+- [ ] `[native]`/interpreter edge disagreements not yet aligned: `to_int(NaN | 1e300)` (native saturates), `abs(i64::MIN)`, `bit_len(-1)`, `bit_test(1, 64)`, `floor(NaN)`, `shr(1, 64)` (both mod-64 now, documented for shl).
+- [ ] No header access / auth in `soma serve` (3 agents): a reverse proxy is the documented answer.
+- [ ] Parse errors stop at the first one; uppercase slot names are not indexable.
+- [ ] No published Linux binary (site says so; deploy builds from source).

@@ -186,6 +186,23 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("group_by expects (list, field)".to_string())))
             }
         }
+        // uniqBy: the first ROW per distinct value of `field`
+        "distinct_by" | "unique_by" => {
+            if let (Some(Value::List(items)), Some(field)) = (args.first(), args.get(1)) {
+                let field = format!("{}", field);
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut result: Vec<Value> = Vec::new();
+                for item in items {
+                    let v = if let Value::Map(e) = item { e.get(&field).cloned().unwrap_or(Value::Unit) } else { item.clone() };
+                    if seen.insert(format!("{}", v)) {
+                        result.push(item.clone());
+                    }
+                }
+                Some(Ok(Value::List(result)))
+            } else {
+                Some(Err(RuntimeError::TypeError("distinct_by(rows: List<Map>, field: String) -> List<Map>".to_string())))
+            }
+        }
         "distinct" => {
             if let Some(Value::List(items)) = args.first() {
                 if let Some(field) = args.get(1) {
