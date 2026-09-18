@@ -49,6 +49,8 @@ pub struct ProgramIndex {
     pub slots: HashSet<String>,
     /// Top-level cell names (targets of `Cell.handler(args)` calls).
     pub cells: HashSet<String>,
+    /// Slots declared with a List type (the others are maps).
+    pub list_slots: HashSet<String>,
 }
 
 /// Collect all cells in the program, recursing into interior sections.
@@ -76,6 +78,7 @@ impl ProgramIndex {
         let mut known: HashSet<String> = HashSet::new();
         let mut variants: HashSet<String> = HashSet::new();
         let mut slots: HashSet<String> = HashSet::new();
+        let mut list_slots: HashSet<String> = HashSet::new();
 
         for b in builtin_names() {
             known.insert((*b).to_string());
@@ -129,6 +132,13 @@ impl ProgramIndex {
                         for slot in &mem.slots {
                             known.insert(slot.node.name.clone());
                             slots.insert(slot.node.name.clone());
+                            let is_list = match &slot.node.ty.node {
+                                TypeExpr::Generic { name, .. } | TypeExpr::Simple(name) => name == "List",
+                                _ => false,
+                            };
+                            if is_list {
+                                list_slots.insert(slot.node.name.clone());
+                            }
                         }
                     }
                     Section::Variants(vs) => {
@@ -150,7 +160,7 @@ impl ProgramIndex {
             }
         }
 
-        Self { handler_map, known, variants, slots, cells }
+        Self { handler_map, known, variants, slots, cells, list_slots }
     }
 }
 

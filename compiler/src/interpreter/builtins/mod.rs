@@ -101,7 +101,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                     ]);
                     match interp.apply_lambda(lambda, pair, cell_name) {
                         Ok(v) => acc = v,
-                        Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                        Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                     }
                 }
                 return Some(Ok(acc));
@@ -135,7 +135,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
             for item in list {
                 match interp.apply_lambda(lambda, item.clone(), cell_name) {
                     Ok(k) => keyed.push((k, item.clone())),
-                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                    Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
             keyed.sort_by(|a, b| {
@@ -149,7 +149,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
             for item in list {
                 match interp.apply_lambda(lambda, item.clone(), cell_name) {
                     Ok(v) => result.push(v),
-                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                    Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
             Some(Ok(Value::List(result)))
@@ -163,7 +163,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                             result.push(item.clone());
                         }
                     }
-                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                    Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
             Some(Ok(Value::List(result)))
@@ -176,7 +176,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                             return Some(Ok(item.clone()));
                         }
                     }
-                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                    Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
             Some(Ok(Value::Unit))
@@ -189,7 +189,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                             return Some(Ok(Value::Bool(true)));
                         }
                     }
-                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                    Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
             Some(Ok(Value::Bool(false)))
@@ -202,7 +202,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                             return Some(Ok(Value::Bool(false)));
                         }
                     }
-                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                    Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
             Some(Ok(Value::Bool(true)))
@@ -214,7 +214,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                     Ok(v) => {
                         if super::is_truthy(&v) { n += 1; }
                     }
-                    Err(e) => return Some(Err(RuntimeError::TypeError(format!("{:?}", e)))),
+                    Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
             Some(Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))))

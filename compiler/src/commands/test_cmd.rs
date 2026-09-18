@@ -244,12 +244,12 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                         ast::Rule::Property { name, var, ty, lo, hi, count, body } => {
                             total += 1;
                             match run_property(&mut interp, name, var, ty, *lo, *hi, *count, &body.node) {
-                                Ok(None) => {
+                                Ok((None, cov)) => {
                                     passed += 1;
-                                    println!("  ✓ property \"{}\" (forall {} in {}..{}, {} samples)",
-                                             name, var, lo, hi, count);
+                                    println!("  ✓ property \"{}\" (forall {} in {}..{}: {})",
+                                             name, var, lo, hi, cov);
                                 }
-                                Ok(Some(cex)) => {
+                                Ok((Some(cex), _)) => {
                                     failed += 1;
                                     println!("  ✗ property \"{}\" — FAILED with counter-example {} = {}",
                                              name, var, cex);
@@ -360,6 +360,18 @@ fn eval_test_expr(
 /// V1.6: run a property-based test. Draw `count` random integers from
 /// `[lo, hi]`, bind `var`, evaluate the postcondition, expect Bool(true).
 /// Returns Ok(None) on universal pass, Ok(Some(cex)) on first failure.
+/// How a `forall` property was evaluated, for the report line.
+enum Coverage { Exhaustive(u64), Sampled(u32, u64) }
+
+impl std::fmt::Display for Coverage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Coverage::Exhaustive(n) => write!(f, "all {} values", n),
+            Coverage::Sampled(k, n) => write!(f, "{} of {} values sampled, both bounds included, fixed seed — NOT a proof", k, n),
+        }
+    }
+}
+
 fn run_property(
     interp: &mut interpreter::Interpreter,
     _name: &str,
@@ -369,32 +381,43 @@ fn run_property(
     hi: i64,
     count: u32,
     body: &ast::Expr,
-) -> Result<Option<String>, String> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // Simple linear congruential RNG seeded by the wall clock, kept
-    // small so we don't bring in a `rand` dependency.
-    let mut state: u64 = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64).unwrap_or(1);
-    let next = |state: &mut u64| -> u64 {
-        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        *state
-    };
+) -> Result<(Option<String>, Coverage), String> {
     if ty != "Int" {
         return Err(format!("only Int properties supported in V1.6 (got {})", ty));
     }
     if hi <= lo { return Err(format!("range {}..{} is empty", lo, hi)); }
     let span = (hi - lo) as u64;
-    for _ in 0..count {
-        let r = (next(&mut state) % span) as i64 + lo;
+    // Every value when the range is small enough to walk: a universally
+    // quantified claim over 100 values used to be 50 random draws that
+    // could say ✓ on one run and ✗ on the next. Larger ranges are sampled
+    // with a FIXED seed (same verdict on every run) and both bounds.
+    const EXHAUSTIVE_MAX: u64 = 20_000;
+    let exhaustive = span <= EXHAUSTIVE_MAX.max(count as u64);
+    let values: Vec<i64> = if exhaustive {
+        (lo..hi).collect()
+    } else {
+        let mut state: u64 = 0x5eed_0000_0000_0001 ^ (span.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut next = || -> u64 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state >> 11
+        };
+        let mut v: Vec<i64> = vec![lo, hi - 1];
+        while (v.len() as u32) < count.max(2) {
+            v.push((next() % span) as i64 + lo);
+        }
+        v
+    };
+    let coverage = if exhaustive { Coverage::Exhaustive(span) } else { Coverage::Sampled(values.len() as u32, span) };
+    for r in values {
         let mut env = std::collections::HashMap::new();
         env.insert(var.to_string(), interpreter::Value::Int(interpreter::SomaInt::from_i64(r)));
         let v = interp.eval_expr_with_env(body, &env, "", "")
             .map_err(|e| describe_error(&e))?;
         if !v.is_truthy() {
-            return Ok(Some(r.to_string()));
+            return Ok((Some(r.to_string()), coverage));
         }
     }
-    Ok(None)
+    Ok((None, coverage))
 }
 
 fn format_expr(expr: &ast::Expr) -> String {

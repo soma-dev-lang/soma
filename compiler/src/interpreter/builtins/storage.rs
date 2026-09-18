@@ -4,12 +4,13 @@ use crate::interpreter::soma_int::SomaInt;
 pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     match name {
         "next_id" => {
+            // The counter lives in the cell's FIRST declared memory slot
+            // (declaration order — never HashMap order, which differs per
+            // thread under `soma serve` and handed the same id out twice),
+            // and the write is journaled: a refused request burns no id.
             let counter_key = "__next_id";
-            let slot = interp.storage.iter()
-                .find(|(k, _)| k.starts_with(&format!("{}.", cell_name)))
-                .or_else(|| interp.storage.iter().next())
-                .map(|(_, v)| v);
-            if let Some(backend) = slot {
+            let backend = interp.next_id_backend(cell_name);
+            if let Some(backend) = backend {
                 let current = backend.get(counter_key)
                     .and_then(|v| match v {
                         crate::runtime::storage::StoredValue::Int(n) => Some(n),
@@ -17,6 +18,13 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     })
                     .unwrap_or(0);
                 let next = current + 1;
+                if let Some(j) = interp.journal.as_mut() {
+                    j.push(crate::interpreter::UndoOp::Restore {
+                        backend: backend.clone(),
+                        key: counter_key.to_string(),
+                        prev: backend.get(counter_key),
+                    });
+                }
                 backend.set(counter_key, crate::runtime::storage::StoredValue::Int(next));
                 Some(Ok(Value::Int(SomaInt::from_i64(next))))
             } else {
@@ -165,22 +173,54 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         // ── Agent: approve(action) — human-in-the-loop ─────────────
         "approve" => {
-            if let (Some(Value::String(action)), Some(answer)) = (args.first(), interp.approve_queue.pop_front()) {
-                // scripted by `mock approve …` in a test cell
+            let Some(Value::String(action)) = args.first() else {
+                return Some(Err(RuntimeError::TypeError("approve(action: String)".to_string())));
+            };
+            // 1. scripted by `mock approve …` in a test cell
+            if let Some(answer) = interp.approve_queue.pop_front() {
                 interp.agent_trace.push(super::llm::trace_approval(action, if answer { "approved" } else { "refused" }));
                 return Some(Ok(Value::Bool(answer)));
             }
-            if let Some(Value::String(action)) = args.first() {
-                // In serve mode: pause and wait for HTTP approval
-                // In run mode: auto-approve with a warning
-                eprintln!("[agent] approval requested: {}", action);
-                eprintln!("[agent] auto-approved (use soma serve for interactive approval)");
-                // Log to trace (V1.6: TraceStep::Approval variant)
-                interp.agent_trace.push(super::llm::trace_approval(action, "auto_approved"));
-                Some(Ok(Value::Bool(true)))
-            } else {
-                Some(Err(RuntimeError::TypeError("approve(action: String)".to_string())))
+            // 2. an explicit policy for unattended runs
+            match std::env::var("SOMA_APPROVE").ok().as_deref() {
+                Some("always") => {
+                    eprintln!("[agent] approval requested: {} — approved by SOMA_APPROVE=always", action);
+                    interp.agent_trace.push(super::llm::trace_approval(action, "auto_approved"));
+                    return Some(Ok(Value::Bool(true)));
+                }
+                Some("never") => {
+                    eprintln!("[agent] approval requested: {} — refused by SOMA_APPROVE=never", action);
+                    interp.agent_trace.push(super::llm::trace_approval(action, "refused"));
+                    return Some(Ok(Value::Bool(false)));
+                }
+                _ => {}
             }
+            // 3. a human at the terminal (soma run, interactive)
+            let in_serve = crate::interpreter::IN_SERVE.load(std::sync::atomic::Ordering::Relaxed);
+            let tty = std::io::IsTerminal::is_terminal(&std::io::stdin())
+                && std::io::IsTerminal::is_terminal(&std::io::stderr());
+            if !in_serve && !interp.test_auto_mock && tty {
+                eprint!("[agent] approve? {} [y/N] ", action);
+                let mut line = String::new();
+                let _ = std::io::stdin().read_line(&mut line);
+                let yes = matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+                interp.agent_trace.push(super::llm::trace_approval(action, if yes { "approved" } else { "refused" }));
+                return Some(Ok(Value::Bool(yes)));
+            }
+            // 4. nobody can answer: fail closed. A gate that silently
+            // approves is worse than no gate.
+            let how = if interp.test_auto_mock {
+                "script it in the test: `mock approve true` / `mock approve false` before the call"
+            } else if in_serve {
+                "under soma serve the decision must arrive as data (a handler parameter or a route), or set SOMA_APPROVE=always|never for an explicit unattended policy"
+            } else {
+                "run interactively at a terminal, or set SOMA_APPROVE=always|never"
+            };
+            interp.agent_trace.push(super::llm::trace_approval(action, "unanswered"));
+            Some(Err(RuntimeError::Domain {
+                kind: "approval_required".to_string(),
+                message: format!("approval_required: approve(\"{}\") has no one to answer it — {}", action, how),
+            }))
         }
         // ── AI Agent: think() with tool-calling loop ──────────────
         "think" => {

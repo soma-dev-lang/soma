@@ -2384,14 +2384,17 @@ impl Parser {
     // ── Expressions ──────────────────────────────────────────────────
 
     fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        self.parse_pipe()
+        self.parse_logical_or()
     }
 
+    // `|>` binds tighter than comparisons and `??` but looser than
+    // arithmetic: `xs |> pluck("k") == ["a"]` is `(xs |> pluck("k")) == …`
+    // and `a + b |> f()` stays `(a + b) |> f()`.
     fn parse_pipe(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        let mut left = self.parse_logical_or()?;
+        let mut left = self.parse_additive()?;
         while self.check(&Token::Pipe) {
             self.advance();
-            let right = self.parse_logical_or()?;
+            let right = self.parse_additive()?;
             let span = left.span.merge(right.span);
             left = Spanned::new(Expr::Pipe {
                 left: Box::new(left),
@@ -2454,7 +2457,7 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        let left = self.parse_additive()?;
+        let left = self.parse_pipe()?;
 
         let op = match self.peek() {
             Token::Lt => Some(CmpOp::Lt),
@@ -2468,7 +2471,7 @@ impl Parser {
 
         if let Some(op) = op {
             self.advance();
-            let right = self.parse_additive()?;
+            let right = self.parse_pipe()?;
             let span = left.span.merge(right.span);
             Ok(Spanned::new(
                 Expr::CmpOp {
@@ -2752,7 +2755,7 @@ impl Parser {
                             start.merge(self.prev_span()),
                         ));
                     } else {
-                        let body = self.parse_pipe()?;
+                        let body = self.parse_expr()?;
                         return Ok(Spanned::new(
                             Expr::Lambda { param: name, body: Box::new(body) },
                             start.merge(self.prev_span()),

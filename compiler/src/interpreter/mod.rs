@@ -30,6 +30,9 @@ pub(crate) enum UndoOp {
 /// 1000 with 50 parallel calls paid out 122–153 times). Handlers are
 /// serialized: correctness first, the language's claim is that limits hold.
 static HANDLER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Set by `soma serve`: no terminal is attached to a request, so `approve()`
+/// can never prompt — it fails closed instead of auto-approving.
+pub static IN_SERVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -1085,6 +1088,9 @@ impl Interpreter {
 
             Statement::Assign { name, value } => {
                 self.last_span = Some(value.span);
+                if !env.contains_key(name) && self.slot_kind(cell_name, name).is_some() {
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(slot_assign_message(name, self.slot_kind(cell_name, name)))));
+                }
                 // Optimization: items = list(items, x) → in-place append (avoids O(n²) clone)
                 if let Expr::FnCall { name: fn_name, args: fn_args } = &value.node {
                     if (fn_name == "list" || fn_name == "push" || fn_name == "append") && fn_args.len() >= 2 {
@@ -1627,6 +1633,11 @@ impl Interpreter {
                 // Locals win — they shadow.
                 if let Some(v) = env.get(name) {
                     Ok(v.clone())
+                } else if let Some(v) = self.materialize_slot(cell_name, name) {
+                    // a memory slot read by its bare name: its whole content
+                    // (List → items, Map → entries). Writes go through
+                    // slot.push / slot.set — never through assignment.
+                    Ok(v)
                 } else if let Some((type_name, shape)) = self.variant_registry.get(name) {
                     match shape {
                         VariantShape::Unit => Ok(Value::Variant {
@@ -3544,6 +3555,78 @@ impl Interpreter {
     /// True when `id` has a recorded state, i.e. it was transitioned at
     /// least once. `get_status` answers the initial state for unknown ids,
     /// which is indistinguishable from a fresh instance — this is the check.
+    /// "List" / "Map" when `name` is a memory slot of `cell_name` (or, for
+    /// cells without a declaration in scope, of any cell), else None.
+    pub(crate) fn slot_kind(&self, cell_name: &str, name: &str) -> Option<&'static str> {
+        if !self.storage.contains_key(name) && !self.storage.contains_key(&format!("{}.{}", cell_name, name)) {
+            return None;
+        }
+        let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
+            Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name).map(|sl| {
+                match &sl.node.ty.node {
+                    TypeExpr::Generic { name: t, .. } | TypeExpr::Simple(t) if t == "List" => "List",
+                    _ => "Map",
+                }
+            }),
+            _ => None,
+        });
+        self.cells.get(cell_name).and_then(declared)
+            .or_else(|| self.cells.values().find_map(declared))
+            .or(Some("Map"))
+    }
+
+    /// The whole content of a slot, for a bare-name read.
+    fn materialize_slot(&mut self, cell_name: &str, name: &str) -> Option<Value> {
+        let kind = self.slot_kind(cell_name, name)?;
+        let backend = self.storage.get(&format!("{}.{}", cell_name, name))
+            .or_else(|| self.storage.get(name))?.clone();
+        Some(match kind {
+            "List" => Value::List(backend.list().into_iter().map(|v| auto_deserialize(stored_to_value(v))).collect()),
+            _ => {
+                let mut m = std::collections::BTreeMap::new();
+                for k in backend.keys() {
+                    if let Some(v) = backend.get(&k) {
+                        m.insert(k, auto_deserialize(stored_to_value(v)));
+                    }
+                }
+                Value::Map(m.into_iter().collect())
+            }
+        })
+    }
+
+    /// The backend that holds `next_id()`'s counter for a cell: its first
+    /// declared memory slot (stable across threads and restarts). Falls
+    /// back to the lexically smallest storage key for slot-less programs.
+    pub(crate) fn next_id_backend(&self, cell_name: &str) -> Option<Arc<dyn StorageBackend>> {
+        // only a Map slot can hold a keyed counter (a List backend has no keys)
+        if let Some(cell) = self.cells.get(cell_name) {
+            for section in &cell.sections {
+                if let Section::Memory(ref mem) = section.node {
+                    for slot in &mem.slots {
+                        let is_list = matches!(&slot.node.ty.node,
+                            TypeExpr::Generic { name, .. } | TypeExpr::Simple(name) if name == "List");
+                        if is_list { continue; }
+                        if let Some(b) = self.storage.get(&format!("{}.{}", cell_name, slot.node.name)) {
+                            return Some(b.clone());
+                        }
+                        if let Some(b) = self.storage.get(&slot.node.name) {
+                            return Some(b.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // then the cell's state-machine status backend (keyed, persistent)
+        if let Some((_, b)) = self.find_state_machine_for(cell_name) {
+            return Some(b.clone());
+        }
+        let mut keys: Vec<&String> = self.storage.keys()
+            .filter(|k| !k.starts_with("__") && self.slot_kind(cell_name, k.rsplit('.').next().unwrap_or(k)) != Some("List"))
+            .collect();
+        keys.sort();
+        keys.first().and_then(|k| self.storage.get(*k).cloned())
+    }
+
     /// `Cell.handler(args)` — explicit cross-cell call.
     fn call_cell_handler(&mut self, cell: &str, handler: &str, args: Vec<Value>) -> Result<Value, ExecError> {
         let exists = self.cells.get(cell).map(|c| c.sections.iter().any(|s| {
@@ -3704,6 +3787,28 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
             }
         }
         Value::Unit => StoredValue::Null,
+    }
+}
+
+/// An error escaping a lambda keeps its identity: a `fail("kind", …)`
+/// inside `xs |> map(…)` must reach the caller's `try` as that kind, not as
+/// a Debug dump of the Rust enum under kind "type".
+pub(crate) fn lambda_error(e: ExecError) -> RuntimeError {
+    match e {
+        ExecError::Runtime(r) => r,
+        ExecError::Return(v) => RuntimeError::TypeError(format!("lambda used `return` (value {}) — a lambda is an expression: `x => expr`", v)),
+        ExecError::Break | ExecError::Continue => RuntimeError::TypeError("break/continue inside a lambda".to_string()),
+    }
+}
+
+pub(crate) fn slot_assign_message(name: &str, kind: Option<&str>) -> String {
+    match kind {
+        Some("List") => format!(
+            "'{name}' is a memory slot, not a variable — it is never assigned as a whole: append with {name}.push(x), read it with {name} (all items) or {name}.all"
+        ),
+        _ => format!(
+            "'{name}' is a memory slot, not a variable — it is never assigned as a whole: write one entry with {name}.set(key, value) or {name}[key] = value, read with {name}.get(key)"
+        ),
     }
 }
 

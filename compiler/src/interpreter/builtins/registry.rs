@@ -364,7 +364,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("clear_context", "agent", "clear_context() -> ()",
         "Reset the multi-turn LLM conversation history."),
     doc("approve", "agent", "approve(action: String) -> Bool",
-        "Human-in-the-loop gate; interactive in serve mode, auto-approved in run mode."),
+        "Human-in-the-loop gate. Answered by `mock approve true|false` in tests, by SOMA_APPROVE=always|never, or by a person at the terminal under `soma run`; otherwise (e.g. under soma serve) it RAISES kind \"approval_required\" — it never approves on its own."),
 
     // ── linalg / risk ───────────────────────────────────────────────
     doc("matrix", "linalg", "matrix(\"1 2; 3 4\") -> List<List<Float>>",

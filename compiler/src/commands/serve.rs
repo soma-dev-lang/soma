@@ -42,6 +42,7 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
 }
 
 pub fn cmd_serve(path: &PathBuf, port: u16, verbose: bool, join: Option<&str>, registry: &mut Registry) {
+    crate::interpreter::IN_SERVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let source = read_source(path);
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));

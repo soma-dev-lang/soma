@@ -507,3 +507,148 @@ cell test T {
     assert_ne!(code, 0);
     assert!(out.contains("cell 'Ledger' has no handler 'depositt'") && out.contains("did you mean 'deposit'"), "{out}");
 }
+
+/// The booking agent's blocker: `next_id()` picked its counter slot in
+/// HashMap order (different per thread under serve) and wrote outside the
+/// journal — the 30-way race handed out an id that already existed and a
+/// refused request burned an id.
+#[test]
+fn next_id_is_deterministic_and_rolls_back_with_the_handler() {
+    let d = dir("next_id");
+    std::fs::write(d.join("app.cell"), r#"
+cell Booking {
+    face {
+        signal book(slot: String) -> Map
+        signal ids() -> List
+        signal request(method: String, path: String, body: String) -> Map
+    }
+    memory {
+        zz_first: Map<String, Int>
+        bookings: Map<String, String>
+        slots: Map<String, Int>
+        invariant slots <= 1
+        aa_last: Map<String, Int>
+    }
+    on book(slot: String) {
+        let id = "b{next_id()}"
+        slots.set(slot, (slots.get(slot) ?? 0) + 1)
+        bookings.set(id, slot)
+        return map("id", id)
+    }
+    on ids() { return sort(bookings.keys()) }
+    on request(method: String, path: String, body: String) {
+        match map("method", method, "path", path) {
+            {method: "POST", path: "/book/" + slot} -> {
+                let r = try { book(slot) }
+                if r.error != () { return response(409, map("error", r.kind)) }
+                r.value
+            }
+            {method: "GET", path: "/ids"} -> ids()
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+}
+cell test T {
+    rules {
+        assert book("s1").id == "b1"
+        assert_fails book("s1")
+        assert book("s2").id == "b2"
+        assert ids() == ["b1", "b2"]
+        assert zz_first.get("__next_id") == 2
+    }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "refused requests must burn no id:\n{out}");
+
+    let port = 19800 + (std::process::id() % 150) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "-p", &port.to_string()])
+        .current_dir(&d)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("soma serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let mut ids = String::new();
+    if up {
+        let _ = http(port, "POST", "/book/alpha");
+        let workers: Vec<_> = (0..30)
+            .map(|_| std::thread::spawn(move || http(port, "POST", "/book/beta")))
+            .collect();
+        for w in workers { let _ = w.join(); }
+        let _ = http(port, "POST", "/book/gamma");
+        ids = http(port, "GET", "/ids");
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    let body = ids.split("\r\n\r\n").last().unwrap_or("").replace(' ', "");
+    assert_eq!(body.trim(), r#"["b1","b2","b3"]"#, "ids must be unique and dense: {ids}");
+}
+
+/// Cycle 3: slots read by bare name, never assigned as a whole; scopes in
+/// check match the runtime; lambda errors keep their kind; `|>` binds
+/// tighter than comparisons; forall walks every value of a small range.
+#[test]
+fn cycle3_language_findings() {
+    let d = dir("cycle3");
+    std::fs::write(d.join("slot.cell"), r#"
+cell A {
+  memory { history: List<String> [persistent] }
+  on add(v: String) {
+    history = push(history, v)
+    len(history)
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "slot.cell"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("'history' is a memory slot, not a variable") && out.contains("history.push(x)"), "{out}");
+
+    std::fs::write(d.join("scope.cell"), "cell A {\n  on f(xs: List<Int>) {\n    let ys = xs |> map(x => x * 2)\n    for i in ys { let k = i }\n    return x + i + k\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "scope.cell"]);
+    assert_ne!(code, 0);
+    for v in ["'x'", "'i'", "'k'"] {
+        assert!(out.contains(&format!("undefined variable {v}")), "{v} must be out of scope:\n{out}");
+    }
+
+    std::fs::write(d.join("app.cell"), r#"
+cell A {
+  memory { history: List<String> [persistent]  hits: Map<String, Int> }
+  on add(v: String) {
+    history.push(v)
+    hits[v] = (hits.get(v) ?? 0) + 1
+    map("n", len(history), "all", history, "hits", hits)
+  }
+  on bad(x: Int) { if x == 2 { fail("bad_line", "line {x}") }  x }
+  on through() {
+    let r = try { [1, 2, 3] |> map(x => bad(x)) }
+    map("kind", r.kind, "detail", r.detail)
+  }
+  on g(n: Int) { if n == 57 { return -1 }  n }
+}
+cell test T {
+  rules {
+    assert add("a").n == 1
+    let r = add("b")
+    assert r.n == 2
+    assert r.all == ["a", "b"]
+    assert r.hits == map("a", 1, "b", 1)
+    assert through().kind == "bad_line"
+    assert through().detail == "line 2"
+    assert [3, 1, 2] |> sort() == [1, 2, 3]
+    assert ([1] |> len()) + 1 == 2
+    property "wrong" forall n: Int in 0..100 ensures g(n) >= 0
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("counter-example n = 57"), "forall must be exhaustive on 100 values:\n{out}");
+    assert!(out.contains("9 tests: 8 passed, 1 failed") || out.contains("8 passed"), "{out}");
+}

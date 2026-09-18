@@ -1,16 +1,20 @@
 // Human-in-the-loop approval gate guarding an irreversible action.
 // Demonstrates: approve() as a lifecycle gate, a state machine where the
 // "executing" path is only reachable past the gate, and a rejected path
-// that lands in a distinct terminal. approve() auto-approves in run/test
-// mode, so the happy path is testable without a human.
+// that lands in a distinct terminal.
 //
-// Run:  SOMA_LLM_MOCK=echo soma run approval_gate.cell --signal deploy "v2.1.0"
-// Test: SOMA_LLM_MOCK=echo soma test approval_gate.cell
+// approve() never answers on its own: a test scripts it with
+// `mock approve true|false`; `soma run` asks the person at the terminal;
+// under `soma serve` (nobody attached) it raises kind "approval_required"
+// unless SOMA_APPROVE=always|never states an explicit policy.
+//
+// Run:  soma run approval_gate.cell deploy "v2.1.0"          (asks y/N)
+//       SOMA_APPROVE=never soma run approval_gate.cell deploy "v2.1.0"
+// Test: soma test approval_gate.cell
 
 cell agent Deployer {
     face {
         signal deploy(version: String) -> Map
-        signal force(version: String, ok: Bool) -> Map
     }
 
     memory {
@@ -24,23 +28,7 @@ cell agent Deployer {
         awaiting  -> executing
         awaiting  -> rejected
         executing -> done
-        *         -> failed
-    }
-
-    // Direct, deterministic variant: the approval decision is a parameter,
-    // so both branches of the gate are unit-testable.
-    on force(version: String, ok: Bool) {
-        let id = to_string(next_id())
-        transition(id, "planning")
-        transition(id, "awaiting")
-        if !ok {
-            transition(id, "rejected")
-            return map("status", "rejected", "version", version)
-        }
-        transition(id, "executing")
-        history = push(history, version)
-        transition(id, "done")
-        map("status", "done", "version", version, "count", len(history))
+        *         -> failed except [done, rejected]
     }
 
     on deploy(version: String) {
@@ -56,17 +44,26 @@ cell agent Deployer {
         }
 
         transition(id, "executing")
-        history = push(history, version)
+        history.push(version)
         transition(id, "done")
-        map("status", "done", "version", version)
+        map("status", "done", "version", version, "count", len(history))
     }
 }
 
 cell test DeployTests {
     rules {
-        assert force("v1", true).status == "done"
-        assert force("v1", false).status == "rejected"
-        // approve() auto-approves in test mode, so deploy reaches done.
-        assert deploy("v2").status == "done"
+        mock approve true
+        assert deploy("v1").status == "done"
+
+        mock approve false
+        assert deploy("v2").status == "rejected"
+
+        // nobody answers: the gate fails closed and the handler rolls back
+        assert_fails deploy("v3") matching "approval_required"
+
+        // one answer per call: only v1 and v4 were ever deployed
+        mock approve true
+        let d4 = deploy("v4")
+        assert d4.count == 2
     }
 }

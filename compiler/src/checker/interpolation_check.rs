@@ -100,6 +100,8 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
 /// while staying conservative around branches and loops.
 struct Walker<'a> {
     index: &'a ProgramIndex,
+    /// names `let`-bound in the innermost block being walked
+    block_lets: HashSet<String>,
     scope: HashSet<String>,
     issues: Vec<InterpolationIssue>,
     /// > 0 while walking inside a `try { }` — issues found there are
@@ -109,7 +111,7 @@ struct Walker<'a> {
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), issues: Vec::new(), try_depth: 0 }
+        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0 }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -122,10 +124,41 @@ impl<'a> Walker<'a> {
         }
     }
 
+    /// Walk a nested block with the runtime's scoping: names `let`-bound
+    /// inside it (and the extra names given, e.g. a loop variable or a
+    /// lambda parameter) are gone afterwards; plain assignments persist.
+    fn scoped(&mut self, extra: &[String], f: impl FnOnce(&mut Self)) {
+        let before = self.scope.clone();
+        for e in extra {
+            self.scope.insert(e.clone());
+        }
+        f(self);
+        // keep plain-assigned names (they persist at runtime), drop the rest
+        let assigned: HashSet<String> = self.scope.difference(&before).cloned()
+            .filter(|n| !self.block_lets.contains(n) && !extra.contains(n))
+            .collect();
+        self.scope = before;
+        self.scope.extend(assigned);
+        self.block_lets.clear();
+    }
+
     fn walk_stmt(&mut self, stmt: &Spanned<Statement>) {
         match &stmt.node {
-            Statement::Let { name, value } | Statement::Assign { name, value } => {
+            Statement::Let { name, value } => {
                 self.walk_expr(value);
+                self.scope.insert(name.clone());
+                self.block_lets.insert(name.clone());
+            }
+            Statement::Assign { name, value } => {
+                self.walk_expr(value);
+                if !self.scope.contains(name) && self.index.slots.contains(name) {
+                    let kind = if self.index.list_slots.contains(name) { Some("List") } else { Some("Map") };
+                    self.issues.push(InterpolationIssue {
+                        message: crate::interpreter::slot_assign_message(name, kind),
+                        span: stmt.span,
+                        warning: false,
+                    });
+                }
                 self.scope.insert(name.clone());
             }
             Statement::Return { value } | Statement::Ensure { condition: value } => {
@@ -139,22 +172,26 @@ impl<'a> Walker<'a> {
             }
             Statement::If { condition, then_body, else_body } => {
                 self.walk_expr(condition);
-                self.walk_stmts(then_body);
-                self.walk_stmts(else_body);
+                self.scoped(&[], |w| w.walk_stmts(then_body));
+                self.scoped(&[], |w| w.walk_stmts(else_body));
             }
             Statement::For { var, iter, body, .. } => {
                 self.walk_expr(iter);
-                self.scope.insert(var.clone());
-                // Pre-bind everything the body binds: on iteration 2+
-                // those names exist, so flagging them would be a false
-                // positive for any string evaluated after the binding.
-                bind_stmts(body, &mut self.scope);
-                self.walk_stmts(body);
+                let var = var.clone();
+                self.scoped(&[var], |w| {
+                    // Pre-bind everything the body binds: on iteration 2+
+                    // those names exist, so flagging them would be a false
+                    // positive for any string evaluated after the binding.
+                    bind_stmts(body, &mut w.scope);
+                    w.walk_stmts(body);
+                });
             }
             Statement::While { condition, body, .. } => {
                 self.walk_expr(condition);
-                bind_stmts(body, &mut self.scope);
-                self.walk_stmts(body);
+                self.scoped(&[], |w| {
+                    bind_stmts(body, &mut w.scope);
+                    w.walk_stmts(body);
+                });
             }
             Statement::Emit { args, .. } => {
                 for a in args {
@@ -259,6 +296,15 @@ impl<'a> Walker<'a> {
                 self.try_depth -= 1;
             }
             Expr::Pipe { left, right } => {
+                // the runtime refuses anything but a call on the right:
+                // say so here, with the parenthesised form
+                if !matches!(right.node, Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::Pipe { .. } | Expr::Ident(_)) {
+                    self.issues.push(InterpolationIssue {
+                        message: "the right side of `|>` must be a call — `x |> f(a)` means f(x, a); to combine the result, parenthesise: `(x |> f()) + 1`".to_string(),
+                        span: right.span,
+                        warning: false,
+                    });
+                }
                 self.walk_expr(left);
                 self.walk_expr(right);
             }
@@ -273,13 +319,15 @@ impl<'a> Walker<'a> {
                 }
             }
             Expr::Lambda { param, body } => {
-                self.scope.insert(param.clone());
-                self.walk_expr(body);
+                let param = param.clone();
+                self.scoped(&[param], |w| w.walk_expr(body));
             }
             Expr::LambdaBlock { param, stmts, result } => {
-                self.scope.insert(param.clone());
-                self.walk_stmts(stmts);
-                self.walk_expr(result);
+                let param = param.clone();
+                self.scoped(&[param], |w| {
+                    w.walk_stmts(stmts);
+                    w.walk_expr(result);
+                });
             }
             Expr::Match { subject, arms } => {
                 self.walk_expr(subject);
