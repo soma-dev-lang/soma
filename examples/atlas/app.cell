@@ -66,7 +66,7 @@ cell agent Atlas [model: claude_sonnet] {
     face {
         signal request(method: String, path: String, body: String) -> String
         signal incoming(sender: String, body: String) -> Map
-        signal approve(id: String) -> Map
+        signal approve_mail(id: String) -> Map
         signal approve_email(id: String) -> Map
         signal decline(id: String) -> Map
         signal verdict(action: String, ref_id: String) -> Map
@@ -109,7 +109,7 @@ cell agent Atlas [model: claude_sonnet] {
     cost {
         tokens: 4000
         latency: 12s
-        usd: 1.00
+        usd: 2.00
     }
 
     // V1.6 #5 + V1.3 refinement: every `transition(id, X)` call must
@@ -150,6 +150,7 @@ cell agent Atlas [model: claude_sonnet] {
             map("requires", list("json_mode"),
                 "max_tokens", 300,
                 "timeout", 5000,
+                "max_rounds", 2,
                 "tools_allowed", list("vault_read")))
 
         // In production the LLM returns JSON we'd parse. For demo:
@@ -224,8 +225,8 @@ cell agent Atlas [model: claude_sonnet] {
     // Human-in-the-loop approval gate. Only handler that calls send_reply.
     // `approve` is also a builtin, and builtins win dispatch from a call
     // site — so the logic lives in approve_email; `approve` stays as the
-    // signal entry point (/approve/<id>).
-    on approve(id: String) { return approve_email(id) }
+    // signal entry point (/approve_mail/<id>).
+    on approve_mail(id: String) { return approve_email(id) }
 
     on approve_email(id: String) {
         if emails.get(id) == () { return response(404, map("error", "not found")) }
@@ -314,7 +315,7 @@ cell agent Atlas [model: claude_sonnet] {
                   <td><span class='pill pill-{st}'>{label}</span></td>
                   <td>{st}</td>
                   <td>
-                    <a href='/approve/{k}'>approve</a> ·
+                    <a href='/approve_mail/{k}'>approve</a> ·
                     <a href='/decline/{k}'>decline</a>
                   </td>
                 </tr>",

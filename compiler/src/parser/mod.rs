@@ -1444,7 +1444,14 @@ impl Parser {
                     });
                 }
                 self.expect(Token::Colon)?;
-                let (state_name, _) = self.expect_any_name()?;
+                let (state_name, sspan) = self.expect_any_name()?;
+                // two `initial:` lines: the last one silently won
+                if !initial.is_empty() && initial != state_name {
+                    return Err(ParseError::FixIt {
+                        message: format!("a state machine has ONE initial state — it already starts in '{}'", initial),
+                        span: sspan,
+                    });
+                }
                 initial = state_name;
                 continue;
             }
@@ -2208,8 +2215,9 @@ impl Parser {
                             accessors.push(idx);
                         } else if self.check(&Token::Dot) {
                             // a keyword is a fine field name here (`j.state = …`)
+                            // a capitalised field (`s.LT1 = 5`, PLC tags) too
                             let field = match self.peek_at(1).clone() {
-                                Token::Ident(f) => Some(f),
+                                Token::Ident(f) | Token::TypeIdent(f) => Some(f),
                                 other => keyword_as_name(&other),
                             };
                             if let Some(f) = field {
@@ -2920,14 +2928,20 @@ impl Parser {
                 // the block — a record literal starts with `field:` or is `{}`
                 let record_follows = self.check(&Token::LBrace) && (
                     matches!(self.peek_at(1), Token::RBrace)
-                    || ((matches!(self.peek_at(1), Token::Ident(_)) || keyword_as_name(self.peek_at(1)).is_some())
+                    || ((matches!(self.peek_at(1), Token::Ident(_) | Token::TypeIdent(_)) || keyword_as_name(self.peek_at(1)).is_some())
                         && matches!(self.peek_at(2), Token::Colon))
                 );
                 if record_follows {
                     self.advance();
                     let mut fields = Vec::new();
                     while !self.check(&Token::RBrace) && !self.is_at_end() {
-                        let (field_name, _) = self.expect_ident()?;
+                        // a capitalised field name (`Tank { LT1: 3 }`) too
+                        let field_name = if let Token::TypeIdent(f) = self.peek().clone() {
+                            self.advance();
+                            f
+                        } else {
+                            self.expect_ident()?.0
+                        };
                         self.expect(Token::Colon)?;
                         let value = self.parse_expr()?;
                         fields.push((field_name, value));

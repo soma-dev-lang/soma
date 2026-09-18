@@ -635,7 +635,25 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
         .collect();
 
     result.terminal_states = terminals.clone();
-    if terminals.is_empty() {
+    // a REACTIVE machine (pump, traffic light, interlock): no terminal state
+    // by design, and every reachable state can come back to the initial one
+    // — nothing is stuck; it passed no --strict gate before
+    let returns_home: bool = {
+        let mut rev: HashMap<String, Vec<String>> = HashMap::new();
+        for (from, to, _) in &edges { rev.entry(to.clone()).or_default().push(from.clone()); }
+        let mut back: HashSet<String> = [sm.initial.clone()].into_iter().collect();
+        let mut q: VecDeque<String> = [sm.initial.clone()].into_iter().collect();
+        while let Some(st) = q.pop_front() {
+            if let Some(ps) = rev.get(&st) { for p in ps { if back.insert(p.clone()) { q.push_back(p.clone()); } } }
+        }
+        reachable.iter().all(|s| back.contains(s))
+    };
+    let reactive = terminals.is_empty() && returns_home && reachable.len() > 1;
+    if reactive {
+        result.checks.push(VerifyCheck::Pass(
+            format!("reactive machine: no terminal state, and every reachable state can return to '{}'", sm.initial)
+        ));
+    } else if terminals.is_empty() {
         result.checks.push(VerifyCheck::Warning(
             "no terminal states — all states have outgoing transitions (possible infinite loop)".to_string()
         ));
@@ -692,6 +710,10 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
     if stuck.is_empty() {
         result.checks.push(VerifyCheck::Pass(
             "liveness: every state can eventually reach a terminal state".to_string()
+        ));
+    } else if reactive {
+        result.checks.push(VerifyCheck::Pass(
+            format!("liveness: every reachable state can return to '{}' (reactive machine)", sm.initial)
         ));
     } else if terminals.is_empty() {
         // No terminal states at all: a deliberately cyclic/reactive machine

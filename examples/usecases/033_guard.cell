@@ -7,7 +7,7 @@
 cell GuardState {
     face {
         signal submit(id: String, content: String) -> String
-        signal approve(id: String, role: String) -> String
+        signal approve_doc(id: String, role: String) -> String
         signal run() -> String
     }
     state review {
@@ -25,15 +25,15 @@ cell GuardState {
         transition(id, "submitted")          // guard reads this handler's `content`
         return get_status(id)
     }
-    on approve(id: String, role: String) {
+    on approve_doc(id: String, role: String) {
         transition(id, "approved")           // guard reads this handler's `role`
         return get_status(id)
     }
     on run() {
         print("submit with text:", submit("doc", "hello"))
-        let r = try { approve("doc", "guest") }
+        let r = try { approve_doc("doc", "guest") }
         print("guest approval refused:", r.error != ())
-        print("admin approval:", approve("doc", "admin"))
+        print("admin approval:", approve_doc("doc", "admin"))
         return "done"
     }
 }
@@ -42,7 +42,7 @@ cell test GuardTests {
     rules {
         assert_fails submit("empty", "")
         assert submit("d1", "text") == "submitted"
-        assert_fails approve("d1", "guest")
-        assert approve("d1", "admin") == "approved"
+        assert_fails approve_doc("d1", "guest")
+        assert approve_doc("d1", "admin") == "approved"
     }
 }

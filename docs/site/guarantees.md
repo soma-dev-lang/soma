@@ -11,7 +11,8 @@ On the **state machine** of each cell (a finite graph, model-checked):
 |---|---|---|
 | Reachability | every declared state can be reached from `initial` | always |
 | Deadlock-freedom | no reachable non-final state without an exit | always |
-| Liveness | every state can reach some final state | always (n/a for cyclic machines — said so) |
+| Liveness | every state can reach some final state — or, for a REACTIVE machine with no final state (a pump, an interlock), every reachable state can return to the initial one | always (a cyclic machine that cannot return home is a ⚠) |
+| Stored history | `[verify]` properties are proven for the CURRENT graph: an instance that took an edge an older version of the program allowed keeps that history (the start-up audit reports only instances in undeclared states) — migrate or reset those instances when you remove an edge; one `soma serve` per data directory runs the every/after ticks (a second one logs that it does not) | — |
 | `eventually = [...]` | every path reaches one of these states | `soma.toml [verify]` |
 | `never = [...]` | these states are unreachable | `soma.toml [verify]` |
 | `always = [...]` | the machine is only ever in one of these states | `soma.toml [verify]` |

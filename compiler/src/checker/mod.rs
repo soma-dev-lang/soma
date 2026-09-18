@@ -835,6 +835,26 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // a handler named `transition` / `approve` / `fail` … replaced the
+        // builtin in EVERY cell (bare calls resolve to a handler first): an
+        // imported `on transition(id, to) { log }` turned every interlock
+        // into a no-op while verify still proved the edges
+        // (the builtins a proof or a safety gate rests on)
+        const RESERVED: &[&str] = &["transition", "approve", "fail", "get_status", "has_state", "valid_transitions",
+            "think", "think_json", "set_budget", "tokens_used"];
+        for cell in &program.cells {
+            for sec in &cell.node.sections {
+                if let Section::OnSignal(on) = &sec.node {
+                    if RESERVED.contains(&on.signal_name.as_str()) {
+                        self.errors.push(CheckError::Static {
+                            kind: "reserved_handler",
+                            message: format!("a handler cannot be named `{}`: it would replace the builtin {}() for every bare call in the program (state machines, approvals and errors included) — rename it (`on {}_{}(…)`)", on.signal_name, on.signal_name, on.signal_name, cell.node.name.to_lowercase()),
+                            span: sec.span,
+                        });
+                    }
+                }
+            }
+        }
         // `every 0ms` ran its body back to back (77,865 commits in 3 s)
         for cell in &program.cells {
             for sec in &cell.node.sections {

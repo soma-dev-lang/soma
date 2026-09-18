@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Check: a handler cannot be named after a safety builtin (`transition`,
+  `approve`, `fail`, `think`…) — it replaced the builtin program-wide while
+  verify still proved the edges; one `initial:` per machine.
+- verify: a reactive machine (no terminal state, every state returns to the
+  initial one) passes --strict.
+- serve: one scheduler per data directory (a second serve doubled ticks).
+- Capitalised field names in assignments and record literals.
 - A panic inside a builtin is a catchable error (kind `internal`); matrix
   builtins cap each dimension (a zero dimension bypassed the size cap).
 - Native: i64-to-BigInt local assignment compiles; mixed Float/String

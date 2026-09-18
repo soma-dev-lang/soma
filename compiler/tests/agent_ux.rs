@@ -2166,3 +2166,36 @@ cell N {
     let (out, _) = soma_in(&d, &["run", "b4.cell", "f", "10"]);
     assert!(out.lines().any(|l| l.trim() == "10"), "{out}");
 }
+
+/// Cycle 24: capitalised field names; a handler cannot replace a safety
+/// builtin; a reactive machine passes --strict; one initial state.
+#[test]
+fn cycle24_findings() {
+    let d = dir("cycle24");
+    std::fs::write(d.join("f.cell"), "cell T {\n  on main() {\n    let s = map(\"Ab\", 1)\n    s.Ab = 5\n    let g = Tank { LT1: 3 }\n    g.LT1 = 4\n    return [s.Ab, g.LT1]\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "f.cell", "main"]);
+    assert!(out.contains("[5, 4]"), "{out}");
+    std::fs::write(d.join("r.cell"), r#"
+cell Audit { memory { trail: List<String> [persistent] } on transition(id: String, to: String) { trail.push(to) } }
+cell Reactor { state rod { initial: safe  safe -> armed  armed -> fired } on fire(id: String) { transition(id, "fired") } }
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "r.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("cannot be named `transition`"), "{out}");
+    std::fs::write(d.join("p.cell"), r#"
+cell Pump {
+  state p { initial: off  off -> starting  starting -> running  running -> stopping  stopping -> off  * -> fault  fault -> off }
+  on go(id: String) { transition(id, "starting") }
+  on up(id: String) { transition(id, "running") }
+  on halt(id: String) { transition(id, "stopping") }
+  on done(id: String) { transition(id, "off") }
+  on trip(id: String) { transition(id, "fault") }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "--strict", "p.cell"]);
+    assert!(out.contains("reactive machine") && out.contains("VERIFY OK"), "{out}");
+    std::fs::write(d.join("i.cell"), "cell I { state s { initial: a  initial: b  a -> b } on go(id: String) { transition(id, \"b\") } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "i.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("ONE initial state"), "{out}");
+}

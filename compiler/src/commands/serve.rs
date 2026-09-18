@@ -1025,8 +1025,30 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
     // Spawn scheduler threads for `every` sections
     // In cluster mode, only the leader runs `every` blocks
-    let no_schedule = NO_SCHEDULE.load(std::sync::atomic::Ordering::Relaxed);
+    let mut no_schedule = NO_SCHEDULE.load(std::sync::atomic::Ordering::Relaxed);
     if no_schedule { eprintln!("scheduler: disabled (--no-schedule) — every/after blocks do not run"); }
+    // ONE scheduler per data directory: a second `soma serve` on the same
+    // .soma_data ran every tick (and every `after`) a second time. The lock
+    // is an exclusive SQLite transaction held for the life of the process
+    // (released by the OS on kill -9).
+    let has_timers = program.cells.iter().any(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::Every(_) | ast::Section::After(_))));
+    if !no_schedule && has_timers {
+        let dir = crate::runtime::storage::data_dir();
+        if dir.is_dir() {
+            match rusqlite::Connection::open(dir.join("scheduler.lock")) {
+                Ok(conn) => {
+                    let _ = conn.busy_timeout(std::time::Duration::from_millis(0));
+                    if conn.execute_batch("BEGIN EXCLUSIVE").is_ok() {
+                        Box::leak(Box::new(conn));
+                    } else {
+                        eprintln!("scheduler: another soma serve on {} runs the every/after blocks — not started here (each tick would run twice)", dir.display());
+                        no_schedule = true;
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
     for cell_spanned in &program.cells {
         if no_schedule { break; }
         if !matches!(cell_spanned.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) { continue; }

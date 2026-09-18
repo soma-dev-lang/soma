@@ -414,7 +414,8 @@ handler's runaway recursion (500 `stack_overflow`; the process stays up).
 ## Verification properties
 
 `soma verify` proves, for every cell with a state machine: reachability,
-deadlock-freedom, liveness (every state can reach a terminal), refinement (each
+deadlock-freedom, liveness (every state can reach a terminal — or, with no
+terminal state, return to the initial one: a reactive machine passes --strict), refinement (each
 handler's `transition()` targets are declared states — the SOURCE of a
 transition is the instance's runtime state, so a removed edge is caught at
 runtime as `invalid_transition`, not by verify; declare `[verify.before.X]

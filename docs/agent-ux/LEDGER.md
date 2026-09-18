@@ -673,3 +673,29 @@ No false proof.
 ### Open
 - [ ] read_csv drops extra fields silently (no strict mode / line numbers).
 - [ ] One unexplained silent exit of a serve process after a tick (not reproduced in 150 iterations).
+
+## Cycle 24 (2026-09-18) — water-treatment safety interlock controller
+
+6.5/10: check, 135 tests, verify --strict (52 temporal properties) green; the
+inlet/drain interlock is proven (no state or output word represents both
+open); flood, stale sensors and 12 random kill -9 always restarted safe. No
+false proof. Cross-device interlocks stay runtime-checked (verification is
+per cell).
+
+### Fixed
+- [x] `s.LT1 = 5` and `Tank { LT1: 3 }` were parse errors (a capitalised field name is a type token) — PLC tag names work.
+- [x] A reactive machine (no terminal state by design) could never pass --strict ("no terminal states" + liveness ⚠) — when every reachable state can return to the initial one, both are ✓ ("reactive machine").
+- [x] Docs: [verify] properties hold for the current graph, not for history stored under an older program.
+
+### Cycle 24 — attack (same binary)
+
+The state-machine model checker held everywhere; one hole around it:
+- [x] **A handler named like a builtin replaced it program-wide**: an imported `on transition(id, to) { log }` or `on approve(msg) { return true }` turned every interlock and approval into a no-op (SOMA_APPROVE=never ignored) while verify printed "refinement ✓" and VERIFY OK — `transition`, `approve`, `fail`, `get_status`, `has_state`, `valid_transitions`, `think`, `think_json`, `set_budget`, `tokens_used` are reserved handler names (check error). Examples renamed (`approve_doc`, `approve_mail`).
+- [x] Two `soma serve` on one .soma_data both ran every `every`/`after` (ticks doubled) — one scheduler per data directory (an exclusive SQLite lock; the second logs that it does not schedule).
+- [x] `[verify.after.X]` with empty lists and two `initial:` lines were accepted silently — errors.
+
+### Open
+- [ ] `A.w.set(…)` in a test cell passes check and fails with "undefined variable: A" (write `w.set` in tests).
+- [ ] A payload-variant target (`transition(id, Failed("x"))`) is counted by verify but always raises at run time.
+- [ ] The guard-binding check misses transitions from other cells, emit listeners and interpolations (they fail closed at run time).
+- [ ] `eventually = []` / `always = []` at the top level are silently empty.

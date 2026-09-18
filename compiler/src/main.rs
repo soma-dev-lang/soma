@@ -648,6 +648,11 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                 unknown_states.push(format!("soma.toml [verify.before.{st}] lists no state (`requires = [\"approved\"]` or `requires_all = [...]`) — it checks nothing"));
             }
         }
+        for (st, a) in &cfg.after {
+            if a.eventually.is_empty() && a.never.is_empty() {
+                unknown_states.push(format!("soma.toml [verify.after.{st}] lists no state (`eventually = [...]` or `never = [...]`) — it checks nothing"));
+            }
+        }
     }
     if declares_props && all_temporal.is_empty() && targeted_present {
         unknown_states.push("[verify] declares properties but no state machine received them (no `state { }` in the targeted cells — check `cells = [...]`)".to_string());

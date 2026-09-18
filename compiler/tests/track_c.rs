@@ -155,7 +155,7 @@ fn test_verify_cyclic_machine_is_reactive_warning() {
     let (out, err, code) = soma(&["verify", &path]);
     assert_eq!(code, 0, "out: {} err: {}", out, err);
     assert!(
-        out.contains("reactive/cyclic system"),
+        out.contains("reactive machine"),
         "expected reactive warning, out: {}", out
     );
 }
