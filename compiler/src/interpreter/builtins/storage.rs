@@ -407,6 +407,7 @@ fn agent_think(
         provider: provider.clone(),
         max_retries: std::env::var("SOMA_LLM_RETRIES").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| cfg.map(|c| c.retries).unwrap_or(3)),
         system_msg: system_msg.to_string(),
+        timeout_ms: timeout_ms.unwrap_or_else(|| std::env::var("SOMA_LLM_TIMEOUT_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(60_000)),
     };
 
     let tools = build_tool_definitions(interp, cell_name);

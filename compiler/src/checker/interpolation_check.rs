@@ -35,6 +35,8 @@ pub struct InterpolationIssue {
     /// (assert_fails blesses error-raising handlers) — demoted to a
     /// warning so check does not contradict a passing test suite.
     pub warning: bool,
+    /// A plain advisory (not a try-demoted error): reported as a habit warning.
+    pub habit: bool,
 }
 
 pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
@@ -151,12 +153,23 @@ impl<'a> Walker<'a> {
             }
             Statement::Assign { name, value } => {
                 self.walk_expr(value);
+                if !self.scope.contains(name) && !self.index.slots.contains(name) && !self.index.known.contains(name) {
+                    // `totl = x` creates a NEW variable: the typo'd name is
+                    // never seen again (`total` keeps its old value)
+                    self.issues.push(InterpolationIssue {
+                        message: format!("assignment creates a new variable '{name}' — declare it with `let {name} = …`, or fix the name if you meant an existing variable"),
+                        span: stmt.span,
+                        warning: true,
+                        habit: true,
+                    });
+                }
                 if !self.scope.contains(name) && self.index.slots.contains(name) {
                     let kind = if self.index.list_slots.contains(name) { Some("List") } else { Some("Map") };
                     self.issues.push(InterpolationIssue {
                         message: crate::interpreter::slot_assign_message(name, kind),
                         span: stmt.span,
                         warning: false,
+                habit: false,
                     });
                 }
                 self.scope.insert(name.clone());
@@ -269,6 +282,7 @@ impl<'a> Walker<'a> {
                                 message: format!("cell '{cell}' has no handler '{method}'{hint}"),
                                 span: target.span,
                                 warning: false,
+                habit: false,
                             });
                         }
                     }
@@ -303,6 +317,7 @@ impl<'a> Walker<'a> {
                         message: "the right side of `|>` must be a call — `x |> f(a)` means f(x, a); to combine the result, parenthesise: `(x |> f()) + 1`".to_string(),
                         span: right.span,
                         warning: false,
+                habit: false,
                     });
                 }
                 self.walk_expr(left);
@@ -375,6 +390,7 @@ impl<'a> Walker<'a> {
                         message: "string literal ends inside `{…}` — no nested quotes inside an interpolation; bind the inner value first: `let inner = \"lit\"` then `\"… {inner}\"`".to_string(),
                         span,
                         warning: false,
+                habit: false,
                     });
                     return;
                 }
@@ -428,6 +444,7 @@ impl<'a> Walker<'a> {
                 ),
                 span,
                 warning: self.try_depth > 0,
+                habit: false,
             });
             return true;
         }
@@ -541,6 +558,7 @@ impl<'a> Walker<'a> {
             ),
             span,
             warning: self.try_depth > 0,
+                habit: false,
         });
     }
 
@@ -559,6 +577,7 @@ impl<'a> Walker<'a> {
                 message: format!("'{name}' does not exist in Soma — {hint}"),
                 span,
                 warning: self.try_depth > 0,
+                habit: false,
             });
             return;
         }
@@ -572,6 +591,7 @@ impl<'a> Walker<'a> {
             ),
             span,
             warning: self.try_depth > 0,
+                habit: false,
         });
     }
 
@@ -586,6 +606,7 @@ impl<'a> Walker<'a> {
             ),
             span,
             warning: self.try_depth > 0,
+                habit: false,
         });
     }
 }

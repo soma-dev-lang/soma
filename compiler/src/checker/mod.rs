@@ -514,7 +514,9 @@ impl<'a> Checker<'a> {
         // rules. Catches "hello {customr}" before it 500s at runtime.
         // Issues inside try { } are recoverable by design → warnings.
         for issue in interpolation_check::check_program(program) {
-            if issue.warning {
+            if issue.habit {
+                self.warnings.push(CheckWarning::HabitWarning { message: issue.message, span: issue.span });
+            } else if issue.warning {
                 self.warnings.push(CheckWarning::InterpolationRecoverable {
                     message: issue.message,
                     span: issue.span,

@@ -12,6 +12,9 @@ pub struct LlmConfig {
     pub provider: String,
     pub max_retries: usize,
     pub system_msg: String,
+    /// Hard cap on one HTTP round-trip to the provider. Handlers run one
+    /// at a time: a provider that hangs used to hang the whole service.
+    pub timeout_ms: u64,
 }
 
 /// Unified LLM response
@@ -81,6 +84,7 @@ pub fn send_with_retry(
 
     for retry in 0..=config.max_retries {
         let mut req = ureq::post(&config.api_url)
+            .timeout(std::time::Duration::from_millis(config.timeout_ms.max(1_000)))
             .set("Content-Type", "application/json");
 
         if config.provider == "anthropic" {

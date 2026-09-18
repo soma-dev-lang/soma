@@ -14,7 +14,7 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Machine-readable resources
 
-- [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + every gotcha — what a service needs, ~35 KB
+- [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~40 KB
 - [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~70 KB)
 - [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma
 - [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same knowledge packaged as an agent skill
@@ -52,7 +52,7 @@ soma describe app.cell --faces       # contract summary of every cell
 soma describe --builtins --json      # exact builtin signatures — never guess
 soma fix    app.cell                 # auto-repair common check errors
 soma docs agent                      # this file, offline, from the binary
-soma docs guarantees | serving       # proven/enforced/not covered; HTTP rules — offline too
+soma docs guarantees|serving|operations   # proofs, HTTP rules, what goes wrong — offline too
 soma example invariant state_machine # verified programs with those features;
 soma example <id>                    #   …and the source of one
 soma init myapp                      # app.cell + soma.toml + AGENTS.md

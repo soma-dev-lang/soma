@@ -348,6 +348,7 @@ def main():
         "docs/gotchas.md": "AGENT_GOTCHAS.md",
         "docs/guarantees.md": "docs/site/guarantees.md",
         "docs/serving.md": "docs/site/serving.md",
+        "docs/operations.md": "docs/site/operations.md",
         "CHANGELOG.md": "CHANGELOG.md",
         "LICENSE": "LICENSE",
     }
@@ -389,6 +390,7 @@ def main():
         llms.rstrip(),
         "\n\n---\n\n" + read("docs/site/guarantees.md").strip(),
         "\n\n---\n\n" + read("docs/site/serving.md").strip(),
+        "\n\n---\n\n" + read("docs/site/operations.md").strip(),
         "\n\n---\n\n# Verified wrong→right pairs\n\n" + read("AGENT_GOTCHAS.md").strip(),
         "\n",
     ]
@@ -421,6 +423,7 @@ def main():
                     "llms_service": f"{BASE}/llms-service.txt",
                     "guarantees": f"{BASE}/docs/guarantees.md",
                     "serving": f"{BASE}/docs/serving.md",
+                    "operations": f"{BASE}/docs/operations.md",
                     "corpus_domains": f"{BASE}/corpus/domains.json",
                     "changelog": f"{BASE}/CHANGELOG.md",
                     "license": f"{BASE}/LICENSE",

@@ -3,18 +3,24 @@
   <url><loc>https://soma-lang.dev/</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/paper</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/agents</loc><lastmod>2026-09-18</lastmod></url>
+  <url><loc>https://soma-lang.dev/status</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/llms.txt</loc><lastmod>2026-09-18</lastmod></url>
+  <url><loc>https://soma-lang.dev/llms-service.txt</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/llms-full.txt</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/agent.md</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/skill/SKILL.md</loc><lastmod>2026-09-18</lastmod></url>
+  <url><loc>https://soma-lang.dev/docs/guarantees.md</loc><lastmod>2026-09-18</lastmod></url>
+  <url><loc>https://soma-lang.dev/docs/serving.md</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/docs/reference.md</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/docs/builtins.md</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/docs/gotchas.md</loc><lastmod>2026-09-18</lastmod></url>
-  <url><loc>https://soma-lang.dev/docs/spec.md</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/builtins.json</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/gotchas.json</loc><lastmod>2026-09-18</lastmod></url>
+  <url><loc>https://soma-lang.dev/corpus/domains.json</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/corpus/index.json</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/corpus/index.md</loc><lastmod>2026-09-18</lastmod></url>
+  <url><loc>https://soma-lang.dev/CHANGELOG.md</loc><lastmod>2026-09-18</lastmod></url>
+  <url><loc>https://soma-lang.dev/LICENSE</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/repo/index.json</loc><lastmod>2026-09-18</lastmod></url>
   <url><loc>https://soma-lang.dev/version.json</loc><lastmod>2026-09-18</lastmod></url>
 </urlset>
