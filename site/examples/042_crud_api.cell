@@ -20,7 +20,7 @@ cell UserCRUD {
         signal get(id: String) -> String
         signal list_all() -> String
         signal update(id: String, name: String) -> String
-        signal delete(id: String) -> String
+        signal delete(id: String) -> Map
         signal demo() -> String
     }
 

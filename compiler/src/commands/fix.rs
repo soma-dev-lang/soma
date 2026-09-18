@@ -174,7 +174,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
         kind: FixKind,
     }
     enum FixKind {
-        InsertHandler { cell_name: String, signal_name: String, params: String },
+        InsertHandler { cell_name: String, signal_name: String, params: String, ret: String },
         RemoveContradictoryProperty { slot_name: String, property_to_remove: String },
         RemoveDuplicateSignal { signal_name: String },
     }
@@ -188,11 +188,25 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
                 if let Some(cell_def) = find_cell(&program, cell) {
                     if let Some(sig_decl) = find_face_signal(cell_def, signal) {
                         let params = format_params(&sig_decl.params);
+                        // a stub of the declared return type, so the fixed
+                        // program passes the face-contract check
+                        let ret = match sig_decl.return_type.as_ref().map(|t| &t.node) {
+                            Some(ast::TypeExpr::Simple(t)) | Some(ast::TypeExpr::Generic { name: t, .. }) => match t.as_str() {
+                                "Int" => "0".to_string(),
+                                "Float" => "0.0".to_string(),
+                                "Bool" => "false".to_string(),
+                                "String" => "\"\"".to_string(),
+                                "List" => "[]".to_string(),
+                                _ => "map(\"status\", \"ok\")".to_string(),
+                            },
+                            _ => "map(\"status\", \"ok\")".to_string(),
+                        };
                         actions.push(FixAction {
                             kind: FixKind::InsertHandler {
                                 cell_name: cell.clone(),
                                 signal_name: signal.clone(),
                                 params,
+                                ret,
                             },
                         });
                     }
@@ -251,14 +265,15 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     // 4. Apply fixes
     for action in &actions {
         match &action.kind {
-            FixKind::InsertHandler { cell_name, signal_name, params } => {
+            FixKind::InsertHandler { cell_name, signal_name, params, ret } => {
                 if let Some(close_pos) = find_cell_closing_brace(&source, cell_name) {
                     let indent = detect_indent(&source, cell_name);
                     let handler = format!(
-                        "\n{indent}on {signal_name}({params}) {{\n{indent}    return map(\"status\", \"ok\")\n{indent}}}\n",
+                        "\n{indent}on {signal_name}({params}) {{\n{indent}    // TODO: implement\n{indent}    return {ret}\n{indent}}}\n",
                         indent = indent,
                         signal_name = signal_name,
                         params = params,
+                        ret = ret,
                     );
                     source.insert_str(close_pos, &handler);
                     fixes.push(AppliedFix {

@@ -3,11 +3,11 @@
 
 cell Contacts {
     face {
-        signal create(name: String, email: String, phone: String) -> String
+        signal create(name: String, email: String, phone: String) -> Map
         signal get(id: String) -> String
         signal list() -> String
         signal search(q: String) -> String
-        signal delete(id: String) -> String
+        signal delete(id: String) -> Map
         signal page() -> String
         promise all_persistent
     }

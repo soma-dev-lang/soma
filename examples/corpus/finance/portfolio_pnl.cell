@@ -10,7 +10,7 @@ cell PortfolioPnL {
         signal total_pnl() -> Float
         signal market_value() -> Float
         signal winners() -> List
-        signal best() -> Map
+        signal best() -> List
     }
 
     on positions() {

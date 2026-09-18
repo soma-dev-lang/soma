@@ -166,9 +166,25 @@ impl<'a> CostWalk<'a> {
             }
             Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => self.visit_expr(&i.node, handler_name),
             Expr::FieldAccess { target, .. } => self.visit_expr(&target.node, handler_name),
-            Expr::MethodCall { target, args, .. } => {
+            Expr::MethodCall { target, method, args } => {
                 self.visit_expr(&target.node, handler_name);
                 for a in args { self.visit_expr(&a.node, handler_name); }
+                // `Ledger.settle(x)`: another cell's handler spends too
+                if let Expr::Ident(cell) = &target.node {
+                    let key = format!("{}.{}", cell, method);
+                    if let Some(body) = self.handlers.get(key.as_str()).copied() {
+                        if self.stack.iter().any(|h| h == &key) {
+                            self.unbounded_sites.push(format!("{}::recursive call to {}", handler_name, key));
+                        } else {
+                            let mut callee = self.child();
+                            callee.stack.push(key.clone());
+                            for s in body { callee.visit_stmt(&s.node, &key); }
+                            self.tokens += callee.tokens;
+                            self.latency_ms += callee.latency_ms;
+                            self.unbounded_sites.extend(callee.unbounded_sites);
+                        }
+                    }
+                }
             }
             // A lambda runs once per element of whatever it is mapped over
             // — an unknown count. Count its body once (a lower bound) and,
@@ -278,7 +294,9 @@ fn usd_milli_per_1k_tokens(model: &str) -> i64 {
     else { 0 }  // unknown
 }
 
-pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>) -> Vec<CostFinding> {
+pub type AllHandlers = std::collections::HashMap<String, std::collections::HashMap<String, Vec<Spanned<Statement>>>>;
+
+pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers) -> Vec<CostFinding> {
     let cost_section = cell.sections.iter().find_map(|s| {
         if let Section::Cost(ref c) = s.node { Some(c.clone()) } else { None }
     });
@@ -292,14 +310,24 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>) -> Vec<CostFindin
     let mut peak_tokens = 0i64;
     let mut peak_latency_ms = 0i64;
     let mut advisory_sites: Vec<String> = Vec::new();
-    let handlers: std::collections::HashMap<String, &[Spanned<Statement>]> = cell
-        .sections
-        .iter()
-        .filter_map(|s| match &s.node {
-            Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.as_slice())),
-            _ => None,
-        })
-        .collect();
+    // Own handlers by name; other cells' handlers by bare name (the runtime
+    // resolves a bare call to any cell that defines it) and as
+    // `Cell.handler` — a 5×think() helper in another cell used to be
+    // invisible and the bound "proven" at 50 tokens.
+    let mut handlers: std::collections::HashMap<String, &[Spanned<Statement>]> = std::collections::HashMap::new();
+    for (cname, hs) in all {
+        for (hname, body) in hs {
+            handlers.insert(format!("{}.{}", cname, hname), body.as_slice());
+            if cname != &cell.name {
+                handlers.entry(hname.clone()).or_insert(body.as_slice());
+            }
+        }
+    }
+    for s in &cell.sections {
+        if let Section::OnSignal(h) = &s.node {
+            handlers.insert(h.signal_name.clone(), h.body.as_slice());
+        }
+    }
     for section in &cell.sections {
         if let Section::OnSignal(ref handler) = section.node {
             let mut walk = CostWalk::new(&handlers);

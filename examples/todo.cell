@@ -2,10 +2,10 @@
 
 cell TodoApp {
     face {
-        signal add(text: String) -> String
-        signal get(id: String) -> String
-        signal done(id: String) -> String
-        signal delete(id: String) -> String
+        signal add(text: String) -> Map
+        signal get(id: String) -> Map
+        signal done(id: String) -> Map
+        signal delete(id: String) -> Map
         signal list() -> String
         signal count() -> Int
         promise all_persistent

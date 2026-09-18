@@ -14,10 +14,10 @@
 
 cell OrderSystem {
     face {
-        signal create(customer: String) -> String
-        signal add_item(id: String, item: String) -> String
+        signal create(customer: String) -> Map
+        signal add_item(id: String, item: String) -> Map
         signal advance(id: String, to: String, role: String) -> String
-        signal status(id: String) -> String
+        signal status(id: String) -> Map
         signal transitions(id: String) -> String
         signal list() -> String
     }

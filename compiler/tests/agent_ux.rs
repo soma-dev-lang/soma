@@ -761,3 +761,61 @@ cell test T {
     assert_eq!(code, 0);
     assert!(out.contains("PROVEN") || out.contains("proven"), "{out}");
 }
+
+/// Cycle 3 (adversarial): the face is a contract — a `-> Int` handler that
+/// returns a String fails check (literal) and run (value); the cost proof
+/// sees calls into other cells; lint sees through `try { }`.
+#[test]
+fn face_contracts_cross_cell_cost_and_lint_through_try() {
+    let d = dir("face_cost");
+    std::fs::write(d.join("face.cell"), "cell A {\n  face { signal typed() -> Int }\n  on typed() { return \"not an int\" }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "face.cell"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("returns a String literal but its face declares `-> Int`"), "{out}");
+
+    std::fs::write(d.join("face2.cell"), "cell A {\n  face { signal typed(s: String) -> Int }\n  on typed(s: String) { return s }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "face2.cell", "typed", "x"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("the face declares `-> Int` but the handler returned String"), "{out}");
+
+    std::fs::write(d.join("cost.cell"), r#"
+cell agent Ledger {
+  on burn(x: String) {
+    let acc = ""
+    for i in range(0, 5) { acc = acc + think(x, map("max_tokens", 50)) }
+    acc
+  }
+}
+cell agent Api {
+  cost { tokens: 100 }
+  on go(x: String) { Ledger.burn(x) }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "cost.cell"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("computed 250 tokens > declared 100"), "{out}");
+
+    std::fs::write(d.join("lint.cell"), r#"
+cell A {
+  memory { drafts: Map<String, String> }
+  on create_room(name: String) { drafts.set(name, "x")  name }
+  on send(id: String) {
+    let reply = drafts.get(id)
+    require reply != () else NoDraft
+    reply
+  }
+  on request(method: String, path: String, body: String) {
+    match map("method", method, "path", path) {
+      {method: "POST", path: "/rooms/" + name} -> {
+        let r = try { create_room(name) }
+        r.value
+      }
+      _ -> response(404, map("error", "not found"))
+    }
+  }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["lint", "lint.cell"]);
+    assert!(!out.contains("create_room' is not referenced"), "{out}");
+    assert!(!out.contains("unchecked .get()"), "{out}");
+}

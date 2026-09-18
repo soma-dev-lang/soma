@@ -2,7 +2,7 @@
 
 cell KVStore {
     face {
-        signal get(key: String) -> String
+        signal get(key: String) -> Map
         signal put(key: String, value: String)
         signal delete(key: String)
         promise "reads reflect the latest write"

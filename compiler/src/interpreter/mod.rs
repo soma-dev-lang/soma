@@ -890,10 +890,34 @@ impl Interpreter {
         let result = self.call_signal_resolved(cell_name, signal_name, args, &params, &body);
 
         self.current_handler = prev_handler;
+        // The face is a contract: `signal f() -> Int` returning a String
+        // used to pass check AND run. Checked at the boundary, with the
+        // same leniency as parameters (Map takes a record/variant/`()`).
+        // (`request` is the router: a route answers with whatever the
+        // route returns — list, string, response map — so it is exempt)
+        let result = match result {
+            Ok(val) if signal_name == "request" => Ok(val),
+            Ok(val) => match self.face_return_type(cell_name, signal_name) {
+                Some(ret) => check_return_type(signal_name, &ret, val).map_err(RuntimeError::TypeError),
+                None => Ok(val),
+            },
+            err => err,
+        };
         if let Ok(ref val) = result {
             self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), val);
         }
         result
+    }
+
+    fn face_return_type(&self, cell_name: &str, signal_name: &str) -> Option<Spanned<TypeExpr>> {
+        let cell = self.cells.get(cell_name)?;
+        cell.sections.iter().find_map(|s| match &s.node {
+            Section::Face(face) => face.declarations.iter().find_map(|d| match &d.node {
+                FaceDecl::Signal(sig) if sig.name == signal_name => sig.return_type.clone(),
+                _ => None,
+            }),
+            _ => None,
+        })
     }
 
     /// Append a record entry to the .somalog file if recording is active.
@@ -3868,6 +3892,32 @@ pub(crate) fn check_param_type(param: &Param, val: Value) -> Result<Value, Strin
             "parameter '{}' expects {}, got {} {}", param.name, ty, got, shown()
         )),
         _ => Ok(val),
+    }
+}
+
+/// `signal f(...) -> T` vs. the value the handler returned.
+pub(crate) fn check_return_type(signal: &str, ret: &Spanned<TypeExpr>, val: Value) -> Result<Value, String> {
+    let ty = match &ret.node {
+        TypeExpr::Simple(t) => t.as_str(),
+        TypeExpr::Generic { name, .. } => name.as_str(),
+        _ => return Ok(val),
+    };
+    let ok = match (ty, &val) {
+        ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_))
+        | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) | ("List", Value::List(_) | Value::Unit)
+        | ("Map", Value::Map(_) | Value::Variant { .. } | Value::Unit) => true,
+        ("Int", Value::Float(f)) => f.fract() == 0.0,
+        ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => false,
+        _ => true,
+    };
+    if ok {
+        Ok(val)
+    } else {
+        let shown: String = format!("{}", val).chars().take(40).collect();
+        Err(format!(
+            "{}(): the face declares `-> {}` but the handler returned {} {}",
+            signal, ty, value_type_name(&val), shown
+        ))
     }
 }
 

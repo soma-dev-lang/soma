@@ -174,7 +174,7 @@ fn native_int_division_matches_the_interpreter() {
     ];
     let mut src = String::from("cell D {\n    face {\n");
     for (n, _) in bodies {
-        src += &format!("        signal {n}_i(a: Int, b: Int) -> Int\n        signal {n}_n(a: Int, b: Int) -> Int\n");
+        src += &format!("        signal {n}_i(a: Int, b: Int) -> Float\n        signal {n}_n(a: Int, b: Int) -> Float\n");
     }
     src += "    }\n";
     for (n, b) in bodies {

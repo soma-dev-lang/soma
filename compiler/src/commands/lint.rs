@@ -46,6 +46,8 @@ struct LintPass<'a> {
     routed_handlers: Vec<String>,
     /// Names of all on-handlers in the cell (for private-helper check)
     all_handler_names: Vec<(String, usize)>, // (name, line)
+    /// the `let` being checked is tested against `()` right after
+    suppress_unchecked_get: bool,
 }
 
 impl<'a> LintPass<'a> {
@@ -55,6 +57,7 @@ impl<'a> LintPass<'a> {
             warnings: Vec::new(),
             routed_handlers: Vec::new(),
             all_handler_names: Vec::new(),
+            suppress_unchecked_get: false,
         }
     }
 
@@ -133,7 +136,24 @@ impl<'a> LintPass<'a> {
     // ── Rule 1: redundant to_json / from_json ───────────────────────
 
     fn check_statements(&mut self, stmts: &[Spanned<Statement>], memory_slots: &[String]) {
-        for stmt in stmts {
+        for (i, stmt) in stmts.iter().enumerate() {
+            // `let x = slot.get(k)` followed by `if x == () { … }` /
+            // `require x != () …` IS the check the lint asks for
+            if let Statement::Let { name, .. } = &stmt.node {
+                let checked_next = stmts[i + 1..].iter().take(3).any(|next| match &next.node {
+                    Statement::If { condition, .. } => cmp_with_unit(&condition.node, name),
+                    Statement::Require { constraint, .. } => constraint_mentions(&constraint.node, name),
+                    Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value } => cmp_with_unit(&value.node, name),
+                    _ => false,
+                });
+                if checked_next {
+                    let saved = self.suppress_unchecked_get;
+                    self.suppress_unchecked_get = true;
+                    self.check_statement(&stmt.node, &stmt.span, memory_slots);
+                    self.suppress_unchecked_get = saved;
+                    continue;
+                }
+            }
             self.check_statement(&stmt.node, &stmt.span, memory_slots);
         }
     }
@@ -345,7 +365,7 @@ impl<'a> LintPass<'a> {
     fn check_unchecked_get_in_let(&mut self, stmt: &Statement, span: &ast::Span, memory_slots: &[String]) {
         if let Statement::Let { name: _var_name, value } = stmt {
             // Check if value is a bare slot.get(key) without ??
-            if self.is_bare_storage_get(&value.node, memory_slots) {
+            if !self.suppress_unchecked_get && self.is_bare_storage_get(&value.node, memory_slots) {
                 let line = self.line_of(span);
                 let get_expr = self.expr_to_source(&value.node);
                 self.warn(
@@ -509,6 +529,26 @@ impl<'a> LintPass<'a> {
                     self.collect_routed_handlers(std::slice::from_ref(s));
                 }
                 self.collect_fn_calls_from_expr(&else_result.node);
+            }
+            // a route body is usually `try { handler(...) }` — see through it
+            Expr::Try(inner) | Expr::TryPropagate(inner) | Expr::Not(inner) => {
+                self.collect_fn_calls_from_expr(&inner.node);
+            }
+            Expr::FieldAccess { target, .. } => self.collect_fn_calls_from_expr(&target.node),
+            Expr::Index { target, index } => {
+                self.collect_fn_calls_from_expr(&target.node);
+                self.collect_fn_calls_from_expr(&index.node);
+            }
+            Expr::ListLiteral(items) => {
+                for it in items { self.collect_fn_calls_from_expr(&it.node); }
+            }
+            Expr::Record { fields, .. } => {
+                for (_, v) in fields { self.collect_fn_calls_from_expr(&v.node); }
+            }
+            Expr::Lambda { body, .. } => self.collect_fn_calls_from_expr(&body.node),
+            Expr::LambdaBlock { stmts, result, .. } => {
+                for s in stmts { self.collect_routed_handlers(std::slice::from_ref(s)); }
+                self.collect_fn_calls_from_expr(&result.node);
             }
             _ => {}
         }
@@ -756,4 +796,32 @@ fn print_json(warnings: &[LintWarning]) {
 
     let output = serde_json::json!({ "lints": lints });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+}
+
+/// `x == ()` / `x != ()` / `x ?? …` anywhere in the expression.
+fn cmp_with_unit(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::CmpOp { left, right, .. } => {
+            let is_name = |e: &Expr| matches!(e, Expr::Ident(n) if n == name);
+            let is_unit = |e: &Expr| matches!(e, Expr::Literal(ast::Literal::Unit));
+            (is_name(&left.node) && is_unit(&right.node)) || (is_unit(&left.node) && is_name(&right.node))
+                || cmp_with_unit(&left.node, name) || cmp_with_unit(&right.node, name)
+        }
+        Expr::BinaryOp { left, right, .. } => cmp_with_unit(&left.node, name) || cmp_with_unit(&right.node, name),
+        Expr::Not(inner) | Expr::Try(inner) => cmp_with_unit(&inner.node, name),
+        // `x ?? d` is desugared to _coalesce(x, d)
+        Expr::FnCall { name: f, args } => (f == "_coalesce" && matches!(args.first().map(|a| &a.node), Some(Expr::Ident(n)) if n == name))
+            || args.iter().any(|a| cmp_with_unit(&a.node, name)),
+        _ => false,
+    }
+}
+
+fn constraint_mentions(c: &ast::Constraint, name: &str) -> bool {
+    match c {
+        ast::Constraint::Comparison { left, right, .. } => cmp_with_unit(&left.node, name) || cmp_with_unit(&right.node, name)
+            || matches!(&left.node, Expr::Ident(n) if n == name) || matches!(&right.node, Expr::Ident(n) if n == name),
+        ast::Constraint::And(a, b) | ast::Constraint::Or(a, b) => constraint_mentions(&a.node, name) || constraint_mentions(&b.node, name),
+        ast::Constraint::Not(inner) => constraint_mentions(&inner.node, name),
+        _ => false,
+    }
 }

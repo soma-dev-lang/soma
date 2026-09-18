@@ -1,7 +1,7 @@
 // 013: JSON API — from_json(body) and return map (auto-JSON)
 cell JsonAPI {
     face {
-        signal echo(data: String) -> String
+        signal echo(data: String) -> Map
     }
     on echo(data: String) {
         let parsed = from_json(data)

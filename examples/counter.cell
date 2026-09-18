@@ -4,7 +4,7 @@ cell Counter {
     face {
         signal increment(amount: Int)
         signal decrement(amount: Int)
-        signal get() -> Int
+        signal get() -> Map
     }
 
     memory {

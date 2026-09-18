@@ -17,7 +17,7 @@ cell KeyValueAPI {
         // Each signal becomes an HTTP endpoint when served
         signal put(key: String, value: String) -> String
         signal get(key: String) -> String
-        signal delete(key: String) -> String
+        signal delete(key: String) -> Map
         signal count() -> Int
     }
 

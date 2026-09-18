@@ -9,7 +9,7 @@
 cell BigFactorial {
     face {
         // BigInt type annotation tells Soma to use arbitrary precision
-        signal compute(n: BigInt) -> BigInt
+        signal compute(n: BigInt) -> Int
     }
 
     on compute(n: BigInt) {

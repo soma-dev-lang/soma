@@ -446,6 +446,8 @@ pub struct Checker<'a> {
     pub manifest: Option<&'a crate::pkg::manifest::Manifest>,
     pub errors: Vec<CheckError>,
     pub warnings: Vec<CheckWarning>,
+    /// cell name → (handler name → body), every top-level cell
+    pub all_handlers: cost::AllHandlers,
 }
 
 impl<'a> Checker<'a> {
@@ -456,6 +458,7 @@ impl<'a> Checker<'a> {
             manifest: None,
             errors: Vec::new(),
             warnings: Vec::new(),
+            all_handlers: Default::default(),
         }
     }
 
@@ -573,6 +576,14 @@ impl<'a> Checker<'a> {
                 span: w.span,
             });
         }
+        // handlers of every top-level cell, for cross-cell cost composition
+        self.all_handlers = program.cells.iter().map(|c| {
+            let hs = c.node.sections.iter().filter_map(|s| match &s.node {
+                Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.clone())),
+                _ => None,
+            }).collect();
+            (c.node.name.clone(), hs)
+        }).collect();
         for cell in &program.cells {
             // Skip meta-cells (they define the language, not the program)
             if cell.node.kind != CellKind::Cell && cell.node.kind != CellKind::Agent {
@@ -585,6 +596,7 @@ impl<'a> Checker<'a> {
     fn check_cell(&mut self, cell: &CellDef) {
         // 1. Structural checks
         self.check_structure(cell);
+        self.check_face_return_literals(cell);
 
         // 2. Property checks (data-driven from registry)
         let mut prop_checker = PropertyChecker::new(self.registry);
@@ -634,7 +646,7 @@ impl<'a> Checker<'a> {
 
         // 4d. V1.6: cost-budget proof. Walks think()/http_*/loop sites
         // and proves peak ≤ declared. Advisory if any think() is unbounded.
-        for finding in cost::check_cell(cell, self.manifest) {
+        for finding in cost::check_cell(cell, self.manifest, &self.all_handlers) {
             match finding {
                 cost::CostFinding::Exceeded { .. } => {
                     self.errors.push(CheckError::CostExceeded {
@@ -1184,6 +1196,77 @@ impl<'a> Checker<'a> {
             }
         }
         false
+    }
+
+    /// `signal f() -> Int` with `return "text"` (or a trailing literal of
+    /// the wrong kind): the contract is checkable without running.
+    fn check_face_return_literals(&mut self, cell: &CellDef) {
+        let declared: Vec<(String, String)> = cell.sections.iter().flat_map(|s| match &s.node {
+            Section::Face(face) => face.declarations.iter().filter_map(|d| match &d.node {
+                FaceDecl::Signal(sig) => sig.return_type.as_ref().map(|t| (sig.name.clone(), match &t.node {
+                    TypeExpr::Simple(n) | TypeExpr::Generic { name: n, .. } => n.clone(),
+                    _ => "Any".to_string(),
+                })),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        }).collect();
+        if declared.is_empty() { return; }
+        fn literal_kind(e: &Expr) -> Option<&'static str> {
+            match e {
+                Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => Some("Int"),
+                Expr::Literal(Literal::Float(_)) => Some("Float"),
+                Expr::Literal(Literal::String(_)) => Some("String"),
+                Expr::Literal(Literal::Bool(_)) => Some("Bool"),
+                Expr::ListLiteral(_) => Some("List"),
+                Expr::Record { .. } => Some("Map"),
+                Expr::FnCall { name, .. } if name == "map" => Some("Map"),
+                Expr::FnCall { name, .. } if name == "list" => Some("List"),
+                _ => None,
+            }
+        }
+        fn compatible(declared: &str, got: &str) -> bool {
+            declared == got || declared == "Any"
+                || (declared == "Float" && got == "Int")
+                || (declared == "Map" && got == "Map")
+        }
+        fn walk(stmts: &[Spanned<Statement>], last_is_value: bool, out: &mut Vec<(Span, &'static str)>) {
+            let n = stmts.len();
+            for (i, st) in stmts.iter().enumerate() {
+                match &st.node {
+                    Statement::Return { value } => {
+                        if let Some(k) = literal_kind(&value.node) { out.push((value.span, k)); }
+                    }
+                    Statement::ExprStmt { expr } if last_is_value && i + 1 == n => {
+                        if let Some(k) = literal_kind(&expr.node) { out.push((expr.span, k)); }
+                    }
+                    Statement::If { then_body, else_body, .. } => {
+                        walk(then_body, last_is_value && i + 1 == n, out);
+                        walk(else_body, last_is_value && i + 1 == n, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for section in &cell.sections {
+            if let Section::OnSignal(ref h) = section.node {
+                if h.signal_name == "request" { continue; } // the router answers with whatever the route returns
+                let Some((_, ty)) = declared.iter().find(|(n, _)| n == &h.signal_name) else { continue };
+                let mut found = Vec::new();
+                walk(&h.body, true, &mut found);
+                for (span, got) in found {
+                    if !compatible(ty, got) {
+                        self.errors.push(CheckError::InterpolationUndefined {
+                            message: format!(
+                                "handler '{}' returns a {} literal but its face declares `-> {}` — fix the value or the face",
+                                h.signal_name, got, ty
+                            ),
+                            span,
+                        });
+                    }
+                }
+            }
+        }
     }
 
     fn check_structure(&mut self, cell: &CellDef) {

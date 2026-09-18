@@ -1,9 +1,9 @@
 // Test: face block declares signal interface
 cell FaceSignals {
     face {
-        signal create(name: String) -> String
+        signal create(name: String) -> Map
         signal read(id: String) -> String
-        signal delete(id: String) -> String
+        signal delete(id: String) -> Map
     }
     memory {
         data: Map<String, String> [persistent, consistent]

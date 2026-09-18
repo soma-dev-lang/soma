@@ -156,11 +156,11 @@ Scores before fixes: booking 16/40 invocations, first check/verify/test green, c
 - [x] N15 `soma run app.cell nosuch 1` ran the first handler with "nosuch" as its argument. Error with did-you-mean.
 - [x] N16 `deploy` copied the macOS binary into a debian image and exited 0 when the provider CLI was missing. Multi-stage Dockerfile builds the tag from source; exit 1.
 - [x] N17 builtins.json listed `timestamp()`/`date_now()` (reserved, not callable). Filtered; `replay` field explains `deterministic`.
-- [ ] N18 cost proof ignores cross-cell calls (`Api.f()` → 5×think in Ledger reported "peak 50"). Open.
-- [ ] N19 face return types never checked (`-> Int` returning a String passes check). Open.
+- [x] N18 cost proof ignores cross-cell calls (`Api.f()` → 5×think in Ledger reported "peak 50"). Bare and `Cell.handler` calls into other cells are composed.
+- [x] N19 face return types never checked. Literal mismatches are check errors; every return is checked at the boundary (Map takes record/variant/`()`, `request` exempt). 17 corpus faces were lying and are fixed.
 - [ ] N20 `[native]` vocabulary only checked at run time, one error per run; a `List<Float>` parameter is lowered to f64 with a rustc dump; the buffer API (buf_get…) is undocumented. Open.
 - [ ] N21 auto-exposure of face signals when `request` exists (3 agents): unplanned surface, no auth story. Open (documented).
-- [ ] N22 lint false positives ("not referenced in request routing" through try/match; unchecked .get() followed by a `== ()` test). Open.
+- [x] N22 lint false positives: routing collection sees through try/match/lambdas; `.get()` followed by a `()` test or `require` is not "unchecked".
 - [ ] N23 verify prints "proven (writes abs(v))" for a Float writer where NaN is rejected at runtime. Wording open.
 
 ### Smaller (fixed)

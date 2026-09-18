@@ -3,7 +3,7 @@ cell ReturnTypes {
     face {
         signal get_count() -> Int
         signal get_name() -> String
-        signal get_data() -> String
+        signal get_data() -> Map
     }
     on get_count() {
         return 42

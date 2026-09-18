@@ -3,7 +3,7 @@
 
 cell Fact {
     face {
-        signal compute(n: BigInt) -> BigInt
+        signal compute(n: BigInt) -> Int
         promise "returns n factorial, arbitrary precision"
     }
 

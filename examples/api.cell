@@ -2,11 +2,11 @@
 
 cell UserAPI {
     face {
-        signal create(data: Map<String, String>) -> String
+        signal create(data: Map<String, String>) -> Map
         signal get(id: String) -> String
         signal list() -> String
-        signal update(id: String, data: Map<String, String>) -> String
-        signal delete(id: String) -> String
+        signal update(id: String, data: Map<String, String>) -> Map
+        signal delete(id: String) -> Map
         promise all_persistent
     }
 

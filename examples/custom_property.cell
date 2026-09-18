@@ -25,7 +25,7 @@ cell property compressed {
 
 cell GlobalUserStore {
     face {
-        signal get_user(id: String) -> String
+        signal get_user(id: String) -> Map
         signal put_user(id: String, data: String)
         promise "reads reflect latest write"
         promise latency < 200ms

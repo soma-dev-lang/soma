@@ -178,7 +178,7 @@ cell Menu {
 cell Orders {
     face {
         signal place_order(customer: String, rest: String, dishes: String, pay: String) -> Map
-        signal accept_order(id: String) -> String
+        signal accept_order(id: String) -> Map
         signal cook_order(id: String) -> String
         signal ready_order(id: String) -> String
         signal pickup_order(id: String, courier: String) -> String
