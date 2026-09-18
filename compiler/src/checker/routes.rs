@@ -89,6 +89,19 @@ pub fn explicit_routes(cell: &CellDef) -> ExplicitRoutes {
             super::literals::for_each_expr(&h.body, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
                 if matches!(&target.node, Expr::Ident(t) if *t == cell.name) { called.push(method.clone()); }
             });
+            // `emit audit(1)` runs this cell's `on audit`, and what IT calls
+            // (request → emit → listener → wipe left POST /wipe open)
+            fn emits(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
+                for st in stmts {
+                    match &st.node {
+                        Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
+                        Statement::If { then_body, else_body, .. } => { emits(then_body, out); emits(else_body, out); }
+                        Statement::For { body, .. } | Statement::While { body, .. } => emits(body, out),
+                        _ => {}
+                    }
+                }
+            }
+            emits(&h.body, &mut called);
             for n in called {
                 if n == "request" || !seen.insert(n.clone()) { continue; }
                 if let Some(next) = local.get(n.as_str()) {

@@ -609,7 +609,10 @@ impl<'a> Checker<'a> {
         for w in habit_warnings {
             self.warnings.push(CheckWarning::HabitWarning { message: w.message, span: w.span });
         }
-        for issue in guards::check_program(program) {
+        // on the desugared program: a transition in `"{…}"`, a UFCS
+        // `id.transition("b")` or a `require` condition escaped the rule
+        let exposed_for_guards = crate::checker::desugar::expose_for_analysis(program);
+        for issue in guards::check_program(&exposed_for_guards) {
             self.errors.push(CheckError::GuardScope { message: issue.message, span: issue.span });
         }
         let (dead_errors, dead_warnings) = dead_code::check_program(program);

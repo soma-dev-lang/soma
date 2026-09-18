@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- A lambda call counts toward the recursion guard (self-application aborted
+  the process); calling a function value is a termination ⚠.
+- Cost sees think() in index/field assignments; the guard rule and route
+  ownership see UFCS, interpolation, require and emit chains.
+- A bare slot name never reaches another cell's storage (it bypassed the
+  owner's invariant); writes to slots with non-size invariants no longer
+  count the slot (bulk loads were quadratic).
+- `mock think` token accounting is capped at max_tokens.
+
 ## 2.5.1 — 2026-09-18
 
 A hardening release: seventeen more fresh-agent cycles (realistic ports —

@@ -792,6 +792,19 @@ impl<'a> Walker<'a> {
     fn check_segment_expr(&mut self, expr: &Expr, bound: &mut HashSet<String>, span: Span) {
         match expr {
             Expr::Ident(name) => {
+                // another cell's slot inside `{…}` (it reached that cell's
+                // storage: a write past its invariant, a read of its secret)
+                if !self.in_test && !bound.contains(name) && !self.scope.contains(name)
+                    && self.index.slots.contains(name) && !self.cell_slots.contains(name) {
+                    self.issues.push(InterpolationIssue {
+                        message: format!("`{name}` is a memory slot of another cell — a cell's slots are private to it: call a handler of the cell that owns `{name}`"),
+                        span,
+                        warning: false,
+                        habit: false,
+                        kind: "foreign_slot",
+                    });
+                    return;
+                }
                 if !bound.contains(name) && !self.known(name) {
                     self.report_undefined_var(name, span);
                 }

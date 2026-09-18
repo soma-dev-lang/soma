@@ -443,7 +443,11 @@ fn agent_think(
         };
         // a mocked call still costs: ~4 characters per token, prompt and
         // reply, so `set_budget` exhaustion (kind `budget`) is testable offline
-        let est = ((prompt.chars().count() + response.chars().count()) as i64 + 3) / 4;
+        // the REPLY part is capped at max_tokens like a provider's (a long
+        // scripted reply counted 41 against a proven bound of 10)
+        let reply_tokens = (response.chars().count() as i64 + 3) / 4;
+        let reply_tokens = match max_tokens { Some(m) if m > 0 => reply_tokens.min(m as i64), _ => reply_tokens };
+        let est = (prompt.chars().count() as i64 + 3) / 4 + reply_tokens;
         let est = est.max(1);
         interp.agent_tokens_used += est;
         interp.agent_trace.push(super::llm::trace_think_with(0, prompt, system.unwrap_or(""), est, interp.agent_tokens_used, "stop"));

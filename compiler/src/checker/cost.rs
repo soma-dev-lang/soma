@@ -164,6 +164,12 @@ impl<'a> CostWalk<'a> {
             Statement::MethodCall { args, .. } => {
                 for a in args { self.visit_expr(&a.node, handler_name); }
             }
+            // `answers[k] = think(…)`, `g.f += …`: the index and the value
+            // spend too (every lvalue assignment was invisible: "peak 0")
+            Statement::IndexSet { index, value, .. } => {
+                self.visit_expr(&index.node, handler_name);
+                self.visit_expr(&value.node, handler_name);
+            }
             // `emit ev(…)` runs every `on ev` of the process, synchronously:
             // their think() calls are this handler's spend too
             Statement::Emit { signal_name, args } => {

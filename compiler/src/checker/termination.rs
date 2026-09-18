@@ -79,6 +79,34 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
             for stmt in &on.body {
                 check_stmt_termination(&stmt.node, &on.signal_name, &on.params, &mut reasons);
             }
+            // a call of a FUNCTION VALUE (a lambda in a local or a parameter):
+            // `let f = g => g(g)  f(f)` recurses with no handler call at all
+            // ("structurally terminates", then a stack overflow)
+            {
+                let mut fn_values: std::collections::HashSet<String> = on.params.iter().map(|p| p.name.clone()).collect();
+                crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
+                    Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } => { fn_values.insert(param.clone()); }
+                    _ => {}
+                });
+                fn let_lambdas(stmts: &[Spanned<Statement>], out: &mut std::collections::HashSet<String>) {
+                    for st in stmts {
+                        match &st.node {
+                            Statement::Let { name, value } | Statement::Assign { name, value } if matches!(value.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }) => { out.insert(name.clone()); }
+                            Statement::If { then_body, else_body, .. } => { let_lambdas(then_body, out); let_lambdas(else_body, out); }
+                            Statement::For { body, .. } | Statement::While { body, .. } => let_lambdas(body, out),
+                            _ => {}
+                        }
+                    }
+                }
+                let_lambdas(&on.body, &mut fn_values);
+                let mut called: Option<String> = None;
+                crate::checker::literals::for_each_expr(&on.body, &mut |e| if let Expr::FnCall { name, .. } = e {
+                    if called.is_none() && fn_values.contains(name) { called = Some(name.clone()); }
+                });
+                if let Some(f) = called {
+                    reasons.push(format!("calls the function value `{}` — a lambda can call itself (`g => g(g)`), so termination is not proven", f));
+                }
+            }
             let mut self_recursive = false;
             for stmt in &on.body {
                 walk_stmt(&stmt.node, &mut |e| {

@@ -989,10 +989,12 @@ impl Interpreter {
             let Some(backend) = self.storage.get(&key).or_else(|| self.storage.get(&slot_name)).cloned() else { continue };
             let mut bad = 0usize;
             let mut sample = String::new();
+            // counted ONCE (per key it made the start-up audit quadratic:
+            // 21 s to start a 50k-policy book)
+            let size = backend.len() as i64;
             for k in backend.keys().into_iter().take(10_000) {
                 let Some(stored) = backend.get(&k) else { continue };
                 let val = self.from_slot(&cell_name, &slot_name, stored_to_value(stored));
-                let size = backend.len() as i64;
                 if self.check_invariants(&cell_name, &slot_name, &k, &val, size, "read").is_err() {
                     bad += 1;
                     if sample.is_empty() { sample = format!("key \"{}\" = {}", k, val); }
@@ -2194,7 +2196,7 @@ impl Interpreter {
                                 // `len(slot)`: counted by the backend — reading
                                 // the bare name materialized every row
                                 None => if let Some(kind) = self.slot_kind(cell_name, local) {
-                                    if let Some(b) = self.storage.get(&format!("{}.{}", cell_name, local)).or_else(|| self.storage.get(local.as_str())) {
+                                    if let Some(b) = self.storage.get(&format!("{}.{}", cell_name, local)).or_else(|| if cell_name.is_empty() { self.storage.get(local.as_str()) } else { None }) {
                                         let n = if kind == "List" { b.list_len() } else { b.len() };
                                         return Ok(Value::Int(SomaInt::from_i64(n as i64)));
                                     }
@@ -2787,7 +2789,7 @@ impl Interpreter {
                         // `rows[i]` on a List slot raises like `xs[i]` on a list
                         // (it answered () out of range, and for `rows["1"]`)
                         if self.slot_kind(cell_name, slot_name) == Some("List") {
-                            let backend = self.storage.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| self.storage.get(slot_name.as_str())).cloned();
+                            let backend = self.storage.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.storage.get(slot_name.as_str()) } else { None }).cloned();
                             if let Some(b) = backend {
                                 let i = list_position(&key, b.list_len(), "list").map_err(ExecError::Runtime)?;
                                 return Ok(b.list_get(i).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).unwrap_or(Value::Unit));
@@ -2951,7 +2953,10 @@ impl Interpreter {
     ) -> Result<Value, ExecError> {
         let prefixed = format!("{}.{}", cell_name, slot_name);
         let backend = self.storage.get(&prefixed)
-            .or_else(|| self.storage.get(slot_name));
+            // the bare name only without a cell (a test rule): from a cell it
+            // reached ANOTHER cell's slot (`"{bal.set(id, -3)}"` skipped the
+            // owner's invariant and the privacy rule)
+            .or_else(|| if cell_name.is_empty() { self.storage.get(slot_name) } else { None });
 
         let backend = match backend {
             // Arc clone: ends the borrow of self.storage so arms can call
@@ -3097,8 +3102,12 @@ impl Interpreter {
                 // a violated invariant must leave the slot untouched.
                 // (the COUNT is paid only by a slot that has invariants)
                 if self.slot_has_invariants(cell_name, slot_name) {
-                    let exists = backend.get(&key_str).is_some();
-                    let size_after = backend.len() as i64 + if exists { 0 } else { 1 };
+                    // the COUNT only when an invariant reads `size` (it made
+                    // every write O(slot size): a 50k-entry load took minutes)
+                    let size_after = if self.slot_invariants_use_size(cell_name, slot_name) {
+                        let exists = backend.get(&key_str).is_some();
+                        backend.len() as i64 + if exists { 0 } else { 1 }
+                    } else { 0 };
                     self.check_invariants(cell_name, slot_name, &key_str, val, size_after, "write")?;
                 }
 
@@ -3127,7 +3136,8 @@ impl Interpreter {
                 // slot value is bound to the entry being removed (it already
                 // satisfied the invariant when written, so only size/key
                 // clauses can flip). Deleting a missing key is a no-op.
-                if !self.slot_has_invariants(cell_name, slot_name) {
+                if !self.slot_has_invariants(cell_name, slot_name) || !self.slot_invariants_use_size(cell_name, slot_name) {
+                    // (a delete can only flip a `size` clause)
                 } else if let Some(stored) = backend.get(&key_str) {
                     let old = self.from_slot(cell_name, slot_name, stored_to_value(stored));
                     let size_after = backend.len() as i64 - 1;
@@ -3163,7 +3173,7 @@ impl Interpreter {
                 // a List lives in the log table: `len()` counts the MAP rows
                 // (0 on SQLite), so `rows.size <= N` never refused a push
                 if self.slot_has_invariants(cell_name, slot_name) {
-                    let size_after = backend.list_len() as i64 + 1;
+                    let size_after = if self.slot_invariants_use_size(cell_name, slot_name) { backend.list_len() as i64 + 1 } else { 0 };
                     self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
                 }
                 if let Some(j) = self.journal.as_mut() {
@@ -3938,6 +3948,14 @@ impl Interpreter {
         }
     }
 
+    fn slot_invariants_use_size(&self, cell_name: &str, slot_name: &str) -> bool {
+        let invs = self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None });
+        let Some(invs) = invs else { return false };
+        let mut names: HashSet<String> = HashSet::new();
+        for inv in invs { free_names_expr(inv, &mut names); }
+        names.iter().any(|n| matches!(n.as_str(), "size" | "_slot_len" | "len" | "count"))
+    }
+
     fn slot_has_invariants(&self, cell_name: &str, slot_name: &str) -> bool {
         // the unqualified key only without a cell (a test rule): another
         // cell's invariant on a slot of the same name refused valid writes
@@ -3992,6 +4010,20 @@ impl Interpreter {
     }
 
     pub(crate) fn apply_lambda(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
+        // a lambda call counts toward the recursion guard like a handler
+        // call: `let f = g => g(g)  f(f)` overflowed the OS stack and
+        // aborted the server
+        self.current_depth += 1;
+        if self.current_depth > self.max_depth {
+            self.current_depth -= 1;
+            return Err(ExecError::Runtime(RuntimeError::StackOverflow));
+        }
+        let r = self.apply_lambda_inner(lambda, arg, cell_name);
+        self.current_depth -= 1;
+        r
+    }
+
+    fn apply_lambda_inner(&mut self, lambda: &Value, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
         match lambda {
             Value::Lambda { param, body, env: closed_env } => {
                 let mut env: Env = closed_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -4749,7 +4781,7 @@ impl Interpreter {
     fn materialize_slot(&mut self, cell_name: &str, name: &str) -> Option<Value> {
         let kind = self.slot_kind(cell_name, name)?;
         let backend = self.storage.get(&format!("{}.{}", cell_name, name))
-            .or_else(|| self.storage.get(name))?.clone();
+            .or_else(|| if cell_name.is_empty() { self.storage.get(name) } else { None })?.clone();
         Some(match kind {
             "List" => Value::List(backend.list().into_iter().map(|v| self.from_slot(cell_name, name, stored_to_value(v))).collect()),
             _ => {

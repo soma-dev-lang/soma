@@ -107,7 +107,7 @@ cell Templates {
                     <div class="regime-info">
                         <div class="regime-label" style="color:{rc}">{cfg.label}</div>
                         <div class="regime-detail">
-                            Breadth: {breadth}% | Avg Vol: {avg_vol} | Exposure: {cfg.exposure}% | Cash: {portfolio.cash_pct}%
+                            Breadth: {breadth}% | Avg Vol: {avg_vol} | Exposure: {cfg.exposure}% | Cash: {pf.cash_pct}%
                         </div>
                     </div>
                     <div class="cycle-badge">Cycle #{cycle}</div>

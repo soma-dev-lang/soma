@@ -554,7 +554,7 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
             {
                 return Err(NativeCheckError {
                     handler_name: handler_name.to_string(),
-                    reason: format!("calls non-native function '{}'", name),
+                    reason: format!("calls '{}', which is not a [native] handler of this cell (a [native] handler calls only builtins of the native vocabulary and [native] handlers of its OWN cell — move '{}' here or drop [native])", name, name),
                 });
             }
             for arg in args { check_expr(handler_name, &arg.node, siblings)?; }

@@ -2391,3 +2391,33 @@ cell B {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("takes 1"), "{out}");
 }
+
+/// Cycle 29 (attack): lambda self-application hits the recursion guard (it
+/// aborted the process) and is not "structurally terminating"; think() in
+/// an index assignment is costed; a bare foreign slot in interpolation is
+/// refused at check and at run time; the guard rule sees UFCS/interpolated
+/// transitions.
+#[test]
+fn cycle29_attack_findings() {
+    let d = dir("cycle29a");
+    std::fs::write(d.join("l.cell"), "cell L {\n  on h(n: Int) {\n    let f = g => g(g)\n    return f(f)\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "l.cell", "h", "1"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("stack overflow"), "{out}");
+    let (out, _) = soma_in(&d, &["verify", "l.cell"]);
+    assert!(out.contains("calls the function value"), "{out}");
+
+    std::fs::write(d.join("c.cell"), "cell agent C {\n  cost { tokens: 100 }\n  on h(n: Int) {\n    let answers = map()\n    answers[\"a\"] = think(\"q\")\n    return answers\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "c.cell"]);
+    assert_ne!(code, 0, "think() in an index assignment was invisible to cost: {out}");
+
+    std::fs::write(d.join("f.cell"), "cell Store { memory { bal: Map<String, Int> [persistent] invariant bal >= 0 } on dep(k: String) { bal.set(k, 1) } }\ncell App { on h(n: Int, id: String) { return \"{bal.set(id, n)}\" } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "f.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("memory slot of another cell"), "{out}");
+
+    std::fs::write(d.join("g.cell"), "cell G {\n  state s { initial: a  a -> b { guard { amount > 0 } } }\n  on ok(id: String, amount: Int) { transition(id, \"b\") }\n  on h2(id: String) { return id.transition(\"b\") }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("handler `h2`"), "{out}");
+}

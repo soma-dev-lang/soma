@@ -804,3 +804,28 @@ No proven property failed.
 - [ ] Several check gaps from the attack remain (variant constructor field types, literal wrong-type slot writes, `m.push` on a Map slot, `map("a")`, `think()` with no argument) — all raise at run time.
 - [ ] `to_string(1.5e300)` prints every binary digit; `-0.0` round-trips as `0.0` in a Float slot.
 - [ ] A string on the line after `require … else Tag` becomes its detail.
+
+## Cycle 29 (2026-09-18) — insurance policy administration and claims
+
+7.5/10: check, 145 tests (4 exhaustive forall properties), verify --strict
+(45 temporal properties, 10 money writers proven) green; 50k-policy nightly
+rating byte-identical to a Python Decimal reference (native 7 ms vs 336 ms
+interpreted); kill -9 twice under 25k requests: nothing lost, audit exact.
+
+### Fixed
+- [x] **Quadratic writes**: every write to a slot with an invariant counted the whole slot (1,000 writes on 20k entries: 444 ms; a 50k load took 417 s) — the COUNT only when an invariant reads `size` (4 ms); the start-up audit counted the slot once per key (4.3 s → 0.5 s).
+- [x] `mock think` replies were counted past max_tokens in tests (41 tokens against a proven 10) — the reply part is capped like a provider's.
+- [x] A [native] call into another cell's [native] handler said "non-native function" — says the callee must be in the same cell.
+
+### Cycle 29 — attack (construct × analysis matrix, same binary)
+
+65 constructs × 8 analyses: invariant prover, think-isolation, refinement and GET-405 held everywhere; the holes:
+- [x] **One GET killed the server**: recursion through lambdas only (`let f = g => g(g)  f(f)`) bypassed the recursion guard (OS stack overflow, exit 134) and verify said "structurally terminates" — lambda calls count toward the guard (`stack_overflow`), and calling a function value is a termination ⚠.
+- [x] **False cost proof**: think() in any lvalue assignment (`answers[k] = think(…)`, `g.f += …`) was invisible ("peak 0", spent 3000) — costed.
+- [x] **Private slots bypassed**: a bare foreign slot inside `"{…}"` (`"{bal.set(id, -3)}"`) wrote another cell's storage past its invariant, and reads leaked its secrets — the unqualified storage fallback is for test rules only; check refuses it in segments too. (quant's template read another cell's slot this way — fixed.)
+- [x] The guard-binding rule missed transitions in interpolation, UFCS and require — run on the desugared program.
+- [x] Route ownership did not follow `request → emit → listener → handler` (POST /wipe open without auth) — it follows emits.
+
+### Open
+- [ ] `try { … }?` of an always-rejected write is described as "the handler catches it"; `"a" |> counts.set(99)` and a self-referencing lambda pass check.
+- [ ] Warnings from imported files still carry the importer's file and line.
