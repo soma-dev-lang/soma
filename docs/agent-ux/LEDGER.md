@@ -773,3 +773,34 @@ out-of-hand plays refused. No false proof.
 ### Open
 - [ ] A string literal on the line after `require … else Tag` becomes the require's detail (the parser does not see newlines).
 - [ ] `sort_by` with NaN keys does not sort; Int/Float `==` goes through f64.
+
+## Cycle 28 (2026-09-18) — warehouse management across two processes
+
+7/10: check, 83 + 16 tests, verify --strict green on both processes; 2,124
+scans through an idempotent bus outbox with kill -9 of each process: nothing
+lost, ledger audit exact (received − adjusted − counted − shipped = on hand).
+No proven property failed.
+
+### Fixed
+- [x] **Silent wrong value**: `let s = if … { 1 } else { if … { 2 } else { 3 } }` was `()` (a nested if STATEMENT as the block's last line) — it is the block's value.
+- [x] The composition lint demanded compensation for a callee that RAISES (the whole handler rolls back) and failed --strict on correct code — it now flags only callees that catch their own failed transition and return normally.
+- [x] `soma check` warned "emit … goes nowhere" for every cross-process emit — silent when soma.toml lists `[peers]`.
+- [x] Docs: start() runs before the peer links; bus events wait for the handler lock; two-way peers reconnect.
+
+### Cycle 28 — attack (same binary)
+
+- [x] **False cost proofs**: a think() in a `while` CONDITION was costed once ("proven 10", spent 50) — counted per iteration + 1, and an unbounded while spending in its condition is advisory; `max_rounds` given twice was costed by its first value and run with its last — the last.
+- [x] **Auth bypass**: a handler `request` reaches through UFCS (`k.wipe()`), interpolation (`"{wipe(k)}"`) or `delegate("Api", "wipe", k)` was still a direct endpoint — route ownership is computed on the desugared program.
+- [x] **Record forgery through storage**: a String in a `Map<String, Any>` / `List<Any>` slot came back parsed as JSON (`{"_type": "Admin"}` became a record, is_a true) — Any and String slots give back the String.
+- [x] Transitions from a cell without a machine escaped refinement, think-isolation and the literal-target check — with one machine they are modelled (an undeclared target is ✗); with none or several they are a check error.
+- [x] A literal sub-pattern (`Charged { tx: "t1" }`) counted as covering the variant — it does not.
+- [x] BigInt arguments read as 0: `clamp(2^70, 10, 20)` was 10 (and "proven"), `pow_mod` with big operands 0/1 — exact; counts, indexes, widths and code points past 64 bits raise kind `range`.
+- [x] Native `len(s)` counted bytes (interpreted: characters) — characters; `str_at` errors say the index as written, kind `index`, in both.
+- [x] An invariant of one cell applied to another cell's slot of the same name — scoped to its cell.
+- [x] `B.bh()` with the wrong argument count passed check — an error.
+- [x] verify printed "✓ refinement: h ⟶ {nowhere}" next to the ✗ for that undeclared target — the ✓ is gone.
+
+### Open
+- [ ] Several check gaps from the attack remain (variant constructor field types, literal wrong-type slot writes, `m.push` on a Map slot, `map("a")`, `think()` with no argument) — all raise at run time.
+- [ ] `to_string(1.5e300)` prints every binary digit; `-0.0` round-trips as `0.0` in a Float slot.
+- [ ] A string on the line after `require … else Tag` becomes its detail.

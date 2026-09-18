@@ -49,6 +49,14 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
         }
     }
 
+    // counts, indexes, widths and code points are 64-bit: a BigInt there was
+    // read as 0 (range(2^70, 2^70 + 3) == [], substring(s, 1, 2^70) == "",
+    // random(2^70) == 0) — say so instead
+    if matches!(name, "range" | "random" | "chr" | "substring" | "slice" | "pad_left" | "pad_right" | "repeat" | "take" | "drop" | "with" | "nth" | "days_in_month" | "sleep" | "str_at" | "left" | "right")
+        && args.iter().any(|a| matches!(a, Value::Int(i) if i.to_i64().is_none()))
+    {
+        return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("{}(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)", name) }));
+    }
     // Try each category in order. A panic inside a builtin (a capacity
     // overflow the size checks missed) is an ordinary `try`-catchable error
     // of kind `internal`, not the end of the process.

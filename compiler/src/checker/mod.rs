@@ -893,6 +893,38 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // `transition()` in a cell with no state machine: it moved the
+        // program's only machine unseen by refinement, think-isolation and
+        // the guard rule (or raised at run time with several machines)
+        {
+            let has_machine = |c: &CellDef| c.sections.iter().any(|s| matches!(s.node, Section::State(_)));
+            let machines = program.cells.iter().filter(|c| has_machine(&c.node)).count();
+            let any_machine = machines > 0;
+            // with exactly ONE machine the runtime moves it (and verify now
+            // models those calls); with none or several it can only fail
+            for cell in program.cells.iter().filter(|c| machines != 1 && matches!(c.node.kind, CellKind::Cell | CellKind::Agent) && !has_machine(&c.node)) {
+                for sec in &cell.node.sections {
+                    let body = match &sec.node {
+                        Section::OnSignal(on) => &on.body,
+                        Section::Every(e) | Section::After(e) => &e.body,
+                        _ => continue,
+                    };
+                    let mut hit = false;
+                    literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, .. } = e { if name == "transition" { hit = true; } });
+                    if hit {
+                        self.errors.push(CheckError::Static {
+                            kind: "transition_no_machine",
+                            message: if any_machine {
+                                format!("cell {} calls transition() but has no state machine — a transition moves the machine of the CALLING cell: call a handler of the cell that owns the machine", cell.node.name)
+                            } else {
+                                format!("cell {} calls transition() but the program declares no state machine", cell.node.name)
+                            },
+                            span: sec.span,
+                        });
+                    }
+                }
+            }
+        }
         // `assert_fails transition(id, "x")` in a program with several
         // machines raised "which machine?" (kind type) and passed for the
         // wrong reason; a test names the machine by calling its cell's handler

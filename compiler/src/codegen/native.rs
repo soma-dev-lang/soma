@@ -4491,7 +4491,8 @@ impl FnGenerator {
                 let arg_ty = self.infer_expr_type(&args[0].node);
                 if arg_ty == NativeType::String {
                     let a = self.gen_expr_direct(&args[0].node, NativeType::String);
-                    format!("({}.len() as i64)", a)
+                    // len = characters, as interpreted (len("😀é") is 2); str_len = bytes
+                    if name == "len" { format!("({}.chars().count() as i64)", a) } else { format!("({}.len() as i64)", a) }
                 } else {
                     {
                         self.err("len() is only supported on String values in [native]");
@@ -5844,11 +5845,12 @@ impl FnGenerator {
             "str_len" | "len" if args.len() == 1 => {
                 let arg_ty = self.infer_expr_type(&args[0].node);
                 if arg_ty == NativeType::String {
-                    if let Expr::Ident(name) = &args[0].node {
-                        return format!("Integer::from({}.len() as i64)", name);
+                    let counter = if name == "len" { ".chars().count()" } else { ".len()" };
+                    if let Expr::Ident(v) = &args[0].node {
+                        return format!("Integer::from({}{} as i64)", v, counter);
                     }
                     let a = self.gen_expr_direct(&args[0].node, NativeType::String);
-                    format!("Integer::from(({}).len() as i64)", a)
+                    format!("Integer::from(({}){} as i64)", a, counter)
                 } else {
                     self.err("len() / str_len() only supported on String");
                     "Integer::from(0i64)".to_string()

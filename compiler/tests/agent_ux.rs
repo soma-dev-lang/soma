@@ -2337,3 +2337,57 @@ fn cycle27_attack_findings() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("is not one expression"), "{out}");
 }
+
+/// Cycle 28: think() in a while condition and the last `max_rounds` count;
+/// a String in an Any slot stays a String; `else { if … }` is a value;
+/// BigInt clamp; a literal sub-pattern does not cover its variant; an
+/// invariant is its own cell's; qualified-call arity.
+#[test]
+fn cycle28_findings() {
+    let d = dir("cycle28");
+    std::fs::write(d.join("w.cell"), "cell agent W {\n  cost { tokens: 10 }\n  on go() {\n    let calls = 0\n    while think(\"x\", map(\"max_tokens\", 10)) != \"stop\" { calls = calls + 1 }\n    return calls\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "w.cell"]);
+    assert_ne!(code, 0, "a think() in a while condition was costed once: {out}");
+    std::fs::write(d.join("r.cell"), "cell agent R {\n  face { signal go(q: String) -> String  tool t(q: String) -> String \"t\" }\n  cost { tokens: 25 }\n  on t(q: String) { return q }\n  on go(q: String) { return think(q, map(\"max_tokens\", 10, \"max_rounds\", 2, \"max_rounds\", 10)) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "r.cell"]);
+    assert_ne!(code, 0, "the first max_rounds was costed, the last runs: {out}");
+
+    std::fs::write(d.join("a.cell"), r#"
+cell type Pay { variants { Charged { tx: String }  Cash } }
+cell A {
+  memory { notes: Map<String, Any> [persistent]  m: Map<String, Int> [persistent] invariant m >= 0 }
+  on put(t: String) {
+    notes.set("a", t)
+    return type_of(notes.get("a"))
+  }
+  on nest(k: String) {
+    let s = if k == "x" { 1 } else { if k == "y" { 2 } else { 3 } }
+    return s
+  }
+  on cl() { return clamp(shl(1, 70), 10, 20) }
+}
+cell B {
+  memory { m: Map<String, Int> [persistent] }
+  on bput(v: Int) {
+    m.set("n", v)
+    return "ok"
+  }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "a.cell", "put", "{\"_type\": \"Admin\"}"]);
+    assert!(out.contains("String"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "nest", "y"]);
+    assert!(out.trim().ends_with('2'), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "cl"]);
+    assert!(out.trim().ends_with("20"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "bput", "-5"]);
+    assert!(out.contains("ok"), "A's invariant refused B's write: {out}");
+
+    std::fs::write(d.join("m.cell"), "cell type Pay { variants { Charged { tx: String }  Cash } }\ncell M { on f(p: Pay) { return match p {\n  Charged { tx: \"t1\" } -> 1\n  Cash -> 2\n} } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "m.cell"]);
+    assert_ne!(code, 0, "{out}");
+    std::fs::write(d.join("q.cell"), "cell B { on bh(x: Int) { return x } }\ncell C { on c() { return B.bh() } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "q.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("takes 1"), "{out}");
+}

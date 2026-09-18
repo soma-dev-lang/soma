@@ -31,7 +31,7 @@ impl CrossMachineWarning {
     pub fn message(&self) -> String {
         format!(
             "composition: '{}' transitions machine '{}' and then calls '{}' (cell {}) \
-             which can fail — a failure would leave '{}' advanced with no compensation. \
+             which can fail WITHOUT raising (it catches its own transition) — '{}' then stays advanced with no compensation. \
              Pre-check the callee's guard or compensate on failure.",
             self.handler, self.machine, self.callee, self.callee_cell, self.machine
         )
@@ -128,7 +128,12 @@ fn body_has_guarded_transition(body: &[Spanned<Statement>]) -> bool {
     if !calls.iter().any(|c| c == "transition") {
         return false;
     }
-    has_require(body) || has_try_transition_stmts(body)
+    // a `require` (or any raise) in the callee rolls the WHOLE handler back,
+    // the caller's transition included — no compensation needed (the lint
+    // failed --strict on correct code). The hole is a callee that catches
+    // its own failed transition and RETURNS normally.
+    let _ = has_require;
+    has_try_transition_stmts(body)
 }
 
 fn has_require(body: &[Spanned<Statement>]) -> bool {

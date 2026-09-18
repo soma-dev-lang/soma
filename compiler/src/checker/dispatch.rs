@@ -307,7 +307,8 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
             let mut emits: Vec<String> = Vec::new();
             visit_emits(body, &mut emits);
             for ev in emits {
-                if !index.handler_map.contains_key(&ev) && !index.known.contains(&ev) {
+                if !index.handler_map.contains_key(&ev) && !index.known.contains(&ev)
+                    && !crate::commands::HAS_PEERS.load(std::sync::atomic::Ordering::Relaxed) {
                     warnings.push(DispatchFinding {
                         message: format!(
                             "emit {ev}(…) in {}.{handler_label}: no cell has `on {ev}(…)` — the event goes nowhere in this process (declare the handler, or fix the name)",

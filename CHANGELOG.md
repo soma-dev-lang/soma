@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Cost: think() in a while condition counts per iteration; the last
+  `max_rounds` wins. Route ownership sees UFCS, interpolation and delegate
+  calls (auth bypass).
+- Storage: an Any slot gives back the String it stored (no JSON re-parse).
+- `else { if … }` is a value; exhaustiveness ignores refutable sub-patterns;
+  BigInt-exact clamp / pow_mod, 64-bit limits raise; native len counts
+  characters; invariants are per cell; qualified-call arity is checked.
+- verify models transitions from a machine-less cell (single-machine
+  programs); the composition lint flags only callees that swallow failures.
 - serve: `emit` is not pushed to WebSocket clients (only `publish` is; SSE
   clients get an emit only when they name it); each WebSocket client has its
   own queue (a slow client is dropped instead of starving the others);

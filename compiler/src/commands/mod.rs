@@ -71,6 +71,9 @@ pub fn find_stdlib() -> PathBuf {
 fn validate_manifest_beside(path: &PathBuf) {
     let toml_path = path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
     let Ok(content) = fs::read_to_string(&toml_path) else { return };
+    if let Ok(m) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
+        if !m.peers.is_empty() { HAS_PEERS.store(true, std::sync::atomic::Ordering::Relaxed); }
+    }
     if let Err(e) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
         eprintln!("error: {} does not parse — its [verify] properties and [agent] settings would be ignored", toml_path.display());
         for line in e.to_string().lines() {
@@ -85,6 +88,10 @@ fn validate_manifest_beside(path: &PathBuf) {
 /// stdout as one JSON object, so a machine reader never sees an empty
 /// stdout with exit 1.
 pub static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// soma.toml beside the program lists [peers]: an `emit` nobody handles
+/// here is meant for another process (not a lost event)
+pub static HAS_PEERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Set by `soma verify`: a fatal error before any proof (unreadable file,
 /// bad soma.toml, lex/parse/import error) still ends with the one verdict

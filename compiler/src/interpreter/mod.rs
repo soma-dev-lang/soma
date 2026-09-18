@@ -3939,7 +3939,9 @@ impl Interpreter {
     }
 
     fn slot_has_invariants(&self, cell_name: &str, slot_name: &str) -> bool {
-        self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| self.invariants.get(slot_name)).map_or(false, |v| !v.is_empty())
+        // the unqualified key only without a cell (a test rule): another
+        // cell's invariant on a slot of the same name refused valid writes
+        self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None }).map_or(false, |v| !v.is_empty())
     }
 
     fn check_invariants(
@@ -3952,7 +3954,7 @@ impl Interpreter {
         op: &str,
     ) -> Result<(), ExecError> {
         let prefixed = format!("{}.{}", cell_name, slot_name);
-        let invs = match self.invariants.get(&prefixed).or_else(|| self.invariants.get(slot_name)) {
+        let invs = match self.invariants.get(&prefixed).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None }) {
             Some(v) if !v.is_empty() => v.clone(),
             _ => return Ok(()),
         };
@@ -4545,7 +4547,13 @@ impl Interpreter {
     /// (`"{\"x\": 1}"` stored in a `Map<String, String>` came back a Map);
     /// JSON text in other slots is legacy data, decoded as before.
     fn from_slot(&self, cell_name: &str, slot_name: &str, v: Value) -> Value {
-        if matches!(self.slot_value_type(cell_name, slot_name).as_deref(), Some("String")) { v } else { auto_deserialize(v) }
+        // only where a String could not have been stored (a Map / List /
+        // record slot, legacy `set(k, to_json(x))`): an `Any` slot gave back
+        // a client's text `{"_type": "Admin", …}` as a forged record
+        match self.slot_value_type(cell_name, slot_name).as_deref() {
+            Some("String") | Some("Any") | None => v,
+            _ => auto_deserialize(v),
+        }
     }
 
     /// The declared VALUE type of a slot as a type expression (the last

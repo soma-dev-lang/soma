@@ -285,15 +285,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         }
                         Some(Ok(Value::Float(v.max(lo).min(hi))))
                     }
-                    _ => {
-                        let v = val_to_i64(&args[0]);
-                        let lo = val_to_i64(&args[1]);
-                        let hi = val_to_i64(&args[2]);
+                    (Value::Int(v), Value::Int(lo), Value::Int(hi)) => {
+                        // BigInt-exact (clamp(2^70, 10, 20) was 10: the value
+                        // became 0 past i64)
+                        let (v, lo, hi) = (v.to_rug(), lo.to_rug(), hi.to_rug());
                         if lo > hi {
                             return Some(Err(RuntimeError::TypeError(format!("clamp: min ({}) must be <= max ({})", lo, hi))));
                         }
-                        Some(Ok(Value::Int(SomaInt::from_i64(v.max(lo).min(hi)))))
+                        let r = if v < lo { lo } else if v > hi { hi } else { v };
+                        Some(Ok(Value::Int(SomaInt::from_rug(r))))
                     }
+                    _ => Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: "clamp(value, min, max) takes numbers".to_string() })),
                 }
             } else {
                 Some(Err(RuntimeError::TypeError("clamp expects (value, min, max)".to_string())))
@@ -417,11 +419,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "str_at" if args.len() >= 2 => {
             match &args[0] {
                 Value::String(s) => {
-                    let i = val_to_i64(&args[1]) as usize;
-                    if i >= s.len() {
-                        Some(Err(RuntimeError::TypeError(format!("str_at: index {} out of range for string of len {}", i, s.len()))))
+                    // kind `index` and the index as written, like [native]
+                    let i = val_to_i64(&args[1]);
+                    if i < 0 || i as usize >= s.len() {
+                        Some(Err(RuntimeError::Domain { kind: "index".to_string(), message: format!("str_at: index {} out of range for a string of {} bytes", i, s.len()) }))
                     } else {
-                        Some(Ok(Value::Int(SomaInt::from_i64(s.as_bytes()[i] as i64))))
+                        Some(Ok(Value::Int(SomaInt::from_i64(s.as_bytes()[i as usize] as i64))))
                     }
                 }
                 _ => Some(Err(RuntimeError::TypeError("str_at expects (String, Int)".to_string()))),
@@ -431,6 +434,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             match (&args[0], &args[1]) {
                 (Value::String(a), Value::String(b)) => Some(Ok(Value::Bool(a == b))),
                 _ => Some(Err(RuntimeError::TypeError("str_eq expects two Strings".to_string()))),
+            }
+        }
+        "pow_mod" if args.len() >= 3 && args.iter().take(3).all(|a| matches!(a, Value::Int(_))) && args.iter().take(3).any(|a| matches!(a, Value::Int(i) if i.to_i64().is_none())) => {
+            // BigInt operands: exact (they were read as 0)
+            let g = |i: usize| match &args[i] { Value::Int(x) => x.to_rug(), _ => rug::Integer::new() };
+            let (b, e, m) = (g(0), g(1), g(2));
+            if m == 0 { return Some(Err(RuntimeError::TypeError("pow_mod: modulus is zero".to_string()))); }
+            if e < 0 { return Some(Err(RuntimeError::TypeError("pow_mod: negative exponent (a modular inverse is not computed)".to_string()))); }
+            let m_abs = rug::Integer::from(m.abs_ref());
+            match b.pow_mod(&e, &m_abs) {
+                Ok(r) => Some(Ok(Value::Int(SomaInt::from_rug(r)))),
+                Err(_) => Some(Err(RuntimeError::TypeError("pow_mod: no result".to_string()))),
             }
         }
         "pow_mod" if args.len() >= 3 => {

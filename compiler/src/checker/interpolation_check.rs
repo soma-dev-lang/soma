@@ -501,6 +501,17 @@ impl<'a> Walker<'a> {
                     if self.index.cells.contains(cell) && !self.scope.contains(cell) {
                         let defined = self.index.handler_map.get(method)
                             .map(|cs| cs.contains(cell)).unwrap_or(false);
+                        if let Some((lo, n)) = self.index.arity.get(&(cell.clone(), method.clone())) {
+                            if args.len() < *lo || args.len() > *n {
+                                self.issues.push(InterpolationIssue {
+                                    message: format!("`{cell}.{method}(…)` passes {} argument(s), but the handler {cell}.{method} takes {}", args.len(), n),
+                                    span,
+                                    warning: false,
+                                    habit: false,
+                                    kind: "arity",
+                                });
+                            }
+                        }
                         if !defined {
                             let owners = self.index.handler_map.get(method).cloned().unwrap_or_default();
                             let hint = if !owners.is_empty() {

@@ -436,7 +436,15 @@ fn collect_variants(
     inferred: &mut Option<String>,
 ) -> bool {
     match pat {
-        MatchPattern::Variant { type_name, name, .. } => {
+        MatchPattern::Variant { type_name, name, fields } => {
+            // `Charged { tx: "t1" }` / `Declined("card")`: a literal (or any
+            // refutable) sub-pattern does not cover the whole variant
+            let irrefutable = |p: &MatchPattern| matches!(p, MatchPattern::Wildcard | MatchPattern::Variable(_));
+            let total = match fields {
+                VariantPatternFields::Unit => true,
+                VariantPatternFields::Tuple(ps) => ps.iter().all(irrefutable),
+                VariantPatternFields::Struct { fields, .. } => fields.iter().all(|(_, p)| irrefutable(p)),
+            };
             // Resolve type either from explicit qualifier or registry lookup.
             let resolved = type_name
                 .clone()
@@ -452,7 +460,7 @@ fn collect_variants(
                             }
                         }
                     }
-                    covered.insert(name.clone());
+                    if total { covered.insert(name.clone()); }
                     true
                 }
                 None => true, // unknown variant; report elsewhere

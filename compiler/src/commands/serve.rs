@@ -82,7 +82,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         });
     let cell_name = cell.node.name.clone();
 
-    let request_routes = std::sync::Arc::new(crate::checker::routes::explicit_routes(&cell.node));
+    // on the desugared program: `k.wipe()`, `"{wipe(k)}"` and
+    // `delegate("Api", "wipe", k)` inside `request` own `wipe` too (they left
+    // POST /wipe/a open around request's auth)
+    let request_routes = {
+        let exposed = crate::checker::desugar::expose_for_analysis(&program);
+        let acell = exposed.cells.iter().find(|c| c.node.name == cell.node.name).map(|c| c.node.clone()).unwrap_or_else(|| cell.node.clone());
+        std::sync::Arc::new(crate::checker::routes::explicit_routes(&acell))
+    };
     let mutating = {
         // interpolation / UFCS calls made explicit: `"{bal.set(k, 0)}"` in a
         // GET handler wrote state

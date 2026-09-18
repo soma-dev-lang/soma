@@ -51,6 +51,9 @@ pub struct ProgramIndex {
     pub cells: HashSet<String>,
     /// Slots declared with a List type (the others are maps).
     pub list_slots: HashSet<String>,
+    /// (cell, handler) → its parameter count (`B.bh()` with the wrong count
+    /// passed check and failed on every call)
+    pub arity: HashMap<(String, String), (usize, usize)>,
 }
 
 /// Collect all cells in the program, recursing into interior sections.
@@ -79,6 +82,7 @@ impl ProgramIndex {
         let mut variants: HashSet<String> = HashSet::new();
         let mut slots: HashSet<String> = HashSet::new();
         let mut list_slots: HashSet<String> = HashSet::new();
+        let mut arity: HashMap<(String, String), (usize, usize)> = HashMap::new();
 
         for b in builtin_names() {
             known.insert((*b).to_string());
@@ -109,6 +113,9 @@ impl ProgramIndex {
                     Section::OnSignal(on) => {
                         known.insert(on.signal_name.clone());
                         if is_top_level && matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
+                            // a trailing Map / List parameter may be left out
+                            let optional = on.params.iter().rev().take_while(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Map" || t == "List") || matches!(&p.ty.node, TypeExpr::Generic { name, .. } if name == "Map" || name == "List")).count();
+                            arity.insert((cell.name.clone(), on.signal_name.clone()), (on.params.len() - optional, on.params.len()));
                             let definers = handler_map
                                 .entry(on.signal_name.clone())
                                 .or_default();
@@ -160,7 +167,7 @@ impl ProgramIndex {
             }
         }
 
-        Self { handler_map, known, variants, slots, cells, list_slots }
+        Self { handler_map, known, variants, slots, cells, list_slots, arity }
     }
 }
 

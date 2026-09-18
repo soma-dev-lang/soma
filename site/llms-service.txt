@@ -877,8 +877,12 @@ listening` or `bus: not started`. The bus speaks one line per event,
 receiver runs only the events its program emits itself or lists in
 `[bus] accept = ["reading"]` in soma.toml, and never `request`, `ws`,
 `start`/`init` or a `_private` handler. An `emit` goes to every connected
-peer AT COMMIT (a handler that raises sends nothing). A peer that restarts is
-not reconnected: restart the sender too, or re-`--join`; `PORT +
+peer AT COMMIT (a handler that raises sends nothing). An incoming bus event
+waits for the process-wide handler lock like a request (keep handlers short
+on busy links); `start()` runs BEFORE the links to `[peers]` are up, so an
+`emit` there reaches no other process (use `after 2s { … }`). A peer that
+restarts is reconnected when both processes list each other in `[peers]`;
+with a one-way link, restart the sender too, or re-`--join`; `PORT +
 1` only when a cell declares `on ws`. Every response, static files, the
 dashboard and the pre-handler 400s included, carries
 `Access-Control-Allow-Origin: *` (browsers on any origin may call it; put a

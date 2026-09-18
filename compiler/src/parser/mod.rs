@@ -3005,24 +3005,7 @@ impl Parser {
                 }
                 self.expect(Token::RBrace)?;
                 // Extract last statement as result expression
-                let then_result = if let Some(last) = then_stmts.last() {
-                    if let Statement::ExprStmt { ref expr } = last.node {
-                        expr.clone()
-                    } else if let Statement::Return { ref value } = last.node {
-                        value.clone()
-                    } else {
-                        Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
-                    }
-                } else {
-                    Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
-                };
-                if then_stmts.len() > 0 {
-                    if let Some(last) = then_stmts.last() {
-                        if matches!(last.node, Statement::ExprStmt { .. } | Statement::Return { .. }) {
-                            then_stmts.pop();
-                        }
-                    }
-                }
+                let then_result = block_result(&mut then_stmts, self.prev_span());
                 self.expect(Token::Else)?;
                 // Handle else if by recursing
                 let (else_stmts, else_result) = if self.check(&Token::If) {
@@ -3036,24 +3019,7 @@ impl Parser {
                         else_stmts.push(self.parse_statement()?);
                     }
                     self.expect(Token::RBrace)?;
-                    let else_result = if let Some(last) = else_stmts.last() {
-                        if let Statement::ExprStmt { ref expr } = last.node {
-                            expr.clone()
-                        } else if let Statement::Return { ref value } = last.node {
-                            value.clone()
-                        } else {
-                            Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
-                        }
-                    } else {
-                        Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
-                    };
-                    if else_stmts.len() > 0 {
-                        if let Some(last) = else_stmts.last() {
-                            if matches!(last.node, Statement::ExprStmt { .. } | Statement::Return { .. }) {
-                                else_stmts.pop();
-                            }
-                        }
-                    }
+                    let else_result = block_result(&mut else_stmts, self.prev_span());
                     (else_stmts, else_result)
                 };
                 Ok(Spanned::new(
@@ -3797,4 +3763,36 @@ fn build_nested_with(
         },
         sp,
     )
+}
+
+/// The value of an if-expression block: its last expression (popped from
+/// the statements) — a nested `if … else …` STATEMENT included, which is an
+/// if-expression here (`else { if k == "y" { 2 } else { 3 } }` was `()`).
+fn block_result(stmts: &mut Vec<Spanned<Statement>>, span: Span) -> Spanned<Expr> {
+    let unit = || Spanned::new(Expr::Literal(Literal::Unit), span);
+    match stmts.last().map(|l| &l.node) {
+        Some(Statement::ExprStmt { .. }) | Some(Statement::Return { .. }) => {
+            let last = stmts.pop().unwrap();
+            match last.node {
+                Statement::ExprStmt { expr } => expr,
+                Statement::Return { value } => value,
+                _ => unit(),
+            }
+        }
+        Some(Statement::If { else_body, .. }) if !else_body.is_empty() => {
+            let last = stmts.pop().unwrap();
+            let lspan = last.span;
+            let Statement::If { condition, mut then_body, mut else_body } = last.node else { unreachable!() };
+            let then_result = block_result(&mut then_body, lspan);
+            let else_result = block_result(&mut else_body, lspan);
+            Spanned::new(Expr::IfExpr {
+                condition: Box::new(condition),
+                then_body,
+                then_result: Box::new(then_result),
+                else_body,
+                else_result: Box::new(else_result),
+            }, lspan)
+        }
+        _ => unit(),
+    }
 }

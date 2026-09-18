@@ -58,6 +58,21 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 let mut handlers: Vec<(&OnSection, Span)> = cell.node.sections.iter()
                     .filter_map(|s| if let Section::OnSignal(ref on) = s.node { Some((on, s.span)) } else { None })
                     .collect();
+                // the only machine of the program is also moved by the
+                // transition() calls of cells without one (they escaped
+                // refinement, think-isolation and the literal-target check)
+                let machine_cells = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
+                if machine_cells == 1 {
+                    for other in program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent) && !c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))) {
+                        for s in &other.node.sections {
+                            if let Section::OnSignal(ref on) = s.node {
+                                if handlers.iter().all(|(h, _)| h.signal_name != on.signal_name) {
+                                    handlers.push((on, s.span));
+                                }
+                            }
+                        }
+                    }
+                }
                 for (i, s) in cell.node.sections.iter().enumerate() {
                     if matches!(s.node, Section::Every(_) | Section::After(_)) {
                         let idx = cell.node.sections[..i].iter().filter(|x| matches!(x.node, Section::Every(_) | Section::After(_))).count();
@@ -121,6 +136,11 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     "refinement"
                 };
 
+                // a handler with an undeclared target gets its ✗, not also a ✓
+                let refused: std::collections::HashSet<String> = findings.iter().filter_map(|f| match f {
+                    super::refinement::RefinementFinding::UndeclaredTarget { handler, .. } => Some(handler.clone()),
+                    _ => None,
+                }).collect();
                 for f in findings {
                     use super::refinement::RefinementFinding::*;
                     match f {
@@ -156,6 +176,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                         }
                         HandlerEffect { handler, targets, has_dynamic } => {
                             if targets.is_empty() && !has_dynamic { continue; }
+                            if refused.contains(&handler) { continue; }
                             let target_strs: Vec<String> = targets.iter().map(|c| {
                                 if c.path.is_empty() {
                                     c.target.clone()

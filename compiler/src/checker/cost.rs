@@ -114,15 +114,23 @@ impl<'a> CostWalk<'a> {
                 self.latency_ms += worst.latency_ms;
             }
             Statement::While { condition, body, bound, .. } => {
-                self.visit_expr(&condition.node, handler_name);
+                // the condition runs once per iteration, plus the last test
+                // (`while think(…) != "stop"` was counted once: "proven 10",
+                // spent 50)
+                let mut cond = self.child();
+                cond.visit_expr(&condition.node, handler_name);
                 let mult = bound.unwrap_or(1) as i64;
                 let mut inner = self.child();
                 for s in body { inner.visit_stmt(&s.node, handler_name); }
-                // an unbounded while only matters when its body spends (a
-                // counting loop made every cost bound "advisory")
-                if bound.is_none() && inner.spends() {
+                // an unbounded while only matters when its body (or its
+                // condition) spends (a counting loop made every cost bound
+                // "advisory")
+                if bound.is_none() && (inner.spends() || cond.spends()) {
                     self.unbounded_sites.push(format!("{}::while-loop", handler_name));
                 }
+                self.tokens += cond.tokens.saturating_mul(mult + 1);
+                self.latency_ms += cond.latency_ms.saturating_mul(mult + 1);
+                self.unbounded_sites.extend(cond.unbounded_sites);
                 self.tokens += inner.tokens.saturating_mul(mult);
                 // Latency in a loop is sequential — multiply.
                 self.latency_ms += inner.latency_ms.saturating_mul(mult);
@@ -188,10 +196,12 @@ impl<'a> CostWalk<'a> {
                         Some(t) => {
                             // map("max_rounds", N) with a literal N caps the rounds
                             let rounds = args.last().and_then(|a| match &a.node {
-                                Expr::FnCall { name, args: kv } if name == "map" => kv.chunks(2).find_map(|c| match (&c[0].node, c.get(1).map(|v| &v.node)) {
-                                    (Expr::Literal(Literal::String(k)), Some(Expr::Literal(Literal::Int(n)))) if k == "max_rounds" => Some((*n).clamp(1, 10)),
-                                    _ => None,
-                                }),
+                                // the LAST `max_rounds` key wins, as in the map the
+                                // runtime builds (the first was costed, the last ran)
+                                Expr::FnCall { name, args: kv } if name == "map" => kv.chunks(2)
+                                    .filter(|c| matches!(&c[0].node, Expr::Literal(Literal::String(k)) if k == "max_rounds"))
+                                    .last()
+                                    .and_then(|c| match c.get(1).map(|v| &v.node) { Some(Expr::Literal(Literal::Int(n))) => Some((*n).clamp(1, 10)), _ => None }),
                                 _ => None,
                             }).map_or(self.rounds, |r| r.min(self.rounds));
                             self.tokens += t.saturating_mul(rounds)
