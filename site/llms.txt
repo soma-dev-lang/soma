@@ -74,8 +74,8 @@ cell App {
     }                                        // violating write rejected, slot unchanged
     state flow {                             // model-checked by `soma verify`
         initial: draft
-        draft -> approved
-        draft -> rejected                    // approved/rejected: terminal
+        draft -> approved { guard { amount < 1000 } }   // guard: reads the CALLING handler's locals
+        draft -> rejected                    // approved/rejected: terminal (no outgoing edge)
     }
     on add(a: Int, b: Int) { return a + b }  // NO return type on handlers
     on request(method: String, path: String, body: String) {
@@ -167,7 +167,7 @@ cell test MyTests {                // a name and a `rules` block are required
         mock approve false                       // next approve() answer (one per call)
         mock price_check 120                     // next call of ANY handler (a tool, an
         mock price_check error "down"            // http wrapper) answers / raises instead
-        property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // every value ≤ 20k
+        property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // 0..100 = 0…99, every value (≤ 20k)
     }
 }
 ```
@@ -187,13 +187,14 @@ source, `file:line`, left/right, and the fields a value really has when
   id nobody created is legal; `has_state(id)` tells a known id from a fresh one.
 - `transition()`'s first argument is an INSTANCE id (an order, a ticket), not
   the machine's name; one cell has one machine, any number of instances.
-- A slot is a Map or a List, never a scalar: `n: Int` is not a slot. Read a
+- A slot is a Map or a List (`n: Int` is a check error). Read a
   whole slot by its bare name (`history`, `counts`); write with
   `counts.set(k, v)` / `counts[k] = v` / `history.push(x)`; `history = …` is
   an error. An invariant on a Map slot applies to every value written.
 - `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
   `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
-- `"""…"""` is raw: no escapes AND no `{interpolation}`.
+- `"""…"""` is raw for escapes (`\t` stays two characters) but `{x}` IS
+  interpolated; write `{{` for a literal brace.
 - `[1, 2] + [10, 20]` is element-wise (`[11, 22]`; Floats when a value is
   one); `concat(a, b)` joins lists.
 - Persistent data lives in `.soma_data/` beside the program (serve and run);
@@ -214,6 +215,7 @@ process (http calls, think(), emitted events).
 ```soma
 fail("not_found", "reservation {id}")     // raise: a kind + a detail
 require amount > 0 else InvalidAmount      // raise with kind InvalidAmount (a bare tag)
+require open < 3 else LoanLimit "{member} holds {open} loans"   // kind + interpolated detail
 let r = try { reserve(id) }                // r = {value, error, kind, detail}
 if r.kind == "not_found" { return response(404, map("error", r.detail)) }
 if r.error != () { fail(r) }               // re-raise unchanged
@@ -237,7 +239,12 @@ handler and a route share a name. `body: String` is the raw text
 before the handler runs) — the same under serve, test and run. A raised error
 answers with its kind: not_found → 404, guard_failed → 403, invalid_transition
 → 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
-`{"error": message, "kind": tag}`. `serve` binds 127.0.0.1 (`--host 0.0.0.0`
+`{"error": message, "kind": tag}`. A plain return answers 200: a map/list as
+JSON, `()` as `null`, a String or number as `{"result": …}`. Path segments and
+query values are coerced to the parameter's declared type (`/decide/x/true` →
+Bool). Every response carries `Access-Control-Allow-Origin: *`. `request` may
+be declared in `face` or not; its return type is not checked (a route answers
+whatever it returns). `serve` binds 127.0.0.1 (`--host 0.0.0.0`
 to expose), refuses a taken port and a program that fails check, and survives a
 handler's runaway recursion (500 `stack_overflow`; the process stays up).
 
@@ -278,7 +285,10 @@ induction when interval reasoning suffices (`(counts.get(k) ?? 0) + 1` keeps
 A failed property prints a counter-example path and is an error. What verify
 does NOT prove: data-dependent rules inside handlers, and invariants on computed
 values (those are runtime-checked — reported as such, never as "proven").
-Guards are enforced at runtime; the model keeps guarded edges.
+Guards (`a -> b { guard { cond } }`) are enforced at runtime and read the
+locals of the handler that calls `transition()`; the model keeps guarded edges.
+A `cost { tokens: N }` that cannot be proven (a think() without a literal
+max_tokens) is a check ERROR, not a note.
 
 ## Agents (LLMs inside the cage)
 

@@ -340,11 +340,16 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::Int(SomaInt::from_i64(a as i64))))
         }
         "sqrt_int" if args.len() >= 1 => {
-            let a = val_to_i64(&args[0]);
+            // exact integer square root, BigInt included (a 20-digit input
+            // used to answer 0 through i64 truncation)
+            let a = match &args[0] {
+                Value::Int(si) => si.to_rug(),
+                other => rug::Integer::from(val_to_i64(other)),
+            };
             if a < 0 {
                 Some(Err(RuntimeError::TypeError("sqrt_int: negative argument".to_string())))
             } else {
-                Some(Ok(Value::Int(SomaInt::from_i64((a as f64).sqrt() as i64))))
+                Some(Ok(Value::Int(SomaInt::from_rug(a.sqrt()))))
             }
         }
         "str_len" if args.len() >= 1 => {

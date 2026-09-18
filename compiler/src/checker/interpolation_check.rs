@@ -37,6 +37,8 @@ pub struct InterpolationIssue {
     pub warning: bool,
     /// A plain advisory (not a try-demoted error): reported as a habit warning.
     pub habit: bool,
+    /// Stable machine-readable class for `check --json`.
+    pub kind: &'static str,
 }
 
 pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
@@ -161,6 +163,7 @@ impl<'a> Walker<'a> {
                         span: stmt.span,
                         warning: true,
                         habit: true,
+                        kind: "assignment_without_let",
                     });
                 }
                 if !self.scope.contains(name) && self.index.slots.contains(name) {
@@ -170,6 +173,7 @@ impl<'a> Walker<'a> {
                         span: stmt.span,
                         warning: false,
                 habit: false,
+                kind: "slot_assignment",
                     });
                 }
                 self.scope.insert(name.clone());
@@ -283,6 +287,7 @@ impl<'a> Walker<'a> {
                                 span: target.span,
                                 warning: false,
                 habit: false,
+                kind: "unknown_handler",
                             });
                         }
                     }
@@ -318,6 +323,7 @@ impl<'a> Walker<'a> {
                         span: right.span,
                         warning: false,
                 habit: false,
+                kind: "pipe_right_side",
                     });
                 }
                 self.walk_expr(left);
@@ -391,6 +397,7 @@ impl<'a> Walker<'a> {
                         span,
                         warning: false,
                 habit: false,
+                kind: "nested_quote",
                     });
                     return;
                 }
@@ -445,6 +452,7 @@ impl<'a> Walker<'a> {
                 span,
                 warning: self.try_depth > 0,
                 habit: false,
+                kind: "undefined_variable",
             });
             return true;
         }
@@ -559,6 +567,7 @@ impl<'a> Walker<'a> {
             span,
             warning: self.try_depth > 0,
                 habit: false,
+                kind: "undefined_variable",
         });
     }
 
@@ -578,6 +587,7 @@ impl<'a> Walker<'a> {
                 span,
                 warning: self.try_depth > 0,
                 habit: false,
+                kind: "foreign_idiom",
             });
             return;
         }
@@ -592,6 +602,7 @@ impl<'a> Walker<'a> {
             span,
             warning: self.try_depth > 0,
                 habit: false,
+                kind: "undefined_variable",
         });
     }
 
@@ -607,6 +618,7 @@ impl<'a> Walker<'a> {
             span,
             warning: self.try_depth > 0,
                 habit: false,
+                kind: "undefined_function",
         });
     }
 }

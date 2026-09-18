@@ -394,8 +394,12 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
             }
         }
 
-        // every state any machine of this file declares
+        // every state a TARGETED machine declares (`cells = [...]` in
+        // soma.toml, else every machine of the file). A property naming
+        // another cell's state used to pass vacuously ("never reached").
+        let targeted: Vec<String> = verify_config.as_ref().map(|c| c.cells.clone()).unwrap_or_default();
         let all_states: std::collections::HashSet<String> = program.cells.iter()
+            .filter(|c| targeted.is_empty() || targeted.contains(&c.node.name))
             .flat_map(|c| c.node.sections.iter())
             .filter_map(|s| if let ast::Section::State(sm) = &s.node { Some(sm) } else { None })
             .flat_map(|sm| StateMachineGraph::from_ast(sm).states.into_iter())
@@ -510,7 +514,8 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
                             // the verified files declares it
                             for (what, state) in named {
                                 if !graph.states.contains(state) && !all_states.contains(state.as_str()) {
-                                    unknown_states.push(format!("{} names state '{}', which no state machine declares", what, state));
+                                    unknown_states.push(format!("{} names state '{}', which no verified state machine declares{}", what, state,
+                                        if targeted.is_empty() { "" } else { " (cells = [...] in soma.toml limits verification to those cells)" }));
                                 }
                             }
                         }

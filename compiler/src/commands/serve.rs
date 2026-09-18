@@ -115,6 +115,16 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         }
         None
     }).unwrap_or_else(|| "Any".to_string());
+    let handler_types: std::collections::HashMap<String, Vec<String>> = cell.node.sections.iter()
+        .filter_map(|s| match &s.node {
+            ast::Section::OnSignal(on) => Some((on.signal_name.clone(), on.params.iter().map(|p| match &p.ty.node {
+                ast::TypeExpr::Simple(t) => t.clone(),
+                ast::TypeExpr::Generic { name, .. } => name.clone(),
+                _ => "Any".to_string(),
+            }).collect())),
+            _ => None,
+        })
+        .collect();
 
     let mut storage_slots = std::collections::HashMap::new();
     for prog_cell in &program.cells {
@@ -245,11 +255,28 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     eprintln!("dashboard: http://{}:{}/__soma/", if host == "0.0.0.0" { "localhost" } else { host }, port);
     eprintln!("---");
 
+    // [native] handlers are compiled ONCE here and shared by every request
+    // interpreter — they used to run interpreted under serve only, so
+    // buffer()/hashmap() answered 400 and native/interpreted results differed
+    let natives = match interpreter::native_ffi::compile_and_load_natives_with_config(
+        &program, &crate::codegen::native::ParallelConfig::default()) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("error: [native] handlers do not compile — fix them or drop [native]:");
+            for line in e.lines().take(12) { eprintln!("  {}", line); }
+            process::exit(1);
+        }
+    };
+    if !natives.is_empty() {
+        eprintln!("native: {} handler(s) compiled", natives.len());
+    }
+    let natives = std::sync::Arc::new(natives);
     let program = std::sync::Arc::new(program);
     let storage_slots = std::sync::Arc::new(storage_slots);
     let handler_names = std::sync::Arc::new(handler_names);
     let handler_params = std::sync::Arc::new(handler_params);
     let request_body_type = std::sync::Arc::new(request_body_type);
+    let handler_types = std::sync::Arc::new(handler_types);
     let cell_name = std::sync::Arc::new(cell_name);
     let base_dir = std::sync::Arc::new(
         path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
@@ -273,6 +300,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let my_node_id = if is_cluster_mode { node_id.clone() } else { String::new() };
         let bus_host = host.to_string();
 
+        let natives = natives.clone();
         std::thread::spawn(move || {
             let listener = match std::net::TcpListener::bind(format!("{}:{}", bus_host, bus_port)) {
                 Ok(l) => l,
@@ -308,6 +336,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
                 // Writer: peer bus → TCP lines to peer
                 let mut write_stream = stream;
+                let natives = natives.clone();
                 std::thread::spawn(move || {
                     use std::io::Write;
                     for line in rx {
@@ -326,6 +355,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let my_nid = my_node_id.clone();
                 let pbus = peer_bus_clone.clone();
 
+                let natives = natives.clone();
                 std::thread::spawn(move || {
                     use std::io::BufRead;
                     let reader = std::io::BufReader::new(read_stream);
@@ -353,6 +383,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                             // peer_id format is "host:bus_port" (e.g., "node2:8084")
                                             let pbus_back = pbus.clone();
                                             let pid = peer_id.clone();
+                                            let natives = natives.clone();
                                             std::thread::spawn(move || {
                                                 if let Ok(stream) = std::net::TcpStream::connect(&pid) {
                                                     stream.set_nodelay(true).ok();
@@ -533,6 +564,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 };
 
                                 let mut interp = interpreter::Interpreter::new(&prog2);
+                                interp.native_handlers = (*natives).clone();
                                 interp.set_storage_raw(&slots2);
                                 interp.ensure_state_machine_storage();
                                 interp.event_bus = Some(ebus.clone());
@@ -580,6 +612,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         }
                         // Writer thread: peer bus → TCP
                         let mut writer = stream;
+                        let natives = natives.clone();
                         std::thread::spawn(move || {
                             use std::io::Write;
                             for line in rx {
@@ -600,6 +633,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // Heartbeat thread: send heartbeat every 3s, check for dead nodes every 10s
         let hb_cluster = cluster.clone();
         let hb_bus = peer_bus.clone();
+        let natives = natives.clone();
         std::thread::spawn(move || {
             let mut tick = 0u64;
             loop {
@@ -628,6 +662,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     if handler_names.contains(&"init".to_string()) || handler_names.contains(&"start".to_string()) {
         let init_signal = if handler_names.contains(&"init".to_string()) { "init" } else { "start" };
         let mut interp = interpreter::Interpreter::new(&program);
+        interp.native_handlers = (*natives).clone();
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
         interp.event_bus = Some(event_bus.clone());
@@ -655,6 +690,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     for (peer_name, addr) in &manifest.peers {
                         eprintln!("peer: connecting to {} ({})", peer_name, addr);
                         let mut interp = interpreter::Interpreter::new(&program);
+                        interp.native_handlers = (*natives).clone();
                         interp.set_storage_raw(&storage_slots);
                         interp.ensure_state_machine_storage();
                         interp.event_bus = Some(event_bus.clone());
@@ -687,6 +723,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         eprintln!("websocket: ws://{}:{}", if host == "0.0.0.0" { "localhost" } else { host }, ws_port);
         let ws_host = host.to_string();
 
+        let natives = natives.clone();
         std::thread::spawn(move || {
             let listener = match std::net::TcpListener::bind(format!("{}:{}", ws_host, ws_port)) {
                 Ok(l) => l,
@@ -707,6 +744,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 if let Ok(mut senders) = bus.lock() {
                     senders.push(bus_tx);
                 }
+                let natives = natives.clone();
                 std::thread::spawn(move || {
                     loop {
                         match bus_rx.recv() {
@@ -745,6 +783,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let bus = bus.clone();
                 let clients = ws_clients.clone();
 
+                let natives = natives.clone();
                 std::thread::spawn(move || {
                     // Clone the TCP stream BEFORE WS handshake
                     let read_stream = match stream.try_clone() {
@@ -779,6 +818,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         match ws_read.read() {
                             Ok(tungstenite::Message::Text(text)) => {
                                 let mut interp = interpreter::Interpreter::new(&prog);
+                                interp.native_handlers = (*natives).clone();
                                 interp.set_storage_raw(&slots);
                                 interp.ensure_state_machine_storage();
                                 interp.event_bus = Some(bus.clone());
@@ -840,9 +880,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let sharded_for_sched = sharded_slots.clone();
                 eprintln!("scheduler: every {}ms [{}]", interval, cname);
 
+                let natives = natives.clone();
                 std::thread::spawn(move || {
                     // Create interpreter ONCE and reuse across ticks
                     let mut interp = interpreter::Interpreter::new(&prog);
+                    interp.native_handlers = (*natives).clone();
                     interp.set_storage_raw(&slots);
                     interp.ensure_state_machine_storage();
                     interp.event_bus = Some(bus.clone());
@@ -882,9 +924,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let sharded_for_after = sharded_slots.clone();
                 eprintln!("scheduler: after {}ms [{}]", delay, cname);
 
+                let natives = natives.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(delay));
                     let mut interp = interpreter::Interpreter::new(&prog);
+                    interp.native_handlers = (*natives).clone();
                     interp.set_storage_raw(&slots);
                     interp.ensure_state_machine_storage();
                     interp.event_bus = Some(bus);
@@ -909,6 +953,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let request_routes = request_routes.clone();
         let handler_params = handler_params.clone();
         let request_body_type = request_body_type.clone();
+        let handler_types = handler_types.clone();
         let cell_name = cell_name.clone();
         let base_dir = base_dir.clone();
         let event_bus = event_bus.clone();
@@ -919,6 +964,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let agent_config = agent_config.clone();
         let agent_models = agent_models.clone();
 
+        let natives = natives.clone();
         let spawned = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
         let method = request.method().to_string();
         let url = request.url().to_string();
@@ -1025,6 +1071,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         }
 
         let mut interp = interpreter::Interpreter::new(&program);
+        interp.native_handlers = (*natives).clone();
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
         interp.event_bus = Some(event_bus.clone());
@@ -1171,7 +1218,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         _ => {
                             let msg = format!("request body must be JSON (the `request` handler declares body: {})", request_body_type);
                             let resp = tiny_http::Response::from_string(
-                                serde_json::json!({ "error": msg, "kind": "json" }).to_string())
+                                error_body(&msg, "json"))
                                 .with_status_code(400)
                                 .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
                             let _ = request.respond(resp);
@@ -1199,9 +1246,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     req_args,
                 )
             } else {
+                // public handlers only, as a real JSON array
+                let public: Vec<&String> = handler_names.iter().filter(|h| !h.starts_with('_') && h.as_str() != "request").collect();
                 let resp = tiny_http::Response::from_string(
-                    format!("{{\"error\": \"no handler for '{}'\", \"available\": [{:?}]}}",
-                        url, handler_names.join(", "))
+                    format!("{}", interpreter::map_from_pairs(vec![
+                        ("error".to_string(), interpreter::Value::String(format!("no handler for '{}'", url))),
+                        ("kind".to_string(), interpreter::Value::String("not_found".to_string())),
+                        ("available".to_string(), interpreter::Value::List(public.iter().map(|h| interpreter::Value::String((*h).clone())).collect())),
+                    ]))
                 )
                 .with_status_code(404)
                 .with_header(
@@ -1212,6 +1264,22 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let _ = request.respond(resp);
                 return;
             }
+        };
+
+        // path segments and query values are text: coerce them to the
+        // handler's declared parameter types (Bool "true", Int "5", a JSON
+        // Map/List) — a `Bool` parameter used to refuse `/decide/x/true`
+        let args: Vec<interpreter::Value> = match handler_types.get(&signal_name) {
+            Some(types) => {
+                let mut out: Vec<interpreter::Value> = args.into_iter().enumerate()
+                    .map(|(i, a)| coerce_to_type(types.get(i).map(|s| s.as_str()).unwrap_or("Any"), a)).collect();
+                // an absent body for a trailing Map/List parameter is an empty one
+                while out.len() < types.len() && matches!(types[out.len()].as_str(), "Map" | "List") {
+                    out.push(if types[out.len()] == "Map" { interpreter::Value::Map(Default::default()) } else { interpreter::Value::List(vec![]) });
+                }
+                out
+            }
+            None => args,
         };
 
         if verbose {
@@ -1345,7 +1413,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             Err(e) => {
                 let kind = e.kind();
                 let status = status_for_kind(&kind);
-                let body = serde_json::json!({ "error": format!("{}", e), "kind": kind }).to_string();
+                let body = error_body(&format!("{}", e), &kind);
                 let mut resp = tiny_http::Response::from_string(body)
                     .with_status_code(status)
                     .with_header(
@@ -1367,6 +1435,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     }
 }
 
+/// `{"error": …, "kind": …}` rendered like every other Soma map (same
+/// spacing as a handler's own `response(404, map("error", …))`).
+fn error_body(message: &str, kind: &str) -> String {
+    format!("{}", interpreter::map_from_pairs(vec![
+        ("error".to_string(), interpreter::Value::String(message.to_string())),
+        ("kind".to_string(), interpreter::Value::String(kind.to_string())),
+    ]))
+}
+
 /// HTTP status for a handler error, by kind: refusals the program made on
 /// purpose are client errors, not 500s.
 pub(crate) fn status_for_kind(kind: &str) -> u16 {
@@ -1385,6 +1462,31 @@ pub(crate) fn status_for_kind(kind: &str) -> u16 {
 /// declaring `seat: Int` receives an Int, not a String. Mirrors the
 /// path-segment and `soma run` CLI coercion: int, then float, then bool,
 /// else string.
+/// A text argument (path segment, query value, CLI token) coerced to the
+/// declared parameter type; anything that does not fit is left as-is and
+/// refused by the call boundary with a precise message.
+pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Value {
+    use interpreter::Value;
+    match (ty, &v) {
+        ("Bool", Value::String(s)) if s == "true" || s == "false" => Value::Bool(s == "true"),
+        ("String", Value::Int(_) | Value::Float(_) | Value::Bool(_)) => Value::String(format!("{}", v)),
+        ("Float", Value::Int(i)) => Value::Float(i.to_f64()),
+        ("Float", Value::String(s)) if s.parse::<f64>().is_ok() => Value::Float(s.parse().unwrap()),
+        ("Int", Value::String(s)) if s.parse::<i64>().is_ok() => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(s.parse().unwrap())),
+        ("Int", Value::Float(f)) if f.fract() == 0.0 => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
+        ("Map" | "List", Value::String(s)) => {
+            if s.trim().is_empty() {
+                return if ty == "Map" { Value::Map(Default::default()) } else { Value::List(vec![]) };
+            }
+            match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(j) => crate::interpreter::builtins::serde_json_to_value(&j),
+                Err(_) => v,
+            }
+        }
+        _ => v,
+    }
+}
+
 fn coerce_query_value(decoded: &str) -> interpreter::Value {
     if let Ok(n) = decoded.parse::<i64>() {
         interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
@@ -1425,25 +1527,9 @@ fn hex_val(b: u8) -> u8 {
     }
 }
 
+/// One JSON → Value conversion for the whole toolchain (big integers stay
+/// exact, 1e400 is infinity, never a silent 0.0) — this file had its own
+/// copy that lost both.
 fn json_request_to_value(v: &serde_json::Value) -> interpreter::Value {
-    match v {
-        serde_json::Value::Null => interpreter::Value::Unit,
-        serde_json::Value::Bool(b) => interpreter::Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i))
-            } else {
-                interpreter::Value::Float(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => interpreter::Value::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            interpreter::Value::List(arr.iter().map(json_request_to_value).collect())
-        }
-        serde_json::Value::Object(obj) => {
-            interpreter::map_from_pairs(
-                obj.iter().map(|(k, v)| (k.clone(), json_request_to_value(v))).collect()
-            )
-        }
-    }
+    crate::interpreter::builtins::serde_json_to_value(v)
 }

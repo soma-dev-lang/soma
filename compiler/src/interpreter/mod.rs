@@ -1574,6 +1574,14 @@ impl Interpreter {
                     // `else Tag` → kind Tag. `else "text {x}"` → a message,
                     // interpolated like any string (it used to be kept
                     // literally, braces and all), kind "require".
+                    if let Some((tag, detail)) = else_signal.split_once('\u{1f}') {
+                        // `else Tag "detail {x}"`: kind Tag, interpolated detail
+                        let text = self.interpolate_string(detail, env, cell_name, signal_name)?;
+                        return Err(ExecError::Runtime(RuntimeError::Domain {
+                            kind: tag.to_string(),
+                            message: format!("{}: {}", tag, text),
+                        }));
+                    }
                     let is_tag = !else_signal.is_empty()
                         && else_signal.chars().all(|c| c.is_alphanumeric() || c == '_');
                     if is_tag {
@@ -3503,6 +3511,11 @@ impl Interpreter {
             return f(self);
         }
         let _serial = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Across PROCESSES too: two `soma run` on one .soma_data used to
+        // lose updates (3000 + 3000 = 3082). The lock is a SQLite
+        // transaction on a file of its own, so it never waits on the
+        // program's own writes.
+        let _cross = CrossProcessLock::acquire();
         self.journal = Some(Vec::new());
         let result = f(self);
         if result.is_err() {
@@ -3651,7 +3664,7 @@ impl Interpreter {
         let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
             Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name).map(|sl| {
                 match &sl.node.ty.node {
-                    TypeExpr::Generic { name: t, .. } | TypeExpr::Simple(t) if t == "List" => "List",
+                    TypeExpr::Generic { name: t, .. } | TypeExpr::Simple(t) if matches!(t.as_str(), "List" | "Log" | "Ledger") => "List",
                     _ => "Map",
                 }
             }),
@@ -3942,6 +3955,37 @@ pub(crate) fn lambda_error(e: ExecError) -> RuntimeError {
         ExecError::Runtime(r) => r,
         ExecError::Return(v) => RuntimeError::TypeError(format!("lambda used `return` (value {}) — a lambda is an expression: `x => expr`", v)),
         ExecError::Break | ExecError::Continue => RuntimeError::TypeError("break/continue inside a lambda".to_string()),
+    }
+}
+
+/// Exclusive lock shared by every soma process using this directory's
+/// `.soma_data` (held for one handler invocation). No persistent storage
+/// here → no lock.
+struct CrossProcessLock(Option<rusqlite::Connection>);
+
+impl CrossProcessLock {
+    fn acquire() -> Self {
+        if !std::path::Path::new(".soma_data").is_dir() {
+            return CrossProcessLock(None);
+        }
+        let conn = match rusqlite::Connection::open(".soma_data/lock.db") {
+            Ok(c) => c,
+            Err(_) => return CrossProcessLock(None),
+        };
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(120));
+        let _ = conn.execute_batch("CREATE TABLE IF NOT EXISTS lock (k INTEGER PRIMARY KEY)");
+        match conn.execute_batch("BEGIN IMMEDIATE") {
+            Ok(()) => CrossProcessLock(Some(conn)),
+            Err(_) => CrossProcessLock(None),
+        }
+    }
+}
+
+impl Drop for CrossProcessLock {
+    fn drop(&mut self) {
+        if let Some(c) = self.0.take() {
+            let _ = c.execute_batch("COMMIT");
+        }
     }
 }
 

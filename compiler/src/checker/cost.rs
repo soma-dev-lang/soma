@@ -18,7 +18,7 @@ use crate::pkg::manifest::Manifest;
 
 #[derive(Debug)]
 pub enum CostFinding {
-    Exceeded { axis: &'static str, declared: i64, computed: i64, unit: &'static str },
+    Exceeded { axis: &'static str, declared: i64, computed: i64, unit: &'static str, where_: String },
     Advisory { axis: &'static str, reason: String },
     Proven { axis: &'static str, computed: i64, declared: i64, unit: &'static str },
 }
@@ -26,9 +26,9 @@ pub enum CostFinding {
 impl std::fmt::Display for CostFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CostFinding::Exceeded { axis, declared, computed, unit } =>
-                write!(f, "cost: '{}' budget exceeded — computed {} {} > declared {} {}",
-                       axis, computed, unit, declared, unit),
+            CostFinding::Exceeded { axis, declared, computed, unit, where_ } =>
+                write!(f, "cost: '{}' budget exceeded — computed {} {} > declared {} {} ({})",
+                       axis, computed, unit, declared, unit, where_),
             CostFinding::Advisory { axis, reason } =>
                 write!(f, "cost: '{}' bound is advisory — {}", axis, reason),
             CostFinding::Proven { axis, computed, declared, unit } =>
@@ -309,6 +309,8 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
     // handlers (only one runs at a time).
     let mut peak_tokens = 0i64;
     let mut peak_latency_ms = 0i64;
+    let mut peak_tokens_in = String::new();
+    let mut peak_latency_in = String::new();
     let mut advisory_sites: Vec<String> = Vec::new();
     // Own handlers by name; other cells' handlers by bare name (the runtime
     // resolves a bare call to any cell that defines it) and as
@@ -335,8 +337,8 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
             for s in &handler.body {
                 walk.visit_stmt(&s.node, &handler.signal_name);
             }
-            peak_tokens = peak_tokens.max(walk.tokens);
-            peak_latency_ms = peak_latency_ms.max(walk.latency_ms);
+            if walk.tokens > peak_tokens { peak_tokens = walk.tokens; peak_tokens_in = handler.signal_name.clone(); }
+            if walk.latency_ms > peak_latency_ms { peak_latency_ms = walk.latency_ms; peak_latency_in = handler.signal_name.clone(); }
             advisory_sites.extend(walk.unbounded_sites);
         }
     }
@@ -368,6 +370,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         if peak_tokens > declared {
             findings.push(CostFinding::Exceeded {
                 axis: "tokens", declared, computed: peak_tokens, unit: "tokens",
+                where_: format!("peak in {}.{}", cell.name, peak_tokens_in),
             });
         } else if bounded {
             findings.push(CostFinding::Proven {
@@ -379,6 +382,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         if peak_latency_ms > declared {
             findings.push(CostFinding::Exceeded {
                 axis: "latency", declared, computed: peak_latency_ms, unit: "ms",
+                where_: format!("peak in {}.{}", cell.name, peak_latency_in),
             });
         } else if bounded {
             findings.push(CostFinding::Proven {
@@ -394,7 +398,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
             });
         } else if peak_usd_milli > declared {
             findings.push(CostFinding::Exceeded {
-                axis: "usd", declared, computed: peak_usd_milli, unit: "milli-USD",
+                axis: "usd", declared, computed: peak_usd_milli, unit: "milli-USD", where_: format!("peak in {}.{}", cell.name, peak_tokens_in),
             });
         } else if bounded {
             findings.push(CostFinding::Proven {

@@ -116,10 +116,13 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
     match interpreter::native_ffi::compile_and_load_natives_with_config(&program, &parallel_config) {
         Ok(natives) => interp.native_handlers = natives,
         Err(e) => {
-            eprintln!("warning: [native] handlers could not be compiled — they run INTERPRETED in this test run");
-            for line in e.lines().take(3) {
+            // a green test run must not be the interpreter standing in for
+            // native code that does not compile
+            eprintln!("error: [native] handlers do not compile — the tests cannot vouch for them:");
+            for line in e.lines().take(12) {
                 eprintln!("  {}", line);
             }
+            process::exit(1);
         }
     }
 

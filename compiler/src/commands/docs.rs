@@ -24,7 +24,7 @@ const TOPICS: &[(&str, &str)] = &[
     ("guarantees", "what is PROVEN, ENFORCED AT RUNTIME, or NOT COVERED — by command"),
     ("serving", "soma serve: routing, exposure, body shape, error statuses, bind address"),
     ("operations", "what kills the process and what does not, ports, exit codes, limits, Linux deployment"),
-    ("all", "agent + reference + gotchas + guarantees + serving + builtins, one stream"),
+    ("all", "agent + reference + gotchas + guarantees + serving + operations + builtins, one stream"),
 ];
 
 pub fn cmd_docs(topic: &str) {

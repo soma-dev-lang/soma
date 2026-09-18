@@ -15,6 +15,7 @@ pub mod cost;
 pub mod effects;
 pub mod protocol;
 pub mod names;
+pub mod literals;
 pub mod interpolation_check;
 pub mod invariants;
 pub mod dispatch;
@@ -176,6 +177,14 @@ pub enum CheckError {
     /// provably unknown at that point in the handler.
     #[error("{message}")]
     InterpolationUndefined {
+        message: String,
+        span: Span,
+    },
+    /// A static error whose message already names its fix (the part
+    /// after " — "); `kind` is the stable machine-readable class.
+    #[error("{message}")]
+    Static {
+        kind: &'static str,
         message: String,
         span: Span,
     },
@@ -404,6 +413,7 @@ impl CheckError {
             | Self::PromiseViolation { span, .. }
             | Self::BudgetExceeded { span, .. }
             | Self::InterpolationUndefined { span, .. }
+            | Self::Static { span, .. }
             | Self::DispatchIssue { span, .. }
             | Self::InvariantIssue { span, .. }
             | Self::DeadCode { span, .. }
@@ -467,7 +477,8 @@ impl<'a> Checker<'a> {
         // state, unique cell names. Each of these used to pass silently
         // (the runtime kept the LAST machine / merged same-named cells).
         if program.cells.is_empty() {
-            self.errors.push(CheckError::InterpolationUndefined {
+            self.errors.push(CheckError::Static {
+                kind: "empty_program",
                 message: "no cell in this file — a program is at least `cell Name { on run() { … } }`".to_string(),
                 span: Span { start: 0, end: 0 },
             });
@@ -475,16 +486,39 @@ impl<'a> Checker<'a> {
         let mut seen_cells: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for cell in &program.cells {
             if !seen_cells.insert(cell.node.name.as_str()) {
-                self.errors.push(CheckError::InterpolationUndefined {
+                self.errors.push(CheckError::Static {
+                    kind: "duplicate_cell",
                     message: format!("cell '{}' is defined twice — rename one; same-named cells are not merged", cell.node.name),
                     span: cell.span,
                 });
+            }
+            // a slot is a keyed store: `n: Int` was accepted and behaved as a
+            // Map, contradicting every doc
+            for section in &cell.node.sections {
+                if let Section::Memory(ref mem) = section.node {
+                    for slot in &mem.slots {
+                        let ok = matches!(&slot.node.ty.node,
+                            TypeExpr::Generic { name, .. } | TypeExpr::Simple(name) if matches!(name.as_str(), "Map" | "List" | "Log" | "Ledger"));
+                        if !ok {
+                            self.errors.push(CheckError::Static {
+                                kind: "scalar_slot",
+                                message: format!(
+                                    "slot '{}' is declared as {} — a memory slot is a Map<K, V> or a List<T>; keep a single value as one entry: `{}: Map<String, {}>` and `{}.get(\"value\")`",
+                                    slot.node.name, crate::commands::describe::format_type(&slot.node.ty.node),
+                                    slot.node.name, crate::commands::describe::format_type(&slot.node.ty.node), slot.node.name
+                                ),
+                                span: slot.span,
+                            });
+                        }
+                    }
+                }
             }
             let machines: Vec<&Spanned<Section>> = cell.node.sections.iter()
                 .filter(|s| matches!(s.node, Section::State(_)))
                 .collect();
             if machines.len() > 1 {
-                self.errors.push(CheckError::InterpolationUndefined {
+                self.errors.push(CheckError::Static {
+                    kind: "multiple_state_machines",
                     message: format!("cell '{}' declares {} state machines — a cell has one lifecycle; put the second machine in its own cell", cell.node.name, machines.len()),
                     span: machines[1].span,
                 });
@@ -493,7 +527,8 @@ impl<'a> Checker<'a> {
                 if let Section::State(ref sm) = m.node {
                     if sm.initial.is_empty() {
                         let first = sm.transitions.first().map(|t| t.node.from.clone()).unwrap_or_else(|| "state".to_string());
-                        self.errors.push(CheckError::InterpolationUndefined {
+                        self.errors.push(CheckError::Static {
+                            kind: "no_initial_state",
                             message: format!("state machine '{}' has no start state — add `initial: {}` as its first line", sm.name, first),
                             span: m.span,
                         });
@@ -521,8 +556,14 @@ impl<'a> Checker<'a> {
                     message: issue.message,
                     span: issue.span,
                 });
-            } else {
+            } else if issue.kind == "undefined_variable" || issue.kind == "undefined_function" {
                 self.errors.push(CheckError::InterpolationUndefined {
+                    message: issue.message,
+                    span: issue.span,
+                });
+            } else {
+                self.errors.push(CheckError::Static {
+                    kind: issue.kind,
                     message: issue.message,
                     span: issue.span,
                 });
@@ -600,6 +641,9 @@ impl<'a> Checker<'a> {
         self.check_structure(cell);
         self.check_face_return_literals(cell);
         self.check_native_vocabulary(cell);
+        for issue in literals::check_cell(cell) {
+            self.errors.push(CheckError::Static { kind: issue.kind, message: issue.message, span: issue.span });
+        }
 
         // 2. Property checks (data-driven from registry)
         let mut prop_checker = PropertyChecker::new(self.registry);
@@ -658,8 +702,12 @@ impl<'a> Checker<'a> {
                     });
                 }
                 cost::CostFinding::Advisory { .. } => {
-                    self.warnings.push(CheckWarning::CostAdvisory {
-                        message: finding.to_string(),
+                    // a DECLARED bound that cannot be proven is a failed
+                    // promise, not a note: a CI gate on the exit code let
+                    // an unbounded think() through
+                    self.errors.push(CheckError::Static {
+                        kind: "cost_unprovable",
+                        message: format!("{} — give every think() a literal max_tokens and every loop around it a literal bound, or remove the cost declaration", finding),
                         span: Span::new(0, 0),
                     });
                 }
@@ -1217,7 +1265,8 @@ impl<'a> Checker<'a> {
                     Section::OnSignal(x) if x.signal_name == h.signal_name => Some(s.span),
                     _ => None,
                 }).unwrap_or(Span { start: 0, end: 0 });
-                self.errors.push(CheckError::InterpolationUndefined {
+                self.errors.push(CheckError::Static {
+                    kind: "native_vocabulary",
                     message: format!("handler '{}' is marked [native] but {} — the native vocabulary is numbers, buffer/hashmap/strbuf primitives and sibling [native] handlers (see `soma docs agent`, Performance); drop [native] or move the rest out", h.signal_name, e.reason),
                     span,
                 });
@@ -1283,7 +1332,8 @@ impl<'a> Checker<'a> {
                 walk(&h.body, true, &mut found);
                 for (span, got) in found {
                     if !compatible(ty, got) {
-                        self.errors.push(CheckError::InterpolationUndefined {
+                        self.errors.push(CheckError::Static {
+                            kind: "face_return_type",
                             message: format!(
                                 "handler '{}' returns a {} literal but its face declares `-> {}` — fix the value or the face",
                                 h.signal_name, got, ty
@@ -1529,11 +1579,23 @@ impl<'a> Checker<'a> {
                 "Define the missing handler, fix the spelling, or rename one of the colliding handlers so the call resolves to exactly one cell.".to_string(),
                 "dispatch",
             ),
-            _ => (
-                format!("{}", err),
-                "Review and fix the reported issue.".to_string(),
-                "other",
-            ),
+            CheckError::Static { kind, message, .. } => {
+                // the fix is the clause after the dash, when the message has one
+                let fix = message.split(" — ").nth(1).map(|f| f.to_string())
+                    .unwrap_or_else(|| message.clone());
+                (message.clone(), fix, kind)
+            }
+            other => {
+                // every remaining variant: a stable snake_case kind from its
+                // name; the message names its own fix
+                let name = format!("{:?}", other);
+                let variant = name.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("error");
+                let snake = variant.chars().fold(String::new(), |mut acc, c| {
+                    if c.is_uppercase() && !acc.is_empty() { acc.push('_'); }
+                    acc.push(c.to_ascii_lowercase()); acc
+                });
+                (format!("{}", err), format!("{}", err), Box::leak(snake.into_boxed_str()))
+            }
         }
     }
 

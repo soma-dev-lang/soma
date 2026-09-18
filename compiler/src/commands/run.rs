@@ -392,6 +392,9 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
             ("String", other) => interpreter::Value::String(format!("{}", other)),
             // a Map/List parameter takes its CLI token as JSON
             ("Map" | "List", interpreter::Value::String(s)) => {
+                if s.trim().is_empty() {
+                    return if ty == "Map" { interpreter::Value::Map(Default::default()) } else { interpreter::Value::List(vec![]) };
+                }
                 if serde_json::from_str::<serde_json::Value>(s).is_err() {
                     return fail(&format!("a string that is not valid JSON: '{}'", s));
                 }

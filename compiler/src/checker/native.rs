@@ -156,7 +156,18 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
         Expr::Literal(lit) => {
             match lit {
                 Literal::Int(_) | Literal::Float(_) | Literal::Bool(_) => Ok(()),
-                Literal::String(_) => Ok(()),
+                Literal::String(text) => {
+                    // `"v {n}"` compiled to the literal text — no
+                    // interpolation natively; say so instead of returning it
+                    let has_hole = text.replace("{{", "").replace("}}", "").contains('{');
+                    if has_hole {
+                        return Err(NativeCheckError {
+                            handler_name: handler_name.to_string(),
+                            reason: format!("uses string interpolation ({}) — not available natively: build the text with to_string() and + , or in an interpreted handler", text.chars().take(30).collect::<String>()),
+                        });
+                    }
+                    Ok(())
+                }
                 _ => Err(NativeCheckError {
                     handler_name: handler_name.to_string(),
                     reason: format!("uses unsupported literal type {:?}", lit),

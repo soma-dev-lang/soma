@@ -1256,7 +1256,8 @@ fn emit_dualmode_wrapper(
                     "        let {}: String = _soma_get_string_arg({});",
                     local, str_idx
                 ));
-                fast_call_args.push(local.clone());
+                // the fast inner takes `&str` for String parameters
+                fast_call_args.push(format!("&{}", local));
                 rug_call_args.push(format!("_soma_get_string_arg({})", str_idx));
                 str_idx += 1;
             }
@@ -3595,7 +3596,11 @@ impl FnGenerator {
                     // Regex match/count return Int
                     "regex_count" | "regex_match" => NativeType::Int,
                     "abs" | "min" | "max" => {
+                        // min(Int, Float) is a Float — one Float argument
+                        // decides (the fast inner was typed by arg 0 alone
+                        // and rustc refused the body)
                         if args.is_empty() { NativeType::Float }
+                        else if args.iter().any(|a| self.infer_expr_type(&a.node) == NativeType::Float) { NativeType::Float }
                         else { self.infer_expr_type(&args[0].node) }
                     }
                     other => {
@@ -4387,7 +4392,12 @@ impl FnGenerator {
             "to_string" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
                 let a = self.gen_expr_direct(&args[0].node, a_ty);
-                format!("format!(\"{{}}\", {})", a)
+                if a_ty == NativeType::Float {
+                    // the interpreter prints an integral Float as "1.0"
+                    format!("{{ let _f: f64 = {}; if _f.fract() == 0.0 && _f.is_finite() {{ format!(\"{{:.1}}\", _f) }} else {{ format!(\"{{}}\", _f) }} }}", a)
+                } else {
+                    format!("format!(\"{{}}\", {})", a)
+                }
             }
             "len" | "str_len" => {
                 let arg_ty = self.infer_expr_type(&args[0].node);

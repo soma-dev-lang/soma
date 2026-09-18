@@ -563,14 +563,16 @@ pub fn check_property(graph: &StateMachineGraph, property: &Property) -> Propert
 /// Format property results for display
 pub fn format_property_results(machine: &str, results: &[PropertyResult]) -> String {
     let mut output = String::new();
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stderr()) && std::env::var_os("NO_COLOR").is_none();
+    let paint = |code: &str, mark: &str| if tty { format!("\x1b[{}m{}\x1b[0m", code, mark) } else { mark.to_string() };
 
     output.push_str(&format!("\n  Temporal properties for '{}':\n", machine));
 
     for r in results {
         if r.passed {
-            output.push_str(&format!("  \x1b[32m✓\x1b[0m {} — {}\n", r.property, r.message));
+            output.push_str(&format!("  {} {} — {}\n", paint("32", "✓"), r.property, r.message));
         } else {
-            output.push_str(&format!("  \x1b[31m✗\x1b[0m {} — {}\n", r.property, r.message));
+            output.push_str(&format!("  {} {} — {}\n", paint("31", "✗"), r.property, r.message));
             if let Some(ref trace) = r.counter_example {
                 output.push_str(&format!("    counter-example: {}\n", trace.join(" → ")));
             }

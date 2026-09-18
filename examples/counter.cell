@@ -8,7 +8,7 @@ cell Counter {
     }
 
     memory {
-        value: Int [persistent, consistent]
+        value: Map<String, String> [persistent, consistent]
     }
 
     on increment(amount: Int) {

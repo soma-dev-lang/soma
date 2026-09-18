@@ -74,5 +74,5 @@ uses fresh in-memory storage every time.
 ## What `soma serve` does not do
 
 No TLS, no authentication, no header access from handlers, no rate limiting.
-It binds all interfaces, and a second port (`PORT + 2`) for the signal bus.
+It binds 127.0.0.1 (`--host 0.0.0.0` to expose it), plus `PORT + 2` for the signal bus and `PORT + 1` for WebSockets when a cell declares `on ws`. Every response carries `Access-Control-Allow-Origin: *` (browsers on any origin may call it; put a proxy in front to restrict).
 Run it behind a reverse proxy and firewall the bus port.

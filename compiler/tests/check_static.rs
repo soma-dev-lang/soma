@@ -62,7 +62,7 @@ fn interpolation_known_names_pass() {
         r#"
         cell Ok {
             face { signal go(user: String) -> String }
-            memory { counter: Int [persistent] }
+            memory { counter: Map<String, Int> [persistent] }
             on go(user: String) {
                 let greeting = "hi {user}"
                 let total = 0

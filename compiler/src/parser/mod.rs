@@ -1421,11 +1421,11 @@ impl Parser {
             // transition block, not after the target state. But `when` is
             // a legal state name: `when -> c` (next token is '->') must
             // parse as the next transition, not trip the fix-it.
-            if matches!(self.peek(), Token::Ident(s) if s == "when")
+            if (matches!(self.peek(), Token::Ident(s) if s == "when") || self.check(&Token::If))
                 && !matches!(self.peek_at(1), Token::Arrow) {
                 return Err(ParseError::FixIt {
                     message: format!(
-                        "guards are declared inside the transition block: {} -> {} {{ guard {{ cond }} }}",
+                        "guards are declared inside the transition block: {} -> {} {{ guard {{ cond }} }} — the condition reads the calling handler's locals",
                         from, to
                     ),
                     span: self.peek_span(),
@@ -2057,7 +2057,15 @@ impl Parser {
                     }
                     _ => {
                         let (name, _) = self.expect_ident()?;
-                        name
+                        // `else Tag "why {x}"`: a machine-readable kind AND
+                        // a human detail (encoded Tag\u{1f}text; the
+                        // interpreter splits it)
+                        if let Token::StringLit(detail) = self.peek().clone() {
+                            self.advance();
+                            format!("{}\u{1f}{}", name, detail)
+                        } else {
+                            name
+                        }
                     }
                 };
                 Ok(Spanned::new(

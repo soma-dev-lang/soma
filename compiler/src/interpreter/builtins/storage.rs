@@ -388,10 +388,16 @@ fn agent_think(
             _ => std::env::var("OPENAI_API_KEY").or_else(|_| std::env::var("ANTHROPIC_API_KEY")),
         })
         .or_else(|_| if provider == "ollama" { Ok("ollama".to_string()) } else { Err(std::env::VarError::NotPresent) })
-        .map_err(|_| RuntimeError::TypeError(format!(
+        .map_err(|_| {
+            // said ONCE on stderr even when the program catches the error:
+            // an operator saw "auto_approved" in 7 ms and no sign the model
+            // was never reached
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| eprintln!("note: think() has no LLM key — every call raises kind \"llm\" (set SOMA_LLM_KEY, or SOMA_LLM_MOCK=echo to mock offline)"));
+            RuntimeError::TypeError(format!(
             "think() requires API key. In soma.toml:\n\n    [agent]\n    provider = \"{}\"\n    key = \"${{ANTHROPIC_API_KEY}}\"\n\nOr set SOMA_LLM_KEY env var. Or SOMA_LLM_MOCK=echo for offline.",
             if provider.is_empty() { "anthropic" } else { &provider }
-        )))?;
+        ))})?;
     if api_key.is_empty() {
         return Err(RuntimeError::TypeError("think() API key empty.".to_string()));
     }

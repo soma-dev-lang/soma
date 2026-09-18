@@ -704,9 +704,9 @@ cell test T {
     assert!(up, "server did not start");
     let status = |r: &String| r.lines().next().unwrap_or("").to_string();
     assert!(status(&got[0]).contains("500") && got[0].contains("stack_overflow"), "{}", got[0]);
-    assert!(status(&got[1]).contains("422") && got[1].contains("\"kind\":\"invariant\""), "{}", got[1]);
+    assert!(status(&got[1]).contains("422") && got[1].contains("\"kind\": \"invariant\""), "{}", got[1]);
     assert!(status(&got[2]).contains("409") && got[2].contains("invalid_transition"), "{}", got[2]);
-    assert!(status(&got[3]).contains("404") && got[3].contains("\"kind\":\"not_found\""), "{}", got[3]);
+    assert!(status(&got[3]).contains("404") && got[3].contains("\"kind\": \"not_found\""), "{}", got[3]);
     assert!(status(&got[4]).contains("200") && got[4].trim_end().ends_with("null"), "{}", got[4]);
     assert!(status(&got[5]).contains("400") && got[5].contains("expects Int"), "{}", got[5]);
     assert!(got[6].contains("\"result\": 3") || got[6].contains("\"result\":3"), "the service must still answer after the overflow: {}", got[6]);
@@ -849,4 +849,68 @@ cell test T {
 "#).unwrap();
     let (out, code) = soma_in(&d, &["test", "app.cell"]);
     assert_eq!(code, 0, "{out}");
+}
+
+/// Cycle 4: what the second wave of agents found.
+#[test]
+fn cycle4_findings() {
+    let d = dir("cycle4");
+    // native under serve, cross-process lock, face/require detail, literal checks
+    std::fs::write(d.join("lit.cell"), "cell A {\n  state s { initial: a\n a -> b }\n  on takes_int(n: Int) { n }\n  on go(id: String) {\n    transition(id, \"c\")\n    takes_int(\"s\")\n  }\n  on h(n: Int) [native] { return \"v {n}\" }\n  memory { n: Int [persistent] }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "lit.cell", "--json"]);
+    assert_ne!(code, 0);
+    for k in ["unknown_transition_target", "argument_type", "native_vocabulary", "scalar_slot"] {
+        assert!(out.contains(&format!("\"kind\": \"{k}\"")) || out.contains(&format!("\"kind\":\"{k}\"")), "missing kind {k}:\n{out}");
+    }
+    assert!(!out.contains("\"other\""), "{out}");
+
+    std::fs::write(d.join("app.cell"), r#"
+cell A {
+  memory { c: Map<String, Int> [persistent] }
+  on lend(m: String, open: Int) {
+    require open < 3 else LoanLimit "member {m} already holds {open} loans"
+    open + 1
+  }
+  on bumps(n: Int) {
+    for i in range(0, n) { c.set("k", (c.get("k") ?? 0) + 1) }
+    c.get("k")
+  }
+  on sq(n: Int) [native] { n * n }
+  on decide(id: String, ok: Bool) { map("id", id, "ok", ok) }
+}
+cell test T {
+  rules {
+    assert_fails lend("ann", 3) matching "LoanLimit: member ann already holds 3 loans"
+    let r = try { lend("bob", 5) }
+    assert r.kind == "LoanLimit"
+    assert r.detail == "member bob already holds 5 loans"
+    assert sq(12) == 144
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+
+    // two processes on one .soma_data: no lost update
+    let a = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "app.cell", "bumps", "500"]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let b = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "app.cell", "bumps", "500"]).current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let _ = a.wait_with_output(); let _ = b.wait_with_output();
+    let (out, _) = soma_in(&d, &["run", "app.cell", "bumps", "0"]);
+    assert!(out.lines().any(|l| l.trim() == "1000"), "two soma run processes must serialize: {out}");
+
+    // native compiled under serve; Bool path segment coerced
+    let port = 19990 + (std::process::id() % 9) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "-p", &port.to_string()])
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("soma serve");
+    let mut up = false;
+    for _ in 0..150 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let (sq, dec) = if up { (http(port, "GET", "/sq/12"), http(port, "GET", "/decide/x/true")) } else { (String::new(), String::new()) };
+    let _ = child.kill(); let _ = child.wait();
+    assert!(up);
+    assert!(sq.contains("144"), "{sq}");
+    assert!(dec.contains("\"ok\": true"), "{dec}");
 }

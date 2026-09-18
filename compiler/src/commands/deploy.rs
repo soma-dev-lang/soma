@@ -109,6 +109,7 @@ pub fn cmd_deploy(path: &PathBuf, target: &str, region: Option<&str>) {
                 .map(|m| m.package.name)
         })
         .flatten()
+        .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| cell.node.name.to_lowercase());
 
     match target {

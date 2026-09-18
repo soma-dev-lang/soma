@@ -8,6 +8,7 @@ use crate::checker::native::{check_native_handler, NativeSiblings};
 use crate::codegen::native::{self, NativeHandler, NativeSig, NativeType};
 
 /// A loaded native function, ready to call.
+#[derive(Clone)]
 pub struct LoadedNative {
     /// Keep the library alive as long as the function pointer is in use
     pub lib: Option<std::sync::Arc<libloading::Library>>,
