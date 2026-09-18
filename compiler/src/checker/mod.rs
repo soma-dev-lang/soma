@@ -1,6 +1,7 @@
 mod properties;
 mod signals;
 pub mod verify;
+pub mod desugar;
 pub mod temporal;
 pub mod native;
 pub mod refinement;
@@ -460,6 +461,8 @@ pub struct Checker<'a> {
     pub warnings: Vec<CheckWarning>,
     /// cell name → (handler name → body), every top-level cell
     pub all_handlers: cost::AllHandlers,
+    /// cells with interpolation / UFCS / pipe calls made explicit (desugar)
+    analysis_cells: std::collections::HashMap<String, CellDef>,
 }
 
 impl<'a> Checker<'a> {
@@ -471,6 +474,7 @@ impl<'a> Checker<'a> {
             errors: Vec::new(),
             warnings: Vec::new(),
             all_handlers: Default::default(),
+            analysis_cells: Default::default(),
         }
     }
 
@@ -622,7 +626,9 @@ impl<'a> Checker<'a> {
             });
         }
         // handlers of every top-level cell, for cross-cell cost composition
-        self.all_handlers = program.cells.iter().map(|c| {
+        let analysis = desugar::expose_for_analysis(program);
+        self.analysis_cells = analysis.cells.iter().map(|c| (c.node.name.clone(), c.node.clone())).collect();
+        self.all_handlers = analysis.cells.iter().map(|c| {
             let hs = c.node.sections.iter().filter_map(|s| match &s.node {
                 Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.clone())),
                 _ => None,
@@ -703,7 +709,8 @@ impl<'a> Checker<'a> {
 
         // 4d. V1.6: cost-budget proof. Walks think()/http_*/loop sites
         // and proves peak ≤ declared. Advisory if any think() is unbounded.
-        for finding in cost::check_cell(cell, self.manifest, &self.all_handlers) {
+        let analysis_cell = self.analysis_cells.get(&cell.name).cloned().unwrap_or_else(|| cell.clone());
+        for finding in cost::check_cell(&analysis_cell, self.manifest, &self.all_handlers) {
             match finding {
                 cost::CostFinding::Exceeded { .. } => {
                     self.errors.push(CheckError::CostExceeded {

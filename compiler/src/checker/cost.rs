@@ -56,11 +56,14 @@ struct CostWalk<'a> {
     handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>,
     /// Handlers currently being expanded (recursion guard).
     stack: Vec<String>,
+    /// provider rounds per think(): 10 when the agent declares tools (each
+    /// tool-call round is a new reply capped at max_tokens), else 1
+    rounds: i64,
 }
 
 impl<'a> CostWalk<'a> {
     fn new(handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>) -> Self {
-        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), handlers, stack: Vec::new() }
+        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), handlers, stack: Vec::new(), rounds: 1 }
     }
 
     /// A fresh accumulator for a nested scope (loop body, lambda, callee).
@@ -71,6 +74,7 @@ impl<'a> CostWalk<'a> {
             unbounded_sites: Vec::new(),
             handlers: self.handlers,
             stack: self.stack.clone(),
+            rounds: self.rounds,
         }
     }
 
@@ -164,7 +168,17 @@ impl<'a> CostWalk<'a> {
                 if name == "think" || name == "think_json" {
                     let (max_tokens, timeout_ms) = extract_think_opts(args);
                     match max_tokens {
-                        Some(t) => self.tokens += t,
+                        Some(t) => {
+                            // map("max_rounds", N) with a literal N caps the rounds
+                            let rounds = args.last().and_then(|a| match &a.node {
+                                Expr::FnCall { name, args: kv } if name == "map" => kv.chunks(2).find_map(|c| match (&c[0].node, c.get(1).map(|v| &v.node)) {
+                                    (Expr::Literal(Literal::String(k)), Some(Expr::Literal(Literal::Int(n)))) if k == "max_rounds" => Some((*n).clamp(1, 10)),
+                                    _ => None,
+                                }),
+                                _ => None,
+                            }).map_or(self.rounds, |r| r.min(self.rounds));
+                            self.tokens += t.saturating_mul(rounds)
+                        }
                         None => self.unbounded_sites.push(format!("{}::think (no max_tokens)", handler_name)),
                     }
                     self.latency_ms += timeout_ms.unwrap_or(30_000);
@@ -379,6 +393,9 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         };
         {
             let mut walk = CostWalk::new(&handlers);
+            if cell.sections.iter().any(|s| matches!(&s.node, Section::Face(f) if f.declarations.iter().any(|d| matches!(d.node, FaceDecl::Tool(_))))) {
+                walk.rounds = 10;
+            }
             walk.stack.push(hname.clone());
             for s in body {
                 walk.visit_stmt(&s.node, &hname);

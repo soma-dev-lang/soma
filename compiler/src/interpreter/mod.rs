@@ -573,6 +573,8 @@ pub struct Interpreter {
     pub(crate) agent_tokens_used: i64,
     /// Token budget: max tokens allowed (0 = unlimited)
     pub(crate) agent_token_budget: i64,
+    /// provider rounds allowed for the current think() (max_rounds, ≤ 10)
+    pub(crate) think_rounds: usize,
     /// Conversation history for multi-turn think() within a handler
     pub(crate) agent_conversation: Vec<serde_json::Value>,
     /// Structured trace log: every think, tool call, transition, delegate
@@ -759,6 +761,7 @@ impl Interpreter {
             invariants,
             agent_tokens_used: 0,
             agent_token_budget: 0,
+            think_rounds: 10,
             agent_conversation: Vec::new(),
             agent_trace: Vec::new(),
             agent_pending_approval: None,
@@ -897,7 +900,7 @@ impl Interpreter {
             let mut sample = String::new();
             for k in backend.keys().into_iter().take(10_000) {
                 let Some(stored) = backend.get(&k) else { continue };
-                let val = auto_deserialize(stored_to_value(stored));
+                let val = self.from_slot(&cell_name, &slot_name, stored_to_value(stored));
                 let size = backend.len() as i64;
                 if self.check_invariants(&cell_name, &slot_name, &k, &val, size, "read").is_err() {
                     bad += 1;
@@ -919,9 +922,9 @@ impl Interpreter {
             if self.slot_value_type(&cell_name, &slot_name).is_none() { continue; }
             let Some(backend) = self.storage.get(&key).cloned() else { continue };
             let values: Vec<(String, Value)> = if self.slot_kind(&cell_name, &slot_name) == Some("List") {
-                backend.list().into_iter().take(10_000).enumerate().map(|(i, v)| (format!("#{}", i), auto_deserialize(stored_to_value(v)))).collect()
+                backend.list().into_iter().take(10_000).enumerate().map(|(i, v)| (format!("#{}", i), self.from_slot(&cell_name, &slot_name, stored_to_value(v)))).collect()
             } else {
-                backend.keys().into_iter().take(10_000).filter_map(|k| backend.get(&k).map(|v| (k, auto_deserialize(stored_to_value(v))))).collect()
+                backend.keys().into_iter().take(10_000).filter_map(|k| backend.get(&k).map(|v| (k, self.from_slot(&cell_name, &slot_name, stored_to_value(v))))).collect()
             };
             let mut bad = 0usize;
             let mut sample = String::new();
@@ -999,7 +1002,7 @@ impl Interpreter {
             let mut bad = 0usize;
             let mut sample = String::new();
             for (i, v) in items.into_iter().enumerate() {
-                let val = auto_deserialize(stored_to_value(v));
+                let val = self.from_slot(&cell_name, &slot_name, stored_to_value(v));
                 if self.check_invariants(&cell_name, &slot_name, "", &val, size, "read").is_err() {
                     bad += 1;
                     if sample.is_empty() { sample = format!("#{} = {}", i, short_value(&val)); }
@@ -1897,7 +1900,9 @@ impl Interpreter {
                 }
                 // Send to peer bus (inter-process)
                 if let Some(ref peers) = self.peer_bus {
-                    let line = format!("EVENT {} {}\n", sig, broadcast_data);
+                    // valid JSON on the wire (`{"inf": inf}` made the peer
+                    // drop the whole event, silently): NaN / inf travel as null
+                    let line = format!("EVENT {} {}\n", sig, builtins::string::to_json_string(&broadcast_data));
                     if let Ok(senders) = peers.lock() {
                         for sender in senders.iter() {
                             let _ = sender.send(line.clone());
@@ -2601,7 +2606,7 @@ impl Interpreter {
                             let backend = self.storage.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| self.storage.get(slot_name.as_str())).cloned();
                             if let Some(b) = backend {
                                 let i = list_position(&key, b.list_len(), "list").map_err(ExecError::Runtime)?;
-                                return Ok(b.list_get(i).map(|v| auto_deserialize(stored_to_value(v))).unwrap_or(Value::Unit));
+                                return Ok(b.list_get(i).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).unwrap_or(Value::Unit));
                             }
                         }
                         return self.call_storage_method(cell_name, slot_name, "get", &[key]);
@@ -2784,7 +2789,7 @@ impl Interpreter {
         // answered 0 after two pushes and `.get(0)` was `()`).
         if self.slot_kind(cell_name, slot_name) == Some("List") && !is_sharded {
             let items = || -> Vec<Value> {
-                backend.list().into_iter().map(|v| auto_deserialize(stored_to_value(v))).collect()
+                backend.list().into_iter().map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).collect()
             };
             match method {
                 "len" | "size" | "count" if args.is_empty() => return Ok(Value::Int(SomaInt::from_i64(backend.list_len() as i64))),
@@ -2796,7 +2801,7 @@ impl Interpreter {
                         let raw = i.to_i64().unwrap_or(0);
                         let idx = if raw < 0 { raw + backend.list_len() as i64 } else { raw };
                         return Ok(if idx >= 0 {
-                            backend.list_get(idx as usize).map(|v| auto_deserialize(stored_to_value(v))).unwrap_or(Value::Unit)
+                            backend.list_get(idx as usize).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).unwrap_or(Value::Unit)
                         } else { Value::Unit });
                     }
                 }
@@ -2860,12 +2865,12 @@ impl Interpreter {
                 // In cluster mode: check local first, then ask peers if not found
                 if is_sharded {
                     if let Some(stored) = backend.get(&key_str) {
-                        return Ok(auto_deserialize(stored_to_value(stored)));
+                        return Ok(self.from_slot(cell_name, slot_name, stored_to_value(stored)));
                     }
                     if let Some(ref cluster) = self.cluster {
                         if !cluster.owns_key(&key_str) {
                             if let Some(val) = self.cluster_remote_get(slot_name, &key_str) {
-                                return Ok(auto_deserialize(val));
+                                return Ok(self.from_slot(cell_name, slot_name, val));
                             }
                         }
                     }
@@ -2873,7 +2878,7 @@ impl Interpreter {
                 }
 
                 match backend.get(&key_str) {
-                    Some(stored) => Ok(auto_deserialize(stored_to_value(stored))),
+                    Some(stored) => Ok(self.from_slot(cell_name, slot_name, stored_to_value(stored))),
                     None => Ok(Value::Unit),
                 }
             }
@@ -2923,7 +2928,7 @@ impl Interpreter {
                 // satisfied the invariant when written, so only size/key
                 // clauses can flip). Deleting a missing key is a no-op.
                 if let Some(stored) = backend.get(&key_str) {
-                    let old = auto_deserialize(stored_to_value(stored));
+                    let old = self.from_slot(cell_name, slot_name, stored_to_value(stored));
                     let size_after = backend.len() as i64 - 1;
                     self.check_invariants(cell_name, slot_name, &key_str, &old, size_after, "delete")?;
                 }
@@ -2973,7 +2978,7 @@ impl Interpreter {
                     if let Some(v) = backend.get(&k) {
                         out.push(map_from_pairs(vec![
                             ("key".to_string(), Value::String(k)),
-                            ("value".to_string(), auto_deserialize(stored_to_value(v))),
+                            ("value".to_string(), self.from_slot(cell_name, slot_name, stored_to_value(v))),
                         ]));
                     }
                 }
@@ -3010,7 +3015,7 @@ impl Interpreter {
             // symmetric with `slot.field = v` and with map field access.
             _ if args.is_empty() => {
                 match backend.get(method) {
-                    Some(stored) => Ok(auto_deserialize(stored_to_value(stored))),
+                    Some(stored) => Ok(self.from_slot(cell_name, slot_name, stored_to_value(stored))),
                     None => Ok(Value::Unit),
                 }
             }
@@ -3627,11 +3632,26 @@ impl Interpreter {
                         // Try to parse as bus event format
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
                             if let Some(event_name) = parsed.get("event").and_then(|e| e.as_str()) {
+                                // a remote server cannot run a private handler or
+                                // forge a record / variant (it did both)
+                                fn forged(v: &serde_json::Value) -> bool {
+                                    match v {
+                                        serde_json::Value::Object(m) => m.contains_key("_type") || m.contains_key("_variant") || m.contains_key("_values") || m.values().any(forged),
+                                        serde_json::Value::Array(xs) => xs.iter().any(forged),
+                                        _ => false,
+                                    }
+                                }
+                                if event_name.starts_with('_') || parsed.get("data").map_or(false, forged) {
+                                    eprintln!("subscribe: refused event '{}' (a private handler, or forged _type/_variant data)", event_name);
+                                    continue;
+                                }
                                 let data = parsed.get("data")
                                     .map(|d| builtins::serde_json_to_value(d))
                                     .unwrap_or(Value::String(text.clone()));
                                 // Dispatch to on event_name(data)
-                                let _ = interp.call_signal(&cname, event_name, vec![data]);
+                                if let Err(e) = interp.call_signal(&cname, event_name, vec![data]) {
+                                    eprintln!("subscribe: event '{}' failed (rolled back): {}", event_name, e);
+                                }
                                 continue;
                             }
                         }
@@ -4255,6 +4275,13 @@ impl Interpreter {
 
     /// `Map<String, Int>` / `List<Map>`: the declared value type of a slot
     /// (the last type argument), when it is a plain name.
+    /// A value read from a slot: a slot of Strings gives back its text
+    /// (`"{\"x\": 1}"` stored in a `Map<String, String>` came back a Map);
+    /// JSON text in other slots is legacy data, decoded as before.
+    fn from_slot(&self, cell_name: &str, slot_name: &str, v: Value) -> Value {
+        if matches!(self.slot_value_type(cell_name, slot_name).as_deref(), Some("String")) { v } else { auto_deserialize(v) }
+    }
+
     fn slot_value_type(&self, cell_name: &str, name: &str) -> Option<String> {
         let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
             Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name).and_then(|sl| {
@@ -4326,12 +4353,12 @@ impl Interpreter {
         let backend = self.storage.get(&format!("{}.{}", cell_name, name))
             .or_else(|| self.storage.get(name))?.clone();
         Some(match kind {
-            "List" => Value::List(backend.list().into_iter().map(|v| auto_deserialize(stored_to_value(v))).collect()),
+            "List" => Value::List(backend.list().into_iter().map(|v| self.from_slot(cell_name, name, stored_to_value(v))).collect()),
             _ => {
                 let mut m = std::collections::BTreeMap::new();
                 for k in backend.keys() {
                     if let Some(v) = backend.get(&k) {
-                        m.insert(k, auto_deserialize(stored_to_value(v)));
+                        m.insert(k, self.from_slot(cell_name, name, stored_to_value(v)));
                     }
                 }
                 Value::Map(m.into_iter().collect())

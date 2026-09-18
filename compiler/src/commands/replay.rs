@@ -135,11 +135,24 @@ pub fn cmd_replay(
     }
 }
 
+/// `--at`: epoch milliseconds, or ISO 8601 `YYYY-MM-DD[THH:MM[:SS]][Z]` (UTC).
+/// Anything else is an error (it silently meant "replay everything").
 fn parse_at(s: &str) -> i64 {
     if let Ok(n) = s.parse::<i64>() { return n; }
-    // ISO 8601: very simple parser, accept yyyy-mm-ddThh:mm:ssZ
-    // For V1 we just accept epoch ms or fall through to "all".
-    i64::MAX
+    let t = s.trim().trim_end_matches('Z');
+    let (date, time) = t.split_once(['T', ' ']).unwrap_or((t, "00:00:00"));
+    if let Some((y, m, d)) = crate::interpreter::builtins::time::parse_iso_date(date) {
+        let parts: Vec<&str> = time.split(':').collect();
+        let num = |i: usize| parts.get(i).map(|p| p.parse::<i64>()).unwrap_or(Ok(0));
+        if let (Ok(h), Ok(mi), Ok(se)) = (num(0), num(1), num(2)) {
+            if (0..24).contains(&h) && (0..60).contains(&mi) && (0..61).contains(&se) && parts.len() <= 3 {
+                let days = crate::interpreter::builtins::time::days_from_civil(y, m, d);
+                return ((days * 86400) + h * 3600 + mi * 60 + se) * 1000;
+            }
+        }
+    }
+    eprintln!("error: --at '{}' is neither epoch milliseconds nor an ISO 8601 time (2026-09-18 or 2026-09-18T12:30:00Z)", s);
+    process::exit(1)
 }
 
 fn fmt_args(args: &[interpreter::Value]) -> String {
@@ -148,10 +161,10 @@ fn fmt_args(args: &[interpreter::Value]) -> String {
 
 fn suggest_fix(nondet: &[String]) -> String {
     if nondet.iter().any(|s| s == "now" || s == "now_ms" || s == "timestamp") {
-        return "mark the handler [pure] or pass the clock as an explicit input parameter".to_string();
+        return "pass the clock in as a handler argument (now()/now_ms() are read again on replay; [pure] does not freeze them)".to_string();
     }
     if nondet.iter().any(|s| s == "random" || s == "rand") {
-        return "seed the PRNG explicitly or pass random draws in via the handler args".to_string();
+        return "pass random draws in as handler arguments (there is no seed builtin)".to_string();
     }
     if nondet.iter().any(|s| s == "today" || s == "date_now") {
         return "pass the date as an input parameter so replay sees the same value".to_string();

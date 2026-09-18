@@ -190,6 +190,9 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
         interp.approve_queue.clear();
         interp.handler_stubs.clear();
         interp.frozen_now = None;
+        // and an empty LLM trace / conversation (trace() carried over)
+        interp.agent_trace.clear();
+        interp.agent_conversation.clear();
         if cell_idx > 0 {
             for cell in &program.cells {
                 if matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) {

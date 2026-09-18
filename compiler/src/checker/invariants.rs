@@ -429,7 +429,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 // the clause over the WRITTEN expression: `require room - amount >= 0`
                                 // is exactly the fact that proves `room - amount` (a bound on the
                                 // parameter alone was the wrong advice for an upper bound)
-                                .map(|(c, _)| render_expr(c).replace(slot.as_str(), &render_expr(value_expr))).collect();
+                                .map(|(c, _)| subst_render(c, slot, value_expr)).collect();
                             format!("`{n}` is a parameter (narrow it: `require {} else …`)", open_txt.join(" && "))
                         } else {
                             let mut assigns: Vec<(&str, &Expr)> = Vec::new();
@@ -455,7 +455,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             let num = |x: f64| if x == f64::INFINITY { "∞".to_string() } else if x == f64::NEG_INFINITY { "-∞".to_string() } else { format!("{}", x) };
                             let open_txt: Vec<String> = parts.iter().zip(&verdicts)
                                 .filter(|(_, v)| **v != Proof::Holds)
-                                .map(|(c, _)| render_expr(c).replace(slot.as_str(), &render_expr(value_expr))).collect();
+                                .map(|(c, _)| subst_render(c, slot, value_expr)).collect();
                             let (l, r) = (if lo.is_finite() { "[" } else { "(" }, if hi.is_finite() { "]" } else { ")" });
                             why.push(format!("`{}` is only known to lie in {}{}, {}{} — narrow it: `require {} else …`",
                                 render_expr(value_expr), l, num(lo), num(hi), r, open_txt.join(" && ")));
@@ -1867,4 +1867,27 @@ fn can_exit(st: &Spanned<Statement>) -> bool {
             hit
         }
     }
+}
+
+/// `c` with the slot name replaced by the written value, rendered — on the
+/// AST (a text replace turned `key != "admin"` into `"1dmin"`), with the
+/// value parenthesised when it is an operation (`(n + 1) % 2`).
+fn subst_render(c: &Expr, slot: &str, value: &Expr) -> String {
+    let shown = match value {
+        Expr::BinaryOp { .. } => format!("({})", render_expr(value)),
+        _ => render_expr(value),
+    };
+    fn go(e: &Expr, slot: &str, shown: &str) -> Expr {
+        let b = |x: &Spanned<Expr>| Box::new(Spanned::new(go(&x.node, slot, shown), x.span));
+        match e {
+            Expr::Ident(n) if n == slot => Expr::Ident(shown.to_string()),
+            Expr::BinaryOp { left, op, right } => Expr::BinaryOp { left: b(left), op: *op, right: b(right) },
+            Expr::CmpOp { left, op, right } => Expr::CmpOp { left: b(left), op: *op, right: b(right) },
+            Expr::Not(i) => Expr::Not(b(i)),
+            Expr::FnCall { name, args } => Expr::FnCall { name: name.clone(), args: args.iter().map(|a| Spanned::new(go(&a.node, slot, shown), a.span)).collect() },
+            Expr::FieldAccess { target, field } => Expr::FieldAccess { target: b(target), field: field.clone() },
+            other => other.clone(),
+        }
+    }
+    render_expr(&go(c, slot, &shown))
 }

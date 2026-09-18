@@ -4,6 +4,7 @@ use std::path::Path;
 
 /// soma.toml — the project manifest
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // `[verfy]` silently dropped every property
 pub struct Manifest {
     /// Optional: a soma.toml that only configures `[verify]` or `[agent]`
     /// is a perfectly good manifest. (It used to be required, and a
@@ -34,6 +35,7 @@ pub struct Manifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)] // `modle = "x"` was accepted and ignored
 pub struct AgentConfig {
     /// LLM provider: "openai", "ollama", "anthropic", or custom URL
     #[serde(default)]

@@ -69,31 +69,41 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             if args.len() >= 2 {
                 let key = format!("{}", args[0]);
                 let val = &args[1];
-                // Store in __agent_memory slot
+                // the cell's own agent memory (it used to be written into
+                // whichever user slot a HashMap walk found first — past its
+                // type and invariants — and was never rolled back)
                 let slot_key = format!("{}.__agent_memory", cell_name);
-                if let Some(backend) = interp.storage.get(&slot_key).or_else(|| {
-                    interp.storage.iter().find(|(k, _)| k.ends_with(".__agent_memory") || k.as_str() == "__agent_memory").map(|(_, v)| v)
-                }) {
-                    backend.set(&key, super::super::value_to_stored(val));
-                    Some(Ok(Value::Unit))
-                } else {
-                    // Auto-create memory in first available storage
-                    if let Some((_, backend)) = interp.storage.iter().next() {
-                        backend.set(&format!("__mem_{}", key), super::super::value_to_stored(val));
-                        Some(Ok(Value::Unit))
+                if !interp.storage.contains_key(&slot_key) {
+                    let persistent = crate::interpreter::PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)
+                        || interp.storage.values().any(|b| b.backend_name() == "sqlite");
+                    let backend: std::sync::Arc<dyn crate::runtime::storage::StorageBackend> = if persistent {
+                        std::sync::Arc::new(crate::runtime::storage::SqliteBackend::new(cell_name, "_agent_memory"))
                     } else {
-                        Some(Err(RuntimeError::TypeError("remember() requires a memory slot".to_string())))
-                    }
+                        std::sync::Arc::new(crate::runtime::storage::MemoryBackend::new())
+                    };
+                    interp.storage.insert(slot_key.clone(), backend);
                 }
+                let backend = interp.storage.get(&slot_key).cloned().unwrap();
+                if let Some(j) = interp.journal.as_mut() {
+                    j.push(crate::interpreter::UndoOp::Restore { backend: backend.clone(), key: key.clone(), prev: backend.get(&key) });
+                }
+                backend.set(&key, super::super::value_to_stored(val));
+                Some(Ok(Value::Unit))
             } else {
                 Some(Err(RuntimeError::TypeError("remember(key, value)".to_string())))
             }
         }
         "recall" => {
             if let Some(Value::String(key)) = args.first() {
-                // Recall from any storage slot
-                for (_, backend) in interp.storage.iter() {
-                    if let Some(val) = backend.get(key).or_else(|| backend.get(&format!("__mem_{}", key))) {
+                let own = format!("{}.__agent_memory", cell_name);
+                if let Some(v) = interp.storage.get(&own).and_then(|b| b.get(key)) {
+                    return Some(Ok(super::super::auto_deserialize(super::super::stored_to_value(v))));
+                }
+                // legacy: values an older version wrote into a user slot
+                for (name, backend) in interp.storage.iter() {
+                    // never a user slot's own entry that happens to share the key
+                    let hit = if name.ends_with("__agent_memory") { backend.get(key) } else { backend.get(&format!("__mem_{}", key)) };
+                    if let Some(val) = hit {
                         return Some(Ok(super::super::auto_deserialize(super::super::stored_to_value(val))));
                     }
                 }
@@ -230,6 +240,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         "think" => {
             if let Some(Value::String(prompt)) = args.first() {
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
+                interp.think_rounds = think_rounds(args);
                 Some(agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms))
             } else {
                 Some(Err(RuntimeError::TypeError("think(prompt: String) requires a string argument".to_string())))
@@ -238,6 +249,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         "think_json" => {
             if let Some(Value::String(prompt)) = args.first() {
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
+                interp.think_rounds = think_rounds(args);
                 Some(agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms))
             } else {
                 Some(Err(RuntimeError::TypeError("think_json(prompt: String) requires a string argument".to_string())))
@@ -254,6 +266,18 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
 ///   think("prompt", "system")
 ///   think("prompt", map("max_tokens", 500, "timeout", 10000))
 ///   think("prompt", "system", map("max_tokens", 500))
+/// `think(p, map("max_rounds", 1))`: at most N provider rounds (tool calls
+/// included) — 10 by default; the cost bound multiplies by it.
+pub(crate) fn think_rounds(args: &[Value]) -> usize {
+    match args.last() {
+        Some(Value::Map(m)) => match m.get("max_rounds") {
+            Some(Value::Int(n)) => n.to_i64().unwrap_or(10).clamp(1, 10) as usize,
+            _ => 10,
+        },
+        _ => 10,
+    }
+}
+
 fn extract_think_opts(args: &[Value]) -> (Option<String>, Option<u64>, Option<u64>) {
     let mut system: Option<String> = None;
     let mut max_tokens: Option<u64> = None;
@@ -436,7 +460,8 @@ fn agent_think(
     let start = std::time::Instant::now();
 
     // Tool-calling loop
-    for iteration in 0..10 {
+    let rounds = interp.think_rounds.max(1);
+    for iteration in 0..rounds {
         // Timeout check
         if let Some(tms) = timeout_ms {
             if start.elapsed().as_millis() as u64 > tms {
@@ -482,7 +507,7 @@ fn agent_think(
         return Ok(Value::String(serde_json::to_string(&raw_json).unwrap_or_default()));
     }
 
-    Err(RuntimeError::TypeError("think() exceeded max iterations (10)".to_string()))
+    Err(RuntimeError::TypeError(format!("think() exceeded max rounds ({}) of tool calls — raise map(\"max_rounds\", N) (≤ 10) or give the model fewer steps", rounds)))
 }
 
 /// Build OpenAI function-calling tool definitions from a cell's face tool declarations
@@ -566,12 +591,26 @@ fn dispatch_tool_call(interp: &mut Interpreter, cell_name: &str, tool_name: &str
         }
     }
 
+    // Only a DECLARED `tool` is callable by the model: it could name any
+    // handler of the cell (a private `_admin`, a state-changing `pay`) and
+    // escape the capability list through it
+    let declared = interp.cells.get(cell_name).map_or(false, |cell| cell.sections.iter().any(|s| matches!(&s.node,
+        crate::ast::Section::Face(face) if face.declarations.iter().any(|d| matches!(&d.node, crate::ast::FaceDecl::Tool(td) if td.name == tool_name)))));
+    if !declared {
+        return Value::String(format!("tool error: '{}' is not a tool of this agent", tool_name));
+    }
     // Scope the capability set for the duration of the call.
     let prev_caps = interp.current_tool_caps.take();
     interp.current_tool_caps = tool_caps;
+    // a tool call that raises leaves nothing behind (its writes were kept
+    // while the model was told it failed)
+    let mark = interp.journal.as_ref().map(|j| j.len());
     let result = match interp.call_signal(cell_name, tool_name, arg_values) {
         Ok(val) => val,
-        Err(e) => Value::String(format!("tool error: {}", e)),
+        Err(e) => {
+            if let Some(m) = mark { interp.rollback_to(m); }
+            Value::String(format!("tool error: {}", e))
+        }
     };
     interp.current_tool_caps = prev_caps;
     result

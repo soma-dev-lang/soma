@@ -29,6 +29,9 @@ impl VerifyResult {
 
 /// Verify all state machines in a program
 pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
+    // interpolation / UFCS / pipe calls made explicit for every proof
+    let analysis = super::desugar::expose_for_analysis(program);
+    let program = &analysis;
     let mut results = Vec::new();
 
     for cell in &program.cells {

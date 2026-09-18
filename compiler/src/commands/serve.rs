@@ -83,7 +83,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     let cell_name = cell.node.name.clone();
 
     let request_routes = std::sync::Arc::new(crate::checker::routes::explicit_routes(&cell.node));
-    let mutating = std::sync::Arc::new(mutating_handlers(&cell.node));
+    let mutating = {
+        // interpolation / UFCS calls made explicit: `"{bal.set(k, 0)}"` in a
+        // GET handler wrote state
+        let analysis = crate::checker::desugar::expose_for_analysis(&program);
+        let acell = analysis.cells.iter().find(|c| c.node.name == cell.node.name).map(|c| c.node.clone()).unwrap_or_else(|| cell.node.clone());
+        std::sync::Arc::new(mutating_handlers(&acell))
+    };
     {
         let mut ev: std::collections::HashSet<String> = std::collections::HashSet::new();
         fn emits(stmts: &[ast::Spanned<ast::Statement>], out: &mut std::collections::HashSet<String>) {
@@ -346,8 +352,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let listener = match std::net::TcpListener::bind(format!("{}:{}", bus_host, bus_port)) {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("bus: cannot bind port {}: {}", bus_port, e);
-                    return;
+                    // the program emits: without its bus, events would be lost
+                    // while the service looked up — like a taken HTTP port, exit 1
+                    eprintln!("error: bus: cannot bind port {}: {} — another process holds it (choose another -p)", bus_port, e);
+                    std::process::exit(1);
                 }
             };
             eprintln!("bus: listening on :{}", bus_port);
@@ -618,11 +626,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                     continue;
                                 }
 
-                                // Regular signal — dispatch to handler
-                                let data = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_data) {
-                                    interpreter::builtins::serde_json_to_value(&parsed)
-                                } else {
-                                    interpreter::Value::String(json_data.to_string())
+                                // Regular signal — dispatch to the handler (the bus is a
+                                // trusted peer network: firewall its port; private `_`
+                                // handlers were refused above)
+                                let data = match serde_json::from_str::<serde_json::Value>(json_data) {
+                                    // a peer cannot forge a record or a variant (HTTP refuses it too)
+                                    Ok(parsed) if reserved_json_key(&parsed, false).is_some() => {
+                                        eprintln!("bus: refused event '{}' (its data carries _type / _variant)", event_name);
+                                        continue;
+                                    }
+                                    Ok(parsed) => interpreter::builtins::serde_json_to_value(&parsed),
+                                    Err(_) => interpreter::Value::String(json_data.to_string()),
                                 };
 
                                 let mut interp = interpreter::Interpreter::new(&prog2);
@@ -632,7 +646,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 interp.event_bus = Some(ebus.clone());
                                 interp.peer_bus = Some(pbus.clone());
                                 if let Some(ref c) = cluster_for_reader { interp.set_cluster(c.clone(), &sharded_for_reader); }
-                                let _ = interp.call_signal(&cname2, event_name, vec![data]);
+                                if let Err(e) = interp.call_signal(&cname2, event_name, vec![data]) {
+                                    eprintln!("bus: event '{}' failed (rolled back): {}", event_name, e);
+                                }
                             }
                         }
                     }
@@ -804,8 +820,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let listener = match std::net::TcpListener::bind(format!("{}:{}", ws_host, ws_port)) {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("ws error: cannot bind port {}: {}", ws_port, e);
-                    return;
+                    eprintln!("error: websocket: cannot bind port {}: {} — another process holds it (choose another -p)", ws_port, e);
+                    std::process::exit(1);
                 }
             };
 
@@ -1321,7 +1337,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     rest.trim_end_matches('/').split('/')
                         .map(|s| {
                             let decoded = urlencoding_decode(&s.replace('+', "%2B"));
-                            if let Ok(n) = decoded.parse::<i64>() {
+                            if let Some(n) = decoded.parse::<i64>().ok().filter(|n| n.to_string() == decoded) {
                                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
                             } else {
                                 interpreter::Value::String(decoded)
@@ -1670,7 +1686,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         resp.add_header(h);
                     }
                 }
-                resp.add_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
+                // the handler's own CORS origin wins (two headers: browsers reject both)
+                let resp = cors(resp);
                 let elapsed = start_time.elapsed();
                 eprintln!("{} {} → {} {}ms", method, url, status_code, elapsed.as_millis());
                 if let Some(ref vb) = verbose_body {
@@ -1808,9 +1825,12 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
 }
 
 fn coerce_query_value(decoded: &str) -> interpreter::Value {
-    if let Ok(n) = decoded.parse::<i64>() {
+    // a number only in its canonical spelling: "007", "1e3", "+7", "-0" are
+    // text (an account id "00123" was stored as "123" in a String parameter);
+    // a declared Int / Float parameter still converts them
+    if let Some(n) = decoded.parse::<i64>().ok().filter(|n| n.to_string() == decoded) {
         interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
-    } else if let Some(f) = decoded.parse::<f64>().ok().filter(|f| f.is_finite()) {
+    } else if let Some(f) = decoded.parse::<f64>().ok().filter(|f| f.is_finite() && format!("{}", f) == decoded) {
         interpreter::Value::Float(f)
     } else if decoded == "true" {
         interpreter::Value::Bool(true)

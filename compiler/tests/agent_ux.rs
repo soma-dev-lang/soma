@@ -1514,7 +1514,7 @@ cell Wallet {
     assert!(out.contains("runtime-checked") && out.contains("d → bal"), "{out}");
     assert!(out.contains("w → bal"), "{out}");
     assert!(out.contains("every 1000ms"), "{out}");
-    assert!(out.contains("recursive call through a pipe"), "{out}");
+    assert!(out.contains("handler `up`: recursive call"), "{out}");
 
     std::fs::write(d.join("n.cell"), r#"
 cell N {
@@ -1561,4 +1561,43 @@ cell Q {
     let (out, code) = soma_in(&d, &["run", "q.cell", "lb"]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("loop_bound"), "{out}");
+}
+
+/// Cycle 15 (attack): String slots give back their text; interpolation /
+/// UFCS calls are seen by the prover; native recursion depth is an error,
+/// not an abort; strict soma.toml; canonical numeric CLI args; remember()
+/// rolls back.
+#[test]
+fn cycle15_attack_findings() {
+    let d = dir("cycle15b");
+    std::fs::write(d.join("s.cell"), r#"
+cell C {
+  memory { m: Map<String, String> [persistent]  rows: List<Int> [persistent]  invariant rows.size <= 2
+           bal: Map<String, Int> [persistent]  invariant bal >= 0 && bal <= 10 }
+  on put() { m.set("k", "{{\"x\": 1}}")  return type_of(m.get("k")) }
+  on _more(x: Int) { require len(rows) < 2 else Full  rows.push(x) }
+  on add(x: Int) { require len(rows) < 2 else Full  let s = "{_more(x)}"  rows.push(x) }
+  on hid(k: String, n: Int) { let s = "{bal.set(k, n)}"  return s }
+  on s(v: String) { return v }
+  on tr(k: String) { let r = try { remember(k, "x")  fail("x", "y") }  return recall(k) }
+  on deep(n: Int) [native] { if n <= 0 { return 0 }  return deep(n - 1) + 1 }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "s.cell", "put"]);
+    assert!(out.contains("String"), "{out}");
+    let (out, _) = soma_in(&d, &["verify", "s.cell"]);
+    assert!(!out.contains("writer 'add' proven"), "{out}");
+    assert!(out.contains("hid → bal"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "s.cell", "s", "007"]);
+    assert!(out.contains("007"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "s.cell", "tr", "a"]);
+    assert!(!out.contains("\"x\""), "{out}");
+    let (out, code) = soma_in(&d, &["run", "s.cell", "deep", "100000000"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("stack_overflow"), "{out}");
+
+    std::fs::write(d.join("soma.toml"), "[verfy]\nnever = [\"x\"]\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "s.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("does not parse"), "{out}");
 }

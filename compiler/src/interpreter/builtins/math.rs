@@ -342,32 +342,31 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "shr" if args.len() >= 2 => {
             let b = val_to_i64(&args[1]);
-            if b < 0 || b > 1 << 24 {
+            if b < 0 {
                 return Some(Err(RuntimeError::TypeError(format!("shr(): shift count {} out of range", b))));
+            }
+            // shifted past every bit: the sign fill (0 or -1), like native
+            if b > 1 << 24 {
+                let a = big_of(&args[0]);
+                return Some(Ok(Value::Int(SomaInt::from_i64(if a < 0 { -1 } else { 0 }))));
             }
             Some(Ok(Value::Int(SomaInt::from_rug(big_of(&args[0]) >> (b as u32)))))
         }
-        "bit_test" if args.len() >= 2 => {
+        // bit operations on the arbitrary-precision Int, like the native
+        // backend (bit_set(1, 64) wrapped to bit 0 through an i64 shift)
+        "bit_test" | "bit_set" | "bit_clr" | "bit_next" if args.len() >= 2 => {
             let b = val_to_i64(&args[1]);
-            let r = if b < 0 { 0 } else if big_of(&args[0]).get_bit(b as u32) { 1 } else { 0 };
-            Some(Ok(Value::Int(SomaInt::from_i64(r))))
-        }
-        "bit_set" if args.len() >= 2 => {
-            let a = val_to_i64(&args[0]);
-            let b = val_to_i64(&args[1]);
-            Some(Ok(Value::Int(SomaInt::from_i64(a | (1 << b)))))
-        }
-        "bit_clr" if args.len() >= 2 => {
-            let a = val_to_i64(&args[0]);
-            let b = val_to_i64(&args[1]);
-            Some(Ok(Value::Int(SomaInt::from_i64(a & !(1 << b)))))
-        }
-        "bit_next" if args.len() >= 2 => {
-            let a = val_to_i64(&args[0]);
-            let b = val_to_i64(&args[1]);
-            let masked = a & !((1i64 << b) - 1);
-            let r: i64 = if masked == 0 { -1 } else { masked.trailing_zeros() as i64 };
-            Some(Ok(Value::Int(SomaInt::from_i64(r))))
+            if b < 0 || b > 1 << 24 {
+                return Some(Err(RuntimeError::TypeError(format!("{}(): bit index {} out of range", name, b))));
+            }
+            let mut a = big_of(&args[0]);
+            let i = b as u32;
+            Some(Ok(Value::Int(match name {
+                "bit_test" => SomaInt::from_i64(if a.get_bit(i) { 1 } else { 0 }),
+                "bit_set" => { a.set_bit(i, true); SomaInt::from_rug(a) }
+                "bit_clr" => { a.set_bit(i, false); SomaInt::from_rug(a) }
+                _ => SomaInt::from_i64(a.find_one(i).map_or(-1, |x| x as i64)),
+            })))
         }
         "bit_len" if args.len() >= 1 => {
             match &args[0] {

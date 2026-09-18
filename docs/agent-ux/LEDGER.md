@@ -432,3 +432,18 @@ properties and all invariants proven — after routing around B1.
 - [ ] No per-client / per-stream WebSocket routing; no SSE replay ids.
 - [ ] Serve log lines have no timestamps.
 
+### Cycle 15 — attack (same binary)
+
+- [x] **Data corruption**: a String slot value holding JSON text (`"{\"x\": 1}"`, `"[1, 2]"`) came back a Map / List — String slots now give back their text.
+- [x] **Security (LLM)**: the model could call ANY handler of the agent cell (a private `_admin`, a state-changing `pay`) and reach the network past the tool capabilities; only the face's `tool`s are callable now, and a tool call that raises is rolled back (its writes were kept).
+- [x] **Crash**: a deep `[native]` recursion overflowed the thread stack and aborted `soma serve`; past 20,000 native frames it is the `stack_overflow` error.
+- [x] **False proofs / 405 bypass**: calls inside a string interpolation (`"{bal.set(k, n)}"`, `"{_more(x)}"`), UFCS (`x._more()`, `p.think()`), pipes and literal `delegate(...)` were invisible to invariant, termination, cost and GET→405 analyses — every analysis now sees them (the runtime is unchanged).
+- [x] **Cost**: a think() in an agent with tools makes up to 10 provider rounds — the bound counts them; `map("max_rounds", N)` caps them (the refund_agent example uses 1).
+- [x] **soma.toml**: unknown sections (`[verfy]`) and `[agent]` keys are errors; `cells = ["b"]` for `B` says so; `requires = []` is an error.
+- [x] **Data**: path/query/CLI text keeps its spelling for String parameters (`00123` was stored as `123`); `remember()` has its own journaled storage (it was never rolled back and wrote into a random user slot); bus / `subscribe` events refuse forged `_type`/`_variant` and private handlers, log failures, and send valid JSON (an `inf` dropped the event).
+- [x] Replay: `--at` parses ISO 8601 (garbage replayed everything); the fix suggestions and the builtins doc no longer claim think/http/read are replayed from the log. Test cells start with an empty trace(); a taken WebSocket / bus port is exit 1; one CORS header; verify's hints substitute on the AST with parentheses (`"admin"` became `"1dmin"`); interpreter bit_set/bit_clr/bit_test/bit_next on arbitrary-precision Ints.
+
+### Open
+- [ ] Runtime errors in an imported file point into the importing file.
+- [ ] A JSON body number beyond Float range reads as `inf`.
+

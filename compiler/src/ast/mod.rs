@@ -728,6 +728,14 @@ pub enum DurationUnit {
     Years,
 }
 
+fn binop_prec(op: BinOp) -> u8 {
+    match op { BinOp::Or => 1, BinOp::And => 2, BinOp::Add | BinOp::Sub => 4, BinOp::Mul | BinOp::Div | BinOp::Mod => 5 }
+}
+
+fn expr_prec(e: &Expr) -> u8 {
+    match e { Expr::BinaryOp { op, .. } => binop_prec(*op), Expr::CmpOp { .. } => 3, _ => 9 }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
@@ -781,11 +789,21 @@ pub fn render_expr(expr: &Expr) -> String {
             let a: Vec<String> = args.iter().map(|x| render_expr(&x.node)).collect();
             format!("{}({})", name, a.join(", "))
         }
+        // parentheses where precedence needs them (`0.0 - (0.0 - n)` was
+        // shown as `0.0 - 0.0 - n`)
         Expr::BinaryOp { left, op, right } => {
-            format!("{} {} {}", render_expr(&left.node), op, render_expr(&right.node))
+            let p = binop_prec(*op);
+            let l = render_expr(&left.node);
+            let r = render_expr(&right.node);
+            let l = if expr_prec(&left.node) < p { format!("({})", l) } else { l };
+            let right_assoc_breaks = matches!(op, BinOp::Sub | BinOp::Div | BinOp::Mod);
+            let rp = expr_prec(&right.node);
+            let r = if rp < p || (rp == p && right_assoc_breaks) { format!("({})", r) } else { r };
+            format!("{} {} {}", l, op, r)
         }
         Expr::CmpOp { left, op, right } => {
-            format!("{} {} {}", render_expr(&left.node), op, render_expr(&right.node))
+            let wrap = |e: &Expr| { let t = render_expr(e); if expr_prec(e) <= 3 { format!("({})", t) } else { t } };
+            format!("{} {} {}", wrap(&left.node), op, wrap(&right.node))
         }
         Expr::Not(inner) => format!("!{}", render_expr(&inner.node)),
         // never a Debug dump in a diagnostic: name the form

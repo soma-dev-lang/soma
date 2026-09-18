@@ -202,9 +202,10 @@ cell test MyTests {                // a name and a `rules` block are required; i
 ```
 `soma test` isolates storage (fresh per run), runs `[native]` handlers natively,
 and — with no LLM key configured — mocks `think()` (echo: reply = prompt).
-A mock scripts the NEXT call of the rule it precedes; one left unused after a
-rule that raised is discarded (with a note). Each `cell test` starts with fresh
-slots, machines and mocks. `soma test --json` gives one record per rule.
+A mock answers the NEXT matching call, even one in a later rule (a queue like
+`mock think ["a", "b"]` spans rules); a mock still unused after a rule that
+raised is discarded (with a note). Each `cell test` starts with fresh slots,
+machines, mocks and trace(). `soma test --json` gives one record per rule.
 `approve()` never answers on its own: unscripted it raises `approval_required`
 (also under serve; SOMA_APPROVE=always|never is the explicit unattended
 policy; `soma run` at a terminal asks). `assert` needs a Bool. A test cell
@@ -448,7 +449,8 @@ locals of the handler that calls `transition()` — so EVERY handler whose
 `transition()` targets the guarded state must bind those names (check error
 otherwise), even one meant for another edge; the model keeps guarded edges.
 A `cost { tokens: N }` bounds the REPLY tokens (the sum of the max_tokens
-caps of the think() calls a handler can make); prompt tokens are not in it —
+caps of the think() calls a handler can make — ×10 provider rounds in an
+agent with tools, or × `map("max_rounds", N)`); prompt tokens are not in it —
 `set_budget` / `tokens_used()` count prompt + reply, per request under serve
 and per rule in a test (return `tokens_used()` from the handler to assert on
 it); `tokens_remaining()` is -1 without a budget, never below 0 with one. A cost bound that cannot
@@ -474,6 +476,9 @@ cell agent Researcher {
 // soma verify PROVES the lifecycle; add `cost { tokens: 2000 }` (also
 // latency:, usd:) to the cell and soma check PROVES the bound when every
 // think() has a literal max_tokens and runs a known number of times.
+// The model may call only the face's `tool`s (never a private or other
+// handler), within their capabilities; a tool call that raises is rolled
+// back. `map("max_rounds", N)` caps the tool-call rounds of one think().
 // approve(msg) is a gate a PERSON answers: tests script it (mock approve),
 // serve raises approval_required unless SOMA_APPROVE says otherwise.
 // think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.

@@ -627,12 +627,22 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     if let Some(cfg) = verify_config.filter(|_| declares_props) {
         for c in &cfg.cells {
             if machine_cells.contains(c) { continue; }
-            if all_cell_names.contains(c) {
+            if let Some(real) = all_cell_names.iter().find(|n| n.eq_ignore_ascii_case(c) && *n != c) {
+                unknown_states.push(format!("soma.toml [verify] cells names '{c}', which this file does not define (did you mean '{real}'? names are case-sensitive) — its properties were not checked"));
+            } else if all_cell_names.contains(c) {
                 unknown_states.push(format!("soma.toml [verify] cells names '{c}', which has no `state {{ }}` — its properties apply to nothing"));
             } else if let Some(near) = checker::names::suggest(c, all_cell_names.iter()) {
                 unknown_states.push(format!("soma.toml [verify] cells names '{c}', which this file does not define (did you mean '{near}'?) — its properties were not checked"));
             } else if !json {
                 eprintln!("note: soma.toml [verify] cells names '{c}', which this file does not define — its properties are not checked here");
+            }
+        }
+    }
+    // `[verify.before.paid] requires = []` promised nothing and passed
+    if let Some(cfg) = verify_config {
+        for (st, b) in &cfg.before {
+            if b.requires.is_empty() && b.requires_all.is_empty() {
+                unknown_states.push(format!("soma.toml [verify.before.{st}] lists no state (`requires = [\"approved\"]` or `requires_all = [...]`) — it checks nothing"));
             }
         }
     }

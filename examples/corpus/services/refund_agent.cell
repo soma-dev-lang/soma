@@ -7,7 +7,7 @@
 // invariant; a refund above 20,000 cents needs a human (`approve()`), which
 // tests script with `mock approve`. Proven: paid is unreachable without
 // decided; nothing after denied. Proven too: the cost bound, because every
-// think() has a literal max_tokens and runs once.
+// think() has a literal max_tokens and one provider round (max_rounds).
 //
 //   soma check  refund_agent.cell      → cost: 'tokens' bound proven
 //   soma verify refund_agent.cell
@@ -65,7 +65,7 @@ cell agent RefundAgent {
             think(
                 "Refund request for order {order_id}: {text}. Amount asked: {amount}. Reply with JSON {\"decision\": \"approve\"|\"deny\"|\"escalate\", \"reason\": \"...\"}",
                 "You are a support agent. Be strict.",
-                map("max_tokens", 300)
+                map("max_tokens", 300, "max_rounds", 1)
             )
         }
         if r.error != () {

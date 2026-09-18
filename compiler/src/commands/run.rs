@@ -65,12 +65,14 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
     let arg_values: Vec<interpreter::Value> = args
         .iter()
         .map(|a| {
-            if let Ok(n) = a.parse::<i64>() {
+            // a number only in its canonical spelling ("007", "1_000", " 5"
+            // are text; a declared Int parameter still converts them)
+            if let Some(n) = a.parse::<i64>().ok().filter(|n| &n.to_string() == a) {
                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
-            } else if let Ok(big) = a.parse::<rug::Integer>() {
+            } else if let Some(big) = a.parse::<rug::Integer>().ok().filter(|b| &b.to_string() == a) {
                 // 99999999999999999999 is an Int, not a Float saturated to i64
                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(big))
-            } else if let Some(n) = a.parse::<f64>().ok().filter(|n| n.is_finite()) {
+            } else if let Some(n) = a.parse::<f64>().ok().filter(|n| n.is_finite() && (format!("{}", n) == *a || format!("{:?}", n) == *a)) {
                 // "NaN" / "inf" stay Strings: a NaN passes no comparison
                 interpreter::Value::Float(n)
             } else if a == "true" {
@@ -457,9 +459,15 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
             ("Int", interpreter::Value::Int(_)) => arg,
             ("Int", interpreter::Value::Float(f)) if f.fract() == 0.0 =>
                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
+            // a non-canonical spelling ("007", "1_000") is text until a
+            // declared Int / Float converts it
+            ("Int", interpreter::Value::String(t)) if t.trim().replace('_', "").parse::<rug::Integer>().is_ok() =>
+                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(t.trim().replace('_', "").parse::<rug::Integer>().unwrap())),
             ("Int", other) => fail(&format!("'{}'", other)),
             ("Float", interpreter::Value::Float(_)) => arg,
             ("Float", interpreter::Value::Int(si)) => interpreter::Value::Float(si.to_f64()),
+            ("Float", interpreter::Value::String(t)) if t.trim().parse::<f64>().map_or(false, |f| f.is_finite()) =>
+                interpreter::Value::Float(t.trim().parse::<f64>().unwrap()),
             ("Float", other) => fail(&format!("'{}'", other)),
             ("Bool", interpreter::Value::Bool(_)) => arg,
             ("Bool", other) => fail(&format!("'{}'", other)),

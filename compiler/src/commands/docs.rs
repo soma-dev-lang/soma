@@ -79,7 +79,8 @@ fn print_builtins_markdown() {
     println!("{} builtins. ✗ marks the nondeterministic set ({}) — calls to these", total, nondet.join(", "));
     println!("are tracked by `soma replay` as potential sources of replay divergence.");
     println!("`deterministic` is membership in that replay set, not a purity claim:");
-    println!("think/http_*/read_*/next_id have effects but are replayed via the log itself.");
+    println!("think/http_*/read_*/next_id are NOT in the log: replay calls them again (think needs a key or");
+    println!("SOMA_LLM_MOCK, files are re-read) — pass their results in as handler arguments to replay exactly.");
     println!("The `native` section is usable inside `[native]` handlers only.");
 
     for cat in registry::categories() {
