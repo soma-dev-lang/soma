@@ -193,6 +193,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
         // and an empty LLM trace / conversation (trace() carried over)
         interp.agent_trace.clear();
         interp.agent_conversation.clear();
+        interp.agent_conversations.clear();
         // remember() memory and next_id counters are per test cell too
         interp.storage.retain(|k, _| !k.ends_with(".__agent_memory") && !k.ends_with(".__counters"));
         if cell_idx > 0 {

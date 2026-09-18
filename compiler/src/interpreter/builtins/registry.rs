@@ -381,7 +381,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Memory-slot method: append a value to a list-backed slot (alias: slot.push)."),
 
     // ── agent ───────────────────────────────────────────────────────
-    doc("think", "agent", "think(prompt: String, system?: String, opts?: {max_tokens, timeout}) -> String",
+    doc("think", "agent", "think(prompt: String, system?: String, opts?: {max_tokens, timeout, max_rounds}) -> String",
         "Call the configured LLM with tool-calling, multi-turn context, and budget enforcement."),
     doc("think_json", "agent", "think_json(prompt: String, system?: String, opts?: {max_tokens, timeout}) -> Map",
         "Like think(), but parses the response as JSON into a Map."),

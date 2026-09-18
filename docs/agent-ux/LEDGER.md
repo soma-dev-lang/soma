@@ -478,3 +478,21 @@ mid-job. The native backend disagreed with the interpreter in four places.
 - [x] **Native**: a negative `bit_set` index hung serve (and `bit_clr` / `bit_next` differed); BigInt-mode `to_string` of an integral Float printed `8`, not `8.0`.
 - [x] Guard names bound only after `transition()` are a check error; `soma test --json` keeps a sampled property's text whole.
 
+## Cycle 17 (2026-09-18) — a multi-agent research & write pipeline
+
+7/10: four agents + a coordinator machine, 14 temporal properties proven, 52 offline
+tests, 30 concurrent jobs against a fake OpenAI server with outages, budget
+exhaustion, approval parking and kill -9 recovery.
+
+### Fixed
+- [x] `every` / `after` ticks (and init, bus, websocket interpreters) ignored `[agent]` in soma.toml — a tick sent the env key to api.openai.com instead of the configured url, and ignored `[agent] mock`.
+- [x] The `cost` bound of a cell calling an agent with tools in ANOTHER cell counted one round (600 real vs 300 "proven"): each callee carries its own cell's rounds.
+- [x] think() shared ONE conversation across agent cells in a request (B was sent A's prompts and data, and B's system prompt was dropped): one context per agent cell, and an explicit system prompt replaces the previous one.
+- [x] The start-up audit called next_id's / remember's own tables orphaned slot data.
+- [x] An unknown think() option (`max_token`) is an error (it was ignored: 2048 tokens); `timeout_ms` is accepted as documented.
+- [x] `describe --builtins` no longer says think/http are "pure" on replay; the agents page no longer promises deterministic replay of LLM calls; docs: per-cell context, tick config, offline tests with a key, mocking a List answer.
+
+### Open
+- [ ] A slow think() holds the process-wide handler lock (9 s GET while a job researches).
+- [ ] No schema option for think_json; no way to script tool-call rounds with `mock think`.
+

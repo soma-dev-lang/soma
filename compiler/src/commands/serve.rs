@@ -223,6 +223,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             .and_then(|c| toml::from_str::<crate::pkg::manifest::Manifest>(&c).ok())
             .map(|m| (Some(m.agent), m.models))
     }).flatten().unwrap_or((None, std::collections::HashMap::new()));
+    // every interpreter of this process (ticks, init, bus, websocket — not
+    // only requests) uses this [agent] config: a tick sent the env key to
+    // api.openai.com instead of the configured url, or ignored [agent] mock
+    let _ = crate::interpreter::DEFAULT_AGENT.set((agent_config.clone(), agent_models.clone()));
 
     // Cluster mode activates when: --join is specified, OR env SOMA_SEEDS, OR cell has scale { }
     let is_cluster_mode = !seeds_to_join.is_empty() || scale_section.is_some();

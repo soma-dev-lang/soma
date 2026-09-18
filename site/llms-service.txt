@@ -480,7 +480,12 @@ cell agent Researcher {
 // handler), with typed arguments, within their capabilities (URL patterns with
 // `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
 // tool that calls think() makes a `cost` bound unprovable); a tool call that raises is rolled
-// back. `map("max_rounds", N)` caps the tool-call rounds of one think().
+// back. `map("max_rounds", N)` caps the tool-call rounds of one think();
+// an unknown option is an error. Each agent cell keeps its OWN multi-turn
+// context (clear_context() resets it); every/after ticks use the same
+// [agent] config as requests. `soma test` mocks think() only when no key is
+// configured — set SOMA_LLM_MOCK=echo for offline tests with a soma.toml key;
+// `mock h [[1, 2]]` scripts ONE List answer ([1, 2] is a queue of two).
 // approve(msg) is a gate a PERSON answers: tests script it (mock approve),
 // serve raises approval_required unless SOMA_APPROVE says otherwise.
 // think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.

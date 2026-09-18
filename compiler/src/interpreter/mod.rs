@@ -593,6 +593,8 @@ pub struct Interpreter {
     pub(crate) agent_tokens_used: i64,
     /// Token budget: max tokens allowed (0 = unlimited)
     pub(crate) agent_token_budget: i64,
+    /// one multi-turn LLM context per agent cell
+    pub(crate) agent_conversations: std::collections::HashMap<String, Vec<serde_json::Value>>,
     /// provider rounds allowed for the current think() (max_rounds, ≤ 10)
     pub(crate) think_rounds: usize,
     /// Conversation history for multi-turn think() within a handler
@@ -650,6 +652,10 @@ pub fn http_marker() -> Value {
 pub fn is_http_response(v: &Value) -> bool {
     matches!(v, Value::Map(m) if matches!(m.get("_response"), Some(Value::Lambda { param, .. }) if param == HTTP_MARK))
 }
+
+/// The process's `[agent]` / `[models]` config (set by `soma serve`): the
+/// default of every interpreter it creates.
+pub static DEFAULT_AGENT: std::sync::OnceLock<(Option<crate::pkg::manifest::AgentConfig>, std::collections::HashMap<String, crate::pkg::manifest::AgentConfig>)> = std::sync::OnceLock::new();
 
 /// Set by `soma run` and `soma serve`: state-machine instances live in
 /// .soma_data/soma.db whatever the slots of the program.
@@ -783,10 +789,11 @@ impl Interpreter {
             agent_token_budget: 0,
             think_rounds: 10,
             agent_conversation: Vec::new(),
+            agent_conversations: std::collections::HashMap::new(),
             agent_trace: Vec::new(),
             agent_pending_approval: None,
-            agent_config: None,
-            agent_models: std::collections::HashMap::new(),
+            agent_config: DEFAULT_AGENT.get().and_then(|d| d.0.clone()),
+            agent_models: DEFAULT_AGENT.get().map(|d| d.1.clone()).unwrap_or_default(),
             record_handlers,
             record_log_path: None,
             record_nondet_called: Vec::new(),
@@ -967,6 +974,11 @@ impl Interpreter {
                 .filter_map(|k| k.split_once('.').map(|(c, s)| format!("{}_{}", c, s)))
                 .collect();
             for (cell, sm) in self.state_machines.keys() { expected.insert(format!("{}__sm_{}", cell, sm)); }
+            // the runtime's own tables: next_id() counters, remember() memory
+            for cell in self.cells.keys() {
+                expected.insert(format!("{}__counters", cell));
+                expected.insert(format!("{}__agent_memory", cell));
+            }
             let mut cells: Vec<String> = self.cells.keys().cloned().collect();
             cells.sort_by_key(|c| std::cmp::Reverse(c.len()));   // OrderLine before Order
             let slot_keys: Vec<String> = { let mut v: Vec<String> = self.storage.keys().filter(|k| k.contains('.') && !k.starts_with("__")).cloned().collect(); v.sort(); v };

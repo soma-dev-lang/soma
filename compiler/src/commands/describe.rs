@@ -299,7 +299,11 @@ pub fn cmd_describe_builtins(json: bool) {
                 "signature": b.signature,
                 "brief": b.brief,
                 "deterministic": b.deterministic,
-                "replay": if b.deterministic { "pure" } else { "recorded by --record, replayed by soma replay" },
+                // honest: effects are NOT in the log (replay calls them again);
+                // now()/random() are tracked as divergence sources
+                "replay": if b.name.starts_with("think") || b.name.starts_with("http_") || b.name.starts_with("read_") || b.name.starts_with("write_") || b.name == "delegate" || b.name == "approve" {
+                    "an effect: not in the log — replay calls it again"
+                } else if b.deterministic { "pure" } else { "nondeterministic: replay reports it as a divergence source" },
             }))
             .collect();
         println!("{}", serde_json::to_string_pretty(&entries).unwrap());

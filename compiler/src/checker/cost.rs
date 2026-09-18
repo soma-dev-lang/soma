@@ -59,11 +59,14 @@ struct CostWalk<'a> {
     /// provider rounds per think(): 10 when the agent declares tools (each
     /// tool-call round is a new reply capped at max_tokens), else 1
     rounds: i64,
+    /// handler key → the rounds of ITS cell (a call into an agent with tools
+    /// in another cell was counted with the caller's single round)
+    rounds_of: Option<&'a std::collections::HashMap<String, i64>>,
 }
 
 impl<'a> CostWalk<'a> {
     fn new(handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>) -> Self {
-        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), handlers, stack: Vec::new(), rounds: 1 }
+        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), handlers, stack: Vec::new(), rounds: 1, rounds_of: None }
     }
 
     /// A fresh accumulator for a nested scope (loop body, lambda, callee).
@@ -75,6 +78,7 @@ impl<'a> CostWalk<'a> {
             handlers: self.handlers,
             stack: self.stack.clone(),
             rounds: self.rounds,
+            rounds_of: self.rounds_of,
         }
     }
 
@@ -164,6 +168,7 @@ impl<'a> CostWalk<'a> {
                     if self.stack.iter().any(|h| h == &key) { continue; }
                     let mut callee = self.child();
                     callee.stack.push(key.clone());
+                        if let Some(r) = self.rounds_of.and_then(|m| m.get(key.as_str())) { callee.rounds = *r; }
                     for s in body { callee.visit_stmt(&s.node, &key); }
                     self.tokens += callee.tokens;
                     self.latency_ms += callee.latency_ms;
@@ -216,6 +221,7 @@ impl<'a> CostWalk<'a> {
                     } else {
                         let mut callee = self.child();
                         callee.stack.push(name.clone());
+                        if let Some(r) = self.rounds_of.and_then(|m| m.get(name.as_str())) { callee.rounds = *r; }
                         for s in body { callee.visit_stmt(&s.node, name); }
                         self.tokens += callee.tokens;
                         self.latency_ms += callee.latency_ms;
@@ -242,6 +248,7 @@ impl<'a> CostWalk<'a> {
                         } else {
                             let mut callee = self.child();
                             callee.stack.push(key.clone());
+                        if let Some(r) = self.rounds_of.and_then(|m| m.get(key.as_str())) { callee.rounds = *r; }
                             for s in body { callee.visit_stmt(&s.node, &key); }
                             self.tokens += callee.tokens;
                             self.latency_ms += callee.latency_ms;
@@ -396,6 +403,14 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
     // `Cell.handler` — a 5×think() helper in another cell used to be
     // invisible and the bound "proven" at 50 tokens.
     let mut handlers: std::collections::HashMap<String, &[Spanned<Statement>]> = std::collections::HashMap::new();
+    let mut rounds_of: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for (cname, hs) in all {
+        let r = if hs.contains_key("__has_tools__") { 10 } else { 1 };
+        for hname in hs.keys() {
+            rounds_of.insert(format!("{}.{}", cname, hname), r);
+            if cname != &cell.name { rounds_of.entry(hname.clone()).or_insert(r); } else { rounds_of.insert(hname.clone(), r); }
+        }
+    }
     for (cname, hs) in all {
         for (hname, body) in hs {
             handlers.insert(format!("{}.{}", cname, hname), body.as_slice());
@@ -420,6 +435,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         };
         {
             let mut walk = CostWalk::new(&handlers);
+            walk.rounds_of = Some(&rounds_of);
             let tool_names: Vec<String> = cell.sections.iter().filter_map(|s| match &s.node {
                 Section::Face(f) => Some(f.declarations.iter().filter_map(|d| match &d.node { FaceDecl::Tool(t) => Some(t.name.clone()), _ => None }).collect::<Vec<_>>()),
                 _ => None,

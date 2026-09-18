@@ -191,6 +191,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         // ── Agent: context() — get/clear conversation history ───────
         "clear_context" => {
             interp.agent_conversation.clear();
+            interp.agent_conversations.remove(cell_name);
             Some(Ok(Value::Unit))
         }
         // ── Agent: approve(action) — human-in-the-loop ─────────────
@@ -247,18 +248,30 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         // ── AI Agent: think() with tool-calling loop ──────────────
         "think" => {
             if let Some(Value::String(prompt)) = args.first() {
+                if let Some(Value::Map(m)) = args.last() {
+                    // a typo'd option (`max_token`) was ignored: 2048 tokens were sent
+                    if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds")) {
+                        return Some(Err(RuntimeError::TypeError(format!("think(): unknown option '{}' — the options are max_tokens, timeout (ms), max_rounds", k))));
+                    }
+                }
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
                 interp.think_rounds = think_rounds(args);
-                Some(agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms))
+                Some(with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), false, max_tokens, timeout_ms)))
             } else {
                 Some(Err(RuntimeError::TypeError("think(prompt: String) requires a string argument".to_string())))
             }
         }
         "think_json" => {
             if let Some(Value::String(prompt)) = args.first() {
+                if let Some(Value::Map(m)) = args.last() {
+                    // a typo'd option (`max_token`) was ignored: 2048 tokens were sent
+                    if let Some(k) = m.keys().find(|k| !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds")) {
+                        return Some(Err(RuntimeError::TypeError(format!("think(): unknown option '{}' — the options are max_tokens, timeout (ms), max_rounds", k))));
+                    }
+                }
                 let (system, max_tokens, timeout_ms) = extract_think_opts(args);
                 interp.think_rounds = think_rounds(args);
-                Some(agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms))
+                Some(with_cell_conversation(interp, cell_name, |interp| agent_think(interp, cell_name, prompt, system.as_deref(), true, max_tokens, timeout_ms)))
             } else {
                 Some(Err(RuntimeError::TypeError("think_json(prompt: String) requires a string argument".to_string())))
             }
@@ -301,7 +314,7 @@ fn extract_think_opts(args: &[Value]) -> (Option<String>, Option<u64>, Option<u6
             let v = n.to_i64().unwrap_or(0);
             if v > 0 { max_tokens = Some(v as u64); }
         }
-        if let Some(Value::Int(n)) = m.get("timeout") {
+        if let Some(Value::Int(n)) = m.get("timeout").or_else(|| m.get("timeout_ms")) {
             let v = n.to_i64().unwrap_or(0);
             if v > 0 { timeout_ms = Some(v as u64); }
         }
@@ -458,9 +471,16 @@ fn agent_think(
 
     let tools = build_tool_definitions(interp, cell_name);
 
-    // Multi-turn setup
-    if interp.agent_conversation.is_empty() && config.provider != "anthropic" {
-        interp.agent_conversation.push(serde_json::json!({"role": "system", "content": system_msg}));
+    // Multi-turn setup — an explicit system prompt replaces the previous
+    // one (a second think() with its own system was sent the first's)
+    if config.provider != "anthropic" {
+        match interp.agent_conversation.first_mut() {
+            None => interp.agent_conversation.push(serde_json::json!({"role": "system", "content": system_msg})),
+            Some(first) if system.is_some() && first.get("role").and_then(|r| r.as_str()) == Some("system") => {
+                first["content"] = serde_json::json!(system_msg);
+            }
+            _ => {}
+        }
     }
     interp.agent_conversation.push(serde_json::json!({"role": "user", "content": prompt}));
 
@@ -716,4 +736,15 @@ fn cap_reply(text: &str, max_tokens: Option<u64>) -> String {
         Some(n) => text.chars().take((n as usize).saturating_mul(4)).collect(),
         None => text.to_string(),
     }
+}
+
+/// Run a think() with the CALLING CELL's conversation: each agent cell has
+/// its own multi-turn context (agent B was sent agent A's prompts and data).
+fn with_cell_conversation(interp: &mut Interpreter, cell_name: &str, f: impl FnOnce(&mut Interpreter) -> Result<Value, RuntimeError>) -> Result<Value, RuntimeError> {
+    let own = interp.agent_conversations.remove(cell_name).unwrap_or_default();
+    let outer = std::mem::replace(&mut interp.agent_conversation, own);
+    let result = f(interp);
+    let own = std::mem::replace(&mut interp.agent_conversation, outer);
+    interp.agent_conversations.insert(cell_name.to_string(), own);
+    result
 }

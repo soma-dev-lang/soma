@@ -629,10 +629,15 @@ impl<'a> Checker<'a> {
         let analysis = desugar::expose_for_analysis(program);
         self.analysis_cells = analysis.cells.iter().map(|c| (c.node.name.clone(), c.node.clone())).collect();
         self.all_handlers = analysis.cells.iter().map(|c| {
-            let hs = c.node.sections.iter().filter_map(|s| match &s.node {
+            let mut hs: std::collections::HashMap<String, Vec<Spanned<Statement>>> = c.node.sections.iter().filter_map(|s| match &s.node {
                 Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.clone())),
                 _ => None,
             }).collect();
+            // marks an agent with tools: its think() makes up to 10 rounds,
+            // also when another cell calls it
+            if c.node.sections.iter().any(|s| matches!(&s.node, Section::Face(f) if f.declarations.iter().any(|d| matches!(d.node, FaceDecl::Tool(_))))) {
+                hs.insert("__has_tools__".to_string(), Vec::new());
+            }
             (c.node.name.clone(), hs)
         }).collect();
         // storage tables are named `<Cell>_<slot>` (and `<table>_log`,

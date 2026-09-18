@@ -1672,3 +1672,28 @@ cell S {
     let (out, code) = soma_in(&d, &["check", "k.cell"]);
     assert_eq!(code, 0, "{out}");
 }
+
+/// Cycle 17: cost composes tool rounds across cells; unknown think()
+/// options are errors; next_id's own table is not an orphan in the audit.
+#[test]
+fn cycle17_findings() {
+    let d = dir("cycle17");
+    std::fs::write(d.join("c.cell"), r#"
+cell agent R { face { signal research(q: String) -> String  tool search(q: String) -> String "Search" }
+  cost { tokens: 600 }  on search(q: String) { return "x" }
+  on research(q: String) { return think("{q}", map("max_tokens", 300, "max_rounds", 2)) } }
+cell C { face { signal go(q: String) -> String }  cost { tokens: 300 }  on go(q: String) { return R.research(q) } }
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "c.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("computed 600 tokens > declared 300"), "{out}");
+
+    std::fs::write(d.join("t.cell"), "cell agent A { on ask(q: String) { let r = try { think(q, map(\"max_token\", 5)) }  return r.detail } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "t.cell", "ask", "hi"]);
+    assert!(out.contains("unknown option 'max_token'"), "{out}");
+
+    std::fs::write(d.join("n.cell"), "cell N { memory { m: Map<String, Int> [persistent] } on id() { return next_id() } }\n").unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "n.cell", "id"]);
+    let (out, _) = soma_in(&d, &["run", "n.cell", "id"]);
+    assert!(!out.contains("no slot declares"), "{out}");
+}
