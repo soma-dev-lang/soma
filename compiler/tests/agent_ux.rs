@@ -374,7 +374,8 @@ cell Bank {
 }
 "#).unwrap();
     let (out, _) = soma_in(&d, &["check", "app.cell"]);
-    assert!(out.contains("handler `pay` and a route of `request` share the path /pay"), "{out}");
+    // the route delegates to the same-named handler: the documented shape, no warning
+    assert!(!out.contains("share the path /pay"), "{out}");
 
     let port = 19100 + (std::process::id() % 700) as u16;
     let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
@@ -840,7 +841,7 @@ cell test T {
     mock price_check error "prices down"
     let q = quote("bolt")
     assert q.market == 120
-    assert q.second == "mock"
+    assert q.second == "prices down"
     mock price_check [1, 2]
     assert price_check("a") == 1
     assert price_check("b") == 2
@@ -928,4 +929,72 @@ fn prover_uses_require_facts_on_locals() {
     assert!(out.contains("writer 'lend' proven by induction (writes open + 1)"), "{out}");
     // a reassigned local is NOT narrowed by the require
     assert!(out.contains("twice → open_count"), "{out}");
+}
+
+/// Cycle 5: scheduler blocks are checked like handlers, mocks are scoped
+/// and typed, the clock can be frozen, test cells are isolated, --strict.
+#[test]
+fn cycle5_findings() {
+    let d = dir("cycle5");
+    std::fs::write(d.join("sched.cell"), "cell E {\n  state s { initial: a\n a -> b }\n  every 1s { transition(\"t\", \"zzz\") }\n  on f() { 1 }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "sched.cell"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("transition() to \"zzz\""), "{out}");
+
+    std::fs::write(d.join("app.cell"), r#"
+cell Notifier { on send(to: String) { "sent {to}" } }
+cell agent A {
+  memory { hist: List<String> [persistent] }
+  on when() { map("t", now(), "d", today()) }
+  on go(x: Int) {
+    if x > 0 { fail("early", "boom") }
+    think("q", map("max_tokens", 10))
+  }
+  on notify() { Notifier.send("bob") }
+  on record(x: String) { hist.push(x)  len(hist) }
+}
+cell test First {
+  rules {
+    mock now 1700000000
+    assert when().t == 1700000000
+    assert when().d == "2023-11-14"
+    mock think "A"
+    assert_fails go(1) matching "early"
+    mock think "B"
+    assert go(0) == "B"
+    mock think ["C", "D"]
+    assert go(0) == "C"
+    assert go(0) == "D"
+    mock Notifier.send error "smtp: down"
+    let r = try { notify() }
+    assert r.kind == "smtp"
+    assert record("a") == 1
+  }
+}
+cell test Second {
+  rules {
+    assert record("b") == 1
+    assert notify() == "sent bob"
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("1 mock think unused after"), "{out}");
+    let (out, code) = soma_in(&d, &["test", "app.cell", "--json"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("\"ok\": true") && out.contains("\"cell\": \"Second\""), "{out}");
+
+    std::fs::write(d.join("strict.cell"), "cell A {\n  memory { c: Map<String, Int>\n invariant c <= 1 }\n  on bump(k: String) { c.set(k, (c.get(k) ?? 0) + 1) }\n}\n").unwrap();
+    let (_, code) = soma_in(&d, &["verify", "strict.cell"]);
+    assert_eq!(code, 0);
+    let (out, code) = soma_in(&d, &["verify", "strict.cell", "--strict"]);
+    assert_ne!(code, 0);
+    assert!(out.contains("--strict"), "{out}");
+
+    let deep = format!("cell D {{ on f() {{ return {}1{} }} }}\n", "(".repeat(3000), ")".repeat(3000));
+    std::fs::write(d.join("deep.cell"), deep).unwrap();
+    let (out, code) = soma_in(&d, &["check", "deep.cell"]);
+    assert_eq!(code, 1, "must be an error, not an abort: {out}");
+    assert!(out.contains("nested more than"), "{out}");
 }

@@ -320,9 +320,14 @@ fn build_dylib(
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            // the error blocks first (a caller shows only the first lines;
+            // two `warning:` blocks used to hide the `error[E0308]`)
+            let mut blocks: Vec<&str> = stderr.split("\n\n").collect();
+            blocks.sort_by_key(|b| if b.trim_start().starts_with("error") { 0 } else { 1 });
+            let ordered = blocks.join("\n\n");
             return Err(format!(
                 "[native] compilation failed for cell '{}':\n{}\n\nGenerated source:\n{}",
-                cell_name, stderr, rust_source
+                cell_name, ordered, rust_source
             ));
         }
 

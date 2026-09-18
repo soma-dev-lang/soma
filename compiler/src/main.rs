@@ -138,6 +138,9 @@ enum Commands {
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
+        /// Fail when anything is only runtime-checked or unprovable (every ⚠ is an error) — for CI gates
+        #[arg(long)]
+        strict: bool,
     },
     /// Run test assertions in a .cell file. Storage is isolated: every
     /// memory slot uses a fresh in-memory backend, so runs never touch
@@ -146,6 +149,9 @@ enum Commands {
     Test {
         /// Path to the .cell file containing test cells
         file: PathBuf,
+        /// Output as JSON (for agents): one record per rule, then the totals
+        #[arg(long)]
+        json: bool,
     },
     /// V1: replay a .somalog file deterministically and report divergences
     Replay {
@@ -289,6 +295,9 @@ fn main() {
 }
 
 fn main_inner() {
+    if std::env::args().any(|a| a == "--json") {
+        commands::JSON_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let cli = Cli::parse();
 
     let mut registry = Registry::new();
@@ -318,7 +327,7 @@ fn main_inner() {
                 commands::serve::cmd_serve(&file, port, &host, verbose, join.as_deref(), no_check, &mut registry);
             }
         }
-        Commands::Test { file } => commands::test_cmd::cmd_test(&file, &mut registry),
+        Commands::Test { file, json } => commands::test_cmd::cmd_test(&file, json, &mut registry),
         Commands::Replay { file, log, at } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), &mut registry),
         Commands::Init { name } => commands::init::cmd_init(name.as_deref()),
         Commands::Add { package, version, git, path } => commands::init::cmd_add(&package, version.as_deref(), git.as_deref(), path.as_deref()),
@@ -329,7 +338,7 @@ fn main_inner() {
         Commands::TestProvider { name } => commands::provider::cmd_test_provider(&name),
         Commands::Migrate { from, to } => commands::provider::cmd_migrate(&from, &to),
         Commands::Props => commands::props::cmd_props(&registry),
-        Commands::Verify { files, json } => cmd_verify(&files, json),
+        Commands::Verify { files, json, strict } => cmd_verify(&files, json, strict),
         Commands::Deploy { file, target, region } => commands::deploy::cmd_deploy(&file, &target, region.as_deref()),
         Commands::Describe { file, builtins, faces, json } => {
             if builtins {
@@ -350,7 +359,7 @@ fn main_inner() {
     }
 }
 
-fn cmd_verify(files: &[PathBuf], json: bool) {
+fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     use checker::temporal::*;
 
     let mut all_results = Vec::new();
@@ -556,10 +565,17 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
 
     unknown_states.sort();
     unknown_states.dedup();
+    // --strict: a proof that degraded to "runtime-checked" (a removed
+    // require, an unprovable termination) is a failure, not a ⚠ — a CI
+    // gate on the exit code could not see the downgrade otherwise
+    let strict_warnings: usize = if strict {
+        all_results.iter().map(|r| r.checks.iter().filter(|c| matches!(c, checker::verify::VerifyCheck::Warning(_))).count()).sum()
+    } else { 0 };
     let has_failures = all_results.iter().any(|r| r.has_failures())
         || all_temporal.iter().any(|(_, rs)| rs.iter().any(|r| !r.passed))
         || !unknown_states.is_empty()
-        || check_failed;
+        || check_failed
+        || strict_warnings > 0;
 
     if json {
         // Machine-readable JSON output for agents
@@ -658,6 +674,7 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
             if structural > 0 { why.push(format!("{} state machine{} with failed checks (see ✗ lines)", structural, if structural == 1 { "" } else { "s" })); }
             if temporal > 0 { why.push(format!("{} temporal propert{} failed", temporal, if temporal == 1 { "y" } else { "ies" })); }
             if !unknown_states.is_empty() { why.push(format!("{} propert{} on unknown states", unknown_states.len(), if unknown_states.len() == 1 { "y" } else { "ies" })); }
+            if strict_warnings > 0 { why.push(format!("--strict: {} ⚠ line{} (runtime-checked or unprovable)", strict_warnings, if strict_warnings == 1 { "" } else { "s" })); }
             eprintln!("VERIFY FAILED — {}", why.join("; "));
         } else {
             eprintln!("VERIFY OK");

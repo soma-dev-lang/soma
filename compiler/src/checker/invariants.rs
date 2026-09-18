@@ -400,7 +400,13 @@ impl RangeCtx<'_> {
                 };
                 match op {
                     BinOp::Add => mk(al + bl, ah + bh),
-                    BinOp::Sub => mk(al - bh, ah - bl),
+                    BinOp::Sub => {
+                        // `require b <= a` earlier: a - b is never negative
+                        let nonneg = matches!((&left.node, &right.node), (Expr::Ident(a), Expr::Ident(b))
+                            if self.vars.contains_key(&format!("__le__{}__{}", b, a)));
+                        let lo = al - bh;
+                        mk(if nonneg { lo.max(0.0) } else { lo }, ah - bl)
+                    }
                     BinOp::Mul => {
                         let c = [al * bl, al * bh, ah * bl, ah * bh];
                         if c.iter().any(|x| x.is_nan()) {
@@ -557,9 +563,28 @@ fn local_ranges_at(
         single.insert(*name, value);
     }
     let dup: HashSet<&str> = assigns.iter().map(|(n, _)| *n).filter(|n| assigns.iter().filter(|(m, _)| m == n).count() > 1).collect();
+    // a parameter is bound once too — unless the body reassigns it
+    let int_params: HashSet<&str> = on.params.iter()
+        .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt"))
+        .map(|p| p.name.as_str()).collect();
+    let reassigned_param = |n: &str| params.contains(n) && assigns.iter().any(|(m, _)| *m == n);
     for stmt in &on.body {
         if let Statement::Require { constraint, .. } = &stmt.node {
             for (left, op, right) in constraint_comparisons(&constraint.node) {
+                // `require b <= a` (two once-bound names): a - b >= 0 — kept
+                // as a fact the subtraction rule reads
+                if let (Expr::Ident(a), Expr::Ident(b)) = (left, right) {
+                    if !dup.contains(a.as_str()) && !dup.contains(b.as_str())
+                        && !reassigned_param(a) && !reassigned_param(b)
+                    {
+                        match op {
+                            CmpOp::Le | CmpOp::Lt => { vars.insert(format!("__le__{}__{}", a, b), Known::Exact(1.0)); }
+                            CmpOp::Ge | CmpOp::Gt => { vars.insert(format!("__le__{}__{}", b, a), Known::Exact(1.0)); }
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
                 let (name, op, bound) = match (left, const_of(right)) {
                     (Expr::Ident(n), Some(c)) => (n.as_str(), op, c),
                     _ => match (const_of(left), right) {
@@ -567,9 +592,12 @@ fn local_ranges_at(
                         _ => continue,
                     },
                 };
-                if dup.contains(name) { continue; }
-                let Some(value) = single.get(name) else { continue };
-                let integral = bound.fract() == 0.0 && looks_int(value);
+                if dup.contains(name) || reassigned_param(name) { continue; }
+                let integral = bound.fract() == 0.0 && match single.get(name) {
+                    Some(value) => looks_int(value),
+                    None if params.contains(name) => int_params.contains(name),
+                    None => continue,
+                };
                 let (lo, hi) = match op {
                     CmpOp::Lt => (f64::NEG_INFINITY, if integral { bound - 1.0 } else { bound }),
                     CmpOp::Le => (f64::NEG_INFINITY, bound),

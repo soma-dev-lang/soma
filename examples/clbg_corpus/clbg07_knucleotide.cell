@@ -40,9 +40,9 @@ cell ClbgKnucleotide {
         let state = 12345678
         let i = 0
         while i < n {
-            state = bxor(state, shl(state, 13))
+            state = band(bxor(state, shl(state, 13)), 9223372036854775807)   // 63-bit state (exact shifts; overflow falls back to BigInt)
             state = bxor(state, shr(state, 7))
-            state = bxor(state, shl(state, 17))
+            state = band(bxor(state, shl(state, 17)), 9223372036854775807)   // 63-bit state (exact shifts; overflow falls back to BigInt)
             buf_set(dna, i, band(state, 3))
             i = i + 1
         }

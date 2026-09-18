@@ -530,6 +530,8 @@ pub struct Interpreter {
     /// `mock <handler> …` in a test cell: handler name → queued answers
     /// (Ok = value returned, Err = message raised) consumed one per call.
     pub handler_stubs: HashMap<String, std::collections::VecDeque<Result<Value, String>>>,
+    /// `mock now <unix seconds>`: the clock the builtins answer with.
+    pub frozen_now: Option<i64>,
     pub(crate) auto_mock_noted: bool,
     /// V1.6: tool-capability scope. Set when the LLM dispatches into a tool
     /// with declared capabilities; the http/* builtins consult it.
@@ -697,6 +699,7 @@ impl Interpreter {
             approve_queue: std::collections::VecDeque::new(),
             test_auto_mock: false,
             handler_stubs: HashMap::new(),
+            frozen_now: None,
             auto_mock_noted: false,
             current_tool_caps: None,
             native_handlers: HashMap::new(),
@@ -799,6 +802,15 @@ impl Interpreter {
         }
     }
 
+    /// Fresh in-memory state-machine storage (test isolation between cells).
+    pub fn reset_state_machine_storage(&mut self) {
+        for ((cell_name, sm_name), _) in self.state_machines.clone() {
+            let key = format!("__sm_{}_{}", cell_name, sm_name);
+            self.storage.remove(&format!("__sm_{}", sm_name));
+            self.storage.insert(key, Arc::new(crate::runtime::storage::MemoryBackend::new()) as Arc<dyn crate::runtime::storage::StorageBackend>);
+        }
+    }
+
     /// Take all emitted signals (drains the buffer)
     /// Find which cell has a handler for the given signal and call it
     /// Same as find_and_call but with a different name for pipe operator
@@ -854,7 +866,15 @@ impl Interpreter {
             if let Some(answer) = q.pop_front() {
                 return match answer {
                     Ok(v) => Ok(v),
-                    Err(msg) => Err(RuntimeError::Domain { kind: "mock".to_string(), message: format!("mock: {}", msg) }),
+                    Err(msg) => {
+                        // `mock h error "not_found: no such item"` raises kind
+                        // not_found; a bare "down" is both kind and detail
+                        let (kind, detail) = match msg.split_once(": ") {
+                            Some((k, d)) if !k.is_empty() && !k.contains(' ') => (k.to_string(), d.to_string()),
+                            _ => (msg.clone(), msg.clone()),
+                        };
+                        Err(RuntimeError::Domain { kind: kind.clone(), message: format!("{}: {}", kind, detail) })
+                    }
                 };
             }
         }
@@ -2163,15 +2183,18 @@ impl Interpreter {
                 let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
                 match target_val {
                     Value::Map(ref entries) => {
-                        // Built-in pseudo-fields for maps
+                        // a real key wins over the pseudo-fields: `r.len` on
+                        // map("len", 351) answered 2 (the entry count)
+                        if let Some(v) = entries.get(field) {
+                            return Ok(v.clone());
+                        }
                         match field.as_str() {
                             "keys" => return Ok(Value::List(entries.keys().map(|k| Value::String(k.clone())).collect())),
                             "values" => return Ok(Value::List(entries.values().cloned().collect())),
                             "length" | "len" | "size" => return Ok(Value::Int(SomaInt::from_i64(entries.len() as i64))),
                             _ => {}
                         }
-                        let val = entries.get(field).cloned().unwrap_or(Value::Unit);
-                        Ok(val)
+                        Ok(Value::Unit)
                     }
                     Value::List(ref items) => {
                         // list.length, list.len, list.first, list.last
@@ -3536,6 +3559,16 @@ impl Interpreter {
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma. Delegates to sub-modules in builtins/.
     pub fn call_builtin(&mut self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+        // `mock now 1000` in a test: a frozen clock (now / now_ms / today
+        // derive from it) — sticky until the next `mock now`
+        if let Some(frozen) = self.frozen_now {
+            match name {
+                "now" => return Some(Ok(Value::Int(SomaInt::from_i64(frozen)))),
+                "now_ms" => return Some(Ok(Value::Int(SomaInt::from_i64(frozen * 1000)))),
+                "today" => return Some(Ok(Value::String(builtins::time::format_unix_date(frozen)))),
+                _ => {}
+            }
+        }
         builtins::call_builtin(self, name, args, cell_name)
     }
 

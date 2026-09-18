@@ -12,9 +12,9 @@ cell Buffon {
     // Xorshift PRNG → float in [0, 1)
     on rand_float(state: Int) [native] {
         let x = state
-        x = bxor(x, shl(x, 13))
+        x = band(bxor(x, shl(x, 13)), 2147483647)   // 31-bit state: shifts stay exact in i64
         x = bxor(x, shr(x, 7))
-        x = bxor(x, shl(x, 17))
+        x = band(bxor(x, shl(x, 17)), 2147483647)   // 31-bit state: shifts stay exact in i64
         if x < 0 { x = 0 - x }
         return x
     }

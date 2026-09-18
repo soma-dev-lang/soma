@@ -263,7 +263,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         Ok(n) => n,
         Err(e) => {
             eprintln!("error: [native] handlers do not compile — fix them or drop [native]:");
-            for line in e.lines().take(12) { eprintln!("  {}", line); }
+            for line in e.lines().take(40) { eprintln!("  {}", line); }
             process::exit(1);
         }
     };
@@ -901,8 +901,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         interp.ws_out = ws_guard.clone();
                     }
 
+                    // the first tick runs at start-up: a sweeper (`every 1s
+                    // { expire_due() }`) must see work that became due while
+                    // the server was down, not one interval later
+                    let mut first = true;
                     loop {
-                        std::thread::sleep(std::time::Duration::from_millis(interval));
+                        if !first { std::thread::sleep(std::time::Duration::from_millis(interval)); }
+                        first = false;
                         // Reset depth counter for each tick
                         interp.current_depth = 0;
                         // Pick up ws_out if it was set after init
@@ -1228,6 +1233,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 error_body(&msg, "json"))
                                 .with_status_code(400)
                                 .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                            eprintln!("{} {} → 400 0ms {}", method, url, msg);
                             let _ = request.respond(resp);
                             return;
                         }
@@ -1280,6 +1286,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             Some(types) => {
                 let mut out: Vec<interpreter::Value> = args.into_iter().enumerate()
                     .map(|(i, a)| coerce_to_type(types.get(i).map(|s| s.as_str()).unwrap_or("Any"), a)).collect();
+                // a Map/List parameter that still holds text: the body was
+                // not JSON → 400 kind json, before the handler (as for `request`)
+                if let Some(i) = out.iter().enumerate().position(|(i, v)| matches!(v, interpreter::Value::String(_)) && matches!(types.get(i).map(|s| s.as_str()), Some("Map" | "List"))) {
+                    let msg = format!("{}(): parameter '{}' expects {} — the request body must be JSON", signal_name,
+                        handler_params.get(&signal_name).and_then(|p| p.get(i)).cloned().unwrap_or_default(), types[i]);
+                    let resp = tiny_http::Response::from_string(error_body(&msg, "json"))
+                        .with_status_code(400)
+                        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                    eprintln!("{} {} → 400 0ms {}", method, url, msg);
+                    let _ = request.respond(resp);
+                    return;
+                }
                 // an absent body for a trailing Map/List parameter is an empty one
                 while out.len() < types.len() && matches!(types[out.len()].as_str(), "Map" | "List") {
                     out.push(if types[out.len()] == "Map" { interpreter::Value::Map(Default::default()) } else { interpreter::Value::List(vec![]) });

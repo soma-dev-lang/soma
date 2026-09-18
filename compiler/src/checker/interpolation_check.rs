@@ -65,6 +65,29 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
     }
 
     for cell in super::names::collect_cells(program) {
+        // test cells: the rules' expressions, with `let` bindings in scope
+        // (an undefined `{var}` inside an assert used to be found at run time)
+        if matches!(cell.kind, CellKind::Test) {
+            let mut w = Walker::new(&index);
+            for section in &cell.sections {
+                if let Section::Rules(rules) = &section.node {
+                    for rule in &rules.rules {
+                        match &rule.node {
+                            Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => w.walk_expr(e),
+                            Rule::Let { name, value } => { w.walk_expr(value); w.scope.insert(name.clone()); }
+                            Rule::Property { var, body, .. } => {
+                                let var = var.clone();
+                                w.scoped(&[var], |w| w.walk_expr(body));
+                            }
+                            Rule::MockThink { reply, .. } | Rule::MockApprove { reply } | Rule::MockHandler { reply, .. } => w.walk_expr(reply),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            issues.extend(w.issues);
+            continue;
+        }
         if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
@@ -389,6 +412,15 @@ impl<'a> Walker<'a> {
                 });
             }
             Expr::Match { subject, arms } => {
+                if arms.is_empty() {
+                    self.issues.push(InterpolationIssue {
+                        message: "`match` with no arms always evaluates to `()` — add at least one arm (`_ -> …`)".to_string(),
+                        span,
+                        warning: false,
+                        habit: false,
+                        kind: "empty_match",
+                    });
+                }
                 self.walk_expr(subject);
                 for arm in arms {
                     bind_pattern(&arm.pattern, &mut self.scope);
@@ -431,11 +463,11 @@ impl<'a> Walker<'a> {
                 // (a literal that IS just "{" is a brace, not a split string)
                 if !s[pos + 1..].contains('}') && s[pos + 1..].trim().is_empty() && s.trim() != "{" {
                     self.issues.push(InterpolationIssue {
-                        message: "string literal ends inside `{…}` — no nested quotes inside an interpolation; bind the inner value first: `let inner = \"lit\"` then `\"… {inner}\"`".to_string(),
+                        message: "string literal ends inside `{…}` — a nested quote inside an interpolation? bind the inner value first: `let inner = \"lit\"` then `\"… {inner}\"` (a literal brace is `{{`)".to_string(),
                         span,
-                        warning: false,
-                habit: false,
-                kind: "nested_quote",
+                        warning: true,
+                        habit: true,
+                        kind: "nested_quote",
                     });
                     return;
                 }

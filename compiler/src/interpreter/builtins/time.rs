@@ -46,7 +46,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
     }
 }
 
-fn format_unix_date(secs: i64) -> String {
+pub fn format_unix_date(secs: i64) -> String {
     let days = secs / 86400;
     let mut y = 1970i64;
     let mut remaining_days = days;

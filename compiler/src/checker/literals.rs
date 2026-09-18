@@ -40,8 +40,13 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
     }).collect();
 
     for section in &cell.sections {
-        if let Section::OnSignal(h) = &section.node {
-            for_each_call(&h.body, &mut |name, args, span| {
+        let body: &[Spanned<Statement>] = match &section.node {
+            Section::OnSignal(h) => &h.body,
+            Section::Every(e) | Section::After(e) => &e.body,
+            _ => continue,
+        };
+        {
+            for_each_call(body, &mut |name, args, span| {
                 if name == "transition" {
                     if let (Some(states), Some(Spanned { node: Expr::Literal(Literal::String(target)), .. })) = (&states, args.get(1)) {
                         if !states.contains(target) {

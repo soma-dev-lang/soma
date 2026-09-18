@@ -114,6 +114,23 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 }
             })
         }
+        // strings.Fields: split on any run of whitespace, no empty pieces
+        "fields" => {
+            args.first().map(|arg| match arg {
+                Value::String(s) => Ok(Value::List(s.split_whitespace().map(|w| Value::String(w.to_string())).collect())),
+                other => Err(RuntimeError::TypeError(format!("fields(s: String) -> List<String>, got {}", super::super::value_type_name(other)))),
+            })
+        }
+        "trim" if args.len() == 2 => {
+            // trim(s, chars): strip any of `chars` from both ends
+            match (&args[0], &args[1]) {
+                (Value::String(s), Value::String(set)) => {
+                    let cs: Vec<char> = set.chars().collect();
+                    Some(Ok(Value::String(s.trim_matches(|c| cs.contains(&c)).to_string())))
+                }
+                _ => Some(Err(RuntimeError::TypeError("trim(s: String, chars: String) -> String".to_string()))),
+            }
+        }
         "trim" => {
             args.first().map(|arg| {
                 if let Value::String(s) = arg {

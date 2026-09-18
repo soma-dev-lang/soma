@@ -330,7 +330,9 @@ impl CheckWarning {
     /// True for informational notes (BudgetOk) that should not be
     /// counted as warnings in the human-readable tally.
     pub fn is_note(&self) -> bool {
-        matches!(self, CheckWarning::BudgetOk { .. } | CheckWarning::CostProven { .. })
+        // a descriptive promise is documentation by design: a note, not a
+        // warning that nags on every check
+        matches!(self, CheckWarning::BudgetOk { .. } | CheckWarning::CostProven { .. } | CheckWarning::UnverifiablePromise { .. })
     }
 }
 
@@ -347,7 +349,7 @@ impl std::fmt::Display for CheckWarning {
                 write!(f, "warning: unknown property '{property}' on '{slot}' (not defined in any loaded cell property)")
             }
             Self::UnverifiablePromise { cell, promise, .. } => {
-                write!(f, "warning: promise on '{cell}' is descriptive only, not machine-verifiable: \"{promise}\"")
+                write!(f, "note: promise on '{cell}' is documentation (not machine-verifiable): \"{promise}\"")
             }
             Self::AwaitWithoutHandler { cell, signal, .. } => {
                 write!(f, "warning: cell '{cell}' declares await '{signal}' but has no handler for it (will it be delivered via bus?)")

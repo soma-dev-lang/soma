@@ -14,6 +14,8 @@ Tested facts about the process, not intentions. Version: see `/version.json`.
 | Port already answering, `soma check` errors, an unreadable file | `soma serve` refuses to start and exits 1 — it never serves a program that does not check (`--no-check` overrides) |
 | Out of memory, SIGKILL, `kill -9` | The process dies; committed writes are in `.soma_data/soma.db` (SQLite); a request in flight is lost as a whole (atomic) |
 | Disk full while writing | Expected (not exercised): the SQLite write fails, the request is rolled back and answered 500 |
+| A slow handler (a quadratic loop, a huge `to_json`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. Keep handlers short; put a proxy timeout in front |
+| The program changed and `.soma_data/` is older | A renamed slot is a new empty slot; a slot whose TYPE changed (List → Map) reads as empty while the old rows stay in the database; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares is stuck (`valid_transitions(id) == []`). None of these is reported at start-up: migrate the data or delete `.soma_data/` |
 
 ## Addresses and ports
 
@@ -34,7 +36,7 @@ Tested facts about the process, not intentions. Version: see `/version.json`.
 | `soma deploy` | provider CLI succeeded | the CLI is missing or failed (the Dockerfile is still generated) |
 | `soma docs`, `soma example` | printed | unknown topic / no match |
 
-`--json` on `check`, `verify`, `test`, `describe`, `example` prints machine-readable stdout; diagnostics go to stderr.
+`--json` on `check`, `verify`, `test`, `describe`, `example` prints machine-readable stdout (also for a fatal error such as an unreadable file); diagnostics go to stderr. `soma verify --strict` turns every ⚠ into a failure.
 
 ## HTTP answers for a raised error
 

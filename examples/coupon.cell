@@ -28,9 +28,9 @@ cell Coupon {
     // PRNG: xorshift64
     on rand(state: Int) [native] {
         let x = state
-        x = bxor(x, shl(x, 13))
+        x = band(bxor(x, shl(x, 13)), 2147483647)   // 31-bit state: shifts stay exact in i64
         x = bxor(x, shr(x, 7))
-        x = bxor(x, shl(x, 17))
+        x = band(bxor(x, shl(x, 17)), 2147483647)   // 31-bit state: shifts stay exact in i64
         return x
     }
 

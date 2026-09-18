@@ -118,11 +118,16 @@ impl ParseError {
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    /// expression nesting, to refuse a 5 000-deep `((((…` with an error
+    /// instead of a stack overflow abort
+    depth: usize,
 }
+
+const MAX_EXPR_DEPTH: usize = 400;
 
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, depth: 0 }
     }
 
     pub fn parse_program(&mut self) -> Result<Program, ParseError> {
@@ -354,6 +359,7 @@ impl Parser {
             Token::Variants => { let span = tok.span; self.advance(); Ok(("variants".to_string(), span)) }
             Token::Implies => { let span = tok.span; self.advance(); Ok(("implies".to_string(), span)) }
             Token::Contradicts => { let span = tok.span; self.advance(); Ok(("contradicts".to_string(), span)) }
+            Token::Match => { let span = tok.span; self.advance(); Ok(("match".to_string(), span)) }
             _ => Err(ParseError::Expected {
                 expected: "identifier".to_string(),
                 found: tok.token.clone(),
@@ -985,8 +991,14 @@ impl Parser {
             if !matches!(self.peek(), Token::Ident(s) if s == "think") {
                 // `mock <handler> <value>` / `mock <handler> error "msg"`:
                 // stub any handler of the program (a tool, an http wrapper)
-                if let Token::Ident(name) = self.peek().clone() {
+                if let Token::Ident(name) | Token::TypeIdent(name) = self.peek().clone() {
                     self.advance();
+                    // `mock Notifier.send …` — the cell is documentation; stubs are by handler name
+                    let name = if self.check(&Token::Dot) {
+                        self.advance();
+                        let (h, _) = self.expect_ident()?;
+                        h
+                    } else { name };
                     let is_error = matches!(self.peek(), Token::Ident(s) if s == "error");
                     if is_error { self.advance(); }
                     let reply = self.parse_expr()?;
@@ -2397,7 +2409,16 @@ impl Parser {
     // ── Expressions ──────────────────────────────────────────────────
 
     fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
-        self.parse_logical_or()
+        if self.depth >= MAX_EXPR_DEPTH {
+            return Err(ParseError::FixIt {
+                message: format!("expression nested more than {} levels deep — split it into `let` bindings", MAX_EXPR_DEPTH),
+                span: self.peek_span(),
+            });
+        }
+        self.depth += 1;
+        let r = self.parse_logical_or();
+        self.depth -= 1;
+        r
     }
 
     // `|>` binds tighter than comparisons and `??` but looser than

@@ -194,3 +194,27 @@ Scores: library service 12/40 invocations, first check/verify/test green, confid
 - [ ] No header access / auth in `soma serve` (3 agents): a reverse proxy is the documented answer.
 - [ ] Parse errors stop at the first one; uppercase slot names are not indexable.
 - [ ] No published Linux binary (site says so; deploy builds from source).
+
+## Cycle 5 (2026-09-18, night) — 5 fresh agents on the cycle-4 binary
+
+Scores: tickets-with-expiry 23/40, 65/65 first try, 40-way race → exactly 3 winners, real `every` expiry, 8/10; Go port 29/35, 18/18 first try, native 244× measured (1.2 ns/Collatz step), Go-obviousness 6/10; 4-cell support system 26/40, 62/62, cost proof followed cross-cell calls (mutants caught), 6/10 unattended; site: time-to-first-correct-program 6 invocations (2 check-time retries), 20/22 claims exact; adversarial: ENFORCED column held everything (tick atomicity, tick/request/CLI serialization across processes, replay), 3 false statements found.
+
+### Fixed
+- [x] `every` / `after` blocks were invisible to refinement and to the literal checks: `every 1s { transition("t", "zzz") }` passed check+verify and raised every tick. Scheduler blocks are handler bodies for both now.
+- [x] `[native]`: `map(…)` accepted by check (rustc said no); `if is_prime(i)` sibling Bool condition in BigInt mode; `for i in range` loop variable typed i64 while siblings took Integer (rustc E0308, and the error was hidden behind two warnings); rustc error blocks now come first, 40 lines shown.
+- [x] Bit operations are arbitrary precision everywhere (Python semantics): `shl`/`shr`/`band`/`bor`/`bxor`/`bnot`/`bit_test` on BigInt in the interpreter; native fast path falls back to BigInt on a lost bit. The four xorshift demos mask explicitly; the bit-packing DP examples (coin_change, knapsack…) work again.
+- [x] `r.len` on `map("len", 351)` answered 2 (pseudo-fields shadowed real keys): a real key wins.
+- [x] The invariant prover narrows parameters (`require p > 0 … set(k, p)`) and knows `require b <= a` for `a - b >= 0`; `require open < 3 … open + 1` was already proven.
+- [x] `mock now 1700000000` freezes now()/now_ms()/today(); `mock Cell.handler …` accepted; a mocked error's kind is the text before ": " (or the text); a mock left unused after a rule that raised is discarded with a note (it used to script the next rule's call); each `cell test` starts with fresh slots, machines and mocks.
+- [x] `soma test --json`; `soma verify --strict` (every ⚠ fails — the CI gate two agents asked for); `check --json` on an unreadable file prints a JSON error; `soma check` refuses >400-deep expressions instead of aborting (exit 134).
+- [x] The first `every` tick runs at start-up (a sweeper sees work due while the server was down).
+- [x] serve: non-JSON body to a public `body: Map` handler → 400 kind `json`; the pre-handler 400 is logged; the route/handler collision warning is silent for the documented delegation shape (`/add/<id> -> add(id)`); the bus port only opens when usable.
+- [x] `promise "…"` is a note, not a nagging warning; `soma run` prints nothing for `()`; `fields(s)`, `trim(s, chars)`, `distinct_by`; `x.match` as a field; empty `match { }` is a check error; undefined `{var}` inside test rules is a check error; starter renamed `open_session`/`close_session` (serve calls a zero-arg `start()`), its invariant comment truthful.
+- [x] serving.md rewritten (statuses by kind, String → `{"result"}`, one path variable per pattern, auto-route coercion, `start()` hook, CORS); llms.txt: scheduler section, `has_state` caveat, `mock now`, `--strict`, `test --json`, one variable per pattern, bare calls in `rules`; sizes/counts no longer hard-coded; operations.md: slow handlers, `.soma_data` after a program change.
+
+### Open
+- [ ] Guard binding is flow-insensitive: a guard local bound only in one branch passes check and is `undefined_variable` at runtime.
+- [ ] `.soma_data` evolution is silent (documented): no start-up scan for re-typed slots, invariant-violating stored values, instances in removed states.
+- [ ] No per-request time limit (documented).
+- [ ] `soma example` on the live site still serves the previous corpus until the site is deployed (the landing block's 6th line depends on it).
+- [ ] Parser: `-10..-2` range patterns, non-ASCII identifiers.

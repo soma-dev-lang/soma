@@ -4457,7 +4457,8 @@ impl FnGenerator {
                 // the (cleared) result buffer.
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                format!("({{ let _k: i64 = {}; if _k >= 64 {{ 0i64 }} else {{ ({}).wrapping_shl(_k as u32) }} }})", b, a)
+                // exact: a lost bit is an overflow → the BigInt fallback runs
+                format!("({{ let _a: i64 = {}; let _k: i64 = {}; match (_k < 64).then(|| _a.checked_shl(_k as u32)).flatten() {{ Some(r) if (r >> (_k as u32)) == _a => r, _ => panic!(\"attempt to shift left with overflow\") }} }})", a, b)
             }
             "shr" if args.len() == 2 => {
                 // arithmetic shift; a count ≥ 64 saturates (0 or -1)
@@ -4786,11 +4787,25 @@ impl FnGenerator {
                 s
             }
             Statement::For { var, iter, body, bound: _ } => {
+                // In Rug mode every Int local the body sees is an Integer
+                // unless the classifier proved it small: the range yields
+                // i64, so bind the loop variable as the type the body
+                // expects (it used to be i64 while siblings took Integer —
+                // rustc E0308 on `for i in range` in the fallback variant).
                 let iter_code = self.gen_for_iter_direct(&iter.node);
-                let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
-                s.push_str(&self.gen_body_rug(body, indent + 1, ctx));
-                s.push_str(&format!("{}}}\n", ind));
-                s
+                let small = self.small_int_vars.contains(var)
+                    || self.var_types.get(var).copied().unwrap_or(NativeType::Int) != NativeType::Int;
+                if small {
+                    let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
+                    s.push_str(&self.gen_body_rug(body, indent + 1, ctx));
+                    s.push_str(&format!("{}}}\n", ind));
+                    s
+                } else {
+                    let mut s = format!("{}for _soma_{} in {} {{\n{}    let mut {}: Integer = Integer::from(_soma_{});\n", ind, var, iter_code, ind, var, var);
+                    s.push_str(&self.gen_body_rug(body, indent + 1, ctx));
+                    s.push_str(&format!("{}}}\n", ind));
+                    s
+                }
             }
             Statement::Break => format!("{}break;\n", ind),
             Statement::Continue => format!("{}continue;\n", ind),
@@ -5447,8 +5462,12 @@ impl FnGenerator {
             }
             Expr::Literal(Literal::Bool(b)) => format!("{}", b),
             Expr::Ident(name) => name.clone(),
+            // `if is_prime(i) { … }`: a Bool-returning sibling or builtin call
+            Expr::FnCall { .. } if self.infer_expr_type(expr) == NativeType::Bool => {
+                self.gen_expr_direct(expr, NativeType::Bool)
+            }
             other => {
-                self.err(format!("unsupported boolean condition in Rug mode: {:?}", other));
+                self.err(format!("unsupported boolean condition in [native] BigInt mode: {} — bind it first: `let ok = …` then `if ok`", crate::ast::render_expr(other)));
                 "true".to_string()
             }
         }

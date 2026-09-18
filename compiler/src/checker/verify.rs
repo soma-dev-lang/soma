@@ -44,9 +44,23 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 // declared transition is reached by some handler, and we
                 // surface a per-handler effect summary so the reader can
                 // see the proof at a glance.
-                let handlers: Vec<(&OnSection, Span)> = cell.node.sections.iter()
+                // scheduler blocks (`every 1s { … }`, `after 5s { … }`) are
+                // handler bodies too: an undeclared transition target in one
+                // used to pass verify and raise every tick under serve
+                let scheduled: Vec<OnSection> = cell.node.sections.iter().filter_map(|s| match &s.node {
+                    Section::Every(e) => Some(OnSection { signal_name: format!("every@{}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
+                    Section::After(e) => Some(OnSection { signal_name: format!("after@{}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
+                    _ => None,
+                }).collect();
+                let mut handlers: Vec<(&OnSection, Span)> = cell.node.sections.iter()
                     .filter_map(|s| if let Section::OnSignal(ref on) = s.node { Some((on, s.span)) } else { None })
                     .collect();
+                for (i, s) in cell.node.sections.iter().enumerate() {
+                    if matches!(s.node, Section::Every(_) | Section::After(_)) {
+                        let idx = cell.node.sections[..i].iter().filter(|x| matches!(x.node, Section::Every(_) | Section::After(_))).count();
+                        handlers.push((&scheduled[idx], s.span));
+                    }
+                }
                 let findings = super::refinement::check_refinement(sm, &handlers);
 
                 // ── V1.4: think-isolation check ────────────────────────

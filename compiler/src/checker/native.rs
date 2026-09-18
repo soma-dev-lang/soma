@@ -185,6 +185,17 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
         }
         Expr::Not(inner) => check_expr(handler_name, &inner.node, siblings),
         Expr::FnCall { name, args } => {
+            // `map(k, v)` / `filter(xs, f)` are pipeline ops natively only in
+            // `xs |> map(x => …)` form: a map LITERAL or a list call cannot
+            // exist in native code (rustc used to be the one to say so)
+            let is_pipeline_op = matches!(name.as_str(), "map" | "filter" | "reduce" | "fold");
+            let has_lambda = args.iter().any(|a| matches!(a.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }));
+            if is_pipeline_op && !has_lambda {
+                return Err(NativeCheckError {
+                    handler_name: handler_name.to_string(),
+                    reason: format!("builds a {} with `{}(…)` — no maps or lists natively: return one scalar per handler (or a String), and build the record in an interpreted handler", if name == "map" { "map" } else { "list" }, name),
+                });
+            }
             // Allow known math builtins and calls to other native handlers
             if !ALLOWED_BUILTINS.contains(&name.as_str())
                 && !siblings.contains(name)

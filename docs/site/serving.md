@@ -43,19 +43,33 @@ A handler may return:
 | Return value | HTTP |
 |---|---|
 | a Map or a List | `200`, JSON |
-| a String | `200`, text |
+| a String or a number | `200`, `{"result": …}` (JSON) |
+| `()` | `200`, `null` |
 | `response(status, body)` | that status; the value is `{_status, _body}` — assert `r._status == 404` in tests |
 | `html(body)` / `html(status, body)` | HTML |
 | `redirect(url)` | `302` |
 
-An uncaught error is a `500` with `{"error": …}`. Map error kinds to statuses:
+An error the handler does not catch is answered by its kind, as
+`{"error": message, "kind": kind}`: `not_found` → 404; `guard_failed`,
+`forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
+409; `invariant`, `ensure` → 422; `json`, `type`, `division_by_zero` and your
+own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
+`budget`, undefined names → 500 (the full table is in operations.md). Map a
+kind yourself only when you want a different status or body:
 
 ```soma
 let r = try { _hold(id) }
-if r.kind == "not_found"          { return response(404, map("error", r.detail)) }
-if r.kind == "invalid_transition" { return response(409, map("error", r.detail)) }
-if r.error != ()                  { return response(422, map("error", r.detail)) }
+if r.kind == "invalid_transition" { return response(410, map("error", r.detail)) }
+if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers
 ```
+
+Path patterns hold ONE variable, at the end (`"/loans/" + rest`); split
+`rest` for more segments, or take the rest from the body or query. Public
+handlers (no `_` prefix, `request` aside) are also reachable directly at
+`/<handler>/<arg>/…`: arguments are coerced to the declared parameter types
+(`/decide/x/true` → Bool), a trailing `Map`/`List` parameter takes the JSON
+body (a non-JSON body → `400 {"kind": "json"}`). At start-up `serve` calls a
+zero-argument `start()` (or `init()`) handler when the cell has one.
 
 ## Concurrency and atomicity
 

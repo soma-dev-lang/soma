@@ -17,13 +17,24 @@
 use std::path::PathBuf;
 use std::process;
 
+/// print now (text mode) or keep for the JSON report
+macro_rules! say {
+    ($buf:expr, $json:expr, $($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        if !$json { println!("{}", line); }
+        $buf.push(line);
+    }};
+}
+
 use crate::ast;
 use crate::interpreter;
 use crate::registry::Registry;
 use crate::runtime;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
-pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
+pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
+    // every line the runner would print, kept for --json
+    let mut out_lines: Vec<String> = Vec::new();
     let source = read_source(path);
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));
@@ -119,23 +130,46 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
             // a green test run must not be the interpreter standing in for
             // native code that does not compile
             eprintln!("error: [native] handlers do not compile — the tests cannot vouch for them:");
-            for line in e.lines().take(12) {
+            for line in e.lines().take(40) {
                 eprintln!("  {}", line);
             }
             process::exit(1);
         }
     }
 
-    for test_cell in &test_cells {
-        println!("test {} ...", test_cell.name);
+    for (cell_idx, test_cell) in test_cells.iter().enumerate() {
+        say!(out_lines, json, "test {} ...", test_cell.name);
         // `let` rules bind here; every later rule of the cell sees them
         let mut test_env: std::collections::HashMap<String, interpreter::Value> = std::collections::HashMap::new();
+        // every test cell starts clean: fresh slots and state-machine
+        // instances, no leftover mock or frozen clock from the cell before
         interp.mock_queue.clear();
         interp.approve_queue.clear();
+        interp.handler_stubs.clear();
+        interp.frozen_now = None;
+        if cell_idx > 0 {
+            for cell in &program.cells {
+                if matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
+                    for section in &cell.node.sections {
+                        if let ast::Section::Memory(ref mem) = section.node {
+                            let mut slots = std::collections::HashMap::new();
+                            for slot in &mem.slots {
+                                let backend: std::sync::Arc<dyn runtime::storage::StorageBackend> =
+                                    std::sync::Arc::new(runtime::storage::MemoryBackend::new());
+                                slots.insert(slot.node.name.clone(), backend);
+                            }
+                            interp.set_storage(&cell.node.name, &slots);
+                        }
+                    }
+                }
+            }
+            interp.reset_state_machine_storage();
+        }
 
         for section in &test_cell.sections {
             if let ast::Section::Rules(ref rules) = section.node {
                 for rule in &rules.rules {
+                    let failed_before = failed;
                     match &rule.node {
                         ast::Rule::Let { name, value } => {
                             match eval_test_expr(&mut interp, &value.node, &test_env) {
@@ -145,7 +179,7 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 Err(e) => {
                                     total += 1;
                                     failed += 1;
-                                    println!("  ✗ {}:{}  let {} = … — ERROR: {}", file_name, line_of(rule.span), name, e);
+                                    say!(out_lines, json, "  ✗ {}:{}  let {} = … — ERROR: {}", file_name, line_of(rule.span), name, e);
                                 }
                             }
                         }
@@ -164,7 +198,20 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 Err(e) => {
                                     total += 1;
                                     failed += 1;
-                                    println!("  ✗ {}:{}  mock think … — ERROR: {}", file_name, line_of(rule.span), e);
+                                    say!(out_lines, json, "  ✗ {}:{}  mock think … — ERROR: {}", file_name, line_of(rule.span), e);
+                                }
+                            }
+                        }
+                        ast::Rule::MockHandler { name, reply, is_error } if name == "now" => {
+                            match eval_test_expr(&mut interp, &reply.node, &test_env) {
+                                Ok(interpreter::Value::Int(t)) => interp.frozen_now = t.to_i64(),
+                                Ok(other) => {
+                                    total += 1; failed += 1;
+                                    say!(out_lines, json, "  ✗ {}:{}  mock now … — ERROR: mock now takes unix seconds (an Int), got {}", file_name, line_of(rule.span), other);
+                                }
+                                Err(e) => {
+                                    total += 1; failed += 1;
+                                    say!(out_lines, json, "  ✗ {}:{}  mock now … — ERROR: {}", file_name, line_of(rule.span), e);
                                 }
                             }
                         }
@@ -181,7 +228,7 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 Err(e) => {
                                     total += 1;
                                     failed += 1;
-                                    println!("  ✗ {}:{}  mock {} … — ERROR: {}", file_name, line_of(rule.span), name, e);
+                                    say!(out_lines, json, "  ✗ {}:{}  mock {} … — ERROR: {}", file_name, line_of(rule.span), name, e);
                                 }
                             }
                         }
@@ -196,7 +243,7 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 Err(e) => {
                                     total += 1;
                                     failed += 1;
-                                    println!("  ✗ {}:{}  mock approve … — ERROR: {}", file_name, line_of(rule.span), e);
+                                    say!(out_lines, json, "  ✗ {}:{}  mock approve … — ERROR: {}", file_name, line_of(rule.span), e);
                                 }
                             }
                         }
@@ -207,18 +254,18 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                             match eval_test_assertion(&mut interp, &expr.node, &test_env) {
                                 Ok((true, _)) => {
                                     passed += 1;
-                                    println!("  ✓ assert {}", shown);
+                                    say!(out_lines, json, "  ✓ assert {}", shown);
                                 }
                                 Ok((false, detail)) => {
                                     failed += 1;
-                                    println!("  ✗ {}:{}  assert {} — FAILED", file_name, line_of(expr.span), shown);
+                                    say!(out_lines, json, "  ✗ {}:{}  assert {} — FAILED", file_name, line_of(expr.span), shown);
                                     for line in detail {
-                                        println!("         {}", line);
+                                        say!(out_lines, json, "         {}", line);
                                     }
                                 }
                                 Err(e) => {
                                     failed += 1;
-                                    println!("  ✗ {}:{}  assert {} — ERROR: {}", file_name, line_of(expr.span), shown, e);
+                                    say!(out_lines, json, "  ✗ {}:{}  assert {} — ERROR: {}", file_name, line_of(expr.span), shown, e);
                                 }
                             }
                         }
@@ -240,26 +287,26 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 // the domain error a test means to prove.
                                 Err(e) if e.starts_with("undefined function") || e.starts_with("undefined variable") => {
                                     failed += 1;
-                                    println!("  ✗ {}  assert_fails {} — FAILED: it raised {}, a bug rather than the failure under test (run `soma check`)",
+                                    say!(out_lines, json, "  ✗ {}  assert_fails {} — FAILED: it raised {}, a bug rather than the failure under test (run `soma check`)",
                                              at, shown, e);
                                 }
                                 Err(e) => match wanted {
                                     Some(text) if !e.contains(text) => {
                                         failed += 1;
-                                        println!("  ✗ {}  assert_fails {} matching \"{}\" — FAILED: it raised something else: {}",
+                                        say!(out_lines, json, "  ✗ {}  assert_fails {} matching \"{}\" — FAILED: it raised something else: {}",
                                                  at, shown, text, e);
                                     }
                                     _ => {
                                         passed += 1;
                                         match wanted {
-                                            Some(text) => println!("  ✓ assert_fails {} matching \"{}\" — raised {}", shown, text, e),
-                                            None => println!("  ✓ assert_fails {} — raised {}", shown, e),
+                                            Some(text) => say!(out_lines, json, "  ✓ assert_fails {} matching \"{}\" — raised {}", shown, text, e),
+                                            None => say!(out_lines, json, "  ✓ assert_fails {} — raised {}", shown, e),
                                         }
                                     }
                                 },
                                 Ok(v) => {
                                     failed += 1;
-                                    println!("  ✗ {}  assert_fails {} — FAILED: expected a runtime error, but it succeeded with {}",
+                                    say!(out_lines, json, "  ✗ {}  assert_fails {} — FAILED: expected a runtime error, but it succeeded with {}",
                                              at, shown, v);
                                 }
                             }
@@ -269,28 +316,73 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                             match run_property(&mut interp, name, var, ty, *lo, *hi, *count, &body.node) {
                                 Ok((None, cov)) => {
                                     passed += 1;
-                                    println!("  ✓ property \"{}\" (forall {} in {}..{}: {})",
+                                    say!(out_lines, json, "  ✓ property \"{}\" (forall {} in {}..{}: {})",
                                              name, var, lo, hi, cov);
                                 }
                                 Ok((Some(cex), _)) => {
                                     failed += 1;
-                                    println!("  ✗ property \"{}\" — FAILED with counter-example {} = {}",
+                                    say!(out_lines, json, "  ✗ property \"{}\" — FAILED with counter-example {} = {}",
                                              name, var, cex);
                                 }
                                 Err(e) => {
                                     failed += 1;
-                                    println!("  ✗ property \"{}\" — ERROR: {}", name, e);
+                                    say!(out_lines, json, "  ✗ property \"{}\" — ERROR: {}", name, e);
                                 }
                             }
                         }
                         _ => {}
+                    }
+                    // A mock queued for THIS rule but never reached (the call
+                    // failed earlier) used to leak into the next rule's call
+                    // and script the wrong answer. Discard it, and say so.
+                    // only when this rule RAISED (an assert_fails that fired,
+                    // an assert/let that errored): a queue like `mock think
+                    // ["a", "b"]` legitimately spans the next two rules
+                    let raised = matches!(rule.node, ast::Rule::AssertFails(_) | ast::Rule::AssertFailsMatching(..))
+                        || (matches!(rule.node, ast::Rule::Assert(_) | ast::Rule::Let { .. }) && failed > failed_before);
+                    if raised {
+                        let mut left: Vec<String> = Vec::new();
+                        if !interp.mock_queue.is_empty() { left.push(format!("{} mock think", interp.mock_queue.len())); }
+                        if !interp.approve_queue.is_empty() { left.push(format!("{} mock approve", interp.approve_queue.len())); }
+                        for (h, q) in &interp.handler_stubs {
+                            if !q.is_empty() { left.push(format!("{} mock {}", q.len(), h)); }
+                        }
+                        if !left.is_empty() {
+                            say!(out_lines, json, "  note: {} unused after line {} — discarded (a mock scripts the NEXT call of the rule it precedes)", left.join(", "), line_of(rule.span));
+                            interp.mock_queue.clear();
+                            interp.approve_queue.clear();
+                            interp.handler_stubs.clear();
+                        }
                     }
                 }
             }
         }
     }
 
-    println!("\n{} tests: {} passed, {} failed", total, passed, failed);
+    say!(out_lines, json, "\n{} tests: {} passed, {} failed", total, passed, failed);
+
+    if json {
+        let mut cell = String::new();
+        let mut records: Vec<serde_json::Value> = Vec::new();
+        for line in &out_lines {
+            let t = line.trim_start_matches('\n');
+            if let Some(name) = t.strip_prefix("test ").and_then(|r| r.strip_suffix(" ...")) {
+                cell = name.to_string();
+            } else if let Some(rest) = t.strip_prefix("  ✓ ") {
+                records.push(serde_json::json!({"cell": cell, "status": "pass", "rule": rest}));
+            } else if let Some(rest) = t.strip_prefix("  ✗ ") {
+                let (loc, msg) = rest.split_once("  ").unwrap_or(("", rest));
+                let line_no = loc.rsplit(':').next().and_then(|n| n.parse::<usize>().ok());
+                records.push(serde_json::json!({"cell": cell, "status": "fail", "line": line_no, "rule": msg}));
+            } else if let Some(rest) = t.strip_prefix("  note: ") {
+                records.push(serde_json::json!({"cell": cell, "status": "note", "rule": rest}));
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            "file": file_name, "total": total, "passed": passed, "failed": failed,
+            "ok": failed == 0, "results": records,
+        })).unwrap());
+    }
 
     if failed > 0 {
         process::exit(1);

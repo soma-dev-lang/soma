@@ -206,8 +206,8 @@ const STARTER_APP: &str = r#"// A counter that cannot go negative, behind a sess
 
 cell Counter {
     face {
-        signal start(id: String) -> String
-        signal stop(id: String) -> String
+        signal open_session(id: String) -> String
+        signal close_session(id: String) -> String
         signal add(n: Int) -> Int
         signal total() -> Int
         signal request(method: String, path: String, body: String) -> Map
@@ -215,7 +215,7 @@ cell Counter {
 
     memory {
         counts: Map<String, Int> [persistent]
-        invariant counts >= 0 && counts <= 1000000     // soma verify PROVES the lower bound below
+        invariant counts >= 0 && counts <= 1000000     // `>= 0` is PROVEN by verify (require n >= 0 below); `<= 1000000` is runtime-checked
     }
 
     state session {
@@ -232,12 +232,12 @@ cell Counter {
         return total()
     }
 
-    on start(id: String) {
+    on open_session(id: String) {
         transition(id, "open")
         return get_status(id)
     }
 
-    on stop(id: String) {
+    on close_session(id: String) {
         transition(id, "closed")
         return get_status(id)
     }
@@ -262,9 +262,9 @@ cell test CounterTests {
         assert total() == 5                                   // …and the slot is unchanged
         assert request("POST", "/counter/-1", "")._status == 400
         assert request("POST", "/counter/2", "").total == 7
-        assert start("s1") == "open"
-        assert stop("s1") == "closed"
-        assert_fails start("s1")             // closed is terminal: no way back
+        assert open_session("s1") == "open"
+        assert close_session("s1") == "closed"
+        assert_fails open_session("s1")      // closed is terminal: no way back
     }
 }
 "#;

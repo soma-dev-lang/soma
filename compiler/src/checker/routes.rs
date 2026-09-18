@@ -100,6 +100,11 @@ pub fn check_program(program: &Program) -> Vec<(String, Span)> {
             if name == "request" || name.starts_with('_') || !segments.contains(name) {
                 continue;
             }
+            // `{path: "/add/" + id} -> add(id)` is the documented shape: the
+            // route delegates to the handler of the same name — no warning
+            if request_calls(cell, name) {
+                continue;
+            }
             out.push((
                 format!(
                     "handler `{name}` and a route of `request` share the path /{name}: `soma serve` also exposes every \
@@ -112,4 +117,15 @@ pub fn check_program(program: &Program) -> Vec<(String, Span)> {
         }
     }
     out
+}
+
+/// Does the cell's `request` handler call `name` anywhere in its body?
+fn request_calls(cell: &CellDef, name: &str) -> bool {
+    let Some(req) = cell.sections.iter().find_map(|s| match &s.node {
+        Section::OnSignal(on) if on.signal_name == "request" => Some(on),
+        _ => None,
+    }) else { return false };
+    let mut found = false;
+    super::literals::for_each_call(&req.body, &mut |called, _, _| { if called == name { found = true; } });
+    found
 }

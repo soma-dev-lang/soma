@@ -270,37 +270,35 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Ok(Value::Int(SomaInt::from_i64(min + (x % range) as i64))))
             }
         }
-        // Bit operations on Int
+        // Bit operations on Int — arbitrary precision, like Python: a bit
+        // array packed into one Int keeps growing past 63 bits, and the
+        // native backend agrees (i64 fast path, BigInt fallback on overflow)
         "band" | "bor" | "bxor" if args.len() >= 2 => {
-            let a = val_to_i64(&args[0]);
-            let b = val_to_i64(&args[1]);
+            let a = big_of(&args[0]);
+            let b = big_of(&args[1]);
             let r = match name { "band" => a & b, "bor" => a | b, _ => a ^ b };
-            Some(Ok(Value::Int(SomaInt::from_i64(r))))
+            Some(Ok(Value::Int(SomaInt::from_rug(r))))
         }
         "bnot" if args.len() >= 1 => {
-            let a = val_to_i64(&args[0]);
-            Some(Ok(Value::Int(SomaInt::from_i64(!a))))
+            Some(Ok(Value::Int(SomaInt::from_rug(!big_of(&args[0])))))
         }
         "shl" if args.len() >= 2 => {
-            // a 64-bit BIT operation (like band/bxor): bits shifted past
-            // bit 63 are dropped — xorshift generators depend on it. The
-            // native backend does the same.
-            let a = val_to_i64(&args[0]);
             let b = val_to_i64(&args[1]);
-            let r = if b >= 64 { 0 } else { a.wrapping_shl(b.max(0) as u32) };
-            Some(Ok(Value::Int(SomaInt::from_i64(r))))
+            if b < 0 || b > 1 << 24 {
+                return Some(Err(RuntimeError::TypeError(format!("shl(): shift count {} out of range", b))));
+            }
+            Some(Ok(Value::Int(SomaInt::from_rug(big_of(&args[0]) << (b as u32)))))
         }
         "shr" if args.len() >= 2 => {
-            // arithmetic shift; a count ≥ 64 saturates (0 or -1) — same natively
-            let a = val_to_i64(&args[0]);
             let b = val_to_i64(&args[1]);
-            let r = if b >= 64 { if a < 0 { -1 } else { 0 } } else { a >> b.max(0) };
-            Some(Ok(Value::Int(SomaInt::from_i64(r))))
+            if b < 0 || b > 1 << 24 {
+                return Some(Err(RuntimeError::TypeError(format!("shr(): shift count {} out of range", b))));
+            }
+            Some(Ok(Value::Int(SomaInt::from_rug(big_of(&args[0]) >> (b as u32)))))
         }
         "bit_test" if args.len() >= 2 => {
-            let a = val_to_i64(&args[0]);
             let b = val_to_i64(&args[1]);
-            let r = if !(0..64).contains(&b) { 0 } else { (a >> b) & 1 };
+            let r = if b < 0 { 0 } else if big_of(&args[0]).get_bit(b as u32) { 1 } else { 0 };
             Some(Ok(Value::Int(SomaInt::from_i64(r))))
         }
         "bit_set" if args.len() >= 2 => {
@@ -521,5 +519,13 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             "max" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) >= 0 { a } else { b }).unwrap())),
             _ => Ok(Value::Unit),
         }
+    }
+}
+
+/// The exact integer of a value (BigInt included; Floats truncate).
+fn big_of(v: &Value) -> rug::Integer {
+    match v {
+        Value::Int(si) => si.to_rug(),
+        other => rug::Integer::from(val_to_i64(other)),
     }
 }

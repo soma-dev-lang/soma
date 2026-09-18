@@ -14,13 +14,13 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Machine-readable resources
 
-- [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~40 KB
-- [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~70 KB)
+- [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~50 KB
+- [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~90 KB)
 - [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma
 - [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same knowledge packaged as an agent skill
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
-- [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the 20 domains (~1 KB) → one domain's index (~12 KB, summaries, each program's verify verdict and soma.toml)
+- [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~1 KB) → one domain's index (~12 KB, summaries, each program's verify verdict and soma.toml)
 - [corpus/index.json](https://soma-lang.dev/corpus/index.json): 300+ verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
 - [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md), [docs/spec.md](https://soma-lang.dev/docs/spec.md): raw markdown
 - [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry
@@ -81,7 +81,7 @@ cell App {
     on request(method: String, path: String, body: String) {
         match map("method", method, "path", path) {
             {method: "GET", path: "/"} -> html("<h1>hi</h1>")
-            {method: "POST", path: "/add/" + id} -> handle(id)
+            {method: "POST", path: "/add/" + id} -> handle(id)   // ONE variable per pattern, at the end
             _ -> response(404, map("error", "not found"))
         }
     }
@@ -165,7 +165,8 @@ names the Soma form for each of these when you get it wrong.
 ```soma
 cell test MyTests {                // a name and a `rules` block are required
     rules {
-        let orders = fixture()                   // shared by the rules below
+        let orders = fixture()                   // shared by the rules below; a bare call
+                                                 // is not a rule: bind it (let _ = f())
         assert total(orders) == 42               // == is structural on lists/maps
         assert_fails pay("x")                    // passes when the expression RAISES
         assert_fails pay("x") matching "invalid transition"   // …for the right reason
@@ -173,13 +174,18 @@ cell test MyTests {                // a name and a `rules` block are required
         mock think error "timeout"               // next think() fails
         mock approve false                       // next approve() answer (one per call)
         mock price_check 120                     // next call of ANY handler (a tool, an
-        mock price_check error "down"            // http wrapper) answers / raises instead
+        mock Notifier.send error "down"          // http wrapper) answers / raises instead;
+                                                 // error "not_found: x" raises kind not_found
+        mock now 1700000000                      // freeze now()/now_ms()/today() until the next mock now
         property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // 0..100 = 0…99, every value (≤ 20k)
     }
 }
 ```
 `soma test` isolates storage (fresh per run), runs `[native]` handlers natively,
 and — with no LLM key configured — mocks `think()` (echo: reply = prompt).
+A mock scripts the NEXT call of the rule it precedes; one left unused after a
+rule that raised is discarded (with a note). Each `cell test` starts with fresh
+slots, machines and mocks. `soma test --json` gives one record per rule.
 `approve()` never answers on its own: unscripted it raises `approval_required`
 (also under serve; SOMA_APPROVE=always|never is the explicit unattended
 policy; `soma run` at a terminal asks). `assert` needs a Bool. A test cell
@@ -191,7 +197,9 @@ source, `file:line`, left/right, and the fields a value really has when
 ## Things you would otherwise guess
 
 - A fresh id is implicitly in the initial state: `transition(id, "held")` on an
-  id nobody created is legal; `has_state(id)` tells a known id from a fresh one.
+  id nobody created is legal; `has_state(id)` is true only once the id has
+  TRANSITIONED — a record stored in a slot but never transitioned is "fresh"
+  to it (test the slot for duplicates: `require m.get(id) == () else Dup`).
 - `transition()`'s first argument is an INSTANCE id (an order, a ticket), not
   the machine's name; one cell has one machine, any number of instances.
 - A slot is a Map or a List (`n: Int` is a check error). Read a
@@ -206,6 +214,17 @@ source, `file:line`, left/right, and the fields a value really has when
   one); `concat(a, b)` joins lists.
 - Persistent data lives in `.soma_data/` beside the program (serve and run);
   `soma test` starts empty.
+
+## Scheduled work
+
+```soma
+every 30s { expire_due() }      // under soma serve: runs at start-up, then every 30 s (5s, 1min, 500ms)
+after 10s { warm_cache() }      // once, 10 s after start-up
+```
+A tick is a handler invocation: atomic, serialized with requests (and with
+other processes on the same `.soma_data`), rolled back and logged if it
+raises; the next tick still runs. The interval counts from the end of the
+previous tick. verify checks the `transition()` targets of these blocks too.
 
 ## Handlers are atomic
 
@@ -291,6 +310,8 @@ induction when interval reasoning suffices (`(counts.get(k) ?? 0) + 1` keeps
 `counts >= 0`; `let open = …  require open < 3 …  set(k, open + 1)` keeps
 `<= 3` — an unconditional `require` on a once-bound local counts); the rest
 is reported per conjunct as runtime-checked.
+`soma verify --strict` fails on every ⚠ too (a proof that degraded to
+runtime-checked, an unprovable termination) — the CI gate.
 A failed property prints a counter-example path and is an error. What verify
 does NOT prove: data-dependent rules inside handlers, and invariants on computed
 values (those are runtime-checked — reported as such, never as "proven").
@@ -395,7 +416,7 @@ Not available natively: maps/lists/records, think(), memory slots, `try`,
 
 ## Learn from working code
 
-- https://soma-lang.dev/corpus/index.json — 316 programs, all passing
+- https://soma-lang.dev/corpus/index.json — 300+ programs, all passing
   check+test (algorithms, web, agents, state machines, finance, games,
   data, safety interlocks, medical, aerospace…). Before writing a cell,
   fetch one with the features you need and adapt it.
@@ -525,19 +546,33 @@ A handler may return:
 | Return value | HTTP |
 |---|---|
 | a Map or a List | `200`, JSON |
-| a String | `200`, text |
+| a String or a number | `200`, `{"result": …}` (JSON) |
+| `()` | `200`, `null` |
 | `response(status, body)` | that status; the value is `{_status, _body}` — assert `r._status == 404` in tests |
 | `html(body)` / `html(status, body)` | HTML |
 | `redirect(url)` | `302` |
 
-An uncaught error is a `500` with `{"error": …}`. Map error kinds to statuses:
+An error the handler does not catch is answered by its kind, as
+`{"error": message, "kind": kind}`: `not_found` → 404; `guard_failed`,
+`forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
+409; `invariant`, `ensure` → 422; `json`, `type`, `division_by_zero` and your
+own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
+`budget`, undefined names → 500 (the full table is in operations.md). Map a
+kind yourself only when you want a different status or body:
 
 ```soma
 let r = try { _hold(id) }
-if r.kind == "not_found"          { return response(404, map("error", r.detail)) }
-if r.kind == "invalid_transition" { return response(409, map("error", r.detail)) }
-if r.error != ()                  { return response(422, map("error", r.detail)) }
+if r.kind == "invalid_transition" { return response(410, map("error", r.detail)) }
+if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers
 ```
+
+Path patterns hold ONE variable, at the end (`"/loans/" + rest`); split
+`rest` for more segments, or take the rest from the body or query. Public
+handlers (no `_` prefix, `request` aside) are also reachable directly at
+`/<handler>/<arg>/…`: arguments are coerced to the declared parameter types
+(`/decide/x/true` → Bool), a trailing `Map`/`List` parameter takes the JSON
+body (a non-JSON body → `400 {"kind": "json"}`). At start-up `serve` calls a
+zero-argument `start()` (or `init()`) handler when the cell has one.
 
 ## Concurrency and atomicity
 
@@ -577,6 +612,8 @@ Tested facts about the process, not intentions. Version: see `/version.json`.
 | Port already answering, `soma check` errors, an unreadable file | `soma serve` refuses to start and exits 1 — it never serves a program that does not check (`--no-check` overrides) |
 | Out of memory, SIGKILL, `kill -9` | The process dies; committed writes are in `.soma_data/soma.db` (SQLite); a request in flight is lost as a whole (atomic) |
 | Disk full while writing | Expected (not exercised): the SQLite write fails, the request is rolled back and answered 500 |
+| A slow handler (a quadratic loop, a huge `to_json`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. Keep handlers short; put a proxy timeout in front |
+| The program changed and `.soma_data/` is older | A renamed slot is a new empty slot; a slot whose TYPE changed (List → Map) reads as empty while the old rows stay in the database; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares is stuck (`valid_transitions(id) == []`). None of these is reported at start-up: migrate the data or delete `.soma_data/` |
 
 ## Addresses and ports
 
@@ -597,7 +634,7 @@ Tested facts about the process, not intentions. Version: see `/version.json`.
 | `soma deploy` | provider CLI succeeded | the CLI is missing or failed (the Dockerfile is still generated) |
 | `soma docs`, `soma example` | printed | unknown topic / no match |
 
-`--json` on `check`, `verify`, `test`, `describe`, `example` prints machine-readable stdout; diagnostics go to stderr.
+`--json` on `check`, `verify`, `test`, `describe`, `example` prints machine-readable stdout (also for a fatal error such as an unreadable file); diagnostics go to stderr. `soma verify --strict` turns every ⚠ into a failure.
 
 ## HTTP answers for a raised error
 

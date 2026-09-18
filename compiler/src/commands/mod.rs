@@ -81,12 +81,23 @@ fn validate_manifest_beside(path: &PathBuf) {
     }
 }
 
+/// Set by main when `--json` was asked: fatal errors then also go to
+/// stdout as one JSON object, so a machine reader never sees an empty
+/// stdout with exit 1.
+pub static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn read_source(path: &PathBuf) -> String {
     validate_manifest_beside(path);
     match fs::read_to_string(path) {
         Ok(source) => source,
         Err(e) => {
             eprintln!("error: cannot read '{}': {}", path.display(), e);
+            if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+                println!("{}", serde_json::json!({
+                    "errors": [{"level": "error", "kind": "io", "message": format!("cannot read '{}': {}", path.display(), e), "fix": "check the path"}],
+                    "warnings": [], "error_count": 1, "passed": false
+                }));
+            }
             process::exit(1);
         }
     }
