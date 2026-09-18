@@ -1319,3 +1319,57 @@ cell S {
     assert!(!out.contains("writer 'h' proven"), "{out}");
     assert!(!out.contains("writer 'l' proven"), "{out}");
 }
+
+/// Cycle 12: a bare call inside a cell runs that cell's own handler; verify
+/// always ends with a verdict and prints check errors with it; clearer
+/// hints (require without else, `and`, a quote inside `{…}`); native check
+/// gaps (a Buf to a sibling); a builtin-arity call is not recursion.
+#[test]
+fn cycle12_findings() {
+    let d = dir("cycle12");
+    std::fs::write(d.join("app.cell"), r#"
+cell Orders { on pack(id: String) { return "orders:" + id } }
+cell Warehouse {
+  on pack(id: String) { return "warehouse:" + id }
+  on caller(id: String) { return pack(id) }
+  on other(id: String) { return Orders.pack(id) }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["run", "app.cell", "caller", "w1"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("warehouse:w1"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "app.cell", "other", "w1"]);
+    assert!(out.contains("orders:w1"), "{out}");
+
+    std::fs::write(d.join("p.cell"), "cell A { on f(n: Int) { require n < 3  return n } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "p.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("needs `else Tag`"), "{out}");
+    assert!(out.contains("VERIFY FAILED"), "{out}");
+
+    std::fs::write(d.join("h.cell"), "cell A {\n on f(a: Bool, b: Bool) { return a and b }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "h.cell"]);
+    assert!(out.contains("Soma writes `a && b`"), "{out}");
+
+    std::fs::write(d.join("n.cell"), r#"
+cell N {
+  on takes(n: Int) [native] { return n }
+  on a5(n: Int) [native] { let b = buffer(n)  buf_set(b, 0, 7)  return takes(b) }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "n.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("passes the buffer `b` to the sibling handler `takes`"), "{out}");
+
+    std::fs::write(d.join("ar.cell"), r#"
+cell A {
+  on sum(a: Int, b: Int, c: Int) { return a + b + c }
+  on use_sum() { return sum([1, 2]) }
+  on list() { return list(1, 2) }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "ar.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (out, code) = soma_in(&d, &["verify", "--strict", "ar.cell"]);
+    assert_eq!(code, 0, "{out}");
+}

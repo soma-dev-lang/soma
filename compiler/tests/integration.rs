@@ -599,8 +599,9 @@ fn test_refinement_undeclared_target_fails() {
         "error message must name the offending target literal: {}", out);
     assert!(out.contains("settle"),
         "error message must name the offending handler: {}", out);
-    assert!(out.contains("refinement"),
-        "failure must be tagged as a refinement check: {}", out);
+    // caught by `soma check` before any proof runs: verify stops there
+    assert!(out.contains("VERIFY FAILED"),
+        "failure must end with the verdict: {}", out);
 }
 
 #[test]

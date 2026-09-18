@@ -40,9 +40,10 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
     }).collect();
 
     for section in &cell.sections {
-        let body: &[Spanned<Statement>] = match &section.node {
-            Section::OnSignal(h) => &h.body,
-            Section::Every(e) | Section::After(e) => &e.body,
+        let (body, owner): (&[Spanned<Statement>], String) = match &section.node {
+            Section::OnSignal(h) => (&h.body, format!("handler '{}'", h.signal_name)),
+            Section::Every(e) => (&e.body, "an `every` block".to_string()),
+            Section::After(e) => (&e.body, "an `after` block".to_string()),
             _ => continue,
         };
         {
@@ -63,15 +64,21 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
                             out.push(LiteralIssue {
                                 kind: "unknown_transition_target",
                                 message: format!(
-                                    "transition() to \"{}\"{} — no such state in `state {{ }}` of cell '{}': declare the edge or fix the name",
-                                    target, near, cell.name
+                                    "transition() to \"{}\"{} in {} — no such state in `state {{ }}` of cell '{}': declare the edge or fix the name",
+                                    target, near, owner, cell.name
                                 ),
                                 span,
                             });
                         }
                     }
                 }
-                if let Some(types) = params.get(name) {
+                // an arity the handler does not take goes to the builtin of
+                // that name (or is an arity error reported elsewhere)
+                let takes = |types: &Vec<String>| {
+                    let required = types.len() - usize::from(types.last().map_or(false, |t| t == "Map"));
+                    args.len() >= required && args.len() <= types.len()
+                };
+                if let Some(types) = params.get(name).filter(|t| takes(t)) {
                     for (i, a) in args.iter().enumerate() {
                         let Some(ty) = types.get(i) else { break };
                         let got = match &a.node {

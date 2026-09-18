@@ -36,14 +36,15 @@ String, path: String, body: Map, query: Map, headers: Map)`. Header names
 are lower-case (`headers.authorization`); a repeated header is one entry,
 its values joined with ", ". A trailing `Map` parameter may be left out by a
 caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
-The declared type of `body` decides its shape, identically under
-`soma serve`, `soma test` and `soma run`:
+The declared type of `body` decides its shape:
 
 - `body: String` — the raw request text; `from_json(body)` parses a JSON body
   (it raises kind `json` on invalid JSON: wrap it in `try`).
 - `body: Map` — the JSON object (or form fields) already parsed; a request
   whose body is not JSON is answered `400 {"kind": "json"}` before the handler
-  runs; an empty body is `map()`.
+  runs; an empty body is `map()`. `soma run` parses its text argument the
+  same way; in a test cell pass the Map itself (`request("POST", "/x",
+  map("a", 1))`) — a String there is a `type` error, not parsed.
 
 A handler may return:
 
@@ -79,7 +80,8 @@ handlers (no `_` prefix, `request` aside) are also reachable directly at
 `/<handler>/<arg>/…`: arguments are coerced to the declared parameter types
 (`/decide/x/true` → Bool), a trailing `Map`/`List` parameter takes the JSON
 body (a non-JSON body → `400 {"kind": "json"}`). At start-up `serve` calls a
-zero-argument `start()` (or `init()`) handler when the cell has one.
+zero-argument `start()` (or `init()`) handler when the cell has one; that
+start-up hook is not an HTTP endpoint (a GET could re-run it).
 
 ## Concurrency and atomicity
 

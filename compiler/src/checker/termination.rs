@@ -66,7 +66,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
             let mut self_recursive = false;
             for stmt in &on.body {
                 walk_stmt(&stmt.node, &mut |e| {
-                    if matches!(e, Expr::FnCall { name, .. } if name == &on.signal_name) {
+                    if matches!(e, Expr::FnCall { name, args } if name == &on.signal_name && crate::ast::accepted_arities(&on.params).contains(&args.len())) {
                         self_recursive = true;
                     }
                 });
@@ -413,8 +413,10 @@ fn check_expr_termination(
 ) {
     match expr {
         Expr::FnCall { name, args } => {
-            // Check for recursive call to the same handler
-            if name == handler_name {
+            // Check for recursive call to the same handler (an arity the
+            // handler does not take goes to the builtin: `list(1, 2)`
+            // inside `on list()` is not recursion)
+            if name == handler_name && crate::ast::accepted_arities(params).contains(&args.len()) {
                 // Structural recursion: the call must have at least one
                 // argument that is provably smaller than the corresponding
                 // parameter. Simplest check: arg is `param - 1` or

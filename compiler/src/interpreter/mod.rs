@@ -2109,16 +2109,20 @@ impl Interpreter {
                 }
                 // Is it a call to another cell's signal?
                 else {
-                    // Try to find a cell with a matching on-handler
-                    let found_cell = self.cells.keys().find(|cn| {
-                        self.cells[*cn].sections.iter().any(|s| {
-                            if let Section::OnSignal(ref on) = s.node {
-                                on.signal_name == *name
-                            } else {
-                                false
-                            }
-                        })
-                    }).cloned();
+                    // Try to find a cell with a matching on-handler: the
+                    // CALLING cell's own handler first, then declaration
+                    // order (a HashMap walk ran another cell's same-named
+                    // handler for a bare call inside a cell that defines it)
+                    let defines = |cn: &str| self.cells.get(cn).map_or(false, |c| c.sections.iter().any(|s| {
+                        matches!(&s.node, Section::OnSignal(on) if on.signal_name == *name)
+                    }));
+                    let found_cell = if defines(cell_name) {
+                        Some(cell_name.to_string())
+                    } else {
+                        let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn)).collect();
+                        all.sort_by_key(|c| self.cell_order.iter().position(|o| o == *c).unwrap_or(usize::MAX));
+                        all.first().map(|c| (*c).clone())
+                    };
 
                     if let Some(target_cell) = found_cell {
                         self.call_signal(&target_cell, name, arg_vals)

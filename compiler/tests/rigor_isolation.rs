@@ -69,7 +69,7 @@ cell Dangerous {
 }
 "#, "dynamic");
     assert!(
-        out.contains("NOT think-isolated") || out.contains("non-literal target"),
+        out.contains("NOT think-isolated") || out.contains("non-literal target") || out.contains("computed target"),
         "expected NOT think-isolated or dynamic target warning, got:\n{out}"
     );
 }

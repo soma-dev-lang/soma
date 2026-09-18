@@ -2096,7 +2096,13 @@ impl Parser {
             Token::Require => {
                 self.advance();
                 let constraint = self.parse_constraint()?;
-                self.expect(Token::Else)?;
+                if !matches!(self.peek(), Token::Else) {
+                    return Err(ParseError::FixIt {
+                        message: "`require` needs `else Tag` — `require len(rows) < 500 else Full` (the tag is the error kind a caller sees)".to_string(),
+                        span: self.tokens[self.pos].span,
+                    });
+                }
+                self.advance();
                 // Accept either an identifier or a string literal as the else target
                 let else_signal = match self.peek() {
                     Token::StringLit(s) => {

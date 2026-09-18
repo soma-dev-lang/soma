@@ -81,7 +81,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     super::isolation::IsolationFinding::NotIsolated { reasons, .. } => {
                         result.checks.push(VerifyCheck::Warning(
                             format!(
-                                "NOT think-isolated: {} — safety under adversarial LLM is not proven for this cell",
+                                "dynamic transition targets: {} — the state these handlers move to is computed at run time (from input or an LLM answer), so the machine's safety is checked at run time for them, not proven",
                                 reasons.join("; ")
                             )
                         ));
@@ -132,13 +132,13 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                                     "{}: handler `{}` calls transition(_, \"{}\") but \"{}\" is not in state machine `{}`{}",
                                     refinement_label, handler, target, target, sm.name, path_text
                                 ),
-                                Some(vec![format!("at byte offset {}–{}", span.start, span.end)]),
+                                { let _ = span; None },
                             ));
                         }
                         DynamicTarget { handler, span: _ } => {
                             result.checks.push(VerifyCheck::Warning(
                                 format!(
-                                    "{}: handler `{}` calls transition() with a non-literal target — V1.3 cannot statically verify this; refinement coverage incomplete here",
+                                    "{}: handler `{}` calls transition() with a computed target — which edge it takes is checked at run time (invalid_transition), not proven; write the target as a literal state to have it verified",
                                     refinement_label, handler
                                 ),
                             ));

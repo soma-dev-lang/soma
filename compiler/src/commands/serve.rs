@@ -245,7 +245,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     eprintln!("soma serve v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("cell: {}", cell_name);
     // the public endpoints (private `_x` handlers and the router are not routed)
-    let public: Vec<&String> = handler_names.iter().filter(|h| !h.starts_with('_') && h.as_str() != "request").collect();
+    let public: Vec<&String> = handler_names.iter().filter(|h| routable(&handler_names, h)).collect();
     eprintln!("endpoints: [{}]{}", public.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
         if handler_names.iter().any(|h| h == "request") { " + request router" } else { "" });
     if scale_section.is_some() {
@@ -1095,6 +1095,16 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     Some("ico") => "image/x-icon",
                     Some("woff2") => "font/woff2",
                     Some("json") => "application/json",
+                    Some("txt") | Some("md") => "text/plain; charset=utf-8",
+                    Some("csv") => "text/csv; charset=utf-8",
+                    Some("xml") => "application/xml",
+                    Some("mjs") => "application/javascript",
+                    Some("htm") => "text/html; charset=utf-8",
+                    Some("gif") => "image/gif",
+                    Some("webp") => "image/webp",
+                    Some("woff") => "font/woff",
+                    Some("pdf") => "application/pdf",
+                    Some("wasm") => "application/wasm",
                     _ => "application/octet-stream",
                 };
                 let resp = tiny_http::Response::from_data(content)
@@ -1138,7 +1148,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let (signal_name, args) = if url.starts_with("/signal/") {
             let signal = url.trim_start_matches("/signal/");
             let (sig_name, query) = signal.split_once('?').unwrap_or((signal, ""));
-            if sig_name.starts_with('_') {
+            if !routable(&handler_names, sig_name) {
                 let resp = tiny_http::Response::from_string(
                     format!("{{\"error\": \"no handler for '{}'\"}}", url)
                 )
@@ -1170,7 +1180,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // handler has the same name as its first segment
             // `request` itself is the router, never an endpoint: `GET
             // /request/POST/%2Fcredit/x` used to run a POST-only route
-            if handler_names.contains(&sig.to_string()) && !sig.starts_with('_') && sig != "request" && !request_routes.matches(url_path) {
+            if handler_names.contains(&sig.to_string()) && routable(&handler_names, sig) && !request_routes.matches(url_path) {
                 let mut args: Vec<interpreter::Value> = if rest.is_empty() {
                     vec![]
                 } else {
@@ -1326,7 +1336,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 )
             } else {
                 // public handlers only, as a real JSON array
-                let public: Vec<&String> = handler_names.iter().filter(|h| !h.starts_with('_') && h.as_str() != "request").collect();
+                let public: Vec<&String> = handler_names.iter().filter(|h| routable(&handler_names, h)).collect();
                 let resp = tiny_http::Response::from_string(
                     format!("{}", interpreter::map_from_pairs(vec![
                         ("error".to_string(), interpreter::Value::String(format!("no handler for '{}'", url))),
@@ -1676,4 +1686,18 @@ fn hex_val(b: u8) -> u8 {
 /// copy that lost both.
 fn json_request_to_value(v: &serde_json::Value) -> interpreter::Value {
     crate::interpreter::builtins::serde_json_to_value(v)
+}
+
+/// The start-up hook serve runs once (`init`, else `start`): not an HTTP
+/// endpoint — anyone could re-run it (reset state, reconnect) with a GET.
+fn lifecycle_hook(names: &[String]) -> Option<&'static str> {
+    if names.iter().any(|n| n == "init") { Some("init") }
+    else if names.iter().any(|n| n == "start") { Some("start") }
+    else { None }
+}
+
+/// A handler reachable over HTTP as `/<name>/…`: not private (`_x`), not the
+/// `request` router, not the start-up hook.
+fn routable(names: &[String], h: &str) -> bool {
+    !h.starts_with('_') && h != "request" && lifecycle_hook(names) != Some(h)
 }

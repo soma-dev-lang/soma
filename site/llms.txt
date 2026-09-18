@@ -5,7 +5,7 @@
 > (`memory`), a model-checked lifecycle (`state`), handlers, HTTP routes and
 > tests. `soma verify` proves the state machines; memory invariants reject
 > bad writes before they commit; LLM agents run inside lifecycles the
-> compiler proves terminate, with hard token caps. Every compiler error
+> compiler proves terminate, with token budgets. Every compiler error
 > names its own fix, so the write → check → fix loop converges.
 
 Everything below is current for the soma binary named in
@@ -245,28 +245,33 @@ source, `file:line`, left/right, and the fields a value really has when
   value type (`Map<String, Int>` given a String) is refused with kind `type`.
 - On a List slot: `rows.push(x)`, `rows[i] = x`, `rows.delete(i)` (by index),
   `rows.get(i)`, `rows.len` — all invariant-checked. A Map slot's `.keys` /
-  `.values` / `.entries` come SORTED by key (every backend); a record's own
-  fields keep their insertion order.
+  `.values` / `.entries` come SORTED by key (every backend); a LOCAL map
+  (`keys(m)` on a `let`) and a record's own fields keep insertion order.
+  `keys(record)` includes `"_type"`.
 - A bare call to a name two cells define (`pack(id)` with `Orders.pack` and
-  `Warehouse.pack`) is a check error: qualify it (`Warehouse.pack(id)`).
+  `Warehouse.pack`) is a check error from a third cell: qualify it
+  (`Warehouse.pack(id)`). Inside `Warehouse` the bare call runs Warehouse's
+  own `pack` (check warns); write `Orders.pack(id)` for the other.
 - `xs[i]` is the same everywhere (local list, List slot, string): negative
   from the end, kind `index` out of range, kind `type` for a non-Int;
-  `nth(xs, i)` and `rows.get(i)` answer `()` out of range instead. A `let`
+  `nth(xs, i)` and `rows.get(i)` answer `()` out of range instead (a
+  negative `i` still counts from the end: `nth(xs, -1)` is the last). A `let`
   named like a memory slot hides the slot (check warns).
 - `emit ev(data)` inside one process is a synchronous, atomic fan-out to
   every cell with `on ev(data)`, the emitting cell included: a listener that raises fails the emitter,
   and the emitter's rollback takes the listeners' writes with it. Only across
   processes (the `[peers]` bus) is an emitted event an effect that is not
   rolled back. `soma check` warns when nobody handles the event.
-- `invariant rows.size <= 500` (or `size <= 500`; NOT `len(rows)`, which
-  in an invariant measures the value being written) is proven when the handler's ONE write that
+- `invariant rows.size <= 500` (NOT `len(rows)`, which in an invariant
+  measures the value being written; a bare `size <= 500` that names no slot
+  bounds EVERY slot of the memory) is proven when the handler's ONE write that
   can add an entry (a `push`, or a `set` of a key not known to exist) comes
-  after `require len(rows) < 500`, is not in a loop or a lambda, and no
+  after `require len(rows) < 500 else Full`, is not in a loop or a lambda, and no
   handler it calls (or event it emits) adds to the slot too; a `set` after
-  `require rows.get(k) != ()` (or in the `else` of `if rows.get(k) == ()`)
+  `require rows.get(k) != () else Missing` (or in the `else` of `if rows.get(k) == ()`)
   cannot grow the slot.
 - A `require` counts for the writes of its own block and the blocks nested
-  in it — `if ok { require n < 3 …  m.set(k, n + 1) }` is proven; a require
+  in it — `if ok { require n < 3 else Full  m.set(k, n + 1) }` is proven; a require
   inside a loop body narrows that iteration's `let` locals only.
 - A trailing `Map` parameter is optional: `on add(a: Int, opts: Map)` is
   callable as `add(1)` (`opts` is `map()`) — the keyword-argument idiom,
@@ -274,15 +279,16 @@ source, `file:line`, left/right, and the fields a value really has when
   `headers: Map` parameter (lower-case names).
 - HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
   "headers", map(...)))` never raise; non-2xx is `{error, kind, status, body}`
-  (kind `http_status` — a redirect that was not followed too — | `timeout` —
+  (kind `http_status` — redirects are followed up to 5 hops; a 3xx left unfollowed (a 307/308 answering a POST, or a 6th hop) is http_status too — | `timeout` —
   also a body that stalls — | `too_large` over `max_bytes` | `refused` |
   `network`); default timeout 30 s; invalid option values are refused;
   a String body is sent as text/plain unless it is JSON; `mock http_post …`
   in tests.
-- `verify --strict` bounds a write only from numbers it can bound: a number
-  read out of a record in a `Map<String, Map>` slot has no interval — keep
-  the guarded number in its own `Map<String, Int>` slot with an invariant
-  (the ⚠ line says `reads a slot with no interval invariant`).
+- `verify --strict` bounds a write only from numbers it can bound: literals,
+  slots with an interval invariant, and values narrowed by `require`/`if`. A
+  number read out of a record (`a.balance`) is unbounded until a `require`
+  narrows it; the ⚠ line says why (`` `v` = a.balance — not bounded ``, or
+  `` `v` is only known to lie in [0, ∞) — narrow it: `require v <= 100 else …` ``).
 - `ensure cond` at the end of a handler raises kind `ensure` (422) when the
   postcondition is false — the whole handler is rolled back.
 - Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
@@ -356,7 +362,9 @@ a server; `soma serve app.cell -p 8080` serves it. Static files: `static/`.
 be reachable over HTTP with `_` (`on _debit(…)`). `soma check` warns when a
 handler and a route share a name unless the route delegates to that handler. `body: String` is the raw text
 (`from_json(body)`); `body: Map` is the parsed JSON (a non-JSON body is a 400
-before the handler runs) — the same under serve, test and run. A raised error
+before the handler runs, kind json; `soma run` parses its text argument the
+same way). In a test cell pass the Map itself — `request("POST", "/x",
+map("a", 1))`: a String argument there is a `type` error, not parsed. A raised error
 answers with its kind: not_found → 404, guard_failed → 403, invalid_transition
 → 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
 `{"error": message, "kind": tag}`. A plain return answers 200: a map/list as
@@ -379,7 +387,8 @@ requires` for the edges you care about), and termination of every
 handler whose recursion has a decreasing argument — a handler it cannot prove
 (`while true`, `rec(n + 1)`) is a ⚠ warning, not a proof, and the runtime
 depth guard is what stops it. `property … forall n in a..b` in tests walks
-EVERY value up to 20,000, samples with a fixed seed beyond that (not a proof). State more in a `soma.toml` beside
+EVERY value when the range has at most 20,000 values; a wider range is only
+sampled (50 values, fixed seed — not a proof). State more in a `soma.toml` beside
 the program (`[package]` is optional; an unknown key is an error):
 
 ```toml
@@ -405,7 +414,7 @@ machine declares is an error, and verify ends with one verdict line
 (`VERIFY OK` / `VERIFY FAILED — …`). `soma verify` and `soma test` refuse a
 program that fails `soma check`. Invariants on computed values are proven by
 induction when interval reasoning suffices (`(counts.get(k) ?? 0) + 1` keeps
-`counts >= 0`; `let open = …  require open < 3 …  set(k, open + 1)` keeps
+`counts >= 0`; `let open = …  require open < 3 else Full  set(k, open + 1)` keeps
 `<= 3` — an unconditional `require` on a once-bound local counts); the rest
 is reported per conjunct as runtime-checked.
 `soma verify --strict` fails on every ⚠ too (a proof that degraded to
@@ -428,7 +437,7 @@ cell agent Researcher {
     }
     state job { initial: idle  idle -> working  working -> done  * -> failed }
     on research(topic: String) {
-        set_budget(5000)                              // hard token cap
+        set_budget(5000)                              // token cap: the think() that crosses it completes, the NEXT one raises kind budget
         transition("t", "working")
         let facts = think("Research {topic}", map("max_tokens", 2000))
         transition("t", "done")

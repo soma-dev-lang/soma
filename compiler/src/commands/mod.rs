@@ -76,8 +76,8 @@ fn validate_manifest_beside(path: &PathBuf) {
         for line in e.to_string().lines() {
             eprintln!("  {}", line);
         }
-        eprintln!("  valid [verify] keys: cells, deadlock_free, eventually, never, always, [verify.after.<state>] with eventually / never, [verify.before.<state>] with requires");
-        process::exit(1);
+        eprintln!("  valid [verify] keys: cells, deadlock_free, eventually, never, always, [verify.after.<state>] with eventually / never, [verify.before.<state>] with requires / requires_all");
+        fatal_exit();
     }
 }
 
@@ -85,6 +85,18 @@ fn validate_manifest_beside(path: &PathBuf) {
 /// stdout as one JSON object, so a machine reader never sees an empty
 /// stdout with exit 1.
 pub static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set by `soma verify`: a fatal error before any proof (unreadable file,
+/// bad soma.toml, lex/parse/import error) still ends with the one verdict
+/// line verify promises.
+pub static VERIFY_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn fatal_exit() -> ! {
+    if VERIFY_MODE.load(std::sync::atomic::Ordering::Relaxed) && !JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+        println!("VERIFY FAILED — the program does not load (fix the error above, then verify)");
+    }
+    process::exit(1)
+}
 
 pub fn read_source(path: &PathBuf) -> String {
     validate_manifest_beside(path);
@@ -100,7 +112,7 @@ pub fn read_source(path: &PathBuf) -> String {
                     "warnings": [], "error_count": 1, "passed": false
                 }));
             }
-            process::exit(1);
+            fatal_exit();
         }
     }
 }
@@ -193,7 +205,7 @@ pub fn lex_with_location(source: &str, file: Option<&str>) -> Vec<lexer::Spanned
             } else {
                 eprintln!("error: {}", e);
             }
-            process::exit(1);
+            fatal_exit();
         }
     }
 }
@@ -225,7 +237,7 @@ pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str
                     eprintln!("error: {}", e);
                 }
             }
-            process::exit(1);
+            fatal_exit();
         }
     }
 }
@@ -247,7 +259,7 @@ pub fn resolve_imports(program: &mut ast::Program, base_path: &PathBuf) {
             candidates.into_iter().find(|p| p.exists())
                 .unwrap_or_else(|| {
                     eprintln!("error: stdlib module '{}' not found", mod_name);
-                    process::exit(1);
+                    fatal_exit();
                 })
         } else if import_path.starts_with("lib:") {
             let mod_name = &import_path[4..];
@@ -290,7 +302,7 @@ fn resolve_pkg_path(base_dir: &Path, pkg_name: &str) -> PathBuf {
         if c.exists() { return c.clone(); }
     }
     eprintln!("error: package '{}' not installed (run `soma install`)", pkg_name);
-    process::exit(1);
+    fatal_exit();
 }
 
 fn import_file(program: &mut ast::Program, path: &PathBuf) {
@@ -298,7 +310,7 @@ fn import_file(program: &mut ast::Program, path: &PathBuf) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot import '{}': {}", path.display(), e);
-            process::exit(1);
+            fatal_exit();
         }
     };
     let file_str = path.display().to_string();

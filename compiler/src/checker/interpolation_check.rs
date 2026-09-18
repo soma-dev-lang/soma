@@ -96,8 +96,10 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                 Section::OnSignal(on) => {
                     let mut w = Walker::new(&index);
                     if blessed_failing.contains(&on.signal_name) {
-                        // treat the whole body as recoverable
-                        w.try_depth = 1;
+                        // interpolation issues in it are recoverable (a bare
+                        // undefined name stays an error: that is a bug, not
+                        // the failure the test expects)
+                        w.blessed = true;
                     }
                     for p in &on.params {
                         w.scope.insert(p.name.clone());
@@ -136,11 +138,13 @@ struct Walker<'a> {
     try_depth: usize,
     /// > 0 inside a `for` / `while` body (`break` is legal there)
     loop_depth: usize,
+    /// a handler a test cell expects to fail (`assert_fails h(…)`)
+    blessed: bool,
 }
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0 }
+        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, blessed: false }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -158,10 +162,24 @@ impl<'a> Walker<'a> {
                         | Expr::ListLiteral(_) | Expr::FieldAccess { .. } | Expr::Not(_))
                         && !expr_has_call(&expr.node);
                     if inert {
+                        // name the Soma form where the cause is plain
+                        let unclosed = |e: &Expr| matches!(e, Expr::Literal(Literal::String(t))
+                            if t.matches('{').count() > t.matches('}').count());
+                        let prev_open = i > 0 && match &stmts[i - 1].node {
+                            Statement::Return { value } | Statement::ExprStmt { expr: value } | Statement::Let { value, .. } => unclosed(&value.node),
+                            _ => false,
+                        };
+                        let hint = match &expr.node {
+                            Expr::Ident(w) if w == "and" => " — Soma writes `a && b`".to_string(),
+                            Expr::Ident(w) if w == "or" => " — Soma writes `a || b`".to_string(),
+                            Expr::Ident(w) if w == "not" => " — Soma writes `!a`".to_string(),
+                            _ if prev_open => " — a `\"` inside `{…}` ends the string: bind the value first (`let v = m[\"k\"]`, then `\"{v}\"`)".to_string(),
+                            _ => " — a value that is not the last statement of its block is thrown away (a missing operator between two values? `let x = a b` is two statements)".to_string(),
+                        };
                         self.issues.push(InterpolationIssue {
                             message: format!(
-                                "`{}` on its own does nothing — a value that is not the last statement of its block is thrown away (a missing operator between two values? `let x = a b` is two statements)",
-                                crate::ast::render_expr(&expr.node)
+                                "`{}` on its own does nothing{}",
+                                crate::ast::render_expr(&expr.node), hint
                             ),
                             span: expr.span,
                             warning: false,
@@ -601,7 +619,7 @@ impl<'a> Walker<'a> {
                      bind the value with a let first, then interpolate the variable"
                 ),
                 span,
-                warning: self.try_depth > 0,
+                warning: self.try_depth > 0 || self.blessed,
                 habit: false,
                 kind: "undefined_variable",
             });
@@ -716,7 +734,7 @@ impl<'a> Walker<'a> {
                  define it before this line, or escape literal braces as '{{{{{name}}}}}'"
             ),
             span,
-            warning: self.try_depth > 0,
+            warning: self.try_depth > 0 || self.blessed,
                 habit: false,
                 kind: "undefined_variable",
         });
@@ -767,7 +785,7 @@ impl<'a> Walker<'a> {
                  define it before this line, or escape literal braces as '{{{{{name}(...)}}}}'"
             ),
             span,
-            warning: self.try_depth > 0,
+            warning: self.try_depth > 0 || self.blessed,
                 habit: false,
                 kind: "undefined_function",
         });

@@ -385,7 +385,7 @@ impl std::fmt::Display for CheckWarning {
             Self::HabitWarning { message, .. } => write!(f, "warning: {message}"),
             Self::NativeSemantics { message, .. } => write!(f, "warning: {message}"),
             Self::InterpolationRecoverable { message, .. } => {
-                write!(f, "warning: {message} (inside try {{ }} — recoverable, so not an error)")
+                write!(f, "warning: {message} (recoverable here — inside try {{ }}, or in a handler a test expects to fail — so not an error)")
             }
         }
     }

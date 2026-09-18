@@ -328,3 +328,21 @@ Scores: public path on Apple silicon 9/10 (4 s install, checksum matches, versio
 ### Open
 - [ ] Release binaries for Linux (x86_64, aarch64) and Intel macOS — needs a CI build (GMP); the installer builds from source there.
 - [ ] A non-ASCII header value is dropped by the HTTP library before Soma sees it.
+
+## Cycle 12 (2026-09-18) — a Rust port and a line-by-line audit of llms.txt
+
+A Rust payment-protocol port (no false ✓ — the prover held) and an agent that
+tested every claim of llms.txt, serving.md and operations.md (~140 claims, 82
+runs): 11 failed, two of them serious.
+
+### Fixed
+- [x] **Dispatch**: a bare call inside a cell to a handler name another cell also defines ran the OTHER cell's handler (a HashMap walk); the calling cell's own handler now wins, then declaration order. `Orders.pack(id)` reaches the other one; the error from a third cell says "qualify it".
+- [x] **Serve**: the start-up hook (`init`, else `start`) was also a public endpoint — any GET could re-run it; it is now routed like a `_` handler. Static `.txt`/`.md`/`.csv`/… get real content types.
+- [x] **verify**: always ends with a verdict line (a parse error, a bad soma.toml or an unreadable file printed none); check errors print on stdout with the verdict; a check failure stops verify before any proof; plain-language messages for dynamic targets; the ⚠ for an invariant now says what range the written value has and which `require` would prove it.
+- [x] **Native**: check refuses a buffer passed to a sibling handler; an Int-valued call (`floor`, `len`, a sibling) in a Float expression is converted (it was a rustc "cannot add i64 to f64"); a constant overflow is the documented `range` error, not a rustc lint.
+- [x] **Check**: `require` without `else` names the fix; `and` / `or` / `not` name `&&` / `||` / `!`; a `"` inside `{…}` says to bind the value first; a builtin call with the arity a same-named handler does not take is neither type-checked against the handler nor counted as recursion by verify; `soma test` prints whole error blocks.
+- [x] **Docs**: a bare `size` invariant bounds every slot; `body: Map` in a test takes a Map; `require` examples carry `else`; token caps, `forall` sampling, redirects, local-map key order, `nth` negative indices, `keys(record)` spelled out; `soma docs agent` is rebuilt from the edited file.
+
+### Open
+- [ ] A formerly terminal state becoming non-terminal (new edge) gives no warning; an `after.X never` counter-example starts at X, not from the initial state; map-literal writes are not bounded by the prover; a handler's source states are not checked against its callers.
+

@@ -262,8 +262,8 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                 warnings.push(DispatchFinding {
                                     message: format!(
                                         "call to '{name}' inside {caller}.{handler_label}: both \
-                                         {caller} and {other} define '{name}' — dispatch picks \
-                                         one silently; rename one handler to disambiguate",
+                                         {caller} and {other} define '{name}' — the bare call runs \
+                                         {caller}'s own; write {other}.{name}(...) if you meant {other}'s",
                                         caller = cell.name,
                                     ),
                                     span: section.span,
@@ -280,7 +280,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                             errors.push(DispatchFinding {
                                 message: format!(
                                     "ambiguous call '{name}': defined by cells {listed} — \
-                                     rename one handler to disambiguate"
+                                     qualify it (`{first}.{name}(…)`) or rename one handler", first = definers[0]
                                 ),
                                 span: section.span,
                             });

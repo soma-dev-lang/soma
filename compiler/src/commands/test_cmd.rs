@@ -50,9 +50,15 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
         chk.check(&program);
         if chk.has_errors() {
             eprintln!("{} fails `soma check` — fix these before running its tests:", path.display());
-            let lines: Vec<String> = chk.report().lines()
-                .filter(|l| !l.starts_with("warning") && !l.starts_with("advisory") && !l.starts_with("✓"))
-                .map(|l| l.to_string()).collect();
+            // whole error blocks only: a warning's `-->` / caret lines used
+            // to be printed without the warning itself
+            let mut lines: Vec<String> = Vec::new();
+            let mut in_error = false;
+            for l in chk.report().lines() {
+                if l.starts_with("error") { in_error = true; }
+                else if l.starts_with("warning") || l.starts_with("advisory") || l.starts_with("✓") || l.starts_with("✗") || l.starts_with("note") { in_error = false; }
+                if in_error { lines.push(l.to_string()); }
+            }
             for line in &lines { eprintln!("  {}", line); }
             if json {
                 // stdout stays machine-readable even when nothing ran

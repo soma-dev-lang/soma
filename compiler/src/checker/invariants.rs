@@ -371,7 +371,10 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             // the bound to require is the one the open clause needs
                             let open_txt: Vec<String> = parts.iter().zip(&verdicts)
                                 .filter(|(_, v)| **v != Proof::Holds)
-                                .map(|(c, _)| render_expr(c).replace(slot.as_str(), n)).collect();
+                                // the clause over the WRITTEN expression: `require room - amount >= 0`
+                                // is exactly the fact that proves `room - amount` (a bound on the
+                                // parameter alone was the wrong advice for an upper bound)
+                                .map(|(c, _)| render_expr(c).replace(slot.as_str(), &render_expr(value_expr))).collect();
                             format!("`{n}` is a parameter (narrow it: `require {} else …`)", open_txt.join(" && "))
                         } else {
                             let mut assigns: Vec<(&str, &Expr)> = Vec::new();
@@ -390,6 +393,19 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     }).collect();
                     why.retain(|w| !w.is_empty());
                     why.sort();
+                    // every name has SOME range, just not a tight enough one:
+                    // say what is known and the require that would prove it
+                    if why.is_empty() {
+                        if let Some((lo, hi)) = bounds(ctx.range_of(value_expr)) {
+                            let num = |x: f64| if x == f64::INFINITY { "∞".to_string() } else if x == f64::NEG_INFINITY { "-∞".to_string() } else { format!("{}", x) };
+                            let open_txt: Vec<String> = parts.iter().zip(&verdicts)
+                                .filter(|(_, v)| **v != Proof::Holds)
+                                .map(|(c, _)| render_expr(c).replace(slot.as_str(), &render_expr(value_expr))).collect();
+                            let (l, r) = (if lo.is_finite() { "[" } else { "(" }, if hi.is_finite() { "]" } else { ")" });
+                            why.push(format!("`{}` is only known to lie in {}{}, {}{} — narrow it: `require {} else …`",
+                                render_expr(value_expr), l, num(lo), num(hi), r, open_txt.join(" && ")));
+                        }
+                    }
                     let tag = if open.len() == parts.len() {
                         format!("{handler} → {slot}")
                     } else {
@@ -542,6 +558,17 @@ impl RangeCtx<'_> {
             Expr::Literal(Literal::Float(f)) => Known::Exact(*f),
             Expr::Ident(n) => self.vars.get(n).copied().unwrap_or(Known::Unknown),
             Expr::BinaryOp { left, op, right } => {
+                // `a - b` after `require b <= a`: at least 0, whatever b is
+                // (the bounds of `b` alone are often unknown — a parameter)
+                if matches!(op, BinOp::Sub) {
+                    if let (Expr::Ident(a), Expr::Ident(b)) = (&left.node, &right.node) {
+                        if self.vars.contains_key(&format!("__le__{}__{}", b, a))
+                            && (bounds(self.range_of(&left.node)).is_none() || bounds(self.range_of(&right.node)).is_none())
+                        {
+                            return mk(0.0, f64::INFINITY);
+                        }
+                    }
+                }
                 let (Some((al, ah)), Some((bl, bh))) =
                     (bounds(self.range_of(&left.node)), bounds(self.range_of(&right.node)))
                 else {
@@ -853,6 +880,21 @@ fn local_ranges_at(
                 vars.insert(name.to_string(), narrowed);
             }
         }
+    }
+    // one more pass for once-bound locals, now that the facts are known:
+    // `let x = if amount > 0 { left - amount } else { left }` needs the
+    // `amount <= left` fact the first pass did not have. Both ranges are
+    // sound over-approximations of the same value: keep their intersection.
+    for (name, value) in &assigns {
+        if params.contains(name) || dup.contains(name) { continue; }
+        let ctx = RangeCtx { hyp, vars: vars.clone(), handlers, depth };
+        let fresh = ctx.range_of(value);
+        let merged = match (vars.get(*name).copied().and_then(bounds), bounds(fresh)) {
+            (Some((a, b)), Some((c, d))) => mk(a.max(c), b.min(d)),
+            (None, Some(_)) => fresh,
+            _ => continue,
+        };
+        vars.insert((*name).to_string(), merged);
     }
     vars
 }

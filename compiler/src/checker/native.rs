@@ -110,6 +110,22 @@ pub fn check_native_handler(
     // rustc behind a 600-line dump)
     let mut bufs: HashSet<String> = HashSet::new();
     check_codegen_limits(handler_name, body, &mut bufs)?;
+    // a buffer handed to a sibling [native] handler: siblings take Int,
+    // Float, Bool or String only (rustc: "non-primitive cast: Vec<i64> as i64")
+    let mut hit: Option<(String, String)> = None;
+    crate::checker::literals::for_each_call(body, &mut |name, args, _| {
+        if hit.is_none() && siblings.contains(name) {
+            for a in args {
+                if let Expr::Ident(n) = &a.node {
+                    if bufs.contains(n) { hit = Some((name.to_string(), n.clone())); break; }
+                }
+            }
+        }
+    });
+    if let Some((callee, buf)) = hit {
+        return Err(NativeCheckError { handler_name: handler_name.to_string(), reason: format!(
+            "passes the buffer `{}` to the sibling handler `{}` — only Int, Float, Bool or String cross between [native] handlers; do the work in one handler, or pass the values one by one", buf, callee) });
+    }
     Ok(())
 }
 

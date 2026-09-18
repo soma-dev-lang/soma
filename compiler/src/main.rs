@@ -383,6 +383,7 @@ fn main_inner() {
 
 fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     use checker::temporal::*;
+    commands::VERIFY_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
 
     let mut all_results = Vec::new();
     let mut all_cell_names: Vec<String> = Vec::new();
@@ -418,11 +419,23 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             chk.source = Some((file_str.clone(), source.clone()));
             chk.check(&program);
             if chk.has_errors() {
-                eprintln!("{} fails `soma check` — fix these before verifying:", path.display());
-                for line in chk.report().lines().filter(|l| !l.starts_with("warning") && !l.starts_with("advisory") && !l.starts_with("✓")) {
-                    eprintln!("  {}", line);
+                // the error blocks only (a warning's `-->` / caret lines used
+                // to be printed without the warning), then STOP: a proof
+                // about a program that does not check proves nothing
+                // on stdout with the verdict: verify's whole report is stdout
+                println!("{} fails `soma check` — fix these before verifying:", path.display());
+                let mut in_error = false;
+                for line in chk.report().lines() {
+                    if line.starts_with("error") { in_error = true; }
+                    else if line.starts_with("warning") || line.starts_with("advisory") || line.starts_with("✓") || line.starts_with("✗") || line.starts_with("note") { in_error = false; }
+                    if in_error && !json { println!("  {}", line); }
                 }
-                check_failed = true;
+                if json {
+                    println!("{}", serde_json::json!({"ok": false, "verdict": "VERIFY FAILED — soma check failed", "cells": []}));
+                } else {
+                    println!("VERIFY FAILED — soma check failed (fix the errors above, then verify)");
+                }
+                std::process::exit(1);
             }
         }
 
