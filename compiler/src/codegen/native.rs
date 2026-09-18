@@ -3950,7 +3950,7 @@ impl FnGenerator {
                     if fname == "sb_push_char" && args.len() == 2 {
                         if let Expr::Ident(sb) = &args[0].node {
                             let v = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                            return format!("{}{}.push((({}) as u8) as char);\n", ind, sb, v);
+                            return format!("{}{{ let _c: i64 = {}; match u32::try_from(_c).ok().and_then(char::from_u32) {{ Some(ch) => {}.push(ch), None => panic!(\"soma:type: sb_push_char: {{}} is not a Unicode code point\", _c) }} }}\n", ind, v, sb);
                         }
                     }
                     if fname == "write_str" && args.len() == 1 {
@@ -4380,6 +4380,12 @@ impl FnGenerator {
                 self.err("round(x, digits) is not in the native vocabulary — round in an interpreted handler, or scale: `round(x * 100.0)` then divide");
                 "0i64".to_string()
             }
+            // an Int is its own floor: the f64 round trip lost digits
+            // (floor(9007199254740993) was 9007199254740992)
+            "floor" | "ceil" | "round" if args.len() == 1 && self.infer_expr_type(&args[0].node) == NativeType::Int => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                self.coerce_direct(a, NativeType::Int, target_ty)
+            }
             "floor" | "ceil" | "round" => {
                 // NaN / ±inf / beyond i64 raise, as the interpreter does —
                 // `as i64` saturated silently (floor(NaN) was 0)
@@ -4512,8 +4518,9 @@ impl FnGenerator {
                     }
                 }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                // a bit index past 63 is 0 (the interpreter agrees)
-                format!("({{ let _k: i64 = {}; if _k < 0 || _k >= 64 {{ 0i64 }} else {{ ({} >> _k) & 1i64 }} }})", b, a)
+                // past bit 63 the sign bit repeats (two's complement, like
+                // the interpreter's BigInt: bit_test(-1, 64) is 1)
+                format!("({{ let _k: i64 = {}; let _a: i64 = {}; if _k < 0 {{ panic!(\"soma:type: bit_test(): bit index {{}} out of range\", _k) }} else if _k >= 64 {{ if _a < 0 {{ 1i64 }} else {{ 0i64 }} }} else {{ (_a >> _k) & 1i64 }} }})", b, a)
             }
             "bit_set" if args.len() == 2 => {
                 let b_expr = &args[1].node;
@@ -4581,8 +4588,10 @@ impl FnGenerator {
                 let base = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let exp = self.gen_expr_direct(&args[1].node, NativeType::Int);
                 let m = self.gen_expr_direct(&args[2].node, NativeType::Int);
-                format!("{{ let mut _r: i128 = 1; let mut _b: i128 = ({}) as i128 % ({}) as i128; let mut _e: i64 = {}; let _m: i128 = ({}) as i128; while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b) % _m; }} _e >>= 1; _b = (_b * _b) % _m; }} _r as i64 }}",
-                    base, m, exp, m)
+                // the result is in [0, m) like the interpreter (a negative
+                // base gave -1 for pow_mod(-1, 1, 7), not 6)
+                format!("{{ let _m: i128 = ({}) as i128; if _m == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} let mut _r: i128 = 1i128.rem_euclid(_m); let mut _b: i128 = (({}) as i128).rem_euclid(_m); let mut _e: i64 = {}; if _e < 0 {{ panic!(\"soma:type: pow_mod(): negative exponent\") }} while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b).rem_euclid(_m); }} _e >>= 1; _b = (_b * _b).rem_euclid(_m); }} _r as i64 }}",
+                    m, base, exp)
             }
             other => {
                 // Sibling native handler call — go through inner_handler_X
@@ -5828,6 +5837,9 @@ impl FnGenerator {
                 self.err("round(x, digits) is not in the native vocabulary — round in an interpreted handler, or scale: `round(x * 100.0)` then divide");
                 "Integer::from(0i64)".to_string()
             }
+            "floor" | "ceil" | "round" if args.len() == 1 && self.infer_expr_type(&args[0].node) == NativeType::Int => {
+                self.gen_expr_rug(&args[0].node)
+            }
             "floor" | "ceil" | "round" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
                 format!("({{ let _f: f64 = ({}).{}(); if !_f.is_finite() {{ panic!(\"soma:{}: {{}} is out of integer range\", _f) }} Integer::from_f64(_f).unwrap() }})", a, name, name)
@@ -5903,7 +5915,7 @@ impl FnGenerator {
                 let b = self.gen_int_to_i64_rug(&args[1].node);
                 if let Expr::Ident(name) = &args[0].node {
                     if self.small_int_vars.contains(name) {
-                        return format!("Integer::from((({}) >> ({})) & 1i64)", name, b);
+                        return format!("Integer::from({{ let _k: i64 = {}; let _a: i64 = {}; if _k >= 64 {{ if _a < 0 {{ 1i64 }} else {{ 0i64 }} }} else {{ (_a >> _k) & 1i64 }} }})", b, name);
                     }
                     return format!(
                         "Integer::from(if {}.get_bit(({}) as u32) {{ 1i64 }} else {{ 0i64 }})",
@@ -5967,7 +5979,7 @@ impl FnGenerator {
                 let base = self.gen_expr_rug(&args[0].node);
                 let exp = self.gen_int_borrow_rug(&args[1].node);
                 let m = self.gen_int_borrow_rug(&args[2].node);
-                format!("({}).pow_mod({}, {}).expect(\"pow_mod failed (modulus 0?)\")", base, exp, m)
+                format!("{{ if Integer::from({}) < 0 {{ panic!(\"soma:type: pow_mod(): negative exponent\") }} if Integer::from({}) == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} ({}).pow_mod({}, {}).expect(\"pow_mod failed\") }}", exp, m, base, exp, m)
             }
             "sqrt_int" if args.len() == 1 => {
                 let a = self.gen_expr_rug(&args[0].node);

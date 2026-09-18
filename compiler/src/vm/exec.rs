@@ -560,6 +560,7 @@ impl VM {
                     ("_status".to_string(), Value::Int(SomaInt::from_i64(200))),
                     ("_body".to_string(), Value::String(body)),
                     ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
+                    ("_response".to_string(), crate::interpreter::http_marker()),
                 ])
             }
             "response" => {
@@ -568,6 +569,7 @@ impl VM {
                 map_from_pairs(vec![
                     ("_status".to_string(), status),
                     ("_body".to_string(), body),
+                    ("_response".to_string(), crate::interpreter::http_marker()),
                 ])
             }
             "redirect" => {
@@ -576,6 +578,7 @@ impl VM {
                     ("_status".to_string(), Value::Int(SomaInt::from_i64(302))),
                     ("_body".to_string(), Value::String(String::new())),
                     ("Location".to_string(), Value::String(url)),
+                    ("_response".to_string(), crate::interpreter::http_marker()),
                 ])
             }
             "map" | "each" => {

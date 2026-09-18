@@ -94,6 +94,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 ("_status".to_string(), status),
                 ("_body".to_string(), Value::String(body)),
                 ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
+                ("_response".to_string(), crate::interpreter::http_marker()),
             ])))
         }
         "response" => {
@@ -108,6 +109,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let mut entries = IndexMap::new();
             entries.insert("_status".to_string(), status);
             entries.insert("_body".to_string(), body);
+            entries.insert("_response".to_string(), crate::interpreter::http_marker());
             let mut i = 2;
             while i + 1 < args.len() {
                 let key = format!("{}", args[i]);
@@ -123,6 +125,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 ("_status".to_string(), Value::Int(SomaInt::from_i64(302))),
                 ("_body".to_string(), Value::String(String::new())),
                 ("Location".to_string(), Value::String(url)),
+                ("_response".to_string(), crate::interpreter::http_marker()),
             ])))
         }
         "sse" => {
@@ -131,6 +134,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let streams: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
             Some(Ok(map_from_pairs(vec![
                 ("_sse".to_string(), Value::Bool(true)),
+                ("_response".to_string(), crate::interpreter::http_marker()),
                 ("_streams".to_string(), Value::List(
                     streams.iter().map(|s| Value::String(s.clone())).collect()
                 )),

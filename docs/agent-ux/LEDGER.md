@@ -400,3 +400,16 @@ limit PROVEN (7 mutants all rejected), kill -9 and 50-way concurrency exact.
 - [ ] Updating a list nested in a local record (`g[0].rows = push(g[0].rows, i)`) is quadratic.
 - [ ] No HALF_EVEN rounding builtin; no JSON-schema helper for think_json.
 
+### Cycle 14 — attack (same binary)
+
+- [x] **Security (serve)**: a map returned from client data (`{"_status":200,"_body":"<script>…","content-type":"text/html","set-cookie":…}` stored then echoed, a query/header/form Map) became a raw HTTP response — stored/reflected XSS, forged cookies, open redirects. Only maps built by `response()`/`html()`/`redirect()`/`sse()` (an unforgeable mark) are responses now. Header values with CR/LF, invalid names and framing headers (Content-Length…) are dropped. Writers answer 405 to every method but POST/PUT/PATCH/DELETE (case-insensitive). The bus port refuses HTTP requests (cross-protocol POST from a page) and `_private` events.
+- [x] **False proofs**: reassignment inside a match arm / `try` / if-expression was invisible; a `require` AFTER a write (or after an early return) was credited to it — an invariant is checked at the write, so only later writes are narrowed (size proofs too); writes in `every` / `after` blocks were not writers; termination through `x |> f()`, `Cell.f()`, a base case that recurses, and `while true` in an `every` block (it hung every request).
+- [x] **Data**: NaN / ±inf nested in a persistent Map or List read back as `()`; a lambda stored in a slot became the text "<lambda>" (refused now); `soma run` with a near-miss handler name ran another handler with the typo as argument; with `start()` and `init(x)` serve called `init()` and never `start()`.
+- [x] **Native**: `sb_push_char` statement form took the low byte; `bit_test(-1, 64)`; `pow_mod` of a negative base (and a negative exponent: interpreter answered 1, now both raise); `floor` of a big Int; check refuses mixed Bool/String/number variables and returns, `to_int` of a String, ordering Strings, growing a String parameter alias — each passed check and failed in rustc. Interpreter `gcd(i64::MIN, 0)` was negative.
+- [x] UFCS on a user handler (`(n + 1).dbl()`) runs it; `for [loop_bound(N)] x in xs` placement documented; a lambda assigning an outer local is a warning.
+
+### Open
+- [ ] Native `/` answers a Float where the interpreter answers an exact Int (6 / 3); `0 / -1` is `-0.0`.
+- [ ] A guard reads a loop/lambda/match binding that shadows the handler's local of the same name.
+- [ ] verify's reason for an invariant that does not name the slot ("`1` is only known to lie in [1, 1]").
+

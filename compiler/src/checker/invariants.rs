@@ -180,12 +180,21 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             }
         }
 
-        let handlers: HashMap<String, &OnSection> = cell
+        // `every` / `after` blocks write slots too: they are writers (their
+        // writes were invisible — "no handler writes to guarded slots")
+        let ticks: Vec<OnSection> = cell.node.sections.iter().enumerate().filter_map(|(i, s)| match &s.node {
+            Section::Every(e) => Some(OnSection { signal_name: format!("every {}ms #{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: vec![] }),
+            Section::After(e) => Some(OnSection { signal_name: format!("after {}ms #{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: vec![] }),
+            _ => None,
+        }).collect();
+        let mut handlers: HashMap<String, &OnSection> = cell
             .node
             .sections
             .iter()
             .filter_map(|s| if let Section::OnSignal(on) = &s.node { Some((on.signal_name.clone(), on)) } else { None })
             .collect();
+        for t in &ticks { handlers.insert(t.signal_name.clone(), t); }
+        let handlers = handlers;
         // every handler of the program, for growth that goes through
         // another cell (`B.relay(x)` → `A.extra(x)`, which pushes)
         let all_handlers: Vec<(String, &OnSection)> = program.cells.iter()
@@ -296,7 +305,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 && matches!(&target.node, Expr::Ident(t) if t == slot) => Some((n.to_string(), render_expr(&args[0].node))),
                             _ => None,
                         }).collect();
-                    existing_key_facts(&on.body, &[], slot, &aliases).iter().any(|(fp, fk, excl)| path.starts_with(fp) && fk == k && excl.as_ref().map_or(true, |e| !path.starts_with(e)))
+                    existing_key_facts(&on.body, &[], slot, &aliases).iter().any(|(fp, fk, excl, after)| path.starts_with(fp) && fk == k && excl.as_ref().map_or(true, |e| !path.starts_with(e))
+                        // a require / early exit covers only the writes AFTER it
+                        && after.map_or(true, |j| path.get(fp.len()).map_or(false, |s| *s / 4 > j)))
                 };
                 if size_upper_bound_any(&parts, slot) && key_exists(wpath, wkey) {
                     for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
@@ -817,6 +828,16 @@ fn local_ranges_at(
     for f in &collected {
         if !write_path.starts_with(&f.path) { continue; }
         if let Some(ex) = &f.exclude { if write_path.starts_with(ex) { continue; } }
+        // `if fast { bal.set(k, n)  return }  require n <= 10 …`: the write
+        // before the require can commit without it
+        // an invariant is checked AT the write, not at commit: a require
+        // narrows only the writes that come AFTER it (`bal.set(k, n)` then
+        // `require n <= 10` — the write is refused before the require runs)
+        if matches!(f.stmt.node, Statement::Require { .. })
+            && write_path.get(f.path.len()).map_or(true, |s| *s / 4 <= f.index) { continue; }
+        // an early exit `if n > 10 { return }` says nothing about a write
+        // that comes BEFORE it (that write already happened)
+        if f.exclude.is_some() && write_path.get(f.path.len()).map_or(true, |s| *s / 4 <= f.index) { continue; }
         match &f.stmt.node {
             Statement::Require { constraint, .. } => facts.extend(constraint_comparisons(&constraint.node).into_iter().map(|(l, o, r)| (l, o, r, None, false))),
             Statement::If { condition, .. } if f.branch == 1 => facts.extend(positive_comparisons(&condition.node).into_iter().map(|(l, o, r)| (l, o, r, None, false))),
@@ -1018,22 +1039,27 @@ struct Fact<'e> {
     /// an `if`'s own branches: 1 = inside `then` (the condition holds),
     /// 2 = inside `else` (its negation holds); 0 = a require / early exit
     branch: u8,
+    /// a require: its statement index, and whether a `return` / `break` /
+    /// `continue` before it in its block can skip it — then it says nothing
+    /// about the writes that come BEFORE it (they may commit without it)
+    index: usize,
+    exit_before: bool,
 }
 
 fn collect_facts<'e>(stmts: &'e [Spanned<Statement>], path: &[usize], out: &mut Vec<Fact<'e>>) {
     let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
     for (i, st) in stmts.iter().enumerate() {
         match &st.node {
-            Statement::Require { .. } => out.push(Fact { stmt: st, path: path.to_vec(), exclude: None, branch: 0 }),
+            Statement::Require { .. } => out.push(Fact { stmt: st, path: path.to_vec(), exclude: None, branch: 0, index: i, exit_before: stmts[..i].iter().any(|s| can_exit(s)) }),
             Statement::If { then_body, else_body, .. } => {
                 if else_body.is_empty() && exits(then_body) {
-                    out.push(Fact { stmt: st, path: path.to_vec(), exclude: Some(sub(i, 0)), branch: 0 });
+                    out.push(Fact { stmt: st, path: path.to_vec(), exclude: Some(sub(i, 0)), branch: 0, index: i, exit_before: false });
                 }
                 // `if n < 5 { c.set(k, n + 1) }`: the condition holds for the
                 // writes of its branch, its negation for those of `else`
-                out.push(Fact { stmt: st, path: sub(i, 0), exclude: None, branch: 1 });
+                out.push(Fact { stmt: st, path: sub(i, 0), exclude: None, branch: 1, index: 0, exit_before: false });
                 if !else_body.is_empty() {
-                    out.push(Fact { stmt: st, path: sub(i, 1), exclude: None, branch: 2 });
+                    out.push(Fact { stmt: st, path: sub(i, 1), exclude: None, branch: 2, index: 0, exit_before: false });
                 }
                 collect_facts(then_body, &sub(i, 0), out);
                 collect_facts(else_body, &sub(i, 1), out);
@@ -1105,20 +1131,57 @@ fn looks_int(expr: &Expr) -> bool {
 fn collect_assigns<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<(&'e str, &'e Expr)>) {
     for stmt in stmts {
         match &stmt.node {
-            Statement::Let { name, value } | Statement::Assign { name, value } => out.push((name.as_str(), &value.node)),
-            Statement::If { then_body, else_body, .. } => {
+            Statement::Let { name, value } | Statement::Assign { name, value } => {
+                out.push((name.as_str(), &value.node));
+                expr_block_assigns(&value.node, out);
+            }
+            Statement::If { condition, then_body, else_body } => {
+                expr_block_assigns(&condition.node, out);
                 collect_assigns(then_body, out);
                 collect_assigns(else_body, out);
             }
-            Statement::While { body, .. } => collect_assigns(body, out),
-            Statement::For { var, body, .. } => {
+            Statement::While { condition, body, .. } => { expr_block_assigns(&condition.node, out); collect_assigns(body, out) }
+            Statement::For { var, iter, body, .. } => {
+                expr_block_assigns(&iter.node, out);
                 // the loop variable is unknown
                 out.push((var.as_str(), &UNKNOWN_EXPR));
                 collect_assigns(body, out);
             }
+            Statement::Return { value } | Statement::ExprStmt { expr: value } | Statement::Ensure { condition: value } => expr_block_assigns(&value.node, out),
+            Statement::IndexSet { index, value, .. } => { expr_block_assigns(&index.node, out); expr_block_assigns(&value.node, out); }
+            Statement::MethodCall { args, .. } | Statement::Emit { args, .. } => { for a in args { expr_block_assigns(&a.node, out); } }
             _ => {}
         }
     }
+}
+
+/// `v = n` inside a match arm, a `try { }`, an if-expression or a lambda
+/// block reassigns the outer `v` (it was invisible: `let v = 5  match n {
+/// _ -> { v = n } }  bal.set(k, v)` was "proven" with v = 5)
+fn expr_block_assigns<'e>(e: &'e Expr, out: &mut Vec<(&'e str, &'e Expr)>) {
+    fn flat<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<(&'e str, &'e Expr)>) {
+        for st in stmts {
+            match &st.node {
+                Statement::Assign { name, value } => out.push((name.as_str(), &value.node)),
+                Statement::If { then_body, else_body, .. } => { flat(then_body, out); flat(else_body, out); }
+                Statement::For { body, .. } | Statement::While { body, .. } => flat(body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut found: Vec<&'e str> = Vec::new();
+    crate::checker::literals::for_each_in_expr(e, &mut |x| {
+        let mut local: Vec<(&'e str, &'e Expr)> = Vec::new();
+        match x {
+            Expr::Match { arms, .. } => for a in arms { flat(&a.body, &mut local) },
+            Expr::IfExpr { then_body, else_body, .. } => { flat(then_body, &mut local); flat(else_body, &mut local); }
+            Expr::LambdaBlock { stmts, .. } => flat(stmts, &mut local),
+            _ => {}
+        }
+        found.extend(local.into_iter().map(|(n, _)| n));
+    });
+    // the value assigned inside the block is not tracked: unknown
+    for n in found { out.push((n, &UNKNOWN_EXPR)); }
 }
 
 static UNKNOWN_EXPR: Expr = Expr::Literal(Literal::Unit);
@@ -1271,10 +1334,10 @@ fn collect_writes_stmts_at(stmts: &[Spanned<Statement>], handler: &str, in_try: 
         match &stmt.node {
             Statement::Let { value, .. }
             | Statement::Assign { value, .. }
-            | Statement::Return { value } => collect_writes_expr(&value.node, handler, in_try, path, out),
-            Statement::ExprStmt { expr } => collect_writes_expr(&expr.node, handler, in_try, path, out),
+            | Statement::Return { value } => collect_writes_expr(&value.node, handler, in_try, &sub(i, 3), out),
+            Statement::ExprStmt { expr } => collect_writes_expr(&expr.node, handler, in_try, &sub(i, 3), out),
             Statement::If { condition, then_body, else_body } => {
-                collect_writes_expr(&condition.node, handler, in_try, path, out);
+                collect_writes_expr(&condition.node, handler, in_try, &sub(i, 3), out);
                 collect_writes_stmts_at(then_body, handler, in_try, &sub(i, 0), out);
                 collect_writes_stmts_at(else_body, handler, in_try, &sub(i, 1), out);
             }
@@ -1290,22 +1353,22 @@ fn collect_writes_stmts_at(stmts: &[Spanned<Statement>], handler: &str, in_try: 
             // A local of the same name is filtered out later (only guarded
             // slot names are kept).
             Statement::IndexSet { name, index, value } => {
-                out.push((handler.to_string(), name.clone(), value.node.clone(), in_try, path.to_vec(), Some(render_expr(&index.node))));
-                collect_writes_expr(&index.node, handler, in_try, path, out);
-                collect_writes_expr(&value.node, handler, in_try, path, out);
+                out.push((handler.to_string(), name.clone(), value.node.clone(), in_try, sub(i, 3), Some(render_expr(&index.node))));
+                collect_writes_expr(&index.node, handler, in_try, &sub(i, 3), out);
+                collect_writes_expr(&value.node, handler, in_try, &sub(i, 3), out);
             }
             Statement::MethodCall { target, method, args } => {
-                push_slot_write(target, method, args, handler, in_try, path, out);
+                push_slot_write(target, method, args, handler, in_try, &sub(i, 3), out);
                 for a in args {
-                    collect_writes_expr(&a.node, handler, in_try, path, out);
+                    collect_writes_expr(&a.node, handler, in_try, &sub(i, 3), out);
                 }
             }
             Statement::Emit { args, .. } => {
                 for a in args {
-                    collect_writes_expr(&a.node, handler, in_try, path, out);
+                    collect_writes_expr(&a.node, handler, in_try, &sub(i, 3), out);
                 }
             }
-            Statement::Ensure { condition } => collect_writes_expr(&condition.node, handler, in_try, path, out),
+            Statement::Ensure { condition } => collect_writes_expr(&condition.node, handler, in_try, &sub(i, 3), out),
             _ => {}
         }
     }
@@ -1702,7 +1765,7 @@ fn key_presence(e: &Expr, slot: &str, negate: bool, aliases: &HashMap<String, St
 
 /// Where a key of `slot` is known to exist: (block path, key rendering,
 /// excluded sub-path).
-fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, aliases: &HashMap<String, String>) -> Vec<(Vec<usize>, String, Option<Vec<usize>>)> {
+fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, aliases: &HashMap<String, String>) -> Vec<(Vec<usize>, String, Option<Vec<usize>>, Option<usize>)> {
     let mut out = Vec::new();
     let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
     for (i, st) in stmts.iter().enumerate() {
@@ -1715,16 +1778,16 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, 
                     } else {
                         Expr::CmpOp { left: Box::new(left.clone()), op: *op, right: Box::new(right.clone()) }
                     };
-                    if let Some((k, true)) = key_presence(&e, slot, false, aliases) { out.push((path.to_vec(), k, None)); }
+                    if let Some((k, true)) = key_presence(&e, slot, false, aliases) { out.push((path.to_vec(), k, None, Some(i))); }
                 }
             }
             Statement::If { condition, then_body, else_body } => {
                 if let Some((k, present)) = key_presence(&condition.node, slot, false, aliases) {
                     if present {
-                        out.push((sub(i, 0), k, None));
+                        out.push((sub(i, 0), k, None, None));
                     } else {
-                        out.push((sub(i, 1), k.clone(), None));
-                        if else_body.is_empty() && exits(then_body) { out.push((path.to_vec(), k, Some(sub(i, 0)))); }
+                        out.push((sub(i, 1), k.clone(), None, None));
+                        if else_body.is_empty() && exits(then_body) { out.push((path.to_vec(), k, Some(sub(i, 0)), Some(i))); }
                     }
                 }
                 out.extend(existing_key_facts(then_body, &sub(i, 0), slot, aliases));
@@ -1740,7 +1803,7 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, 
                     Expr::FnCall { name, args } => name == "keys" && args.len() == 1 && matches!(&args[0].node, Expr::Ident(n) if n == slot),
                     _ => false,
                 };
-                if over_keys { out.push((sub(i, 2), var.clone(), None)); }
+                if over_keys { out.push((sub(i, 2), var.clone(), None, None)); }
                 out.extend(existing_key_facts(body, &sub(i, 2), slot, aliases));
             }
             Statement::While { body, .. } => out.extend(existing_key_facts(body, &sub(i, 2), slot, aliases)),
@@ -1774,4 +1837,24 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>) -> Vec<(Optio
     }
     stmts_walk(stmts, cells, &mut out);
     out
+}
+
+/// Can this statement leave the block early (a `return`, `break` or
+/// `continue`, at any depth — `fail()` raises and rolls back, so it is not
+/// an exit that commits)?
+fn can_exit(st: &Spanned<Statement>) -> bool {
+    match &st.node {
+        Statement::Return { .. } | Statement::Break | Statement::Continue => true,
+        Statement::If { then_body, else_body, .. } => then_body.iter().any(can_exit) || else_body.iter().any(can_exit),
+        Statement::For { body, .. } | Statement::While { body, .. } => body.iter().any(can_exit),
+        _ => {
+            let mut hit = false;
+            crate::checker::literals::for_each_expr(std::slice::from_ref(st), &mut |e| match e {
+                Expr::Match { arms, .. } => { if arms.iter().any(|a| a.body.iter().any(can_exit)) { hit = true; } }
+                Expr::IfExpr { then_body, else_body, .. } => { if then_body.iter().chain(else_body).any(can_exit) { hit = true; } }
+                _ => {}
+            });
+            hit
+        }
+    }
 }

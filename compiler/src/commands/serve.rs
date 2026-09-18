@@ -84,6 +84,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
     let request_routes = std::sync::Arc::new(crate::checker::routes::explicit_routes(&cell.node));
     let mutating = std::sync::Arc::new(mutating_handlers(&cell.node));
+    let zero_arg_hooks: Vec<&'static str> = ["start", "init"].into_iter().filter(|h| cell.node.sections.iter().any(|s| matches!(&s.node,
+        ast::Section::OnSignal(on) if on.signal_name == *h && crate::ast::accepted_arities(&on.params).contains(&0)))).collect();
     let handler_names: Vec<String> = cell.node.sections.iter()
         .filter_map(|s| {
             if let ast::Section::OnSignal(ref on) = s.node {
@@ -376,8 +378,29 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     use std::io::BufRead;
                     let reader = std::io::BufReader::new(read_stream);
                     eprintln!("bus: peer connected");
+                    let mut first = true;
                     for line in reader.lines() {
                         let line = match line { Ok(l) => l, Err(_) => break };
+                        // a browser page can POST to the bus port (a cross-
+                        // protocol request whose body carries `EVENT …`): an
+                        // HTTP request line ends the connection
+                        if first {
+                            first = false;
+                            let head = line.split(' ').next().unwrap_or("");
+                            if line.contains(" HTTP/") || matches!(head, "GET" | "POST" | "PUT" | "DELETE" | "HEAD" | "OPTIONS" | "PATCH" | "CONNECT" | "TRACE") {
+                                eprintln!("bus: refused an HTTP request on the bus port");
+                                break;
+                            }
+                        }
+                        // `_private` handlers are not reachable from outside
+                        // the process (only the `_cluster_*` replication ones)
+                        if let Some(rest) = line.strip_prefix("EVENT ") {
+                            let name = rest.split(' ').next().unwrap_or("");
+                            if name.starts_with('_') && !name.starts_with("_cluster_") {
+                                eprintln!("bus: refused event '{}' (private handler)", name);
+                                continue;
+                            }
+                        }
 
                         // Handle cluster membership protocol
                         if line.starts_with("CLUSTER ") {
@@ -687,8 +710,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     }
 
     // Run init() handler if it exists (may call connect/ws_connect)
-    if handler_names.contains(&"init".to_string()) || handler_names.contains(&"start".to_string()) {
-        let init_signal = if handler_names.contains(&"init".to_string()) { "init" } else { "start" };
+    // every zero-argument start-up hook runs, `start` then `init` (with
+    // `start()` and `init(x)`, init() was called without its argument and
+    // start() never ran)
+    for init_signal in zero_arg_hooks.iter().copied() {
         let mut interp = interpreter::Interpreter::new(&program);
         interp.native_handlers = (*natives).clone();
         interp.set_storage_raw(&storage_slots);
@@ -1183,7 +1208,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
         // a handler that changes state is not reachable by GET / HEAD: an
         // `<img src=…/put/z>` on any page (CORS is `*`) used to overwrite data
-        if method == "GET" || method == "HEAD" {
+        // any method but POST/PUT/PATCH/DELETE (case-insensitive: `get`,
+        // `Get`, TRACE…) is a read
+        if !matches!(method.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE") {
             let url_path = url.split('?').next().unwrap_or(&url);
             let target: Option<&str> = if let Some(sig) = url_path.strip_prefix("/signal/") {
                 Some(sig)
@@ -1192,7 +1219,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 if handler_names.iter().any(|h| h == sig) && routable(&handler_names, sig) && !request_routes.matches(url_path) { Some(sig) } else { None }
             };
             if let Some(sig) = target.filter(|s| mutating.contains(*s)) {
-                let msg = format!("{}() changes state: call it with POST (a GET must not write)", sig);
+                let msg = format!("{}() changes state: call it with POST (a {} must not write)", sig, method);
                 let resp = tiny_http::Response::from_string(error_body(&msg, "method_not_allowed"))
                     .with_status_code(405)
                     .with_header(tiny_http::Header::from_bytes(&b"Allow"[..], &b"POST"[..]).unwrap())
@@ -1464,6 +1491,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 // Check for SSE response
                 let is_sse = if let interpreter::Value::Map(ref entries) = val {
                     entries.get("_sse").map(|v| matches!(v, interpreter::Value::Bool(true))).unwrap_or(false)
+                        && interpreter::is_http_response(&val)
                 } else {
                     false
                 };
@@ -1508,7 +1536,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 }
 
                 let is_response = if let interpreter::Value::Map(ref entries) = val {
-                    entries.get("_status").is_some()
+                    entries.get("_status").is_some() && interpreter::is_http_response(&val)
                 } else {
                     false
                 };
@@ -1581,6 +1609,16 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         ).unwrap()
                     );
                 for (key, val) in &extra_headers {
+                    // a header name is a token; a value has no CR/LF or other
+                    // control character (`filename={name}` with %0d%0a split
+                    // the response); framing headers belong to the server
+                    let name_ok = !key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+                    let value_ok = val.bytes().all(|b| b == b'\t' || (b >= 0x20 && b != 0x7f));
+                    let framing = matches!(key.to_ascii_lowercase().as_str(), "content-length" | "transfer-encoding" | "connection");
+                    if !name_ok || !value_ok || framing {
+                        eprintln!("warning: {} {}: response header {:?} dropped (invalid name, a control character in the value, or a framing header)", method, url, key);
+                        continue;
+                    }
                     if let Ok(h) = tiny_http::Header::from_bytes(key.as_bytes(), val.as_bytes()) {
                         resp.add_header(h);
                     }
@@ -1772,7 +1810,6 @@ fn hex_val(b: u8) -> u8 {
 fn reserved_json_key(v: &serde_json::Value, top: bool) -> Option<&'static str> {
     match v {
         serde_json::Value::Object(m) => {
-            if top && m.contains_key("_status") { return Some("_status"); }
             for k in ["_type", "_variant", "_values"] {
                 if m.contains_key(k) { return Some(k); }
             }

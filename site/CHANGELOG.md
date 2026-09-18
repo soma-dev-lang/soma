@@ -26,6 +26,12 @@
   in client JSON is refused; neither `start` nor `init` is an endpoint.
 - `soma run` refuses a program that fails check; native check runs the code
   generator; native shifts, sqrt_int, sb_push_char fixed.
+- serve: only `response()`/`html()`/`redirect()` maps are HTTP responses (a
+  client map with `_status` stored or echoed forged status, headers and XSS);
+  CR/LF header values dropped; the bus port refuses HTTP and private events.
+- Prover: a `require` proves only the writes after it; reassignments in match
+  arms, `try` and if-expressions; `every`/`after` writers; termination through
+  pipes, qualified self-calls and tick loops.
 - Hints for `require` without `else`, `and`/`or`/`not`, a quote inside `{…}`;
   CI builds Linux and Intel macOS binaries for every release tag.
 

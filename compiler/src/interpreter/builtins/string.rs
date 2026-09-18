@@ -388,7 +388,8 @@ fn write_json_with(v: &Value, out: &mut String, spaced: bool) {
         }
         Value::Map(entries) => {
             out.push('{');
-            for (i, (k, val)) in entries.iter().enumerate() {
+            // the HTTP-response mark is not data
+            for (i, (k, val)) in entries.iter().filter(|(k, v)| !(k.as_str() == "_response" && matches!(v, Value::Lambda { param, .. } if param == crate::interpreter::HTTP_MARK))).enumerate() {
                 if i > 0 { out.push_str(sep); }
                 out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
                 out.push_str(colon);

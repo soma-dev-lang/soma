@@ -273,7 +273,8 @@ source, `file:line`, left/right, and the fields a value really has when
   handler it calls (or event it emits) adds to the slot too; a `set` after
   `require rows.get(k) != () else Missing` (or in the `else` of `if rows.get(k) == ()`)
   cannot grow the slot.
-- A `require` counts for the writes of its own block and the blocks nested
+- An invariant is checked AT each write: a `require` proves only the writes
+  that come AFTER it. A `require` counts for the writes of its own block and the blocks nested
   in it — `if ok { require n < 3 else Full  m.set(k, n + 1) }` is proven; a require
   inside a loop body narrows that iteration's `let` locals only.
 - A trailing `Map` parameter is optional: `on add(a: Int, opts: Map)` is
@@ -371,7 +372,11 @@ be reachable over HTTP with `_` (`on _debit(…)`); `start`/`init` are never
 endpoints. A handler that changes state (a slot write, a transition, an emit,
 a call into another cell) answers GET/HEAD with 405 — POST to it. A request
 body may not carry `_type`/`_variant`/`_values` (a client cannot forge a
-record or a variant) nor a top-level `_status` (400). `NaN`/`inf` in a path
+record or a variant). Only a map built by `response()` / `html()` / `redirect()`
+is an HTTP response: a returned map with `_status` keys from client data is
+plain JSON. Response header values with CR/LF are dropped. A handler that
+calls `from_json` on client text builds whatever declared variant it names —
+validate it. `NaN`/`inf` in a path
 or query stay Strings. `soma check` warns when a
 handler and a route share a name unless the route delegates to that handler. `body: String` is the raw text
 (`from_json(body)`); `body: Map` is the parsed JSON (a non-JSON body is a 400
@@ -500,7 +505,7 @@ cell agent Researcher {
     integer quotient (truncates toward zero, BigInt-exact).
 12. One memory invariant names one slot; `size` invariants also guard
     `delete`. A cost bound is *proven* only when every `think()` runs a
-    known number of times (literal `range`, `[loop_bound(N)]`); a declared
+    known number of times (literal `range`, or an annotated loop: `for [loop_bound(50)] x in xs { … }`, `while [loop_bound(50)] cond { … }`); a declared
     bound that cannot be proven is a check ERROR.
 
 ## Packages

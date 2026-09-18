@@ -392,7 +392,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let mut a = val_to_i64(&args[0]).unsigned_abs();
             let mut b = val_to_i64(&args[1]).unsigned_abs();
             while b != 0 { let t = b; b = a % b; a = t; }
-            Some(Ok(Value::Int(SomaInt::from_i64(a as i64))))
+            // gcd(i64::MIN, 0) is 2^63: it does not fit an i64 (it came back negative)
+            Some(Ok(Value::Int(SomaInt::from_rug(rug::Integer::from(a)))))
         }
         "sqrt_int" if args.len() >= 1 => {
             // exact integer square root, BigInt included (a 20-digit input
@@ -439,7 +440,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if m == 0 {
                 return Some(Err(RuntimeError::TypeError("pow_mod: modulus is zero".to_string())));
             }
-            let mut r: i128 = 1;
+            if exp < 0 {
+                // it answered 1 (the loop never ran); pow_mod(3, -1, 7) is an inverse, not 1
+                return Some(Err(RuntimeError::TypeError("pow_mod: negative exponent (a modular inverse is not computed)".to_string())));
+            }
+            let mut r: i128 = 1i128.rem_euclid(m);
             let mut b = base.rem_euclid(m);
             let mut e = exp;
             while e > 0 {

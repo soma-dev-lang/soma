@@ -529,6 +529,34 @@ impl<'a> Walker<'a> {
                 self.scoped(&[param], |w| w.walk_expr(body));
             }
             Expr::LambdaBlock { param, stmts, result } => {
+                // `xs |> map(x => { t = t + x  x })`: a lambda gets a COPY of
+                // the outer locals — the assignment changes nothing outside
+                fn outer_assign(stmts: &[Spanned<Statement>], own: &mut HashSet<String>) -> Option<String> {
+                    for st in stmts {
+                        match &st.node {
+                            Statement::Let { name, .. } => { own.insert(name.clone()); }
+                            Statement::Assign { name, .. } if !own.contains(name) => return Some(name.clone()),
+                            Statement::If { then_body, else_body, .. } => {
+                                if let Some(n) = outer_assign(then_body, &mut own.clone()).or_else(|| outer_assign(else_body, &mut own.clone())) { return Some(n); }
+                            }
+                            Statement::For { var, body, .. } => { let mut o = own.clone(); o.insert(var.clone()); if let Some(n) = outer_assign(body, &mut o) { return Some(n); } }
+                            Statement::While { body, .. } => { if let Some(n) = outer_assign(body, &mut own.clone()) { return Some(n); } }
+                            _ => {}
+                        }
+                    }
+                    None
+                }
+                let mut own: HashSet<String> = HashSet::new();
+                own.insert(param.clone());
+                if let Some(n) = outer_assign(stmts, &mut own) {
+                    self.issues.push(InterpolationIssue {
+                        message: format!("`{n} = …` inside a lambda changes a copy — the outer `{n}` is unchanged after it; accumulate with a `for` loop, or `reduce`/`sum` over the list"),
+                        span,
+                        warning: true,
+                        habit: true,
+                        kind: "lambda_assign",
+                    });
+                }
                 let param = param.clone();
                 self.scoped(&[param], |w| {
                     // a lambda body is not inside the enclosing loop

@@ -110,6 +110,50 @@ pub fn check_native_handler(
     // rustc behind a 600-line dump)
     let mut bufs: HashSet<String> = HashSet::new();
     check_codegen_limits(handler_name, body, &mut bufs)?;
+    // String values in native code: text is read (str_* builtins, `==`),
+    // not parsed, ordered or grown by `+` (each was a rustc error)
+    let mut texts: HashSet<String> = params.iter()
+        .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "String"))
+        .map(|p| p.name.clone()).collect();
+    for st in body {
+        if let Statement::Let { name, value } = &st.node {
+            if matches!(value.node, Expr::Literal(Literal::String(_))) || matches!(&value.node, Expr::Ident(n) if texts.contains(n)) { texts.insert(name.clone()); }
+        }
+    }
+    let is_text = |e: &Expr| matches!(e, Expr::Literal(Literal::String(_))) || matches!(e, Expr::Ident(n) if texts.contains(n));
+    let mut problem: Option<String> = None;
+    crate::checker::literals::for_each_expr(body, &mut |e| {
+        if problem.is_some() { return; }
+        match e {
+            Expr::FnCall { name, args } if matches!(name.as_str(), "to_int" | "to_float") && args.first().map_or(false, |a| is_text(&a.node)) =>
+                problem = Some(format!("{}() of a String is not native (parse text in an interpreted handler and pass the number)", name)),
+            Expr::CmpOp { left, op, right } if matches!(op, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) && (is_text(&left.node) || is_text(&right.node)) =>
+                problem = Some("orders Strings with < / > — native code compares text only with == / !=".to_string()),
+            _ => {}
+        }
+    });
+    fn grows_text(stmts: &[Spanned<Statement>], texts: &HashSet<String>) -> Option<String> {
+        stmts.iter().find_map(|st| match &st.node {
+            Statement::Assign { name, value } if texts.contains(name) && matches!(value.node, Expr::BinaryOp { op: BinOp::Add, .. }) => Some(name.clone()),
+            Statement::If { then_body, else_body, .. } => grows_text(then_body, texts).or_else(|| grows_text(else_body, texts)),
+            Statement::For { body, .. } | Statement::While { body, .. } => grows_text(body, texts),
+            _ => None,
+        })
+    }
+    // only a local that ALIASES a String parameter (`let u = s`, a &str in
+    // Rust) cannot grow; `let r = ""  r = r + …` compiles
+    let param_aliases: HashSet<String> = body.iter().filter_map(|st| match &st.node {
+        Statement::Let { name, value } if matches!(&value.node, Expr::Ident(n) if params.iter().any(|p| &p.name == n && matches!(&p.ty.node, TypeExpr::Simple(t) if t == "String"))) => Some(name.clone()),
+        _ => None,
+    }).collect();
+    if problem.is_none() {
+        if let Some(n) = grows_text(body, &param_aliases) {
+            problem = Some(format!("grows the String `{}` with + — build text with strbuf() / sb_push / sb_finish", n));
+        }
+    }
+    if let Some(reason) = problem {
+        return Err(NativeCheckError { handler_name: handler_name.to_string(), reason });
+    }
     // a buffer handed to a sibling [native] handler: siblings take Int,
     // Float, Bool or String only (rustc: "non-primitive cast: Vec<i64> as i64")
     let mut hit: Option<(String, String)> = None;
@@ -160,6 +204,43 @@ fn check_codegen_limits(handler_name: &str, body: &[Spanned<Statement>], bufs: &
     }
     if let Some(n) = assigns_float(body, &int_lets) {
         return err(format!("`{n}` starts as an Int and is later given a Float — a native variable has one type: start it as a Float (`let {n} = 0.0`)"));
+    }
+    // one type per variable and per return: Bool / String / number do not
+    // mix (each passed check and failed in rustc with "mismatched types")
+    fn lit_kind(e: &Expr) -> Option<&'static str> {
+        match e {
+            Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::Float(_)) => Some("number"),
+            Expr::Literal(Literal::String(_)) => Some("String"),
+            Expr::Literal(Literal::Bool(_)) => Some("Bool"),
+            _ => None,
+        }
+    }
+    let mut kinds: std::collections::HashMap<String, &'static str> = std::collections::HashMap::new();
+    let mut ret_kinds: Vec<&'static str> = Vec::new();
+    fn walk<'b>(stmts: &'b [Spanned<Statement>], kinds: &mut std::collections::HashMap<String, &'static str>, rets: &mut Vec<&'static str>) -> Option<String> {
+        for st in stmts {
+            match &st.node {
+                Statement::Let { name, value } => { if let Some(k) = lit_kind(&value.node) { kinds.insert(name.clone(), k); } }
+                Statement::Assign { name, value } => {
+                    if let (Some(prev), Some(k)) = (kinds.get(name).copied(), lit_kind(&value.node)) {
+                        if prev != k { return Some(format!("`{}` holds a {} and is later given a {} — a native variable has one type", name, prev, k)); }
+                    }
+                }
+                Statement::Return { value } => { if let Some(k) = lit_kind(&value.node) { rets.push(k); } }
+                Statement::If { then_body, else_body, .. } => {
+                    if let Some(m) = walk(then_body, kinds, rets) { return Some(m); }
+                    if let Some(m) = walk(else_body, kinds, rets) { return Some(m); }
+                }
+                Statement::For { body, .. } | Statement::While { body, .. } => { if let Some(m) = walk(body, kinds, rets) { return Some(m); } }
+                _ => {}
+            }
+        }
+        None
+    }
+    if let Some(m) = walk(body, &mut kinds, &mut ret_kinds) { return err(m); }
+    ret_kinds.sort(); ret_kinds.dedup();
+    if ret_kinds.len() > 1 {
+        return err(format!("returns a {} on one path and a {} on another — a native handler returns one type", ret_kinds[0], ret_kinds[1]));
     }
     for st in body {
         match &st.node {

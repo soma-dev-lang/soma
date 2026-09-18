@@ -1492,3 +1492,46 @@ fn cycle14_findings() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("007|Smith, J"), "{out}");
 }
+
+/// Cycle 14 (attack): order-aware and block-aware invariant proofs, tick
+/// writers, termination through pipes / qualified calls / ticks, non-finite
+/// floats nested in slots, stored lambdas refused, UFCS on handlers.
+#[test]
+fn cycle14_attack_findings() {
+    let d = dir("cycle14b");
+    std::fs::write(d.join("p.cell"), r#"
+cell Wallet {
+  memory { bal: Map<String, Int> [persistent]  invariant bal >= 0 && bal <= 100 }
+  on a(k: String, n: Int) { let v = 5  match n { 0 -> { v = 0 } _ -> { v = n } }  bal.set(k, v) }
+  on d(k: String, n: Int, fast: Bool) { if fast { bal.set(k, n)  return "fast" }  require n >= 0 && n <= 10 else TooBig  bal.set(k, n) }
+  on w(k: String, n: Int, c: Int) { let z = if c == 1 { bal.set(k, n)  1 } else { 0 }  require n >= 0 && n <= 10 else X  bal.set(k, n) }
+  every 1s { bal.set("tick", 1000) }
+  on up(n: Int) { return (n + 1) |> up() }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "p.cell"]);
+    assert!(!out.contains("writer 'a' proven"), "{out}");
+    assert!(out.contains("runtime-checked") && out.contains("d → bal"), "{out}");
+    assert!(out.contains("w → bal"), "{out}");
+    assert!(out.contains("every 1000ms"), "{out}");
+    assert!(out.contains("recursive call through a pipe"), "{out}");
+
+    std::fs::write(d.join("n.cell"), r#"
+cell N {
+  memory { a: Map<String, Map> [persistent] }
+  on put() { a.set("m", map("nan", 0.0 / 0.0, "inf", 1.0 / 0.0))  return "ok" }
+  on get() { let m = a.get("m")  return "{m.nan} {m.inf}" }
+  on lam() { a.set("f", map("f", x => x + 1))  return "stored" }
+  on dbl(x: Int) { return x * 2 }
+  on u(n: Int) { return (n + 1).dbl() }
+}
+"#).unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "n.cell", "put"]);
+    let (out, _) = soma_in(&d, &["run", "n.cell", "get"]);
+    assert!(out.contains("NaN inf"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "n.cell", "lam"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("cannot be stored"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "n.cell", "u", "3"]);
+    assert!(out.contains("8"), "{out}");
+}

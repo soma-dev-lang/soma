@@ -202,37 +202,9 @@ fn walk_expr(e: &Spanned<Expr>, f: &mut dyn FnMut(&str, &[Spanned<Expr>], Span))
 /// Every expression in a body (nested blocks, lambdas and arms included),
 /// pre-order — for walkers that need more than `f(args)` calls
 /// (`Cell.handler(…)` is a MethodCall).
-pub fn for_each_expr(stmts: &[Spanned<Statement>], f: &mut dyn FnMut(&Expr)) {
-    fn ex(e: &Spanned<Expr>, f: &mut dyn FnMut(&Expr)) {
-        f(&e.node);
-        match &e.node {
-            Expr::FnCall { args, .. } => { for a in args { ex(a, f); } }
-            Expr::MethodCall { target, args, .. } => { ex(target, f); for a in args { ex(a, f); } }
-            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => { ex(left, f); ex(right, f); }
-            Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => ex(i, f),
-            Expr::FieldAccess { target, .. } => ex(target, f),
-            Expr::Index { target, index } => { ex(target, f); ex(index, f); }
-            Expr::ListLiteral(items) => { for it in items { ex(it, f); } }
-            Expr::Record { fields, .. } => { for (_, v) in fields { ex(v, f); } }
-            Expr::Lambda { body, .. } => ex(body, f),
-            Expr::LambdaBlock { stmts, result, .. } => { for_each_expr(stmts, f); ex(result, f); }
-            Expr::Match { subject, arms } => {
-                ex(subject, f);
-                for arm in arms {
-                    if let Some(g) = &arm.guard { ex(g, f); }
-                    for_each_expr(&arm.body, f);
-                    ex(&arm.result, f);
-                }
-            }
-            Expr::IfExpr { condition, then_body, then_result, else_body, else_result, .. } => {
-                ex(condition, f);
-                for_each_expr(then_body, f); ex(then_result, f);
-                for_each_expr(else_body, f); ex(else_result, f);
-            }
-            _ => {}
-        }
-    }
-    fn con(c: &Constraint, f: &mut dyn FnMut(&Expr)) {
+pub fn for_each_expr<'a>(stmts: &'a [Spanned<Statement>], f: &mut dyn FnMut(&'a Expr)) {
+    fn ex<'a>(e: &'a Spanned<Expr>, f: &mut dyn FnMut(&'a Expr)) { for_each_in_expr(&e.node, f) }
+    fn con<'a>(c: &'a Constraint, f: &mut dyn FnMut(&'a Expr)) {
         match c {
             Constraint::Comparison { left, right, .. } => { ex(left, f); ex(right, f); }
             Constraint::And(a, b) | Constraint::Or(a, b) => { con(&a.node, f); con(&b.node, f); }
@@ -253,5 +225,37 @@ pub fn for_each_expr(stmts: &[Spanned<Statement>], f: &mut dyn FnMut(&Expr)) {
             Statement::Require { constraint, .. } => con(&constraint.node, f),
             Statement::Break | Statement::Continue => {}
         }
+    }
+}
+
+/// `f` on `e` and every expression nested in it (blocks included).
+pub fn for_each_in_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Expr)) {
+    let ex = |x: &'a Spanned<Expr>, f: &mut dyn FnMut(&'a Expr)| for_each_in_expr(&x.node, f);
+    f(e);
+    match e {
+        Expr::FnCall { args, .. } => { for a in args { ex(a, f); } }
+        Expr::MethodCall { target, args, .. } => { ex(target, f); for a in args { ex(a, f); } }
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => { ex(left, f); ex(right, f); }
+        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => ex(i, f),
+        Expr::FieldAccess { target, .. } => ex(target, f),
+        Expr::Index { target, index } => { ex(target, f); ex(index, f); }
+        Expr::ListLiteral(items) => { for it in items { ex(it, f); } }
+        Expr::Record { fields, .. } => { for (_, v) in fields { ex(v, f); } }
+        Expr::Lambda { body, .. } => ex(body, f),
+        Expr::LambdaBlock { stmts, result, .. } => { for_each_expr(stmts, f); ex(result, f); }
+        Expr::Match { subject, arms } => {
+            ex(subject, f);
+            for arm in arms {
+                if let Some(g) = &arm.guard { ex(g, f); }
+                for_each_expr(&arm.body, f);
+                ex(&arm.result, f);
+            }
+        }
+        Expr::IfExpr { condition, then_body, then_result, else_body, else_result, .. } => {
+            ex(condition, f);
+            for_each_expr(then_body, f); ex(then_result, f);
+            for_each_expr(else_body, f); ex(else_result, f);
+        }
+        _ => {}
     }
 }

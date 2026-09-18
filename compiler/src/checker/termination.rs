@@ -58,6 +58,22 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
     let graph = call_graph(program);
 
     for section in &cell.sections {
+        // an `every` / `after` block holds the process lock while it runs:
+        // `while true { }` there hung every request — judge its loops too
+        if let Section::Every(e) | Section::After(e) = &section.node {
+            let label = format!("{} {}ms", if matches!(section.node, Section::Every(_)) { "every" } else { "after" }, e.interval_ms);
+            let mut reasons = Vec::new();
+            for stmt in &e.body {
+                check_stmt_termination(&stmt.node, &label, &[], &mut reasons);
+            }
+            if reasons.is_empty() {
+                findings.push(TerminationFinding::Terminates { handler: label });
+            } else {
+                reasons.dedup();
+                findings.push(TerminationFinding::MayNotTerminate { handler: label, reasons });
+            }
+            continue;
+        }
         if let Section::OnSignal(ref on) = section.node {
             let mut reasons = Vec::new();
             for stmt in &on.body {
@@ -90,6 +106,14 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                     ));
                 }
             }
+            // `(n + 1) |> up()` / `A.up2(n + 1)`: a self-call the
+            // decreasing-argument rule does not see — not measured
+            if hidden_self_call(&on.body, &on.signal_name) {
+                reasons.push(format!(
+                    "handler `{}`: recursive call through a pipe or a qualified `Cell.{}(…)` — write it as a plain `{}(n - 1)` call to have it measured",
+                    on.signal_name, on.signal_name, on.signal_name
+                ));
+            }
             if self_recursive && reasons.is_empty() && !has_conditional(&on.body) {
                 reasons.push(format!(
                     "handler `{}`: recursion has no base case (no conditional branch can stop the descent)",
@@ -118,7 +142,7 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                             "handler `{}`: the decreasing argument `{}` is not an Int (a Float step can stall: x - 1 == x past 2^53)",
                             on.signal_name, p.name
                         ));
-                    } else if !has_lower_bound_exit(&on.body, &p.name) {
+                    } else if !has_lower_bound_exit(&on.body, &p.name, &on.signal_name) {
                         reasons.push(format!(
                             "handler `{}`: `{} - k` decreases but no base case bounds it from below — write `if {} <= 0 {{ return … }}` (an `== 0` test is stepped over from a negative start)",
                             on.signal_name, p.name, p.name
@@ -385,7 +409,7 @@ fn check_stmt_termination(
 
             if !is_bounded {
                 reasons.push(format!(
-                    "handler `{}`: for-loop with unbounded iterator (add [loop_bound(N)] or use range(0, N) with literal N)",
+                    "handler `{}`: for-loop with unbounded iterator (write `for [loop_bound(N)] x in xs` or use range(0, N) with literal N)",
                     handler_name
                 ));
             }
@@ -607,7 +631,7 @@ fn is_decreasing_arg(arg: &Expr, param_name: &str) -> bool {
 /// Does the body stop the descent with a lower bound on `param` before any
 /// statement can recurse: `if param <= c { … return … }` (or `< c`, or the
 /// flipped spelling), or `require param >= c` — with a literal `c`?
-fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str) -> bool {
+fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str, handler: &str) -> bool {
     fn bounded(cond: &Expr, param: &str) -> bool {
         match cond {
             Expr::CmpOp { left, op, right } => {
@@ -627,7 +651,7 @@ fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str) -> bool {
             Statement::If { condition, then_body, .. } => {
                 let exits = matches!(then_body.last().map(|s| &s.node), Some(Statement::Return { .. }))
                     || matches!(then_body.last().map(|s| &s.node), Some(Statement::ExprStmt { expr }) if matches!(&expr.node, Expr::FnCall { name, .. } if name == "fail"));
-                if exits && bounded(&condition.node, param) { return true; }
+                if exits && bounded(&condition.node, param) && !calls_self(then_body, handler) { return true; }
             }
             Statement::Require { constraint, .. } => {
                 if let Constraint::Comparison { left, op, right } = &constraint.node {
@@ -672,6 +696,29 @@ fn rebinds(stmts: &[Spanned<Statement>], name: &str) -> bool {
                 if b.contains(name) || st_walk(&arm.body, name) { hit = true; }
             }
         }
+        _ => {}
+    });
+    hit
+}
+
+/// A self-call in any form: `h(…)`, `x |> h(…)`, `Cell.h(…)`.
+fn calls_self(stmts: &[Spanned<Statement>], handler: &str) -> bool {
+    let mut hit = false;
+    crate::checker::literals::for_each_expr(stmts, &mut |e| match e {
+        Expr::FnCall { name, .. } if name == handler => hit = true,
+        Expr::MethodCall { target, method, .. } if method == handler
+            && matches!(&target.node, Expr::Ident(c) if c.chars().next().map_or(false, |ch| ch.is_uppercase())) => hit = true,
+        _ => {}
+    });
+    hit
+}
+
+fn hidden_self_call(stmts: &[Spanned<Statement>], handler: &str) -> bool {
+    let mut hit = false;
+    crate::checker::literals::for_each_expr(stmts, &mut |e| match e {
+        Expr::Pipe { right, .. } if matches!(&right.node, Expr::FnCall { name, .. } if name == handler) => hit = true,
+        Expr::MethodCall { target, method, .. } if method == handler
+            && matches!(&target.node, Expr::Ident(c) if c.chars().next().map_or(false, |ch| ch.is_uppercase())) => hit = true,
         _ => {}
     });
     hit

@@ -381,7 +381,7 @@ impl std::fmt::Display for Value {
             }
             Value::Map(entries) => {
                 write!(f, "{{")?;
-                for (i, (k, v)) in entries.iter().enumerate() {
+                for (i, (k, v)) in entries.iter().filter(|(k, v)| !(k.as_str() == "_response" && matches!(v, Value::Lambda { param, .. } if param == HTTP_MARK))).enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "\"{}\": ", json_escape_str(k))?;
                     match v {
@@ -604,6 +604,25 @@ pub enum VariantShape {
     Unit,
     Tuple(usize),         // arity
     Struct(Vec<String>),  // field names
+}
+
+/// The provenance mark of an HTTP response map (`response()`, `html()`,
+/// `redirect()`, `sse()`): a value no JSON body, query string, header or
+/// stored slot can produce — a map a CLIENT sent with `_status` / `_body`
+/// / header keys used to become a raw HTTP response (stored XSS, forged
+/// cookies, open redirects).
+pub const HTTP_MARK: &str = "__soma_http_response__";
+
+pub fn http_marker() -> Value {
+    Value::Lambda {
+        param: HTTP_MARK.to_string(),
+        body: Box::new(Spanned::new(Expr::Literal(Literal::Unit), crate::ast::Span { start: 0, end: 0 })),
+        env: HashMap::new(),
+    }
+}
+
+pub fn is_http_response(v: &Value) -> bool {
+    matches!(v, Value::Map(m) if matches!(m.get("_response"), Some(Value::Lambda { param, .. }) if param == HTTP_MARK))
 }
 
 /// Set by `soma run` and `soma serve`: state-machine instances live in
@@ -2669,12 +2688,28 @@ impl Interpreter {
                         if let Some(res) = self.call_builtin(method, &ufcs, cell_name) {
                             return res.map_err(ExecError::Runtime);
                         }
+                        // UFCS on a user handler: `(n + 1).dbl()` → dbl(n + 1)
+                        // (check accepted it; the runtime said "no method")
+                        let is_slot = matches!(&target.node, Expr::Ident(n) if self.slot_kind(cell_name, n).is_some() && !env.contains_key(n));
+                        if !is_slot && self.user_handler_takes(method, ufcs.len()) {
+                            let defines = |cn: &str| self.cells.get(cn).map_or(false, |c| c.sections.iter().any(|s| {
+                                matches!(&s.node, Section::OnSignal(on) if on.signal_name == *method)
+                            }));
+                            let target_cell = if defines(cell_name) { Some(cell_name.to_string()) } else {
+                                let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn)).collect();
+                                all.sort_by_key(|c| self.cell_order.iter().position(|o| o == *c).unwrap_or(usize::MAX));
+                                all.first().map(|c| (*c).clone())
+                            };
+                            if let Some(tc) = target_cell {
+                                return self.call_signal(&tc, method, ufcs).map_err(ExecError::Runtime);
+                            }
+                        }
                         // Try storage as fallback
                         if let Expr::Ident(ref name) = target.node {
                             return self.call_storage_method(cell_name, name, method, &arg_vals);
                         }
                         Err(ExecError::Runtime(RuntimeError::TypeError(
-                            format!("no method '{}' on {:?}", method, target_val),
+                            format!("no method '{}' on {} {}", method, value_type_name(&target_val), { let t: String = format!("{}", target_val).chars().take(40).collect(); t }),
                         )))
                     }
                 }
@@ -4190,6 +4225,22 @@ impl Interpreter {
     /// whole Float is NOT an Int — `1.0` in `Map<String, Int>` is refused;
     /// a declared sum type takes only its variants).
     fn check_slot_value_type(&self, cell_name: &str, slot_name: &str, val: &Value) -> Result<Value, ExecError> {
+        // a function has no stored form: it was saved as the text "<lambda>"
+        fn has_fn(v: &Value) -> bool {
+            match v {
+                Value::Lambda { param, .. } => param != HTTP_MARK,
+                Value::LambdaBlock { .. } => true,
+                Value::List(xs) => xs.iter().any(has_fn),
+                Value::Map(m) => m.values().any(has_fn),
+                _ => false,
+            }
+        }
+        if has_fn(val) {
+            return Err(ExecError::Runtime(RuntimeError::Domain {
+                kind: "type".to_string(),
+                message: format!("slot '{}': a function (lambda) cannot be stored — store the data it works on", slot_name),
+            }));
+        }
         let Some(ty) = self.slot_value_type(cell_name, slot_name) else { return Ok(val.clone()) };
         let ok = match (ty.as_str(), val) {
             ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_))
@@ -4401,7 +4452,9 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
         Value::Bool(b) => StoredValue::Bool(*b),
         Value::List(items) => StoredValue::List(items.iter().map(value_to_stored).collect()),
         Value::Map(entries) => StoredValue::Map(
-            entries.iter().map(|(k, v)| (k.clone(), value_to_stored(v))).collect()
+            entries.iter()
+                .filter(|(k, v)| !(k.as_str() == "_response" && matches!(v, Value::Lambda { param, .. } if param == HTTP_MARK)))
+                .map(|(k, v)| (k.clone(), value_to_stored(v))).collect()
         ),
         Value::Lambda { .. } | Value::LambdaBlock { .. } => StoredValue::String("<lambda>".to_string()),
         Value::Variant { type_name, variant, fields } => {

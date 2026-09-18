@@ -119,7 +119,7 @@ impl<'a> CostWalk<'a> {
                 let known = bound.map(|b| b as i64).or_else(|| literal_range_len(&iter.node));
                 if known.is_none() && inner.spends() {
                     self.unbounded_sites.push(format!(
-                        "{}::for-loop over a collection of unknown size (add [loop_bound(N)])",
+                        "{}::for-loop over a collection of unknown size (write `for [loop_bound(N)] x in xs`)",
                         handler_name
                     ));
                 }

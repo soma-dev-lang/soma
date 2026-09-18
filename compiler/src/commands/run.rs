@@ -406,7 +406,10 @@ fn unknown_handler_or_default(
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_');
     // a handler takes the rest of the args → the token was meant as a name
     let rest_fits = handler_params.iter().any(|(_, p)| *p + 1 == n_args);
-    if identifier_like && (by_arity.is_none() || rest_fits) {
+    // a near-miss of a handler name is a typo, never an argument:
+    // `list_acounts` ran close_account("list_acounts")
+    let near_miss = crate::checker::names::suggest(name, handler_names.iter()).is_some();
+    if identifier_like && (by_arity.is_none() || rest_fits || near_miss) {
         let public: Vec<&String> = handler_names.iter().filter(|h| !h.starts_with('_')).collect();
         let near = crate::checker::names::suggest(name, public.iter().copied())
             .map(|h| format!(" (did you mean '{}'?)", h))

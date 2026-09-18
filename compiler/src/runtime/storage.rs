@@ -667,6 +667,16 @@ fn json_to_stored(v: &serde_json::Value) -> StoredValue {
             StoredValue::List(arr.iter().map(json_to_stored).collect())
         }
         serde_json::Value::Object(obj) => {
+            // NaN / ±inf nested in a Map or List (JSON has no such number:
+            // they were written as null and read back as `()`)
+            if let (1, Some(serde_json::Value::String(f))) = (obj.len(), obj.get("__float__")) {
+                match f.as_str() {
+                    "NaN" => return StoredValue::Float(f64::NAN),
+                    "inf" => return StoredValue::Float(f64::INFINITY),
+                    "-inf" => return StoredValue::Float(f64::NEG_INFINITY),
+                    _ => {}
+                }
+            }
             if let (1, Some(serde_json::Value::String(d))) = (obj.len(), obj.get("__bigint__")) {
                 return StoredValue::BigInt(d.clone());
             }
@@ -715,6 +725,8 @@ fn stored_to_json(v: &StoredValue) -> serde_json::Value {
     match v {
         StoredValue::Int(n) => serde_json::Value::Number((*n).into()),
         StoredValue::BigInt(d) => serde_json::json!({"__bigint__": d}),
+        StoredValue::Float(n) if n.is_nan() => serde_json::json!({"__float__": "NaN"}),
+        StoredValue::Float(n) if n.is_infinite() => serde_json::json!({"__float__": if *n > 0.0 { "inf" } else { "-inf" }}),
         StoredValue::Float(n) => serde_json::json!(*n),
         StoredValue::String(s) => serde_json::Value::String(s.clone()),
         StoredValue::Bool(b) => serde_json::Value::Bool(*b),
