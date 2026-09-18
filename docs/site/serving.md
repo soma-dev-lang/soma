@@ -34,7 +34,8 @@ it by calling their handlers by name.
 `headers` gets the headers, anything else the query): `on request(method:
 String, path: String, body: Map, query: Map, headers: Map)`. Header names
 are lower-case (`headers.authorization`); a repeated header is one entry,
-its values joined with ", ". A trailing `Map` parameter may be left out by a
+its values joined with ", " (a repeated QUERY key keeps its last value). `OPTIONS`
+requests are answered 204 with permissive CORS headers before any handler. A trailing `Map` parameter may be left out by a
 caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
 The declared type of `body` decides its shape:
 

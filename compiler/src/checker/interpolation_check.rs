@@ -266,6 +266,7 @@ impl<'a> Walker<'a> {
                 self.walk_expr(value);
             }
             Statement::If { condition, then_body, else_body } => {
+                self.int_builtin_as_bool(condition);
                 self.walk_expr(condition);
                 self.scoped(&[], |w| w.walk_stmts(then_body));
                 self.scoped(&[], |w| w.walk_stmts(else_body));
@@ -310,6 +311,7 @@ impl<'a> Walker<'a> {
                 });
             }
             Statement::While { condition, body, .. } => {
+                self.int_builtin_as_bool(condition);
                 self.walk_expr(condition);
                 self.scoped(&[], |w| {
                     bind_stmts(body, &mut w.scope);
@@ -377,6 +379,31 @@ impl<'a> Walker<'a> {
             Constraint::Not(inner) => self.walk_constraint(&inner.node),
             // Predicate args are not evaluated at runtime — stay silent.
             Constraint::Predicate { .. } | Constraint::Descriptive(_) => {}
+        }
+    }
+
+    /// `if !regex_match(s, p)`: a builtin that answers Int 1/0 used as a
+    /// Bool raises "expected Bool, got Int" at run time — say it here.
+    fn int_builtin_as_bool(&mut self, e: &Spanned<Expr>) {
+        let mut parts = vec![e];
+        while let Some(x) = parts.pop() {
+            match &x.node {
+                Expr::BinaryOp { left, op: BinOp::And | BinOp::Or, right } => { parts.push(left); parts.push(right); }
+                Expr::FnCall { name, .. } if !self.index.handler_map.contains_key(name) => {
+                    if let Some(b) = crate::interpreter::builtins::registry::BUILTINS.iter().find(|b| b.name == name) {
+                        if b.signature.trim_end().ends_with("-> Int") {
+                            self.issues.push(InterpolationIssue {
+                                message: format!("{}() answers an Int (1 or 0), not a Bool — compare it: `{}(…) == 1`", name, name),
+                                span: x.span,
+                                warning: false,
+                                habit: false,
+                                kind: "int_as_bool",
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -464,6 +491,7 @@ impl<'a> Walker<'a> {
                 self.walk_expr(right);
             }
             Expr::Not(inner) => {
+                self.int_builtin_as_bool(inner);
                 self.walk_expr(inner);
             }
             Expr::Try(inner) | Expr::TryPropagate(inner) => {

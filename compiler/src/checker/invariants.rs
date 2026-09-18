@@ -267,8 +267,26 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         || (on.params.iter().any(|p| p.name == n) && assigns.iter().any(|(m, _)| *m == n));
                     let mut shadow: HashSet<String> = HashSet::new();
                     collect_binders_stmts(&on.body, &mut shadow);
-                    if k.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| !w.is_empty() && (rebound(w) || shadow.contains(w))) { return false; }
-                    existing_key_facts(&on.body, &[], slot).iter().any(|(fp, fk, excl)| path.starts_with(fp) && fk == k && excl.as_ref().map_or(true, |e| !path.starts_with(e)))
+                    // a `for` variable bound ONCE in the handler (no other
+                    // loop, lambda, match, let or parameter of that name) is
+                    // one binding, not a shadow
+                    let mut for_counts: HashMap<String, usize> = HashMap::new();
+                    count_for_vars(&on.body, &mut for_counts);
+                    let mut non_for: HashSet<String> = HashSet::new();
+                    collect_non_for_binders(&on.body, &mut non_for);
+                    let single_for = |w: &str| for_counts.get(w) == Some(&1) && !non_for.contains(w)
+                        && !on.params.iter().any(|p| p.name == w)
+                        && !assigns.iter().any(|(m, e)| *m == w && !std::ptr::eq(*e, &UNKNOWN_EXPR));
+                    if k.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| !w.is_empty() && (rebound(w) || (shadow.contains(w) && !single_for(w)))) { return false; }
+                    // `let r = rows.get(k)` bound once: `r != ()` says k exists
+                    let aliases: HashMap<String, String> = assigns.iter()
+                        .filter(|(n, _)| assigns.iter().filter(|(m, _)| m == n).count() == 1 && !shadow.contains(*n))
+                        .filter_map(|(n, e)| match e {
+                            Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1
+                                && matches!(&target.node, Expr::Ident(t) if t == slot) => Some((n.to_string(), render_expr(&args[0].node))),
+                            _ => None,
+                        }).collect();
+                    existing_key_facts(&on.body, &[], slot, &aliases).iter().any(|(fp, fk, excl)| path.starts_with(fp) && fk == k && excl.as_ref().map_or(true, |e| !path.starts_with(e)))
                 };
                 if size_upper_bound_any(&parts, slot) && key_exists(wpath, wkey) {
                     for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
@@ -773,6 +791,7 @@ fn local_ranges_at(
         if let Some(ex) = &f.exclude { if write_path.starts_with(ex) { continue; } }
         match &f.stmt.node {
             Statement::Require { constraint, .. } => facts.extend(constraint_comparisons(&constraint.node).into_iter().map(|(l, o, r)| (l, o, r, None))),
+            Statement::If { condition, .. } if f.branch == 1 => facts.extend(positive_comparisons(&condition.node).into_iter().map(|(l, o, r)| (l, o, r, None))),
             Statement::If { condition, .. } => facts.extend(negated_comparisons(&condition.node).into_iter().map(|(l, o, r)| (l, o, r, None))),
             _ => {}
         }
@@ -901,6 +920,20 @@ fn local_ranges_at(
 
 /// `if a || b { return … }` after which ¬a ∧ ¬b holds: the negated leaves.
 /// `&&` cannot be split (¬(a ∧ b) is a disjunction) and yields nothing.
+/// The comparisons an `if` condition guarantees inside its branch (the
+/// `&&` spine only).
+fn positive_comparisons(c: &Expr) -> Vec<(&Expr, CmpOp, &Expr)> {
+    match c {
+        Expr::CmpOp { left, op, right } => vec![(&left.node, *op, &right.node)],
+        Expr::BinaryOp { left, op: BinOp::And, right } => {
+            let mut v = positive_comparisons(&left.node);
+            v.extend(positive_comparisons(&right.node));
+            v
+        }
+        _ => vec![],
+    }
+}
+
 fn negated_comparisons(c: &Expr) -> Vec<(&Expr, CmpOp, &Expr)> {
     match c {
         Expr::CmpOp { left, op, right } => {
@@ -940,16 +973,25 @@ struct Fact<'e> {
     path: Vec<usize>,
     /// the early exit's own branch: the negated condition does not hold there
     exclude: Option<Vec<usize>>,
+    /// an `if`'s own branches: 1 = inside `then` (the condition holds),
+    /// 2 = inside `else` (its negation holds); 0 = a require / early exit
+    branch: u8,
 }
 
 fn collect_facts<'e>(stmts: &'e [Spanned<Statement>], path: &[usize], out: &mut Vec<Fact<'e>>) {
     let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
     for (i, st) in stmts.iter().enumerate() {
         match &st.node {
-            Statement::Require { .. } => out.push(Fact { stmt: st, path: path.to_vec(), exclude: None }),
+            Statement::Require { .. } => out.push(Fact { stmt: st, path: path.to_vec(), exclude: None, branch: 0 }),
             Statement::If { then_body, else_body, .. } => {
                 if else_body.is_empty() && exits(then_body) {
-                    out.push(Fact { stmt: st, path: path.to_vec(), exclude: Some(sub(i, 0)) });
+                    out.push(Fact { stmt: st, path: path.to_vec(), exclude: Some(sub(i, 0)), branch: 0 });
+                }
+                // `if n < 5 { c.set(k, n + 1) }`: the condition holds for the
+                // writes of its branch, its negation for those of `else`
+                out.push(Fact { stmt: st, path: sub(i, 0), exclude: None, branch: 1 });
+                if !else_body.is_empty() {
+                    out.push(Fact { stmt: st, path: sub(i, 1), exclude: None, branch: 2 });
                 }
                 collect_facts(then_body, &sub(i, 0), out);
                 collect_facts(else_body, &sub(i, 1), out);
@@ -1465,6 +1507,32 @@ fn find_len_of_slot(expr: &Expr, slots: &[String], out: &mut Vec<(String, String
 /// Names introduced by lambda parameters and match-arm patterns anywhere in
 /// a body (they shadow, so a narrowed outer name of the same spelling is
 /// not what a write inside reads).
+fn count_for_vars(stmts: &[Spanned<Statement>], out: &mut HashMap<String, usize>) {
+    for st in stmts {
+        match &st.node {
+            Statement::For { var, body, .. } => { *out.entry(var.clone()).or_default() += 1; count_for_vars(body, out); }
+            Statement::While { body, .. } => count_for_vars(body, out),
+            Statement::If { then_body, else_body, .. } => { count_for_vars(then_body, out); count_for_vars(else_body, out); }
+            _ => {}
+        }
+    }
+}
+
+/// Binders other than `for` variables: lambda parameters, match bindings
+/// (anywhere, including inside loop iterators and bodies).
+fn collect_non_for_binders(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+    for st in stmts {
+        match &st.node {
+            Statement::For { iter, body, .. } => { collect_binders_expr(&iter.node, out); collect_non_for_binders(body, out); }
+            Statement::While { condition, body, .. } => { collect_binders_expr(&condition.node, out); collect_non_for_binders(body, out); }
+            Statement::If { condition, then_body, else_body } => {
+                collect_binders_expr(&condition.node, out); collect_non_for_binders(then_body, out); collect_non_for_binders(else_body, out);
+            }
+            _ => collect_binders_stmts(std::slice::from_ref(st), out),
+        }
+    }
+}
+
 fn collect_binders_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
     for st in stmts {
         match &st.node {
@@ -1553,11 +1621,13 @@ fn size_upper_bound_any(parts: &[&Expr], slot: &str) -> bool {
 }
 
 /// `slot.get(K) != ()` / `slot.get(K) == ()` / `slot.has(K)` → (K, key is present?)
-fn key_presence(e: &Expr, slot: &str, negate: bool) -> Option<(String, bool)> {
+fn key_presence(e: &Expr, slot: &str, negate: bool, aliases: &HashMap<String, String>) -> Option<(String, bool)> {
     let get_key = |t: &Expr| -> Option<String> {
         match t {
             Expr::MethodCall { target, method, args } if (method == "get" || method == "has") && args.len() == 1
                 && matches!(&target.node, Expr::Ident(n) if n == slot) => Some(render_expr(&args[0].node)),
+            // `let r = rows.get(k)  require r != ()` (r bound once)
+            Expr::Ident(n) => aliases.get(n).cloned(),
             _ => None,
         }
     };
@@ -1568,14 +1638,14 @@ fn key_presence(e: &Expr, slot: &str, negate: bool) -> Option<(String, bool)> {
             Some((k, present != negate))
         }
         Expr::MethodCall { method, .. } if method == "has" => Some((get_key(e)?, !negate)),
-        Expr::Not(i) => key_presence(&i.node, slot, !negate),
+        Expr::Not(i) => key_presence(&i.node, slot, !negate, aliases),
         _ => None,
     }
 }
 
 /// Where a key of `slot` is known to exist: (block path, key rendering,
 /// excluded sub-path).
-fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str) -> Vec<(Vec<usize>, String, Option<Vec<usize>>)> {
+fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, aliases: &HashMap<String, String>) -> Vec<(Vec<usize>, String, Option<Vec<usize>>)> {
     let mut out = Vec::new();
     let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
     for (i, st) in stmts.iter().enumerate() {
@@ -1588,11 +1658,11 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str) 
                     } else {
                         Expr::CmpOp { left: Box::new(left.clone()), op: *op, right: Box::new(right.clone()) }
                     };
-                    if let Some((k, true)) = key_presence(&e, slot, false) { out.push((path.to_vec(), k, None)); }
+                    if let Some((k, true)) = key_presence(&e, slot, false, aliases) { out.push((path.to_vec(), k, None)); }
                 }
             }
             Statement::If { condition, then_body, else_body } => {
-                if let Some((k, present)) = key_presence(&condition.node, slot, false) {
+                if let Some((k, present)) = key_presence(&condition.node, slot, false, aliases) {
                     if present {
                         out.push((sub(i, 0), k, None));
                     } else {
@@ -1600,10 +1670,23 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str) 
                         if else_body.is_empty() && exits(then_body) { out.push((path.to_vec(), k, Some(sub(i, 0)))); }
                     }
                 }
-                out.extend(existing_key_facts(then_body, &sub(i, 0), slot));
-                out.extend(existing_key_facts(else_body, &sub(i, 1), slot));
+                out.extend(existing_key_facts(then_body, &sub(i, 0), slot, aliases));
+                out.extend(existing_key_facts(else_body, &sub(i, 1), slot, aliases));
             }
-            Statement::For { body, .. } | Statement::While { body, .. } => out.extend(existing_key_facts(body, &sub(i, 2), slot)),
+            Statement::For { var, iter, body, .. } => {
+                // `for k in rows.keys { rows.set(k, …) }`: k was a key when
+                // the loop started — setting it again cannot add past the
+                // size the slot had (a deleted k comes back, no more)
+                let over_keys = match &iter.node {
+                    Expr::FieldAccess { target, field } => field == "keys" && matches!(&target.node, Expr::Ident(n) if n == slot),
+                    Expr::MethodCall { target, method, args } => method == "keys" && args.is_empty() && matches!(&target.node, Expr::Ident(n) if n == slot),
+                    Expr::FnCall { name, args } => name == "keys" && args.len() == 1 && matches!(&args[0].node, Expr::Ident(n) if n == slot),
+                    _ => false,
+                };
+                if over_keys { out.push((sub(i, 2), var.clone(), None)); }
+                out.extend(existing_key_facts(body, &sub(i, 2), slot, aliases));
+            }
+            Statement::While { body, .. } => out.extend(existing_key_facts(body, &sub(i, 2), slot, aliases)),
             _ => {}
         }
     }

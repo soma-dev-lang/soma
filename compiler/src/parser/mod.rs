@@ -139,6 +139,28 @@ fn keyword_as_name(t: &Token) -> Option<String> {
     }.to_string())
 }
 
+/// A keyword that can never be a name: the error says so (it used to be a
+/// bare "expected identifier, found 'agent'").
+fn reserved_word(t: &Token) -> Option<&'static str> {
+    Some(match t {
+        Token::Cell => "cell", Token::Interior => "interior", Token::Given => "given",
+        Token::Promise => "promise", Token::Tool => "tool", Token::AgentKw => "agent",
+        Token::Await => "await", Token::On => "on", Token::Where => "where", Token::Else => "else",
+        Token::Require => "require", Token::Let => "let", Token::If => "if", Token::Return => "return",
+        Token::For => "for", Token::In => "in", Token::Use => "use", Token::While => "while",
+        Token::Break => "break", Token::Continue => "continue", Token::Try => "try", Token::Catch => "catch",
+        Token::Assert => "assert", Token::MutexGroup => "mutex_group",
+        _ => return None,
+    })
+}
+
+fn reserved_error(t: &Token, span: Span) -> Option<ParseError> {
+    reserved_word(t).map(|w| ParseError::FixIt {
+        message: format!("`{w}` is a reserved word in Soma and cannot name a variable, parameter or field — rename it (`{w}_id`, `the_{w}`)"),
+        span,
+    })
+}
+
 impl Parser {
     pub fn new(tokens: Vec<SpannedToken>) -> Self {
         Self { tokens, pos: 0, depth: 0 }
@@ -374,6 +396,7 @@ impl Parser {
             Token::Implies => { let span = tok.span; self.advance(); Ok(("implies".to_string(), span)) }
             Token::Contradicts => { let span = tok.span; self.advance(); Ok(("contradicts".to_string(), span)) }
             Token::Match => { let span = tok.span; self.advance(); Ok(("match".to_string(), span)) }
+            t if reserved_word(t).is_some() => Err(reserved_error(t, tok.span).unwrap()),
             _ => Err(ParseError::Expected {
                 expected: "identifier".to_string(),
                 found: tok.token.clone(),
@@ -3135,6 +3158,25 @@ impl Parser {
                 // the span covers the parentheses: `(x |> f()) + 1` echoes whole
                 Ok(Spanned::new(expr.node, start.merge(end)))
             }
+            Token::After | Token::Every | Token::Ensure | Token::Requires | Token::Connect
+                | Token::Variants | Token::Implies | Token::Contradicts => {
+                let name = match self.peek() {
+                    Token::After => "after", Token::Every => "every", Token::Ensure => "ensure",
+                    Token::Requires => "requires", Token::Connect => "connect", Token::Variants => "variants",
+                    Token::Implies => "implies", _ => "contradicts",
+                }.to_string();
+                self.advance();
+                if self.check(&Token::LParen) {
+                    self.advance();
+                    let args = self.parse_arg_list()?;
+                    let end = self.peek_span();
+                    self.expect(Token::RParen)?;
+                    Ok(Spanned::new(Expr::FnCall { name, args }, start.merge(end)))
+                } else {
+                    Ok(Spanned::new(Expr::Ident(name), start))
+                }
+            }
+            ref t if reserved_word(t).is_some() && !matches!(t, Token::If | Token::Try) => Err(reserved_error(t, start).unwrap()),
             _ => Err(ParseError::Expected {
                 expected: "expression".to_string(),
                 found: self.peek().clone(),

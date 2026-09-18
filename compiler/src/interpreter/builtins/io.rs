@@ -98,6 +98,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "response" => {
             let status = args.first().cloned().unwrap_or(Value::Int(SomaInt::from_i64(200)));
+            match &status {
+                Value::Int(si) if si.to_i64().map_or(false, |n| (100..=599).contains(&n)) => {}
+                other => return Some(Err(RuntimeError::TypeError(format!(
+                    "response(status, body): the status must be an HTTP status Int 100–599, got {}", other)))),
+            }
             let body = args.get(1).cloned().unwrap_or(Value::Unit);
             let mut entries = IndexMap::new();
             entries.insert("_status".to_string(), status);

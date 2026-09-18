@@ -422,7 +422,8 @@ fn print_cell_face(cell: &CellDef) {
                 let ty = sm.state_type.as_deref()
                     .map(|t| format!(": {}", t)).unwrap_or_default();
                 let transitions: Vec<String> = sm.transitions.iter()
-                    .map(|t| format!("{} -> {}{}", t.node.from, t.node.to,
+                    .map(|t| format!("{} -> {}{}{}", t.node.from, t.node.to,
+                        if t.node.except.is_empty() { String::new() } else { format!(" except [{}]", t.node.except.join(", ")) },
                         if t.node.guard.is_some() { " (guarded)" } else { "" }))
                     .collect();
                 println!("  state {}{} (initial {}): {}", sm.name, ty,
@@ -500,7 +501,8 @@ fn face_json(cell: &CellDef) -> serde_json::Value {
             }
             Section::State(sm) => {
                 let transitions: Vec<String> = sm.transitions.iter()
-                    .map(|t| format!("{} -> {}", t.node.from, t.node.to))
+                    .map(|t| if t.node.except.is_empty() { format!("{} -> {}", t.node.from, t.node.to) }
+                        else { format!("{} -> {} except [{}]", t.node.from, t.node.to, t.node.except.join(", ")) })
                     .collect();
                 let mut s = serde_json::json!({
                     "name": sm.name,

@@ -387,6 +387,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 
     let mut all_results = Vec::new();
     let mut all_cell_names: Vec<String> = Vec::new();
+    let mut machine_cells: Vec<String> = Vec::new();
     let mut all_temporal = Vec::new();
     let mut total_cells: usize = 0;
 
@@ -401,7 +402,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     let verify_config = manifest.as_ref().map(|m| &m.verify);
 
     let mut unknown_states: Vec<String> = Vec::new();
-    let mut check_failed = false;
+    let check_failed = false;
 
     for path in files {
         let source = commands::read_source(path);
@@ -452,6 +453,9 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 
         eprintln!("Verifying {}...", path.display());
         all_cell_names.extend(program.cells.iter().map(|c| c.node.name.clone()));
+        machine_cells.extend(program.cells.iter()
+            .filter(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::State(_))))
+            .map(|c| c.node.name.clone()));
         total_cells += program.cells.iter()
             .filter(|c| matches!(c.node.kind, ast::CellKind::Cell | ast::CellKind::Agent))
             .count();
@@ -617,6 +621,21 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     let targeted_present = verify_config.as_ref().map(|cfg| {
         cfg.cells.is_empty() || cfg.cells.iter().any(|c| all_cell_names.contains(c))
     }).unwrap_or(false);
+    // `cells = [...]` naming a cell: a near-miss of a cell of this file is a
+    // typo (every property was silently skipped and verify said OK); a cell
+    // of this file without a state machine cannot carry the properties
+    if let Some(cfg) = verify_config.filter(|_| declares_props) {
+        for c in &cfg.cells {
+            if machine_cells.contains(c) { continue; }
+            if all_cell_names.contains(c) {
+                unknown_states.push(format!("soma.toml [verify] cells names '{c}', which has no `state {{ }}` — its properties apply to nothing"));
+            } else if let Some(near) = checker::names::suggest(c, all_cell_names.iter()) {
+                unknown_states.push(format!("soma.toml [verify] cells names '{c}', which this file does not define (did you mean '{near}'?) — its properties were not checked"));
+            } else if !json {
+                eprintln!("note: soma.toml [verify] cells names '{c}', which this file does not define — its properties are not checked here");
+            }
+        }
+    }
     if declares_props && all_temporal.is_empty() && targeted_present {
         unknown_states.push("[verify] declares properties but no state machine received them (no `state { }` in the targeted cells — check `cells = [...]`)".to_string());
     }
@@ -720,7 +739,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 
     if !json {
         for u in &unknown_states {
-            eprintln!("error: soma.toml: {} — a property about a state that does not exist proves nothing", u);
+            if u.starts_with("soma.toml") { eprintln!("error: {}", u); }
+            else { eprintln!("error: soma.toml: {} — a property about a state that does not exist proves nothing", u); }
         }
         // ONE verdict, last, so nobody stops reading at an early "0 failures"
         let structural = all_results.iter().filter(|r| r.has_failures()).count();
@@ -730,7 +750,10 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             if check_failed { why.push("soma check failed".to_string()); }
             if structural > 0 { why.push(format!("{} cell{} with failed checks — state machine or invariants (see ✗ lines)", structural, if structural == 1 { "" } else { "s" })); }
             if temporal > 0 { why.push(format!("{} temporal propert{} failed", temporal, if temporal == 1 { "y" } else { "ies" })); }
-            if !unknown_states.is_empty() { why.push(format!("{} propert{} on unknown states", unknown_states.len(), if unknown_states.len() == 1 { "y" } else { "ies" })); }
+            let bad_cells = unknown_states.iter().filter(|u| u.starts_with("soma.toml")).count();
+            let unknown = unknown_states.len() - bad_cells;
+            if unknown > 0 { why.push(format!("{} propert{} on unknown states", unknown, if unknown == 1 { "y" } else { "ies" })); }
+            if bad_cells > 0 { why.push("soma.toml [verify] cells names no state machine of this file".to_string()); }
             if strict_warnings > 0 {
                 why.push(format!("--strict: {} ⚠ line{} (runtime-checked or unprovable)", strict_warnings, if strict_warnings == 1 { "" } else { "s" }));
                 // the ⚠ lines sit among dozens of ✓: repeat them by the verdict

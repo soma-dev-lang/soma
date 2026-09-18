@@ -213,6 +213,11 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
             if let ast::Section::Rules(ref rules) = section.node {
                 for rule in &rules.rules {
                     let failed_before = failed;
+                    // each rule is one top-level call, like one HTTP request
+                    // under serve: a `set_budget` does not outlive it
+                    interp.agent_token_budget = 0;
+                    interp.agent_tokens_used = 0;
+                    interp.last_span = None;
                     match &rule.node {
                         ast::Rule::Let { name, value } => {
                             match eval_test_expr(&mut interp, &value.node, &test_env) {
@@ -222,7 +227,9 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                                 Err(e) => {
                                     total += 1;
                                     failed += 1;
-                                    say!(out_lines, json, "  ✗ {}:{}  let {} = … — ERROR: {}", file_name, line_of(rule.span), name, e);
+                                    let at = interp.last_span.map(|sp| line_of(sp)).filter(|l| *l != line_of(rule.span))
+                                        .map(|l| format!(" (raised at line {})", l)).unwrap_or_default();
+                                    say!(out_lines, json, "  ✗ {}:{}  let {} = … — ERROR: {}{}", file_name, line_of(rule.span), name, e, at);
                                 }
                             }
                         }
@@ -312,7 +319,9 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                                 }
                                 Err(e) => {
                                     failed += 1;
-                                    say!(out_lines, json, "  ✗ {}:{}  assert {} — ERROR: {}", file_name, line_of(expr.span), shown, e);
+                                    let at = interp.last_span.map(|sp| line_of(sp)).filter(|l| *l != line_of(expr.span))
+                                        .map(|l| format!(" (raised at line {})", l)).unwrap_or_default();
+                                    say!(out_lines, json, "  ✗ {}:{}  assert {} — ERROR: {}{}", file_name, line_of(expr.span), shown, e, at);
                                 }
                             }
                         }

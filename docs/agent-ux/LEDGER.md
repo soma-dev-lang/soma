@@ -346,3 +346,21 @@ runs): 11 failed, two of them serious.
 ### Open
 - [ ] A formerly terminal state becoming non-terminal (new edge) gives no warning; an `after.X never` counter-example starts at X, not from the initial state; map-literal writes are not bounded by the prover; a handler's source states are not checked against its callers.
 
+## Cycle 13 (2026-09-18) — a multi-tenant ticket backend, end to end
+
+Docs 8/10: 79/79 tests, verify --strict green, 600 mixed requests and races
+correct under serve. Eight bugs, two of them in the HTTP layer.
+
+### Fixed
+- [x] **verify**: a `[verify] cells` entry that is a near-miss of a cell of the file (or names a cell with no state machine) is an error — every property was silently skipped and verify said OK, even with `--strict`.
+- [x] **Security (serve)**: a request body carrying `_status` is refused — a handler echoing a client object let the client pick the HTTP status and inject response headers; a status outside 100–599 is a 500 (it was wrapped mod 65536: 65736 went out as 200); `response()` refuses one; 204/304 carry no body; a non-UTF-8 body is `400 json` (it read as `map()`); `%ZZ` stays literal (it decoded to NUL); a non-object JSON body says "must be a JSON object".
+- [x] **cost**: the proven `tokens` bound is said to cover reply tokens (the max_tokens caps), not prompts; the `echo`/`fixed:` mocks stop at max_tokens like a provider.
+- [x] **Budgets**: a test rule starts with no token budget (one rule = one request, as under serve); `tokens_remaining()` never goes below 0.
+- [x] **Prover**: an `if` condition narrows the writes of its branch (its negation those of `else`); `for k in rows.keys { rows.set(k, …) }` and `let r = rows.get(k)  require r != ()` no longer count as growing the slot.
+- [x] **Check**: a reserved word used as a name says "reserved word — rename it"; `after`/`every`/`ensure` bound by `let` can be read; an Int-answering builtin (`regex_match`) used as a Bool is an error; `soma test` names the line that raised; `describe` keeps `except [...]`.
+- [x] **Docs**: forall takes one Int variable; test cells may hold helpers; guards bind for every handler targeting the state; repeated query keys, OPTIONS; budget scope.
+
+### Open
+- [ ] `eventually` has no fairness option (a legitimate assigned ↔ waiting cycle fails it).
+- [ ] `response()` with a bad status raises kind `type` (answered 400) — a server bug that reads as a client error.
+

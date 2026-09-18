@@ -10,6 +10,13 @@
   stdout, and says which `require` would prove an open invariant.
 - Native: a buffer passed to a sibling is a check error; Int-valued calls in
   Float expressions compile; a constant overflow is the `range` error.
+- `soma verify` fails when `[verify] cells` names a misspelled cell or one
+  without a state machine (every property was silently skipped).
+- serve refuses a request body carrying `_status` (a handler echoing it let
+  the client pick the status and headers), answers 500 for a status outside
+  100–599, 400 for a non-UTF-8 body, and keeps `%ZZ` literal.
+- The prover narrows by `if` branches and accepts update loops over a
+  slot's keys; `cost { tokens }` is stated as reply tokens.
 - Hints for `require` without `else`, `and`/`or`/`not`, a quote inside `{…}`;
   CI builds Linux and Intel macOS binaries for every release tag.
 

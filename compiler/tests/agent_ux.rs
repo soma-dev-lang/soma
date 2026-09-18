@@ -220,7 +220,7 @@ cell test T {
     // think(prompt, system, opts): the options are the LAST argument
     let d = std::env::temp_dir().join("soma_agent_ux_mocks");
     let (out, _) = soma_in(&d, &["check", "app.cell"]);
-    assert!(out.contains("'tokens' bound proven — peak 50 tokens"), "{out}");
+    assert!(out.contains("'tokens' bound proven — peak 50 reply tokens"), "{out}");
 }
 
 #[test]
@@ -1372,4 +1372,49 @@ cell A {
     assert_eq!(code, 0, "{out}");
     let (out, code) = soma_in(&d, &["verify", "--strict", "ar.cell"]);
     assert_eq!(code, 0, "{out}");
+}
+
+/// Cycle 13: `[verify] cells` typos fail verify; `if` branches narrow
+/// invariant proofs; update loops over a slot's keys keep size proofs;
+/// reserved words name themselves; Int builtins used as Bool are errors;
+/// per-rule token budgets.
+#[test]
+fn cycle13_findings() {
+    let d = dir("cycle13");
+    std::fs::write(d.join("app.cell"), r#"
+cell Tickets {
+  state life { initial: open  open -> closed  closed -> open }
+  on close(id: String) { transition(id, "closed") }
+  on reopen(id: String) { transition(id, "open") }
+}
+"#).unwrap();
+    std::fs::write(d.join("soma.toml"), "[verify]\ncells = [\"Tickts\"]\nnever = [\"closed\"]\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "app.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("did you mean 'Tickets'"), "{out}");
+    std::fs::remove_file(d.join("soma.toml")).unwrap();
+
+    std::fs::write(d.join("q.cell"), r#"
+cell Q {
+  memory { c: Map<String, Int> [persistent]  invariant c >= 0 && c <= 5
+           rows: Map<String, Int> [persistent]  invariant rows.size <= 10 }
+  on add_if(k: String) { let n = c.get(k) ?? 0  if n < 5 { c.set(k, n + 1) }  return n }
+  on bad(k: String, x: Int) { if x < 5 || x > 100 { c.set(k, x) } }
+  on touch() { for k in rows.keys { rows.set(k, 5) }  return 1 }
+  on upd(k: String) { let r = rows.get(k)  require r != () else Missing  rows.set(k, r + 1) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "q.cell"]);
+    assert!(out.contains("writer 'add_if' proven"), "{out}");
+    assert!(!out.contains("writer 'bad' proven"), "{out}");
+    assert!(out.contains("writer 'touch' proven"), "{out}");
+    assert!(out.contains("writer 'upd' proven"), "{out}");
+
+    std::fs::write(d.join("r.cell"), "cell A { on f(agent: String) { return agent } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "r.cell"]);
+    assert!(out.contains("`agent` is a reserved word"), "{out}");
+    std::fs::write(d.join("b.cell"), "cell A { on f(s: String) { if !regex_match(s, \"^a\") { return false }  return true } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "b.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("answers an Int (1 or 0)"), "{out}");
 }

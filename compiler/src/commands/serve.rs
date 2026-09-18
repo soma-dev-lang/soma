@@ -1019,8 +1019,21 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             acc.into_iter().map(|(k, v)| (k, interpreter::Value::String(v))).collect()
         };
 
-        let mut body_raw = String::new();
-        let _ = request.as_reader().read_to_string(&mut body_raw);
+        // bytes first: a body that is not UTF-8 used to read as "" (a
+        // `body: Map` handler then saw map() — the data silently lost)
+        let mut body_bytes: Vec<u8> = Vec::new();
+        let _ = request.as_reader().read_to_end(&mut body_bytes);
+        let body_raw = match String::from_utf8(body_bytes) {
+            Ok(t) => t,
+            Err(_) => {
+                let resp = tiny_http::Response::from_string(error_body("the request body is not valid UTF-8", "json"))
+                    .with_status_code(400)
+                    .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                eprintln!("{} {} → 400 0ms request body is not valid UTF-8", method, url);
+                let _ = request.respond(cors(resp));
+                return;
+            }
+        };
 
         // leading whitespace is JSON too (a pretty-printing client): trim
         let body_raw = body_raw.trim_start().to_string();
@@ -1045,6 +1058,20 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             None
         };
         let body = body_raw;
+
+        // a returned map with `_status` IS an HTTP response (its other plain
+        // keys become headers): a handler echoing a client object would let
+        // the client pick the status and inject headers — refuse the key
+        if let Some(interpreter::Value::Map(m)) = &body_value {
+            if m.contains_key("_status") {
+                let resp = tiny_http::Response::from_string(error_body("the request body may not carry `_status` (reserved: a returned map with `_status` is an HTTP response)", "json"))
+                    .with_status_code(400)
+                    .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                eprintln!("{} {} → 400 0ms body carries reserved `_status`", method, url);
+                let _ = request.respond(cors(resp));
+                return;
+            }
+        }
 
         if method == "OPTIONS" {
             let resp = tiny_http::Response::from_string("")
@@ -1294,7 +1321,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         Some(v) if matches!(v, interpreter::Value::Map(_) | interpreter::Value::List(_)) => v,
                         _ if body.trim().is_empty() => interpreter::Value::Map(Default::default()),
                         _ => {
-                            let msg = format!("request body must be JSON (the `request` handler declares body: {})", request_body_type);
+                            let msg = if request_body_type.as_str() == "Map" {
+                                "request body must be a JSON object `{…}` (the `request` handler declares body: Map)".to_string()
+                            } else {
+                                format!("request body must be a JSON {} (the `request` handler declares body: {})",
+                                    if request_body_type.as_str() == "List" { "array `[…]`" } else { "value" }, request_body_type)
+                            };
                             let resp = tiny_http::Response::from_string(
                                 error_body(&msg, "json"))
                                 .with_status_code(400)
@@ -1449,9 +1481,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 };
                 let (status_code, body_str, content_type, extra_headers) = if is_response {
                     let entries = if let interpreter::Value::Map(ref e) = val { e } else { unreachable!() };
-                    let status = entries.get("_status")
-                        .and_then(|v| if let interpreter::Value::Int(si) = v { si.to_i64().map(|n| n as u16) } else { None })
-                        .unwrap_or(200);
+                    // a status outside 100–599 was wrapped mod 65536 (99999
+                    // went out as 34463, 65736 as 200): answer 500 instead
+                    let raw_status = entries.get("_status")
+                        .and_then(|v| if let interpreter::Value::Int(si) = v { si.to_i64() } else { None });
+                    let status: u16 = match raw_status {
+                        Some(n) if (100..=599).contains(&n) => n as u16,
+                        None => 200,
+                        Some(n) => {
+                            eprintln!("error: {} {}: response status {} is not an HTTP status (100–599) — answered 500", method, url, n);
+                            500
+                        }
+                    };
                     let content_type = entries.get("_content_type")
                         .and_then(|v| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None })
                         .unwrap_or("application/json".to_string());
@@ -1497,6 +1538,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 };
 
                 let verbose_body = if verbose { Some(body_str.clone()) } else { None };
+                // 204 / 304 carry no body (HTTP): `response(204, x)` sent one
+                let body_str = if status_code == 204 || status_code == 304 { String::new() } else { body_str };
                 let mut resp = tiny_http::Response::from_string(body_str)
                     .with_status_code(tiny_http::StatusCode(status_code))
                     .with_header(
@@ -1657,17 +1700,21 @@ fn coerce_query_value(decoded: &str) -> interpreter::Value {
 
 fn urlencoding_decode(s: &str) -> String {
     let mut bytes = Vec::with_capacity(s.len());
-    let mut iter = s.bytes();
-    while let Some(b) = iter.next() {
-        match b {
-            b'%' => {
-                let hi = iter.next().unwrap_or(b'0');
-                let lo = iter.next().unwrap_or(b'0');
-                bytes.push((hex_val(hi) << 4) | hex_val(lo));
+    let raw = s.as_bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        match raw[i] {
+            // an invalid escape (`%ZZ`, a trailing `%`) stays literal — it
+            // decoded to a NUL character
+            b'%' if i + 2 < raw.len() && raw[i + 1].is_ascii_hexdigit() && raw[i + 2].is_ascii_hexdigit() => {
+                bytes.push((hex_val(raw[i + 1]) << 4) | hex_val(raw[i + 2]));
+                i += 3;
+                continue;
             }
             b'+' => bytes.push(b' '),
-            _ => bytes.push(b),
+            b => bytes.push(b),
         }
+        i += 1;
     }
     String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }

@@ -498,7 +498,7 @@ fn cost_bound_is_not_proven_through_helpers_loops_or_lambdas() {
         .replace("BODY", r#"for i in range(0, 3) { one("x") }"#);
     let (out, code) = check_src("cost_via_range.cell", &src);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("'tokens' bound proven — peak 1500 tokens"), "got: {out}");
+    assert!(out.contains("'tokens' bound proven — peak 1500 reply tokens"), "got: {out}");
 }
 
 #[test]

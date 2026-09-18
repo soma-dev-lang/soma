@@ -153,7 +153,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         "tokens_remaining" => {
             if interp.agent_token_budget > 0 {
-                Some(Ok(Value::Int(SomaInt::from_i64(interp.agent_token_budget - interp.agent_tokens_used))))
+                Some(Ok(Value::Int(SomaInt::from_i64((interp.agent_token_budget - interp.agent_tokens_used).max(0)))))
             } else {
                 Some(Ok(Value::Int(SomaInt::from_i64(-1)))) // unlimited
             }
@@ -358,8 +358,10 @@ fn agent_think(
     if let Some(mock) = mock_val {
         let response = match (&scripted, mock.as_str()) {
             (Some(Ok(text)), _) => text.clone(),
-            (_, "echo") => prompt.to_string(),
-            (_, s) if s.starts_with("fixed:") => s[6..].to_string(),
+            // a real provider stops at max_tokens: so does the mock (~4
+            // characters per token) — a scripted reply is kept as written
+            (_, "echo") => cap_reply(prompt, max_tokens),
+            (_, s) if s.starts_with("fixed:") => cap_reply(&s[6..], max_tokens),
             (_, other) => {
                 // a configuration mistake, not a domain error: a handler's
                 // `try { think(..) }` must not be able to swallow it
@@ -633,4 +635,11 @@ fn json_object_reply(text: &str) -> Result<Value, RuntimeError> {
         kind: "json".to_string(),
         message: format!("think_json(): the model did not answer a JSON object — got {:?}; catch it with `try`, or use think() and parse the text yourself", shown),
     })
+}
+
+fn cap_reply(text: &str, max_tokens: Option<u64>) -> String {
+    match max_tokens {
+        Some(n) => text.chars().take((n as usize).saturating_mul(4)).collect(),
+        None => text.to_string(),
+    }
 }

@@ -32,8 +32,13 @@ impl std::fmt::Display for CostFinding {
             CostFinding::Advisory { axis, reason } =>
                 write!(f, "cost: '{}' bound is advisory — {}", axis, reason),
             CostFinding::Proven { axis, computed, declared, unit } =>
-                write!(f, "cost: '{}' bound proven — peak {} {} ≤ declared {} {}",
-                       axis, computed, unit, declared, unit),
+                if *axis == "tokens" {
+                    write!(f, "cost: 'tokens' bound proven — peak {} reply tokens (the max_tokens caps) ≤ declared {} (prompts are not counted: cap them with set_budget)",
+                           computed, declared)
+                } else {
+                    write!(f, "cost: '{}' bound proven — peak {} {} ≤ declared {} {}",
+                           axis, computed, unit, declared, unit)
+                },
         }
     }
 }
