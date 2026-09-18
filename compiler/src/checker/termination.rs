@@ -79,31 +79,37 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
             for stmt in &on.body {
                 check_stmt_termination(&stmt.node, &on.signal_name, &on.params, &mut reasons);
             }
-            // a call of a FUNCTION VALUE (a lambda in a local or a parameter):
-            // `let f = g => g(g)  f(f)` recurses with no handler call at all
-            // ("structurally terminates", then a stack overflow)
+            // recursion with no handler call: a LAMBDA whose body calls a
+            // function value (`g => g(g)`, or through an alias `let k = [g][0]
+            // k(k)`), or a handler calling its own function-valued parameter
+            // (`_ap(f) { f(f) }`). A plain `let f = x => x + 1  f(2)` is fine.
             {
-                let mut fn_values: std::collections::HashSet<String> = on.params.iter().map(|p| p.name.clone()).collect();
-                crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
-                    Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } => { fn_values.insert(param.clone()); }
-                    _ => {}
-                });
-                fn let_lambdas(stmts: &[Spanned<Statement>], out: &mut std::collections::HashSet<String>) {
-                    for st in stmts {
-                        match &st.node {
-                            Statement::Let { name, value } | Statement::Assign { name, value } if matches!(value.node, Expr::Lambda { .. } | Expr::LambdaBlock { .. }) => { out.insert(name.clone()); }
-                            Statement::If { then_body, else_body, .. } => { let_lambdas(then_body, out); let_lambdas(else_body, out); }
-                            Statement::For { body, .. } | Statement::While { body, .. } => let_lambdas(body, out),
-                            _ => {}
+                let handler_names: std::collections::HashSet<&str> = graph.keys().map(|s| s.as_str()).collect();
+                let builtins = crate::checker::names::builtin_names();
+                let is_value_call = |n: &str| !handler_names.contains(n) && !builtins.contains(n) && !n.starts_with(|c: char| c.is_uppercase());
+                let mut hit: Option<String> = None;
+                crate::checker::literals::for_each_expr(&on.body, &mut |e| {
+                    if hit.is_some() { return; }
+                    let inner: Vec<&Expr> = match e {
+                        Expr::Lambda { body, .. } => vec![&body.node],
+                        Expr::LambdaBlock { stmts, result, .. } => {
+                            let mut v: Vec<&Expr> = Vec::new();
+                            crate::checker::literals::for_each_expr(stmts, &mut |x| if let Expr::FnCall { name, .. } = x { if is_value_call(name) { hit = Some(name.clone()); } });
+                            v.push(&result.node);
+                            v
                         }
+                        _ => vec![],
+                    };
+                    for x in inner {
+                        crate::checker::literals::for_each_in_expr(x, &mut |y| if let Expr::FnCall { name, .. } = y { if hit.is_none() && is_value_call(name) { hit = Some(name.clone()); } });
                     }
-                }
-                let_lambdas(&on.body, &mut fn_values);
-                let mut called: Option<String> = None;
-                crate::checker::literals::for_each_expr(&on.body, &mut |e| if let Expr::FnCall { name, .. } = e {
-                    if called.is_none() && fn_values.contains(name) { called = Some(name.clone()); }
                 });
-                if let Some(f) = called {
+                if hit.is_none() {
+                    crate::checker::literals::for_each_expr(&on.body, &mut |e| if let Expr::FnCall { name, .. } = e {
+                        if hit.is_none() && on.params.iter().any(|p| &p.name == name) { hit = Some(name.clone()); }
+                    });
+                }
+                if let Some(f) = hit {
                     reasons.push(format!("calls the function value `{}` — a lambda can call itself (`g => g(g)`), so termination is not proven", f));
                 }
             }

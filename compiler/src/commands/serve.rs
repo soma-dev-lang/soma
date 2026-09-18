@@ -88,7 +88,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     let request_routes = {
         let exposed = crate::checker::desugar::expose_for_analysis(&program);
         let acell = exposed.cells.iter().find(|c| c.node.name == cell.node.name).map(|c| c.node.clone()).unwrap_or_else(|| cell.node.clone());
-        std::sync::Arc::new(crate::checker::routes::explicit_routes(&acell))
+        std::sync::Arc::new(crate::checker::routes::explicit_routes_in(&exposed, &acell))
     };
     let mutating = {
         // interpolation / UFCS calls made explicit: `"{bal.set(k, 0)}"` in a
@@ -1063,6 +1063,20 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     // .soma_data ran every tick (and every `after`) a second time. The lock
     // is an exclusive SQLite transaction held for the life of the process
     // (released by the OS on kill -9).
+    // a SHARED lock held while serving: `soma run --fresh` in the same
+    // directory deleted the database under the running server (its later
+    // writes went to an unlinked file and were lost)
+    {
+        let dir = crate::runtime::storage::data_dir();
+        if dir.is_dir() {
+            if let Ok(conn) = rusqlite::Connection::open(dir.join("serve.lock")) {
+                let _ = conn.execute_batch("CREATE TABLE IF NOT EXISTS l(x)");
+                if conn.execute_batch("BEGIN").is_ok() && conn.query_row("SELECT count(*) FROM l", [], |r| r.get::<_, i64>(0)).is_ok() {
+                    Box::leak(Box::new(conn));
+                }
+            }
+        }
+    }
     let has_timers = program.cells.iter().any(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::Every(_) | ast::Section::After(_))));
     if !no_schedule && has_timers {
         let dir = crate::runtime::storage::data_dir();

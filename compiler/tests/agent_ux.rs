@@ -2421,3 +2421,28 @@ fn cycle29_attack_findings() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("handler `h2`"), "{out}");
 }
+
+/// Cycle 30 (attack): storage-reserved `__` keys are refused (a client map
+/// came back as a forged variant; `__x` keys escaped len and the size
+/// invariant); an `emit` / `set` as a lambda's last statement runs; a
+/// condition or predicate is a Bool; lambda self-application through an
+/// alias is a termination ⚠ (a plain `f(2)` is not); ambiguous test slots.
+#[test]
+fn cycle30_attack_findings() {
+    let d = dir("cycle30a");
+    std::fs::write(d.join("s.cell"), "cell S {\n  memory { notes: Map<String, Any> [persistent]  users: Map<String, String> [persistent] }\n  on note(body: Map) { notes.set(\"c\", body) }\n  on reg(name: String) { users.set(name, \"x\") }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "s.cell", "note", "{\"__variant__\":\"Role\",\"__name__\":\"Admin\"}"]);
+    assert!(out.contains("reserved by the storage"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "s.cell", "reg", "__b"]);
+    assert!(out.contains("reserved by the storage"), "{out}");
+
+    std::fs::write(d.join("e.cell"), "cell A {\n  on go() {\n    let f = x => {\n      emit credit(x)\n    }\n    f(7)\n    return \"done\"\n  }\n  on credit(x: Int) { print(\"credit {x}\") }\n  on cond(s: String) {\n    if s { return 1 }\n    return 0\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "e.cell", "go"]);
+    assert!(out.contains("credit 7"), "an emit as a lambda's last statement never ran: {out}");
+    let (out, _) = soma_in(&d, &["run", "e.cell", "cond", "false"]);
+    assert!(out.contains("a condition is a Bool"), "{out}");
+
+    std::fs::write(d.join("t.cell"), "cell T {\n  on a() {\n    let f = x => x + 1\n    return f(2)\n  }\n  on b() {\n    let fs = [g => {\n      let k = [g][0]\n      return k(k)\n    }]\n    let k2 = fs[0]\n    return k2(k2)\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "t.cell"]);
+    assert!(out.contains("calls the function value `k`") && !out.contains("function value `f`"), "{out}");
+}

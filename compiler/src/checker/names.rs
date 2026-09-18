@@ -54,6 +54,8 @@ pub struct ProgramIndex {
     /// (cell, handler) → its parameter count (`B.bh()` with the wrong count
     /// passed check and failed on every call)
     pub arity: HashMap<(String, String), (usize, usize)>,
+    /// slot name → the cells that declare one of that name
+    pub slot_owners: HashMap<String, Vec<String>>,
 }
 
 /// Collect all cells in the program, recursing into interior sections.
@@ -83,6 +85,7 @@ impl ProgramIndex {
         let mut slots: HashSet<String> = HashSet::new();
         let mut list_slots: HashSet<String> = HashSet::new();
         let mut arity: HashMap<(String, String), (usize, usize)> = HashMap::new();
+        let mut slot_owners: HashMap<String, Vec<String>> = HashMap::new();
 
         for b in builtin_names() {
             known.insert((*b).to_string());
@@ -139,6 +142,8 @@ impl ProgramIndex {
                         for slot in &mem.slots {
                             known.insert(slot.node.name.clone());
                             slots.insert(slot.node.name.clone());
+                            let o = slot_owners.entry(slot.node.name.clone()).or_default();
+                            if !o.contains(&cell.name) { o.push(cell.name.clone()); }
                             let is_list = match &slot.node.ty.node {
                                 TypeExpr::Generic { name, .. } | TypeExpr::Simple(name) => name == "List",
                                 _ => false,
@@ -167,7 +172,7 @@ impl ProgramIndex {
             }
         }
 
-        Self { handler_map, known, variants, slots, cells, list_slots, arity }
+        Self { handler_map, known, variants, slots, cells, list_slots, arity, slot_owners }
     }
 }
 

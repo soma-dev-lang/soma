@@ -90,6 +90,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             if args.len() >= 2 {
                 let key = format!("{}", args[0]);
                 let val = &args[1];
+                if let Some(k) = crate::interpreter::reserved_storage_key(val) {
+                    return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("remember(): a map key '{}' — keys starting with `__` are reserved by the storage", k) }));
+                }
                 // the cell's own agent memory (it used to be written into
                 // whichever user slot a HashMap walk found first — past its
                 // type and invariants — and was never rolled back)

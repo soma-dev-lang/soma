@@ -829,3 +829,30 @@ interpreted); kill -9 twice under 25k requests: nothing lost, audit exact.
 ### Open
 - [ ] `try { … }?` of an always-rejected write is described as "the handler catches it"; `"a" |> counts.set(99)` and a self-referencing lambda pass check.
 - [ ] Warnings from imported files still carry the importer's file and line.
+
+## Cycle 30 (2026-09-18) — deployment orchestrator (canary, approvals, freezes)
+
+8/10: check, 85 tests, verify --strict (21 temporal properties, capacity bound
+proven) green; 8 random kill -9 plus a webhook outage: 0 stuck, 0 double
+promotions, webhooks 331/331 exactly once, max 3 concurrent prod deploys.
+No bug and no false proof.
+
+### Fixed
+- [x] verify names each machine `Cell.machine` when several cells have one (two `s` blocks were indistinguishable).
+- [x] Docs: "vacuously true" is for a missing TARGET state (a `requires` naming a missing state fails); keywords and reserved handler names; tool capabilities bind model calls only; tool calls are tested offline with a fake OpenAI-compatible server.
+
+### Cycle 30 — attack (regressions and storage, same binary)
+
+- [x] **Forged variant through storage**: the storage encodes variants / BigInts / special floats with in-band `__variant__` / `__bigint__` / `__float__` keys, and a client JSON body stored in an Any slot came back as `Admin {who: "mallory"}` — map keys starting with `__` are refused in slot values and `remember`.
+- [x] **Proven size bound broken**: slot keys starting with `__` were hidden from len / keys / the size invariant (6 rows under `size <= 3`) — refused.
+- [x] **False termination**: lambda self-application through an alias (`let k = [g][0]  k(k)`) — the rule now flags any lambda whose body calls a function value, or a handler calling its function parameter; the documented `let f = x => x + 1  f(2)` is no longer a ⚠ under --strict.
+- [x] **Dropped statements**: the last statement of a block lambda was discarded when it was not an expression — `x => { emit credit(x) }` never emitted (and its target stayed a forgeable endpoint), a final `set` / `transition` never ran.
+- [x] Route ownership stopped at other cells (`request → Domain.run → Api.wipe` left POST /wipe open) — it follows calls through every cell.
+- [x] `if` / `while` / filter / find / any / all / count took truthiness (`if body.admin` was true for the String "false") — a Bool, `()` being false.
+- [x] `soma run --fresh` deleted the database under a running `soma serve` — refused while a serve holds the directory.
+- [x] A slot name two cells declare, read in a test rule, silently read one of them — check error; `"{secret}"` of another cell's slot is refused by check.
+
+### Open
+- [ ] Writing a List slot by index or deleting from it is O(n) per write (quadratic loops).
+- [ ] `delegate("Api", h, …)` with a computed handler name inside `request` does not own `h`.
+- [ ] `rows.delete(5)` out of range is a silent no-op; a Map slot re-declared List loses its old entries on the first push.

@@ -184,3 +184,55 @@ fn request_calls(cell: &CellDef, name: &str) -> bool {
     super::literals::for_each_call(&req.body, &mut |called, _, _| { if called == name { found = true; } });
     found
 }
+
+/// `explicit_routes` over the WHOLE program: a handler of this cell that
+/// `request` reaches through ANOTHER cell (`Domain.run(x)` calling
+/// `Api.wipe(id)`) is owned too (POST /wipe/x skipped request's auth).
+pub fn explicit_routes_in(program: &Program, cell: &CellDef) -> ExplicitRoutes {
+    let mut routes = explicit_routes(cell);
+    let mut defs: std::collections::HashMap<(String, String), &OnSection> = std::collections::HashMap::new();
+    for c in &program.cells {
+        for s in &c.node.sections {
+            if let Section::OnSignal(h) = &s.node { defs.insert((c.node.name.clone(), h.signal_name.clone()), h); }
+        }
+    }
+    let Some(req) = defs.get(&(cell.name.clone(), "request".to_string())).copied() else { return routes };
+    let cells: std::collections::HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut todo: Vec<(String, &OnSection)> = vec![(cell.name.clone(), req)];
+    while let Some((cur, h)) = todo.pop() {
+        let mut edges: Vec<(Option<String>, String)> = Vec::new();
+        super::literals::for_each_call(&h.body, &mut |n, _, _| edges.push((None, n.to_string())));
+        super::literals::for_each_expr(&h.body, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
+            if let Expr::Ident(t) = &target.node { if cells.contains(t) { edges.push((Some(t.clone()), method.clone())); } }
+        });
+        fn stmt_edges(stmts: &[Spanned<Statement>], cells: &std::collections::HashSet<String>, out: &mut Vec<(Option<String>, String)>) {
+            for st in stmts {
+                match &st.node {
+                    Statement::MethodCall { target, method, .. } if cells.contains(target) => out.push((Some(target.clone()), method.clone())),
+                    Statement::Emit { signal_name, .. } => out.push((Some("*".to_string()), signal_name.clone())),
+                    Statement::If { then_body, else_body, .. } => { stmt_edges(then_body, cells, out); stmt_edges(else_body, cells, out); }
+                    Statement::For { body, .. } | Statement::While { body, .. } => stmt_edges(body, cells, out),
+                    _ => {}
+                }
+            }
+        }
+        stmt_edges(&h.body, &cells, &mut edges);
+        for (tc, n) in edges {
+            let targets: Vec<String> = match tc {
+                Some(c) if c == "*" => program.cells.iter().filter(|c| defs.contains_key(&(c.node.name.clone(), n.clone()))).map(|c| c.node.name.clone()).collect(),
+                Some(c) => vec![c],
+                None if defs.contains_key(&(cur.clone(), n.clone())) => vec![cur.clone()],
+                None => program.cells.iter().filter(|c| defs.contains_key(&(c.node.name.clone(), n.clone()))).map(|c| c.node.name.clone()).collect(),
+            };
+            for t in targets {
+                if n == "request" || !seen.insert((t.clone(), n.clone())) { continue; }
+                if let Some(next) = defs.get(&(t.clone(), n.clone())).copied() {
+                    if t == cell.name && !n.starts_with('_') && !routes.owned.contains(&n) { routes.owned.push(n.clone()); }
+                    todo.push((t, next));
+                }
+            }
+        }
+    }
+    routes
+}

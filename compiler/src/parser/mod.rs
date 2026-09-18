@@ -2887,6 +2887,16 @@ impl Parser {
                         // ACTUALLY: let's just put all stmts except last into the body, and the last expr is result.
                         // But Lambda only has body: Expr. We need to change Lambda to support statements.
                         // Let's do it properly:
+                        // the last statement is the value only when it IS an
+                        // expression: an `emit` / `set` / `transition(...)`
+                        // statement there was dropped (it never ran)
+                        let last_is_value = stmts.last().map_or(false, |l| matches!(l.node, Statement::ExprStmt { .. } | Statement::Return { .. }));
+                        if !last_is_value && !stmts.is_empty() {
+                            return Ok(Spanned::new(
+                                Expr::LambdaBlock { param: name, stmts, result: Box::new(result) },
+                                start.merge(self.prev_span()),
+                            ));
+                        }
                         if stmts.len() <= 1 {
                             return Ok(Spanned::new(
                                 Expr::Lambda { param: name, body: Box::new(result) },

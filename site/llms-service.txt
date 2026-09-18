@@ -428,7 +428,9 @@ EVERY value when the range has at most 20,000 values; a wider range is only
 sampled (50 values, fixed seed — not a proof). State more in a `soma.toml` beside
 the program (`[package]` is optional; an unknown key is an error). The properties
 apply to every machine of the cells in `cells = [...]` (all cells when absent):
-a property naming a state one machine lacks is vacuously true there — split
+a property whose TARGET state one machine lacks is vacuously true there (but
+`before.X requires [Y]` with X present and Y absent FAILS: X is reachable
+without Y) — output names each machine `Cell.machine` when there are several; split
 programs, or scope `cells`, when two machines need different properties:
 
 ```toml
@@ -500,7 +502,11 @@ cell agent Researcher {
 // latency:, usd:) to the cell and soma check PROVES the bound when every
 // think() has a literal max_tokens and runs a known number of times.
 // The model may call only the face's `tool`s (never a private or other
-// handler), with typed arguments, within their capabilities (URL patterns with
+// handler), with typed arguments, within their capabilities — the scope
+// binds MODEL calls only: your own code (or `soma run app.cell tool …`)
+// calling the tool handler directly is not restricted; `mock think` scripts
+// text replies only (to test tool calls offline, point [agent] url at a fake
+// OpenAI-compatible server) (URL patterns with
 // `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
 // tool that calls think() makes a `cost` bound unprovable); a tool call that raises is rolled
 // back. `map("max_rounds", N)` caps the tool-call rounds of one think();
@@ -544,7 +550,11 @@ cell agent Researcher {
 8. serve routes only the cell that owns `request` — put routable signals
    there, delegating to domain cells.
 9. Adjacent string literals don't concatenate (`return "a" "b"` is a check
-   error); `on` and `given` are reserved words.
+   error). Language keywords (on, given, cell, agent, tool, use, require,
+   promise, let, if, match, return, …) are not names — `soma check` says
+   which one and how to rename it. Reserved HANDLER names (they would replace the
+   builtin): transition, approve, fail, get_status, has_state,
+   valid_transitions, think, think_json, set_budget, tokens_used.
 10. Floats: compare with a tolerance, never ==.
 11. `7 / 2` is `3.5` — everywhere, `[native]` included. `idiv(7, 2)` is the
     integer quotient (truncates toward zero, BigInt-exact).

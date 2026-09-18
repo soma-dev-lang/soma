@@ -246,7 +246,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
             for item in list {
                 match interp.apply_lambda(lambda, item.clone(), cell_name) {
                     Ok(v) => {
-                        if super::is_truthy(&v) {
+                        if match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } {
                             result.push(item.clone());
                         }
                     }
@@ -259,7 +259,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
             for item in list {
                 match interp.apply_lambda(lambda, item.clone(), cell_name) {
                     Ok(v) => {
-                        if super::is_truthy(&v) {
+                        if match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } {
                             return Some(Ok(item.clone()));
                         }
                     }
@@ -272,7 +272,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
             for item in list {
                 match interp.apply_lambda(lambda, item.clone(), cell_name) {
                     Ok(v) => {
-                        if super::is_truthy(&v) {
+                        if match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } {
                             return Some(Ok(Value::Bool(true)));
                         }
                     }
@@ -285,7 +285,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
             for item in list {
                 match interp.apply_lambda(lambda, item.clone(), cell_name) {
                     Ok(v) => {
-                        if !super::is_truthy(&v) {
+                        if !match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } {
                             return Some(Ok(Value::Bool(false)));
                         }
                     }
@@ -299,7 +299,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
             for item in list {
                 match interp.apply_lambda(lambda, item.clone(), cell_name) {
                     Ok(v) => {
-                        if super::is_truthy(&v) { n += 1; }
+                        if match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } { n += 1; }
                     }
                     Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
@@ -396,5 +396,15 @@ pub fn serde_json_to_value(v: &serde_json::Value) -> Value {
             }
             Value::Map(obj.iter().map(|(k, v)| (k.clone(), serde_json_to_value(v))).collect())
         }
+    }
+}
+
+/// The answer of a filter / find / any / all / count predicate: a Bool
+/// (`()` is false), like an `if` condition — a String "false" counted as true.
+fn pred_bool(name: &str, v: &Value) -> Result<bool, RuntimeError> {
+    match v {
+        Value::Bool(b) => Ok(*b),
+        Value::Unit => Ok(false),
+        other => Err(RuntimeError::TypeError(format!("{}(): the lambda answered {} {} — a predicate answers a Bool (compare: `x => x.n > 0`)", name, crate::interpreter::value_type_name(other), { let t: String = format!("{}", other).chars().take(30).collect(); t }))),
     }
 }

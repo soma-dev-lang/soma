@@ -335,6 +335,14 @@ fn main_inner() {
             if fresh {
                 // the database lives beside the program (see operations.md)
                 let data = runtime::storage::data_dir();
+                // not under a running `soma serve` (it holds a shared lock)
+                if let Ok(conn) = rusqlite::Connection::open(data.join("serve.lock")) {
+                    let _ = conn.busy_timeout(std::time::Duration::from_millis(0));
+                    if data.join("serve.lock").exists() && conn.execute_batch("BEGIN EXCLUSIVE").is_err() {
+                        eprintln!("error: --fresh: a `soma serve` is running on {} — stop it first (deleting its database under it loses everything it writes next)", data.display());
+                        std::process::exit(1);
+                    }
+                }
                 if data.exists() {
                     if let Err(e) = std::fs::remove_dir_all(&data) {
                         eprintln!("error: --fresh: cannot remove {}: {}", data.display(), e);
@@ -580,7 +588,9 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                         .map(|p| check_property(&graph, p))
                         .collect();
 
-                    all_temporal.push((sm.name.clone(), results));
+                    let machine_cells = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::State(_)))).count();
+                    let label = if machine_cells > 1 { format!("{}.{}", cell.node.name, sm.name) } else { sm.name.clone() };
+                    all_temporal.push((label, results));
                 }
             }
         }

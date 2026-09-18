@@ -437,6 +437,22 @@ impl<'a> Walker<'a> {
             // bound NOWHERE — a typo or an incomplete rename, which would
             // otherwise only fail at runtime, on the path that reads it.
             Expr::Ident(name) => {
+                // a test rule naming a slot two cells declare: it silently
+                // read one of them (a false green test)
+                if self.in_test && !self.scope.contains(name) {
+                    if let Some(owners) = self.index.slot_owners.get(name) {
+                        if owners.len() > 1 {
+                            self.issues.push(InterpolationIssue {
+                                message: format!("`{name}` is a slot of several cells ({}) — in a test it is ambiguous: read it through a handler of the cell you mean", owners.join(", ")),
+                                span,
+                                warning: false,
+                                habit: false,
+                                kind: "ambiguous_slot",
+                            });
+                            return;
+                        }
+                    }
+                }
                 // another cell's slot by its bare name: it resolved to that
                 // cell's storage (an imported library read and rewrote the
                 // importer's `api_keys`), unseen by verify
@@ -728,6 +744,17 @@ impl<'a> Walker<'a> {
                 .chars()
                 .next()
                 .map_or(false, |c| c.is_alphabetic() || c == '_');
+            if starts_like_ident && !self.in_test && !self.scope.contains(expr_str)
+                && self.index.slots.contains(expr_str) && !self.cell_slots.contains(expr_str) {
+                self.issues.push(InterpolationIssue {
+                    message: format!("`{expr_str}` is a memory slot of another cell — a cell's slots are private to it: call a handler of the cell that owns `{expr_str}`"),
+                    span,
+                    warning: false,
+                    habit: false,
+                    kind: "foreign_slot",
+                });
+                return true;
+            }
             if starts_like_ident && !self.known(expr_str) {
                 self.report_undefined_var(expr_str, span);
             }

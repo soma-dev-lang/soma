@@ -39,6 +39,10 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
         for section in &cell.node.sections {
             if let Section::State(ref sm) = section.node {
                 let mut result = verify_state_machine(sm, &cell.node);
+                // several machines: name the CELL too (two `s` blocks could
+                // not be told apart)
+                let machine_cells = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
+                if machine_cells > 1 { result.machine_name = format!("{}.{}", cell.node.name, sm.name); }
                 // ── V1.3: refinement check ─────────────────────────────
                 // The CTL checker proves properties about the *picture* of
                 // the state machine. The refinement check proves the

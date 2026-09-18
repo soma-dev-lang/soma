@@ -287,7 +287,15 @@ fn cond_truth(val: &Value) -> Result<bool, ExecError> {
             "a condition got a List ({}) — a comparison on a list gives a 0/1 list per element: use all(...) / any(...)",
             { let t: String = format!("{}", val).chars().take(30).collect(); t }))));
     }
-    Ok(is_truthy(val))
+    // a condition is a Bool (an absent value, `()`, is false): the String
+    // "false" from a client body read as TRUE in `if body.admin { … }`
+    match val {
+        Value::Bool(b) => Ok(*b),
+        Value::Unit => Ok(false),
+        other => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+            "a condition got {} {} — a condition is a Bool: compare it (`x == \"yes\"`, `n > 0`, `xs != []`)",
+            value_type_name(other), { let t: String = format!("{}", other).chars().take(30).collect(); t })))),
+    }
 }
 
 /// An invariant over a List value holds for EVERY element (the 0/1 mask of
@@ -3087,6 +3095,12 @@ impl Interpreter {
                     .ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError(
                         "set() requires key and value arguments".to_string()
                     )))?;
+                // `__x` keys are the storage's own (hidden from len / keys /
+                // the size invariant: `reg("__b")` grew a proven-bounded slot)
+                if format!("{}", key).starts_with("__") {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "{}.set(\"{}\", …): keys starting with `__` are reserved by the storage — prefix user keys differently", slot_name, key) }));
+                }
                 // `()` became the key "null" (the same entry as "null"): a
                 // mistyped field used as a key wrote silently
                 if matches!(key, Value::Unit) {
@@ -4732,6 +4746,12 @@ impl Interpreter {
                 message: format!("slot '{}': a function (lambda) cannot be stored — store the data it works on", slot_name),
             }));
         }
+        if let Some(k) = reserved_storage_key(val) {
+            return Err(ExecError::Runtime(RuntimeError::Domain {
+                kind: "type".to_string(),
+                message: format!("slot '{}': a map key '{}' — keys starting with `__` are reserved by the storage (a client body `{{\"__variant__\": …}}` came back as a forged variant)", slot_name, k),
+            }));
+        }
         // stored values are JSON: past ~126 levels they came back as a String
         fn depth(v: &Value) -> usize {
             match v {
@@ -6085,4 +6105,15 @@ fn and_or_err(e: RuntimeError, op: &str) -> RuntimeError {
 pub fn spawn_handler_thread<F>(f: F) -> std::thread::JoinHandle<()>
 where F: FnOnce() + Send + 'static {
     std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(f).expect("spawn a handler thread")
+}
+
+/// A map key anywhere in `v` that the storage encoding reserves (`__…`).
+pub(crate) fn reserved_storage_key(v: &Value) -> Option<String> {
+    match v {
+        Value::Map(m) => m.iter().find_map(|(k, x)| if k.starts_with("__") { Some(k.clone()) } else { reserved_storage_key(x) }),
+        Value::List(xs) => xs.iter().find_map(reserved_storage_key),
+        Value::Variant { fields: VariantValue::Struct(m), .. } => m.values().find_map(reserved_storage_key),
+        Value::Variant { fields: VariantValue::Tuple(xs), .. } => xs.iter().find_map(reserved_storage_key),
+        _ => None,
+    }
 }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Storage refuses map keys and slot keys starting with `__` (reserved by
+  the encoding: a client body could come back as a forged variant, and such
+  keys escaped len and size invariants).
+- A block lambda's last statement runs when it is not an expression (an
+  `emit` there was dropped); conditions and predicates take Bools; route
+  ownership follows calls through other cells; `run --fresh` refuses to wipe
+  a directory a `soma serve` is using; verify names machines per cell.
 - A lambda call counts toward the recursion guard (self-application aborted
   the process); calling a function value is a termination ⚠.
 - Cost sees think() in index/field assignments; the guard rule and route
