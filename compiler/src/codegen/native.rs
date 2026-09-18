@@ -1286,6 +1286,12 @@ fn emit_dualmode_wrapper(
     ));
     out.push_str("    }));\n");
 
+    // A panic that starts with "soma:" is a Soma error (a range refusal),
+    // not an i64 overflow: it must reach the guard, not the Rug fallback.
+    out.push_str("    if let Err(_p) = &_fast {\n");
+    out.push_str("        let _m = _p.downcast_ref::<String>().map(|s| s.as_str()).or_else(|| _p.downcast_ref::<&str>().copied()).unwrap_or(\"\");\n");
+    out.push_str("        if _m.starts_with(\"soma:\") { std::panic::panic_any(_m.to_string()); }\n");
+    out.push_str("    }\n");
     // If fast path returned a value, encode it directly. Otherwise fall back.
     out.push_str("    if let Ok(Some(_fast_v)) = _fast {\n");
     match ret_type {
@@ -4357,13 +4363,19 @@ impl FnGenerator {
                 }
             }
             "floor" | "ceil" | "round" => {
+                // NaN / ±inf / beyond i64 raise, as the interpreter does —
+                // `as i64` saturated silently (floor(NaN) was 0)
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
-                format!("(({}).{}() as i64)", a, name)
+                format!("({{ let _f: f64 = ({}).{}(); if !_f.is_finite() || _f.abs() >= 9.223372036854775e18 {{ panic!(\"soma:{}: {{}} is out of integer range\", _f) }} _f as i64 }})", a, name, name)
             }
             "to_int" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
                 let a = self.gen_expr_direct(&args[0].node, a_ty);
-                format!("({} as i64)", a)
+                if a_ty == NativeType::Float {
+                    format!("({{ let _f: f64 = {}; if !_f.is_finite() || _f.abs() >= 9.223372036854775e18 {{ panic!(\"soma:range: to_int({{}}) is outside the Int range — use round() or keep it a Float\", _f) }} _f as i64 }})", a)
+                } else {
+                    format!("({} as i64)", a)
+                }
             }
             "to_float" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
@@ -4445,16 +4457,18 @@ impl FnGenerator {
                 // the (cleared) result buffer.
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                format!("(({}).wrapping_shl(({}) as u32))", a, b)
+                format!("({{ let _k: i64 = {}; if _k >= 64 {{ 0i64 }} else {{ ({}).wrapping_shl(_k as u32) }} }})", b, a)
             }
             "shr" if args.len() == 2 => {
+                // arithmetic shift; a count ≥ 64 saturates (0 or -1)
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                format!("(({}) >> ({}))", a, b)
+                format!("({{ let _a: i64 = {}; let _k: i64 = {}; if _k >= 64 {{ if _a < 0 {{ -1i64 }} else {{ 0i64 }} }} else {{ _a >> _k }} }})", a, b)
             }
             "bit_len" if args.len() == 1 => {
+                // of the magnitude, like the interpreter (bit_len(-1) is 1)
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                format!("(64 - ({} as i64).leading_zeros() as i64)", a)
+                format!("(64 - ({} as i64).unsigned_abs().leading_zeros() as i64)", a)
             }
             // Bit-position primitives. In Direct mode (i64), test/set/clr
             // are 1-2 cycle ops. When called from a Rug-mode handler with
@@ -4479,7 +4493,8 @@ impl FnGenerator {
                     }
                 }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                format!("((({} >> {}) & 1i64))", a, b)
+                // a bit index past 63 is 0 (the interpreter agrees)
+                format!("({{ let _k: i64 = {}; if _k < 0 || _k >= 64 {{ 0i64 }} else {{ ({} >> _k) & 1i64 }} }})", b, a)
             }
             "bit_set" if args.len() == 2 => {
                 let b_expr = &args[1].node;
@@ -5751,13 +5766,14 @@ impl FnGenerator {
                 if a_ty == NativeType::Int {
                     self.gen_expr_rug(&args[0].node)
                 } else {
+                    // a Float beyond i64 is an exact BigInt here; NaN/inf raise
                     let a = self.gen_expr_direct(&args[0].node, a_ty);
-                    format!("Integer::from({} as i64)", a)
+                    format!("({{ let _f: f64 = {} as f64; if !_f.is_finite() {{ panic!(\"soma:range: to_int({{}}) is outside the Int range — use round() or keep it a Float\", _f) }} Integer::from_f64(_f.trunc()).unwrap() }})", a)
                 }
             }
             "floor" | "ceil" | "round" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
-                format!("Integer::from(({}).{}() as i64)", a, name)
+                format!("({{ let _f: f64 = ({}).{}(); if !_f.is_finite() {{ panic!(\"soma:{}: {{}} is out of integer range\", _f) }} Integer::from_f64(_f).unwrap() }})", a, name, name)
             }
             // Bit operations on Integer — need owned operands so the result
             // can be a BigInt regardless of operand sizes.

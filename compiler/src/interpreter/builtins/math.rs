@@ -8,9 +8,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             args.first().map(|arg| match arg {
                 Value::Int(si) => {
                     if let Some(n) = si.to_i64() {
-                        n.checked_abs()
-                            .map(|v| Value::Int(SomaInt::from_i64(v)))
-                            .ok_or_else(|| RuntimeError::TypeError("abs: integer overflow (i64::MIN has no positive equivalent)".to_string()))
+                        // |i64::MIN| is 2^63: a BigInt, not an error (native agrees)
+                        Ok(match n.checked_abs() {
+                            Some(v) => Value::Int(SomaInt::from_i64(v)),
+                            None => Value::Int(SomaInt::from_rug(-rug::Integer::from(n))),
+                        })
                     } else {
                         // Big int: negate if negative
                         let s = format!("{}", si);
@@ -285,17 +287,21 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             // native backend does the same.
             let a = val_to_i64(&args[0]);
             let b = val_to_i64(&args[1]);
-            Some(Ok(Value::Int(SomaInt::from_i64(a.wrapping_shl(b as u32)))))
+            let r = if b >= 64 { 0 } else { a.wrapping_shl(b.max(0) as u32) };
+            Some(Ok(Value::Int(SomaInt::from_i64(r))))
         }
         "shr" if args.len() >= 2 => {
+            // arithmetic shift; a count ≥ 64 saturates (0 or -1) — same natively
             let a = val_to_i64(&args[0]);
             let b = val_to_i64(&args[1]);
-            Some(Ok(Value::Int(SomaInt::from_i64(a.wrapping_shr(b as u32)))))
+            let r = if b >= 64 { if a < 0 { -1 } else { 0 } } else { a >> b.max(0) };
+            Some(Ok(Value::Int(SomaInt::from_i64(r))))
         }
         "bit_test" if args.len() >= 2 => {
             let a = val_to_i64(&args[0]);
             let b = val_to_i64(&args[1]);
-            Some(Ok(Value::Int(SomaInt::from_i64((a >> b) & 1))))
+            let r = if !(0..64).contains(&b) { 0 } else { (a >> b) & 1 };
+            Some(Ok(Value::Int(SomaInt::from_i64(r))))
         }
         "bit_set" if args.len() >= 2 => {
             let a = val_to_i64(&args[0]);

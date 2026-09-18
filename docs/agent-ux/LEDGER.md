@@ -190,7 +190,7 @@ Scores: library service 12/40 invocations, first check/verify/test green, confid
 
 ### Open
 - [ ] Slot VALUE types are not enforced (`Map<String, Int>` stores 2.5). Considered; the corpus writes Floats into Int maps in places — needs a sweep-driven decision.
-- [ ] `[native]`/interpreter edge disagreements not yet aligned: `to_int(NaN | 1e300)` (native saturates), `abs(i64::MIN)`, `bit_len(-1)`, `bit_test(1, 64)`, `floor(NaN)`, `shr(1, 64)` (both mod-64 now, documented for shl).
+- [x] `[native]`/interpreter edge cases aligned: `to_int`/`floor` of NaN, inf or beyond i64 raise on both (a `soma:` panic reaches the guard instead of the Rug fallback), `abs(i64::MIN)` is 2^63 on both, `bit_len` of the magnitude, `bit_test`/`shr`/`shl` with a count ≥ 64 give 0 / saturate on both.
 - [ ] No header access / auth in `soma serve` (3 agents): a reverse proxy is the documented answer.
 - [ ] Parse errors stop at the first one; uppercase slot names are not indexable.
 - [ ] No published Linux binary (site says so; deploy builds from source).
