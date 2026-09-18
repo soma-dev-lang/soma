@@ -476,8 +476,11 @@ impl<'a> Walker<'a> {
             Expr::LambdaBlock { param, stmts, result } => {
                 let param = param.clone();
                 self.scoped(&[param], |w| {
+                    // a lambda body is not inside the enclosing loop
+                    let outer = std::mem::replace(&mut w.loop_depth, 0);
                     w.walk_stmts(stmts);
                     w.walk_expr(result);
+                    w.loop_depth = outer;
                 });
             }
             Expr::Match { subject, arms } => {

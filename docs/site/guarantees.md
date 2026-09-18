@@ -24,7 +24,7 @@ On the **handlers**:
 | Property | Meaning |
 |---|---|
 | Refinement | every `transition(id, "x")` with a literal target is a declared edge, and every declared edge is taken by some handler (or reported) |
-| Termination | handlers terminate: bounded loops, recursion with a decreasing argument and a base case, no call cycles |
+| Termination | in every cell: bounded loops, recursion on an Int argument that decreases towards a lower-bound base case (`if n <= 0 { return … }`), no call cycles; anything else is a ⚠ (a failure under `--strict`) |
 | Think-isolation | with only literal transition targets, the properties above hold whatever an LLM returns |
 | Cost bound | `cost { tokens: N }` holds when every `think()` has a literal `max_tokens` and runs a known number of times (across sibling handlers) — a declared bound that cannot be proven is a `soma check` error (worded "bound is advisory"), never a silent pass |
 | Invariants on known values | a write of a literal, a `clamp(..)`, or a value interval reasoning can bound — including by induction on the slot's own invariant: `(counts.get(k) ?? 0) + 1` keeps `counts >= 0` |

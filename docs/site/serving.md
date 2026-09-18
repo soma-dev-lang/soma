@@ -29,9 +29,13 @@ it by calling their handlers by name.
 
 ## Requests and responses
 
-`request` receives `(method, path, body)` — and a fourth `query: Map`
-argument when it declares one. The declared type of `body` decides its shape,
-identically under `soma serve`, `soma test` and `soma run`:
+`request` receives `(method, path, body)` — plus `query: Map` and
+`headers: Map` when it declares them: `on request(method: String, path:
+String, body: Map, query: Map, headers: Map)`. Header names are lower-case
+(`headers.authorization`). A trailing `Map` parameter may be left out by a
+caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
+The declared type of `body` decides its shape, identically under
+`soma serve`, `soma test` and `soma run`:
 
 - `body: String` — the raw request text; `from_json(body)` parses a JSON body
   (it raises kind `json` on invalid JSON: wrap it in `try`).
@@ -64,7 +68,9 @@ if r.kind == "invalid_transition" { return response(410, map("error", r.detail))
 if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers (under serve; a test sees the raised error)
 ```
 
-Path segments reach `request` percent-decoded (`/stock/a%20b` → `"/stock/a b"`).
+Path segments reach `request` percent-decoded (`/stock/a%20b` → `"/stock/a b"`),
+except an encoded slash: `%2F` stays `%2F`, so a value cannot fake a path
+segment (`split(rest, "/")` sees the segments the client meant).
 Path patterns hold ONE variable, at the end (`"/loans/" + rest`); split
 `rest` for more segments, or take the rest from the body or query. Public
 handlers (no `_` prefix, `request` aside) are also reachable directly at
@@ -89,7 +95,8 @@ uses fresh in-memory storage every time.
 
 ## What `soma serve` does not do
 
-No TLS, no authentication, no header access from handlers, no rate limiting.
+No TLS, no built-in authentication (read `headers.authorization` in
+`request` and refuse), no rate limiting.
 It binds 127.0.0.1 (`--host 0.0.0.0` to expose it). `PORT + 2` (the signal
 bus) is opened only when a cell uses `emit`, declares `scale`, or `--join` is
 given — the start-up log says `bus: listening` or `bus: not started`; `PORT +

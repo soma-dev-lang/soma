@@ -39,7 +39,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let Some(v) = args.first() else { return Some(Err(RuntimeError::TypeError("parse_date(s: String) -> Map".to_string()))) };
             Some(date_arg(v, "parse_date").map(|(y, m, d)| {
                 let days = days_from_civil(y, m, d);
-                let weekday = ((days % 7 + 11) % 7) + 1; // 1 = Monday … 7 = Sunday
+                // 1970-01-01 was a Thursday (4): 1 = Monday … 7 = Sunday (ISO 8601)
+                let weekday = (days + 3).rem_euclid(7) + 1;
                 crate::interpreter::map_from_pairs(vec![
                     ("year".to_string(), Value::Int(SomaInt::from_i64(y))),
                     ("month".to_string(), Value::Int(SomaInt::from_i64(m))),
@@ -138,7 +139,9 @@ pub fn days_in_month(y: i64, m: i64) -> i64 {
 /// "YYYY-MM-DD" → (y, m, d), strictly.
 pub fn parse_iso_date(s: &str) -> Option<(i64, i64, i64)> {
     let parts: Vec<&str> = s.trim().split('-').collect();
-    if parts.len() != 3 { return None; }
+    // strict YYYY-MM-DD: "2026-3-1" is not accepted
+    if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2
+        || !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) { return None; }
     let y: i64 = parts[0].parse().ok()?;
     let m: i64 = parts[1].parse().ok()?;
     let d: i64 = parts[2].parse().ok()?;

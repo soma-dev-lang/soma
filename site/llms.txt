@@ -194,7 +194,7 @@ cell test MyTests {                // a name and a `rules` block are required
         mock price_check 120                     // next call of ANY handler (a tool, an
         mock Notifier.send error "down"          // http wrapper) answers / raises instead;
                                                  // error "not_found: x" raises kind not_found
-        mock now 1700000000                      // freeze now()/now_ms()/today() until the next mock now
+        mock now 1700000000                      // freeze now()/now_ms()/today() until the next mock now (1700000000.25 or `mock now_ms …` for sub-second)
         property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // 0..100 = 0…99, every value (≤ 20k)
     }
 }
@@ -262,6 +262,10 @@ source, `file:line`, left/right, and the fields a value really has when
 - A `require` counts for the writes of its own block and the blocks nested
   in it — `if ok { require n < 3 …  m.set(k, n + 1) }` is proven; a require
   inside a loop body narrows that iteration's `let` locals only.
+- A trailing `Map` parameter is optional: `on add(a: Int, opts: Map)` is
+  callable as `add(1)` (`opts` is `map()`) — the keyword-argument idiom,
+  read with `opts.step ?? 1`. HTTP headers reach `request` as a fifth
+  `headers: Map` parameter (lower-case names).
 - HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
   "headers", map(...)))` never raise; non-2xx is `{error, kind, status, body}`
   (kind `http_status` | `timeout` | `refused` | `network`); default timeout
@@ -280,8 +284,11 @@ source, `file:line`, left/right, and the fields a value really has when
   `format("%10.2f", …)` only for display, `money = "{idiv(c, 100)}.{…}"` for exact text.
 - Data: `read_csv(path)` → List<Map> (auto-typed cells); `agg`, `sort_by`,
   `top`, `median`, `pstdev`; `stdev` / `variance` are SAMPLE (n − 1) like
-  Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`
-  and `xs[i]` are linear (20k rows in 0.1 s).
+  Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`,
+  `xs[i]`, `len(xs)`, `nth(xs, i)`, `xs.len` and a List slot's `rows[i]` /
+  `rows.len` cost O(1) per call (20k rows in 0.1 s); passing a big list to a
+  handler COPIES it (values are copies) — loop inside the handler, or pass
+  an index.
 - `think_json()` raises kind `json` when the model does not answer a JSON
   object (catch it with `try`); a ```json fence around the object is fine.
   A mocked `think` costs ~4 characters per token, so `set_budget` exhaustion

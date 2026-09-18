@@ -548,6 +548,7 @@ pub struct Interpreter {
     /// a real network call under `soma test` was already reported
     pub(crate) net_noted: bool,
     /// `mock now <unix seconds>`: the clock the builtins answer with.
+    /// `mock now` in a test: the frozen clock, in MILLISECONDS
     pub frozen_now: Option<i64>,
     pub(crate) auto_mock_noted: bool,
     /// V1.6: tool-capability scope. Set when the LLM dispatches into a tool
@@ -621,7 +622,7 @@ impl Interpreter {
                     }
                     let value = (Arc::new(on.params.clone()), Arc::new(on.body.clone()));
                     handler_cache.insert(key, value);
-                    handler_arities.entry(on.signal_name.clone()).or_default().push(on.params.len());
+                    handler_arities.entry(on.signal_name.clone()).or_default().extend(crate::ast::accepted_arities(&on.params));
                     if on.properties.iter().any(|p| p == "record") {
                         record_handlers.insert((cell.node.name.clone(), on.signal_name.clone()));
                     }
@@ -750,7 +751,7 @@ impl Interpreter {
                 let key = (cell.name.clone(), on.signal_name.clone());
                 let value = (Arc::new(on.params.clone()), Arc::new(on.body.clone()));
                 self.handler_cache.insert(key, value);
-                self.handler_arities.entry(on.signal_name.clone()).or_default().push(on.params.len());
+                self.handler_arities.entry(on.signal_name.clone()).or_default().extend(crate::ast::accepted_arities(&on.params));
             }
         }
         self.cells.insert(cell.name.clone(), cell);
@@ -790,19 +791,13 @@ impl Interpreter {
             Ok(val) => Ok(val),
             Err(ExecError::Return(val)) => Ok(val),
             Err(ExecError::Break) => {
-                let e = RuntimeError::TypeError("break outside of loop".to_string());
-                eprintln!("[scheduler] error: {}", e);
-                Err(e)
+                Err(RuntimeError::TypeError("break outside of loop".to_string()))
             }
             Err(ExecError::Continue) => {
-                let e = RuntimeError::TypeError("continue outside of loop".to_string());
-                eprintln!("[scheduler] error: {}", e);
-                Err(e)
+                Err(RuntimeError::TypeError("continue outside of loop".to_string()))
             }
-            Err(ExecError::Runtime(e)) => {
-                eprintln!("[scheduler] error: {}", e);
-                Err(e)
-            }
+            // the caller logs it once (`[scheduler:Cell] tick error: …`)
+            Err(ExecError::Runtime(e)) => Err(e),
         }
     }
 
@@ -1136,6 +1131,11 @@ impl Interpreter {
             return Err(RuntimeError::StackOverflow);
         }
 
+        // a left-out trailing `Map` parameter (an options map) is map()
+        let mut args = args;
+        if args.len() < params.len() && crate::ast::accepted_arities(params).contains(&args.len()) {
+            while args.len() < params.len() { args.push(Value::Map(Default::default())); }
+        }
         // Check arity
         if args.len() != params.len() {
             self.current_depth -= 1;
@@ -1906,6 +1906,29 @@ impl Interpreter {
             }
 
             Expr::FnCall { name, args } => {
+                // `len(rows)` / `nth(rows, i)` on a local: read in place —
+                // evaluating `rows` copied the whole list per call (a
+                // `while i < len(rows)` loop over 20k rows took 39 s)
+                if matches!(name.as_str(), "len" | "nth") && !self.user_handler_takes(name, args.len()) {
+                    if let Some(Expr::Ident(local)) = args.first().map(|a| &a.node) {
+                        if name == "len" && args.len() == 1 {
+                            match env.get(local) {
+                                Some(Value::List(xs)) => return Ok(Value::Int(SomaInt::from_i64(xs.len() as i64))),
+                                Some(Value::Map(m)) => return Ok(Value::Int(SomaInt::from_i64(m.len() as i64))),
+                                Some(Value::String(t)) => return Ok(Value::Int(SomaInt::from_i64(t.chars().count() as i64))),
+                                _ => {}
+                            }
+                        }
+                        if name == "nth" && args.len() == 2 && matches!(env.get(local), Some(Value::List(_))) {
+                            let idx = self.eval_expr(&args[1].node, env, cell_name, signal_name)?;
+                            if let (Some(Value::List(xs)), Value::Int(i)) = (env.get(local), &idx) {
+                                // same answer as the builtin: out of range (or negative) is ()
+                                let k = i.to_i64().unwrap_or(-1);
+                                return Ok(if k >= 0 && (k as usize) < xs.len() { xs[k as usize].clone() } else { Value::Unit });
+                            }
+                        }
+                    }
+                }
                 let mut arg_vals = Vec::new();
                 for arg in args {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
@@ -2345,6 +2368,14 @@ impl Interpreter {
                     {
                         return self.call_storage_method(cell_name, slot_name, field, &[]);
                     }
+                    // a local: read the field in place (`rows.len` copied the
+                    // whole list per read; `big_record.x` the whole record)
+                    match env.get(slot_name) {
+                        Some(Value::List(xs)) if matches!(field.as_str(), "len" | "length" | "size") =>
+                            return Ok(Value::Int(SomaInt::from_i64(xs.len() as i64))),
+                        Some(Value::Map(m)) if m.contains_key(field) => return Ok(m[field].clone()),
+                        _ => {}
+                    }
                 }
                 // Evaluate target and access field on the value
                 let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
@@ -2594,16 +2625,17 @@ impl Interpreter {
                 backend.list().into_iter().map(|v| auto_deserialize(stored_to_value(v))).collect()
             };
             match method {
-                "len" | "size" | "count" => return Ok(Value::Int(SomaInt::from_i64(backend.list().len() as i64))),
+                "len" | "size" | "count" if args.is_empty() => return Ok(Value::Int(SomaInt::from_i64(backend.list_len() as i64))),
                 "values" | "all" | "list" | "entries" | "items" => return Ok(Value::List(items())),
                 "first" => return Ok(items().into_iter().next().unwrap_or(Value::Unit)),
                 "last" => return Ok(items().into_iter().last().unwrap_or(Value::Unit)),
                 "get" | "at" | "nth" => {
                     if let Some(Value::Int(i)) = args.first() {
-                        let xs = items();
                         let raw = i.to_i64().unwrap_or(0);
-                        let idx = if raw < 0 { raw + xs.len() as i64 } else { raw };
-                        return Ok(if idx >= 0 && (idx as usize) < xs.len() { xs[idx as usize].clone() } else { Value::Unit });
+                        let idx = if raw < 0 { raw + backend.list_len() as i64 } else { raw };
+                        return Ok(if idx >= 0 {
+                            backend.list_get(idx as usize).map(|v| auto_deserialize(stored_to_value(v))).unwrap_or(Value::Unit)
+                        } else { Value::Unit });
                     }
                 }
                 "has" | "contains" => {
@@ -2765,9 +2797,23 @@ impl Interpreter {
             "len" | "size" | "count" => {
                 Ok(Value::Int(SomaInt::from_i64(backend.len() as i64)))
             }
-            "list" | "all" | "entries" => {
+            "list" | "all" => {
                 let items = backend.list();
                 Ok(Value::List(items.into_iter().map(stored_to_value).collect()))
+            }
+            // like entries(m): {key, value} records, sorted by key (it
+            // returned the bare values)
+            "entries" | "items" => {
+                let mut out = Vec::new();
+                for k in backend.keys() {
+                    if let Some(v) = backend.get(&k) {
+                        out.push(map_from_pairs(vec![
+                            ("key".to_string(), Value::String(k)),
+                            ("value".to_string(), auto_deserialize(stored_to_value(v))),
+                        ]));
+                    }
+                }
+                Ok(Value::List(out))
             }
             "keys" => {
                 let keys = backend.keys();
@@ -3630,7 +3676,11 @@ impl Interpreter {
             _ => {
                 // `counts[k] += 1` on a key that is not there yet
                 let hint = if matches!(l, Value::Unit) || matches!(r, Value::Unit) {
-                    " — one side is () (a missing key or field?): default it, `(m.get(k) ?? 0) + 1`"
+                    match op {
+                        BinOp::Sub => " — one side is () (a missing key or field?): default it, `(m.get(k) ?? 0) - 1`",
+                        BinOp::Mul => " — one side is () (a missing key or field?): default it, `(m.get(k) ?? 1) * n`",
+                        _ => " — one side is () (a missing key or field?): default it, `(m.get(k) ?? 0) + 1`",
+                    }
                 } else { "" };
                 Err(RuntimeError::TypeError(format!(
                     "cannot {} {} and {}: {} {} {}{}",
@@ -3858,10 +3908,11 @@ impl Interpreter {
         }
         // `mock now 1000` in a test: a frozen clock (now / now_ms / today
         // derive from it) — sticky until the next `mock now`
-        if let Some(frozen) = self.frozen_now {
+        if let Some(frozen_ms) = self.frozen_now {
+            let frozen = frozen_ms.div_euclid(1000);
             match name {
                 "now" => return Some(Ok(Value::Int(SomaInt::from_i64(frozen)))),
-                "now_ms" => return Some(Ok(Value::Int(SomaInt::from_i64(frozen * 1000)))),
+                "now_ms" => return Some(Ok(Value::Int(SomaInt::from_i64(frozen_ms)))),
                 "today" => return Some(Ok(Value::String(builtins::time::format_unix_date(frozen)))),
                 _ => {}
             }

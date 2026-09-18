@@ -328,7 +328,11 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         if params.contains(&n.as_str()) {
                             let numeric = on.map(|o| o.params.iter().any(|p| &p.name == n && matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "Float" || t == "BigInt"))).unwrap_or(false);
                             if !numeric { return String::new(); }
-                            format!("`{n}` is a parameter (narrow it: `require {n} >= 0 else …`)")
+                            // the bound to require is the one the open clause needs
+                            let open_txt: Vec<String> = parts.iter().zip(&verdicts)
+                                .filter(|(_, v)| **v != Proof::Holds)
+                                .map(|(c, _)| render_expr(c).replace(slot.as_str(), n)).collect();
+                            format!("`{n}` is a parameter (narrow it: `require {} else …`)", open_txt.join(" && "))
                         } else {
                             let mut assigns: Vec<(&str, &Expr)> = Vec::new();
                             if let Some(o) = on { collect_assigns(&o.body, &mut assigns); }
@@ -488,6 +492,12 @@ impl RangeCtx<'_> {
 
     fn range_of_inner(&self, expr: &Expr) -> Known {
         match expr {
+            // `if p == "pro" { 50000 } else { 1000 }`: either arm
+            Expr::IfExpr { then_result, else_result, .. } =>
+                join(self.range_of(&then_result.node), self.range_of(&else_result.node)),
+            // a match whose arms all have bounded results
+            Expr::Match { arms, .. } if !arms.is_empty() =>
+                arms.iter().map(|a| self.range_of(&a.result.node)).reduce(join).unwrap_or(Known::Unknown),
             Expr::Literal(Literal::Int(n)) => Known::Exact(*n as f64),
             Expr::Literal(Literal::Float(f)) => Known::Exact(*f),
             Expr::Ident(n) => self.vars.get(n).copied().unwrap_or(Known::Unknown),

@@ -239,12 +239,16 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                                 }
                             }
                         }
-                        ast::Rule::MockHandler { name, reply, is_error } if name == "now" => {
+                        ast::Rule::MockHandler { name, reply, is_error } if name == "now" || name == "now_ms" => {
+                            // the clock is kept in milliseconds: `mock now 1700000000.25`
+                            // and `mock now_ms 1700000000250` are the same instant
+                            let scale = if name == "now_ms" { 1.0 } else { 1000.0 };
                             match eval_test_expr(&mut interp, &reply.node, &test_env) {
-                                Ok(interpreter::Value::Int(t)) => interp.frozen_now = t.to_i64(),
+                                Ok(interpreter::Value::Int(t)) => interp.frozen_now = t.to_i64().and_then(|v| v.checked_mul(scale as i64)),
+                                Ok(interpreter::Value::Float(f)) => interp.frozen_now = Some((f * scale).round() as i64),
                                 Ok(other) => {
                                     total += 1; failed += 1;
-                                    say!(out_lines, json, "  ✗ {}:{}  mock now … — ERROR: mock now takes unix seconds (an Int), got {}", file_name, line_of(rule.span), other);
+                                    say!(out_lines, json, "  ✗ {}:{}  mock {} … — ERROR: mock now takes unix seconds (mock now_ms: milliseconds), got {}", file_name, line_of(rule.span), name, other);
                                 }
                                 Err(e) => {
                                     total += 1; failed += 1;

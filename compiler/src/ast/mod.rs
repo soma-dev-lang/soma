@@ -799,3 +799,17 @@ pub fn render_expr(expr: &Expr) -> String {
         Expr::ListLiteral(items) => format!("[{}]", items.iter().map(|i| render_expr(&i.node)).collect::<Vec<_>>().join(", ")),
     }
 }
+
+/// How many arguments a handler accepts: all of them, or fewer when the
+/// trailing parameters are `Map`s (an options map left out is `map()` —
+/// `request(method, path, body)` for a `request` that also takes
+/// `query: Map, headers: Map`).
+pub fn accepted_arities(params: &[Param]) -> Vec<usize> {
+    let mut out = vec![params.len()];
+    let mut n = params.len();
+    while n > 0 && matches!(&params[n - 1].ty.node, TypeExpr::Simple(t) if t == "Map") {
+        n -= 1;
+        out.push(n);
+    }
+    out
+}

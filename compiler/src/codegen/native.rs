@@ -4840,8 +4840,8 @@ impl FnGenerator {
                     }
                     if fname == "hm_set" && args.len() == 3 {
                         if let Expr::Ident(hm) = &args[0].node {
-                            let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                            let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                            let k = hm_i64(&self.gen_expr_rug(&args[1].node), "key");
+                            let v = hm_i64(&self.gen_expr_rug(&args[2].node), "value");
                             return format!("{}{}.insert({}, {});\n", ind, hm, k, v);
                         }
                     }
@@ -5665,8 +5665,8 @@ impl FnGenerator {
             }
             "hm_set" if args.len() == 3 => {
                 if let Expr::Ident(hm) = &args[0].node {
-                    let k = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                    let v = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                    let k = hm_i64(&self.gen_expr_rug(&args[1].node), "key");
+                    let v = hm_i64(&self.gen_expr_rug(&args[2].node), "value");
                     return format!("{{ {}.insert({}, {}); Integer::from(0i64) }}", hm, k, v);
                 }
                 self.err("hm_set: first arg must be an identifier");
@@ -6171,4 +6171,14 @@ fn expr_uses_random(expr: &Expr) -> bool {
         Expr::Not(inner) => expr_uses_random(&inner.node),
         _ => false,
     }
+}
+
+/// A BigInt expression narrowed to the i64 a hashmap holds, or a `range`
+/// error (the retry path after an i64 overflow used to panic again with
+/// "attempt to add with overflow", kind `type`).
+fn hm_i64(rug_expr: &str, what: &str) -> String {
+    format!(
+        "{{ let _v: Integer = {}; _v.to_i64().unwrap_or_else(|| panic!(\"soma:range: a hashmap holds 64-bit Ints — {} {{}} does not fit (mask it, or keep it in a scalar, which promotes to BigInt)\", _v)) }}",
+        rug_expr, what
+    )
 }

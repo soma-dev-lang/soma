@@ -280,6 +280,28 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     // reported as runtime-checked.
     results.extend(super::invariants::verify_program_invariants(program));
 
+    // termination in cells WITHOUT a state machine (it was only analysed
+    // next to one: `while true` in a plain cell passed `--strict` silently)
+    for cell in &program.cells {
+        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        if cell.node.sections.iter().any(|s| matches!(s.node, Section::State(_))) { continue; }
+        let findings = super::termination::check_cell_termination(&cell.node, program);
+        let warnings: Vec<String> = findings.iter().filter_map(|f| match f {
+            super::termination::TerminationFinding::MayNotTerminate { reasons, .. } => Some(reasons.clone()),
+            _ => None,
+        }).flatten().collect();
+        if !warnings.is_empty() {
+            results.push(VerifyResult {
+                machine_name: format!("{}/termination", cell.node.name),
+                states: vec![],
+                initial: String::new(),
+                terminal_states: vec![],
+                transitions: vec![],
+                checks: warnings.into_iter().map(VerifyCheck::Warning).collect(),
+            });
+        }
+    }
+
     // V1.6: protocol verification — one result block per protocol.
     if !program.protocols.is_empty() {
         let findings = super::protocol::check_program(program);

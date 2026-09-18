@@ -113,6 +113,10 @@ pub trait StorageBackend: Send + Sync {
         for it in items { self.append(it); }
     }
     fn list(&self) -> Vec<StoredValue>;
+    /// Length / one element of the list, without materializing it
+    /// (`rows.get(i)` in a loop loaded the whole log per call).
+    fn list_len(&self) -> usize { self.list().len() }
+    fn list_get(&self, i: usize) -> Option<StoredValue> { self.list().into_iter().nth(i) }
     fn keys(&self) -> Vec<String>;
     fn values(&self) -> Vec<StoredValue>;
     fn has(&self, key: &str) -> bool;
@@ -136,6 +140,18 @@ impl MemoryBackend {
 }
 
 impl StorageBackend for MemoryBackend {
+    fn list_len(&self) -> usize {
+        let log = self.log.read().unwrap_or_else(|e| e.into_inner());
+        if !log.is_empty() { return log.len(); }
+        drop(log);
+        self.list().len()
+    }
+    fn list_get(&self, i: usize) -> Option<StoredValue> {
+        let log = self.log.read().unwrap_or_else(|e| e.into_inner());
+        if !log.is_empty() { return log.get(i).cloned(); }
+        drop(log);
+        self.list().into_iter().nth(i)
+    }
     fn get(&self, key: &str) -> Option<StoredValue> {
         self.map.read().unwrap_or_else(|e| e.into_inner()).get(key).cloned()
     }
@@ -476,6 +492,28 @@ impl StorageBackend for SqliteBackend {
         ).ok();
     }
 
+    fn list_len(&self) -> usize {
+        let n: i64 = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(&format!("SELECT COUNT(*) FROM \"{}_log\"", self.table), [], |r| r.get(0)).unwrap_or(0)
+        };
+        if n > 0 { n as usize } else { self.list().len() }
+    }
+
+    fn list_get(&self, i: usize) -> Option<StoredValue> {
+        let logged: i64 = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(&format!("SELECT COUNT(*) FROM \"{}_log\"", self.table), [], |r| r.get(0)).unwrap_or(0)
+        };
+        if logged == 0 { return self.list().into_iter().nth(i); }
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            &format!("SELECT value, type FROM \"{}_log\" ORDER BY id LIMIT 1 OFFSET ?1", self.table),
+            rusqlite::params![i as i64],
+            |row| { let v: String = row.get(0)?; let t: String = row.get(1)?; Ok(Self::load_typed(&v, &t)) },
+        ).ok()
+    }
+
     fn replace_list(&self, items: Vec<StoredValue>) {
         {
             let conn = self.conn.lock().unwrap();
@@ -500,7 +538,7 @@ impl StorageBackend for SqliteBackend {
         }
         // Fall back to KV table values when log is empty (data was added via set())
         let mut stmt = conn.prepare(&format!(
-            "SELECT value, type FROM \"{}\" WHERE key NOT LIKE '__%%' ORDER BY key", self.table
+            "SELECT value, type FROM \"{}\" WHERE substr(key, 1, 2) != '__' ORDER BY key", self.table
         )).unwrap();
         stmt.query_map([], |row| {
             let val: String = row.get(0)?;

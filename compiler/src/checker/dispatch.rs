@@ -37,7 +37,7 @@ fn handler_arities(program: &Program) -> std::collections::HashMap<String, Vec<u
     for cell in super::names::collect_cells(program) {
         for section in &cell.sections {
             if let Section::OnSignal(on) = &section.node {
-                out.entry(on.signal_name.clone()).or_default().push(on.params.len());
+                out.entry(on.signal_name.clone()).or_default().extend(crate::ast::accepted_arities(&on.params));
             }
         }
     }

@@ -1002,6 +1002,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let spawned = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
         let method = request.method().to_string();
         let url = request.url().to_string();
+        // request headers, names lower-cased (the optional 5th parameter of
+        // `request`: `on request(method, path, body, query: Map, headers: Map)`)
+        let req_headers: Vec<(String, interpreter::Value)> = request.headers().iter()
+            .map(|h| (h.field.as_str().as_str().to_ascii_lowercase(), interpreter::Value::String(h.value.as_str().to_string())))
+            .collect();
 
         let mut body_raw = String::new();
         let _ = request.as_reader().read_to_string(&mut body_raw);
@@ -1281,6 +1286,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let wants_query = handler_params.get("request").is_some_and(|p| p.len() >= 4);
                 if wants_query {
                     req_args.push(interpreter::map_from_pairs(query_map));
+                }
+                // the headers are the optional 5th parameter (an API key in
+                // `Authorization` used to be unreadable)
+                if handler_params.get("request").is_some_and(|p| p.len() >= 5) {
+                    req_args.push(interpreter::map_from_pairs(req_headers.clone()));
                 }
                 (
                     "request".to_string(),

@@ -294,3 +294,20 @@ Scores: day-two migration of `warehouse_reservations` (added fields, renamed sta
 - [ ] Outbound HTTP holds the process-wide handler lock (documented; timeouts bound it).
 - [ ] No migration command or schema version (a documented recipe instead).
 - [x] `let match = 1` is refused with a fix; `cell test` without `rules` is a check error.
+
+## Cycle 10 (2026-09-18, after the 2.5.0 release) — regression replay of 25 fixes, Go quota service
+
+Scores: all 25 fixes held on their reported path; six defects in neighbouring variants. Go port (token bucket, quota, monthly reset) green in 5 invocations, 20-way burst admitted exactly 10, 6/10.
+
+### Fixed
+- [x] Slot `.entries` returned the values, and a SQL `LIKE '__%'` (where `_` is a wildcard) dropped every two-character key from `list()` after a restart.
+- [x] `parse_date` weekday is ISO (1 = Monday; it was 1 = Sunday) and the format is strict (`"2026-3-1"` is kind `date`).
+- [x] `[native]` hashmap: an i64 overflow in a key or value is a `range` error, not a leaked Rust panic of kind `type`.
+- [x] `len(xs)`, `nth(xs, i)`, `xs.len`, a field of a local record, a List slot's `rows[i]` / `rows.get(i)` / `rows.len`: no copy of the whole list per call (5 000 calls: 2.2 s → 1 ms).
+- [x] Prover: if-expressions and matches with bounded arms are bounded; the "narrow it" hint states the bound the open clause needs (`require n <= 3`, not `>= 0`); termination is analysed in cells without a state machine too.
+- [x] `mock now 1700000000.25` and `mock now_ms …`; HTTP headers reach `request` as an optional fifth `headers: Map` parameter; a trailing `Map` parameter may be left out by any caller (`add(1)` for `on add(a: Int, opts: Map)`).
+- [x] A scheduler tick error is logged once; the `() - 1` hint says `- 1`; `break` in a lambda inside a loop is an error.
+
+### Open
+- [ ] Passing a large list to a handler copies it (value semantics; documented). Structural sharing would remove it.
+- [ ] Invariants over two slots / record fields (`used <= limit`): model as one slot (headroom) — documented.

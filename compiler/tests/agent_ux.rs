@@ -1169,7 +1169,7 @@ cell test T {
 "#).unwrap();
     let (out, code) = soma_in(&d, &["test", "app.cell"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("10 passed, 0 failed"), "{out}");
+    assert!(out.contains("9 passed, 0 failed"), "{out}");
     let (out, _) = soma_in(&d, &["verify", "app.cell"]);
     assert!(out.contains("writer 'drain' proven by induction"), "{out}");
     assert!(out.contains("writer 'rel' proven"), "{out}");
@@ -1212,4 +1212,60 @@ cell Api {
     assert!(echo.contains("\"rest\":\"a b\""), "{echo}");
     let (out, _) = soma_in(&d, &["run", "srv.cell", "state"]);
     assert!(out.contains("\"seq\": []"), "{out}");
+}
+
+/// Cycle 10 (regression replay + Go port): slot `.entries` returned values
+/// and a SQL LIKE wildcard dropped two-character keys, `parse_date` weekday
+/// was off by one and it accepted "2026-3-1", a native hashmap overflow
+/// leaked a Rust panic, `len(xs)` copied the list, an if-expression of two
+/// literals was unbounded, `mock now` was whole seconds only, headers were
+/// unreadable, trailing Map parameters were mandatory.
+#[test]
+fn cycle10_findings() {
+    let d = dir("cycle10");
+    std::fs::write(d.join("app.cell"), r#"
+cell K {
+  face { signal fill() -> Int  signal show() -> List  signal pick(id: String, p: String) -> Int
+         signal t() -> List  signal add(a: Int, opts: Map) -> Int  signal big(n: Int) -> Int }
+  memory { m: Map<String, Int> [persistent]  q: Map<String, Int> [persistent]  invariant q >= 0 && q <= 100000 }
+  on fill() { for k in ["10", "9", "B", "a"] { m.set(k, 1) }  return len(m.keys) }
+  on show() { return m.entries |> map(e => e.key) }
+  on pick(id: String, p: String) { let v = if p == "a" { 50000 } else { 1000 }  q.set(id, v)  return v }
+  on t() { return [now(), now_ms()] }
+  on add(a: Int, opts: Map) { return a + (opts.step ?? 1) }
+  on big(n: Int) {
+    let xs = range(0, n)
+    let i = 0  let s = 0
+    while i < len(xs) { s += nth(xs, i)  i += 1 }
+    return s
+  }
+}
+cell test T { rules {
+  assert fill() == 4
+  assert show() == ["10", "9", "B", "a"]
+  assert parse_date("2026-03-01").weekday == 7
+  assert parse_date("2026-03-02").weekday == 1
+  assert_fails parse_date("2026-3-1") matching "date"
+  mock now 1700000000.25
+  assert t() == [1700000000, 1700000000250]
+  assert add(1) == 2
+  assert add(1, map("step", 5)) == 6
+  assert big(20000) == 199990000
+} }
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("9 passed, 0 failed"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "--fresh", "app.cell", "fill"]);
+    assert!(out.contains('4'), "{out}");
+    let (out, _) = soma_in(&d, &["run", "app.cell", "show"]);
+    assert!(out.contains(r#"["10", "9", "B", "a"]"#), "{out}");
+    let (out, _) = soma_in(&d, &["verify", "app.cell"]);
+    assert!(out.contains("writer 'pick' proven"), "{out}");
+
+    // termination is checked in cells without a state machine too
+    std::fs::write(d.join("term.cell"), "cell W { face { signal f(n: Int) -> Int }\n on f(n: Int) { if n == 0 { return 0 }\n return f(n - 1) } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "term.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("no base case bounds it from below"), "{out}");
 }
