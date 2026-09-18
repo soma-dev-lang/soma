@@ -1169,7 +1169,7 @@ cell test T {
 "#).unwrap();
     let (out, code) = soma_in(&d, &["test", "app.cell"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("9 passed, 0 failed"), "{out}");
+    assert!(out.contains("10 passed, 0 failed"), "{out}");
     let (out, _) = soma_in(&d, &["verify", "app.cell"]);
     assert!(out.contains("writer 'drain' proven by induction"), "{out}");
     assert!(out.contains("writer 'rel' proven"), "{out}");

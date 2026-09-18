@@ -569,7 +569,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         if json {
             println!("{}", serde_json::json!({"ok": false, "verdict": "VERIFY FAILED — soma check failed", "cells": []}));
         } else {
-            eprintln!("VERIFY FAILED — soma check failed (fix the errors above, then verify)");
+            println!("VERIFY FAILED — soma check failed (fix the errors above, then verify)");
         }
         std::process::exit(1);
     }
@@ -588,7 +588,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             if orphan_props {
                 eprintln!("note: the soma.toml beside this file declares [verify] properties; none applies here (no state machine)");
             }
-            eprintln!("VERIFY OK (vacuous — no state machine)");
+            println!("VERIFY OK (vacuous — no state machine)");
         }
         return;
     }
@@ -721,16 +721,16 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             if strict_warnings > 0 {
                 why.push(format!("--strict: {} ⚠ line{} (runtime-checked or unprovable)", strict_warnings, if strict_warnings == 1 { "" } else { "s" }));
                 // the ⚠ lines sit among dozens of ✓: repeat them by the verdict
-                eprintln!("--strict failures:");
+                println!("--strict failures:");
                 for r in &all_results {
                     for c in &r.checks {
-                        if let checker::verify::VerifyCheck::Warning(m) = c { eprintln!("  ⚠ {}", m); }
+                        if let checker::verify::VerifyCheck::Warning(m) = c { println!("  ⚠ {}", m); }
                     }
                 }
             }
-            eprintln!("VERIFY FAILED — {}", why.join("; "));
+            println!("VERIFY FAILED — {}", why.join("; "));
         } else {
-            eprintln!("VERIFY OK");
+            println!("VERIFY OK");
         }
     }
 

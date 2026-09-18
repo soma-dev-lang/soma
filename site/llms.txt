@@ -254,9 +254,11 @@ source, `file:line`, left/right, and the fields a value really has when
   and the emitter's rollback takes the listeners' writes with it. Only across
   processes (the `[peers]` bus) is an emitted event an effect that is not
   rolled back. `soma check` warns when nobody handles the event.
-- `invariant len(rows) <= 500` is proven when the handler's ONE write that
+- `invariant rows.size <= 500` (or `size <= 500`; NOT `len(rows)`, which
+  in an invariant measures the value being written) is proven when the handler's ONE write that
   can add an entry (a `push`, or a `set` of a key not known to exist) comes
-  after `require len(rows) < 500` and is not in a loop; a `set` after
+  after `require len(rows) < 500`, is not in a loop or a lambda, and no
+  handler it calls (or event it emits) adds to the slot too; a `set` after
   `require rows.get(k) != ()` (or in the `else` of `if rows.get(k) == ()`)
   cannot grow the slot.
 - A `require` counts for the writes of its own block and the blocks nested

@@ -197,6 +197,15 @@ impl<'a> Walker<'a> {
         match &stmt.node {
             Statement::Let { name, value } => {
                 self.walk_expr(value);
+                if self.index.slots.contains(name) && !self.scope.contains(name) {
+                    self.issues.push(InterpolationIssue {
+                        message: format!("`let {name}` hides the memory slot `{name}` for the rest of this block — reads, indexes and writes of `{name}` now mean the local; rename it (e.g. `{name}_local`) unless that is intended"),
+                        span: stmt.span,
+                        warning: true,
+                        habit: true,
+                        kind: "local_shadows_slot",
+                    });
+                }
                 self.scope.insert(name.clone());
                 self.block_lets.insert(name.clone());
             }

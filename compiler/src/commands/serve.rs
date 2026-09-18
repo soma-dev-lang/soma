@@ -939,8 +939,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             }
                         }
                         let mut env = rustc_hash::FxHashMap::default();
-                        if let Err(e) = interp.exec_every(&body, &mut env, &cname) {
-                            eprintln!("[scheduler:{}] tick error: {}", cname, e);
+                        match interp.exec_every(&body, &mut env, &cname) {
+                            Err(e) => eprintln!("[scheduler:{}] tick error (rolled back): {}", cname, e),
+                            Ok(_) if interp.last_commit_writes > 0 => eprintln!("[scheduler:{}] tick committed {} write(s)", cname, interp.last_commit_writes),
+                            Ok(_) => {}
                         }
                     }
                 });
@@ -972,8 +974,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         interp.ws_out = ws_guard.clone();
                     }
                     let mut env = rustc_hash::FxHashMap::default();
-                    if let Err(e) = interp.exec_every(&body, &mut env, &cname) {
-                        eprintln!("[after:{}] error: {}", cname, e);
+                    match interp.exec_every(&body, &mut env, &cname) {
+                        Err(e) => eprintln!("[after:{}] error (rolled back): {}", cname, e),
+                        Ok(_) => eprintln!("[after:{}] ran, committed {} write(s)", cname, interp.last_commit_writes),
                     }
                 });
             }

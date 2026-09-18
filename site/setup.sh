@@ -2,9 +2,19 @@
 set -e
 
 REPO="soma-dev-lang/soma"
-VERSION=$(curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/compiler/Cargo.toml" 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\(.*\)"/\1/')
+# The version is the LATEST PUBLISHED RELEASE (not whatever `main` says:
+# a version bump on main before its release used to send every install to a
+# source build). SOMA_VERSION=2.5.0 pins one explicitly.
+VERSION="${SOMA_VERSION:-}"
 if [ -z "$VERSION" ]; then
-    VERSION="0.31.0"
+    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | sed 's/.*"v\{0,1\}\([0-9][^"]*\)".*/\1/')
+fi
+if [ -z "$VERSION" ]; then
+    VERSION=$(curl -fsSL "https://soma-lang.dev/version.json" 2>/dev/null | grep '"soma_version"' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+fi
+if [ -z "$VERSION" ]; then
+    echo "  ✗ cannot find the latest soma release (GitHub API and soma-lang.dev unreachable) — set SOMA_VERSION=x.y.z"
+    exit 1
 fi
 INSTALL_DIR="$HOME/.soma/bin"
 
@@ -64,12 +74,32 @@ else
 fi
 
 if [ "$HTTP_CODE" = "200" ]; then
-    echo "  → downloading soma for ${TARGET}..."
-    curl -fsSL "$BINARY_URL" -o "$INSTALL_DIR/soma"
+    echo "  → downloading soma ${VERSION} for ${TARGET}..."
+    TMP_BIN=$(mktemp)
+    curl -fsSL "$BINARY_URL" -o "$TMP_BIN"
+    # verify against the release's SHA256SUMS before installing anything
+    SUMS=$(curl -fsSL "https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS" 2>/dev/null || true)
+    EXPECTED=$(echo "$SUMS" | grep "soma-${TARGET}\$" | awk '{print $1}')
+    if command -v shasum > /dev/null 2>&1; then
+        ACTUAL=$(shasum -a 256 "$TMP_BIN" | awk '{print $1}')
+    else
+        ACTUAL=$(sha256sum "$TMP_BIN" | awk '{print $1}')
+    fi
+    if [ -z "$EXPECTED" ]; then
+        echo "  ✗ the release has no checksum for soma-${TARGET} — not installing an unverified binary"
+        rm -f "$TMP_BIN"; exit 1
+    fi
+    if [ "$EXPECTED" != "$ACTUAL" ]; then
+        echo "  ✗ checksum mismatch for soma-${TARGET}: expected ${EXPECTED}, got ${ACTUAL}"
+        rm -f "$TMP_BIN"; exit 1
+    fi
+    echo "  ✓ checksum verified (${ACTUAL})"
+    mv "$TMP_BIN" "$INSTALL_DIR/soma"
     chmod +x "$INSTALL_DIR/soma"
     echo "  ✓ soma downloaded to ${INSTALL_DIR}/soma"
 else
-    echo "  → no pre-built binary found, building from source..."
+    echo "  → no pre-built binary for ${TARGET} in release v${VERSION}: building v${VERSION} from source"
+    echo "    (Rust via rustup in \$HOME if missing, then cargo build — about a minute; nothing outside \$HOME)"
     echo ""
 
     if ! command -v cargo > /dev/null 2>&1; then
@@ -86,29 +116,22 @@ else
 
     TMPDIR=$(mktemp -d)
     echo "  → cloning soma..."
-    git clone --quiet --depth 1 https://github.com/${REPO}.git "$TMPDIR/soma"
+    git clone --quiet --depth 1 --branch "v${VERSION}" https://github.com/${REPO}.git "$TMPDIR/soma"
 
-    # Install GMP (required for BigInt via rug/GMP)
-    if ! pkg-config --exists gmp 2>/dev/null; then
-        echo "  → installing GMP (for BigInt)..."
-        if [ "$OS" = "darwin" ]; then
-            if command -v brew > /dev/null 2>&1; then
-                brew install gmp --quiet 2>/dev/null
-            else
-                echo "  ⚠ install GMP manually: brew install gmp"
-            fi
-        elif [ "$OS" = "linux" ]; then
-            if command -v apt-get > /dev/null 2>&1; then
-                sudo apt-get install -y libgmp-dev >/dev/null 2>&1
-            elif command -v dnf > /dev/null 2>&1; then
-                sudo dnf install -y gmp-devel >/dev/null 2>&1
-            elif command -v pacman > /dev/null 2>&1; then
-                sudo pacman -S --noconfirm gmp >/dev/null 2>&1
-            else
-                echo "  ⚠ install GMP manually: apt install libgmp-dev"
-            fi
+    # GMP (BigInt) is needed to build. The installer never runs sudo: it
+    # says what to install and stops.
+    if ! pkg-config --exists gmp 2>/dev/null && [ ! -f /usr/include/gmp.h ] && [ ! -f /opt/homebrew/include/gmp.h ] && [ ! -f /usr/local/include/gmp.h ]; then
+        if [ "$OS" = "darwin" ] && command -v brew > /dev/null 2>&1; then
+            echo "  → installing GMP with Homebrew..."
+            brew install gmp --quiet 2>/dev/null
+        else
+            echo "  ✗ GMP (the BigInt library) is missing. Install it, then run this installer again:"
+            echo "      Debian/Ubuntu: sudo apt-get install -y build-essential libgmp-dev m4"
+            echo "      Fedora:        sudo dnf install -y gmp-devel"
+            echo "      Arch:          sudo pacman -S gmp"
+            echo "      macOS:         brew install gmp"
+            rm -rf "$TMPDIR"; exit 1
         fi
-        echo "  ✓ GMP installed"
     fi
 
     echo "  → building (this takes ~60 seconds)..."
@@ -129,13 +152,17 @@ else
     echo "  ✓ stdlib installed to $HOME/.soma/stdlib"
 fi
 
-# Remove old installations that would shadow ~/.soma/bin
-for OLD_SOMA in /usr/local/bin/soma "$HOME/.local/bin/soma" "$HOME/bin/soma" "$HOME/.cargo/bin/soma"; do
+# Old installations that would shadow ~/.soma/bin: removed inside $HOME,
+# only reported elsewhere (the installer never touches system paths)
+for OLD_SOMA in "$HOME/.local/bin/soma" "$HOME/bin/soma" "$HOME/.cargo/bin/soma"; do
     if [ -f "$OLD_SOMA" ]; then
         echo "  → removing old installation: $OLD_SOMA"
-        rm -f "$OLD_SOMA" 2>/dev/null || sudo rm -f "$OLD_SOMA" 2>/dev/null || echo "  ⚠ could not remove $OLD_SOMA (remove manually)"
+        rm -f "$OLD_SOMA" 2>/dev/null || echo "  ⚠ could not remove $OLD_SOMA (remove manually)"
     fi
 done
+if [ -f /usr/local/bin/soma ]; then
+    echo "  ⚠ an older /usr/local/bin/soma exists and may shadow this install — remove it: sudo rm /usr/local/bin/soma"
+fi
 
 # Add to PATH if not already there
 PATH_LINE="export PATH=\"\$HOME/.soma/bin:\$PATH\""
@@ -170,7 +197,7 @@ fi
 export PATH="$HOME/.soma/bin:$PATH"
 
 echo ""
-echo "  ✓ soma $(${INSTALL_DIR}/soma --version 2>/dev/null || echo 'installed')"
+echo "  ✓ $(${INSTALL_DIR}/soma --version 2>/dev/null || echo 'soma installed')"
 echo ""
 echo "  ⚠ run 'source ${SHELL_RC}' or open a new terminal to use soma"
 

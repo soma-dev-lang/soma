@@ -547,6 +547,8 @@ pub struct Interpreter {
     pub handler_stubs: HashMap<String, std::collections::VecDeque<Result<Value, String>>>,
     /// a real network call under `soma test` was already reported
     pub(crate) net_noted: bool,
+    /// writes committed by the last top-level invocation
+    pub last_commit_writes: usize,
     /// `mock now <unix seconds>`: the clock the builtins answer with.
     /// `mock now` in a test: the frozen clock, in MILLISECONDS
     pub frozen_now: Option<i64>,
@@ -720,6 +722,7 @@ impl Interpreter {
             test_auto_mock: false,
             handler_stubs: HashMap::new(),
             net_noted: false,
+            last_commit_writes: 0,
             frozen_now: None,
             auto_mock_noted: false,
             current_tool_caps: None,
@@ -1259,9 +1262,11 @@ impl Interpreter {
                 self.last_span = Some(value.span);
                 let idx_val = self.eval_expr(&index.node, env, cell_name, signal_name)?;
                 let new_val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
-                // A storage slot: xs[k] = v  ⇒  xs.set(k, v)
-                if self.storage.contains_key(name)
-                    || self.storage.contains_key(&format!("{}.{}", cell_name, name))
+                // A storage slot: xs[k] = v  ⇒  xs.set(k, v) — unless a LOCAL
+                // of that name is in scope (`let rows = [1, 2]  rows[0] = 99`
+                // used to overwrite the persistent slot `rows`)
+                if !env.contains_key(name) && (self.storage.contains_key(name)
+                    || self.storage.contains_key(&format!("{}.{}", cell_name, name)))
                 {
                     self.call_storage_method(cell_name, name, "set", &[idx_val, new_val])?;
                     return Ok(Value::Unit);
@@ -1812,6 +1817,16 @@ impl Interpreter {
                     && !self.storage.contains_key(&format!("{}.{}", cell_name, target))
                 {
                     return self.call_cell_handler(target, method, arg_vals);
+                }
+                // a local of the slot's name: `let rows = []  rows.push(x)`
+                // would write the SLOT — refuse instead of guessing
+                if env.contains_key(target) && (self.storage.contains_key(target)
+                    || self.storage.contains_key(&format!("{}.{}", cell_name, target)))
+                {
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                        "`{t}.{m}(…)`: `{t}` is a local variable here, and it has the name of the memory slot `{t}` — rename the local (a local list is rebuilt: `{t} = push({t}, x)`)",
+                        t = target, m = method
+                    ))));
                 }
                 // Check if target is a memory slot with a storage backend
                 self.call_storage_method(cell_name, target, method, &arg_vals)
@@ -2436,8 +2451,10 @@ impl Interpreter {
                 // `s[i]` (string, by char). A storage-slot index reads
                 // through .get() so `slot[k]` works like slot.get(k).
                 if let Expr::Ident(ref slot_name) = target.node {
-                    if self.storage.contains_key(slot_name)
-                        || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name))
+                    // a local (or parameter, loop variable, lambda parameter)
+                    // of the slot's name wins, as for every other read
+                    if !env.contains_key(slot_name) && (self.storage.contains_key(slot_name)
+                        || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name)))
                     {
                         let key = self.eval_expr(&index.node, env, cell_name, signal_name)?;
                         return self.call_storage_method(cell_name, slot_name, "get", &[key]);
@@ -2506,8 +2523,8 @@ impl Interpreter {
                 }
                 // Check if target is a storage slot
                 if let Expr::Ident(ref slot_name) = target.node {
-                    if self.storage.contains_key(slot_name)
-                        || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name))
+                    if !env.contains_key(slot_name) && (self.storage.contains_key(slot_name)
+                        || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name)))
                     {
                         return self.call_storage_method(cell_name, slot_name, method, &arg_vals);
                     }
@@ -3852,6 +3869,9 @@ impl Interpreter {
         if result.is_err() {
             self.rollback_to(0);
         }
+        // how many writes / transitions the invocation committed (a
+        // scheduler tick logs it — ticks were invisible in the serve log)
+        self.last_commit_writes = if result.is_ok() { self.journal.as_ref().map_or(0, |j| j.len()) } else { 0 };
         self.journal = None;
         if let Some(c) = txn {
             let c = c.lock().unwrap_or_else(|e| e.into_inner());

@@ -258,6 +258,16 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 let key_exists = |path: &Vec<usize>, key: &Option<String>| -> bool {
                     let Some(k) = key else { return false };
                     let Some(on) = handlers.get(handler) else { return false };
+                    // the key expression must name only once-bound values:
+                    // `let key = k  require m.get(key) != ()  key = k2  m.set(key, …)`
+                    // sets a DIFFERENT key than the one required
+                    let mut assigns: Vec<(&str, &Expr)> = Vec::new();
+                    collect_assigns(&on.body, &mut assigns);
+                    let rebound = |n: &str| assigns.iter().filter(|(m, _)| *m == n).count() > 1
+                        || (on.params.iter().any(|p| p.name == n) && assigns.iter().any(|(m, _)| *m == n));
+                    let mut shadow: HashSet<String> = HashSet::new();
+                    collect_binders_stmts(&on.body, &mut shadow);
+                    if k.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| !w.is_empty() && (rebound(w) || shadow.contains(w))) { return false; }
                     existing_key_facts(&on.body, &[], slot).iter().any(|(fp, fk, excl)| path.starts_with(fp) && fk == k && excl.as_ref().map_or(true, |e| !path.starts_with(e)))
                 };
                 if size_upper_bound_any(&parts, slot) && key_exists(wpath, wkey) {
@@ -265,9 +275,39 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         if size_upper_bound(c, slot).is_some() { *v = Proof::Holds; }
                     }
                 }
-                let adds_here = writes.iter().filter(|(h, sl, e, _, p, k)| h == handler && sl == slot
+                let mut adds_here = writes.iter().filter(|(h, sl, e, _, p, k)| h == handler && sl == slot
                     && !matches!(e, Expr::Ident(n) if n == "<deleted entry>") && !key_exists(p, k)).count();
-                let in_loop = wpath.iter().any(|step| step % 4 == 2);
+                // a sibling handler called from here that also adds to the
+                // slot grows it past the one require (transitively)
+                if let Some(on) = handlers.get(handler) {
+                    let mut seen: HashSet<String> = HashSet::new();
+                    let mut stack: Vec<String> = Vec::new();
+                    crate::checker::literals::for_each_call(&on.body, &mut |n, _, _| stack.push(n.to_string()));
+                    // `emit ev(…)` runs every `on ev` of the process: a call too
+                    fn emits(stmts: &[Spanned<Statement>], out: &mut Vec<String>) {
+                        for st in stmts {
+                            match &st.node {
+                                Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
+                                Statement::If { then_body, else_body, .. } => { emits(then_body, out); emits(else_body, out); }
+                                Statement::For { body, .. } | Statement::While { body, .. } => emits(body, out),
+                                _ => {}
+                            }
+                        }
+                    }
+                    emits(&on.body, &mut stack);
+                    while let Some(callee) = stack.pop() {
+                        if callee == *handler || !seen.insert(callee.clone()) { continue; }
+                        let Some(c_on) = handlers.get(&callee) else { continue };
+                        if writes.iter().any(|(h, sl, e, _, _, _)| *h == callee && sl == slot && !matches!(e, Expr::Ident(n) if n == "<deleted entry>")) {
+                            adds_here += 1;
+                        }
+                        crate::checker::literals::for_each_call(&c_on.body, &mut |n, _, _| stack.push(n.to_string()));
+                        emits(&c_on.body, &mut stack);
+                    }
+                }
+                // a loop body, or a lambda (`xs |> map(i => rows.push(i))`) may
+                // run the write many times
+                let in_loop = wpath.iter().any(|step| step % 4 == 2 || *step == usize::MAX / 2);
                 for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
                     if *v == Proof::Holds || adds_here != 1 || in_loop { continue; }
                     let Some(k) = size_upper_bound(c, slot) else { continue };
@@ -1207,10 +1247,12 @@ fn collect_writes_expr(expr: &Expr, handler: &str, in_try: bool, path: &[usize],
                 collect_writes_expr(&v.node, handler, in_try, path, out);
             }
         }
-        Expr::Lambda { body, .. } => collect_writes_expr(&body.node, handler, in_try, path, out),
+        // a lambda may run many times (`xs |> map(i => rows.push(i))`)
+        Expr::Lambda { body, .. } => collect_writes_expr(&body.node, handler, in_try, &{ let mut v = path.to_vec(); v.push(usize::MAX / 2); v }, out),
         Expr::LambdaBlock { stmts, result, .. } => {
-            collect_writes_stmts_at(stmts, handler, in_try, &{ let mut v = path.to_vec(); v.push(usize::MAX / 2); v }, out);
-            collect_writes_expr(&result.node, handler, in_try, path, out);
+            let lam = { let mut v = path.to_vec(); v.push(usize::MAX / 2); v };
+            collect_writes_stmts_at(stmts, handler, in_try, &lam, out);
+            collect_writes_expr(&result.node, handler, in_try, &lam, out);
         }
         Expr::Match { subject, arms } => {
             collect_writes_expr(&subject.node, handler, in_try, path, out);
@@ -1451,7 +1493,8 @@ fn size_upper_bound(c: &Expr, slot: &str) -> Option<f64> {
     let is_size = |e: &Expr| match e {
         Expr::Ident(n) => n == "size",
         Expr::FieldAccess { target, field } => matches!(&target.node, Expr::Ident(n) if n == slot) && (field == "size" || field == "len"),
-        Expr::FnCall { name, args } => (name == "len" || name == "size") && args.len() == 1 && matches!(&args[0].node, Expr::Ident(n) if n == slot),
+        // NOT `len(slot)`: in an invariant the slot's name is the value being
+        // written, so `len(rows)` measures that value, not the slot
         _ => false,
     };
     let Expr::CmpOp { left, op, right } = c else { return None };

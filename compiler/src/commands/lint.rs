@@ -48,6 +48,9 @@ struct LintPass<'a> {
     all_handler_names: Vec<(String, usize)>, // (name, line)
     /// the `let` being checked is tested against `()` right after
     suppress_unchecked_get: bool,
+    /// (slot, loop variable) pairs of `for k in slot.keys`: `slot.get(k)`
+    /// inside cannot miss
+    known_keys: Vec<(String, String)>,
 }
 
 impl<'a> LintPass<'a> {
@@ -58,6 +61,7 @@ impl<'a> LintPass<'a> {
             routed_handlers: Vec::new(),
             all_handler_names: Vec::new(),
             suppress_unchecked_get: false,
+            known_keys: Vec::new(),
         }
     }
 
@@ -205,9 +209,17 @@ impl<'a> LintPass<'a> {
                 self.check_statements(then_body, memory_slots);
                 self.check_statements(else_body, memory_slots);
             }
-            Statement::For { iter, body, .. } => {
+            Statement::For { var, iter, body, .. } => {
                 self.check_expr_for_lints(&iter.node, &iter.span, memory_slots);
+                let keys_of = match &iter.node {
+                    Expr::FieldAccess { target, field } if field == "keys" => match &target.node { Expr::Ident(n) => Some(n.clone()), _ => None },
+                    Expr::MethodCall { target, method, .. } if method == "keys" => match &target.node { Expr::Ident(n) => Some(n.clone()), _ => None },
+                    Expr::FnCall { name, args } if name == "keys" && args.len() == 1 => match &args[0].node { Expr::Ident(n) => Some(n.clone()), _ => None },
+                    _ => None,
+                };
+                if let Some(slot) = &keys_of { self.known_keys.push((slot.clone(), var.clone())); }
                 self.check_statements(body, memory_slots);
+                if keys_of.is_some() { self.known_keys.pop(); }
             }
             Statement::While { condition, body, .. } => {
                 self.check_expr_for_lints(&condition.node, &condition.span, memory_slots);
@@ -365,7 +377,11 @@ impl<'a> LintPass<'a> {
     fn check_unchecked_get_in_let(&mut self, stmt: &Statement, span: &ast::Span, memory_slots: &[String]) {
         if let Statement::Let { name: _var_name, value } = stmt {
             // Check if value is a bare slot.get(key) without ??
-            if !self.suppress_unchecked_get && self.is_bare_storage_get(&value.node, memory_slots) {
+            let key_known = matches!(&value.node, Expr::MethodCall { target, method, args }
+                if method == "get" && args.len() == 1
+                    && matches!((&target.node, &args[0].node), (Expr::Ident(sl), Expr::Ident(k))
+                        if self.known_keys.iter().any(|(a, b)| a == sl && b == k)));
+            if !self.suppress_unchecked_get && !key_known && self.is_bare_storage_get(&value.node, memory_slots) {
                 let line = self.line_of(span);
                 let get_expr = self.expr_to_source(&value.node);
                 self.warn(
