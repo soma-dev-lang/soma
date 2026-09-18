@@ -646,3 +646,30 @@ No false proof found.
 
 ### Open
 - [ ] `x % 0` says "modulo by zero" interpreted, "division by zero" native (same kind).
+
+## Cycle 23 (2026-09-18) — batch + streaming e-commerce analytics (pandas port)
+
+7/10: every aggregate matches an independent Python reference exactly (daily
+revenue per country, cohorts, refund rates, median, p90/p99 bit-for-bit with
+numpy); native path 108× faster (20.5 s → 0.19 s on 201k rows) with identical
+results; idempotent directory ingest survives kill -9 mid-file; 8 invariants
+proven by induction.
+
+### Fixed
+- [x] **Native**: `di = nd` from an i64 local into a BigInt-mode local compiled to `std::mem::swap` of two Rust types (E0308 after a clean check) — an `assign`.
+- [x] The "`let` hides the memory slot" warning fired for another cell's slot name — only the walked cell's slots.
+- [x] Regexes were compiled on every call (~12 µs; 60% of an interpreted validation) — cached per pattern.
+- [x] `read_files(dir, n)` took the first N in file-system order — by file name.
+- [x] Docs: persistent write cost (~0.1 ms measured, not 1 ms); read_files has no listing / move / delete.
+
+### Cycle 23 — attack (same binary)
+
+No false proof.
+- [x] `zeros(0, 2^62)` / `ones(2^40, 0)` / `reshape` / `mat` with one zero dimension passed the 10^8-cell cap (a product of 0): capacity-overflow panic past `try`, or 18 GB — each dimension is capped; a panic inside any builtin is now a `try`-catchable error of kind `internal` instead of ending `soma run`.
+- [x] A `[native]` handler returning `a / b` on one path and a String on another passed check (rustc E0308) — one return type is a check error.
+- [x] `format("%d", inf)` printed 9223372036854775807 — kind `range`; a big finite Float prints exactly.
+- [x] Docs: group_by / agg keys are the field's text (1 and "1" share a group, missing → "unknown", () → "null").
+
+### Open
+- [ ] read_csv drops extra fields silently (no strict mode / line numbers).
+- [ ] One unexplained silent exit of a serve process after a tick (not reproduced in 150 iterations).

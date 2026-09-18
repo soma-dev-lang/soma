@@ -268,6 +268,29 @@ pub fn check_native_handler(
             _ => None,
         }).collect();
         problem = walk(body, &mut kinds);
+        // one return type per native handler: `return a / b` (a Float) on
+        // one path and `return "neg"` on another passed check, then rustc
+        // refused the generated code (E0308)
+        if problem.is_none() {
+            let mut kinds2 = kinds.clone();
+            fn all_lets(stmts: &[Spanned<Statement>], k: &mut std::collections::HashMap<String, char>) {
+                for st in stmts {
+                    match &st.node {
+                        Statement::Let { name, value } => { if let Some(c) = kind(&value.node, k) { k.insert(name.clone(), c); } }
+                        Statement::If { then_body, else_body, .. } => { all_lets(then_body, k); all_lets(else_body, k); }
+                        Statement::For { body, .. } | Statement::While { body, .. } => all_lets(body, k),
+                        _ => {}
+                    }
+                }
+            }
+            all_lets(body, &mut kinds2);
+            let mut rets: Vec<&Expr> = Vec::new();
+            collect_returns(body, &mut rets);
+            let seen: HashSet<char> = rets.iter().filter_map(|e| kind(e, &kinds2)).collect();
+            if seen.contains(&'s') && seen.len() > 1 {
+                problem = Some("returns a String on one path and a number or Bool on another — a native handler has one return type (return to_string(x), or split the handler)".to_string());
+            }
+        }
     }
     if let Some(reason) = problem {
         return Err(NativeCheckError { handler_name: handler_name.to_string(), reason });

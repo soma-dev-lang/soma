@@ -119,7 +119,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let (Some(Value::String(text)), Some(Value::String(pat))) = (args.first(), args.get(1)) else {
                 return Some(Err(RuntimeError::TypeError(format!("{}(text: String, pattern: String{})", name, if name == "regex_replace" { ", replacement: String" } else { "" }))));
             };
-            let rx = match regex::Regex::new(pat) {
+            // compiled once per pattern (about 12 µs per call went into
+            // recompiling the same pattern in a validation loop)
+            let rx = match cached_regex(pat) {
                 Ok(r) => r,
                 Err(e) => return Some(Err(RuntimeError::TypeError(format!("{}: invalid pattern {:?}: {}", name, pat, e)))),
             };
@@ -484,7 +486,9 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         let body = match conv {
             'd' => match &arg {
                 Value::Int(n) => n.to_string(),
-                Value::Float(f) => format!("{}", f.trunc() as i64),
+                // an infinite / NaN Float has no integer (it printed i64::MAX)
+                Value::Float(f) if !f.is_finite() => return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("format(): %d of {} — it has no integer value", f) }),
+                Value::Float(f) => rug::Integer::from_f64(f.trunc()).map(|i| i.to_string()).unwrap_or_default(),
                 other => return Err(RuntimeError::TypeError(format!("format(): %d needs an Int, got {}", super::super::value_type_name(other)))),
             },
             'f' => {
@@ -510,4 +514,19 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         }
     }
     Ok(Value::String(out))
+}
+
+thread_local! {
+    static REGEX_CACHE: std::cell::RefCell<std::collections::HashMap<String, regex::Regex>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn cached_regex(pat: &str) -> Result<regex::Regex, regex::Error> {
+    if let Some(r) = REGEX_CACHE.with(|c| c.borrow().get(pat).cloned()) { return Ok(r); }
+    let r = regex::Regex::new(pat)?;
+    REGEX_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 256 { c.clear(); }
+        c.insert(pat.to_string(), r.clone());
+    });
+    Ok(r)
 }

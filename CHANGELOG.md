@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A panic inside a builtin is a catchable error (kind `internal`); matrix
+  builtins cap each dimension (a zero dimension bypassed the size cap).
+- Native: i64-to-BigInt local assignment compiles; mixed Float/String
+  returns are a check error. Regexes are compiled once per pattern;
+  `read_files` is in name order; `format("%d", inf)` raises.
 - serve: WebSocket and SSE pushes carry the data as one-line JSON (a String
   payload could forge envelope fields and SSE events for other clients).
 - `range` near i64::MAX ends (the step wrapped); `format("%.Nf")` past 1000

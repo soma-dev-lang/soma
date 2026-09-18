@@ -65,6 +65,10 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
     }
 
     for cell in super::names::collect_cells(program) {
+        let cell_slots: HashSet<String> = cell.sections.iter().filter_map(|s| match &s.node {
+            Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
+            _ => None,
+        }).flatten().collect();
         // test cells: the rules' expressions, with `let` bindings in scope
         // (an undefined `{var}` inside an assert used to be found at run time)
         if matches!(cell.kind, CellKind::Test) {
@@ -95,6 +99,7 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
             match &section.node {
                 Section::OnSignal(on) => {
                     let mut w = Walker::new(&index);
+                    w.cell_slots = cell_slots.clone();
                     if blessed_failing.contains(&on.signal_name) {
                         // interpolation issues in it are recoverable (a bare
                         // undefined name stays an error: that is a bug, not
@@ -109,6 +114,7 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                 }
                 Section::Every(ev) | Section::After(ev) => {
                     let mut w = Walker::new(&index);
+                    w.cell_slots = cell_slots.clone();
                     w.walk_stmts(&ev.body);
                     issues.extend(w.issues);
                 }
@@ -140,11 +146,14 @@ struct Walker<'a> {
     loop_depth: usize,
     /// a handler a test cell expects to fail (`assert_fails h(…)`)
     blessed: bool,
+    /// the memory slots of the cell being walked (a `let` of another
+    /// cell's slot name hides nothing)
+    cell_slots: HashSet<String>,
 }
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, blessed: false }
+        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, blessed: false, cell_slots: HashSet::new() }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -215,7 +224,7 @@ impl<'a> Walker<'a> {
         match &stmt.node {
             Statement::Let { name, value } => {
                 self.walk_expr(value);
-                if self.index.slots.contains(name) && !self.scope.contains(name) {
+                if self.cell_slots.contains(name) && !self.scope.contains(name) {
                     self.issues.push(InterpolationIssue {
                         message: format!("`let {name}` hides the memory slot `{name}` for the rest of this block — reads, indexes and writes of `{name}` now mean the local; rename it (e.g. `{name}_local`) unless that is intended"),
                         span: stmt.span,

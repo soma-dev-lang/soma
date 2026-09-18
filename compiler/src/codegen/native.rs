@@ -5350,6 +5350,11 @@ impl FnGenerator {
 
         if let Expr::Ident(src) = value {
             let var_ty = self.var_types.get(src).copied().unwrap_or(NativeType::Float);
+            // an i64 local into an Integer one: swap/clone_from mixed the two
+            // Rust types (E0308 after a clean `soma check`)
+            if var_ty == NativeType::Int && src != name && self.small_int_vars.contains(src) && !self.small_int_vars.contains(name) {
+                return format!("{}{}.assign({});\n", ind, name, src);
+            }
             if var_ty == NativeType::Int && src != name {
                 // Swap-on-assign: if `src` is in the precomputed
                 // swap_safe_vars set, we can use mem::swap instead of

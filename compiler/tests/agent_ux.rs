@@ -2130,3 +2130,39 @@ cell R {
     assert!(up, "server did not start");
     assert!(got.contains(r#"data: "legit\nevent: forged""#) && !got.contains("\nevent: forged"), "{got}");
 }
+
+/// Cycle 23 (attack): a zero matrix dimension no longer bypasses the size
+/// cap (capacity overflow past `try`); a builtin panic is a catchable
+/// error; a native handler returning a Float and a String is a check error;
+/// `%d` of inf raises.
+#[test]
+fn cycle23_attack_findings() {
+    let d = dir("cycle23a");
+    std::fs::write(d.join("z.cell"), r#"
+cell T {
+  on main() {
+    let b = shl(1, 62)
+    return [try { zeros(0, b) }.kind, try { ones(shl(1, 40), 0) }.kind, try { mat(b, 0, []) }.kind, try { format("%d", 1.0 / 0.0) }.kind, format("%d", 1e20)]
+  }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "z.cell", "main"]);
+    assert!(out.contains(r#"["range", "range", "range", "range", "100000000000000000000"]"#), "{out}");
+    std::fs::write(d.join("n.cell"), r#"
+cell N {
+  on retdiff(a: Int, b: Int) [native] {
+    if a > b { return a / b }
+    return "neg"
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "n.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("one return type"), "{out}");
+
+    // an i64 local assigned into a BigInt-mode local compiled to a swap of
+    // two Rust types (E0308 after a clean check)
+    std::fs::write(d.join("b4.cell"), "cell B {\n    on f(n: Int) [native] {\n        let nd = 0\n        let di = 0\n        di = str_len(\"abc\")\n        di = nd\n        return di + n\n    }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "b4.cell", "f", "10"]);
+    assert!(out.lines().any(|l| l.trim() == "10"), "{out}");
+}

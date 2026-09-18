@@ -1452,6 +1452,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let flat = match flatten_nums(&args[0]) { Ok(f) => f, Err(e) => return Some(Err(e)) };
             let r = arg_usize(&args[1]);
             let c = arg_usize(&args[2]);
+            if let Err(e) = check_cells(r, c) { return Some(Err(e)); }
             if r.checked_mul(c) != Some(flat.len()) {
                 return Some(Err(RuntimeError::TypeError(format!(
                     "reshape: {} values cannot fill a {}x{} matrix ({} cells)", flat.len(), r, c, r as u128 * c as u128))));
@@ -1611,6 +1612,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Ok(v) => v,
                 Err(e) => return Some(Err(e)),
             };
+            if let Err(e) = check_cells(r, c) { return Some(Err(e)); }
             if flat.len() != r * c {
                 return Some(Err(RuntimeError::TypeError(format!(
                     "mat: expected {} values for {}×{} matrix, got {}",
@@ -2397,8 +2399,10 @@ mod tests {
 
 /// zeros(2^62, 2^62) panicked (capacity overflow) past every `try`
 fn check_cells(r: usize, c: usize) -> Result<(), RuntimeError> {
+    // each dimension too: zeros(0, 2^62) is 0 cells but 2^62 empty rows
+    // (capacity overflow past `try`, or 18 GB for 2^40 rows)
     match r.checked_mul(c) {
-        Some(n) if n <= crate::interpreter::MAX_BUILT_LEN => Ok(()),
+        Some(n) if n <= crate::interpreter::MAX_BUILT_LEN && r <= crate::interpreter::MAX_BUILT_LEN && c <= crate::interpreter::MAX_BUILT_LEN => Ok(()),
         _ => Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("a {}x{} matrix is past the limit of {} cells", r, c, crate::interpreter::MAX_BUILT_LEN) }),
     }
 }

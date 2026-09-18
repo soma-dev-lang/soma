@@ -297,11 +297,14 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                     let count_limit = count_si.to_i64().unwrap_or(0);
                     let mut results = Vec::new();
                     if let Ok(entries) = std::fs::read_dir(dir) {
+                        // the first N BY NAME (the directory order was the
+                        // file system's, different between runs)
+                        let mut paths: Vec<std::path::PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+                        paths.sort();
                         let mut n = 0i64;
-                        for entry in entries {
+                        for path in paths {
                             if n >= count_limit { break; }
-                            if let Ok(entry) = entry {
-                                let path = entry.path();
+                            {
                                 if path.is_file() {
                                     if let Ok(content) = std::fs::read_to_string(&path) {
                                         results.push(map_from_pairs(vec![

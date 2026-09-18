@@ -49,7 +49,25 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
         }
     }
 
-    // Try each category in order
+    // Try each category in order. A panic inside a builtin (a capacity
+    // overflow the size checks missed) is an ordinary `try`-catchable error
+    // of kind `internal`, not the end of the process.
+    let interp_ptr = std::panic::AssertUnwindSafe(&mut *interp);
+    let outcome = std::panic::catch_unwind(move || {
+        let interp = interp_ptr;
+        let interp: &mut super::Interpreter = interp.0;
+        call_categories(interp, name, args, cell_name)
+    });
+    match outcome {
+        Ok(r) => r,
+        Err(p) => {
+            let msg = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_else(|| "a builtin failed".to_string());
+            Some(Err(RuntimeError::Domain { kind: "internal".to_string(), message: format!("{}(): {}", name, msg) }))
+        }
+    }
+}
+
+fn call_categories(interp: &mut super::Interpreter, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
     None
         .or_else(|| io::call_builtin(name, args))
         .or_else(|| string::call_builtin(name, args))

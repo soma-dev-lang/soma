@@ -145,12 +145,12 @@ The `native` section is usable inside `[native]` handlers only.
 | `min_by` | `min_by(rows: List<Map>, field) -> Map` | Row with the smallest integer value of `field`, or (). |
 | `max_by` | `max_by(rows: List<Map>, field) -> Map` | Row with the largest integer value of `field`, or (). |
 | `pluck` | `pluck(rows: List<Map>, field) -> List` | Extract one field from every row (missing fields become ()). |
-| `group_by` | `group_by(rows: List<Map>, field) -> Map<String, List>` | Group rows into a map keyed by the field's stringified value. |
+| `group_by` | `group_by(rows: List<Map>, field) -> Map<String, List>` | Group rows into a map keyed by the field's stringified value: 1 and "1" (true and "true") share a group, a row without the field goes to "unknown" and a () value to "null" — normalise the field first when those differ in your data. |
 | `distinct` | `distinct(rows: List, field?) -> List` | Unique elements — or, with `field`, the unique VALUES of that field (distinct_by keeps the rows). |
 | `distinct_by` | `distinct_by(rows: List<Map>, field: String) -> List<Map>` | The first row per distinct value of `field` (lodash uniqBy / dedup by id). Alias: unique_by. |
 | `count_by` | `count_by(rows: List<Map>, field, value) -> Int` | Number of rows whose `field` stringifies equal to `value`. |
 | `select` | `select(rows: List<Map>, fields...) -> List<Map>` | Project each row down to the named fields. |
-| `agg` | `agg(rows: List<Map>, group_field, "col:func"...) -> List<Map>` | Group + aggregate: func is sum\|avg\|min\|max\|count; every group also gets a `count`. |
+| `agg` | `agg(rows: List<Map>, group_field, "col:func"...) -> List<Map>` | Group + aggregate: func is sum\|avg\|min\|max\|count; every group also gets a `count`. Groups are keyed like group_by (the field's text). |
 | `inner_join` | `inner_join(left: List<Map>, right: List<Map>, key) -> List<Map>` | Merge rows whose `key` matches in both lists (left fields win). |
 | `left_join` | `left_join(left: List<Map>, right: List<Map>, key) -> List<Map>` | Keep every left row, merging matching right-row fields when found. |
 
@@ -174,7 +174,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `write_file` | `write_file(path: String, content) -> Bool \| {error}` | Write content (stringified) to a file; true on success. |
 | `read_csv` | `read_csv(path: String, opts: Map?) -> List<Map> \| {error}` | Parse an RFC 4180 CSV (quoted fields, "" escapes, multi-line quoted cells, CRLF) with a header row into maps. Unquoted cells are auto-typed Int/Float/String; a quoted cell and a leading-zero id (007) stay Strings; a short row is padded with "", extra fields are dropped. map("raw", true) keeps every cell as text (exact money: "1.00"). |
 | `write_csv` | `write_csv(path: String, rows: List<Map>) -> Bool \| {error}` | Write rows as CSV using the first row's keys as the header. A cell read_csv would split, trim or re-type is quoted (separators, quotes, newlines, edge spaces, and a String that reads as a number: "12" comes back "12"); a List/Map is its JSON text, () an empty cell; true comes back as the String "true". |
-| `read_files` | `read_files(dir: String, count: Int) -> List<{path, content}>` | Read up to `count` files from a directory. |
+| `read_files` | `read_files(dir: String, count: Int) -> List<{path, content}>` | Read the first `count` files of a directory, in file-name order, with their content (a file that is not UTF-8 text is skipped). There is no listing, move or delete: remember the names you processed in a slot. |
 | `par_read_files` | `par_read_files(dir: String, count: Int) -> List<{path, content}>` | Thread-parallel variant of read_files. |
 | `word_count` | `word_count(text: String \| docs: List) -> Map<String, Int>` | Lowercased word frequency of a string or of {content} docs (Rust-speed). |
 | `par_word_count` | `par_word_count(docs: List) -> Map<String, Int>` | Thread-parallel variant of word_count over a list. |
