@@ -983,8 +983,17 @@ impl Parser {
                 return Ok(Spanned::new(Rule::MockApprove { reply }, start.merge(self.prev_span())));
             }
             if !matches!(self.peek(), Token::Ident(s) if s == "think") {
+                // `mock <handler> <value>` / `mock <handler> error "msg"`:
+                // stub any handler of the program (a tool, an http wrapper)
+                if let Token::Ident(name) = self.peek().clone() {
+                    self.advance();
+                    let is_error = matches!(self.peek(), Token::Ident(s) if s == "error");
+                    if is_error { self.advance(); }
+                    let reply = self.parse_expr()?;
+                    return Ok(Spanned::new(Rule::MockHandler { name, reply, is_error }, start.merge(self.prev_span())));
+                }
                 return Err(ParseError::Expected {
-                    expected: "think or approve (mock think \"reply\" | mock think [\"a\", \"b\"] | mock think error \"msg\" | mock approve false)".to_string(),
+                    expected: "think, approve or a handler name (mock think \"reply\" | mock think error \"msg\" | mock approve false | mock price_check 42 | mock fetch error \"down\")".to_string(),
                     found: self.peek().clone(),
                     span: self.peek_span(),
                 });

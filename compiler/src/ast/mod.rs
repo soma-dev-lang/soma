@@ -341,6 +341,10 @@ pub enum Rule {
     /// `mock approve false` / `mock approve [true, false]` — script the
     /// next answers of the human-approval builtin (auto-approved otherwise).
     MockApprove { reply: Spanned<Expr> },
+    /// `mock price_check 42` / `mock price_check error "down"`: the next
+    /// call of handler `name` (a tool, an http wrapper, anything) returns
+    /// the value — or raises — instead of running its body.
+    MockHandler { name: String, reply: Spanned<Expr>, is_error: bool },
     /// V1.6: `property "name" forall x: Int in 0..100 ensures expr`
     /// — randomized test that quantifies over `count` random inputs.
     Property {

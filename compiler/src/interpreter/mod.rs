@@ -527,6 +527,9 @@ pub struct Interpreter {
     /// Under `soma test` with no key and no mock configured, think() is
     /// mocked (echo) instead of failing on the network.
     pub test_auto_mock: bool,
+    /// `mock <handler> …` in a test cell: handler name → queued answers
+    /// (Ok = value returned, Err = message raised) consumed one per call.
+    pub handler_stubs: HashMap<String, std::collections::VecDeque<Result<Value, String>>>,
     pub(crate) auto_mock_noted: bool,
     /// V1.6: tool-capability scope. Set when the LLM dispatches into a tool
     /// with declared capabilities; the http/* builtins consult it.
@@ -693,6 +696,7 @@ impl Interpreter {
             mock_queue: std::collections::VecDeque::new(),
             approve_queue: std::collections::VecDeque::new(),
             test_auto_mock: false,
+            handler_stubs: HashMap::new(),
             auto_mock_noted: false,
             current_tool_caps: None,
             native_handlers: HashMap::new(),
@@ -845,6 +849,15 @@ impl Interpreter {
         signal_name: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        // a scripted answer from a test cell replaces the body (one per call)
+        if let Some(q) = self.handler_stubs.get_mut(signal_name) {
+            if let Some(answer) = q.pop_front() {
+                return match answer {
+                    Ok(v) => Ok(v),
+                    Err(msg) => Err(RuntimeError::Domain { kind: "mock".to_string(), message: format!("mock: {}", msg) }),
+                };
+            }
+        }
         // V1: [record] mode — set up nondet tracking before invoking the handler.
         let is_recorded = self.record_handlers.contains(&(cell_name.to_string(), signal_name.to_string()));
         let recorded_args = if is_recorded { Some(args.clone()) } else { None };

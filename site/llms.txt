@@ -165,6 +165,8 @@ cell test MyTests {                // a name and a `rules` block are required
         mock think "billing"                     // next think() reply; or a list to queue
         mock think error "timeout"               // next think() fails
         mock approve false                       // next approve() answer (one per call)
+        mock price_check 120                     // next call of ANY handler (a tool, an
+        mock price_check error "down"            // http wrapper) answers / raises instead
         property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // every value ≤ 20k
     }
 }

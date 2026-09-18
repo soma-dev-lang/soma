@@ -165,6 +165,23 @@ pub fn cmd_test(path: &PathBuf, registry: &mut Registry) {
                                 }
                             }
                         }
+                        ast::Rule::MockHandler { name, reply, is_error } => {
+                            match eval_test_expr(&mut interp, &reply.node, &test_env) {
+                                Ok(v) => {
+                                    let answers: Vec<Result<interpreter::Value, String>> = match (&v, *is_error) {
+                                        (interpreter::Value::List(items), false) => items.iter().cloned().map(Ok).collect(),
+                                        (_, false) => vec![Ok(v)],
+                                        (_, true) => vec![Err(format!("{}", v))],
+                                    };
+                                    interp.handler_stubs.entry(name.clone()).or_default().extend(answers);
+                                }
+                                Err(e) => {
+                                    total += 1;
+                                    failed += 1;
+                                    println!("  ✗ {}:{}  mock {} … — ERROR: {}", file_name, line_of(rule.span), name, e);
+                                }
+                            }
+                        }
                         ast::Rule::MockApprove { reply } => {
                             match eval_test_expr(&mut interp, &reply.node, &test_env) {
                                 Ok(interpreter::Value::List(items)) => {

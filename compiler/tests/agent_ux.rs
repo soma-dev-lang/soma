@@ -819,3 +819,34 @@ cell A {
     assert!(!out.contains("create_room' is not referenced"), "{out}");
     assert!(!out.contains("unchecked .get()"), "{out}");
 }
+
+/// `mock <handler> …` stubs any handler (tools, http wrappers) in a test.
+#[test]
+fn any_handler_can_be_mocked_in_tests() {
+    let d = dir("mock_handler");
+    std::fs::write(d.join("app.cell"), r#"
+cell agent Buyer {
+  face { signal quote(item: String) -> Map  tool price_check(item: String) -> Int }
+  on price_check(item: String) { http_get("https://prices.example/{item}") }
+  on quote(item: String) {
+    let market = price_check(item)
+    let r = try { price_check(item) }
+    map("market", market, "second", r.kind)
+  }
+}
+cell test T {
+  rules {
+    mock price_check 120
+    mock price_check error "prices down"
+    let q = quote("bolt")
+    assert q.market == 120
+    assert q.second == "mock"
+    mock price_check [1, 2]
+    assert price_check("a") == 1
+    assert price_check("b") == 2
+  }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+}
