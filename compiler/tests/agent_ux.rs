@@ -1920,3 +1920,66 @@ cell App {
     assert!(up, "server did not start");
     assert!(r.contains("401") && r.contains("auth"), "the direct /wipe endpoint bypassed request's auth: {r}");
 }
+
+/// Cycle 20: an SSE client receives only the streams it subscribed to
+/// (tenant B read tenant A's events); a literal `delegate` to a missing
+/// handler of a known cell is a check error.
+#[test]
+fn cycle20_findings() {
+    let d = dir("cycle20");
+    std::fs::write(d.join("dl.cell"), r#"
+cell A { on f(x: Int) { return x } }
+cell B { on g() { return delegate("A", "nope", 1) } }
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "dl.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("has no handler 'nope'"), "{out}");
+    std::fs::write(d.join("app.cell"), r#"
+cell App {
+    on request(method: String, path: String, body: String) {
+        match map("method", method, "path", path) {
+            {method: "GET", path: "/lit/b"} -> sse("b")
+            {method: "POST", path: "/pub/" + name} -> _pub(name)
+            _ -> response(404, map("error", "not found"))
+        }
+    }
+    on _pub(name: String) {
+        publish(name, map("to", name))
+        return "ok"
+    }
+}
+"#).unwrap();
+    let port = 20300 + (std::process::id() % 150) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "-p", &port.to_string()])
+        .current_dir(&d)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("soma serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let mut got = String::new();
+    if up {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_millis(1500))).unwrap();
+        s.write_all(b"GET /lit/b HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = http(port, "POST", "/pub/a");
+        let _ = http(port, "POST", "/pub/b");
+        let mut buf = [0u8; 4096];
+        loop {
+            match s.read(&mut buf) { Ok(0) | Err(_) => break, Ok(n) => got.push_str(&String::from_utf8_lossy(&buf[..n])) }
+            if got.contains("event: b") { break; }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    assert!(got.contains("event: b"), "{got}");
+    assert!(!got.contains("event: a"), "an SSE client got a stream it did not subscribe to: {got}");
+}

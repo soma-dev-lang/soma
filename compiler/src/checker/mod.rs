@@ -768,6 +768,43 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // `delegate("Nope", "x", 1)` with literal names passed check and
+        // raised "no handler found" at run time (a bare call is checked)
+        {
+            let defs: std::collections::HashMap<String, Vec<String>> = program.cells.iter().map(|c| (c.node.name.clone(), c.node.sections.iter().filter_map(|s| match &s.node {
+                Section::OnSignal(on) => Some(on.signal_name.clone()),
+                _ => None,
+            }).collect())).collect();
+            for cell in &program.cells {
+                for sec in &cell.node.sections {
+                    let body = match &sec.node {
+                        Section::OnSignal(on) => &on.body,
+                        Section::Every(e) | Section::After(e) => &e.body,
+                        _ => continue,
+                    };
+                    let mut bad: Vec<(bool, String)> = Vec::new();
+                    literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
+                        if name == "delegate" && args.len() >= 2 {
+                            if let (Expr::Literal(Literal::String(c)), Expr::Literal(Literal::String(h))) = (&args[0].node, &args[1].node) {
+                                // a cell of another file composed at run time
+                                // is legitimate: a warning; a missing handler
+                                // of a cell this program defines is an error
+                                let msg = match defs.get(c) {
+                                    None => Some((false, format!("delegate(\"{}\", \"{}\", …): no cell named {} in this program — it raises \"no handler found\" unless that cell is loaded beside it", c, h, c))),
+                                    Some(hs) if !hs.contains(h) => Some((true, format!("delegate(\"{}\", \"{}\", …): cell {} has no handler '{}'", c, h, c, h))),
+                                    _ => None,
+                                };
+                                if let Some(m) = msg { if !bad.contains(&m) { bad.push(m); } }
+                            }
+                        }
+                    });
+                    for (err, m) in bad {
+                        if err { self.errors.push(CheckError::Static { kind: "undefined_delegate", message: m, span: sec.span }); }
+                        else { self.warnings.push(CheckWarning::HabitWarning { message: m, span: sec.span }); }
+                    }
+                }
+            }
+        }
         // `every 0ms` ran its body back to back (77,865 commits in 3 s)
         for cell in &program.cells {
             for sec in &cell.node.sections {

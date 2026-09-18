@@ -111,10 +111,15 @@ variant.
   WebSocket client as `{"event": "stream", "data": …}` and to SSE clients
   subscribed to that name (a client that stops reading is dropped after 1024
   queued events) — AT COMMIT: a handler that raises (or a `try`
-  that rolls back) pushes nothing. There is no per-client routing: filter by
-  the event data on the client.
-- SSE: a `request` route returns `sse("stream1", "ev")`; the first event is
-  `connected`. There is no replay — after a reconnect, re-fetch state.
+  that rolls back) pushes nothing. WebSocket clients have no per-client
+  routing: EVERY one receives every event, so do not publish one user's or
+  tenant's data where others hold a WebSocket — give each an SSE stream of
+  its own.
+- SSE: a `request` route returns `sse("stream1", "ev")`; the client receives
+  only the named streams (`sse()` with no name: all of them) — so per-tenant
+  streams (`sse("t_" + tenant)`) behind your own auth check in `request` keep
+  tenants apart. The first event is `connected`. There is no replay — after
+  a reconnect, re-fetch state.
 - A handler that some `emit` targets is an event listener, not an HTTP
   endpoint (a client could forge the event); `publish` counts as a state
   change (GET → 405).
@@ -136,7 +141,9 @@ uses fresh in-memory storage every time.
 ## What `soma serve` does not do
 
 No TLS, no built-in authentication (read `headers.authorization` in
-`request` and refuse), no rate limiting.
+`request` and refuse), no rate limiting, no cap on open connections (one
+thread each: at the machine's thread limit the process exits with status 70
+so a supervisor restarts it — cap connections in the reverse proxy).
 It binds 127.0.0.1 (`--host 0.0.0.0` to expose it). `PORT + 2` (the signal
 bus) is opened only when a cell uses `emit`, declares `scale`, lists events
 in `[bus] accept`, or `--join` is given — the start-up log says `bus:

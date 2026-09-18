@@ -571,3 +571,25 @@ Other fixes:
 - [ ] Native `/` on two Ints is always a Float (documented, warned) — unchanged.
 - [ ] Map slot key types are not enforced (`Map<Int, …>` takes "abc"; `1` and `"1"` are one key) — documented.
 - [ ] Misleading messages remain for `rows[k].x = 1` on a missing key and for a think() exceeding max_rounds (points at the tool body).
+
+## Cycle 20 (2026-09-18) — multi-tenant subscription billing (proration, dunning, SSE)
+
+7/10: check, 63 tests and verify --strict (7 temporal properties, 6 invariant proofs)
+green; ~15k requests with two kill -9 (one mid renewal tick): reconcile exact
+(60,242,522 cents paid = collected), no duplicate invoice, no cross-tenant 2xx. No false proof.
+
+### Fixed
+- [x] **Security**: every SSE client received every published stream — `sse("t_ten_2")` got tenant A's invoice events. A client now receives only the streams it named (`sse()` with no name: all).
+- [x] Docs: an invariant on a record FIELD or over a structure is runtime-checked (a ⚠ under --strict — keep proven numbers in their own slots); WebSocket clients all receive every event (use per-tenant SSE streams).
+
+### Open
+- [ ] One process-wide handler lock caps throughput (~200 req/s here); no secondary indexes (tenant listings scan the slot); no cryptographic random for API keys.
+
+### Cycle 20 — attack (same binary)
+
+No false proof found (termination, intervals, cost composition, temporal properties, rollback all held).
+- [x] **DoS**: ~8,300 half-open connections reached the OS thread limit; a tiny_http worker panicked, poisoned its pool, and the process stayed up serving nothing (a supervisor never restarts a live process) — a panic in the HTTP layer now exits with status 70; docs say to cap connections in the proxy.
+- [x] `delegate("A", "nope", …)` with literal names passed check — a missing handler of a cell of this program is an error; a cell this program does not define is a warning (libraries composed at run time use it).
+
+### Open
+- [ ] Connections are still one thread each (the exit is a clean death, not a limit).

@@ -281,6 +281,26 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         process::exit(1);
     });
 
+    // tiny_http runs one thread per open connection: a flood that reaches
+    // the OS thread limit panicked a worker and poisoned its pool, and the
+    // process stayed up serving NOTHING (a supervisor never restarted it).
+    // A panic inside the HTTP layer now ends the process: a clean death a
+    // supervisor restarts (handlers run in SQLite transactions: nothing is
+    // half-written).
+    {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            prev(info);
+            let in_http = info.location().map_or(false, |l| l.file().contains("tiny_http"))
+                || info.payload().downcast_ref::<String>().map_or(false, |m| m.contains("failed to spawn thread"))
+                || info.payload().downcast_ref::<&str>().map_or(false, |m| m.contains("failed to spawn thread"));
+            if in_http {
+                eprintln!("serve: the HTTP layer failed (too many open connections for this machine's thread limit?) — exiting so a supervisor restarts it; cap concurrent connections in the reverse proxy");
+                std::process::exit(70);
+            }
+        }));
+    }
+
     eprintln!("soma serve v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("cell: {}", cell_name);
     // the public endpoints (private `_x` handlers and the router are not routed)
@@ -1629,6 +1649,16 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
                 if is_sse {
                     eprintln!("{} {} → SSE stream", method, url);
+                    // only the streams this client subscribed to (every client
+                    // received every publish: tenant B read tenant A's events);
+                    // `sse()` with no names subscribes to all of them
+                    let streams: Vec<String> = match &val {
+                        interpreter::Value::Map(e) => match e.get("_streams") {
+                            Some(interpreter::Value::List(xs)) => xs.iter().map(|x| format!("{}", x)).collect(),
+                            _ => Vec::new(),
+                        },
+                        _ => Vec::new(),
+                    };
 
                     let (tx, rx) = std::sync::mpsc::sync_channel::<interpreter::BusEvent>(interpreter::BUS_QUEUE);
                     if let Ok(mut senders) = event_bus.lock() {
@@ -1651,6 +1681,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     loop {
                         match rx.recv_timeout(std::time::Duration::from_secs(15)) {
                             Ok(event) => {
+                                if !streams.is_empty() && !streams.iter().any(|n| *n == event.stream) { continue; }
                                 let json = format!("{}", event.data);
                                 let msg = format!("event: {}\ndata: {}\n\n", event.stream, json);
                                 if write!(writer, "{}", msg).is_err() { break; }

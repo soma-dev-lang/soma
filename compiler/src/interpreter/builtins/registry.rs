@@ -327,7 +327,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("redirect", "web", "redirect(url: String) -> Response",
         "302 redirect to `url`."),
     doc("sse", "web", "sse(streams...) -> Response",
-        "Open a Server-Sent-Events connection subscribed to the named streams."),
+        "Open a Server-Sent-Events connection that receives only the named streams (no name: every stream)."),
     doc("publish", "web", "publish(stream: String, data) -> ()",
         "Push data to a runtime-chosen SSE stream name on the event bus."),
 

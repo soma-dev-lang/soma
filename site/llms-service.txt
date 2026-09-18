@@ -667,7 +667,7 @@ sit in `authorized` until someone acts.
 
 | Mechanism | Guarantee |
 |---|---|
-| Memory invariants | checked **before** every `set`, bracket write, `push` and `delete` (for `size`). A violating write raises (`kind "invariant"`) and the slot is unchanged. `soma verify` lists each write it could not prove as *runtime-checked*. On a Float slot a computed value may be NaN (`sqrt(-1.0)`, `inf - inf`), which fails every comparison: such writes are runtime-checked, never "proven". |
+| Memory invariants | checked **before** every `set`, bracket write, `push` and `delete` (for `size`). A violating write raises (`kind "invariant"`) and the slot is unchanged. `soma verify` lists each write it could not prove as *runtime-checked*. On a Float slot a computed value may be NaN (`sqrt(-1.0)`, `inf - inf`), which fails every comparison: such writes are runtime-checked, never "proven". The prover reasons about numbers: an invariant on a FIELD of a record-valued slot (`plans.price >= 0`) or over a structure (`sum_by(inv.lines, "amount") == inv.total`) is runtime-checked, so it is a ⚠ under `verify --strict` — keep a number you need proven in its own `Map<String, Int>` slot. |
 | Transitions | `transition()` to an undeclared edge raises `invalid_transition` with the valid targets. Guards raise `guard_failed`. |
 | **Atomic handlers** | a handler that raises leaves nothing behind: its memory writes and transitions are rolled back. A failing `try { }` block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their value). Consequence: an error means "nothing happened" — to *record* a refusal (a reservation moved to `rejected`), return it as a value instead of raising. |
 | **Serialized handlers** | under `soma serve`, top-level handler invocations run one at a time: read-modify-write needs no lock. |
@@ -814,10 +814,15 @@ variant.
   WebSocket client as `{"event": "stream", "data": …}` and to SSE clients
   subscribed to that name (a client that stops reading is dropped after 1024
   queued events) — AT COMMIT: a handler that raises (or a `try`
-  that rolls back) pushes nothing. There is no per-client routing: filter by
-  the event data on the client.
-- SSE: a `request` route returns `sse("stream1", "ev")`; the first event is
-  `connected`. There is no replay — after a reconnect, re-fetch state.
+  that rolls back) pushes nothing. WebSocket clients have no per-client
+  routing: EVERY one receives every event, so do not publish one user's or
+  tenant's data where others hold a WebSocket — give each an SSE stream of
+  its own.
+- SSE: a `request` route returns `sse("stream1", "ev")`; the client receives
+  only the named streams (`sse()` with no name: all of them) — so per-tenant
+  streams (`sse("t_" + tenant)`) behind your own auth check in `request` keep
+  tenants apart. The first event is `connected`. There is no replay — after
+  a reconnect, re-fetch state.
 - A handler that some `emit` targets is an event listener, not an HTTP
   endpoint (a client could forge the event); `publish` counts as a state
   change (GET → 405).
@@ -839,7 +844,9 @@ uses fresh in-memory storage every time.
 ## What `soma serve` does not do
 
 No TLS, no built-in authentication (read `headers.authorization` in
-`request` and refuse), no rate limiting.
+`request` and refuse), no rate limiting, no cap on open connections (one
+thread each: at the machine's thread limit the process exits with status 70
+so a supervisor restarts it — cap connections in the reverse proxy).
 It binds 127.0.0.1 (`--host 0.0.0.0` to expose it). `PORT + 2` (the signal
 bus) is opened only when a cell uses `emit`, declares `scale`, lists events
 in `[bus] accept`, or `--join` is given — the start-up log says `bus:

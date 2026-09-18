@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- serve: an SSE client receives only the streams it subscribed to (every
+  client received every publish); a connection flood that broke the HTTP
+  worker pool exits the process (status 70) instead of leaving it alive and
+  deaf; a literal `delegate` to a missing handler is a check error.
 - Prover soundness: calls in `require` conditions and details are analysed
   (termination, cost, invariants); transition guards must be pure; a delete
   voids a key-exists size proof; Float-slot writes that may be NaN are
