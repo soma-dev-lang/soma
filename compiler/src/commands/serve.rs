@@ -227,6 +227,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     // only requests) uses this [agent] config: a tick sent the env key to
     // api.openai.com instead of the configured url, or ignored [agent] mock
     let _ = crate::interpreter::DEFAULT_AGENT.set((agent_config.clone(), agent_models.clone()));
+    let _ = BUS_ACCEPT.set(soma_toml_path.exists().then(|| std::fs::read_to_string(&soma_toml_path).ok()
+        .and_then(|c| toml::from_str::<crate::pkg::manifest::Manifest>(&c).ok()).map(|m| m.bus.accept)).flatten().unwrap_or_default());
 
     // Cluster mode activates when: --join is specified, OR env SOMA_SEEDS, OR cell has scale { }
     let is_cluster_mode = !seeds_to_join.is_empty() || scale_section.is_some();
@@ -632,9 +634,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                     continue;
                                 }
 
-                                // Regular signal — dispatch to the handler (the bus is a
-                                // trusted peer network: firewall its port; private `_`
-                                // handlers were refused above)
+                                // Regular signal — only an EVENT: one this program emits, or
+                                // one soma.toml `[bus] accept` lists (any public 1-argument
+                                // handler of any cell ran — `EVENT drain {}`)
+                                let accepted = EVENT_LISTENERS.get().map_or(false, |e| e.contains(event_name))
+                                    || BUS_ACCEPT.get().map_or(false, |a| a.iter().any(|x| x == event_name));
+                                if !accepted {
+                                    eprintln!("bus: refused event '{}' — not emitted by this program nor listed in soma.toml [bus] accept", event_name);
+                                    continue;
+                                }
                                 let data = match serde_json::from_str::<serde_json::Value>(json_data) {
                                     // a peer cannot forge a record or a variant (HTTP refuses it too)
                                     Ok(parsed) if reserved_json_key(&parsed, false).is_some() => {
@@ -1113,7 +1121,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let natives = natives.clone();
         let spawned = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
         let method = request.method().to_string();
-        let url = request.url().to_string();
+        // `//withdraw/…` collapsed to a handler while `request`'s match saw
+        // the empty first segment: one canonical path for every router
+        let url = {
+            let raw = request.url().to_string();
+            let (path, query) = match raw.split_once('?') { Some((p, q)) => (p.to_string(), Some(q.to_string())), None => (raw.clone(), None) };
+            let mut collapsed = String::with_capacity(path.len());
+            for ch in path.chars() {
+                if ch == '/' && collapsed.ends_with('/') { continue; }
+                collapsed.push(ch);
+            }
+            match query { Some(q) => format!("{}?{}", collapsed, q), None => collapsed }
+        };
         // request headers, names lower-cased (the optional 5th parameter of
         // `request`: `on request(method, path, body, query: Map, headers: Map)`)
         // a repeated header is ONE entry, its values joined with ", " (HTTP
@@ -1154,6 +1173,16 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let body_value = if body_raw.starts_with('{') || body_raw.starts_with('[') {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_raw) {
                 reserved_hit = reserved_json_key(&parsed, true);
+                // 1e400 read as Float inf: a number beyond Float range is refused
+                fn out_of_range(v: &serde_json::Value) -> bool {
+                    match v {
+                        serde_json::Value::Number(n) => n.as_f64().map_or(false, |f| !f.is_finite()),
+                        serde_json::Value::Array(xs) => xs.iter().any(out_of_range),
+                        serde_json::Value::Object(m) => m.values().any(out_of_range),
+                        _ => false,
+                    }
+                }
+                if reserved_hit.is_none() && out_of_range(&parsed) { reserved_hit = Some("a number beyond Float range"); }
                 Some(json_request_to_value(&parsed))
             } else {
                 None
@@ -1193,8 +1222,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }
         }
         if let Some(key) = reserved_hit {
-            let msg = format!("the request body may not carry `{}` (reserved: it marks {})", key,
-                if key == "_status" { "a returned map as an HTTP response" } else { "a record or a sum-type variant — a client cannot forge one" });
+            let msg = if key.starts_with("a number") { "the request body holds a number beyond Float range (it would read as inf)".to_string() } else { format!("the request body may not carry `{}` (reserved: it marks {})", key,
+                if key == "_status" { "a returned map as an HTTP response" } else { "a record or a sum-type variant — a client cannot forge one" }) };
             let resp = tiny_http::Response::from_string(error_body(&msg, "json"))
                 .with_status_code(400)
                 .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
@@ -1329,7 +1358,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let (signal_name, args) = if url.starts_with("/signal/") {
             let signal = url.trim_start_matches("/signal/");
             let (sig_name, query) = signal.split_once('?').unwrap_or((signal, ""));
-            if !routable(&handler_names, sig_name) {
+            if !routable(&handler_names, sig_name) || request_routes.first_segments().iter().any(|f| f == sig_name) {
                 let resp = tiny_http::Response::from_string(
                     format!("{{\"error\": \"no handler for '{}'\"}}", url)
                 )
@@ -1361,7 +1390,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // handler has the same name as its first segment
             // `request` itself is the router, never an endpoint: `GET
             // /request/POST/%2Fcredit/x` used to run a POST-only route
-            if handler_names.contains(&sig.to_string()) && routable(&handler_names, sig) && !request_routes.matches(url_path) {
+            // a handler that an explicit `request` route owns (`/withdraw/…`
+            // with its auth) is reachable ONLY through that route: `/withdraw?
+            // id=…&amt=…` reached it around the route's checks
+            let route_owned = request_routes.first_segments().iter().any(|f| f == sig);
+            if handler_names.contains(&sig.to_string()) && routable(&handler_names, sig) && !request_routes.matches(url_path) && !route_owned {
                 let mut args: Vec<interpreter::Value> = if rest.is_empty() {
                     vec![]
                 } else {
@@ -1644,7 +1677,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     let raw_status = entries.get("_status")
                         .and_then(|v| if let interpreter::Value::Int(si) = v { si.to_i64() } else { None });
                     let status: u16 = match raw_status {
-                        Some(n) if (100..=599).contains(&n) => n as u16,
+                        Some(n) if (200..=599).contains(&n) => n as u16,
                         None => 200,
                         Some(n) => {
                             eprintln!("error: {} {}: response status {} is not an HTTP status (100–599) — answered 500", method, url, n);
@@ -1938,6 +1971,8 @@ fn lifecycle_hook(names: &[String]) -> Option<&'static str> {
 /// Handlers that are the target of an `emit` somewhere in the program: event
 /// listeners, not endpoints (`POST /moved` forged the event)
 static EVENT_LISTENERS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+/// soma.toml `[bus] accept`: events other processes may send
+static BUS_ACCEPT: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
 fn routable(names: &[String], h: &str) -> bool {
     if EVENT_LISTENERS.get().map_or(false, |e| e.contains(h)) { return false; }

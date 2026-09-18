@@ -4583,7 +4583,8 @@ impl FnGenerator {
                 }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
-                format!("(({}) | (1i64 << {}))", a, b)
+                // bit 63 and above do not fit an i64: the BigInt variant computes it
+                format!("({{ let _k: i64 = {}; if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} ({}) | (1i64 << _k) }})", b, a)
             }
             "bit_clr" if args.len() == 2 => {
                 let b_expr = &args[1].node;
@@ -4594,7 +4595,7 @@ impl FnGenerator {
                 }
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
-                format!("(({}) & !(1i64 << {}))", a, b)
+                format!("({{ let _k: i64 = {}; if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} ({}) & !(1i64 << _k) }})", b, a)
             }
             "bit_next" if args.len() == 2 => {
                 let b = format!("_soma_bit_index({})", self.gen_expr_direct(&args[1].node, NativeType::Int));
@@ -5952,7 +5953,7 @@ impl FnGenerator {
                 // (u32 << u32 in plain Rust would panic for shift > 31).
                 let a = self.gen_expr_rug(&args[0].node);
                 let b = self.gen_int_to_i64_rug(&args[1].node);
-                format!("{{ let _k: i64 = {}; if _k < 0 || _k > u32::MAX as i64 {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} Integer::from(({}) << (_k as u32)) }}", b, a)
+                format!("{{ let _k: i64 = {}; if _k < 0 || _k > (1i64 << 24) {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} Integer::from(({}) << (_k as u32)) }}", b, a)
             }
             "shr" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);
@@ -6059,7 +6060,7 @@ impl FnGenerator {
                     return self.gen_sibling_call_from_rug_int(other, args, &info);
                 }
                 {
-                    self.err(format!("unknown function call: {} (not a sibling, not a builtin)", other));
+                    if matches!(other, "sqrt" | "pow" | "exp" | "log" | "sin" | "cos" | "to_string" | "to_float" | "floor" | "ceil" | "round") { self.err(format!("{}() is not available in this handler's BigInt mode — it mixes Int and Float (returns or operands) or overflows an Int; keep one numeric type per handler, or split it", other)); } else { self.err(format!("unknown function call: {} (not a sibling, not a builtin)", other)); }
                     "Integer::from(0i64)".to_string()
                 }
             }

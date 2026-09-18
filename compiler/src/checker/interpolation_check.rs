@@ -325,8 +325,14 @@ impl<'a> Walker<'a> {
                     self.walk_expr(a);
                 }
             }
-            Statement::Require { constraint, .. } => {
+            Statement::Require { constraint, else_signal } => {
                 self.walk_constraint(&constraint.node);
+                // `require … else Bad "detail {x}"`: the detail is interpolated
+                // when the require fails — an undefined name answered 500
+                // instead of the 400 `Bad`
+                if let Some((_, detail)) = else_signal.split_once('\u{1f}') {
+                    self.scan_string(detail, stmt.span);
+                }
             }
             Statement::MethodCall { target, method, args } => {
                 // statement position: `xs.push(x)` on a local does nothing

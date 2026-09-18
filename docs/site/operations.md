@@ -103,7 +103,10 @@ Make `_migrate` idempotent (check before writing) and back up
 
 `emit` reaches every cell of the same process synchronously. Across
 processes it needs the bus: a `[peers]` table in soma.toml
-(`other = "host:PORT+2"`) on the sending side. `--join host:bus-port`
+(`other = "host:PORT+2"`) on the sending side, and on the RECEIVING side
+the events it accepts from other processes: `[bus] accept = ["paid"]` (an
+event this program emits itself is accepted too; anything else — any
+other handler — is refused). The event reaches every cell with `on paid`. `--join host:bus-port`
 registers a node for `scale` sharding; it does not by itself forward `emit`.
 A peer that is down when the process starts is logged as
 `peer: … failed` and not retried — start the receiving process first. This

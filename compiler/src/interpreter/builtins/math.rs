@@ -35,7 +35,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 _ => return Some(Err(RuntimeError::TypeError("round(x, digits): x must be a number".to_string()))),
             };
             let d = match &args[1] {
-                Value::Int(i) => i.to_i64().unwrap_or(0).clamp(0, 15) as i32,
+                Value::Int(i) if i.to_i64().map_or(false, |d| d >= 0) => i.to_i64().unwrap_or(0).min(15) as i32,
+                Value::Int(_) => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be ≥ 0 (a negative value was ignored)".to_string()))),
                 _ => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be an Int".to_string()))),
             };
             Some(Ok(Value::Float(round_decimal(x, d))))
@@ -69,7 +70,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "to_fixed" if args.len() == 2 => {
             let x = match &args[0] { Value::Float(f) => *f, Value::Int(i) => i.to_f64(), _ => return Some(Err(RuntimeError::TypeError("to_fixed(x, digits)".to_string()))) };
-            let d = match &args[1] { Value::Int(i) => i.to_i64().unwrap_or(0).clamp(0, 15) as usize, _ => 2 };
+            // exactly `digits` decimals (it capped at 15 and ignored negatives)
+            let d = match &args[1] { Value::Int(i) => i.to_i64().unwrap_or(-1), _ => -1 };
+            if !(0..=100).contains(&d) {
+                return Some(Err(RuntimeError::TypeError(format!("to_fixed(x, digits): digits must be an Int 0..100, got {}", args[1]))));
+            }
+            let d = d as usize;
+            if d > 15 { return Some(Ok(Value::String(format!("{:.*}", d, x)))); }
             Some(Ok(Value::String(fixed_string(x, d))))
         }
         "round" => {

@@ -103,10 +103,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "response" => {
             let status = args.first().cloned().unwrap_or(Value::Int(SomaInt::from_i64(200)));
             match &status {
-                Value::Int(si) if si.to_i64().map_or(false, |n| (100..=599).contains(&n)) => {}
+                // 1xx are protocol-level (101 left the client hanging)
+                Value::Int(si) if si.to_i64().map_or(false, |n| (200..=599).contains(&n)) => {}
                 // a server bug, not a client error: kind `response` → 500
                 other => return Some(Err(RuntimeError::Domain { kind: "response".to_string(), message: format!(
-                    "response(status, body): the status must be an HTTP status Int 100–599, got {}", other) })),
+                    "response(status, body): the status must be an HTTP status Int 200–599, got {}", other) })),
             }
             let body = args.get(1).cloned().unwrap_or(Value::Unit);
             let mut entries = IndexMap::new();
@@ -190,7 +191,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             let mut entries = IndexMap::new();
                             for (i, header) in headers.iter().enumerate() {
                                 let (text, quoted) = rec.get(i).cloned().unwrap_or((String::new(), false));
-                                let val = if quoted { text.as_str() } else { text.trim() };
+                                // raw keeps the text exactly (spaces included)
+                                let val = if quoted || raw { text.as_str() } else { text.trim() };
                                 // a quoted cell is text; so is `007` (an id,
                                 // not seven); raw mode keeps everything text
                                 let leading_zero = val.len() > 1 && val.starts_with('0') && val.as_bytes()[1].is_ascii_digit();
@@ -237,12 +239,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                     entries.get(*h)
                                         .map(|v| match v {
                                             Value::String(s) => {
-                                                if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+                                                // quoted when a reader would change it: separators,
+                                                // quotes, newlines, and edge spaces (trimmed otherwise)
+                                                if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
+                                                    || s.starts_with(char::is_whitespace) || s.ends_with(char::is_whitespace) {
                                                     format!("\"{}\"", s.replace('"', "\"\""))
                                                 } else {
                                                     s.clone()
                                                 }
                                             }
+                                            // `()` is an empty cell (it was the text "null")
+                                            Value::Unit => String::new(),
                                             other => format!("{}", other),
                                         })
                                         .unwrap_or_default()

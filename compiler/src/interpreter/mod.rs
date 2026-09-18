@@ -627,6 +627,8 @@ pub struct Interpreter {
     /// Per-type variant list: type name → ordered Vec of variant names.
     /// Used by the exhaustiveness checker.
     pub(crate) type_variants: HashMap<String, Vec<String>>,
+    /// (type, variant) → declared payload: shape and field types
+    pub(crate) variant_fields: HashMap<(String, String), VariantFields>,
 }
 
 /// What kind of payload a registered variant takes.
@@ -701,6 +703,7 @@ impl Interpreter {
         // silently (the checker pass reports a friendlier error).
         let mut variant_registry: HashMap<String, (String, VariantShape)> = HashMap::new();
         let mut type_variants: HashMap<String, Vec<String>> = HashMap::new();
+        let mut variant_fields: HashMap<(String, String), VariantFields> = HashMap::new();
         for cell in &program.cells {
             if !matches!(cell.node.kind, CellKind::Type) {
                 continue;
@@ -721,6 +724,7 @@ impl Interpreter {
                             (cell.node.name.clone(), shape),
                         );
                         names.push(vd.node.name.clone());
+                        variant_fields.insert((cell.node.name.clone(), vd.node.name.clone()), vd.node.fields.clone());
                     }
                     type_variants.insert(cell.node.name.clone(), names);
                 }
@@ -803,6 +807,7 @@ impl Interpreter {
             replay_mode: false,
             variant_registry,
             type_variants,
+            variant_fields,
         }
     }
 
@@ -4401,18 +4406,69 @@ impl Interpreter {
                 other => Err(format!("expected a Map, got {}", value_type_name(other))),
             },
             TypeExpr::Simple(t) => {
+                if let (true, Value::Variant { type_name, variant, fields }) = (self.type_variants.contains_key(t.as_str()), v) {
+                    if type_name != t { return Err(format!("expected {}, got a {} variant", t, type_name)); }
+                    return self.variant_ok(type_name, variant, fields);
+                }
                 let ok = match (t.as_str(), v) {
                     ("Any", _) | (_, Value::Unit) => true,
                     ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_)) | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) => true,
                     ("List", Value::List(_)) | ("Map", Value::Map(_) | Value::Variant { .. }) => true,
                     ("Int" | "Float" | "String" | "Bool" | "List" | "Map", _) => false,
-                    (t, Value::Variant { type_name, variant, .. }) if self.type_variants.contains_key(t) => type_name == t && self.type_variants[t].iter().any(|x| x == variant),
+                    (t, Value::Variant { type_name, variant, fields }) if self.type_variants.contains_key(t) => type_name == t && self.variant_ok(type_name, variant, fields).is_ok(),
                     (t, _) if self.type_variants.contains_key(t) => false,
                     _ => true,
                 };
                 if ok { Ok(()) } else { Err(format!("expected {}, got {} {}", t, value_type_name(v), { let s: String = format!("{}", v).chars().take(30).collect(); s })) }
             }
             _ => Ok(()),
+        }
+    }
+
+    /// A variant value against its declaration: the variant exists, and its
+    /// payload has the declared fields with the declared types (from_json
+    /// built `Charged` with `tx: 5, amt: "x"`, or with no fields at all).
+    pub(crate) fn variant_ok(&self, type_name: &str, variant: &str, fields: &VariantValue) -> Result<(), String> {
+        let Some(decl) = self.variant_fields.get(&(type_name.to_string(), variant.to_string())) else {
+            return Err(format!("{} declares no variant {}", type_name, variant));
+        };
+        let scalar_fits = |t: &Spanned<TypeExpr>, v: &Value| -> bool {
+            match (&t.node, v) {
+                (TypeExpr::Simple(t), v) => match (t.as_str(), v) {
+                    ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_)) | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) => true,
+                    ("Int" | "Float" | "String" | "Bool", _) => false,
+                    ("List", Value::List(_)) | ("Map", Value::Map(_) | Value::Variant { .. }) => true,
+                    ("List" | "Map", _) => false,
+                    (t, Value::Variant { type_name, variant, fields }) if self.type_variants.contains_key(t) => type_name == t && self.variant_ok(type_name, variant, fields).is_ok(),
+                    (t, _) if self.type_variants.contains_key(t) => false,
+                    _ => true,
+                },
+                _ => true,
+            }
+        };
+        match (decl, fields) {
+            (VariantFields::Unit, VariantValue::Unit) => Ok(()),
+            (VariantFields::Unit, VariantValue::Struct(m)) if m.is_empty() => Ok(()),
+            (VariantFields::Tuple(ts), VariantValue::Tuple(vs)) if ts.len() == vs.len() => {
+                for (i, (t, v)) in ts.iter().zip(vs).enumerate() {
+                    if !scalar_fits(t, v) { return Err(format!("{}.{}: field {} is {} {}", type_name, variant, i, value_type_name(v), v)); }
+                }
+                Ok(())
+            }
+            (VariantFields::Struct(fs), VariantValue::Struct(m)) => {
+                for (n, t) in fs {
+                    match m.get(n) {
+                        None => return Err(format!("{}.{}: field '{}' is missing", type_name, variant, n)),
+                        Some(v) if !scalar_fits(t, v) => return Err(format!("{}.{}: field '{}' expects {}, got {} {}", type_name, variant, n, crate::commands::describe::format_type(&t.node), value_type_name(v), v)),
+                        _ => {}
+                    }
+                }
+                if let Some(extra) = m.keys().find(|k| !fs.iter().any(|(n, _)| n == *k)) {
+                    return Err(format!("{}.{}: no field '{}'", type_name, variant, extra));
+                }
+                Ok(())
+            }
+            _ => Err(format!("{}.{}: the payload does not have the declared shape", type_name, variant)),
         }
     }
 
@@ -4491,8 +4547,8 @@ impl Interpreter {
             ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => false,
             // the variant must be one the type declares: from_json of a
             // client string could build `Pay.Refund` for a Pay without it
-            (t, Value::Variant { type_name, variant, .. }) if self.type_variants.contains_key(t) =>
-                type_name == t && self.type_variants[t].iter().any(|v| v == variant),
+            (t, Value::Variant { type_name, variant, fields }) if self.type_variants.contains_key(t) =>
+                type_name == t && self.variant_ok(type_name, variant, fields).is_ok(),
             (t, _) if self.type_variants.contains_key(t) => false,
             _ => true,
         };

@@ -2060,15 +2060,22 @@ impl Parser {
                 if self.check(&Token::LBracket) {
                     self.advance();
                     while !self.check(&Token::RBracket) && !self.is_at_end() {
+                        let prop_span = self.peek_span();
                         let prop = self.parse_memory_property()?;
-                        if let MemoryProperty::Param(ref pp) = prop.node {
-                            if pp.name == "loop_bound" {
-                                if let Some(lit) = pp.values.first() {
-                                    if let Literal::Int(n) = lit.node {
-                                        if n >= 0 { bound = Some(n as u64); }
-                                    }
-                                }
-                            }
+                        // `loop_bound(zb)` / `loop_bound(2.5)` were accepted and ignored:
+                        // the loop then ran unbounded
+                        let ok = match &prop.node {
+                            MemoryProperty::Param(pp) if pp.name == "loop_bound" => match pp.values.first().map(|l| &l.node) {
+                                Some(Literal::Int(n)) if *n > 0 => { bound = Some(*n as u64); true }
+                                _ => false,
+                            },
+                            _ => false,
+                        };
+                        if !ok {
+                            return Err(ParseError::FixIt {
+                                message: "a loop annotation is `[loop_bound(N)]` with N a positive Int literal".to_string(),
+                                span: prop_span,
+                            });
                         }
                         if self.check(&Token::Comma) { self.advance(); }
                     }
@@ -2096,14 +2103,18 @@ impl Parser {
                     self.advance();
                     while !self.check(&Token::RBracket) && !self.is_at_end() {
                         let (attr_name, _) = self.expect_ident()?;
-                        if attr_name == "loop_bound" && self.check(&Token::LParen) {
-                            self.advance();
-                            if let Token::IntLit(n) = &self.tokens[self.pos].token {
-                                if *n >= 0 { bound = Some(*n as u64); }
-                            }
-                            self.advance(); // consume the int
-                            self.expect(Token::RParen)?;
+                        let good = attr_name == "loop_bound" && self.check(&Token::LParen)
+                            && matches!(self.tokens.get(self.pos + 1).map(|t| &t.token), Some(Token::IntLit(n)) if *n > 0);
+                        if !good {
+                            return Err(ParseError::FixIt {
+                                message: "a loop annotation is `[loop_bound(N)]` with N a positive Int literal".to_string(),
+                                span: self.peek_span(),
+                            });
                         }
+                        self.advance();
+                        if let Token::IntLit(n) = &self.tokens[self.pos].token { bound = Some(*n as u64); }
+                        self.advance(); // consume the int
+                        self.expect(Token::RParen)?;
                         if self.check(&Token::Comma) { self.advance(); }
                     }
                     self.expect(Token::RBracket)?;

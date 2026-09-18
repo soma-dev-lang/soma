@@ -640,6 +640,18 @@ impl<'a> Checker<'a> {
             }
             (c.node.name.clone(), hs)
         }).collect();
+        // two cells with `request`: serve routes only the FIRST — say so
+        {
+            let routers: Vec<&Spanned<CellDef>> = program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent)
+                && c.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == "request"))).collect();
+            if routers.len() > 1 {
+                self.warnings.push(CheckWarning::DispatchShadow {
+                    message: format!("cells {} each define `request` — soma serve routes only the first ({}); merge the routes into one cell",
+                        routers.iter().map(|c| c.node.name.as_str()).collect::<Vec<_>>().join(", "), routers[0].node.name),
+                    span: routers[1].span,
+                });
+            }
+        }
         // storage tables are named `<Cell>_<slot>` (and `<table>_log`,
         // `<Cell>__sm_<machine>`, `<Cell>__agent_memory`), case-insensitive
         // in SQLite: two names that meet share data (`acct`/`Acct`, cell

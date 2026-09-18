@@ -124,7 +124,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
 
     // ── math ────────────────────────────────────────────────────────
     doc("abs", "math", "abs(x: Int|Float) -> Int|Float",
-        "Absolute value; errors on i64::MIN overflow."),
+        "Absolute value, arbitrary precision (abs(-9223372036854775808) is 9223372036854775808)."),
     doc("round", "math", "round(x: Float) -> Int | round(x: Float, digits: Int) -> Float",
         "Round half away from zero to the nearest integer, or keep `digits` decimals: round(2.345, 2) = 2.35."),
     doc("floor", "math", "floor(x: Float) -> Int",

@@ -41,6 +41,36 @@ pub fn is_vector(v: &Value) -> bool {
 /// Non-numeric lists (strings, records, mixed) keep `+` = CONCAT; the
 /// explicit form for any two lists is concat(a, b).
 pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value, RuntimeError>> {
+    // Int vectors with + - *: exact, element by element (they went through
+    // f64: [9007199254740993] + [0] lost a digit, [1, 2] + 5 gave Floats,
+    // a BigInt element raised "integer too large")
+    if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+        let int_vec = |v: &Value| matches!(v, Value::List(xs) if !xs.is_empty() && xs.iter().all(|x| matches!(x, Value::Int(_))));
+        let f = |a: &rug::Integer, b: &rug::Integer| -> Value {
+            let v = match op { BinOp::Add => rug::Integer::from(a + b), BinOp::Sub => rug::Integer::from(a - b), _ => rug::Integer::from(a * b) };
+            Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(v))
+        };
+        let ints = |v: &Value| -> Vec<rug::Integer> { match v { Value::List(xs) => xs.iter().map(|x| match x { Value::Int(i) => i.to_rug(), _ => rug::Integer::new() }).collect(), _ => vec![] } };
+        match (l, r) {
+            (Value::List(_), Value::List(_)) if int_vec(l) && int_vec(r) => {
+                let (a, b) = (ints(l), ints(r));
+                if a.len() != b.len() {
+                    return Some(Err(RuntimeError::TypeError(format!(
+                        "vector op: lengths {} and {} disagree — numeric-vector arithmetic is elementwise; to CONCATENATE lists use concat(a, b)", a.len(), b.len()))));
+                }
+                return Some(Ok(Value::List(a.iter().zip(b.iter()).map(|(x, y)| f(x, y)).collect())));
+            }
+            (Value::List(_), Value::Int(k)) if int_vec(l) => {
+                let k = k.to_rug();
+                return Some(Ok(Value::List(ints(l).iter().map(|x| f(x, &k)).collect())));
+            }
+            (Value::Int(k), Value::List(_)) if int_vec(r) => {
+                let k = k.to_rug();
+                return Some(Ok(Value::List(ints(r).iter().map(|x| f(&k, x)).collect())));
+            }
+            _ => {}
+        }
+    }
     let opf: Option<fn(f64, f64) -> f64> = match op {
         BinOp::Add => Some(|a, b| a + b),
         BinOp::Sub => Some(|a, b| a - b),

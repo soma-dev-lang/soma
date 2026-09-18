@@ -32,6 +32,10 @@ pub struct Manifest {
     /// Named model definitions: [models.opus], [models.gemma], etc.
     #[serde(default)]
     pub models: HashMap<String, AgentConfig>,
+    /// `[bus] accept = ["paid"]`: events another process may send this one
+    /// (besides the events this program emits itself)
+    #[serde(default)]
+    pub bus: BusConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,6 +343,14 @@ impl Manifest {
             cluster: ClusterConfig::default(),
             agent: AgentConfig::default(),
             models: HashMap::new(),
+            bus: BusConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BusConfig {
+    #[serde(default)]
+    pub accept: Vec<String>,
 }

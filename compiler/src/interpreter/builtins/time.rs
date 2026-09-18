@@ -52,9 +52,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "add_days" if args.len() == 2 => {
             let n = val_to_i64(&args[1]);
-            Some(date_arg(&args[0], "add_days").map(|(y, m, d)| {
-                let (y2, m2, d2) = civil_from_days(days_from_civil(y, m, d) + n);
-                Value::String(iso(y2, m2, d2))
+            Some(date_arg(&args[0], "add_days").and_then(|(y, m, d)| {
+                // a date outside 0000-01-01..9999-12-31 is not a date parse_date
+                // reads back (an i64 day count wrapped to year -25252734927764529)
+                let days = days_from_civil(y, m, d).checked_add(n).filter(|x| x.abs() < 4_000_000);
+                let (y2, m2, d2) = match days { Some(x) => civil_from_days(x), None => (-1, 1, 1) };
+                if !(0..=9999).contains(&y2) {
+                    return Err(RuntimeError::Domain { kind: "date".to_string(), message: format!("date: add_days goes outside years 0000–9999 ({} days)", n) });
+                }
+                Ok(Value::String(iso(y2, m2, d2)))
             }))
         }
         "add_months" if args.len() == 2 => {
@@ -82,7 +88,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             })))
         }
         "days_in_month" if args.len() == 2 => {
-            Some(Ok(Value::Int(SomaInt::from_i64(days_in_month(val_to_i64(&args[0]), val_to_i64(&args[1]))))))
+            let m = val_to_i64(&args[1]);
+            if !(1..=12).contains(&m) {
+                return Some(Err(RuntimeError::Domain { kind: "date".to_string(), message: format!("date: days_in_month: month {} is not 1..12", m) }));
+            }
+            Some(Ok(Value::Int(SomaInt::from_i64(days_in_month(val_to_i64(&args[0]), m)))))
         }
         "format_date" => {
             if let Some(ts) = args.first() {

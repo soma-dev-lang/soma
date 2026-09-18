@@ -524,3 +524,16 @@ kill -9 restarts and live period closes: trial balance 0 throughout. No false pr
 - [ ] No per-machine scoping of `[verify]` properties; no named constants.
 - [ ] A property naming a state no machine has is printed as a vacuous ✓ before the error.
 
+### Cycle 18 — attack (same binary)
+
+No false proof found. Fixed:
+- [x] **Security**: the bus ran ANY public 1-argument handler of any cell (`EVENT drain {}`) — only events this program emits or soma.toml `[bus] accept` lists; `//withdraw/…` (collapsed slashes), `/withdraw?id=…` and `/signal/withdraw` reached a handler around `request`'s authenticated route — paths are canonical and a handler an explicit route owns is reachable only through it.
+- [x] **Data**: `agg` / `sum_by` / `avg_by` / `max_by` / `filter_by` went through i64 (9.99 summed as 9, 2^70 dropped) — exact Ints, real Floats, averages like `/`; Int-vector `+ - *` went through f64 — exact; `from_json` / literals could store a variant with missing, extra or mistyped fields, and move a typed machine with an undeclared variant — checked; CSV round trip (`()` as "null", edge spaces lost, raw trimmed).
+- [x] **Native**: `bit_set` / `bit_clr` at bit 63 wrapped; `shl` had no size cap (301 MB, 88 s holding the lock); a mixed Int/Float handler named `sqrt` "unknown".
+- [x] **Check gaps**: an undefined name in `require … else Tag "{x}"`; guards read by `every` / `after` transitions; `loop_bound(zb)` / `loop_bound(2.5)` were silently ignored.
+- [x] Smaller: `to_fixed` digits capped at 15 / negative digits ignored; `add_days` overflow and years past 9999; `days_in_month(2026, 13)`; `response(101)` hung the client; a JSON body `1e400` read as `inf`; two `request` cells warn; `abs` doc.
+
+### Open
+- [ ] Native `/` answers a Float where the interpreter answers an exact Int (`to_string(n / 3)`, quotients past 2^53).
+- [ ] `to_int` of a big Float into a `let` in a Direct-only native handler raises instead of promoting.
+

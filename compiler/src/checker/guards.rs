@@ -56,8 +56,16 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
 
                 // every handler that takes this transition with a literal target
                 let mut callers = 0usize;
-                for hs in &cell.sections {
-                    let Section::OnSignal(on) = &hs.node else { continue };
+                // `every` / `after` blocks take transitions too (a tick with no
+                // `amount` raised undefined_variable every tick)
+                let ticks: Vec<OnSection> = cell.sections.iter().filter_map(|s| match &s.node {
+                    Section::Every(e) => Some(OnSection { signal_name: format!("every {}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
+                    Section::After(e) => Some(OnSection { signal_name: format!("after {}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
+                    _ => None,
+                }).collect();
+                let handlers_and_ticks: Vec<&OnSection> = cell.sections.iter().filter_map(|s| match &s.node { Section::OnSignal(on) => Some(on), _ => None })
+                    .chain(ticks.iter()).collect();
+                for on in handlers_and_ticks {
                     let mut takes = false;
                     for stmt in &on.body {
                         super::termination::walk_stmt(&stmt.node, &mut |e| {

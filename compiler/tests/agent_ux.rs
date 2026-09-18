@@ -1748,3 +1748,35 @@ cell N { memory { neg: Map<String, Int> [persistent]  invariant neg >= 0 }
     let (out, _) = soma_in(&d, &["check", "c.cell"]);
     assert!(out.contains("a cell has no constants"), "{out}");
 }
+
+/// Cycle 18 (attack): exact aggregations and Int vectors; malformed
+/// variants refused; `//route` and route-owned handlers; strict
+/// loop_bound; require detail names checked.
+#[test]
+fn cycle18_attack_findings() {
+    let d = dir("cycle18b");
+    std::fs::write(d.join("sales.csv"), "dept,price\nA,9.99\nA,5.50\nB,0.75\n").unwrap();
+    std::fs::write(d.join("a.cell"), r#"
+cell type Pay { variants { Charged { tx: String, amt: Int }  Cash } }
+cell A {
+  memory { pays: Map<String, Pay> [persistent] }
+  on agg1() { let rows = read_csv("sales.csv")  return [sum_by(rows, "price"), agg(rows, "dept", "price:max")[0].price_max] }
+  on vec() { return [9007199254740993] + [0] }
+  on put(body: String) { pays.set("k", from_json(body)) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "a.cell", "agg1"]);
+    assert!(out.contains("16.24") && out.contains("9.99"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "a.cell", "vec"]);
+    assert!(out.contains("[9007199254740993]"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "a.cell", "put", "{\"_type\":\"Pay\",\"_variant\":\"Charged\",\"tx\":5,\"amt\":\"x\"}"]);
+    assert_eq!(code, 1, "{out}");
+
+    std::fs::write(d.join("l.cell"), "cell L { on f(xs: List) { let n = 0  for [loop_bound(2.5)] x in xs { n = n + 1 }  return n } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "l.cell"]);
+    assert!(out.contains("positive Int literal"), "{out}");
+    std::fs::write(d.join("r.cell"), "cell R { on f(x: Int) { require x > 0 else Bad \"detail {zundef}\"  return x } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "r.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("zundef"), "{out}");
+}

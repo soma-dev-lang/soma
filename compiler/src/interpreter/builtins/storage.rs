@@ -41,6 +41,19 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         "transition" => {
             if args.len() >= 2 {
+                // a Variant target must be a declared variant of the MACHINE's
+                // type (from_json built `Zzz.Qqq` / an undeclared `Sent` and it
+                // moved a typed machine)
+                if let Value::Variant { type_name, variant, .. } = &args[1] {
+                    let declared_ok = interp.type_variants.get(type_name).map_or(false, |vs| vs.iter().any(|v| v == variant));
+                    let machine_type = interp.find_state_machine_for(cell_name).and_then(|(sm, _)| sm.state_type.clone());
+                    let type_ok = machine_type.as_deref().map_or(true, |t| t == type_name);
+                    if !declared_ok || !type_ok {
+                        return Some(Err(RuntimeError::TypeError(format!(
+                            "transition(): {}.{} is not a declared state of this machine{}", type_name, variant,
+                            machine_type.map(|t| format!(" (its states are {} variants)", t)).unwrap_or_default()))));
+                    }
+                }
                 let id = format!("{}", args[0]);
                 let target = format!("{}", args[1]);
                 Some(interp.do_transition_for(cell_name, &id, &target))

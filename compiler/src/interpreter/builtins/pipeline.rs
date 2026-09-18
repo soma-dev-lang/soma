@@ -3,6 +3,60 @@ use super::{val_to_i64, val_to_f64, map_field_i64, map_field_f64};
 use crate::interpreter::soma_int::SomaInt;
 use indexmap::IndexMap;
 
+
+/// A number from a row field: exact Int (BigInt included) or Float. The
+/// aggregations went through i64 (9.99 summed as 9, 2^70 as 0).
+#[derive(Clone)]
+enum Num { I(rug::Integer), F(f64) }
+
+fn num_of(v: &Value) -> Option<Num> {
+    match v {
+        Value::Int(si) => Some(Num::I(si.to_rug())),
+        Value::Float(f) => Some(Num::F(*f)),
+        Value::String(s) => s.trim().parse::<rug::Integer>().ok().map(Num::I)
+            .or_else(|| s.trim().parse::<f64>().ok().filter(|f| f.is_finite()).map(Num::F)),
+        _ => None,
+    }
+}
+
+fn num_f(n: &Num) -> f64 { match n { Num::I(i) => SomaInt::from_rug(i.clone()).to_f64(), Num::F(f) => *f } }
+
+fn num_value(n: Num) -> Value { match n { Num::I(i) => Value::Int(SomaInt::from_rug(i)), Num::F(f) => Value::Float(f) } }
+
+fn num_cmp(a: &Num, b: &Num) -> std::cmp::Ordering {
+    match (a, b) {
+        (Num::I(x), Num::I(y)) => x.cmp(y),
+        _ => num_f(a).partial_cmp(&num_f(b)).unwrap_or(std::cmp::Ordering::Equal),
+    }
+}
+
+fn num_sum(xs: &[Num]) -> Num {
+    if xs.iter().all(|n| matches!(n, Num::I(_))) {
+        let mut t = rug::Integer::new();
+        for n in xs { if let Num::I(i) = n { t += i; } }
+        Num::I(t)
+    } else {
+        Num::F(xs.iter().map(num_f).sum())
+    }
+}
+
+/// the mean: an Int when it is exact, else a Float (like 7 / 2 = 3.5)
+fn num_avg(xs: &[Num]) -> Value {
+    if xs.is_empty() { return Value::Unit; }
+    match num_sum(xs) {
+        Num::I(t) => {
+            let n = rug::Integer::from(xs.len());
+            let (q, r) = t.clone().div_rem(n.clone());
+            if r == 0 { Value::Int(SomaInt::from_rug(q)) } else { Value::Float(num_f(&Num::I(t)) / xs.len() as f64) }
+        }
+        Num::F(f) => Value::Float(f / xs.len() as f64),
+    }
+}
+
+fn field_num(item: &Value, field: &str) -> Option<Num> {
+    if let Value::Map(e) = item { e.get(field).and_then(num_of) } else { None }
+}
+
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
         "filter_by" => {
@@ -22,37 +76,23 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     ))),
                 }
                 let result: Vec<Value> = items.iter().filter(|item| {
-                    if let Value::Map(entries) = item {
-                        let val = entries.get(&field);
-                        if let Some(val) = val {
-                            let use_float = matches!(val, Value::Float(_)) || matches!(threshold, Value::Float(_));
-                            if use_float {
-                                let a = val_to_f64(val);
-                                let b = val_to_f64(threshold);
-                                match op.as_str() {
-                                    ">" => a > b,
-                                    ">=" => a >= b,
-                                    "<" => a < b,
-                                    "<=" => a <= b,
-                                    "==" | "=" => (a - b).abs() < f64::EPSILON,
-                                    "!=" => (a - b).abs() >= f64::EPSILON,
-                                    _ => false,
-                                }
-                            } else {
-                                let a = val_to_i64(val);
-                                let b = val_to_i64(threshold);
-                                match op.as_str() {
-                                    ">" => a > b,
-                                    ">=" => a >= b,
-                                    "<" => a < b,
-                                    "<=" => a <= b,
-                                    "==" | "=" => format!("{}", val) == format!("{}", threshold),
-                                    "!=" => format!("{}", val) != format!("{}", threshold),
-                                    _ => false,
-                                }
+                    let Value::Map(entries) = item else { return false };
+                    let Some(val) = entries.get(&field) else { return false };
+                    // numbers compare exactly (BigInt included); other values as text
+                    match (num_of(val), num_of(threshold)) {
+                        (Some(a), Some(b)) if !matches!(val, Value::String(_)) => {
+                            let o = num_cmp(&a, &b);
+                            match op.as_str() {
+                                ">" => o.is_gt(), ">=" => o.is_ge(), "<" => o.is_lt(), "<=" => o.is_le(),
+                                "==" | "=" => o.is_eq(), "!=" => !o.is_eq(), _ => false,
                             }
-                        } else { false }
-                    } else { false }
+                        }
+                        _ => match op.as_str() {
+                            "==" | "=" => format!("{}", val) == format!("{}", threshold),
+                            "!=" => format!("{}", val) != format!("{}", threshold),
+                            _ => false,
+                        },
+                    }
                 }).cloned().collect();
                 Some(Ok(Value::List(result)))
             } else {
@@ -111,8 +151,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
-                    let total: i64 = items.iter().map(|item| map_field_i64(item, &field)).sum();
-                    Some(Ok(Value::Int(SomaInt::from_i64(total))))
+                    let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
+                    Some(Ok(num_value(num_sum(&xs))))
                 } else { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
             } else {
                 Some(Err(RuntimeError::TypeError("sum_by expects (list, field)".to_string())))
@@ -122,15 +162,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
-                    if items.is_empty() { return Some(Ok(Value::Unit)); }
-                    let total: f64 = items.iter().map(|item| map_field_f64(item, &field)).sum();
-                    let avg = total / items.len() as f64;
-                    // Return Int if whole number, Float otherwise
-                    if avg == (avg as i64) as f64 {
-                        Some(Ok(Value::Int(SomaInt::from_i64(avg as i64))))
-                    } else {
-                        Some(Ok(Value::Float(avg)))
-                    }
+                    let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
+                    Some(Ok(num_avg(&xs)))
                 } else { Some(Ok(Value::Unit)) }
             } else {
                 Some(Err(RuntimeError::TypeError("avg_by expects (list, field)".to_string())))
@@ -141,11 +174,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     let is_max = name == "max_by";
-                    let result = items.iter().max_by_key(|item| {
-                        let v = map_field_i64(item, &field);
-                        if is_max { v } else { -v }
-                    });
-                    Some(Ok(result.cloned().unwrap_or(Value::Unit)))
+                    let mut best: Option<(Num, &Value)> = None;
+                    for it in items {
+                        let Some(n) = field_num(it, &field) else { continue };
+                        let better = match &best { None => true, Some((b, _)) => if is_max { num_cmp(&n, b).is_gt() } else { num_cmp(&n, b).is_lt() } };
+                        if better { best = Some((n, it)); }
+                    }
+                    Some(Ok(best.map(|(_, v)| v.clone()).unwrap_or(Value::Unit)))
                 } else { Some(Ok(Value::Unit)) }
             } else {
                 Some(Err(RuntimeError::TypeError("min_by/max_by expects (list, field)".to_string())))
@@ -284,15 +319,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             if let Some(colon) = op_str.find(':') {
                                 let col = &op_str[..colon];
                                 let func = &op_str[colon+1..];
-                                let vals: Vec<i64> = group.iter().filter_map(|item| {
-                                    if let Value::Map(e) = item { e.get(col).map(val_to_i64) } else { None }
-                                }).collect();
+                                let vals: Vec<Num> = group.iter().filter_map(|item| field_num(item, col)).collect();
                                 let agg_val = match func {
-                                    "sum" => Value::Int(SomaInt::from_i64(vals.iter().sum())),
-                                    "avg" => Value::Int(SomaInt::from_i64(if vals.is_empty() { 0 } else { vals.iter().sum::<i64>() / vals.len() as i64 })),
-                                    "min" => Value::Int(SomaInt::from_i64(vals.iter().copied().min().unwrap_or(0))),
-                                    "max" => Value::Int(SomaInt::from_i64(vals.iter().copied().max().unwrap_or(0))),
-                                    "count" => Value::Int(SomaInt::from_i64(vals.len() as i64)),
+                                    "sum" => num_value(num_sum(&vals)),
+                                    "avg" => num_avg(&vals),
+                                    "min" => vals.iter().cloned().min_by(num_cmp).map(num_value).unwrap_or(Value::Unit),
+                                    "max" => vals.iter().cloned().max_by(num_cmp).map(num_value).unwrap_or(Value::Unit),
+                                    // every present value counts (a String id too)
+                                    "count" => Value::Int(SomaInt::from_i64(group.iter().filter(|item| matches!(item, Value::Map(e) if e.get(col).map_or(false, |v| !matches!(v, Value::Unit)))).count() as i64)),
                                     _ => Value::Unit,
                                 };
                                 row.insert(format!("{}_{}", col, func), agg_val);
