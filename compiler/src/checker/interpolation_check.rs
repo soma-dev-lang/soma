@@ -367,6 +367,17 @@ impl<'a> Walker<'a> {
                 continue;
             }
             if byte == b'{' {
+                // `"v={x} and {"` — the literal ends INSIDE a `{`: a nested
+                // quote split the string. Name that, not the stray word after.
+                // (a literal that IS just "{" is a brace, not a split string)
+                if !s[pos + 1..].contains('}') && s[pos + 1..].trim().is_empty() && s.trim() != "{" {
+                    self.issues.push(InterpolationIssue {
+                        message: "string literal ends inside `{…}` — no nested quotes inside an interpolation; bind the inner value first: `let inner = \"lit\"` then `\"… {inner}\"`".to_string(),
+                        span,
+                        warning: false,
+                    });
+                    return;
+                }
                 if let Some(end) = s[pos + 1..].find('}') {
                     let expr_str = &s[pos + 1..pos + 1 + end];
                     // Skipped as CSS/HTML — runtime advances one byte

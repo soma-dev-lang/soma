@@ -3424,8 +3424,11 @@ impl FnGenerator {
         var_types: Option<&HashMap<String, NativeType>>,
     ) -> bool {
         match expr {
-            Expr::Literal(Literal::Int(_))
-            | Expr::Literal(Literal::Float(_))
+            // a literal step is "small" only when a loop of 2^31 iterations
+            // cannot overflow: `t = t + 2^62` overflowed the Rug fallback
+            // itself (the local had been kept as i64)
+            Expr::Literal(Literal::Int(n)) => n.unsigned_abs() <= (1u64 << 32),
+            Expr::Literal(Literal::Float(_))
             | Expr::Literal(Literal::Bool(_)) => true,
             Expr::Ident(n) => {
                 // When we have type info, non-Int idents are automatically bounded.
@@ -4424,11 +4427,20 @@ impl FnGenerator {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 format!("(!({}))", a)
             }
-            "shl" | "shr" if args.len() == 2 => {
+            "shl" if args.len() == 2 => {
+                // 64-bit wrapping shift, exactly the interpreter's
+                // wrapping_shl (a shift count ≥ 64 is taken mod 64, never
+                // a panic). A result of i64::MIN is a genuine value: the
+                // host distinguishes it from the "big result" sentinel by
+                // the (cleared) result buffer.
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                let op = if name == "shl" { "<<" } else { ">>" };
-                format!("(({}) {} ({}))", a, op, b)
+                format!("(({}).wrapping_shl(({}) as u32))", a, b)
+            }
+            "shr" if args.len() == 2 => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                format!("(({}) >> ({}))", a, b)
             }
             "bit_len" if args.len() == 1 => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
@@ -6051,6 +6063,14 @@ fn _soma_get_string_arg_ref(idx: usize, f: impl FnOnce(&str) -> String) -> Strin
 #[inline(always)]
 fn _soma_set_result(val: String) {
     _SOMA_RESULT.with(|r| *r.borrow_mut() = Some(val));
+}
+
+/// Cleared by the host before every call, so a handler that answers the
+/// i64::MIN sentinel without writing the buffer cannot be read as the
+/// PREVIOUS handler's big result.
+#[no_mangle]
+pub extern "C" fn _soma_result_clear() {
+    _SOMA_RESULT.with(|r| *r.borrow_mut() = None);
 }
 "#;
 

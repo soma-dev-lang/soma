@@ -265,13 +265,17 @@ pub fn cmd_describe_builtins(json: bool) {
     use crate::interpreter::builtins::registry;
 
     if json {
+        // "reserved" names are not callable — listing them with a
+        // signature made agents write timestamp() and get "not a builtin"
         let entries: Vec<serde_json::Value> = registry::BUILTINS.iter()
+            .filter(|b| b.category != "reserved")
             .map(|b| serde_json::json!({
                 "name": b.name,
                 "category": b.category,
                 "signature": b.signature,
                 "brief": b.brief,
                 "deterministic": b.deterministic,
+                "replay": if b.deterministic { "pure" } else { "recorded by --record, replayed by soma replay" },
             }))
             .collect();
         println!("{}", serde_json::to_string_pretty(&entries).unwrap());

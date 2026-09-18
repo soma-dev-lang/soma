@@ -187,6 +187,9 @@ enum Commands {
         /// Output as JSON (for agents)
         #[arg(long)]
         json: bool,
+        /// List every match (default: the first 20)
+        #[arg(long)]
+        all: bool,
     },
 
     // ── Project ───────────────────────────────────────────────────
@@ -343,7 +346,7 @@ fn main_inner() {
             }
         }
         Commands::Docs { topic } => commands::docs::cmd_docs(&topic),
-        Commands::Example { terms, json } => commands::example::cmd_example(&terms, json),
+        Commands::Example { terms, json, all } => commands::example::cmd_example(&terms, json, all),
     }
 }
 

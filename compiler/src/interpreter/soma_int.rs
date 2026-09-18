@@ -57,7 +57,7 @@ impl SomaInt {
         }
     }
 
-    fn to_rug(&self) -> Integer {
+    pub fn to_rug(&self) -> Integer {
         match &self.0 {
             SomaIntInner::Small(n) => Integer::from(*n),
             SomaIntInner::Big(n) => (**n).clone(),

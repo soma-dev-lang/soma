@@ -255,8 +255,8 @@ footer {
 <main>
 <header>
   <h1>Soma</h1>
-  <p class="lede">Soma is an experimental programming language built around one unit called a cell. A cell can contain an interface, memory declarations, state machines, scheduled work, and handlers. The current implementation is a Rust compiler/interpreter with static checks, a web server, agent helpers, native numeric handlers, and record/replay.</p>
-  <p>This page is intentionally factual. It separates implemented behavior from partial or experimental behavior.</p>
+  <p class="lede">Soma is a small language for services whose correctness is a lifecycle and a few hard limits — approvals, quotas, escrow, agent workflows. One file holds the data, the state machine, the handlers, the tests and the HTTP routes; <code>soma verify</code> proves the lifecycle and the invariants it can, and says which ones it only checks at runtime. Handlers are atomic and serialized: a request that fails leaves nothing behind.</p>
+  <p>Built for programs written by AI agents: every error names its fix, the whole language fits in one context window (<a href="/llms.txt">llms.txt</a>), and the toolchain answers with evidence (<code>VERIFY OK</code>, proven bounds, exact counts) rather than promises. This page is factual: <a href="#status">implementation status</a> separates what is implemented from what is partial.</p>
   <div class="install">
     <code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
     <button type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
@@ -265,23 +265,6 @@ footer {
   <p class="note">Installer note: the shell installer executes code fetched from the project repository. Review <a href="https://github.com/soma-dev-lang/soma/blob/main/site/setup.sh">site/setup.sh</a> before running it in an environment you care about.</p>
 </header>
 
-<section id="status">
-  <h2>Implementation Status</h2>
-  <div class="status-grid">
-    <div class="card">
-      <h3><span class="tag implemented">implemented</span>Language core</h3>
-      <p>Cells, handlers, memory slots, state machines, pattern matching, collections, pipes, tests, and a CLI are implemented.</p>
-    </div>
-    <div class="card">
-      <h3><span class="tag partial">partial</span>Distributed runtime</h3>
-      <p>Nodes can join through the signal bus. Replication is currently broadcast-based and should be treated as eventual, not consensus-backed.</p>
-    </div>
-    <div class="card">
-      <h3><span class="tag limited">limited</span>Formal claims</h3>
-      <p>Verification applies to the declared state-machine abstraction, memory-budget model, and syntactic refinement checks. It does not prove arbitrary handler semantics or LLM output quality.</p>
-    </div>
-  </div>
-</section>
 
 <section id="language">
   <h2>Language Shape</h2>
@@ -343,6 +326,24 @@ never = ["invalid"]
 eventually = ["filled", "rejected"]</code></pre>
 
   <p>The repository also contains Coq/Rocq proof files under <code>docs/rigor/coq</code>. They mechanize selected results for the CTL depth bound, memory-budget cost lattice, isolation, abstraction, and runtime-fidelity models. They are evidence for those models, not a full formalization of the whole Rust implementation.</p>
+</section>
+
+<section id="status">
+  <h2>Implementation Status</h2>
+  <div class="status-grid">
+    <div class="card">
+      <h3><span class="tag implemented">implemented</span>Language core</h3>
+      <p>Cells, handlers, memory slots, state machines, pattern matching, collections, pipes, tests, and a CLI are implemented.</p>
+    </div>
+    <div class="card">
+      <h3><span class="tag partial">partial</span>Distributed runtime</h3>
+      <p>Nodes can join through the signal bus. Replication is currently broadcast-based and should be treated as eventual, not consensus-backed.</p>
+    </div>
+    <div class="card">
+      <h3><span class="tag limited">limited</span>Formal claims</h3>
+      <p>Verification applies to the declared state-machine abstraction, memory-budget model, and syntactic refinement checks. It does not prove arbitrary handler semantics or LLM output quality.</p>
+    </div>
+  </div>
 </section>
 
 <section id="agents">
@@ -408,20 +409,16 @@ eventually = ["filled", "rejected"]</code></pre>
 
 <section id="reproduce">
   <h2>Reproduce Basic Checks</h2>
-  <p>After installing, these commands exercise the core CLI paths:</p>
+  <p>After installing (no repository checkout needed), these commands exercise the core paths:</p>
 <pre><code>soma --version
-soma run examples/usecases/001_hello.cell
-soma check examples/pricing/app.cell
-soma verify examples/pricing/app.cell
-soma lint site/examples/093_tests_strings.cell
-soma describe examples/usecases/042_agent.cell
-SOMA_LLM_MOCK=echo soma run examples/usecases/044_budget.cell
-soma run examples/overflow_corpus/o01_mul_overflow.cell
-soma run examples/v1/02_replay_trader.cell --record
-soma replay examples/v1/02_replay_trader.cell</code></pre>
-  <p>To verify the Coq proof files, run:</p>
-<pre><code>cd docs/rigor/coq
-make check</code></pre>
+soma init demo && cd demo
+soma check app.cell && soma verify app.cell && soma test app.cell
+soma run app.cell add 5
+soma example invariant state_machine          # verified programs, by feature
+soma example services/payments_approval > pay.cell && soma verify pay.cell
+soma docs agent | head -40                    # the language, offline
+soma serve app.cell -p 8080                   # then: curl -X POST localhost:8080/counter/5</code></pre>
+  <p>The Coq proof files live in the repository (<code>docs/rigor/coq</code>, <code>make check</code>).</p>
 </section>
 
 <section id="limits">

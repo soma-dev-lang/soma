@@ -49,11 +49,18 @@ fn describe_builtins_json_is_complete_and_unique() {
         .filter(|e| e["deterministic"] == serde_json::json!(false))
         .map(|e| e["name"].as_str().unwrap())
         .collect();
-    for name in ["now", "now_ms", "timestamp", "today", "date_now", "random", "rand"] {
+    // reserved names (timestamp, date_now, rand) are tracked for replay
+    // but not callable, so they are NOT listed — an agent read them as
+    // signatures and wrote timestamp()
+    for name in ["now", "now_ms", "today", "random"] {
         assert!(nondet.contains(&name), "'{}' must be deterministic:false", name);
     }
-    assert_eq!(nondet.len(), 7,
+    for name in ["timestamp", "date_now", "rand"] {
+        assert!(!entries.iter().any(|e| e["name"] == name), "reserved '{}' must not be listed", name);
+    }
+    assert_eq!(nondet.len(), 4,
         "nondeterministic set changed — this changes replay behavior: {:?}", nondet);
+    assert!(entries.iter().all(|e| e.get("replay").is_some()), "every entry says what replay does with it");
 }
 
 #[test]

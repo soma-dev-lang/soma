@@ -361,6 +361,11 @@ def main():
     # builtins, straight from the compiler
     r = soma("describe", "--builtins", "--json")
     builtins = json.loads(r.stdout)
+    # "reserved" names are tracked for replay but NOT callable: an agent
+    # that read `timestamp() -> Int` here wrote it and got "not a builtin".
+    # `deterministic: false` means the call is recorded by --record and
+    # replayed by `soma replay` — say so in every entry, not in a README.
+    builtins = [b for b in builtins if b.get("category") != "reserved"]
     write("builtins.json", json.dumps(builtins, indent=1, ensure_ascii=False))
 
     gotchas = build_gotchas()

@@ -164,14 +164,38 @@ cell test MyTests {                // a name and a `rules` block are required
         assert_fails pay("x") matching "invalid transition"   // …for the right reason
         mock think "billing"                     // next think() reply; or a list to queue
         mock think error "timeout"               // next think() fails
-        property "sum" forall n: Int in 0..100 ensures f(n) >= 0
+        mock approve false                       // next approve() answer (one per call)
+        property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // every value ≤ 20k
     }
 }
 ```
 `soma test` isolates storage (fresh per run), runs `[native]` handlers natively,
-and — with no LLM key configured — mocks `think()` (echo: reply = prompt). A
-failure prints the asserted source, `file:line`, left/right, and the fields a
-value really has when `x.field` came back `()`.
+and — with no LLM key configured — mocks `think()` (echo: reply = prompt).
+`approve()` never answers on its own: unscripted it raises `approval_required`
+(also under serve; SOMA_APPROVE=always|never is the explicit unattended
+policy; `soma run` at a terminal asks). `assert` needs a Bool. A test cell
+calls the handlers of every cell unqualified, or as `Cell.handler(…)`; slot
+methods (`m.get(k)`, `xs.len`) work there too. A failure prints the asserted
+source, `file:line`, left/right, and the fields a value really has when
+`x.field` came back `()`.
+
+## Things you would otherwise guess
+
+- A fresh id is implicitly in the initial state: `transition(id, "held")` on an
+  id nobody created is legal; `has_state(id)` tells a known id from a fresh one.
+- `transition()`'s first argument is an INSTANCE id (an order, a ticket), not
+  the machine's name; one cell has one machine, any number of instances.
+- A slot is a Map or a List, never a scalar: `n: Int` is not a slot. Read a
+  whole slot by its bare name (`history`, `counts`); write with
+  `counts.set(k, v)` / `counts[k] = v` / `history.push(x)`; `history = …` is
+  an error. An invariant on a Map slot applies to every value written.
+- `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
+  `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
+- `"""…"""` is raw: no escapes AND no `{interpolation}`.
+- `[1, 2] + [10, 20]` is element-wise and yields Floats (`[11.0, 22.0]`);
+  `concat(a, b)` joins lists.
+- Persistent data lives in `.soma_data/` beside the program (serve and run);
+  `soma test` starts empty.
 
 ## Handlers are atomic
 
@@ -271,9 +295,11 @@ cell agent Researcher {
         return map("facts", facts, "spent", tokens_used())
     }
 }
-// soma verify PROVES termination and the lifecycle; add `cost { tokens: 2000 }`
-// (also latency:, usd:) to the cell and soma check PROVES the bound when every
+// soma verify PROVES the lifecycle; add `cost { tokens: 2000 }` (also
+// latency:, usd:) to the cell and soma check PROVES the bound when every
 // think() has a literal max_tokens and runs a known number of times.
+// approve(msg) is a gate a PERSON answers: tests script it (mock approve),
+// serve raises approval_required unless SOMA_APPROVE says otherwise.
 // think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.
 // Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT, or
 // [agent] mock = "echo" in soma.toml. Record/replay: --record, soma replay.

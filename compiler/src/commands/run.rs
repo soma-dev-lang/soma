@@ -10,7 +10,7 @@ use super::{read_source, lex_with_location, parse_with_location, resolve_imports
 
 pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&str>, record_all: bool, registry: &mut Registry) {
     if use_jit {
-        eprintln!("warning: --jit is deprecated. Use [native] on handlers for 200x performance.");
+        eprintln!("warning: --jit is deprecated and ignored. Mark hot numeric handlers [native] instead (see `soma docs agent`, Performance).");
         eprintln!("  on simulate(n: Int) [native] {{ ... }}");
         eprintln!("  See: https://soma-lang.dev#native");
         eprintln!();

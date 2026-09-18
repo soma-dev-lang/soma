@@ -76,8 +76,9 @@ pub fn cmd_init(name: Option<&str>) {
     }
     println!("  soma check app.cell && soma verify app.cell && soma test app.cell");
     println!("  soma run app.cell add 5");
-    println!("  soma serve app.cell              # http://localhost:8080");
+    println!("  soma serve app.cell              # http://127.0.0.1:8080 — GET /, POST /counter/5");
     println!("  soma example invariant state_machine      # verified programs to start from");
+    println!("  soma docs agent | guarantees | serving    # the language, offline");
 }
 
 pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Option<&str>) {
@@ -201,7 +202,7 @@ const STARTER_APP: &str = r#"// A counter that cannot go negative, behind a sess
 //   soma verify app.cell      proves the `session` state machine
 //   soma test   app.cell      runs CounterTests
 //   soma run    app.cell add 5
-//   soma serve  app.cell      GET /  ·  POST /add/5
+//   soma serve  app.cell      GET /  ·  POST /counter/5  (the routes `request` declares)
 
 cell Counter {
     face {
@@ -214,7 +215,7 @@ cell Counter {
 
     memory {
         counts: Map<String, Int> [persistent]
-        invariant counts >= 0 && counts <= 1000000     // checked before every write
+        invariant counts >= 0 && counts <= 1000000     // soma verify PROVES the lower bound below
     }
 
     state session {
@@ -226,7 +227,8 @@ cell Counter {
     on total() { return counts.get("n") ?? 0 }
 
     on add(n: Int) {
-        counts.set("n", total() + n)                    // a bad write raises; the slot keeps its value
+        require n >= 0 else NegativeAmount              // refused before anything is written
+        counts.set("n", (counts.get("n") ?? 0) + n)     // provable by induction: the slot never goes below 0
         return total()
     }
 
@@ -243,7 +245,11 @@ cell Counter {
     on request(method: String, path: String, body: String) {
         match map("method", method, "path", path) {
             {method: "GET", path: "/"} -> map("total", total())
-            {method: "POST", path: "/add/" + n} -> map("total", add(to_int(n)))
+            {method: "POST", path: "/counter/" + n} -> {
+                let r = try { add(to_int(n)) }                     // a refusal becomes a status code, not a 500
+                if r.error != () { return response(400, map("error", r.kind)) }
+                map("total", r.value)
+            }
             _ -> response(404, map("error", "not found"))
         }
     }
@@ -252,8 +258,10 @@ cell Counter {
 cell test CounterTests {
     rules {
         assert add(5) == 5
-        assert_fails add(0 - 100)            // the invariant refuses a negative total…
-        assert total() == 5                  // …and the slot is unchanged
+        assert_fails add(0 - 100) matching "NegativeAmount"   // refused…
+        assert total() == 5                                   // …and the slot is unchanged
+        assert request("POST", "/counter/-1", "")._status == 400
+        assert request("POST", "/counter/2", "").total == 7
         assert start("s1") == "open"
         assert stop("s1") == "closed"
         assert_fails start("s1")             // closed is terminal: no way back

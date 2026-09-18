@@ -279,6 +279,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::Int(SomaInt::from_i64(!a))))
         }
         "shl" if args.len() >= 2 => {
+            // a 64-bit BIT operation (like band/bxor): bits shifted past
+            // bit 63 are dropped — xorshift generators depend on it. The
+            // native backend does the same.
             let a = val_to_i64(&args[0]);
             let b = val_to_i64(&args[1]);
             Some(Ok(Value::Int(SomaInt::from_i64(a.wrapping_shl(b as u32)))))

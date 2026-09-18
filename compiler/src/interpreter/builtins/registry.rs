@@ -152,7 +152,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("bnot", "math", "bnot(a: Int) -> Int",
         "Bitwise NOT."),
     doc("shl", "math", "shl(a: Int, n: Int) -> Int",
-        "Shift left by n bits (wrapping)."),
+        "64-bit left shift: bits shifted past bit 63 are dropped (a bit operation, like bxor — xorshift-friendly); n is taken mod 64. For an exact 2^n multiple use a * pow(2, n)."),
     doc("shr", "math", "shr(a: Int, n: Int) -> Int",
         "Arithmetic shift right by n bits (wrapping)."),
     doc("bit_test", "math", "bit_test(a: Int, i: Int) -> Int",

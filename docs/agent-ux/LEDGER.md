@@ -133,3 +133,35 @@ Measured progress on the data task: green in 16 invocations (cycle 1: 28), 4 che
 - `final: paid` in a state block gave "expected '->', found ':'" — now a fix-it ("states with no outgoing transition are final; delete this line").
 - `r.after` was a parse error (`after` is a verify keyword): verify words are now accepted as field names.
 - `soma run app.cell validate '{"id":1}'` passed a String to a `Map` parameter (E9): the token is parsed as JSON for Map/List parameters, with a boundary error when it is not.
+
+## Cycle 3 (2026-09-18, night) — 5 fresh agents: booking service, Python port, LLM triage, site evaluator, adversarial soundness
+
+Scores before fixes: booking 16/40 invocations, first check/verify/test green, correctness confidence 7/10; port 26/35, byte-identical to Python on first run, obviousness 7/10; triage 31/40, 53/53 first try, unattended trust 6/10; site: credibility 7, completeness 6, agent-friendliness 8, desirability 6; adversarial: 9 unsound + 4 wrong-output + 14 gaps in 55 invocations.
+
+### Blockers / unsound (all fixed unless noted)
+- [x] N1 `next_id()` picked its counter slot in HashMap order (differs per serve thread) and wrote outside the journal: an existing id was handed out again, a refused request burned an id. Now: first declared Map slot (else the machine's status backend), journaled.
+- [x] N2 `approve()` auto-approved under headless serve AND in tests ("use soma serve for interactive approval" printed under soma serve). Now fails closed: `mock approve`, SOMA_APPROVE=always|never, a terminal under `soma run`, else kind `approval_required`. approval_gate example rewritten.
+- [x] N3 `history = push(history, v)` on a List slot silently built a local list (count always 1; check passed). Slots read by bare name materialize; whole-slot assignment is a check AND runtime error naming `.push/.set`.
+- [x] N4 `forall n in 0..100` was 50 random samples with a wall-clock seed: ✓ then ✗ on the same file. Exhaustive up to 20k values, fixed seed beyond, labelled "NOT a proof".
+- [x] N5 unbounded recursion under serve: thread stack overflow killed the process. 64 MB request threads; the depth guard answers 500 `stack_overflow`; the service stays up.
+- [x] N6 serve bound 0.0.0.0, claimed "listening on localhost" while another process owned 127.0.0.1:port. Now 127.0.0.1 (`--host`), probes the port first, refuses a program that fails check (`--no-check`).
+- [x] N7 errors under serve were all 500 with the raw text; `()` became `{}`. Kinds map to 404/403/409/422/400 as `{"error", "kind"}`; `()` is `null`; strings are JSON-escaped.
+- [x] N8 `body: String` received a parsed Map under serve but a String under test. The declared type decides (String raw, Map parsed or 400), everywhere.
+- [x] N9 `fail("kind")` inside a `map`/`filter` lambda reached the caller as kind "type" with a Rust Debug dump. Errors keep their identity.
+- [x] N10 check missed names used outside their scope (lambda param, `let` in a block, loop var); now block-scoped like the runtime.
+- [x] N11 handler parameter types unchecked at call sites (`typed_add("a", 1)`, `"ten"` into `Int` over HTTP). Checked at the boundary (Map accepts variants/`()`/callbacks as the corpus does).
+- [x] N12 native: `shl(2^62, 1)` returned a STALE value (i64::MIN sentinel collided with "big result in buffer"); `t += 2^62` overflowed in the Rug fallback (literal steps up to 2^32 are "small"); interpreter `shl` wrapped. Fixed all three.
+- [x] N13 `x |> f() == y` parsed as `x |> (f() == y)`: `|>` now binds between comparison and arithmetic; check rejects a non-call right side.
+- [x] N14 two state machines in one cell: `transition()` picked one at random. check error (one lifecycle per cell); semaphore apps fixed. Also: duplicate cell names, empty file.
+- [x] N15 `soma run app.cell nosuch 1` ran the first handler with "nosuch" as its argument. Error with did-you-mean.
+- [x] N16 `deploy` copied the macOS binary into a debian image and exited 0 when the provider CLI was missing. Multi-stage Dockerfile builds the tag from source; exit 1.
+- [x] N17 builtins.json listed `timestamp()`/`date_now()` (reserved, not callable). Filtered; `replay` field explains `deterministic`.
+- [ ] N18 cost proof ignores cross-cell calls (`Api.f()` → 5×think in Ledger reported "peak 50"). Open.
+- [ ] N19 face return types never checked (`-> Int` returning a String passes check). Open.
+- [ ] N20 `[native]` vocabulary only checked at run time, one error per run; a `List<Float>` parameter is lowered to f64 with a rustc dump; the buffer API (buf_get…) is undocumented. Open.
+- [ ] N21 auto-exposure of face signals when `request` exists (3 agents): unplanned surface, no auth story. Open (documented).
+- [ ] N22 lint false positives ("not referenced in request routing" through try/match; unchecked .get() followed by a `== ()` test). Open.
+- [ ] N23 verify prints "proven (writes abs(v))" for a Float writer where NaN is rejected at runtime. Wording open.
+
+### Smaller (fixed)
+- `soma docs guarantees | serving` offline; `mock approve` documented; `soma verify` always ends with a verdict (vacuous when no machine); `assert` needs a Bool; `()` and `matching` echoed whole in test output; from_json("") raises; to_int out of range raises; sum() on a non-number raises; List slot `.len/.get(i)/.last/.has`; `f() + 1` as a statement; nested quote inside `{…}` named; `final:` in a state block named; `r.after` (verify words as field names); starter uses request routes only, a provable invariant and maps refusals to 400; `soma example --all` and the terms that narrow; landing page leads with why, status below, reproduce section works after install; `/examples/` dead links removed; `--jit` no longer claims 200x; llms.txt: HTTP rules, verify wording (termination proven only with a decreasing argument), forall sampling, the facts agents had to guess.

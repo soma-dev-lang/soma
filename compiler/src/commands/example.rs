@@ -37,7 +37,7 @@ fn strs(v: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn cmd_example(terms: &[String], json: bool) {
+pub fn cmd_example(terms: &[String], json: bool, all: bool) {
     let base = site();
     // full.json carries the summaries the word search needs
     let index_url = format!("{}/corpus/full.json", base);
@@ -123,7 +123,8 @@ pub fn cmd_example(terms: &[String], json: bool) {
         eprintln!("no verified program matches [{}]. `soma example` lists domains and features.", terms.join(", "));
         std::process::exit(1);
     }
-    for p in hits.iter().take(20) {
+    let shown = if all { hits.len() } else { 20 };
+    for p in hits.iter().take(shown) {
         println!(
             "{:<44} {}",
             p.get("id").and_then(|s| s.as_str()).unwrap_or(""),
@@ -131,8 +132,17 @@ pub fn cmd_example(terms: &[String], json: bool) {
         );
         println!("{:<44} [{}]", "", strs(p, "features").join(", "));
     }
-    if hits.len() > 20 {
-        println!("… {} more — add a term to narrow", hits.len() - 20);
+    if hits.len() > shown {
+        // the terms that would narrow THIS list, not a vague "add a term"
+        let mut domains: Vec<String> = hits.iter()
+            .filter_map(|p| p.get("domain").and_then(|d| d.as_str()).map(|d| d.to_string()))
+            .collect();
+        domains.sort(); domains.dedup();
+        let mut feats: Vec<String> = hits.iter().flat_map(|p| strs(p, "features")).collect();
+        feats.sort(); feats.dedup();
+        feats.retain(|f| !wanted.contains(f));
+        println!("… {} more — `--all` lists every match, or narrow by domain [{}] or feature [{}]",
+            hits.len() - shown, domains.join(", "), feats.join(", "));
     }
     println!("\nsoma example <id>    prints the source");
 }

@@ -525,7 +525,11 @@ fn call_native_shared(native: &LoadedNative, args: &[super::Value]) -> Result<su
             }
         }
 
-        // 3. Call the zero-arg handler
+        // 3. Call the zero-arg handler (result buffer cleared first: a
+        // stale big result must never be read back)
+        if let Ok(clear) = lib.get::<unsafe extern "C" fn()>(b"_soma_result_clear") {
+            clear();
+        }
         let handler_fn: extern "C" fn() -> i64 = std::mem::transmute(native.fn_ptr);
         let result_i64 = handler_fn();
 
@@ -543,6 +547,10 @@ fn call_native_shared(native: &LoadedNative, args: &[super::Value]) -> Result<su
             NativeType::Int => {
                 if result_i64 == i64::MIN {
                     let s = read_shared_result(lib)?;
+                    if s.is_empty() {
+                        // a genuine i64::MIN, not the sentinel
+                        return Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(i64::MIN)));
+                    }
                     Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_decimal_str(&s)))
                 } else {
                     Ok(Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(result_i64)))
