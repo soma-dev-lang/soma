@@ -82,6 +82,10 @@ pub fn cmd_init(name: Option<&str>) {
 }
 
 pub fn cmd_add(package: &str, version: Option<&str>, git: Option<&str>, path: Option<&str>) {
+    if !crate::pkg::resolver::valid_package_name(package) {
+        eprintln!("error: '{}' is not a package name (letters, digits, `_`, `-`, `.`; no `/`, no `..`)", package);
+        std::process::exit(1);
+    }
     let cwd = std::env::current_dir().unwrap();
     let manifest_path = cwd.join("soma.toml");
 

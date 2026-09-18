@@ -152,7 +152,20 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                         let argcs: Vec<usize> =
                             call_shapes.iter().filter(|(n, _, _)| n == &name).map(|(_, a, _)| *a).collect();
                         let definer = index.handler_map.get(&name).map(|d| d[0].clone()).unwrap_or_default();
+                        let own = index.handler_map.get(&name).map_or(false, |d| d.contains(&cell.name));
                         for argc in argcs {
+                            if takes.contains(&argc) && !own && cell.kind != CellKind::Test {
+                                // another cell's handler named like a builtin does
+                                // NOT replace the builtin (a library's
+                                // escape_html turned escaping off): say so
+                                errors.push(DispatchFinding {
+                                    message: format!(
+                                        "`{name}(…)` here calls the BUILTIN {name}(), not the handler {definer}.{name} — a handler of another cell never replaces a builtin; call it as `{definer}.{name}(…)`"
+                                    ),
+                                    span: section.span,
+                                });
+                                break;
+                            }
                             if takes.contains(&argc) {
                                 // goes to the handler. Inside the homonymous
                                 // handler that is a self-call — almost never

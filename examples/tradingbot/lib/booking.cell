@@ -10,6 +10,11 @@ cell Booking {
         pending_targets: Map<String, String> [ephemeral, local]
     }
 
+    // read by the HTTP cell (a cell's slots are private to it)
+    on api_orders() { return orders.values() }
+    on api_positions() { return positions.values() }
+
+
     state order_lifecycle {
         initial: pending
         pending -> sent

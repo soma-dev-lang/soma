@@ -63,8 +63,10 @@ enum Commands {
         /// Path to the .cell source file
         file: PathBuf,
         /// Arguments to pass (parsed as integers or strings)
-        // negative numbers are values, not flags: `soma run f.cell -7 2`
-        #[arg(allow_negative_numbers = true)]
+        // negative numbers are values, not flags: `soma run f.cell -7 2`;
+        // and after the handler name everything is an argument (`soma run
+        // app.cell put --fresh` wiped the database)
+        #[arg(allow_negative_numbers = true, trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
         /// Deprecated: use [native] on handlers instead
         #[arg(long, hide = true)]

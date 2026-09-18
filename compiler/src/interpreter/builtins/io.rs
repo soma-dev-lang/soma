@@ -6,11 +6,10 @@ use indexmap::IndexMap;
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
     match name {
         "print" => {
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 { print!(" "); }
-                print!("{}", arg);
-            }
-            println!();
+            let line = args.iter().map(|a| format!("{}", a)).collect::<Vec<_>>().join(" ");
+            // under --json stdout is the one JSON document: print() goes to
+            // stderr (`soma test --json` was invalid JSON)
+            if crate::commands::JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) { eprintln!("{}", line); } else { println!("{}", line); }
             Some(Ok(Value::Unit))
         }
         "load_template" | "load" | "include" => {
@@ -93,12 +92,22 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     body = format!("{}{}", htmx_tag, body);
                 }
             }
-            Some(Ok(map_from_pairs(vec![
+            // html(status, body, "Set-Cookie", "sid=1", …): header pairs
+            // (they were dropped silently)
+            let mut entries = map_from_pairs(vec![
                 ("_status".to_string(), status),
                 ("_body".to_string(), Value::String(body)),
                 ("_content_type".to_string(), Value::String("text/html; charset=utf-8".to_string())),
                 ("_response".to_string(), crate::interpreter::http_marker()),
-            ])))
+            ]);
+            if let Value::Map(m) = &mut entries {
+                let mut i = 2;
+                while i + 1 < args.len() {
+                    m.insert(format!("{}", args[i]), args[i + 1].clone());
+                    i += 2;
+                }
+            }
+            Some(Ok(entries))
         }
         "response" => {
             let status = args.first().cloned().unwrap_or(Value::Int(SomaInt::from_i64(200)));

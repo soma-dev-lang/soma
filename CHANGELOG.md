@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Security: a cell's slots are private (reading another cell's slot by bare
+  name is a check error); another cell's handler never replaces a builtin
+  (a library's `escape_html` disabled escaping); `soma install` refuses
+  dependency names with `/` or `..`.
+- New builtins: `sha256`, `hmac_sha256`, `random_token`, `secure_eq`.
+- `use` imports each file once (cycles and diamonds load); `soma run` takes
+  everything after the handler as arguments; `--json` is always JSON.
+- `response()` honours an explicit Content-Type; `html()` takes headers;
+  properties see the rules' `let` fixtures.
 - Check: a handler cannot be named after a safety builtin (`transition`,
   `approve`, `fail`, `think`…) — it replaced the builtin program-wide while
   verify still proved the edges; one `initial:` per machine.

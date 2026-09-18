@@ -699,3 +699,30 @@ The state-machine model checker held everywhere; one hole around it:
 - [ ] A payload-variant target (`transition(id, Failed("x"))`) is counted by verify but always raises at run time.
 - [ ] The guard-binding check misses transitions from other cells, emit listeners and interpolations (they fail closed at run time).
 - [ ] `eventually = []` / `always = []` at the top level are silently empty.
+
+## Cycle 25 (2026-09-18) — collaborative kanban / issue tracker
+
+8/10: check, 82 tests, verify --strict green (WIP limits, "done only after
+review", reactive machine); 300 SSE listeners + 300 movers with no lost or
+reordered event, 30 simultaneous moves of one card → exactly one 200, kill -9
+lost none of 120 acknowledged versions; real Chrome saw peers' moves in 0.5 s.
+
+### Fixed
+- [x] A `property` could not see the rules' `let` fixtures (undefined variable at run time after a clean check) — fixtures are in scope.
+- [x] `response(200, "<b>x</b>", "Content-Type", "text/html")` sent a JSON-wrapped body under an HTML type — the header is the content type and a String body goes out as is; `html(status, body, "Set-Cookie", …)` dropped its headers — header pairs are sent.
+- [x] No cryptographic primitive (tokens and password hashes could not be secure): `sha256`, `hmac_sha256`, `random_token` (OS CSPRNG), `secure_eq` (constant time).
+- [x] Docs: auth recipe (tokens, hashes, cookies, SameSite), repeated form fields, the unauthenticated dashboard.
+
+### Cycle 25 — attack (same binary)
+
+- [x] **Private slots were not private**: any cell (an imported library included) read and rewrote another cell's slot by its bare name (`api_keys.set("admin", …)`), unseen by verify — a check error (test cells excepted); the tradingbot example got accessor handlers.
+- [x] **A library replaced builtins program-wide**: `on escape_html(s) { return s }` in an imported file turned escaping off (XSS); `on clamp(x, lo, hi) { return x }` made "writer proven" false — only the CALLING cell's own handler shadows a builtin at run time; a bare call to another cell's builtin-named handler is a check error (`H.rows()`); the prover treats a handler named like clamp/abs/min/max/len as unknown.
+- [x] **Path traversal in `soma install`**: a dependency named `../../x` or `/abs` wrote .cell files anywhere — names are validated (add and install).
+- [x] Import cycles (`use self`, a ↔ b) overflowed the stack; diamonds defined a cell twice — each file is imported once.
+- [x] `soma run app.cell put --fresh` wiped the database — everything after the handler name is an argument.
+- [x] `--json` printed nothing on a parse error; `test --json` mixed print() output into stdout — one JSON object; print goes to stderr under --json.
+
+### Open
+- [ ] Errors inside an imported file are reported with the importer's file name and lines (parse errors are right).
+- [ ] The replay source hash ignores imported files; `soma add` rewrites soma.toml without its comments; a package shadows a same-named local file silently.
+- [ ] A machine-less cell calling transition() drives the program's only machine; an import that adds a second machine makes it fail at run time after a clean check.

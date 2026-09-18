@@ -709,6 +709,26 @@ impl RangeCtx<'_> {
                 }
             }
             Expr::FnCall { name, args } => match (name.as_str(), args.len()) {
+                // a handler of the cell named like a builtin IS what runs
+                // (`on clamp(x, lo, hi) { return x }` was trusted as clamp)
+                (_, _) if self.depth < 3 && self.handlers.contains_key(name) => match self.handlers.get(name) {
+                    Some(on) => {
+                        let inner = RangeCtx {
+                            hyp: self.hyp,
+                            vars: local_ranges_at(on, self.hyp, self.handlers, self.depth + 1, &[]),
+                            handlers: self.handlers,
+                            depth: self.depth + 1,
+                        };
+                        let mut rets: Vec<&Expr> = Vec::new();
+                        collect_return_values(&on.body, &mut rets);
+                        if rets.is_empty() {
+                            return Known::Unknown;
+                        }
+                        rets.iter().map(|e| inner.range_of(e)).reduce(join).unwrap_or(Known::Unknown)
+                    }
+                    None => Known::Unknown,
+                },
+                (_, _) if self.handlers.contains_key(name) => Known::Unknown,
                 // a ?? b: a when present, else b
                 ("_coalesce", 2) => join(self.range_of(&args[0].node), self.range_of(&args[1].node)),
                 ("clamp", 3) => match (bounds(self.range_of(&args[1].node)), bounds(self.range_of(&args[2].node))) {
@@ -740,23 +760,6 @@ impl RangeCtx<'_> {
                 // a sibling handler: `on total() { return counts.get("n") ?? 0 }`,
                 // or `_drop_hold(id, sku)` returning a slot read — its
                 // parameters are unknown inside, its returns are joined
-                (_, _) if self.depth < 3 && self.handlers.contains_key(name) => match self.handlers.get(name) {
-                    Some(on) => {
-                        let inner = RangeCtx {
-                            hyp: self.hyp,
-                            vars: local_ranges_at(on, self.hyp, self.handlers, self.depth + 1, &[]),
-                            handlers: self.handlers,
-                            depth: self.depth + 1,
-                        };
-                        let mut rets: Vec<&Expr> = Vec::new();
-                        collect_return_values(&on.body, &mut rets);
-                        if rets.is_empty() {
-                            return Known::Unknown;
-                        }
-                        rets.iter().map(|e| inner.range_of(e)).reduce(join).unwrap_or(Known::Unknown)
-                    }
-                    None => Known::Unknown,
-                },
                 _ => Known::Unknown,
             },
             _ => Known::Unknown,

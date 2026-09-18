@@ -7,6 +7,9 @@ edition = "2021"
 description = "The Soma language compiler — fractal, declarative, agent-native"
 
 [dependencies]
+sha2 = "0.10"
+hmac = "0.12"
+getrandom = "0.2"
 thiserror = "1"
 miette = { version = "5", features = ["fancy"] }
 clap = { version = "4", features = ["derive"] }

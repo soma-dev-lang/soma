@@ -1484,7 +1484,7 @@ fn cycle14_findings() {
 
     std::fs::write(d.join("t.csv"), "id,name,amt\n007,\"Smith, J\",1.00\n").unwrap();
     std::fs::write(d.join("helper.cell"), "cell H { on rows() { return read_csv(\"t.csv\") } }\n").unwrap();
-    std::fs::write(d.join("main.cell"), "use helper\ncell M { on go() { let r = rows()  return \"{r[0].id}|{r[0].name}\" } }\n").unwrap();
+    std::fs::write(d.join("main.cell"), "use helper\ncell M { on go() { let r = H.rows()  return \"{r[0].id}|{r[0].name}\" } }\n").unwrap();
     let (out, code) = soma_in(&d, &["run", "main.cell", "go"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("007|Smith, J"), "{out}");
@@ -2198,4 +2198,46 @@ cell Pump {
     let (out, code) = soma_in(&d, &["check", "i.cell"]);
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("ONE initial state"), "{out}");
+}
+
+/// Cycle 25: another cell's slot by bare name is a check error; a builtin
+/// is not replaced by another cell's handler; import cycles and diamonds
+/// load; flags after the handler are arguments; a property sees the rules'
+/// fixtures; crypto builtins; `--json` on a parse error is JSON.
+#[test]
+fn cycle25_findings() {
+    let d = dir("cycle25");
+    std::fs::write(d.join("s.cell"), "cell Vault { memory { keys: Map<String, String> [persistent] } on put(k: String) { keys.set(k, \"v\") } }\ncell Other { on steal() { return keys.get(\"admin\") } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "s.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("memory slot of another cell"), "{out}");
+
+    std::fs::write(d.join("lib.cell"), "cell Lib { on escape_html(s: String) { return s } }\n").unwrap();
+    std::fs::write(d.join("app.cell"), "use lib\ncell App { on page(s: String) { return escape_html(s) } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("calls the BUILTIN escape_html()"), "a library replaced escape_html: {out}");
+
+    std::fs::write(d.join("a.cell"), "use b\ncell A { on f() { return 1 } }\n").unwrap();
+    std::fs::write(d.join("b.cell"), "use a\ncell B { on g() { return 2 } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "a.cell"]);
+    assert_eq!(code, 0, "an import cycle must load: {out}");
+
+    std::fs::write(d.join("fl.cell"), "cell F { memory { m: Map<String, String> [persistent] } on put(v: String) {\n    m.set(\"k\", v)\n    return v\n  } }\n").unwrap();
+    let _ = soma_in(&d, &["run", "fl.cell", "put", "keep"]);
+    let (out, _) = soma_in(&d, &["run", "fl.cell", "put", "--fresh"]);
+    assert!(!out.contains("fresh: removed"), "{out}");
+
+    std::fs::write(d.join("pf.cell"), "cell A { on f(k: Int, n: Int) { return k + n } }\ncell test T { rules {\n  let k = 5\n  property \"fixture\" forall n: Int in 0..3 ensures f(k, n) >= 5\n} }\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "pf.cell"]);
+    assert_eq!(code, 0, "{out}");
+
+    std::fs::write(d.join("cr.cell"), "cell C { on main() { return [sha256(\"abc\"), len(random_token()), secure_eq(\"a\", \"b\")] } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "cr.cell", "main"]);
+    assert!(out.contains("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") && out.contains("64, false"), "{out}");
+
+    std::fs::write(d.join("syn.cell"), "cell X { on f() { return } }\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_soma")).args(["check", "--json", "syn.cell"]).current_dir(&d).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(serde_json::from_str::<serde_json::Value>(stdout.trim()).is_ok(), "{stdout}");
 }

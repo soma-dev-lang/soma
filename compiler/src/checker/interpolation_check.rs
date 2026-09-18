@@ -73,6 +73,7 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
         // (an undefined `{var}` inside an assert used to be found at run time)
         if matches!(cell.kind, CellKind::Test) {
             let mut w = Walker::new(&index);
+            w.in_test = true;
             for section in &cell.sections {
                 if let Section::Rules(rules) = &section.node {
                     for rule in &rules.rules {
@@ -100,6 +101,7 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                 Section::OnSignal(on) => {
                     let mut w = Walker::new(&index);
                     w.cell_slots = cell_slots.clone();
+                    w.in_test = matches!(cell.kind, CellKind::Test);
                     if blessed_failing.contains(&on.signal_name) {
                         // interpolation issues in it are recoverable (a bare
                         // undefined name stays an error: that is a bug, not
@@ -149,11 +151,13 @@ struct Walker<'a> {
     /// the memory slots of the cell being walked (a `let` of another
     /// cell's slot name hides nothing)
     cell_slots: HashSet<String>,
+    /// walking a `cell test` (its rules and helpers name every cell's slots)
+    in_test: bool,
 }
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, blessed: false, cell_slots: HashSet::new() }
+        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, blessed: false, cell_slots: HashSet::new(), in_test: false }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -433,6 +437,19 @@ impl<'a> Walker<'a> {
             // bound NOWHERE — a typo or an incomplete rename, which would
             // otherwise only fail at runtime, on the path that reads it.
             Expr::Ident(name) => {
+                // another cell's slot by its bare name: it resolved to that
+                // cell's storage (an imported library read and rewrote the
+                // importer's `api_keys`), unseen by verify
+                if !self.in_test && self.index.slots.contains(name) && !self.cell_slots.contains(name) && !self.scope.contains(name) {
+                    self.issues.push(InterpolationIssue {
+                        message: format!("`{name}` is a memory slot of another cell — a cell's slots are private to it: call a handler of the cell that owns `{name}`"),
+                        span,
+                        warning: false,
+                        habit: false,
+                        kind: "foreign_slot",
+                    });
+                    return;
+                }
                 // `let f = len`, `|> map(dbl)`: a function is not a value
                 // (it raised "undefined variable" at run time)
                 let is_fn = self.index.handler_map.contains_key(name) || super::names::builtin_names().contains(name.as_str());

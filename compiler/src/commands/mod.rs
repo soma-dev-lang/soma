@@ -91,9 +91,25 @@ pub static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// line verify promises.
 pub static VERIFY_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The message of the error that stops a program from loading (for the
+/// `--json` object: a parse error printed nothing on stdout).
+pub static FATAL_MSG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static JSON_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_fatal(msg: String) {
+    if let Ok(mut m) = FATAL_MSG.lock() { if m.is_none() { *m = Some(msg); } }
+}
+
 pub fn fatal_exit() -> ! {
     if VERIFY_MODE.load(std::sync::atomic::Ordering::Relaxed) && !JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
         println!("VERIFY FAILED — the program does not load (fix the error above, then verify)");
+    }
+    if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) && !JSON_DONE.load(std::sync::atomic::Ordering::Relaxed) {
+        let msg = FATAL_MSG.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "the program does not load (details on stderr)".to_string());
+        println!("{}", serde_json::json!({
+            "errors": [{"level": "error", "kind": "load", "message": msg}],
+            "warnings": [], "error_count": 1, "passed": false
+        }));
     }
     process::exit(1)
 }
@@ -111,6 +127,7 @@ pub fn read_source(path: &PathBuf) -> String {
                     "errors": [{"level": "error", "kind": "io", "message": format!("cannot read '{}': {}", path.display(), e), "fix": "check the path"}],
                     "warnings": [], "error_count": 1, "passed": false
                 }));
+                JSON_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             fatal_exit();
         }
@@ -229,12 +246,14 @@ pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str
                     };
                     let context = crate::interpreter::format_error_context(src, span.start);
                     eprintln!("error: {}\n{}\n{}", e, location, context);
+                    set_fatal(format!("{} ({})", e, location.trim_start_matches("  --> ")));
                     if let Some(h) = foreign_syntax_hint(&e.to_string(), src, span.start) {
                         eprintln!("{}", h);
                     }
                 }
                 _ => {
                     eprintln!("error: {}", e);
+                    set_fatal(format!("{}", e));
                 }
             }
             fatal_exit();
@@ -242,8 +261,21 @@ pub fn parse_with_location(tokens: Vec<lexer::SpannedToken>, source: Option<&str
     }
 }
 
+thread_local! {
+    /// files already brought in by this program's `use` graph: an import
+    /// cycle (`a` uses `b` uses `a`, or `use self`) recursed until the stack
+    /// overflowed, and a diamond (`b` and `c` both use `d`) defined D twice
+    static IMPORTED: std::cell::RefCell<std::collections::HashSet<PathBuf>> = std::cell::RefCell::new(std::collections::HashSet::new());
+    static IMPORT_DEPTH: std::cell::Cell<usize> = std::cell::Cell::new(0);
+}
+
+fn canonical(p: &Path) -> PathBuf { fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()) }
+
 pub fn resolve_imports(program: &mut ast::Program, base_path: &PathBuf) {
     let base_dir = base_path.parent().unwrap_or(Path::new("."));
+    if IMPORT_DEPTH.with(|d| d.get()) == 0 {
+        IMPORTED.with(|s| { let mut s = s.borrow_mut(); s.clear(); s.insert(canonical(base_path)); });
+    }
 
     for import_path in &program.imports.clone() {
         let full_path = if import_path.starts_with("pkg:") {
@@ -310,6 +342,7 @@ fn resolve_pkg_path(base_dir: &Path, pkg_name: &str) -> PathBuf {
 }
 
 fn import_file(program: &mut ast::Program, path: &PathBuf) {
+    if !IMPORTED.with(|s| s.borrow_mut().insert(canonical(path))) { return; }
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -320,7 +353,9 @@ fn import_file(program: &mut ast::Program, path: &PathBuf) {
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));
     let mut imported = parse_with_location(tokens, Some(&source), Some(&file_str));
+    IMPORT_DEPTH.with(|d| d.set(d.get() + 1));
     resolve_imports(&mut imported, path);
+    IMPORT_DEPTH.with(|d| d.set(d.get() - 1));
     // an imported file's own test cells are ITS tests (`soma test lib/m.cell`):
     // run from the importer they reported the importer's file and lines
     imported.cells.retain(|c| !matches!(c.node.kind, ast::CellKind::Test));

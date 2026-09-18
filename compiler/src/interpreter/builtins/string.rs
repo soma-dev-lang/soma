@@ -150,6 +150,38 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             out.flush().ok();
             Some(Ok(Value::Int(SomaInt::from_i64(text.len() as i64))))
         }
+        // ── crypto for authentication (session tokens, password hashes,
+        // signed cookies): `random()` is a time-seeded PRNG ──
+        "sha256" if args.len() == 1 => {
+            use sha2::Digest;
+            let data = format!("{}", args[0]);
+            Some(Ok(Value::String(hex(&sha2::Sha256::digest(data.as_bytes())))))
+        }
+        "hmac_sha256" if args.len() == 2 => {
+            use hmac::Mac;
+            let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(format!("{}", args[0]).as_bytes()).expect("hmac takes any key");
+            mac.update(format!("{}", args[1]).as_bytes());
+            Some(Ok(Value::String(hex(&mac.finalize().into_bytes()))))
+        }
+        "random_token" => {
+            let n = match args.first() { Some(Value::Int(i)) => i.to_i64().unwrap_or(-1), None => 32, _ => -1 };
+            if !(1..=1024).contains(&n) {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: "random_token(bytes): 1 to 1024 bytes".to_string() }));
+            }
+            let mut buf = vec![0u8; n as usize];
+            if getrandom::getrandom(&mut buf).is_err() {
+                return Some(Err(RuntimeError::Domain { kind: "internal".to_string(), message: "random_token(): the OS random source failed".to_string() }));
+            }
+            Some(Ok(Value::String(hex(&buf))))
+        }
+        "secure_eq" if args.len() == 2 => {
+            // constant-time: comparing a token with == leaks its prefix by timing
+            let (a, b) = (format!("{}", args[0]), format!("{}", args[1]));
+            let (a, b) = (a.as_bytes(), b.as_bytes());
+            let mut diff = (a.len() ^ b.len()) as u8 | if a.len() != b.len() { 1 } else { 0 };
+            for i in 0..a.len().max(b.len()) { diff |= a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0); }
+            Some(Ok(Value::Bool(diff == 0)))
+        }
         // printf subset: %d %s %f %.Nf %Nd %-Ns %0Nd %%
         "format" if !args.is_empty() => {
             let Value::String(fmt) = &args[0] else {
@@ -529,4 +561,8 @@ fn cached_regex(pat: &str) -> Result<regex::Regex, regex::Error> {
         c.insert(pat.to_string(), r.clone());
     });
     Ok(r)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }

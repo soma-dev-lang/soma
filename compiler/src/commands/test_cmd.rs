@@ -382,7 +382,7 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                         }
                         ast::Rule::Property { name, var, ty, lo, hi, count, body } => {
                             total += 1;
-                            match run_property(&mut interp, name, var, ty, *lo, *hi, *count, &body.node) {
+                            match run_property(&mut interp, name, var, ty, *lo, *hi, *count, &body.node, &test_env) {
                                 Ok((None, cov)) => {
                                     passed += 1;
                                     say!(out_lines, json, "  ✓ property \"{}\" (forall {} in {}..{}: {})",
@@ -598,6 +598,7 @@ fn run_property(
     hi: i64,
     count: u32,
     body: &ast::Expr,
+    fixtures: &std::collections::HashMap<String, interpreter::Value>,
 ) -> Result<(Option<String>, Coverage), String> {
     if ty != "Int" {
         return Err(format!("only Int properties supported in V1.6 (got {})", ty));
@@ -626,7 +627,8 @@ fn run_property(
     };
     let coverage = if exhaustive { Coverage::Exhaustive(span) } else { Coverage::Sampled(values.len() as u32, span) };
     for r in values {
-        let mut env = std::collections::HashMap::new();
+        // the rules' `let` fixtures are in scope, like for any other rule
+        let mut env = fixtures.clone();
         env.insert(var.to_string(), interpreter::Value::Int(interpreter::SomaInt::from_i64(r)));
         let v = interp.eval_expr_with_env(body, &env, "", "")
             .map_err(|e| describe_error(&e))?;

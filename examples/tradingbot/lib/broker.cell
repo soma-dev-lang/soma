@@ -9,6 +9,10 @@ cell Broker {
         fills: Map<String, String> [persistent, consistent]
     }
 
+    // read by the HTTP cell (a cell's slots are private to it)
+    on api_fills() { return fills.values() }
+
+
     state execution {
         initial: idle
         idle -> receiving

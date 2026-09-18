@@ -10,6 +10,10 @@ cell Market {
         history: Map<String, String> [ephemeral, local]
     }
 
+    // read by the HTTP cell (a cell's slots are private to it)
+    on api_prices() { return prices.values() }
+
+
     state feed {
         initial: disconnected
         disconnected -> connecting

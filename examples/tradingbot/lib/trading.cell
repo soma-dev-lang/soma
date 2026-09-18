@@ -9,6 +9,10 @@ cell Trading {
         targets: Map<String, String> [persistent, consistent]
     }
 
+    // read by the HTTP cell (a cell's slots are private to it)
+    on api_targets() { return targets.values() }
+
+
     state strategy {
         initial: idle
         idle -> computing

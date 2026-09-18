@@ -141,7 +141,12 @@ uses fresh in-memory storage every time.
 ## What `soma serve` does not do
 
 No TLS, no built-in authentication (read `headers.authorization` in
-`request` and refuse), no rate limiting, no cap on open connections (one
+`request` and refuse; make tokens with `random_token()`, store
+`hmac_sha256(secret, password + salt)`, compare secrets with `secure_eq`;
+cookies arrive in `headers.cookie` and are set with
+`response(303, "", "Location", "/", "Set-Cookie", "sid=…; HttpOnly; SameSite=Strict")`
+or `html(200, page, "Set-Cookie", …)`; a repeated form or query field keeps
+its last value; the `/__soma/` dashboard is unauthenticated — firewall it), no rate limiting, no cap on open connections (one
 thread each: at the machine's thread limit the process exits with status 70
 so a supervisor restarts it — cap connections in the reverse proxy).
 It binds 127.0.0.1 (`--host 0.0.0.0` to expose it). `PORT + 2` (the signal

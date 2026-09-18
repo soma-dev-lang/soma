@@ -2296,7 +2296,12 @@ impl Interpreter {
                 // Resolution: a handler of the program taking this many
                 // arguments shadows a builtin of the same name. `on list()`
                 // can still call the builtin list(1, 2) — 2 ≠ 0 arguments.
-                let user_wins = self.user_handler_takes(name, arg_vals.len());
+                // …but only the CALLING cell's own handler: a library's
+                // `on escape_html(s) { return s }` replaced the builtin for
+                // the whole importing program (XSS), and `on clamp(x, lo, hi)`
+                // made a proven invariant false
+                let user_wins = self.user_handler_takes(name, arg_vals.len())
+                    && (!crate::checker::names::builtin_names().contains(name.as_str()) || self.cell_defines_handler(cell_name, name));
                 // Check lambda builtins first (map, filter, find, etc.) — need &mut self
                 if !user_wins && arg_vals.iter().any(|v| matches!(v, Value::Lambda { .. })) {
                     if let Some(val) = builtins::call_lambda_builtin(self, name, &arg_vals, cell_name) {
@@ -4315,6 +4320,12 @@ impl Interpreter {
     /// Does the program define a handler `name` taking exactly `argc`
     /// arguments? Then a call resolves to it rather than to a builtin.
     #[inline]
+    fn cell_defines_handler(&self, cell_name: &str, name: &str) -> bool {
+        // a test rule or `soma run` names the program's handlers directly
+        if cell_name.is_empty() { return true; }
+        self.cells.get(cell_name).map_or(false, |c| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == name)))
+    }
+
     fn user_handler_takes(&self, name: &str, argc: usize) -> bool {
         self.handler_arities.get(name).is_some_and(|a| a.contains(&argc))
     }

@@ -19,6 +19,11 @@ pub fn resolve_and_install(
         .map_err(|e| format!("cannot create {}: {}", cache_dir.display(), e))?;
 
     for (name, dep) in &manifest.dependencies {
+        // a dependency NAME is a directory under packages/: `../../x` or an
+        // absolute path wrote .cell files anywhere on disk
+        if !valid_package_name(name) {
+            return Err(format!("dependency name '{}' is not a package name (letters, digits, `_`, `-`, `.`; no `/`, no `..`)", name));
+        }
         let pkg_path = resolve_package(name, dep, &cache_dir, lock)?;
         installed.insert(name.clone(), pkg_path);
     }
@@ -291,4 +296,10 @@ fn hash_files(dir: &Path, files: &[String]) -> String {
         }
     }
     format!("{:016x}", hasher.finish())
+}
+
+/// A package name that stays one directory under packages/.
+pub fn valid_package_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.starts_with('.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }

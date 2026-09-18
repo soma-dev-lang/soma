@@ -1742,17 +1742,23 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             500
                         }
                     };
-                    let content_type = entries.get("_content_type")
-                        .and_then(|v| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None })
+                    // `response(200, "<b>x</b>", "Content-Type", "text/html")`:
+                    // the header IS the content type (it went out beside a
+                    // JSON-wrapped body)
+                    let explicit_ct = entries.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                        .map(|(_, v)| format!("{}", v));
+                    let content_type = explicit_ct.clone().or_else(|| entries.get("_content_type")
+                        .and_then(|v| if let interpreter::Value::String(s) = v { Some(s.clone()) } else { None }))
                         .unwrap_or("application/json".to_string());
                     let body_val = entries.get("_body")
                         .cloned()
                         .unwrap_or(interpreter::Value::Unit);
                     let headers: Vec<(String, String)> = entries.iter()
-                        .filter(|(k, _)| !k.starts_with('_'))
+                        .filter(|(k, _)| !k.starts_with('_') && !k.eq_ignore_ascii_case("content-type"))
                         .map(|(k, v)| (k.clone(), format!("{}", v)))
                         .collect();
-                    let is_html = content_type.contains("html");
+                    // any non-JSON type sends a String body as it is
+                    let is_html = content_type.contains("html") || (explicit_ct.is_some() && !content_type.contains("json"));
                     let body_str = if is_html {
                         match &body_val {
                             interpreter::Value::String(s) => s.clone(),
