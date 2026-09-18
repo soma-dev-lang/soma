@@ -148,7 +148,7 @@ pub fn value_to_json(v: &Value) -> serde_json::Value {
                 VariantValue::Unit => {}
                 VariantValue::Tuple(vs) => {
                     obj.insert(
-                        "_fields".to_string(),
+                        "_values".to_string(),
                         serde_json::Value::Array(vs.iter().map(value_to_json).collect()),
                     );
                 }

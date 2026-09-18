@@ -136,6 +136,9 @@ match r {
 }
 // typed state machines: state order: OrderState { initial: Placed ... }
 // transition(id, Variant) is compile-checked against the type
+// to_json(Charged { tx: "t1" }) == '{"_type":"Pay","_variant":"Charged","tx":"t1"}'
+// (a tuple variant carries "_values"); from_json brings the variant back; HTTP
+// answers a returned variant the same way. Slots store variants as variants.
 ```
 
 ## Coming from Python / TypeScript

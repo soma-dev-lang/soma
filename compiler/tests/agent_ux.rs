@@ -913,7 +913,7 @@ cell test T {
     let _ = child.kill(); let _ = child.wait();
     assert!(up);
     assert!(sq.contains("144"), "{sq}");
-    assert!(dec.contains("\"ok\": true"), "{dec}");
+    assert!(dec.contains("\"ok\":true"), "{dec}");
 }
 
 /// Two agents wanted this proven: `require open < 3` then `open + 1`

@@ -293,6 +293,20 @@ pub fn serde_json_to_value(v: &serde_json::Value) -> Value {
             Value::List(arr.iter().map(serde_json_to_value).collect())
         }
         serde_json::Value::Object(obj) => {
+            // `{"_type": "Pay", "_variant": "Charged", …}` is what to_json
+            // writes for a variant: bring the variant back
+            if let (Some(serde_json::Value::String(t)), Some(serde_json::Value::String(v))) = (obj.get("_type"), obj.get("_variant")) {
+                use crate::interpreter::VariantValue;
+                let fields = if let Some(serde_json::Value::Array(items)) = obj.get("_values").or_else(|| obj.get("_fields")) {
+                    VariantValue::Tuple(items.iter().map(serde_json_to_value).collect())
+                } else {
+                    let entries: indexmap::IndexMap<String, Value> = obj.iter()
+                        .filter(|(k, _)| k.as_str() != "_type" && k.as_str() != "_variant")
+                        .map(|(k, v)| (k.clone(), serde_json_to_value(v))).collect();
+                    if entries.is_empty() { VariantValue::Unit } else { VariantValue::Struct(entries) }
+                };
+                return Value::Variant { type_name: t.clone(), variant: v.clone(), fields };
+            }
             Value::Map(obj.iter().map(|(k, v)| (k.clone(), serde_json_to_value(v))).collect())
         }
     }

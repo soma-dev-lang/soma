@@ -1,4 +1,4 @@
-use super::super::{Value, RuntimeError};
+use super::super::{Value, RuntimeError, VariantValue};
 use super::json_to_value;
 use crate::interpreter::soma_int::SomaInt;
 
@@ -346,6 +346,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
 /// Serialize a Value as valid JSON. Unlike Display formatting, this escapes
 /// strings properly and maps NaN/inf (which JSON cannot represent) to null.
 /// BigInts are written as bare arbitrary-precision numbers.
+/// The JSON `to_json` writes (used by `soma serve` for response bodies).
+pub fn to_json_string(v: &Value) -> String {
+    let mut out = String::new();
+    write_json(v, &mut out);
+    out
+}
+
 fn write_json(v: &Value, out: &mut String) {
     match v {
         Value::Unit => out.push_str("null"),
@@ -374,6 +381,30 @@ fn write_json(v: &Value, out: &mut String) {
                 out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
                 out.push(':');
                 write_json(val, out);
+            }
+            out.push('}');
+        }
+        // a variant is a tagged object (it used to be its Display text as a
+        // JSON string, which from_json could not bring back)
+        Value::Variant { type_name, variant, fields } => {
+            out.push_str("{\"_type\":");
+            out.push_str(&serde_json::to_string(type_name).unwrap_or_default());
+            out.push_str(",\"_variant\":");
+            out.push_str(&serde_json::to_string(variant).unwrap_or_default());
+            match fields {
+                VariantValue::Unit => {}
+                VariantValue::Tuple(items) => {
+                    out.push_str(",\"_values\":");
+                    write_json(&Value::List(items.clone()), out);
+                }
+                VariantValue::Struct(entries) => {
+                    for (k, val) in entries {
+                        out.push(',');
+                        out.push_str(&serde_json::to_string(k).unwrap_or_else(|_| "\"\"".to_string()));
+                        out.push(':');
+                        write_json(val, out);
+                    }
+                }
             }
             out.push('}');
         }

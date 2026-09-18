@@ -239,5 +239,5 @@ Scores: Ruby port (invoice/ledger with dates and money formatting) 17 invocation
 - [ ] Refinement checks transition TARGETS; a removed edge whose `transition()` remains is a runtime `invalid_transition`, not a verify failure (documented; `[verify.before.X] requires` covers the edges that matter).
 - [ ] `emit` across processes needs `[peers]`; a peer down at start-up is not retried (documented).
 - [ ] `soma fix` repairs missing handlers and `--native-idiv` only (documented as such).
-- [ ] Variants do not round-trip through `to_json` (a JSON string); records with `_type` do.
+- [x] Variants round-trip through `to_json` / `from_json` as `{"_type", "_variant", …}` (they used to be a JSON string); `soma serve` renders every body with the same JSON writer (a returned variant is an object, not `{"result": Charged { … }}`).
 - [ ] `trace()` omits the system prompt.

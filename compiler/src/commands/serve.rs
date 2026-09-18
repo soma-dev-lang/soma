@@ -1411,7 +1411,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     } else {
                         match &body_val {
                             interpreter::Value::Unit => "null".to_string(),
-                            interpreter::Value::Map(_) | interpreter::Value::List(_) => format!("{}", body_val),
+                            interpreter::Value::Map(_) | interpreter::Value::List(_) | interpreter::Value::Variant { .. } =>
+                                interpreter::builtins::string::to_json_string(&body_val),
                             interpreter::Value::String(s) => {
                                 if s.starts_with('{') || s.starts_with('[') { s.clone() }
                                 else { serde_json::json!({ "result": s }).to_string() }
@@ -1423,7 +1424,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 } else {
                     let body = match &val {
                         interpreter::Value::Unit => "null".to_string(),
-                        interpreter::Value::List(_) | interpreter::Value::Map(_) => format!("{}", val),
+                        interpreter::Value::List(_) | interpreter::Value::Map(_) | interpreter::Value::Variant { .. } =>
+                            interpreter::builtins::string::to_json_string(&val),
                         interpreter::Value::String(s) => {
                             if s.starts_with('{') || s.starts_with('[') { s.clone() }
                             else { serde_json::json!({ "result": s }).to_string() }
