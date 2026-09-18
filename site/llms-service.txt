@@ -466,7 +466,8 @@ an Int slot refuses a non-exact `/` instead of truncating.
 
 What a `[native]` handler may use — nothing else:
 - parameters and locals: Int, Float, Bool, String (a List cannot cross the
-  boundary: keep the loop interpreted and make the per-element kernel native)
+  boundary in either direction: parse the input into buffers inside the
+  handler, return a String)
 - arithmetic, comparisons, `if`/`while`/`for i in range(a, b)`, `return`,
   sqrt log exp pow abs min max floor ceil round sin cos random, idiv gcd
   pow_mod sqrt_int, band bor bxor bnot shl shr bit_len bit_test bit_set
@@ -478,7 +479,20 @@ What a `[native]` handler may use — nothing else:
   `hm_inc(m, k)`, `hm_len(m)`, `hm_has(m, k)`
 - strings: `strbuf() -> SBuf`, `sb_push(b, s)`, `sb_push_int(b, n)`,
   `sb_push_char(b, c)`, `sb_len(b)`, `sb_finish(b) -> String`;
-  `regex_count / regex_replace / regex_match`; `read_file read_stdin write_str`
+  `regex_count / regex_replace / regex_match`; `read_file read_stdin
+  write_str` (write_str flushes; an Int overflow re-runs the handler in
+  BigInt mode, so text written BEFORE the overflow is repeated — keep
+  write_str away from overflow-prone arithmetic, or return the text)
+- a Buf/HMap/SBuf lives in ONE variable of ONE handler: it cannot be
+  re-bound (`let t = u  u = v` — copy elements instead), returned, or passed
+  to a sibling (pack results into a String with strbuf). A Buf holds 64-bit
+  Ints: a value that overflows i64 while stored into it is a `range` error
+  (scalars promote to BigInt; mask the value or keep it scalar). `for` takes
+  `range(a, b)` only (a step → `while`). A literal `/ 0` does not compile.
+  `soma check` reports all of these.
+- one FFI call costs ~2 µs: make the LOOP native, not just the per-element
+  kernel (10^7 sibling calls inside a native loop: 20 ms; 2·10^6 calls from
+  an interpreted loop: 3.5 s).
 Not available natively: maps/lists/records, think(), memory slots, `try`,
 `match`, string interpolation — call an interpreted handler for those. The
 buffer / hashmap / strbuf primitives exist ONLY in `[native]` handlers

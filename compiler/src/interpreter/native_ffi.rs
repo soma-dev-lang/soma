@@ -322,12 +322,14 @@ fn build_dylib(
             let stderr = String::from_utf8_lossy(&output.stderr);
             // the error blocks first (a caller shows only the first lines;
             // two `warning:` blocks used to hide the `error[E0308]`)
-            let mut blocks: Vec<&str> = stderr.split("\n\n").collect();
-            blocks.sort_by_key(|b| if b.trim_start().starts_with("error") { 0 } else { 1 });
-            let ordered = blocks.join("\n\n");
+            // the rustc ERROR blocks only (warnings are noise on generated
+            // code); the whole crate used to follow and bury them — it is
+            // on disk for whoever wants it
+            let errors: Vec<&str> = stderr.split("\n\n").filter(|b| b.trim_start().starts_with("error")).collect();
+            let shown = if errors.is_empty() { stderr.to_string() } else { errors.join("\n\n") };
             return Err(format!(
-                "[native] compilation failed for cell '{}':\n{}\n\nGenerated source:\n{}",
-                cell_name, ordered, rust_source
+                "[native] compilation failed for cell '{}':\n{}\n(generated source: {})",
+                cell_name, shown, proj_src.join("lib.rs").display()
             ));
         }
 

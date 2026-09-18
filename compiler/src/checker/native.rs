@@ -7,6 +7,7 @@
 //! Forbidden: String, Map, pipes, storage access, print, HTTP, signals, lambdas.
 
 use crate::ast::*;
+use std::collections::HashSet;
 
 /// Error from native handler validation
 #[derive(Debug)]
@@ -105,7 +106,89 @@ pub fn check_native_handler(
     for stmt in body {
         check_stmt(handler_name, &stmt.node, siblings)?;
     }
+    // what codegen refuses, said here (each used to pass check and die in
+    // rustc behind a 600-line dump)
+    let mut bufs: HashSet<String> = HashSet::new();
+    check_codegen_limits(handler_name, body, &mut bufs)?;
     Ok(())
+}
+
+fn is_buffer_ctor(e: &Expr) -> bool {
+    matches!(e, Expr::FnCall { name, .. } if matches!(name.as_str(), "buffer" | "buffer_f" | "hashmap" | "strbuf"))
+}
+
+fn check_codegen_limits(handler_name: &str, body: &[Spanned<Statement>], bufs: &mut HashSet<String>) -> Result<(), NativeCheckError> {
+    let err = |reason: String| Err(NativeCheckError { handler_name: handler_name.to_string(), reason });
+    for st in body {
+        match &st.node {
+            Statement::Let { name, value } => {
+                if is_buffer_ctor(&value.node) { bufs.insert(name.clone()); }
+                else if let Expr::Ident(src) = &value.node {
+                    if bufs.contains(src) {
+                        return err(format!("`let {} = {}` re-binds a buffer — a Buf/HMap/SBuf lives in one variable; copy it element by element (`for k in range(0, n) {{ buf_set(v, k, buf_get(u, k)) }}`)", name, src));
+                    }
+                }
+                check_codegen_limits_expr(handler_name, &value.node)?;
+            }
+            Statement::Assign { name, value } => {
+                if bufs.contains(name) {
+                    return err(format!("`{} = …` re-assigns a buffer — a Buf/HMap/SBuf is bound once; copy elements instead of swapping variables", name));
+                }
+                check_codegen_limits_expr(handler_name, &value.node)?;
+            }
+            Statement::Return { value } => {
+                match &value.node {
+                    Expr::Ident(n) if bufs.contains(n) => return err(format!("returns the buffer `{}` — only Int, Float, Bool or String cross the [native] boundary; pack the values into a String (strbuf) and split it in an interpreted handler", n)),
+                    Expr::ListLiteral(_) => return err("returns a list — only Int, Float, Bool or String cross the [native] boundary".to_string()),
+                    _ => {}
+                }
+                check_codegen_limits_expr(handler_name, &value.node)?;
+            }
+            Statement::For { iter, body, .. } => {
+                if let Expr::FnCall { name, args } = &iter.node {
+                    if name == "range" && args.len() != 2 {
+                        return err("a native `for` takes `range(a, b)` only — write a `while` loop for a step".to_string());
+                    }
+                }
+                check_codegen_limits(handler_name, body, bufs)?;
+            }
+            Statement::While { condition, body, .. } => {
+                check_codegen_limits_expr(handler_name, &condition.node)?;
+                check_codegen_limits(handler_name, body, bufs)?;
+            }
+            Statement::If { condition, then_body, else_body } => {
+                check_codegen_limits_expr(handler_name, &condition.node)?;
+                check_codegen_limits(handler_name, then_body, bufs)?;
+                check_codegen_limits(handler_name, else_body, bufs)?;
+            }
+            Statement::ExprStmt { expr } | Statement::Ensure { condition: expr } => check_codegen_limits_expr(handler_name, &expr.node)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn check_codegen_limits_expr(handler_name: &str, e: &Expr) -> Result<(), NativeCheckError> {
+    let err = |reason: String| Err(NativeCheckError { handler_name: handler_name.to_string(), reason });
+    match e {
+        Expr::BinaryOp { left, op, right } => {
+            if matches!(op, BinOp::Div | BinOp::Mod) && matches!(&right.node, Expr::Literal(Literal::Int(0))) {
+                return err("divides by the literal 0 — rustc refuses to compile it (an unconditional panic); pass the divisor as a value if you want the runtime error".to_string());
+            }
+            check_codegen_limits_expr(handler_name, &left.node)?;
+            check_codegen_limits_expr(handler_name, &right.node)
+        }
+        Expr::FnCall { name, args } => {
+            if name == "idiv" && matches!(args.get(1).map(|a| &a.node), Some(Expr::Literal(Literal::Int(0)))) {
+                return err("idiv by the literal 0 — rustc refuses to compile it; pass the divisor as a value".to_string());
+            }
+            for a in args { check_codegen_limits_expr(handler_name, &a.node)?; }
+            Ok(())
+        }
+        Expr::CmpOp { left, right, .. } => { check_codegen_limits_expr(handler_name, &left.node)?; check_codegen_limits_expr(handler_name, &right.node) }
+        Expr::Not(i) => check_codegen_limits_expr(handler_name, &i.node),
+        _ => Ok(()),
+    }
 }
 
 fn check_stmt(handler_name: &str, stmt: &Statement, siblings: &NativeSiblings) -> Result<(), NativeCheckError> {

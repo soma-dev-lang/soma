@@ -261,3 +261,18 @@ Scores: warehouse inventory (2 cells + router) 6 invocations to check+verify --s
 - [ ] No auth hook, no per-request timeout, no header access under serve (proxy's job; documented).
 - [ ] Native boundary takes scalars only (a List cannot cross) — documented; the interpreter is now linear, which removes most of the pressure.
 - [ ] Dashboard shows verification, not live traces or token totals.
+
+## Cycle 8 (2026-09-18, morning) — 5 fresh agents on the cycle-7 binary
+
+Scores: TypeScript Kanban port green in 4 invocations, 38/38, WIP invariant proven, 6.5/10; cold site evaluation → "try", 7/10, a strictly verified booking service in 7 invocations; 4-cell fulfilment saga (Erlang/Temporal persona) 5/10 — a bare ambiguous call resolved at random across runs; adversarial prover audit: no runtime violation, but eight FALSE ✓ proofs; native numerics: sieve 10^8 in 0.7 s, 512²×200 Jacobi in 0.08 s, results bit-identical to the interpreter, 5/10 for the boundary limits and four check-passes-rustc-fails constructs.
+
+### Fixed
+- [x] **Prover soundness**: a `require` inside a loop narrows only that loop's per-iteration locals (a loop can run zero times — the cycle-7 rule was unsound); match-arm and lambda bindings shadow narrowed names; intervals beyond 2^53 are unknown (i64::MAX + 10 rounded to i64::MAX in f64); `require cur + n <= K` on the written expression itself is a fact; an early `if n >= 1 { return … }` narrows what follows; termination of `down(n - 1)` needs a lower-bound base case on an Int (`if n <= 0`), not `== 0`; `every` / `after` blocks and `delegate("Cell", "h", …)` count in cost proofs; a self-loop no longer breaks liveness; an interpolated transition target is dynamic; liveness / `eventually` lines state that guarded edges are assumed passable; orphan `[verify]` properties (no machine) fail instead of "Temporal: 0 passed".
+- [x] A bare call to a name two cells define is a check error in test cells too, and runtime dispatch is deterministic (declaration order); slot `.keys` / `.values` sorted in every backend; `emit` with no listener is a check warning; `soma serve` lists endpoints (no private handlers); serve accepts whitespace-padded JSON bodies; stored records keep their field order.
+- [x] `[native]`: `soma check` refuses what codegen refuses (buffer re-binding, list/buffer returns, `range(a, b, step)`, a literal `/ 0`); an Int that overflows i64 while stored into a Buf is a `range` error (BigInt retry) instead of a second overflow panic; `write_str` flushes; codegen errors render the expression, rustc failures show only the error blocks and the path of the generated crate; the crate silences its own lint noise.
+- [x] The starter and `gate_appointment` are `--strict` clean; landing page links `/status` (maturity), guarantees, serving, operations; dead links fixed; `soma run` audits stored data; `trace()` records the system prompt; `--strict` repeats the ⚠ lines by the verdict.
+
+### Open
+- [ ] `cost { }` is a static bound on output tokens; `set_budget` is the runtime cap (documented). A `Buf` cannot cross handler boundaries (documented).
+- [ ] Cross-cell invariants (`Orders.cancelled ⇒ Warehouse.released`) are tested, not proven.
+- [ ] `{k: v}` map literal, optional parameter types (`String?`) — language changes, not taken.
