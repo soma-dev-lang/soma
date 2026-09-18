@@ -1,5 +1,89 @@
 # Changelog
 
+## 2.5.0 — 2026-09-18
+
+The agent-experience release. Nine cycles of fresh AI agents (none had seen
+Soma) built services, ported Python/Java/TypeScript/Go/Ruby programs, ran
+data jobs and LLM pipelines, and attacked the prover, the runtime and the
+parser — learning only from the website. Every finding below was reproduced,
+fixed, and pinned by a regression test; the whole repository (1,405 `.cell`
+files) was re-run through check / verify / test after every batch.
+
+### Soundness and atomicity
+
+- A handler with persistent slots is **one SQLite transaction**: a process
+  killed mid-handler (`kill -9`) leaves nothing of it on disk (writes used to
+  commit one statement at a time). `every` / `after` ticks are rolled back
+  when they raise, like handlers.
+- Slots give back exactly what they stored: an Int beyond 64 bits stayed a
+  String; records keep their field order; `.keys` / `.values` are sorted.
+- Slot value types are enforced on every write (`Map<String, Int>` refuses a
+  String, `1.5` or `1.0`; `Map<String, Pay>` refuses a plain map).
+- List slots: `rows[i] = v`, `rows[i].f = v`, `rows.delete(i)` used to be
+  silently dropped.
+- The prover no longer issues false ✓: a `require` in a loop that may run
+  zero times, bindings that shadow a narrowed name, interval overflow past
+  2^53, termination without a lower-bound base case, cost bounds that skipped
+  `every` blocks and `delegate`, liveness that assumed guards pass (now said).
+- The prover proves more: a `require` counts for the writes of its own block,
+  early exits (`if n >= 1 { return … }`), `require a + b <= K` on the written
+  expression, one slot's invariant chained through a local, `size` /
+  `len(slot)` invariants, deletes against value invariants. Every ⚠ says why.
+- `request` is never an HTTP endpoint (a GET could run a POST route);
+  path segments are percent-decoded; CORS on every response.
+- A bare call to a name two cells define is a check error (it resolved at
+  random); `*` edges no longer fire from states a program stopped declaring.
+
+### Language and builtins
+
+- `format(fmt, …)` (printf subset), `div_round` (HALF_UP), `floor_div`,
+  `mod`, `divmod`, `to_fixed`, exact `round(x, d)`; dates: `parse_date`,
+  `add_days`, `add_months`, `days_between`, `months_between`,
+  `days_in_month`; `chr`, `ord`; `stdev`/`variance` are sample statistics
+  (`pstdev`/`pvariance` population); `sin cos tan atan atan2`, `regex_*`,
+  `read_stdin`, `write_str` in interpreted handlers too.
+- HTTP client: `http_get/post/put/patch/delete` with a default 30 s timeout,
+  `headers`, and `{error, kind, status, body}` on failure (the upstream body is
+  kept); mockable in tests.
+- `think_json` raises kind `json` on a non-object reply; mocked `think`
+  costs tokens (budgets testable offline); `trace()` survives requests under
+  `soma serve` and records the system prompt.
+- Variants round-trip through `to_json` / `from_json`; `soma run` and
+  `soma serve` answer valid JSON (NaN/inf → null).
+- Literals `1_000_000`, `0xFF`, `0b101`, `"\u{1F600}"`; negative range
+  patterns; bare state names; keyword field names (`j.state = …`).
+- `|> map`, `|> filter` and `xs[i]` are linear (a 20k-row job went from
+  104 s to 0.1 s).
+
+### Toolchain
+
+- `soma check` catches what used to fail at run time: native-only
+  primitives outside `[native]`, what the native codegen refuses (buffer
+  re-binding, list returns, stepped ranges, literal `/ 0`), `break` outside
+  a loop, `transition()` arity, values thrown away (`let j = 1 2`), rules
+  outside a test cell, empty test cells, writes to a loop copy (warning),
+  `emit` with no listener (warning). 10 000 nested blocks no longer crash it.
+- `soma verify --strict` repeats the ⚠ lines by the verdict and always ends
+  with one verdict line; orphan `[verify]` properties fail.
+- `soma test --json` records carry rule, message, left/right, raised;
+  `assert_fails … matching` matches the kind too; `mock` works for any
+  handler, `Cell.handler`, `now`, and builtins such as `http_post`.
+- `soma serve`: `--no-schedule`, an `llm:` start-up line, endpoints listed,
+  whitespace-padded JSON bodies accepted, stored-data audit at start-up
+  (undeclared states, invariant violations, re-typed values, renamed slots)
+  — also under `soma run`.
+- `soma run --fresh`; `.soma_data/` lives beside the program; exact big-Int
+  CLI arguments. `soma fix` repairs `;`, `=>` arms, `-> T` on handlers,
+  `null`/`True`. `soma describe --json` lists sum types.
+
+### Site and docs
+
+- New `docs/operations.md` (failure modes, statuses, exit codes, migration
+  guide, environment variables); serving/guarantees/reference corrected
+  against the binary; builtins regenerated from the compiler; the landing
+  page links status, guarantees and serving, and states what verify proves.
+- The `soma init` starter and the corpus exemplars pass `--strict`.
+
 ## 2.4.0 — 2026-09-18
 
 An audit release: the verifier and the runtime were attacked with adversarial
