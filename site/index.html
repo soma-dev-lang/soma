@@ -341,8 +341,8 @@ eventually = ["filled", "rejected"]</code></pre>
       <p>Nodes can join through the signal bus. Replication is currently broadcast-based and should be treated as eventual, not consensus-backed.</p>
     </div>
     <div class="card">
-      <h3><span class="tag limited">limited</span>Formal claims</h3>
-      <p>Verification applies to the declared state-machine abstraction, memory-budget model, and syntactic refinement checks. It does not prove arbitrary handler semantics or LLM output quality.</p>
+      <h3><span class="tag partial">scoped</span>Formal claims</h3>
+      <p>What <code>soma verify</code> proves, it proves for every input: state-machine reachability, liveness and temporal properties; memory invariants by induction over every write (literal, clamped, <code>require</code>-narrowed or read-modify-write); termination of structurally recursive handlers; token cost bounds across sibling calls and scheduled blocks. What it cannot prove it reports as runtime-checked, and <code>--strict</code> turns that into a failure. Out of scope: arbitrary handler semantics, cross-cell properties, and what an LLM answers — those are tested, and validated at runtime. The exact table: <a href="/docs/guarantees.md">docs/guarantees.md</a>.</p>
     </div>
   </div>
 </section>
