@@ -382,3 +382,21 @@ Six false proofs, two data-corruption bugs, one data-loss bug, four security iss
 - [ ] Deep (100k) nesting in `to_json` overflows the stack; nested-map construction is quadratic.
 - [ ] `from_json` of a String body can still build variants a type does not declare.
 
+## Cycle 14 (2026-09-18) — an expense pipeline ported from Python, and an approval agent
+
+8/10: byte-identical output to Python on 5 datasets, 51/51 tests, the per-employee-month
+limit PROVEN (7 mutants all rejected), kill -9 and 50-way concurrency exact.
+
+### Fixed
+- [x] `"^[0-9]{4}"`: a `{4}` / `{2,3}` segment is literal text (check passed, run raised "undefined variable: 4").
+- [x] A `while` loop with no think() in it no longer makes a `cost` bound advisory.
+- [x] `transition(id, "draft")` into a state no declared edge enters (the initial state) is a check error — verify had ✓ refinement and every call failed.
+- [x] An imported file's test cells no longer run (with the importer's file and lines) under the importer's `soma test`.
+- [x] `use helper` imports helper.cell beside the program (it said "package not installed").
+- [x] `read_csv` is RFC 4180 (quoted commas, `""`, multi-line cells, BOM); quoted cells and `007` stay Strings; `map("raw", true)` keeps text; `write_csv` quotes newlines.
+- [x] Between cycles: a variant a sum type does not declare cannot enter a slot of that type; `response()` with a non-HTTP status is kind `response` (500).
+
+### Open
+- [ ] Updating a list nested in a local record (`g[0].rows = push(g[0].rows, i)`) is quadratic.
+- [ ] No HALF_EVEN rounding builtin; no JSON-schema helper for think_json.
+

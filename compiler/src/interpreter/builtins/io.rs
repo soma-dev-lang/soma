@@ -167,29 +167,36 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "read_csv" => {
             if let Some(Value::String(path)) = args.first() {
+                // read_csv(path, map("raw", true)): every cell stays text
+                let raw = matches!(args.get(1), Some(Value::Map(m)) if matches!(m.get("raw"), Some(Value::Bool(true))));
                 match std::fs::read_to_string(path) {
                     Ok(content) => {
-                        let mut rows = Vec::new();
-                        let mut lines = content.lines();
-                        let headers: Vec<String> = if let Some(header_line) = lines.next() {
-                            header_line.split(',').map(|s| s.trim().to_string()).collect()
-                        } else {
-                            return Some(Ok(Value::List(vec![])));
+                        let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+                        let mut records = parse_csv(content).into_iter();
+                        let headers: Vec<String> = match records.next() {
+                            Some(h) => h.into_iter().map(|(t, _)| t.trim().to_string()).collect(),
+                            None => return Some(Ok(Value::List(vec![]))),
                         };
-                        for line in lines {
-                            if line.trim().is_empty() { continue; }
-                            let values: Vec<&str> = line.split(',').collect();
+                        let mut rows = Vec::new();
+                        for rec in records {
+                            if rec.len() == 1 && rec[0].0.trim().is_empty() && !rec[0].1 { continue; }
                             let mut entries = IndexMap::new();
                             for (i, header) in headers.iter().enumerate() {
-                                let val = values.get(i).map(|s| s.trim()).unwrap_or("");
-                                // Try to parse as number
-                                if let Ok(n) = val.parse::<i64>() {
-                                    entries.insert(header.clone(), Value::Int(SomaInt::from_i64(n)));
-                                } else if let Ok(n) = val.parse::<f64>() {
-                                    entries.insert(header.clone(), Value::Float(n));
+                                let (text, quoted) = rec.get(i).cloned().unwrap_or((String::new(), false));
+                                let val = if quoted { text.as_str() } else { text.trim() };
+                                // a quoted cell is text; so is `007` (an id,
+                                // not seven); raw mode keeps everything text
+                                let leading_zero = val.len() > 1 && val.starts_with('0') && val.as_bytes()[1].is_ascii_digit();
+                                let typed = if raw || quoted || leading_zero {
+                                    Value::String(val.to_string())
+                                } else if let Ok(n) = val.parse::<i64>() {
+                                    Value::Int(SomaInt::from_i64(n))
+                                } else if let Some(n) = val.parse::<f64>().ok().filter(|f| f.is_finite()) {
+                                    Value::Float(n)
                                 } else {
-                                    entries.insert(header.clone(), Value::String(val.to_string()));
-                                }
+                                    Value::String(val.to_string())
+                                };
+                                entries.insert(header.clone(), typed);
                             }
                             rows.push(Value::Map(entries));
                         }
@@ -223,7 +230,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                     entries.get(*h)
                                         .map(|v| match v {
                                             Value::String(s) => {
-                                                if s.contains(',') || s.contains('"') {
+                                                if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
                                                     format!("\"{}\"", s.replace('"', "\"\""))
                                                 } else {
                                                     s.clone()
@@ -480,4 +487,46 @@ fn call_llm(prompt: &str, extra_args: &[Value]) -> Result<Value, RuntimeError> {
         }
         Err(e) => Err(RuntimeError::TypeError(format!("think() HTTP error: {}", e))),
     }
+}
+
+
+/// RFC 4180 records: `"a,b"` is one field, `""` inside quotes is a quote,
+/// a quoted field may span lines; CRLF or LF. Each field carries whether it
+/// was quoted.
+fn parse_csv(text: &str) -> Vec<Vec<(String, bool)>> {
+    let mut records = Vec::new();
+    let mut rec: Vec<(String, bool)> = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut in_quotes = false;
+    let mut chars = text.chars().peekable();
+    let mut any = false;
+    while let Some(c) = chars.next() {
+        any = true;
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') { field.push('"'); chars.next(); } else { in_quotes = false; }
+            } else {
+                field.push(c);
+            }
+            continue;
+        }
+        match c {
+            '"' if field.trim().is_empty() && !quoted => { field.clear(); quoted = true; in_quotes = true; }
+            ',' => { rec.push((std::mem::take(&mut field), quoted)); quoted = false; }
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' => {
+                rec.push((std::mem::take(&mut field), quoted));
+                quoted = false;
+                records.push(std::mem::take(&mut rec));
+                any = false;
+            }
+            _ => field.push(c),
+        }
+    }
+    if any || !field.is_empty() || !rec.is_empty() {
+        rec.push((field, quoted));
+        records.push(rec);
+    }
+    records
 }

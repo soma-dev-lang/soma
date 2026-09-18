@@ -1463,3 +1463,32 @@ cell G {
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("fails `soma check`"), "{out}");
 }
+
+/// Cycle 14: `{4}` in a string is literal text; a counting `while` does not
+/// make a cost bound advisory; a transition into a state no edge enters is
+/// a check error; RFC 4180 read_csv; `use helper` finds helper.cell.
+#[test]
+fn cycle14_findings() {
+    let d = dir("cycle14");
+    std::fs::write(d.join("i.cell"), "cell R { on main() { let s = \"a{4}b{2,3}\"  return s } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "i.cell", "main"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("a{4}b{2,3}"), "{out}");
+
+    std::fs::write(d.join("c.cell"), "cell agent A {\n cost { tokens: 100 }\n on _count(n: Int) { let i = 0  while i < n { i = i + 1 }  return i }\n on ask(n: Int) { let k = _count(n)  return think(\"hi {k}\", map(\"max_tokens\", 100)) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "c.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("bound proven"), "{out}");
+
+    std::fs::write(d.join("t.cell"), "cell W {\n state s { initial: draft  draft -> done }\n on create(id: String) { transition(id, \"draft\") }\n on finish(id: String) { transition(id, \"done\") }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "t.cell"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("no declared edge of cell 'W' enters 'draft'"), "{out}");
+
+    std::fs::write(d.join("t.csv"), "id,name,amt\n007,\"Smith, J\",1.00\n").unwrap();
+    std::fs::write(d.join("helper.cell"), "cell H { on rows() { return read_csv(\"t.csv\") } }\n").unwrap();
+    std::fs::write(d.join("main.cell"), "use helper\ncell M { on go() { let r = rows()  return \"{r[0].id}|{r[0].name}\" } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "main.cell", "go"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("007|Smith, J"), "{out}");
+}

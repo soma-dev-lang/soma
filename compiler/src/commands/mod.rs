@@ -301,7 +301,11 @@ fn resolve_pkg_path(base_dir: &Path, pkg_name: &str) -> PathBuf {
     for c in &candidates {
         if c.exists() { return c.clone(); }
     }
-    eprintln!("error: package '{}' not installed (run `soma install`)", pkg_name);
+    // `use helper` with helper.cell beside the program: a local file
+    let sibling = base_dir.join(format!("{}.cell", pkg_name));
+    if sibling.exists() { return sibling; }
+    eprintln!("error: `use {}` — no file {}.cell beside the program, no lib/{}.cell (`use lib::{}`), and no installed package '{}' (`soma install`)",
+        pkg_name, pkg_name, pkg_name, pkg_name, pkg_name);
     fatal_exit();
 }
 
@@ -317,6 +321,9 @@ fn import_file(program: &mut ast::Program, path: &PathBuf) {
     let tokens = lex_with_location(&source, Some(&file_str));
     let mut imported = parse_with_location(tokens, Some(&source), Some(&file_str));
     resolve_imports(&mut imported, path);
+    // an imported file's own test cells are ITS tests (`soma test lib/m.cell`):
+    // run from the importer they reported the importer's file and lines
+    imported.cells.retain(|c| !matches!(c.node.kind, ast::CellKind::Test));
     program.cells.extend(imported.cells);
 }
 

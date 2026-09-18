@@ -95,13 +95,14 @@ impl<'a> CostWalk<'a> {
             }
             Statement::While { condition, body, bound, .. } => {
                 self.visit_expr(&condition.node, handler_name);
-                // Unbounded while → mark advisory.
-                if bound.is_none() {
-                    self.unbounded_sites.push(format!("{}::while-loop", handler_name));
-                }
                 let mult = bound.unwrap_or(1) as i64;
                 let mut inner = self.child();
                 for s in body { inner.visit_stmt(&s.node, handler_name); }
+                // an unbounded while only matters when its body spends (a
+                // counting loop made every cost bound "advisory")
+                if bound.is_none() && inner.spends() {
+                    self.unbounded_sites.push(format!("{}::while-loop", handler_name));
+                }
                 self.tokens += inner.tokens.saturating_mul(mult);
                 // Latency in a loop is sequential — multiply.
                 self.latency_ms += inner.latency_ms.saturating_mul(mult);

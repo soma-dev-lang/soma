@@ -629,6 +629,10 @@ impl<'a> Walker<'a> {
     /// would treat it as an expression (and so skip past it), false if
     /// it renders literally.
     fn check_segment(&mut self, expr_str: &str, span: Span) -> bool {
+        // `{4}` / `{2,3}`: a regex quantifier, literal text at run time
+        if !expr_str.is_empty() && expr_str.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ') {
+            return false;
+        }
         // Fast path mirror: a bare word is looked up in env directly.
         if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
             let starts_like_ident = expr_str

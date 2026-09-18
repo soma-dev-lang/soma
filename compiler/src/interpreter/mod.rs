@@ -3140,7 +3140,10 @@ impl Interpreter {
                     let expr_str = &s[pos + 1..pos + 1 + end];
 
                     // Skip empty or HTML-like content (class names, CSS)
-                    if expr_str.is_empty() || expr_str.contains(':') || expr_str.contains(';') {
+                    // `{4}` / `{2,3}` — a regex quantifier, not a value: literal
+                    // text (it raised "undefined variable: 4")
+                    let quantifier = expr_str.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ');
+                    if expr_str.is_empty() || expr_str.contains(':') || expr_str.contains(';') || quantifier {
                         result.push('{');
                         pos += 1;
                         continue;

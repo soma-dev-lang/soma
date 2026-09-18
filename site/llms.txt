@@ -300,7 +300,12 @@ source, `file:line`, left/right, and the fields a value really has when
 - Money: Ints in cents (any size, exact); `div_round(n, d)` is HALF_UP
   division (`div_round(cents * bps, 120000)` = BigDecimal interest at scale 2);
   `format("%10.2f", …)` only for display, `money = "{idiv(c, 100)}.{…}"` for exact text.
-- Data: `read_csv(path)` → List<Map> (auto-typed cells); `agg`, `sort_by`,
+- Data: `read_csv(path)` → List<Map>: RFC 4180 (quoted `"a, b"`, `""`, multi-line
+  cells); unquoted cells auto-typed (`1.00` → 1.0), quoted cells and `007` stay
+  Strings; `read_csv(path, map("raw", true))` keeps all text (exact money).
+  `use helper` imports helper.cell beside the program, `use lib::m`
+  lib/m.cell; imported handlers are callable by name; an imported file's
+  test cells run only under `soma test lib/m.cell`. `agg`, `sort_by`,
   `top`, `median`, `pstdev`; `stdev` / `variance` are SAMPLE (n − 1) like
   Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`,
   `xs[i]`, `len(xs)`, `nth(xs, i)`, `xs.len` and a List slot's `rows[i]` /

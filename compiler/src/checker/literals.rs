@@ -29,6 +29,15 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
         }
         _ => None,
     });
+    // states some declared edge enters (`* -> x` included)
+    let entered: std::collections::HashSet<String> = cell.sections.iter().flat_map(|s| match &s.node {
+        Section::State(sm) => sm.transitions.iter().map(|t| t.node.to.clone()).collect::<Vec<_>>(),
+        _ => Vec::new(),
+    }).collect();
+    let initial: Option<String> = cell.sections.iter().find_map(|s| match &s.node {
+        Section::State(sm) => Some(sm.initial.clone()),
+        _ => None,
+    });
     // handler name → declared parameter types
     let params: std::collections::HashMap<String, Vec<String>> = cell.sections.iter().filter_map(|s| match &s.node {
         Section::OnSignal(h) => Some((h.signal_name.clone(), h.params.iter().map(|p| match &p.ty.node {
@@ -58,6 +67,19 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
                 if name == "transition" {
                     if let (Some(states), Some(Spanned { node: Expr::Literal(Literal::String(target)), .. })) = (&states, args.get(1)) {
                         // "{g}_x" is interpolated at runtime: a dynamic target, not this text
+                        // a declared state no edge ENTERS (the initial state,
+                        // typically): the transition fails on every call
+                        if states.contains(target) && !target.contains('{') && !entered.contains(target) {
+                            out.push(LiteralIssue {
+                                kind: "unknown_transition_target",
+                                message: format!(
+                                    "transition() to \"{}\" in {} — no declared edge of cell '{}' enters '{}'{}, so this raises invalid_transition every time: declare an edge into it, or drop the call",
+                                    target, owner, cell.name, target,
+                                    if initial.as_deref() == Some(target.as_str()) { " (it is the initial state: a fresh id is already there)" } else { "" }
+                                ),
+                                span,
+                            });
+                        }
                         if !states.contains(target) && !target.contains('{') {
                             let near = crate::checker::names::suggest(target, states.iter())
                                 .map(|s| format!(" (did you mean \"{}\"?)", s)).unwrap_or_default();
