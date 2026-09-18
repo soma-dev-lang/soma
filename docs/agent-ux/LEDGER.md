@@ -276,3 +276,21 @@ Scores: TypeScript Kanban port green in 4 invocations, 38/38, WIP invariant prov
 - [ ] `cost { }` is a static bound on output tokens; `set_budget` is the runtime cap (documented). A `Buf` cannot cross handler boundaries (documented).
 - [ ] Cross-cell invariants (`Orders.cancelled ⇒ Warehouse.released`) are tested, not proven.
 - [ ] `{k: v}` map literal, optional parameter types (`String?`) — language changes, not taken.
+
+## Cycle 9 (2026-09-18) — maintenance, HTTP client, Python port, fuzzing (regression replay cut short by a rate limit)
+
+Scores: day-two migration of `warehouse_reservations` (added fields, renamed state, sweeper, report) done live on the served database, 6/10; two services over HTTP 4/10 (server side 7, client side 2); Python `Library` port green at invocation 2, values identical to CPython, 7/10; front-end fuzzing: one compiler crash (10 000 nested `if` → stack overflow, SIGABRT) and nine wrong acceptances.
+
+### Fixed
+- [x] **Crash**: nested blocks share the 400-level depth budget with expressions (an error instead of an abort); an error echoes a 120-column window of the line, control characters escaped.
+- [x] **Lexer**: `1_000_000`, `0xFF`, `0b101`, `0o17` (they lexed as `1` + identifier `_000`); `12abc` is an invalid number; `\u{1F600}`, `\r`, `\0` escapes (`\u{…}` reached the interpolator); a value on its own in the middle of a block is a check error (`let j = 1 2`).
+- [x] **Check**: `break`/`continue` outside a loop; `transition()` arity; `!` needs a Bool (`!0` was `true`); negative range patterns `-10..-2` (and a `-1` pattern after an arm is not a subtraction); a bare call ambiguous between cells stays an error; type messages show Soma values, never a Rust dump.
+- [x] **HTTP client**: one implementation for `http_get/post/put/patch/delete`; default timeout 30 s and `timeout` honoured on every method (POST ignored it and waited 40 s); non-2xx returns `{error, kind: http_status, status, body}` with the upstream body; `timeout` / `refused` / `network` kinds; `headers`; unknown options refused; `mock http_post …` scripts the builtin in tests (it used to be accepted and hit the network) and an unscripted call prints a note.
+- [x] **Migration**: `*` edges no longer fire from states the program does not declare (the audit said "no transition" while a sweeper could cancel them); the audit also reports values of another type than declared and slot tables no slot declares (renamed slots), in `soma run` too; operations.md has a migration section.
+- [x] **Prover**: a require counts for the writes of its own block and nested blocks (a conditional require dominating the write now proves it; an early exit never narrows its own branch); `size` / `len(slot)` invariants are provable (`require len(rows) < K` before the one adding write, outside loops; a set on a key known to exist does not grow); reasons name only numeric parameters and say what a size bound needs.
+- [x] Python habits: UFCS on slots (`rows.any(…)`), `() + 1` names the `?? 0` fix, a write to a loop copy warns; exact CLI Ints beyond 64 bits; `warehouse_reservations` is `--strict` clean.
+
+### Open
+- [ ] Outbound HTTP holds the process-wide handler lock (documented; timeouts bound it).
+- [ ] No migration command or schema version (a documented recipe instead).
+- [ ] `let match = 1` parses then fails; `cell test` without `rules` is accepted.

@@ -164,10 +164,16 @@ floor_div(-7, 2) == -4   mod(-7, 2) == 1   // Python's // and %
 ```
 A `class` with private fields is a `cell` with `memory` slots: one instance,
 no `new`, no `this` — `this.hits.get(u)` is `hits.get(u)`; `constructor(a, b)`
-is a `configure(a, b)` handler writing a `config` slot. `soma run` persists
-slots in `.soma_data/` between runs (`soma run --fresh` starts empty; a `main`
-that creates records is otherwise a one-shot); `soma test` starts empty. `soma check`
-names the Soma form for each of these when you get it wrong.
+is a `configure(a, b)` handler writing a `config` slot; subclasses are the
+variants of a `cell type`, overridden methods one exhaustive `match` each.
+A script is `on main() { print(…) }` run with `soma run --fresh app.cell main`:
+`soma run` prints the handler's returned value (return nothing from main),
+and slots persist in `.soma_data/` between runs unless `--fresh`; `soma test`
+starts empty. `counts[k] += 1` on a missing key is `() + 1` — write
+`(counts.get(k) ?? 0) + 1`; `for r in rows { r.v = 2 }` changes a copy
+(check warns). Number literals: `1_000_000`, `0xFF`, `0b101`; strings:
+`\n \t \r \" \\ \u{1F600}`. `soma check` names the Soma form for each of
+these when you get it wrong.
 
 ## Tests
 
@@ -248,6 +254,18 @@ source, `file:line`, left/right, and the fields a value really has when
   and the emitter's rollback takes the listeners' writes with it. Only across
   processes (the `[peers]` bus) is an emitted event an effect that is not
   rolled back. `soma check` warns when nobody handles the event.
+- `invariant len(rows) <= 500` is proven when the handler's ONE write that
+  can add an entry (a `push`, or a `set` of a key not known to exist) comes
+  after `require len(rows) < 500` and is not in a loop; a `set` after
+  `require rows.get(k) != ()` (or in the `else` of `if rows.get(k) == ()`)
+  cannot grow the slot.
+- A `require` counts for the writes of its own block and the blocks nested
+  in it — `if ok { require n < 3 …  m.set(k, n + 1) }` is proven; a require
+  inside a loop body narrows that iteration's `let` locals only.
+- HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
+  "headers", map(...)))` never raise; non-2xx is `{error, kind, status, body}`
+  (kind `http_status` | `timeout` | `refused` | `network`); default timeout
+  30 s; `mock http_post …` in tests.
 - `verify --strict` bounds a write only from numbers it can bound: a number
   read out of a record in a `Map<String, Map>` slot has no interval — keep
   the guarded number in its own `Map<String, Int>` slot with an invariant

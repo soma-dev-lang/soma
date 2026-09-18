@@ -566,8 +566,10 @@ sse("trade", "update")                // SSE event stream
 ## HTTP client, WebSocket, signal bus
 
 ```soma
-let resp = http_get(url)                  // GET; JSON bodies auto-parse to Map/List
-let resp = http_post(url, body)           // POST as application/json; JSON auto-parsed
+let resp = http_get(url, map("timeout", 2000))           // GET; JSON bodies auto-parse to Map/List
+let resp = http_post(url, body, map("timeout", 2000))    // a Map/List body goes as JSON
+// also http_put / http_patch (url, body, opts?) and http_delete(url, opts?)
+// opts: timeout (ms, default 30000), max_bytes, headers: map("Authorization", "Bearer …")
 let ws = ws_connect("ws://host:9001")     // open WebSocket (send-only) → {status, url}
 ws_send(message)                          // send text on the open WebSocket
 subscribe("ws://host:9001/stream")        // read-only WS: incoming {"event", "data"} → on event(data)
@@ -575,7 +577,14 @@ link("host:8082")                          // TCP signal-bus link: emits reach p
 publish("stream-name", data)              // push to SSE subscribers on a runtime-chosen stream
 ```
 
-On error, `http_get`/`http_post` return `map("error", message)` instead of throwing — check `resp.error`.
+The http builtins never raise. A 2xx answer is its body; anything else is
+`{error, kind, status, body}`: kind `http_status` (with the upstream status
+and its body, parsed when JSON), `timeout`, `refused` or `network`. Branch on
+`resp.kind` / `resp.status`, not on the text. Under `soma serve` the call
+holds the handler lock for its whole duration (handlers are serialized):
+keep timeouts short. In tests, `mock http_post map(...)` scripts the next
+call, `mock http_get error "timeout: slow"` a failure (`status_404: …`
+gives status 404); an unscripted real call prints a note.
 
 ## Events: `emit`
 

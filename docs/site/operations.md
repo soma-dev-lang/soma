@@ -16,8 +16,9 @@ program has no such route).
 | Port already answering, `soma check` errors, an unreadable file | `soma serve` refuses to start and exits 1 — it never serves a program that does not check (`--no-check` overrides) |
 | Out of memory, SIGKILL, `kill -9`, SIGTERM | The process dies at once (no draining: an in-flight client gets an empty reply); committed handlers are in `.soma_data/soma.db` (SQLite); the handler in flight is lost as a whole — its writes sat in one uncommitted SQLite transaction |
 | Disk full while writing | Expected (not exercised): the SQLite write fails, the request is rolled back and answered 500 |
+| A slow upstream (`http_post` to a service that hangs) | The handler holds the process-wide lock for the whole call: every other request waits. Every http builtin has a timeout (default 30 s; pass `map("timeout", ms)`) — keep it short; the upstream is not cancelled |
 | A slow handler (a quadratic loop, a huge `to_json`, a loop of 100 000 `slot.set`) | Handlers run one at a time: every other request and every scheduler tick WAITS for it — there is no per-request time limit. `soma verify` proves termination, not speed. A persistent slot write costs about 1 ms (each is an SQLite statement): a 100 000-key rebuild in one handler holds the process for ~2 minutes. Keep handlers short; batch bulk loads outside the request path; put a proxy timeout in front |
-| The program changed and `.soma_data/` is older | A renamed slot is a new empty slot; a slot whose TYPE changed (List → Map) reads as empty while the old rows stay in the database; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares is stuck (`valid_transitions(id) == []`). `soma serve` audits the database at start-up and prints one `warning: stored data: …` line per problem (instances in undeclared states, values an invariant refuses); a re-typed slot is not detected. Migrate the data or delete `.soma_data/` |
+| The program changed and `.soma_data/` is older | A renamed slot is a new empty slot (the old rows stay in the file); a slot whose value TYPE changed gives back the old values with their old type; an invariant added later is not checked against stored values (verify proves it for future writes only); a state-machine instance stored in a state the new machine no longer declares takes no transition, `*` edges included. `soma serve` and `soma run` audit the database at start-up and print one `warning: stored data: …` line per problem: instances in undeclared states, values an invariant refuses, values of another type than declared, slot data no slot declares any more (renamed/removed). Migrate (below) or delete `.soma_data/` |
 
 ## Addresses and ports
 
@@ -64,6 +65,29 @@ A handler that returns normally answers 200 with its value as JSON (`()` is `nul
 - Handlers run one at a time (a process-wide lock): correct under contention, no parallelism inside one process. Throughput is not a goal.
 - `forall` properties in tests walk every value up to 20 000, then sample with a fixed seed.
 - One process, one SQLite file (`.soma_data/soma.db`, created beside the program); no replication unless a `scale` section and a bus join are configured (experimental).
+
+## Migrating stored data
+
+There is no migration command: a migration is a handler, run once with
+`soma run` against the same `.soma_data/` (it shares the database with a
+running `soma serve`, and like every handler it is one transaction).
+
+- **Added slot / field**: old rows read `()`. Backfill in a one-shot handler
+  (`for id in skus.keys { if prio.get(id) == () { prio.set(id, 2) } }`), or
+  default at read time (`prio.get(id) ?? 2`).
+- **Renamed state**: run a copy of the program that still declares the old
+  state and an edge out of it (`picked -> packed`), with a `_migrate` handler
+  calling `transition(id, "packed")` for each stuck id; then serve the new
+  program. `soma run migrate.cell _migrate`.
+- **Renamed slot**: keep the old slot declared next to the new one for one
+  release, copy in `_migrate`, then drop it. The audit names the orphaned
+  rows until then.
+- **Re-typed slot**: read, convert, `set` — or rename the slot.
+- **Tightened invariant**: stored values that violate it are served but can
+  not be written back; fix them in `_migrate` or keep the old bound.
+
+Make `_migrate` idempotent (check before writing) and back up
+`.soma_data/soma.db` first.
 
 ## Environment variables
 
