@@ -527,10 +527,21 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
         std::process::exit(1);
     }
     if all_results.is_empty() {
+        // Nothing to prove is not a proof: say so, but still end with the
+        // one verdict line every caller greps for. Properties in soma.toml
+        // about a machine that does not exist are an error.
+        let orphan_props = verify_config.as_ref().map(|cfg| {
+            !cfg.eventually.is_empty() || !cfg.never.is_empty() || !cfg.always.is_empty()
+                || !cfg.after.is_empty() || !cfg.before.is_empty()
+        }).unwrap_or(false);
         if json {
-            println!("{{\"state_machines\":[], \"temporal\":[], \"passed\": true}}");
+            println!("{{\"state_machines\":[], \"temporal\":[], \"passed\": true, \"note\": \"no state machine: nothing beyond soma check was proven\"}}");
         } else {
-            eprintln!("No state machines found.");
+            eprintln!("No state machine in this program: nothing to prove beyond `soma check` (invariants and lifecycles are what verify proves).");
+            if orphan_props {
+                eprintln!("note: the soma.toml beside this file declares [verify] properties; none applies here (no state machine)");
+            }
+            eprintln!("VERIFY OK (vacuous — no state machine)");
         }
         return;
     }
@@ -636,7 +647,7 @@ fn cmd_verify(files: &[PathBuf], json: bool) {
         if has_failures {
             let mut why: Vec<String> = Vec::new();
             if check_failed { why.push("soma check failed".to_string()); }
-            if structural > 0 { why.push(format!("{} machine/invariant check(s) failed", structural)); }
+            if structural > 0 { why.push(format!("{} state machine{} with failed checks (see ✗ lines)", structural, if structural == 1 { "" } else { "s" })); }
             if temporal > 0 { why.push(format!("{} temporal propert{} failed", temporal, if temporal == 1 { "y" } else { "ies" })); }
             if !unknown_states.is_empty() { why.push(format!("{} propert{} on unknown states", unknown_states.len(), if unknown_states.len() == 1 { "y" } else { "ies" })); }
             eprintln!("VERIFY FAILED — {}", why.join("; "));

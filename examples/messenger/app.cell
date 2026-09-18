@@ -699,7 +699,7 @@ cell Messenger {
     //                              HTTP ROUTES
     // ════════════════════════════════════════════════════════════════════
 
-    on request(method: String, path: String, body: String) {
+    on request(method: String, path: String, body: Map) {
         // ── POST routes ────────────────────────────────────────────────
         if method == "POST" {
             if path == "/register" {

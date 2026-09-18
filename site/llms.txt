@@ -205,13 +205,24 @@ a server; `soma serve app.cell -p 8080` serves it. Static files: `static/`.
 `/<handler>/<arg>/<arg>` (that is how forms post to `/add`). A path that
 `request` matches explicitly goes to `request`; prefix handlers that must not
 be reachable over HTTP with `_` (`on _debit(…)`). `soma check` warns when a
-handler and a route share a name.
+handler and a route share a name. `body: String` is the raw text
+(`from_json(body)`); `body: Map` is the parsed JSON (a non-JSON body is a 400
+before the handler runs) — the same under serve, test and run. A raised error
+answers with its kind: not_found → 404, guard_failed → 403, invalid_transition
+→ 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
+`{"error": message, "kind": tag}`. `serve` binds 127.0.0.1 (`--host 0.0.0.0`
+to expose), refuses a taken port and a program that fails check, and survives a
+handler's runaway recursion (500 `stack_overflow`; the process stays up).
 
 ## Verification properties
 
-`soma verify` always proves: reachability, deadlock-freedom, liveness (every
-state can reach a terminal), handler termination, and refinement (each handler's
-`transition()` targets are declared edges). State more in a `soma.toml` beside
+`soma verify` proves, for every cell with a state machine: reachability,
+deadlock-freedom, liveness (every state can reach a terminal), refinement (each
+handler's `transition()` targets are declared edges), and termination of every
+handler whose recursion has a decreasing argument — a handler it cannot prove
+(`while true`, `rec(n + 1)`) is a ⚠ warning, not a proof, and the runtime
+depth guard is what stops it. `property … forall n in a..b` in tests walks
+EVERY value up to 20,000, samples with a fixed seed beyond that (not a proof). State more in a `soma.toml` beside
 the program (`[package]` is optional; an unknown key is an error):
 
 ```toml

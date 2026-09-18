@@ -98,6 +98,23 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }
         })
         .collect();
+    // The declared type of `request`'s body parameter decides its shape:
+    // `body: String` gets the raw text (parse it with from_json), a Map /
+    // List / Any / untyped parameter gets the parsed JSON. Before, JSON
+    // arrived parsed whatever the declaration said, so `body == ""` on a
+    // `String` parameter was a type error under serve only.
+    let request_body_type: String = cell.node.sections.iter().find_map(|s| {
+        if let ast::Section::OnSignal(ref on) = s.node {
+            if on.signal_name == "request" {
+                return on.params.get(2).map(|p| match &p.ty.node {
+                    ast::TypeExpr::Simple(t) => t.clone(),
+                    ast::TypeExpr::Generic { name, .. } => name.clone(),
+                    _ => "Any".to_string(),
+                });
+            }
+        }
+        None
+    }).unwrap_or_else(|| "Any".to_string());
 
     let mut storage_slots = std::collections::HashMap::new();
     for prog_cell in &program.cells {
@@ -232,6 +249,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     let storage_slots = std::sync::Arc::new(storage_slots);
     let handler_names = std::sync::Arc::new(handler_names);
     let handler_params = std::sync::Arc::new(handler_params);
+    let request_body_type = std::sync::Arc::new(request_body_type);
     let cell_name = std::sync::Arc::new(cell_name);
     let base_dir = std::sync::Arc::new(
         path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf()
@@ -890,6 +908,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let handler_names = handler_names.clone();
         let request_routes = request_routes.clone();
         let handler_params = handler_params.clone();
+        let request_body_type = request_body_type.clone();
         let cell_name = cell_name.clone();
         let base_dir = base_dir.clone();
         let event_bus = event_bus.clone();
@@ -1119,8 +1138,23 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         })
                         .collect()
                 };
-                let body_arg = body_value.clone()
-                    .unwrap_or(interpreter::Value::String(body.clone()));
+                let body_arg = match request_body_type.as_str() {
+                    "String" => interpreter::Value::String(body.clone()),
+                    "Map" | "List" => match body_value.clone() {
+                        Some(v) if matches!(v, interpreter::Value::Map(_) | interpreter::Value::List(_)) => v,
+                        _ if body.trim().is_empty() => interpreter::Value::Map(Default::default()),
+                        _ => {
+                            let msg = format!("request body must be JSON (the `request` handler declares body: {})", request_body_type);
+                            let resp = tiny_http::Response::from_string(
+                                serde_json::json!({ "error": msg, "kind": "json" }).to_string())
+                                .with_status_code(400)
+                                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+                            let _ = request.respond(resp);
+                            return;
+                        }
+                    },
+                    _ => body_value.clone().unwrap_or(interpreter::Value::String(body.clone())),
+                };
 
                 let mut req_args = vec![
                     interpreter::Value::String(method.clone()),

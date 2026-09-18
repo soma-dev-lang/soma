@@ -17,17 +17,10 @@ cell SemaphoreApp {
         events: Map<String, String> [persistent, consistent]
     }
 
-    state phase_main {
-        initial: green_ns
-        green_ns -> yellow_ns
-        yellow_ns -> green_ew
-        green_ew -> yellow_ew
-        yellow_ew -> green_ns
-        * -> emergency_red
-        emergency_red -> green_ns
-    }
-
-    state phase_secondary {
+    // One lifecycle, two instances ("main" and "secondary" are the ids
+    // passed to transition()/get_status()) — two identical machines in
+    // one cell left transition() picking one at random.
+    state phase {
         initial: green_ns
         green_ns -> yellow_ns
         yellow_ns -> green_ew

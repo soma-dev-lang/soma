@@ -460,6 +460,44 @@ impl<'a> Checker<'a> {
     }
 
     pub fn check(&mut self, program: &Program) {
+        // Structure: something to check, one machine per cell with a start
+        // state, unique cell names. Each of these used to pass silently
+        // (the runtime kept the LAST machine / merged same-named cells).
+        if program.cells.is_empty() {
+            self.errors.push(CheckError::InterpolationUndefined {
+                message: "no cell in this file — a program is at least `cell Name { on run() { … } }`".to_string(),
+                span: Span { start: 0, end: 0 },
+            });
+        }
+        let mut seen_cells: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for cell in &program.cells {
+            if !seen_cells.insert(cell.node.name.as_str()) {
+                self.errors.push(CheckError::InterpolationUndefined {
+                    message: format!("cell '{}' is defined twice — rename one; same-named cells are not merged", cell.node.name),
+                    span: cell.span,
+                });
+            }
+            let machines: Vec<&Spanned<Section>> = cell.node.sections.iter()
+                .filter(|s| matches!(s.node, Section::State(_)))
+                .collect();
+            if machines.len() > 1 {
+                self.errors.push(CheckError::InterpolationUndefined {
+                    message: format!("cell '{}' declares {} state machines — a cell has one lifecycle; put the second machine in its own cell", cell.node.name, machines.len()),
+                    span: machines[1].span,
+                });
+            }
+            for m in machines {
+                if let Section::State(ref sm) = m.node {
+                    if sm.initial.is_empty() {
+                        let first = sm.transitions.first().map(|t| t.node.from.clone()).unwrap_or_else(|| "state".to_string());
+                        self.errors.push(CheckError::InterpolationUndefined {
+                            message: format!("state machine '{}' has no start state — add `initial: {}` as its first line", sm.name, first),
+                            span: m.span,
+                        });
+                    }
+                }
+            }
+        }
         // Program-wide sum-type checks (duplicate variants,
         // non-exhaustive matches).
         for issue in sum_types::check_program(program) {

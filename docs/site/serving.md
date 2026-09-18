@@ -28,9 +28,15 @@ it by calling their handlers by name.
 
 ## Requests and responses
 
-`request` receives `(method: String, path: String, body: String)` — and a
-fourth `query: Map` argument when it declares one. `from_json(body)` parses a
-JSON body (it raises on invalid JSON: wrap it in `try`).
+`request` receives `(method, path, body)` — and a fourth `query: Map`
+argument when it declares one. The declared type of `body` decides its shape,
+identically under `soma serve`, `soma test` and `soma run`:
+
+- `body: String` — the raw request text; `from_json(body)` parses a JSON body
+  (it raises kind `json` on invalid JSON: wrap it in `try`).
+- `body: Map` — the JSON object (or form fields) already parsed; a request
+  whose body is not JSON is answered `400 {"kind": "json"}` before the handler
+  runs; an empty body is `map()`.
 
 A handler may return:
 
