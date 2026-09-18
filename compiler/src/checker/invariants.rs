@@ -95,8 +95,25 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                 }
                 // called functions must be builtins — handlers are not
                 // callable from an invariant context
+                // every call the invariant can make — inside lambdas,
+                // interpolation, match guards, UFCS (`"{_side()}"`,
+                // `all(x => _side() > 0)`, `1._nope()` ran code or passed)
                 let mut fns = HashSet::new();
-                collect_fn_names(&inv.node, &mut fns);
+                let mut effects: Vec<String> = Vec::new();
+                crate::checker::desugar::for_each_deep(&inv.node, &mut |e| match e {
+                    Expr::FnCall { name, .. } => { fns.insert(name.clone()); }
+                    Expr::MethodCall { method, .. } if !matches!(method.as_str(), "get" | "has" | "contains" | "keys" | "values" | "len" | "size" | "length") => { fns.insert(method.clone()); }
+                    _ => {}
+                });
+                for f in &fns {
+                    if crate::checker::names::EFFECT_BUILTINS.contains(&f.as_str()) { effects.push(f.clone()); }
+                }
+                for f in effects {
+                    issues.push(InvariantIssue {
+                        message: format!("memory invariant calls {f}() — an invariant is a condition checked on every write: it may not call think(), transition(), I/O or the network (it would run unseen by the cost, termination and refinement proofs)"),
+                        span: inv.span,
+                    });
+                }
                 for f in fns {
                     if !builtin_names().contains(f.as_str()) {
                         issues.push(InvariantIssue {
@@ -430,7 +447,8 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     _ => false,
                 });
                 let mut nan_open = false;
-                if float_slot && !matches!(known, Known::Exact(_)) && !is_int_valued(value_expr) && !nan_free_float(value_expr, slot) {
+                if float_slot && !matches!(known, Known::Exact(_)) && !is_int_valued(value_expr) && !nan_free_float(value_expr, slot)
+                    && !ctx.vars.contains_key(&format!("__cmp__{}", render_expr(value_expr))) {
                     for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
                         if *v == Proof::Holds && size_upper_bound(c, slot).is_none() { *v = Proof::Unknown; nan_open = true; }
                     }
@@ -1018,9 +1036,9 @@ fn local_ranges_at(
                             collect_idents(e, &mut used);
                             if used.iter().any(|u| dup.contains(u.as_str()) || reassigned_param(u)) { continue; }
                             let (lo, hi) = match op {
-                                CmpOp::Lt => (f64::NEG_INFINITY, if looks_int(e) && c.fract() == 0.0 { c - 1.0 } else { c }),
+                                CmpOp::Lt => (f64::NEG_INFINITY, if looks_int(e) && c.fract() == 0.0 { c - 1.0 } else { c.next_down() }),
                                 CmpOp::Le => (f64::NEG_INFINITY, c),
-                                CmpOp::Gt => (if looks_int(e) && c.fract() == 0.0 { c + 1.0 } else { c }, f64::INFINITY),
+                                CmpOp::Gt => (if looks_int(e) && c.fract() == 0.0 { c + 1.0 } else { c.next_up() }, f64::INFINITY),
                                 CmpOp::Ge => (c, f64::INFINITY),
                                 CmpOp::Eq => (c, c),
                                 CmpOp::Ne => continue,
@@ -1029,6 +1047,8 @@ fn local_ranges_at(
                             let cur = vars.get(&key).copied().unwrap_or(Known::Unknown);
                             let narrowed = match bounds(cur) { Some((cl, ch)) => mk(cl.max(lo), ch.min(hi)), None => mk(lo, hi) };
                             vars.insert(key, narrowed);
+                            // a comparison that held: not NaN
+                            if !negated { vars.insert(format!("__cmp__{}", render_expr(e)), Known::Exact(1.0)); }
                             continue;
                         }
                     },
@@ -1040,9 +1060,9 @@ fn local_ranges_at(
                     None => continue,
                 };
                 let (lo, hi) = match op {
-                    CmpOp::Lt => (f64::NEG_INFINITY, if integral { bound - 1.0 } else { bound }),
+                    CmpOp::Lt => (f64::NEG_INFINITY, if integral { bound - 1.0 } else { bound.next_down() }),
                     CmpOp::Le => (f64::NEG_INFINITY, bound),
-                    CmpOp::Gt => (if integral { bound + 1.0 } else { bound }, f64::INFINITY),
+                    CmpOp::Gt => (if integral { bound + 1.0 } else { bound.next_up() }, f64::INFINITY),
                     CmpOp::Ge => (bound, f64::INFINITY),
                     CmpOp::Eq => (bound, bound),
                     CmpOp::Ne => continue,
@@ -1053,6 +1073,10 @@ fn local_ranges_at(
                     None => mk(lo, hi),
                 };
                 vars.insert(name.to_string(), narrowed);
+                // `require rate > 0.0` held: `rate` is not NaN (NaN fails
+                // every comparison) — "may be NaN" looped back to that require
+                // (a negated fact — the else of `if x < 0.0` — lets NaN through)
+                if !negated { vars.insert(format!("__cmp__{}", name), Known::Exact(1.0)); }
             }
         }
     }

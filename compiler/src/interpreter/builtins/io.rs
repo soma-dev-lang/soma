@@ -17,15 +17,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 match std::fs::read_to_string(path) {
                     Ok(content) => {
                         if args.len() > 1 {
-                            let mut result = content;
-                            let mut i = 1;
-                            while i + 1 < args.len() {
-                                let key = format!("{}", args[i]);
-                                let val = format!("{}", args[i + 1]);
-                                result = result.replace(&format!("{{{}}}", key), &val);
-                                i += 2;
-                            }
-                            Some(Ok(Value::String(result)))
+                            // one pass, as render(): a value `{token}` is text,
+                            // not a placeholder the next pair fills (it leaked
+                            // the secret passed after it)
+                            Some(Ok(Value::String(substitute_once(&content, &args[1..]))))
                         } else {
                             Some(Ok(Value::String(content)))
                         }
@@ -38,35 +33,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "render" => {
             if let Some(Value::String(template)) = args.first() {
-                let mut vars: HashMap<String, String> = HashMap::new();
-                let mut i = 1;
-                while i + 1 < args.len() {
-                    let key = format!("{}", args[i]);
-                    let val = format!("{}", args[i + 1]);
-                    vars.insert(key, val);
-                    i += 2;
-                }
-                let mut result = String::with_capacity(template.len());
-                let mut pos = 0;
-                while pos < template.len() {
-                    if template.as_bytes()[pos] == b'{' {
-                        if let Some(end) = template[pos+1..].find('}') {
-                            let key = &template[pos+1..pos+1+end];
-                            if let Some(val) = vars.get(key) {
-                                result.push_str(val);
-                                pos = pos + 1 + end + 1;
-                                continue;
-                            }
-                        }
-                    }
-                    if let Some(c) = template[pos..].chars().next() {
-                        result.push(c);
-                        pos += c.len_utf8();
-                    } else {
-                        pos += 1;
-                    }
-                }
-                Some(Ok(Value::String(result)))
+                Some(Ok(Value::String(substitute_once(template, &args[1..]))))
             } else {
                 Some(Err(RuntimeError::TypeError("render expects a template string".to_string())))
             }
@@ -566,4 +533,35 @@ fn parse_csv(text: &str) -> Vec<Vec<(String, bool)>> {
         records.push(rec);
     }
     records
+}
+
+/// `{key}` placeholders filled from (key, value) pairs in ONE left-to-right
+/// pass: a substituted value is never rescanned.
+fn substitute_once(template: &str, pairs: &[Value]) -> String {
+    let mut vars: HashMap<String, String> = HashMap::new();
+    let mut i = 0;
+    while i + 1 < pairs.len() {
+        vars.insert(format!("{}", pairs[i]), format!("{}", pairs[i + 1]));
+        i += 2;
+    }
+    let mut result = String::with_capacity(template.len());
+    let mut pos = 0;
+    while pos < template.len() {
+        if template.as_bytes()[pos] == b'{' {
+            if let Some(end) = template[pos + 1..].find('}') {
+                if let Some(val) = vars.get(&template[pos + 1..pos + 1 + end]) {
+                    result.push_str(val);
+                    pos = pos + 1 + end + 1;
+                    continue;
+                }
+            }
+        }
+        if let Some(c) = template[pos..].chars().next() {
+            result.push(c);
+            pos += c.len_utf8();
+        } else {
+            pos += 1;
+        }
+    }
+    result
 }

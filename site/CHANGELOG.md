@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Capability-scoped tools cannot load files (`load`, `include`,
+  `par_read_files`, …) or `link()`; invariants are pure conditions (no
+  handler call or effect builtin, however hidden); a tool calling back its
+  think() handler is a termination ⚠; `link()` makes a handler POST-only;
+  `load()` substitutes in one pass; a reply over its `max_tokens` raises.
+- Errors in imported files are reported in that file.
+- `??` short-circuits; `with()` stores BigInt values; strict Float bounds
+  after a `require` are proven; `tools_allowed` must name tools.
 - Interpolation segments are analysed exactly where the runtime finds them:
   `"{ { expr } }"` ran `expr` unseen by route ownership, termination, cost,
   GET→405, guard and invariant checks.

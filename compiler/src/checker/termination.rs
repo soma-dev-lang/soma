@@ -333,6 +333,18 @@ fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
         }
         graph.entry(on.signal_name.clone()).or_default().extend(calls);
     }
+    // think() hands control to the model, which may call any tool it can
+    // dispatch there: a tool that calls back the handler is a recursion the
+    // MODEL drives (5 250 LLM calls from one `soma run`, "✓ terminates")
+    for cell in &program.cells {
+        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        for fx in crate::checker::effects::check_cell(&cell.node) {
+            let edges = graph.entry(fx.handler.clone()).or_default();
+            for t in fx.think_tools {
+                if names.contains(t.as_str()) && !edges.contains(&t) { edges.push(t); }
+            }
+        }
+    }
     graph
 }
 

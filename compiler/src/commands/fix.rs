@@ -174,6 +174,8 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
             Err(e) => {
                 let msg = e.to_string();
                 let Some(span) = e.span() else { break };
+                // a position in an imported file: not this text
+                if span.start > source.len() { break; }
                 let (line, _) = crate::interpreter::span_to_location(source, span.start);
                 if msg.starts_with("match arms use '->'") && source[span.start..].starts_with("=>") {
                     source.replace_range(span.start..span.start + 2, "->");
@@ -252,6 +254,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     let mut idiom_edits: Vec<(usize, usize, &str, String)> = Vec::new();
     for error in &errors {
         if let CheckError::Static { kind: "foreign_idiom", message, span } = error {
+            if span.start >= source.len() { continue; }
             let word = source[span.start..span.end.min(source.len())].to_string();
             let to = match word.as_str() {
                 "null" | "None" | "nil" | "undefined" | "NULL" => "()",

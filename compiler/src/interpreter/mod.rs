@@ -161,7 +161,44 @@ fn binop_verb(op: BinOp) -> &'static str {
 }
 
 /// Convert a byte offset to line:col using source text
+/// Spans of an imported file start at `(k + 1) * IMPORT_SPAN_BASE` (k its
+/// registration index), so an error in it is reported in THAT file — it
+/// used to be reported at the importer's path, on a line past its end.
+pub const IMPORT_SPAN_BASE: usize = 1 << 40;
+
+static IMPORT_SOURCES: std::sync::Mutex<Vec<(String, std::sync::Arc<str>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Register an imported file's text; the base to add to its spans.
+pub fn register_import_source(file: &str, text: &str) -> usize {
+    let mut v = IMPORT_SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = v.iter().position(|(f, t)| f == file && &**t == text) {
+        return (i + 1) * IMPORT_SPAN_BASE;
+    }
+    v.push((file.to_string(), std::sync::Arc::from(text)));
+    v.len() * IMPORT_SPAN_BASE
+}
+
+/// The imported file, its text and the local offset of a shifted position.
+pub fn resolve_import_pos(pos: usize) -> Option<(String, std::sync::Arc<str>, usize)> {
+    if pos < IMPORT_SPAN_BASE { return None; }
+    let v = IMPORT_SOURCES.lock().unwrap_or_else(|e| e.into_inner());
+    let k = pos / IMPORT_SPAN_BASE;
+    v.get(k - 1).map(|(f, t)| (f.clone(), t.clone(), pos % IMPORT_SPAN_BASE))
+}
+
+/// `file`, `text`, `pos` of a diagnostic, redirected to the imported file
+/// the position belongs to.
+pub fn locate_pos<'a>(file: &'a str, text: &'a str, pos: usize) -> (std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>, usize) {
+    match resolve_import_pos(pos) {
+        Some((f, t, p)) => (std::borrow::Cow::Owned(f), std::borrow::Cow::Owned(t.to_string()), p),
+        None => (std::borrow::Cow::Borrowed(file), std::borrow::Cow::Borrowed(text), pos),
+    }
+}
+
 pub fn span_to_location(source: &str, offset: usize) -> (usize, usize) {
+    if let Some((_, t, p)) = resolve_import_pos(offset) {
+        return span_to_location(&t, p);
+    }
     let mut line = 1;
     let mut col = 1;
     for (i, ch) in source.chars().enumerate() {
@@ -181,6 +218,9 @@ pub fn span_to_location(source: &str, offset: usize) -> (usize, usize) {
 /// Build a source-context snippet with a caret line pointing at the error position.
 /// Returns an empty string if no source is available.
 pub fn format_error_context(source: &str, span_start: usize) -> String {
+    if let Some((_, t, p)) = resolve_import_pos(span_start) {
+        return format_error_context(&t, p);
+    }
     let (line_num, col) = span_to_location(source, span_start);
     // Extract the source line
     let full_line = source.split('\n').nth(line_num - 1).unwrap_or("");
@@ -211,6 +251,7 @@ pub fn format_runtime_error(
 ) -> String {
     let (location, context) = match (source_file, source_text, span) {
         (Some(file), Some(text), Some(sp)) => {
+            let (file, _, _) = locate_pos(file, text, sp.start);
             let (line, col) = span_to_location(text, sp.start);
             let loc = format!("  --> {}:{}:{}\n", file, line, col);
             let ctx = format_error_context(text, sp.start);
@@ -2199,6 +2240,13 @@ impl Interpreter {
             }
 
             Expr::FnCall { name, args } => {
+                // `a ?? b` short-circuits: `m.get(k) ?? fail(…)` failed on a
+                // present key, `id ?? next_id()` burned an id per call
+                if name == "_coalesce" && args.len() == 2 {
+                    let a = self.eval_expr(&args[0].node, env, cell_name, signal_name)?;
+                    if !matches!(a, Value::Unit) { return Ok(a); }
+                    return self.eval_expr(&args[1].node, env, cell_name, signal_name);
+                }
                 // `len(rows)` / `nth(rows, i)` on a local: read in place —
                 // evaluating `rows` copied the whole list per call (a
                 // `while i < len(rows)` loop over 20k rows took 39 s)

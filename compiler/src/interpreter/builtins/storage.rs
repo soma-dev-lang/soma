@@ -553,6 +553,14 @@ fn agent_think(
             iteration as i64, if iteration == 0 { prompt } else { "(cont)" }, if iteration == 0 { system.unwrap_or("") } else { "" },
             resp.tokens, interp.agent_tokens_used, &resp.finish_reason,
         ));
+        // the cost proof counts each reply at its max_tokens: a provider that
+        // ignores the cap (10 000 tokens for max_tokens 60) is refused — the
+        // tokens are charged, the reply is not used
+        let out = raw_json["usage"]["completion_tokens"].as_i64().or_else(|| raw_json["usage"]["output_tokens"].as_i64()).unwrap_or(0);
+        let cap = max_tokens.unwrap_or(2048) as i64;
+        if out > cap {
+            return Err(RuntimeError::Domain { kind: "llm".to_string(), message: format!("llm: the provider returned {} reply tokens for max_tokens {} — it ignored the cap the cost bound relies on", out, cap) });
+        }
 
         // Tool calls
         if !resp.tool_calls.is_empty() {

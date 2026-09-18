@@ -2529,3 +2529,42 @@ fn cycle33_findings() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("expected Int"), "{out}");
 }
+
+#[test]
+fn cycle34_findings() {
+    let d = dir("cycle34");
+    // `??` short-circuits; with() stores a BigInt value
+    std::fs::write(d.join("c.cell"), "cell C {\n  on f(k: String) {\n    let m = map(\"cash\", \"Cash\")\n    let big = map(\"a\", 1) |> with(\"x\", 99999999999999999999999)\n    return [m.get(k) ?? fail(\"not_found\", \"account {k}\"), big.x]\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "c.cell", "f", "cash"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Cash") && out.contains("99999999999999999999999"), "{out}");
+    // a strict Float bound after a require is proven (and not NaN)
+    std::fs::write(d.join("r.cell"), "cell Rates {\n  memory {\n    rates: Map<String, Float> [persistent]\n    invariant rates > 0.0\n  }\n  on set_rate(k: String, rate: Float) {\n    require rate > 0.0 else BadRate\n    rates.set(k, rate)\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "r.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("proven by induction"), "{out}");
+}
+
+#[test]
+fn cycle34_attack_findings() {
+    let d = dir("cycle34b");
+    // invariants are pure conditions, however the call is hidden
+    std::fs::write(d.join("i.cell"), "cell I {\n  memory {\n    m: Map<String, Int> [persistent]\n    invariant \"{_side()}\" != \"\"\n    invariant think(\"audit {value}\") != \"\"\n  }\n  on _side() { return 1 }\n  on w(k: String) { m.set(k, 1) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "i.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("'_side' which is not a builtin") && out.contains("calls think()"), "{out}");
+    // a tool that calls back the handler whose think() dispatches it
+    std::fs::write(d.join("a.cell"), "cell agent A {\n  face {\n    signal ask(q: String) -> String\n    tool deeper(q: String) -> String \"go deeper\"\n  }\n  on deeper(q: String) { return ask(q) }\n  on ask(q: String) { return think(q, map(\"max_tokens\", 50, \"max_rounds\", 2)) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "a.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("mutual recursion"), "{out}");
+    // an error in an imported file is reported in that file
+    std::fs::write(d.join("helper.cell"), "cell H {\n  on boom(x: Int) {\n    return 10 / x\n  }\n}\n").unwrap();
+    std::fs::write(d.join("app.cell"), "use helper\n\ncell App {\n  on main() { return boom(0) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "app.cell", "main"]);
+    assert!(out.contains("helper.cell:3:"), "{out}");
+    // link() is a state change: GET answers 405
+    std::fs::write(d.join("l.cell"), "cell L {\n  on connect(addr: String) { link(addr) return 1 }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "l.cell"]);
+    assert_eq!(code, 0, "{out}");
+}

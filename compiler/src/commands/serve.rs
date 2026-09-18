@@ -2131,7 +2131,7 @@ fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections::HashSet<St
         let mut callees = Vec::new();
         crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
             Expr::FnCall { name, .. } => {
-                if matches!(name.as_str(), "transition" | "remember" | "delegate" | "publish" | "write_file" | "next_id" | "think" | "think_json" | "http_post" | "http_put" | "http_delete") { writes = true; }
+                if name != "http_get" && name != "sleep" && crate::checker::names::EFFECT_BUILTINS.contains(&name.as_str()) { writes = true; }
                 let own = cell.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if o.signal_name == *name));
                 if !own && foreign.contains(name) { writes = true; }
                 callees.push(name.clone());

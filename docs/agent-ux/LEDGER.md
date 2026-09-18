@@ -916,3 +916,22 @@ parallel requests for the last seat → exactly one 201, verify --strict green.
 ### Open
 - [ ] Errors inside an imported file are reported at the importer's path.
 - [ ] Invariants cannot relate two slots; no CSV-to-String builtin.
+
+### Cycle 34 — realistic port (double-entry ledger, two files) + attack
+
+Ledger port 7.5/10: 200 concurrent postings balanced, 300 posts racing a
+period close → exactly the accepted ones exist, verify --strict green.
+
+### Fixed
+- [x] **A capability-scoped tool read any file and exfiltrated emits**: `load` / `include` / `load_template` / `par_read_files` / `read_stdin` were not denied (the model read `../secrets/admin_token`), nor `link()` / `ws_send` (every later emit went to the attacker's peer).
+- [x] **Invariants ran arbitrary code**: a handler call hidden in interpolation / a lambda / UFCS, or an effect builtin (`think`, `transition`, `approve`, `link`, …) passed check — false cost, termination and refinement proofs. Invariants are pure conditions now (a deep walk, one shared list of effect builtins also used by guards and GET→405).
+- [x] **Termination claimed for recursion the model drives**: a tool calling back the handler whose think() dispatches it (5 250 LLM calls from one run) — think()→tool edges are in the call graph.
+- [x] `link()` was not a state change (GET 200, any web page could re-route emits) nor refused in a guard.
+- [x] `load(t, "name", n, "token", secret)` substituted sequentially — `name="{token}"` printed the secret; one pass, as render().
+- [x] A provider ignoring `max_tokens` broke a "proven" cost bound — a reply longer than its cap raises kind `llm`.
+- [x] **Errors inside a `use`d file reported the importer's path and a line past its end** — imported spans carry their file (runtime, check, JSON).
+- [x] Port: `??` evaluated its right side always (`get(k) ?? fail(…)` failed on a present key, `?? next_id()` burned ids); `with()` refused a BigInt value; a Float-slot invariant could never pass --strict (strict bounds, and a value that passed a require comparison is not NaN — an early-exit's negation still is); `tools_allowed` naming a non-tool is a check error.
+
+### Open
+- [ ] `soma test` "raised at line N" and the max-rounds error point at the wrong line; serve's `endpoints:` line lists request-owned handlers; GET /<tool> answers 405 (POST 404).
+- [ ] A constant `idiv(i64::MIN, -1)` in a [native] handler fails the rustc build after a clean check.

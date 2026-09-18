@@ -92,7 +92,8 @@ name is an HTTP endpoint (a request could re-run it). A handler that changes
 state — a slot write, a transition, an emit, a call into another cell —
 answers `GET`/`HEAD` with `405` (`Allow: POST`) — for the auto-exposed
 `/<handler>` endpoints; routes of your own `request` answer every method you
-match, so match on `method` for the ones that write: with CORS open to every
+match (a HEAD request reaches `request` with method `"HEAD"` — match it next
+to `"GET"` if clients send it), so match on `method` for the ones that write: with CORS open to every
 origin, a GET that writes is writable by any web page (`<img src=…>`). A JSON
 body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
 `_values` anywhere is refused (400), whatever the type of `body` — also for

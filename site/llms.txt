@@ -150,7 +150,8 @@ map("k", v)   map()                // no {k: v} literal;   record: Name { k: v }
 m.k   m["size"]                    // a key; m.len / m.size / m.keys: the entry count / keys
                                    // when the map has no such key (a record: () ) — m["size"] is always the key
 [1, 2, 3]     []                   // list literals
-x == ()       x ?? 0               // null is (); no null / None / undefined
+x == ()       x ?? 0               // null is (); no null / None / undefined; `??` only runs its right side on ()
+5 == ""                            // raises kind `type` (Int vs String is a bug); nested values of different types are just unequal
 substring(s, i, i + 1)             // s[i] as a String; str_at(s, i) is a BYTE (Int)
 if c { a } else { b }              // is an expression; no ternary; && || !  (no and/or/not)
                                    // a condition (if, while, &&, ||, !, require, guards,
@@ -234,7 +235,9 @@ source, `file:line`, left/right, and the fields a value really has when
 - A slot is a Map or a List (`n: Int` is a check error). Read a
   whole slot by its bare name (`history`, `counts`); write with
   `counts.set(k, v)` / `counts[k] = v` / `history.push(x)`; `history = …` is
-  an error. An invariant on a Map slot applies to every value written.
+  an error. An invariant on a Map slot applies to every value written; it is
+  a pure condition — no handler call, think(), transition(), I/O or network,
+  even inside a lambda or an interpolation (a check error).
 - `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
   `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
 - Every parameter has a type (`x: Any` takes a value of any kind — check it
@@ -530,7 +533,11 @@ cell agent Researcher {
 // (classify with no refund tool in reach); a `*` in a capability stays in
 // its part of the URL (host or path), `..` segments and userinfo are
 // refused, and a tool's scope holds for the tools of any agent it calls;
-// an unknown option is an error. Each agent cell keeps its OWN multi-turn
+// a scoped tool reads/writes no file (read_file, load, include, …) and opens
+// no link/socket. An unknown option, or a tools_allowed name that is not a
+// tool, is an error. A reply longer than its max_tokens (a provider ignoring
+// the cap) raises kind `llm`; a tool that calls back its think() handler is a
+// termination ⚠ (the model drives that recursion). Each agent cell keeps its OWN multi-turn
 // context (clear_context() resets it); every/after ticks use the same
 // [agent] config as requests. `soma test` mocks think() only when no key is
 // configured — set SOMA_LLM_MOCK=echo for offline tests with a soma.toml key;

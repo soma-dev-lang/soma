@@ -14,6 +14,15 @@ use std::collections::{HashMap, HashSet};
 /// fast path (`items = append(items, x)`), and `_coalesce` backs `??`.
 const INLINE_BUILTIN_NAMES: &[&str] = &["append", "_coalesce"];
 
+/// Builtins with an effect beyond their value: a state change, an LLM call,
+/// I/O, the network, the bus. A guard or an invariant (a condition) may not
+/// call them; a handler that does is not a GET.
+pub const EFFECT_BUILTINS: &[&str] = &[
+    "think", "think_json", "transition", "publish", "remember", "delegate", "next_id",
+    "write_file", "write_csv", "write_str", "http_get", "http_post", "http_put", "http_patch", "http_delete",
+    "set_budget", "sleep", "link", "subscribe", "ws_connect", "ws_send", "approve", "clear_context", "clear_trace",
+];
+
 /// Every builtin callable by bare name at runtime, DERIVED from the
 /// builtin registry (interpreter/builtins/registry.rs — the single
 /// source of truth) so this list can never drift from the dispatch

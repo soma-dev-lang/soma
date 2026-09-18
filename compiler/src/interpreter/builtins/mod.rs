@@ -30,7 +30,10 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     // not match any declared scope.
     // a capability-scoped tool reaches only its URLs: no file access, no raw
     // sockets (read_file / write_file / ws_connect bypassed the capability)
-    if interp.current_tool_caps.is_some() && matches!(name, "read_file" | "write_file" | "read_csv" | "write_csv" | "read_files" | "ws_connect" | "connect" | "subscribe" | "append_file") {
+    if interp.current_tool_caps.is_some() && matches!(name, "read_file" | "write_file" | "read_csv" | "write_csv" | "read_files" | "par_read_files" | "read_stdin"
+        // templates read files too, and link() routes every later emit to a peer
+        | "load" | "include" | "load_template" | "link" | "ws_send"
+        | "ws_connect" | "connect" | "subscribe" | "append_file") {
         let caps = interp.current_tool_caps.clone().unwrap_or_default();
         if !caps.iter().any(|c| c == "*") || interp.outer_tool_caps.iter().any(|o| !o.iter().any(|c| c == "*")) {
             return Some(Err(RuntimeError::TypeError(format!("capability denied: {}() is outside this tool's capabilities {:?}", name, caps))));
@@ -53,7 +56,8 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     // read as 0 (range(2^70, 2^70 + 3) == [], substring(s, 1, 2^70) == "",
     // random(2^70) == 0) — say so instead
     if matches!(name, "range" | "random" | "chr" | "substring" | "slice" | "pad_left" | "pad_right" | "repeat" | "take" | "drop" | "with" | "nth" | "days_in_month" | "sleep" | "str_at" | "left" | "right")
-        && args.iter().any(|a| matches!(a, Value::Int(i) if i.to_i64().is_none()))
+        // with(xs, i, v): only the index is a count — the stored value may be big
+        && args.iter().enumerate().any(|(n, a)| !(name == "with" && n != 1) && matches!(a, Value::Int(i) if i.to_i64().is_none()))
     {
         return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("{}(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)", name) }));
     }

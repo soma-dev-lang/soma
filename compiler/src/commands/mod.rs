@@ -358,7 +358,10 @@ fn import_file(program: &mut ast::Program, path: &PathBuf) {
         }
     };
     let file_str = path.display().to_string();
-    let tokens = lex_with_location(&source, Some(&file_str));
+    let mut tokens = lex_with_location(&source, Some(&file_str));
+    // its spans point into ITS text (see IMPORT_SPAN_BASE)
+    let base = crate::interpreter::register_import_source(&file_str, &source);
+    for t in tokens.iter_mut() { t.span.start += base; t.span.end += base; }
     let mut imported = parse_with_location(tokens, Some(&source), Some(&file_str));
     IMPORT_DEPTH.with(|d| d.set(d.get() + 1));
     resolve_imports(&mut imported, path);

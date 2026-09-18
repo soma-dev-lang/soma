@@ -791,7 +791,8 @@ impl<'a> Checker<'a> {
                             if bad.is_some() { return; }
                             match e {
                                 Expr::FnCall { name, .. } if handlers.contains(name) => bad = Some(format!("calls the handler `{}`", name)),
-                                Expr::FnCall { name, .. } if matches!(name.as_str(), "think" | "think_json" | "transition" | "publish" | "remember" | "delegate" | "next_id" | "write_file" | "http_get" | "http_post" | "http_put" | "http_delete" | "set_budget" | "sleep") => bad = Some(format!("calls {}()", name)),
+                                Expr::FnCall { name, .. } if names::EFFECT_BUILTINS.contains(&name.as_str()) => bad = Some(format!("calls {}()", name)),
+                                Expr::MethodCall { method, .. } if names::EFFECT_BUILTINS.contains(&method.as_str()) => bad = Some(format!("calls .{}()", method)),
                                 Expr::FnCall { name, .. } if !builtins.contains(name.as_str()) && !name.starts_with(|c: char| c.is_uppercase()) => bad = Some(format!("calls `{}`, which is not a builtin (undefined function)", name)),
                                 Expr::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") || handlers.contains(method) =>
                                     bad = Some(format!("calls .{}()", method)),
@@ -856,6 +857,11 @@ impl<'a> Checker<'a> {
                     _ => continue,
                 };
                 let mut bad: Vec<String> = Vec::new();
+                let tools: Vec<String> = cell.node.sections.iter().filter_map(|s| match &s.node {
+                    Section::Face(f) => Some(f.declarations.iter().filter_map(|d| match &d.node { FaceDecl::Tool(t) => Some(t.name.clone()), _ => None }).collect::<Vec<_>>()),
+                    _ => None,
+                }).flatten().collect();
+                let mut not_tools: Vec<String> = Vec::new();
                 literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
                     if matches!(name.as_str(), "think" | "think_json") {
                         for a in args {
@@ -866,11 +872,29 @@ impl<'a> Checker<'a> {
                                             if !matches!(k.as_str(), "max_tokens" | "timeout" | "timeout_ms" | "max_rounds" | "tools_allowed" | "requires") && !bad.contains(k) { bad.push(k.clone()); }
                                         }
                                     }
+                                    // `tools_allowed: ["admin"]` naming a handler that is
+                                    // not a face tool allowed nothing, silently
+                                    for pair in kv.chunks(2) {
+                                        if let [k, v] = pair {
+                                            if matches!(&k.node, Expr::Literal(Literal::String(k)) if k == "tools_allowed") {
+                                                if let Expr::ListLiteral(items) = &v.node {
+                                                    for it in items {
+                                                        if let Expr::Literal(Literal::String(t)) = &it.node {
+                                                            if !tools.contains(t) && !not_tools.contains(t) { not_tools.push(t.clone()); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 });
+                for t in not_tools {
+                    self.errors.push(CheckError::Static { kind: "think_option", message: format!("tools_allowed names \"{}\", which is not a tool of {} — declare it in the face (`tool {}(…) -> … \"what it does\"`) or drop it", t, cell.node.name, t), span: sec.span });
+                }
                 for k in bad {
                     self.errors.push(CheckError::Static { kind: "think_option", message: format!("\"{}\" is not a think() option — the options are max_tokens, max_rounds, timeout (ms), tools_allowed and requires; a JSON shape is checked by your own code after think_json()", k), span: sec.span });
                 }
@@ -1947,6 +1971,7 @@ impl<'a> Checker<'a> {
             return String::new();
         }
         let (line, col) = crate::interpreter::span_to_location(text, span.start);
+        let (file, _, _) = crate::interpreter::locate_pos(file, text, span.start);
         let mut block = format!(
             "  --> {}:{}:{}\n{}",
             file,
@@ -1967,6 +1992,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let (line, col) = crate::interpreter::span_to_location(text, span.start);
+        let (file, text, _) = crate::interpreter::locate_pos(file, text, span.start);
         v["file"] = serde_json::json!(file);
         v["line"] = serde_json::json!(line);
         v["col"] = serde_json::json!(col);
