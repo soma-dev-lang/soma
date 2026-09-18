@@ -98,7 +98,9 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
     let max_bytes = int_opt("max_bytes").map(|v| v as usize);
     // inside a capability-scoped tool a redirect is NOT followed: a 302 to
     // another host escaped the tool's URL capability
-    let redirects = if NO_REDIRECTS.with(|c| c.get()) { 0 } else { 5 };
+    // ureq counts the final request too: 6 lets 5 redirect hops through
+    // (the documented limit; the 5th hop failed as a network error)
+    let redirects = if NO_REDIRECTS.with(|c| c.get()) { 0 } else { 6 };
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_millis(timeout_ms)).redirects(redirects).build();
     let mut req = agent.request(method, url);
     if let Some(b) = &body {

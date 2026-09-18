@@ -377,7 +377,7 @@ let v2 = v * 2                         // vector broadcast: * / + -
 let sq = v * v                         // vector elementwise: + * / -
 let vsum = v + v                       // elementwise add (numeric vectors)
 let mask = A > 2                       // comparison mask → 0/1 matrix
-let vm = v >= 2.0                      // 0/1 vector (feed to where_mask)
+let vm = v >= 2.0                      // 0.0/1.0 vector (a mask: multiply with it)
 // list CONCATENATION is explicit: concat(a, b). Non-numeric lists
 // (strings, records) keep + = concat.
 let d = det([4, 3, 6, 3].reshape(2, 2))   // -6.0
@@ -426,7 +426,7 @@ on withdraw(balance: Int, amount: Int) {
     return result
 }
 
-// try catches: division by zero, type errors, stack overflow, invalid
+// try catches: division by zero, type errors (NOT a stack overflow: runaway recursion fails the handler), invalid
 // transitions, require/invariant/ensure failures, fail(). An undefined
 // function is a `soma check` error; an undefined variable inside a `try`
 // is a check warning and raises kind undefined_variable (catchable).

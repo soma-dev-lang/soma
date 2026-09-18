@@ -411,7 +411,10 @@ fn unknown_handler_or_default(
     // a near-miss of a handler name is a typo, never an argument:
     // `list_acounts` ran close_account("list_acounts")
     let near_miss = crate::checker::names::suggest(name, handler_names.iter()).is_some();
-    if identifier_like && (by_arity.is_none() || rest_fits || near_miss) {
+    // with SEVERAL public handlers a bare word is a handler name, never data
+    // (`soma run app.cell help` wiped "help" through the first handler)
+    let several = handler_names.iter().filter(|h| !h.starts_with('_') && h.as_str() != "request").count() > 1;
+    if identifier_like && (by_arity.is_none() || rest_fits || near_miss || several) {
         let public: Vec<&String> = handler_names.iter().filter(|h| !h.starts_with('_')).collect();
         let near = crate::checker::names::suggest(name, public.iter().copied())
             .map(|h| format!(" (did you mean '{}'?)", h))

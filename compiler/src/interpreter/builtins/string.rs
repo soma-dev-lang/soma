@@ -515,7 +515,7 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         next += 1;
         let w: usize = if width.is_empty() { 0 } else { width.parse().unwrap_or(usize::MAX) };
         // %.Nf past Rust's formatting limit panicked past every `try`
-        if conv == 'f' && prec.map_or(false, |p| p > 1000) {
+        if (conv == 'f' || conv == 'e') && prec.map_or(false, |p| p > 1000) {
             return Err(RuntimeError::Domain { kind: "range".to_string(), message: "format(): %.Nf takes at most 1000 decimals".to_string() });
         }
         if w > crate::interpreter::MAX_BUILT_LEN || prec.map_or(false, |p| p > crate::interpreter::MAX_BUILT_LEN) {
@@ -533,11 +533,25 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
                 let x = match &arg { Value::Float(f) => *f, Value::Int(n) => n.to_f64(), other => return Err(RuntimeError::TypeError(format!("format(): %f needs a number, got {}", super::super::value_type_name(other)))) };
                 super::math::fixed_string(x, prec.unwrap_or(6))
             }
+            // scientific notation, C-style: format("%.3e", 6.02214076e23) = "6.022e+23"
+            'e' => {
+                let x = match &arg { Value::Float(f) => *f, Value::Int(n) => n.to_f64(), other => return Err(RuntimeError::TypeError(format!("format(): %e needs a number, got {}", super::super::value_type_name(other)))) };
+                if !x.is_finite() { format!("{}", x) } else {
+                    let t = format!("{:.*e}", prec.unwrap_or(6), x);
+                    match t.split_once('e') {
+                        Some((m, e)) => {
+                            let ev: i32 = e.parse().unwrap_or(0);
+                            format!("{}e{}{:02}", m, if ev < 0 { '-' } else { '+' }, ev.abs())
+                        }
+                        None => t,
+                    }
+                }
+            }
             's' => {
                 let t = format!("{}", arg);
                 match prec { Some(p) => t.chars().take(p).collect(), None => t }
             }
-            other => return Err(RuntimeError::TypeError(format!("format(): unsupported directive %{} (supported: %d %s %f %.Nf, widths, - and 0 flags)", other))),
+            other => return Err(RuntimeError::TypeError(format!("format(): unsupported directive %{} (supported: %d %s %f %e %.Nf %.Ne, widths, - and 0 flags)", other))),
         };
         let len = body.chars().count();
         if len >= w { out.push_str(&body); continue; }

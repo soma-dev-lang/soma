@@ -856,3 +856,31 @@ No bug and no false proof.
 - [ ] Writing a List slot by index or deleting from it is O(n) per write (quadratic loops).
 - [ ] `delegate("Api", h, …)` with a computed handler name inside `request` does not own `h`.
 - [ ] `rows.delete(5)` out of range is a silent no-op; a Map slot re-declared List loses its old entries on the first push.
+
+## Cycle 31 (2026-09-18) — lab experiment pipeline + numerical toolkit
+
+8/10: check, 60 tests (8 forall properties), verify --strict green; native
+Monte Carlo / Simpson / Gaussian elimination bit-identical to the interpreter
+and to NumPy (≤ 4e-16 relative), 3–6× faster than NumPy; kill -9 during an
+analysis never exposed a half-analysed result.
+
+### Fixed
+- [x] Large Floats printed their exact binary expansion (6.02214076e23 → 602214075999999987023872.0) — shortest round-trip digits (interpreter, native, CSV).
+- [x] `NaN` / `inf` written by write_csv came back as Strings — read back as Floats.
+- [x] A handler calling an imported handler that may not terminate was "✓ structurally terminates" — non-termination propagates through calls.
+- [x] `format("%.3e", x)` — C-style scientific notation; docs: random() has no seed, sum's order, matrix × vector.
+
+### Cycle 31 — attack (regressions + the docs run as a test suite)
+
+- [x] **One request wedged serve**: self-application passed to a higher-order builtin (`g => try { [g, g] |> map(g) }`) passed verify --strict and, with `try` catching each stack overflow, ran at 100% CPU / 940 MB holding the lock — a stack overflow is not caught by `try` (it fails the handler), and a lambda handing a function value to map / filter / … is a termination ⚠.
+- [x] **Auth bypass**: `delegate("Api", op, id)` with a computed handler inside `request` — every public handler of that cell is request's.
+- [x] Regressions of cycle 30: refusing `__` map keys broke `word_count("__init__")` and `to_sampled` handles — such maps are escaped by the storage encoding instead (still never a forged variant); the function-value ⚠ fired on `let dbl = x => inc(x)` — only function values that could be the lambda itself count; ⚠ lines name the handler.
+- [x] `()` is false everywhere a condition is read (`!()`, `&&`, require, guards raised); invariants must be Bool conditions (`invariant vals` was truthiness, and verify suggested `require v - 3`).
+- [x] A face `tool` was a public HTTP endpoint around request's auth — not exposed.
+- [x] `soma run app.cell nosuch` ran the first handler with "nosuch" — an error when several handlers exist.
+- [x] `return f(a)(b)` returned the lambda silently — refused; test-cell helpers read slots; undefined functions in test rules are check errors; native conditions are Bools; 5 redirect hops are followed (the 5th failed).
+- [x] Docs examples fixed: the agent example (missing tool handler, hard-coded instance, cost claim) now passes verify --strict; the cell-anatomy example checks; gotcha 2's `*` wildcard is `_`; predicate and recall docs.
+
+### Open
+- [ ] car-rental/lib/tests.cell calls `seed()` from the app that imports it (it can never run on its own) — now a check error.
+- [ ] Writing a List slot by index is O(n); `soma run` picks one of two same-named handlers silently.

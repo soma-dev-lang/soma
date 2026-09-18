@@ -412,10 +412,7 @@ impl SqliteBackend {
             StoredValue::String(s) => (s.clone(), "string"),
             StoredValue::Null => ("null".to_string(), "null"),
             StoredValue::List(items) => (serde_json::to_string(&items.iter().map(|v| stored_to_json(v)).collect::<Vec<_>>()).unwrap_or_default(), "json"),
-            StoredValue::Map(map) => {
-                let obj: serde_json::Map<String, serde_json::Value> = map.iter().map(|(k, v)| (k.clone(), stored_to_json(v))).collect();
-                (serde_json::to_string(&obj).unwrap_or_default(), "json")
-            }
+            StoredValue::Map(_) => (serde_json::to_string(&stored_to_json(value)).unwrap_or_default(), "json"),
             StoredValue::Variant { .. } => {
                 (serde_json::to_string(&stored_to_json(value)).unwrap_or_default(), "variant")
             }
@@ -667,6 +664,9 @@ fn json_to_stored(v: &serde_json::Value) -> StoredValue {
             StoredValue::List(arr.iter().map(json_to_stored).collect())
         }
         serde_json::Value::Object(obj) => {
+            if let (1, Some(serde_json::Value::Object(inner))) = (obj.len(), obj.get("__map__")) {
+                return StoredValue::Map(inner.iter().map(|(k, v)| (k.clone(), json_to_stored(v))).collect());
+            }
             // NaN / ±inf nested in a Map or List (JSON has no such number:
             // they were written as null and read back as `()`)
             if let (1, Some(serde_json::Value::String(f))) = (obj.len(), obj.get("__float__")) {
@@ -738,7 +738,14 @@ fn stored_to_json(v: &StoredValue) -> serde_json::Value {
             let obj: serde_json::Map<String, serde_json::Value> = map.iter()
                 .map(|(k, v)| (k.clone(), stored_to_json(v)))
                 .collect();
-            serde_json::Value::Object(obj)
+            // a user map whose keys look like the encoding's own tags
+            // (`__variant__`, `__bigint__`, `__init__`…) is wrapped, so it
+            // comes back as the map it was — never as a forged variant
+            if obj.keys().any(|k| k.starts_with("__")) {
+                serde_json::json!({"__map__": serde_json::Value::Object(obj)})
+            } else {
+                serde_json::Value::Object(obj)
+            }
         }
         StoredValue::Variant { type_name, variant, fields } => {
             let (kind, encoded) = match fields {

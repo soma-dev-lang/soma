@@ -214,6 +214,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                     Value::Int(SomaInt::from_decimal_str(val))
                                 } else if let Some(n) = val.parse::<f64>().ok().filter(|f| f.is_finite()) {
                                     Value::Float(n)
+                                } else if matches!(val, "NaN" | "inf" | "-inf") {
+                                    // what write_csv writes for a NaN / infinite Float
+                                    Value::Float(val.parse::<f64>().unwrap_or(f64::NAN))
                                 } else {
                                     Value::String(val.to_string())
                                 };

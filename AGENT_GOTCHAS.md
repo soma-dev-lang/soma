@@ -26,11 +26,11 @@ return "len: {n}"
 ## 2. `match` arms use `->`, not `=>`
 
 ```soma
-return match x { 1 => "a"  * => "b" }
+return match x { 1 => "a"  _ => "b" }
 // error: match arms use '->', not '=>'
 ```
 ```soma
-return match x { 1 -> "a"  * -> "b" }
+return match x { 1 -> "a"  _ -> "b" }     // `_` is the catch-all arm
 ```
 `=>` is **lambda** syntax (`p => p + 1`). `->` is match arms and signal
 return types. Don't cross them.

@@ -303,7 +303,9 @@ fn cond_truth(val: &Value) -> Result<bool, ExecError> {
 fn invariant_holds(val: &Value) -> bool {
     match val {
         Value::List(mask) => mask.iter().all(is_truthy),
-        other => is_truthy(other),
+        // a condition is a Bool: `invariant vals` accepted 5 and refused 0
+        Value::Bool(b) => *b,
+        _ => false,
     }
 }
 
@@ -396,11 +398,10 @@ impl std::fmt::Display for Value {
         match self {
             Value::Int(si) => write!(f, "{}", si),
             Value::Float(n) => {
-                if n.fract() == 0.0 && n.is_finite() {
-                    write!(f, "{:.1}", n)
-                } else {
-                    write!(f, "{}", n)
-                }
+                // shortest round-trip digits (`{:.1}` wrote the exact binary
+                // expansion: 6.02214076e23 → 602214075999999987023872.0)
+                let t = format!("{}", n);
+                if n.is_finite() && !t.contains('.') { write!(f, "{}.0", t) } else { write!(f, "{}", t) }
             }
             Value::String(s) => write!(f, "{}", s),
             Value::Bool(b) => write!(f, "{}", b),
@@ -480,6 +481,9 @@ impl Value {
     fn as_bool(&self) -> Result<bool, RuntimeError> {
         match self {
             Value::Bool(b) => Ok(*b),
+            // an absent value is false wherever a condition is read (`if`
+            // took it, `!()`, `() && x`, `require ()` and guards raised)
+            Value::Unit => Ok(false),
             // `!0` used to be `true`: a condition is a Bool, as in `if`
             other => Err(RuntimeError::TypeError(format!("expected Bool, got {} {} — compare it: `x == 0`, `s == \"\"`, `xs == []`", value_type_name(other), short_value(other)))),
         }
@@ -2204,7 +2208,7 @@ impl Interpreter {
                                 // `len(slot)`: counted by the backend — reading
                                 // the bare name materialized every row
                                 None => if let Some(kind) = self.slot_kind(cell_name, local) {
-                                    if let Some(b) = self.storage.get(&format!("{}.{}", cell_name, local)).or_else(|| if cell_name.is_empty() { self.storage.get(local.as_str()) } else { None }) {
+                                    if let Some(b) = self.storage.get(&format!("{}.{}", cell_name, local)).or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(local.as_str()) } else { None }) {
                                         let n = if kind == "List" { b.list_len() } else { b.len() };
                                         return Ok(Value::Int(SomaInt::from_i64(n as i64)));
                                     }
@@ -2485,6 +2489,12 @@ impl Interpreter {
                 let outcome = self.eval_expr(&inner.node, env, cell_name, signal_name);
                 if let (Err(ExecError::Runtime(_)), Some(mark)) = (&outcome, savepoint) {
                     self.rollback_savepoint(mark);
+                }
+                // runaway recursion is not caught: a `try` around a
+                // self-applying lambda re-ran it at every level (100% CPU,
+                // 940 MB, the server's lock held) — it fails the handler
+                if matches!(outcome, Err(ExecError::Runtime(RuntimeError::StackOverflow))) {
+                    return outcome;
                 }
                 match outcome {
                     Ok(val) => Ok(map_from_pairs(vec![
@@ -2797,7 +2807,7 @@ impl Interpreter {
                         // `rows[i]` on a List slot raises like `xs[i]` on a list
                         // (it answered () out of range, and for `rows["1"]`)
                         if self.slot_kind(cell_name, slot_name) == Some("List") {
-                            let backend = self.storage.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.storage.get(slot_name.as_str()) } else { None }).cloned();
+                            let backend = self.storage.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(slot_name.as_str()) } else { None }).cloned();
                             if let Some(b) = backend {
                                 let i = list_position(&key, b.list_len(), "list").map_err(ExecError::Runtime)?;
                                 return Ok(b.list_get(i).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).unwrap_or(Value::Unit));
@@ -2964,7 +2974,7 @@ impl Interpreter {
             // the bare name only without a cell (a test rule): from a cell it
             // reached ANOTHER cell's slot (`"{bal.set(id, -3)}"` skipped the
             // owner's invariant and the privacy rule)
-            .or_else(|| if cell_name.is_empty() { self.storage.get(slot_name) } else { None });
+            .or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(slot_name) } else { None });
 
         let backend = match backend {
             // Arc clone: ends the borrow of self.storage so arms can call
@@ -3962,6 +3972,12 @@ impl Interpreter {
         }
     }
 
+    /// a `cell test` (its helpers read every cell's slots by their bare
+    /// name, like its rules)
+    fn is_test_cell(&self, cell_name: &str) -> bool {
+        self.cells.get(cell_name).map_or(false, |c| c.kind == CellKind::Test)
+    }
+
     fn slot_invariants_use_size(&self, cell_name: &str, slot_name: &str) -> bool {
         let invs = self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None });
         let Some(invs) = invs else { return false };
@@ -4129,7 +4145,7 @@ impl Interpreter {
                     result.extend(b.clone());
                     Ok(Value::List(result))
                 }
-                _ => Err(RuntimeError::TypeError("invalid op for lists".to_string())),
+                _ => Err(RuntimeError::TypeError("this operator does not apply to these two lists — numeric vectors of equal length take + - * / elementwise, a matrix times a matrix is the product (a matrix times a vector: write the vector as a one-column matrix [[a], [b]]), and concat(a, b) joins lists".to_string())),
             },
             (Value::Bool(a), Value::Bool(b)) => match op {
                 BinOp::And => Ok(Value::Bool(*a && *b)),
@@ -4506,7 +4522,7 @@ impl Interpreter {
                 })?;
             match result {
                 Value::Bool(true) => {} // guard passed
-                Value::Bool(false) => {
+                Value::Bool(false) | Value::Unit => {
                     // name the condition: "condition is false" told nobody which
                     return Err(RuntimeError::RequireFailed(format!(
                         "guard failed for transition {} → {}: `{}` is false",
@@ -4746,12 +4762,7 @@ impl Interpreter {
                 message: format!("slot '{}': a function (lambda) cannot be stored — store the data it works on", slot_name),
             }));
         }
-        if let Some(k) = reserved_storage_key(val) {
-            return Err(ExecError::Runtime(RuntimeError::Domain {
-                kind: "type".to_string(),
-                message: format!("slot '{}': a map key '{}' — keys starting with `__` are reserved by the storage (a client body `{{\"__variant__\": …}}` came back as a forged variant)", slot_name, k),
-            }));
-        }
+        // (map keys starting with `__` are escaped by the storage encoding)
         // stored values are JSON: past ~126 levels they came back as a String
         fn depth(v: &Value) -> usize {
             match v {
@@ -4801,7 +4812,7 @@ impl Interpreter {
     fn materialize_slot(&mut self, cell_name: &str, name: &str) -> Option<Value> {
         let kind = self.slot_kind(cell_name, name)?;
         let backend = self.storage.get(&format!("{}.{}", cell_name, name))
-            .or_else(|| if cell_name.is_empty() { self.storage.get(name) } else { None })?.clone();
+            .or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(name) } else { None })?.clone();
         Some(match kind {
             "List" => Value::List(backend.list().into_iter().map(|v| self.from_slot(cell_name, name, stored_to_value(v))).collect()),
             _ => {

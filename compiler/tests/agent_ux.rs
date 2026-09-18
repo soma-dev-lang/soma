@@ -1725,7 +1725,7 @@ cell A {
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("got an element String"), "{out}");
     let (out, _) = soma_in(&d, &["run", "s.cell", "f"]);
-    assert!(out.contains("1180591620717411303424.0"), "{out}");
+    assert!(out.contains("1180591620717411300000.0"), "{out}");
 }
 
 /// Cycle 18: `else` narrows a once-bound Int local like a parameter; an
@@ -2430,9 +2430,12 @@ fn cycle29_attack_findings() {
 #[test]
 fn cycle30_attack_findings() {
     let d = dir("cycle30a");
-    std::fs::write(d.join("s.cell"), "cell S {\n  memory { notes: Map<String, Any> [persistent]  users: Map<String, String> [persistent] }\n  on note(body: Map) { notes.set(\"c\", body) }\n  on reg(name: String) { users.set(name, \"x\") }\n}\n").unwrap();
-    let (out, _) = soma_in(&d, &["run", "--fresh", "s.cell", "note", "{\"__variant__\":\"Role\",\"__name__\":\"Admin\"}"]);
-    assert!(out.contains("reserved by the storage"), "{out}");
+    std::fs::write(d.join("s.cell"), "cell S {\n  memory { notes: Map<String, Any> [persistent]  users: Map<String, String> [persistent] }\n  on note(body: Map) { notes.set(\"c\", body) }\n  on get() { return type_of(notes.get(\"c\")) }\n  on reg(name: String) { users.set(name, \"x\") }\n}\n").unwrap();
+    // map keys that look like the storage's tags are escaped: the value
+    // comes back as the Map it was, never as a forged variant
+    let _ = soma_in(&d, &["run", "--fresh", "s.cell", "note", "{\"__variant__\":\"Role\",\"__name__\":\"Admin\"}"]);
+    let (out, _) = soma_in(&d, &["run", "s.cell", "get"]);
+    assert!(out.contains("Map"), "{out}");
     let (out, _) = soma_in(&d, &["run", "s.cell", "reg", "__b"]);
     assert!(out.contains("reserved by the storage"), "{out}");
 
@@ -2445,4 +2448,46 @@ fn cycle30_attack_findings() {
     std::fs::write(d.join("t.cell"), "cell T {\n  on a() {\n    let f = x => x + 1\n    return f(2)\n  }\n  on b() {\n    let fs = [g => {\n      let k = [g][0]\n      return k(k)\n    }]\n    let k2 = fs[0]\n    return k2(k2)\n  }\n}\n").unwrap();
     let (out, _) = soma_in(&d, &["verify", "t.cell"]);
     assert!(out.contains("calls the function value `k`") && !out.contains("function value `f`"), "{out}");
+}
+
+/// Cycle 31: self-application through map(g) is a termination ⚠ and a
+/// stack overflow is not caught by try; a computed delegate in request owns
+/// the cell's handlers; face tools are not endpoints (serve); an unknown
+/// word with several handlers is an error; invariants and conditions are
+/// Bools with () false; `f(a)(b)` is refused; floats print shortest digits;
+/// test helpers read slots; undefined functions in rules are check errors.
+#[test]
+fn cycle31_findings() {
+    let d = dir("cycle31");
+    std::fs::write(d.join("y.cell"), "cell Y {\n  on spin(n: Int) {\n    let w = g => try { [g, g] |> map(g) }\n    return [w] |> map(w)\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "y.cell"]);
+    assert!(out.contains("calls the function value `g`"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "y.cell", "spin", "1"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("stack overflow"), "{out}");
+
+    std::fs::write(d.join("u.cell"), "cell U {\n  memory { m: Map<String, String> [persistent] }\n  on wipe(k: String) { m.delete(k) }\n  on stats(k: String) { return m.get(k) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "u.cell", "nosuch"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("no handler named 'nosuch'"), "{out}");
+
+    std::fs::write(d.join("b.cell"), "cell B {\n  memory { vals: Map<String, Int> [persistent] invariant vals }\n  on f(n: Int) { return [!(), [1] |> filter(x => ()), format(\"%.3e\", 6.02214076e23), 6.02214076e23] }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "b.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("is not a condition"), "{out}");
+    std::fs::write(d.join("b2.cell"), "cell B {\n  on f(n: Int) { return [!(), [1] |> filter(x => ()), format(\"%.3e\", 6.02214076e23), 6.02214076e23] }\n  on g(n: Int) {\n    let mk = a => (b => a + b)\n    return mk(5)(n)\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "b2.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("calling the result of a call"), "{out}");
+    std::fs::write(d.join("b3.cell"), "cell B {\n  on f(n: Int) { return [!(), [1] |> filter(x => ()), format(\"%.3e\", 6.02214076e23), 6.02214076e23] }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "b3.cell", "f", "1"]);
+    assert!(out.contains(r#"[true, [], "6.022e+23", 6.02214076e23]"#), "{out}");
+
+    std::fs::write(d.join("t.cell"), "cell Store {\n  memory { items: Map<String, Int> [persistent] }\n  on add(k: String, n: Int) { items.set(k, n) }\n}\ncell test T {\n  rules {\n    let _ = add(\"a\", 1)\n    assert _count() == 1\n  }\n  on _count() { return items.len }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "t.cell"]);
+    assert_eq!(code, 0, "{out}");
+    std::fs::write(d.join("t2.cell"), "cell Store { on add(k: String) { return 1 } }\ncell test T { rules { assert _total() == 1 } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "t2.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("undefined function '_total'"), "{out}");
 }

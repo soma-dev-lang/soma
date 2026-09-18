@@ -88,7 +88,20 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     let request_routes = {
         let exposed = crate::checker::desugar::expose_for_analysis(&program);
         let acell = exposed.cells.iter().find(|c| c.node.name == cell.node.name).map(|c| c.node.clone()).unwrap_or_else(|| cell.node.clone());
-        std::sync::Arc::new(crate::checker::routes::explicit_routes_in(&exposed, &acell))
+        let mut r = crate::checker::routes::explicit_routes_in(&exposed, &acell);
+        // a face `tool` is for the MODEL (think() dispatches it with its
+        // capability scope): it is not an HTTP endpoint too (`POST /refund/o1`
+        // ran the tool around request's auth)
+        for sec in &acell.sections {
+            if let ast::Section::Face(face) = &sec.node {
+                for d in &face.declarations {
+                    if let ast::FaceDecl::Tool(t) = &d.node {
+                        if !r.owned.contains(&t.name) { r.owned.push(t.name.clone()); }
+                    }
+                }
+            }
+        }
+        std::sync::Arc::new(r)
     };
     let mutating = {
         // interpolation / UFCS calls made explicit: `"{bal.set(k, 0)}"` in a

@@ -316,7 +316,7 @@ pub fn generate_native_source_with_config(
     // a bit index: 0 ≤ i ≤ 2^24 (a negative one became a 4-billion-bit set_bit: a hang)
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_bit_index(k: i64) -> i64 { if k < 0 || k > (1i64 << 24) { panic!(\"soma:type: bit index {} out of range\", k) } k }\n");
     // a Float prints like the interpreter's (an integral Float as "8.0")
-    out.push_str("#[inline] #[allow(dead_code)] fn _soma_fmt_f(f: f64) -> String { if f.fract() == 0.0 && f.is_finite() { format!(\"{:.1}\", f) } else { format!(\"{}\", f) } }\n");
+    out.push_str("#[inline] #[allow(dead_code)] fn _soma_fmt_f(f: f64) -> String { let t = format!(\"{}\", f); if f.is_finite() && !t.contains('.') { format!(\"{}.0\", t) } else { t } }\n");
     out.push_str("impl Drop for _SomaDepth { #[inline(always)] fn drop(&mut self) { _SOMA_DEPTH.with(|d| d.set(d.get().saturating_sub(1))); } }\n\n");
     let _ = all_direct_originally; // kept for future per-handler decisions
 
@@ -4482,7 +4482,7 @@ impl FnGenerator {
                 let a = self.gen_expr_direct(&args[0].node, a_ty);
                 if a_ty == NativeType::Float {
                     // the interpreter prints an integral Float as "1.0"
-                    format!("{{ let _f: f64 = {}; if _f.fract() == 0.0 && _f.is_finite() {{ format!(\"{{:.1}}\", _f) }} else {{ format!(\"{{}}\", _f) }} }}", a)
+                    format!("_soma_fmt_f({})", a)
                 } else {
                     format!("format!(\"{{}}\", {})", a)
                 }

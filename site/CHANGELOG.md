@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A stack overflow is not caught by `try`; lambdas handing function values to
+  map/filter are a termination ⚠; a computed delegate in `request` owns the
+  cell's handlers; face tools are not HTTP endpoints.
+- Storage escapes map keys starting with `__` (no refusal, no forgery);
+  `()` is false in every condition; invariants must be Bool.
+- Floats print shortest digits; `format("%e")`; 5 redirect hops;
+  `f(a)(b)` refused; unknown handler names in `soma run` are errors.
 - Storage refuses map keys and slot keys starting with `__` (reserved by
   the encoding: a client body could come back as a forged variant, and such
   keys escaped len and size invariants).

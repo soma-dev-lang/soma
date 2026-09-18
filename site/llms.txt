@@ -78,10 +78,12 @@ cell App {
         draft -> rejected                    // approved/rejected: terminal (no outgoing edge)
     }
     on add(a: Int, b: Int) { return a + b }  // NO return type on handlers
+    on approve_request(id: String, amount: Int) { transition(id, "approved") }  // binds the guard's `amount`
+    on reject(id: String) { transition(id, "rejected") }
     on request(method: String, path: String, body: String) {
         match map("method", method, "path", path) {
             {method: "GET", path: "/"} -> html("<h1>hi</h1>")
-            {method: "POST", path: "/add/" + id} -> handle(id)   // ONE variable per pattern, at the end
+            {method: "POST", path: "/approve/" + id} -> approve_request(id, 500)   // ONE variable per pattern, at the end
             _ -> response(404, map("error", "not found"))
         }
     }
@@ -94,7 +96,7 @@ cell App {
 let x = 42                  x += 1            // no semicolons; newlines separate
 let v = -1                                    // negative literals work
 let s = "hello {name}"                        // interpolation; UNDEFINED vars are
-                                              // check-time errors; no nested "..." inside {}
+                                              // check-time errors; an unescaped " inside {} ends the string
 let xs = [1, 2, 3]          xs[0] = 99        // bracket index read AND write
 let m = map("k", 1)         m["k"] = 2        // maps too; m.k and m["k"] both read
 let g = Game { bet: 10 }    g.bet = 20        // records: literal + dot mutation
@@ -148,6 +150,9 @@ map("k", v)   map()                // no {k: v} literal;   record: Name { k: v }
 [1, 2, 3]     []                   // list literals
 x == ()       x ?? 0               // null is (); no null / None / undefined
 if c { a } else { b }              // is an expression; no ternary; && || !  (no and/or/not)
+                                   // a condition (if, while, &&, ||, !, require, guards,
+                                   // filter/any/all predicates, invariants) is a Bool — `()`
+                                   // counts as false; a String/Int/List is a type error
 x => x + 1                         // lambdas take ONE parameter
 for x in xs { }   for k in keys(m) { m[k] }   for e in entries(m) { e.key  e.value }   // for over () runs 0 times, over a String its lines, over a number: type error
 slice(xs, 1, 3)  slice(xs, -2)     // no xs[a:b]
@@ -290,7 +295,7 @@ source, `file:line`, left/right, and the fields a value really has when
   `headers: Map` parameter (lower-case names).
 - HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
   "headers", map(...)))` never raise; non-2xx is `{error, kind, status, body}`
-  (kind `http_status` — redirects are followed up to 5 hops; a 3xx left unfollowed (a 307/308 answering a POST, or a 6th hop) is http_status too — | `timeout` —
+  (kind `http_status` — redirects are followed up to 5 hops; a 3xx left unfollowed (a 307/308 answering a POST) is http_status too, a 6th hop is kind `network` (too many redirects) — | `timeout` —
   also a body that stalls — | `too_large` over `max_bytes` | `refused` |
   `network`); default timeout 30 s; invalid option values are refused;
   a String body is sent as text/plain unless it is JSON; `mock http_post …`
@@ -489,26 +494,32 @@ cell agent Researcher {
         signal research(topic: String) -> Map
         tool search(q: String) -> String [capability: "https://api.x.com/*"] "Search"
     }
-    state job { initial: idle  idle -> working  working -> done  * -> failed }
+    cost { tokens: 6000 }                             // PROVEN by soma check: 2000 × 3 rounds
+    state job { initial: idle  idle -> working  working -> done  * -> failed except [done] }
+    on search(q: String) { return to_json(http_get("https://api.x.com/search?q={q}")) }
     on research(topic: String) {
-        set_budget(5000)                              // token cap: the think() that crosses it completes, the NEXT one raises kind budget
-        transition("t", "working")
-        let facts = think("Research {topic}", map("max_tokens", 2000))
-        transition("t", "done")
-        return map("facts", facts, "spent", tokens_used())
+        set_budget(8000)                              // token cap: the think() that crosses it completes, the NEXT one raises kind budget
+        transition(topic, "working")                  // one machine instance per topic
+        let r = try { think("Research {topic}", map("max_tokens", 2000, "max_rounds", 3)) }
+        if r.error != () {
+            transition(topic, "failed")
+            return map("error", r.kind)
+        }
+        transition(topic, "done")
+        return map("facts", r.value, "spent", tokens_used())
     }
 }
-// soma verify PROVES the lifecycle; add `cost { tokens: 2000 }` (also
-// latency:, usd:) to the cell and soma check PROVES the bound when every
-// think() has a literal max_tokens and runs a known number of times.
+// soma verify PROVES the lifecycle; `cost { tokens: N }` (also latency:,
+// usd:) is PROVEN when every think() has a literal max_tokens and runs a
+// known number of times — with tools, × the rounds (`max_rounds`, else 10).
 // The model may call only the face's `tool`s (never a private or other
-// handler), with typed arguments, within their capabilities — the scope
-// binds MODEL calls only: your own code (or `soma run app.cell tool …`)
-// calling the tool handler directly is not restricted; `mock think` scripts
-// text replies only (to test tool calls offline, point [agent] url at a fake
-// OpenAI-compatible server) (URL patterns with
+// handler), with typed arguments, within their capabilities (URL patterns with
 // `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
-// tool that calls think() makes a `cost` bound unprovable); a tool call that raises is rolled
+// tool that calls think() makes a `cost` bound unprovable) — the scope binds
+// MODEL calls only (your own code calling the tool handler is not
+// restricted), and a tool is not an HTTP endpoint; `mock think` scripts text
+// replies only (to test tool calls offline, point [agent] url at a fake
+// OpenAI-compatible server); a tool call that raises is rolled
 // back. `map("max_rounds", N)` caps the tool-call rounds of one think();
 // `map("tools_allowed", ["lookup"])` offers only those tools to that call
 // (classify with no refund tool in reach); a `*` in a capability stays in
@@ -589,7 +600,7 @@ Arguments are type-checked at the call like any handler; `random(n)` /
 `shl(1, 64) - 1`); `[loop_bound(N)]` is checked; recursion deeper than
 20,000 calls raises stack_overflow. Floats print with the shortest
 round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.0000001`, a Float inside
-a printed map or list too); to_json — HTTP bodies included — uses JSON's shortest form (`1.18e21`).
+a printed map or list too; `format("%.3e", x)` for scientific notation); to_json — HTTP bodies included — uses JSON's shortest form (`1.18e21`).
 An SSE `data:` line and a WebSocket push carry the value as JSON on one line
 (a String payload is quoted, so a client cannot forge another event).
 `soma check` verifies the native vocabulary (every handler, every error at

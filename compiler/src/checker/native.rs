@@ -292,6 +292,29 @@ pub fn check_native_handler(
             }
         }
     }
+    // a condition is a Bool, as interpreted: `if k { … }` on an Int ran in
+    // native code and raised in the interpreter
+    if problem.is_none() {
+        let nums: HashSet<String> = params.iter().filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "Float")).map(|p| p.name.clone()).collect();
+        let numeric = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(_) | Literal::Float(_)))
+            || matches!(e, Expr::Ident(n) if nums.contains(n))
+            || matches!(e, Expr::BinaryOp { op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. });
+        fn conds<'a>(stmts: &'a [Spanned<Statement>], out: &mut Vec<&'a Expr>) {
+            for st in stmts {
+                match &st.node {
+                    Statement::If { condition, then_body, else_body } => { out.push(&condition.node); conds(then_body, out); conds(else_body, out); }
+                    Statement::While { condition, body, .. } => { out.push(&condition.node); conds(body, out); }
+                    Statement::For { body, .. } => conds(body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut cs: Vec<&Expr> = Vec::new();
+        conds(body, &mut cs);
+        if cs.iter().any(|c| numeric(c)) {
+            problem = Some("uses a number as a condition — a condition is a Bool, as in interpreted code: compare it (`if k != 0`)".to_string());
+        }
+    }
     if let Some(reason) = problem {
         return Err(NativeCheckError { handler_name: handler_name.to_string(), reason });
     }

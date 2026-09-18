@@ -218,6 +218,26 @@ pub fn explicit_routes_in(program: &Program, cell: &CellDef) -> ExplicitRoutes {
             }
         }
         stmt_edges(&h.body, &cells, &mut edges);
+        // `delegate("Api", op, id)` with a COMPUTED handler name can reach any
+        // handler of that cell: all of them are request's (POST /wipe/k
+        // skipped the auth check)
+        let mut computed: Option<Option<String>> = None;
+        super::literals::for_each_expr(&h.body, &mut |e| if let Expr::FnCall { name, args } = e {
+            if name == "delegate" && args.len() >= 2 && !matches!(args[1].node, Expr::Literal(Literal::String(_))) {
+                computed = Some(match &args[0].node { Expr::Literal(Literal::String(c)) => Some(c.clone()), _ => None });
+            }
+        });
+        if let Some(target) = computed {
+            if target.as_deref().map_or(true, |c| c == cell.name) {
+                for sec in &cell.sections {
+                    if let Section::OnSignal(o) = &sec.node {
+                        if o.signal_name != "request" && !o.signal_name.starts_with('_') && !routes.owned.contains(&o.signal_name) {
+                            routes.owned.push(o.signal_name.clone());
+                        }
+                    }
+                }
+            }
+        }
         for (tc, n) in edges {
             let targets: Vec<String> = match tc {
                 Some(c) if c == "*" => program.cells.iter().filter(|c| defs.contains_key(&(c.node.name.clone(), n.clone()))).map(|c| c.node.name.clone()).collect(),

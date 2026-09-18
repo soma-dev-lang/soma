@@ -29,7 +29,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `hmac_sha256` | `hmac_sha256(key: String, message: String) -> String` | HMAC-SHA-256 as hex: sign a session cookie or a webhook payload with a server secret. |
 | `random_token` ✗ | `random_token(bytes?: Int) -> String` | Cryptographically secure random bytes from the OS, as hex (default 32 bytes = 64 characters): session tokens, API keys, salts. random() is NOT for secrets. |
 | `secure_eq` | `secure_eq(a: String, b: String) -> Bool` | Constant-time equality for secrets (tokens, signatures): `==` returns early and leaks a prefix by timing. |
-| `format` | `format(fmt: String, args...) -> String` | printf subset: %d %s %f %.2f %8.2f %3d %-8s %05d %% — widths, precision (rounded half away from zero on the decimal text), left-align with '-', zero-pad with '0'. |
+| `format` | `format(fmt: String, args...) -> String` | printf subset: %d %s %f %.2f %8.2f %e %.3e %3d %-8s %05d %% — %e is C-style scientific (6.022e+23); widths, precision (rounded half away from zero on the decimal text), left-align with '-', zero-pad with '0'. |
 | `fields` | `fields(s: String) -> List<String>` | Split on any run of whitespace, no empty pieces (Go's strings.Fields; split(s, " ") keeps empties). |
 | `index_of` | `index_of(s: String, sub: String) -> Int  \|  index_of(xs: List, x) -> Int` | Character index of the first occurrence of `sub` in a String, or the position of the first element equal to `x` in a List; -1 if absent. |
 | `substring` | `substring(s: String, start: Int, end: Int) -> String` | Character-based slice [start, end) — end is exclusive and clamped. |
@@ -84,14 +84,14 @@ The `native` section is usable inside `[native]` handlers only.
 | `pow` | `pow(base: Int\|Float, exp: Int\|Float) -> Float` | base raised to exp (always a Float). |
 | `min` | `min(a, b) -> Int\|Float \| min(list: List) -> Int\|Float` | Smaller of two numbers, or the minimum of a list (Float if any element is). |
 | `max` | `max(a, b) -> Int\|Float \| max(list: List) -> Int\|Float` | Larger of two numbers, or the maximum of a list (Float if any element is). |
-| `sum` | `sum(list: List) -> Int\|Float` | Sum of a list of numbers (Int-exact unless any element is a Float); 0 when empty. |
+| `sum` | `sum(list: List) -> Int\|Float` | Sum of a list of numbers (Int-exact unless any element is a Float); 0 when empty. Floats are added left to right without compensation (NumPy's pairwise / Python's fsum can differ in the last bits). |
 | `product` | `product(list: List) -> Int\|Float` | Product of a list of numbers; 1 when empty. |
 | `avg` | `avg(list: List) -> Int\|Float` | Mean of a list of numbers, by the rule of `/`: avg([1, 2]) = 1.5, an exact mean of Ints stays an Int; () when empty. |
 | `parse_int` | `parse_int(s: String) -> Int \| ()` | Strict integer parse: () unless the WHOLE string is an integer ("1.5", "12abc", "" → ()). to_int() is lenient and truncates. |
 | `parse_float` | `parse_float(s: String) -> Float \| ()` | Strict float parse: () unless the whole string is a finite number. |
 | `idiv` | `idiv(a: Int, b: Int) -> Int` | Integer division truncating toward zero; errors on division by zero. |
 | `clamp` | `clamp(v, lo, hi) -> Int\|Float` | Constrain v to [lo, hi]; errors if lo > hi. |
-| `random` ✗ | `random() -> Float \| random(max: Int) -> Int \| random(min: Int, max: Int) -> Int` | Time-seeded PRNG: float in [0,1), or int in [0,max) / [min,max). |
+| `random` ✗ | `random() -> Float \| random(max: Int) -> Int \| random(min: Int, max: Int) -> Int` | Time-seeded PRNG: float in [0,1), or int in [0,max) / [min,max). There is no seed: for reproducible runs write your own generator (an LCG over Ints), and for secrets use random_token(). |
 | `gcd` | `gcd(a: Int, b: Int) -> Int` | Greatest common divisor (Euclid, absolute values). |
 | `sqrt_int` | `sqrt_int(n: Int) -> Int` | Integer square root; errors on negative input. |
 | `pow_mod` | `pow_mod(base: Int, exp: Int, m: Int) -> Int` | Modular exponentiation base^exp mod m; errors if m is zero. |
@@ -162,11 +162,11 @@ The `native` section is usable inside `[native]` handlers only.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `filter` | `filter(list: List, x => Bool) -> List` | Keep elements where the lambda returns truthy. |
-| `find` | `find(list: List, x => Bool) -> Any` | First element where the lambda is truthy, or (). |
-| `any` | `any(list: List, x => Bool) -> Bool` | True if the lambda is truthy for at least one element. |
-| `all` | `all(list: List, x => Bool) -> Bool` | True if the lambda is truthy for every element (true on empty). |
-| `count` | `count(list: List, x => Bool) -> Int` | Number of elements where the lambda is truthy. |
+| `filter` | `filter(list: List, x => Bool) -> List` | Keep elements where the lambda returns true (it answers a Bool; () counts as false). |
+| `find` | `find(list: List, x => Bool) -> Any` | First element where the lambda returns true, or (). |
+| `any` | `any(list: List, x => Bool) -> Bool` | True if the lambda returns true for at least one element. |
+| `all` | `all(list: List, x => Bool) -> Bool` | True if the lambda returns true for every element (true on empty). |
+| `count` | `count(list: List, x => Bool) -> Int` | Number of elements where the lambda returns true. |
 | `reduce` | `reduce(list: List, initial, p => expr) -> Any` | Fold the list; the lambda receives {acc, val} and returns the next acc. |
 
 ## io
@@ -250,7 +250,7 @@ The `native` section is usable inside `[native]` handlers only.
 | Builtin | Signature | Description |
 |---|---|---|
 | `remember` | `remember(key, value) -> ()` | Persist a value in the cell's agent memory slot. |
-| `recall` | `recall(key: String) -> Any` | Fetch a remembered value from any storage slot, or (). |
+| `recall` | `recall(key: String) -> Any` | The value this cell remember()ed under the key, or (). |
 | `append` | `slot.append(value) -> ()` | Memory-slot method: append a value to a list-backed slot (alias: slot.push). |
 
 ## agent

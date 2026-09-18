@@ -928,6 +928,51 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // an undefined function in a test rule passed check and failed only
+        // when the test ran
+        {
+            let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for c in &program.cells {
+                for s in &c.node.sections {
+                    if let Section::OnSignal(on) = &s.node { defined.insert(on.signal_name.clone()); }
+                }
+            }
+            let builtins = names::builtin_names();
+            for cell in program.cells.iter().filter(|c| c.node.kind == CellKind::Test) {
+                for sec in &cell.node.sections {
+                    let Section::Rules(rules) = &sec.node else { continue };
+                    let mut lets: std::collections::HashSet<String> = std::collections::HashSet::new();
+                    for rule in &rules.rules {
+                        if let Rule::Let { name, .. } = &rule.node { lets.insert(name.clone()); }
+                        let e = match &rule.node {
+                            Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => e,
+                            Rule::Let { value, .. } => value,
+                            _ => continue,
+                        };
+                        let mut params: std::collections::HashSet<String> = std::collections::HashSet::new();
+                        literals::for_each_in_expr(&e.node, &mut |x| match x {
+                            Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } => { params.insert(param.clone()); }
+                            _ => {}
+                        });
+                        let mut bad: Option<String> = None;
+                        literals::for_each_in_expr(&e.node, &mut |x| if let Expr::FnCall { name, .. } = x {
+                            if bad.is_none() && !defined.contains(name) && !builtins.contains(name.as_str()) && !lets.contains(name)
+                                && !params.contains(name) && !name.starts_with(|c: char| c.is_uppercase()) && name != "_coalesce" {
+                                bad = Some(name.clone());
+                            }
+                        });
+                        if let Some(n) = bad {
+                            let near = names::suggest(&n, defined.iter()).map(|s| format!(" (did you mean '{}'?)", s)).unwrap_or_default();
+                            self.errors.push(CheckError::Static {
+                                kind: "undefined_function",
+                                message: format!("test rule calls undefined function '{}'{} — no cell defines a handler of that name and it is not a builtin", n, near),
+                                span: rule.span,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         // `assert_fails transition(id, "x")` in a program with several
         // machines raised "which machine?" (kind type) and passed for the
         // wrong reason; a test names the machine by calling its cell's handler
@@ -976,6 +1021,28 @@ impl<'a> Checker<'a> {
                         if !matches!(&p.ty.node, TypeExpr::Simple(t) if t == "String" || t == "Any") {
                             self.errors.push(CheckError::Static { kind: "ws_placement", message: "`on ws(msg: String)`: a WebSocket frame arrives as text — parse it with from_json(msg)".to_string(), span: sec.span });
                         }
+                    }
+                }
+            }
+        }
+        // an invariant is a condition: `invariant vals` / `invariant vals - 3`
+        // were truthiness (5 accepted, 0 refused) and verify suggested
+        // `require v - 3 else …`, itself invalid
+        for cell in &program.cells {
+            for sec in &cell.node.sections {
+                let Section::Memory(m) = &sec.node else { continue };
+                for inv in &m.invariants {
+                    let not_bool = match &inv.node {
+                        Expr::Ident(_) | Expr::Literal(Literal::Int(_) | Literal::Float(_) | Literal::String(_) | Literal::BigInt(_)) => true,
+                        Expr::BinaryOp { op, .. } => !matches!(op, BinOp::And | BinOp::Or),
+                        _ => false,
+                    };
+                    if not_bool {
+                        self.errors.push(CheckError::Static {
+                            kind: "invariant_not_bool",
+                            message: format!("invariant `{}` is not a condition — compare it (`{} >= 0`, `size <= 100`)", crate::ast::render_expr(&inv.node), crate::ast::render_expr(&inv.node)),
+                            span: inv.span,
+                        });
                     }
                 }
             }
