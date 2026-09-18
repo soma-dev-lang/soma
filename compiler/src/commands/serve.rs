@@ -1683,7 +1683,7 @@ pub(crate) fn status_for_kind(kind: &str) -> u16 {
         "invalid_transition" | "conflict" => 409,
         "invariant" | "ensure" => 422,
         "json" | "division_by_zero" | "type" => 400,
-        "stack_overflow" | "llm" | "budget" | "undefined_variable" | "undefined_function" | "no_handler" => 500,
+        "stack_overflow" | "llm" | "budget" | "undefined_variable" | "undefined_function" | "no_handler" | "response" => 500,
         _ => 400, // `require … else Tag`, fail("tag") — the program refused the request
     }
 }

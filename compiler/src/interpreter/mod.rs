@@ -4194,7 +4194,10 @@ impl Interpreter {
             | ("Map", Value::Map(_) | Value::Variant { .. }) => true,
             ("Float", Value::Int(i)) => return Ok(Value::Float(i.to_f64())),
             ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => false,
-            (t, Value::Variant { type_name, .. }) if self.type_variants.contains_key(t) => type_name == t,
+            // the variant must be one the type declares: from_json of a
+            // client string could build `Pay.Refund` for a Pay without it
+            (t, Value::Variant { type_name, variant, .. }) if self.type_variants.contains_key(t) =>
+                type_name == t && self.type_variants[t].iter().any(|v| v == variant),
             (t, _) if self.type_variants.contains_key(t) => false,
             _ => true,
         };
