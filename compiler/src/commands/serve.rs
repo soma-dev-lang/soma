@@ -1003,6 +1003,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let mut body_raw = String::new();
         let _ = request.as_reader().read_to_string(&mut body_raw);
 
+        // leading whitespace is JSON too (a pretty-printing client): trim
+        let body_raw = body_raw.trim_start().to_string();
         let body_value = if body_raw.starts_with('{') || body_raw.starts_with('[') {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_raw) {
                 Some(json_request_to_value(&parsed))

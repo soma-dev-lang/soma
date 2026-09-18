@@ -28,7 +28,9 @@ pub enum StoredValue {
     String(String),
     Bool(bool),
     List(Vec<StoredValue>),
-    Map(HashMap<String, StoredValue>),
+    /// insertion-ordered: a record comes back with its fields in the order
+    /// they were written (a HashMap shuffled them per process)
+    Map(indexmap::IndexMap<String, StoredValue>),
     /// V1.6: sum-type values stored with their tag and fields,
     /// so a `Map<String, TodoStatus>` round-trips through any backend.
     Variant {

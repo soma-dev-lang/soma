@@ -61,7 +61,7 @@ kind yourself only when you want a different status or body:
 ```soma
 let r = try { _hold(id) }
 if r.kind == "invalid_transition" { return response(410, map("error", r.detail)) }
-if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers
+if r.error != ()                  { fail(r) }      // re-raise: the default mapping answers (under serve; a test sees the raised error)
 ```
 
 Path segments reach `request` percent-decoded (`/stock/a%20b` → `"/stock/a b"`).

@@ -217,6 +217,15 @@ source, `file:line`, left/right, and the fields a value really has when
   an error. An invariant on a Map slot applies to every value written.
 - `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
   `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
+- Declared parameter types are enforced at runtime: `add(points: Int)` given
+  `2.5` raises kind `type` (400) before the body runs — no `is_int` check needed.
+- Values are copies: `let row = s[k]  row.count += 1` changes `row` only —
+  write it back (`s[k] = row`); a map read from a slot is a copy too
+  (`cards.set(id, c)` after editing `c`). Records keep their field order.
+- In `cell test`, `request(...)` is an ordinary call: an error it does not
+  catch RAISES (assert it with `assert_fails request(...) matching "not_found"`);
+  the kind → HTTP status mapping is applied by `soma serve` only. Return
+  `response(status, …)` yourself when a test must see the status.
 - `"""…"""` is raw for escapes (`\t` stays two characters) but `{x}` IS
   interpolated; write `{{` for a literal brace.
 - `[1, 2] + [10, 20]` is element-wise (`[11, 22]`; Floats when a value is
