@@ -77,6 +77,36 @@ pub fn check_cell_termination(cell: &CellDef, program: &Program) -> Vec<Terminat
                     on.signal_name
                 ));
             }
+            // `down(n - 1)` descends forever from a negative n unless the
+            // base case is a LOWER BOUND on an Int parameter (`if n <= 0 {
+            // return … }`, `require n >= 0`): `n == 0` is stepped over
+            if self_recursive && reasons.is_empty() {
+                let decreasing: Vec<&Param> = on.params.iter().filter(|p| {
+                    let mut used = false;
+                    for stmt in &on.body {
+                        walk_stmt(&stmt.node, &mut |e| {
+                            if let Expr::FnCall { name, args } = e {
+                                if name == &on.signal_name && args.iter().any(|a| is_decreasing_arg(&a.node, &p.name)) { used = true; }
+                            }
+                        });
+                    }
+                    used
+                }).collect();
+                for p in decreasing {
+                    let is_int = matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int");
+                    if !is_int {
+                        reasons.push(format!(
+                            "handler `{}`: the decreasing argument `{}` is not an Int (a Float step can stall: x - 1 == x past 2^53)",
+                            on.signal_name, p.name
+                        ));
+                    } else if !has_lower_bound_exit(&on.body, &p.name) {
+                        reasons.push(format!(
+                            "handler `{}`: `{} - k` decreases but no base case bounds it from below — write `if {} <= 0 {{ return … }}` (an `== 0` test is stepped over from a negative start)",
+                            on.signal_name, p.name, p.name
+                        ));
+                    }
+                }
+            }
             if let Some(cycle) = find_cycle(&graph, &on.signal_name) {
                 reasons.push(format!(
                     "handler `{}`: mutual recursion {} without a provable decreasing measure",
@@ -523,6 +553,48 @@ fn is_decreasing_arg(arg: &Expr, param_name: &str) -> bool {
                     }
                 }
             }
+        }
+    }
+    false
+}
+
+/// Does the body stop the descent with a lower bound on `param` before any
+/// statement can recurse: `if param <= c { … return … }` (or `< c`, or the
+/// flipped spelling), or `require param >= c` — with a literal `c`?
+fn has_lower_bound_exit(body: &[Spanned<Statement>], param: &str) -> bool {
+    fn bounded(cond: &Expr, param: &str) -> bool {
+        match cond {
+            Expr::CmpOp { left, op, right } => {
+                let lit = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(_)));
+                match (&left.node, &right.node) {
+                    (Expr::Ident(n), r) if n == param && lit(r) => matches!(op, CmpOp::Le | CmpOp::Lt),
+                    (l, Expr::Ident(n)) if n == param && lit(l) => matches!(op, CmpOp::Ge | CmpOp::Gt),
+                    _ => false,
+                }
+            }
+            Expr::BinaryOp { left, op: BinOp::Or, right } => bounded(&left.node, param) || bounded(&right.node, param),
+            _ => false,
+        }
+    }
+    for st in body {
+        match &st.node {
+            Statement::If { condition, then_body, .. } => {
+                let exits = matches!(then_body.last().map(|s| &s.node), Some(Statement::Return { .. }))
+                    || matches!(then_body.last().map(|s| &s.node), Some(Statement::ExprStmt { expr }) if matches!(&expr.node, Expr::FnCall { name, .. } if name == "fail"));
+                if exits && bounded(&condition.node, param) { return true; }
+            }
+            Statement::Require { constraint, .. } => {
+                if let Constraint::Comparison { left, op, right } = &constraint.node {
+                    let lit = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(_)));
+                    let ok = match (&left.node, &right.node) {
+                        (Expr::Ident(n), r) if n == param && lit(r) => matches!(op, CmpOp::Ge | CmpOp::Gt),
+                        (l, Expr::Ident(n)) if n == param && lit(l) => matches!(op, CmpOp::Le | CmpOp::Lt),
+                        _ => false,
+                    };
+                    if ok { return true; }
+                }
+            }
+            _ => {}
         }
     }
     false

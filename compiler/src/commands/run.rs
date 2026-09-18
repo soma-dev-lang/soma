@@ -310,6 +310,11 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     let actual_args = coerce_cli_args(&cell.node, &signal_name, actual_args);
 
+    // stored data older than the program (an invariant added since, an
+    // instance in a removed state): say so, like serve does
+    for line in interp.audit_stored_data() {
+        eprintln!("warning: stored data: {}", line);
+    }
     match interp.call_signal(&cell_name, &signal_name, actual_args) {
         // the handler's value is the command's output; `()` prints nothing
         // (a `main` that only prints used to end with a stray `null`)

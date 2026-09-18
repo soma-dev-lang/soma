@@ -101,6 +101,9 @@ impl RuntimeError {
                     "budget".to_string()
                 } else if msg.contains("out of bounds") {
                     "index".to_string()
+                } else if msg.starts_with("range: ") {
+                    // a [native] to_int() past the Int range: same kind as interpreted
+                    "range".to_string()
                 } else {
                     "type".to_string()
                 }

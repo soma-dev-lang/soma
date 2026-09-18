@@ -145,6 +145,15 @@ impl<'a> CostWalk<'a> {
                     self.latency_ms += timeout.unwrap_or(10_000);
                 }
                 for a in args { self.visit_expr(&a.node, handler_name); }
+                // `delegate("Cell", "handler", …)` with literal names runs
+                // that handler: it spends what the handler spends
+                let delegated: Option<String> = if name == "delegate" && args.len() >= 2 {
+                    match (&args[0].node, &args[1].node) {
+                        (Expr::Literal(Literal::String(c)), Expr::Literal(Literal::String(h))) => Some(format!("{}.{}", c, h)),
+                        _ => { self.unbounded_sites.push(format!("{}::delegate to a non-literal target", handler_name)); None }
+                    }
+                } else { None };
+                let name: &String = delegated.as_ref().unwrap_or(name);
                 // A call to a sibling handler spends what its body spends.
                 if let Some(body) = self.handlers.get(name.as_str()).copied() {
                     if self.stack.iter().any(|h| h == name) {
@@ -331,14 +340,22 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         }
     }
     for section in &cell.sections {
-        if let Section::OnSignal(ref handler) = section.node {
+        // every / after blocks are handler invocations: a tick with two
+        // think() calls used to count as "peak 0"
+        let (hname, body): (String, &[Spanned<Statement>]) = match &section.node {
+            Section::OnSignal(handler) => (handler.signal_name.clone(), &handler.body),
+            Section::Every(e) => (format!("every@{}ms", e.interval_ms), &e.body),
+            Section::After(e) => (format!("after@{}ms", e.interval_ms), &e.body),
+            _ => continue,
+        };
+        {
             let mut walk = CostWalk::new(&handlers);
-            walk.stack.push(handler.signal_name.clone());
-            for s in &handler.body {
-                walk.visit_stmt(&s.node, &handler.signal_name);
+            walk.stack.push(hname.clone());
+            for s in body {
+                walk.visit_stmt(&s.node, &hname);
             }
-            if walk.tokens > peak_tokens { peak_tokens = walk.tokens; peak_tokens_in = handler.signal_name.clone(); }
-            if walk.latency_ms > peak_latency_ms { peak_latency_ms = walk.latency_ms; peak_latency_in = handler.signal_name.clone(); }
+            if walk.tokens > peak_tokens { peak_tokens = walk.tokens; peak_tokens_in = hname.clone(); }
+            if walk.latency_ms > peak_latency_ms { peak_latency_ms = walk.latency_ms; peak_latency_in = hname.clone(); }
             advisory_sites.extend(walk.unbounded_sites);
         }
     }

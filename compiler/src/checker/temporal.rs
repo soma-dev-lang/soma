@@ -439,7 +439,9 @@ pub fn check_property(graph: &StateMachineGraph, property: &Property) -> Propert
                 PropertyResult {
                     property: format!("eventually({})", pred.describe()),
                     passed: true,
-                    message: "all paths eventually satisfy the predicate".to_string(),
+                    message: if graph.adj.values().any(|v| v.iter().any(|(_, g)| g.is_some())) {
+                        "all paths eventually satisfy the predicate — assuming every guarded edge can be taken (a guard that is always false makes its source a runtime dead end; guards are checked at runtime, not proven)".to_string()
+                    } else { "all paths eventually satisfy the predicate".to_string() },
                     counter_example: None,
                 }
             }
@@ -476,7 +478,9 @@ pub fn check_property(graph: &StateMachineGraph, property: &Property) -> Propert
                 PropertyResult {
                     property: format!("after('{}', {})", state, pred.describe()),
                     passed: true,
-                    message: format!("after '{}', all paths eventually satisfy the predicate", state),
+                    message: if graph.adj.values().any(|v| v.iter().any(|(_, g)| g.is_some())) {
+                        format!("after '{}', all paths eventually satisfy the predicate — assuming every guarded edge can be taken", state)
+                    } else { format!("after '{}', all paths eventually satisfy the predicate", state) },
                     counter_example: None,
                 }
             }

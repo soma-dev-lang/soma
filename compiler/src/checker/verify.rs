@@ -603,8 +603,9 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
     }
 
     // 4. Terminal states (no outgoing transitions)
+    // a self-loop (`paid -> paid`) does not make a state non-terminal
     let terminals: Vec<String> = states.iter()
-        .filter(|s| adj.get(*s).map_or(true, |v| v.is_empty()))
+        .filter(|s| adj.get(*s).map_or(true, |v| v.iter().all(|t| t == *s)))
         .cloned()
         .collect();
 
@@ -697,7 +698,7 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
         // enabled (an over-approximation, so safety results still hold); the
         // guard itself is enforced when transition() runs.
         result.checks.push(VerifyCheck::Pass(
-            format!("guards (enforced at runtime, edges kept in the model): {}", guards_str.join(", "))
+            format!("guards (enforced at runtime, edges kept in the model — liveness and `eventually` above assume they can pass): {}", guards_str.join(", "))
         ));
     }
 

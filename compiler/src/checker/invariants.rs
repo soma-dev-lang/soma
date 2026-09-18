@@ -387,7 +387,8 @@ fn bounds(k: Known) -> Option<(f64, f64)> {
 }
 
 fn mk(lo: f64, hi: f64) -> Known {
-    if lo.is_nan() || hi.is_nan() {
+    const EXACT: f64 = 9007199254740992.0; // 2^53: beyond it f64 rounds (i64::MAX + 10 == i64::MAX)
+    if lo.is_nan() || hi.is_nan() || (lo.is_finite() && lo.abs() > EXACT) || (hi.is_finite() && hi.abs() > EXACT) {
         Known::Unknown
     } else if lo == hi {
         Known::Exact(lo)
@@ -618,7 +619,15 @@ fn local_ranges_at(
         if params.contains(name) { continue; }
         single.insert(*name, value);
     }
-    let dup: HashSet<&str> = assigns.iter().map(|(n, _)| *n).filter(|n| assigns.iter().filter(|(m, _)| m == n).count() > 1).collect();
+    // a name bound more than once — by a second `let`, or by a lambda
+    // parameter / match-arm pattern that SHADOWS it (`match raw { n -> …
+    // used.set(k, n) }` wrote the arm's n, not the narrowed parameter)
+    let mut shadowed: HashSet<String> = HashSet::new();
+    collect_binders_stmts(&on.body, &mut shadowed);
+    let dup: HashSet<&str> = assigns.iter().map(|(n, _)| *n)
+        .filter(|n| assigns.iter().filter(|(m, _)| m == n).count() > 1 || shadowed.contains(*n))
+        .chain(shadowed.iter().map(|s| s.as_str()))
+        .collect();
     // a parameter is bound once too — unless the body reassigns it
     let int_params: HashSet<&str> = on.params.iter()
         .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt"))
@@ -629,22 +638,30 @@ fn local_ranges_at(
     // narrowed by a per-iteration `require` — the handler is atomic, so a
     // require failing in ANY iteration rolls every write back). A loop with
     // break/continue can skip its require: not narrowed.
-    let mut unconditional: Vec<&Spanned<Statement>> = Vec::new();
+    let mut unconditional: Vec<(&Spanned<Statement>, Option<HashSet<String>>)> = Vec::new();
     collect_unconditional_requires(&on.body, &mut unconditional);
     // the facts: each `require` comparison, plus the NEGATION of an early
     // exit `if n >= 1 { … return … }` / `if c { fail(…) }` (statements after
     // it run only when the condition is false)
-    let mut facts: Vec<(&Expr, CmpOp, &Expr)> = Vec::new();
-    for stmt in unconditional {
+    let mut facts: Vec<(&Expr, CmpOp, &Expr, Option<HashSet<String>>)> = Vec::new();
+    for (stmt, scope) in unconditional {
         match &stmt.node {
-            Statement::Require { constraint, .. } => facts.extend(constraint_comparisons(&constraint.node)),
-            Statement::If { condition, .. } => facts.extend(negated_comparisons(&condition.node)),
+            Statement::Require { constraint, .. } => facts.extend(constraint_comparisons(&constraint.node).into_iter().map(|(l, o, r)| (l, o, r, scope.clone()))),
+            Statement::If { condition, .. } => facts.extend(negated_comparisons(&condition.node).into_iter().map(|(l, o, r)| (l, o, r, scope.clone()))),
             _ => {}
         }
     }
     {
         {
-            for (left, op, right) in facts {
+            for (left, op, right, scope) in facts {
+                // inside a loop: every name the fact mentions must be a
+                // per-iteration local of that loop
+                if let Some(scope) = &scope {
+                    let mut used = HashSet::new();
+                    collect_idents(left, &mut used);
+                    collect_idents(right, &mut used);
+                    if !used.iter().all(|u| scope.contains(u)) { continue; }
+                }
                 // `require b <= a` (two once-bound names): a - b >= 0 — kept
                 // as a fact the subtraction rule reads
                 if let (Expr::Ident(a), Expr::Ident(b)) = (left, right) {
@@ -772,14 +789,32 @@ fn exits(stmts: &[Spanned<Statement>]) -> bool {
     }
 }
 
-fn collect_unconditional_requires<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e Spanned<Statement>>) {
+/// A fact and, when it sits inside a loop body, the names `let`-bound in
+/// that body: a loop can run ZERO times, so its `require` says nothing
+/// about a parameter or an outer local — only about the per-iteration
+/// locals that every write in the same iteration reads.
+fn collect_unconditional_requires<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<(&'e Spanned<Statement>, Option<HashSet<String>>)>) {
     for st in stmts {
         match &st.node {
-            Statement::Require { .. } => out.push(st),
+            Statement::Require { .. } => out.push((st, None)),
             // an early exit: the negated condition holds afterwards
-            Statement::If { then_body, else_body, .. } if else_body.is_empty() && exits(then_body) => out.push(st),
+            Statement::If { then_body, else_body, .. } if else_body.is_empty() && exits(then_body) => out.push((st, None)),
             Statement::For { body, .. } | Statement::While { body, .. } => {
-                if !has_break_or_continue(body) { collect_unconditional_requires(body, out); }
+                if !has_break_or_continue(body) {
+                    let locals: HashSet<String> = body.iter().filter_map(|b| match &b.node {
+                        Statement::Let { name, .. } => Some(name.clone()),
+                        _ => None,
+                    }).collect();
+                    let mut inner = Vec::new();
+                    collect_unconditional_requires(body, &mut inner);
+                    for (st, scope) in inner {
+                        let merged = match scope {
+                            Some(s) => s.intersection(&locals).cloned().collect(),
+                            None => locals.clone(),
+                        };
+                        out.push((st, Some(merged)));
+                    }
+                }
             }
             _ => {}
         }
@@ -1265,6 +1300,73 @@ fn find_len_of_slot(expr: &Expr, slots: &[String], out: &mut Vec<(String, String
             find_len_of_slot(&right.node, slots, out);
         }
         Expr::Not(i) => find_len_of_slot(&i.node, slots, out),
+        _ => {}
+    }
+}
+
+/// Names introduced by lambda parameters and match-arm patterns anywhere in
+/// a body (they shadow, so a narrowed outer name of the same spelling is
+/// not what a write inside reads).
+fn collect_binders_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+    for st in stmts {
+        match &st.node {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value }
+            | Statement::Ensure { condition: value } | Statement::ExprStmt { expr: value } => collect_binders_expr(&value.node, out),
+            Statement::If { condition, then_body, else_body } => {
+                collect_binders_expr(&condition.node, out); collect_binders_stmts(then_body, out); collect_binders_stmts(else_body, out);
+            }
+            Statement::For { var, iter, body, .. } => { out.insert(var.clone()); collect_binders_expr(&iter.node, out); collect_binders_stmts(body, out); }
+            Statement::While { condition, body, .. } => { collect_binders_expr(&condition.node, out); collect_binders_stmts(body, out); }
+            Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => { for a in args { collect_binders_expr(&a.node, out); } }
+            Statement::IndexSet { index, value, .. } => { collect_binders_expr(&index.node, out); collect_binders_expr(&value.node, out); }
+            _ => {}
+        }
+    }
+}
+
+fn collect_binders_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Lambda { param, body } => { out.insert(param.clone()); collect_binders_expr(&body.node, out); }
+        Expr::LambdaBlock { param, stmts, result } => { out.insert(param.clone()); collect_binders_stmts(stmts, out); collect_binders_expr(&result.node, out); }
+        Expr::Match { subject, arms } => {
+            collect_binders_expr(&subject.node, out);
+            for arm in arms {
+                pattern_binders(&arm.pattern, out);
+                if let Some(g) = &arm.guard { collect_binders_expr(&g.node, out); }
+                collect_binders_stmts(&arm.body, out);
+                collect_binders_expr(&arm.result.node, out);
+            }
+        }
+        Expr::FieldAccess { target, .. } => collect_binders_expr(&target.node, out),
+        Expr::Index { target, index } => { collect_binders_expr(&target.node, out); collect_binders_expr(&index.node, out); }
+        Expr::MethodCall { target, args, .. } => { collect_binders_expr(&target.node, out); for a in args { collect_binders_expr(&a.node, out); } }
+        Expr::FnCall { args, .. } => { for a in args { collect_binders_expr(&a.node, out); } }
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => {
+            collect_binders_expr(&left.node, out); collect_binders_expr(&right.node, out);
+        }
+        Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => collect_binders_expr(&i.node, out),
+        Expr::Record { fields, .. } => { for (_, v) in fields { collect_binders_expr(&v.node, out); } }
+        Expr::ListLiteral(items) => { for i in items { collect_binders_expr(&i.node, out); } }
+        Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
+            collect_binders_expr(&condition.node, out);
+            collect_binders_stmts(then_body, out); collect_binders_expr(&then_result.node, out);
+            collect_binders_stmts(else_body, out); collect_binders_expr(&else_result.node, out);
+        }
+        _ => {}
+    }
+}
+
+fn pattern_binders(p: &MatchPattern, out: &mut HashSet<String>) {
+    match p {
+        MatchPattern::Variable(n) => { out.insert(n.clone()); }
+        MatchPattern::Or(ps) => { for q in ps { pattern_binders(q, out); } }
+        MatchPattern::MapDestructure(fields) => { for (name, q) in fields { out.insert(name.clone()); pattern_binders(q, out); } }
+        MatchPattern::StringPrefix { rest, .. } => { out.insert(rest.clone()); }
+        MatchPattern::Variant { fields, .. } => match fields {
+            VariantPatternFields::Tuple(ps) => { for q in ps { pattern_binders(q, out); } }
+            VariantPatternFields::Struct { fields, .. } => { for (name, q) in fields { out.insert(name.clone()); pattern_binders(q, out); } }
+            VariantPatternFields::Unit => {}
+        },
         _ => {}
     }
 }

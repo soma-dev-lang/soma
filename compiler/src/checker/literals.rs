@@ -49,7 +49,8 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
             for_each_call(body, &mut |name, args, span| {
                 if name == "transition" {
                     if let (Some(states), Some(Spanned { node: Expr::Literal(Literal::String(target)), .. })) = (&states, args.get(1)) {
-                        if !states.contains(target) {
+                        // "{g}_x" is interpolated at runtime: a dynamic target, not this text
+                        if !states.contains(target) && !target.contains('{') {
                             let near = crate::checker::names::suggest(target, states.iter())
                                 .map(|s| format!(" (did you mean \"{}\"?)", s)).unwrap_or_default();
                             out.push(LiteralIssue {

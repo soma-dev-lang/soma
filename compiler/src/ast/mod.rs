@@ -783,6 +783,14 @@ pub fn render_expr(expr: &Expr) -> String {
             format!("{} {} {}", render_expr(&left.node), op, render_expr(&right.node))
         }
         Expr::Not(inner) => format!("!{}", render_expr(&inner.node)),
-        other => format!("{other:?}"),
+        // never a Debug dump in a diagnostic: name the form
+        Expr::Match { subject, .. } => format!("match {} {{ … }}", render_expr(&subject.node)),
+        Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } => format!("{} => …", param),
+        Expr::IfExpr { condition, .. } => format!("if {} {{ … }} else {{ … }}", render_expr(&condition.node)),
+        Expr::Try(inner) => format!("try {{ {} }}", render_expr(&inner.node)),
+        Expr::TryPropagate(inner) => format!("{}?", render_expr(&inner.node)),
+        Expr::Pipe { left, right } => format!("{} |> {}", render_expr(&left.node), render_expr(&right.node)),
+        Expr::Record { type_name, .. } => format!("{} {{ … }}", type_name),
+        Expr::ListLiteral(items) => format!("[{}]", items.iter().map(|i| render_expr(&i.node)).collect::<Vec<_>>().join(", ")),
     }
 }
