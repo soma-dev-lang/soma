@@ -509,3 +509,18 @@ exhaustion, approval parking and kill -9 recovery.
 - [ ] Storage tables can still collide ACROSS programs sharing one directory (check sees one program).
 - [ ] A variant whose FIELDS changed is not reported by the start-up audit.
 
+## Cycle 18 (2026-09-18) — a double-entry ledger ported from Python
+
+8.5/10: identical reports to the reference on 3 streams of 5,002 operations, verify
+--strict OK with 29 checks + 12 temporal properties, 4,200 concurrent requests with
+kill -9 restarts and live period closes: trial balance 0 throughout. No false proof.
+
+### Fixed
+- [x] `if x > 0 { … } else { … }` narrowed the `else` for an Int parameter but not for `let x = amt` — once-bound Int locals are NaN-free like Int parameters.
+- [x] An untyped parameter (`on f(x)`) says "needs a type … `x: Any`" (it was "expected ':'"); `const` / a cell-level `let` say there are no constants and how proofs need the literal twice; the section list names the real keywords.
+- [x] Docs: the gotchas' untyped `request` example; `Any` in the types table and llms.txt; property scoping with several machines; literal bounds in invariant and require.
+
+### Open
+- [ ] No per-machine scoping of `[verify]` properties; no named constants.
+- [ ] A property naming a state no machine has is printed as a vacuous ✓ before the error.
+

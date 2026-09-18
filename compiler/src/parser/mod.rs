@@ -649,8 +649,17 @@ impl Parser {
                     start.merge(self.prev_span()),
                 ))
             }
+            // `const LIMIT = 500` / a cell-level `let`: there are none — say so
+            Token::Let => Err(ParseError::FixIt {
+                message: "a cell has no constants or cell-level `let` — write the literal where it is used (a proven bound needs the literal in the invariant AND the require), or return it from a handler: `on _limit() { return 500 }`".to_string(),
+                span: self.peek_span(),
+            }),
+            Token::Ident(ref w) if w == "const" || w == "val" || w == "var" => Err(ParseError::FixIt {
+                message: format!("`{}`: a cell has no constants — write the literal where it is used (a proven bound needs the literal in the invariant AND the require), or return it from a handler: `on _limit() {{ return 500 }}`", w),
+                span: self.peek_span(),
+            }),
             _ => Err(ParseError::Expected {
-                expected: "face, memory, interior, on, rules, runtime, state, every, scale, or cost".to_string(),
+                expected: "a section: face, memory, state, on, every, after, cost, or (in a test cell) rules".to_string(),
                 found: self.peek().clone(),
                 span: self.peek_span(),
             }),
@@ -876,7 +885,13 @@ impl Parser {
 
     fn parse_param(&mut self) -> Result<Param, ParseError> {
         let (name, _) = self.expect_ident()?;
-        self.expect(Token::Colon)?;
+        if !self.check(&Token::Colon) {
+            return Err(ParseError::FixIt {
+                message: format!("parameter '{}' needs a type — `{}: Int` / `String` / `Float` / `Bool` / `Map` / `List`, or `{}: Any` for a value of any kind", name, name, name),
+                span: self.tokens[self.pos].span,
+            });
+        }
+        self.advance();
         let ty = self.parse_type_expr()?;
         Ok(Param { name, ty })
     }

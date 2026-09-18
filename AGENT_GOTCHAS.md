@@ -140,7 +140,7 @@ Use `cell type X { variants { ... } }` only for *sum types* (tagged unions).
 cell Api {
     face { signal request(...) -> String  signal place(...) -> Map }
     on place(...) { return place_order(...) }   // delegate to Orders
-    on request(method, path, body) { ... }
+    on request(method: String, path: String, body: String) { ... }
 }
 ```
 

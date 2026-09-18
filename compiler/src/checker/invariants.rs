@@ -878,8 +878,21 @@ fn local_ranges_at(
                 if negated {
                     // NaN-free: a constant, an Int parameter, or a local whose
                     // range is already known (it came from a bounded source)
-                    let nan_free = |e: &Expr, vars: &HashMap<String, Known>| const_of(e).is_some() || match e {
-                        Expr::Ident(n) => int_params.contains(n.as_str()) || vars.get(n.as_str()).copied().and_then(bounds).is_some(),
+                    // an Int expression cannot be NaN: Int parameters, Int
+                    // literals, and once-bound locals over them (`let x = amt`
+                    // lost the `else` narrowing a parameter got)
+                    fn int_expr(e: &Expr, single: &HashMap<&str, &Expr>, int_params: &HashSet<&str>, depth: usize) -> bool {
+                        if depth > 8 { return false; }
+                        match e {
+                            Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => true,
+                            Expr::Ident(n) => int_params.contains(n.as_str()) || single.get(n.as_str()).map_or(false, |v| int_expr(v, single, int_params, depth + 1)),
+                            Expr::BinaryOp { left, op, right } => matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Mod)
+                                && int_expr(&left.node, single, int_params, depth + 1) && int_expr(&right.node, single, int_params, depth + 1),
+                            _ => false,
+                        }
+                    }
+                    let nan_free = |e: &Expr, vars: &HashMap<String, Known>| const_of(e).is_some() || int_expr(e, &single, &int_params, 0) || match e {
+                        Expr::Ident(n) => vars.get(n.as_str()).copied().and_then(bounds).is_some(),
                         _ => false,
                     };
                     if !nan_free(left, &vars) || !nan_free(right, &vars) { continue; }

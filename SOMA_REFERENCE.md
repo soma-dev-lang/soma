@@ -74,6 +74,7 @@ cell AppName {
 | Unit | `()` | null equivalent |
 | Duration | `5s`, `1min`, `500ms`, `1h` | converts to milliseconds |
 | Record | `User { name: "Alice", age: 30 }` | typed map with `_type` field |
+| Any | `on log(x: Any)` | a parameter or slot value of any kind (check it with `type_of(x)`); every parameter needs a type — `x: Any` when it can be anything |
 
 ## Variables
 

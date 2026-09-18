@@ -228,6 +228,8 @@ source, `file:line`, left/right, and the fields a value really has when
   an error. An invariant on a Map slot applies to every value written.
 - `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
   `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
+- Every parameter has a type (`x: Any` takes a value of any kind — check it
+  with `type_of(x)`); element types too (`xs: List<Int>`).
 - Declared parameter types are enforced at runtime: `add(points: Int)` given
   `2.5` raises kind `type` (400) before the body runs — no `is_int` check needed.
 - Values are copies: `let row = s[k]  row.count += 1` changes `row` only —
@@ -266,6 +268,9 @@ source, `file:line`, left/right, and the fields a value really has when
   and the emitter's rollback takes the listeners' writes with it. Only across
   processes (the `[peers]` bus) is an emitted event an effect that is not
   rolled back. `soma check` warns when nobody handles the event.
+- A bound is proven only against LITERALS: repeat the number in the
+  invariant and in the `require` (there are no constants; a handler returning
+  it is not used by the prover).
 - `invariant rows.size <= 500` (NOT `len(rows)`, which in an invariant
   measures the value being written; a bare `size <= 500` that names no slot
   bounds EVERY slot of the memory) is proven when the handler's ONE write that
@@ -411,7 +416,10 @@ handler whose recursion has a decreasing argument — a handler it cannot prove
 depth guard is what stops it. `property … forall n in a..b` in tests walks
 EVERY value when the range has at most 20,000 values; a wider range is only
 sampled (50 values, fixed seed — not a proof). State more in a `soma.toml` beside
-the program (`[package]` is optional; an unknown key is an error):
+the program (`[package]` is optional; an unknown key is an error). The properties
+apply to every machine of the cells in `cells = [...]` (all cells when absent):
+a property naming a state one machine lacks is vacuously true there — split
+programs, or scope `cells`, when two machines need different properties:
 
 ```toml
 [verify]
@@ -1102,7 +1110,7 @@ Use `cell type X { variants { ... } }` only for *sum types* (tagged unions).
 cell Api {
     face { signal request(...) -> String  signal place(...) -> Map }
     on place(...) { return place_order(...) }   // delegate to Orders
-    on request(method, path, body) { ... }
+    on request(method: String, path: String, body: String) { ... }
 }
 ```
 

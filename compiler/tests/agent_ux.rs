@@ -1729,3 +1729,22 @@ cell A {
     let (out, _) = soma_in(&d, &["run", "s.cell", "f"]);
     assert!(out.contains("1180591620717411303424.0"), "{out}");
 }
+
+/// Cycle 18: `else` narrows a once-bound Int local like a parameter; an
+/// untyped parameter and a cell-level constant name their fix.
+#[test]
+fn cycle18_findings() {
+    let d = dir("cycle18");
+    std::fs::write(d.join("n.cell"), r#"
+cell N { memory { neg: Map<String, Int> [persistent]  invariant neg >= 0 }
+  on add(k: String, amt: Int) { let x = amt  if x > 0 { return 1 } else { neg.set(k, (neg.get(k) ?? 0) - x) } } }
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "n.cell"]);
+    assert!(out.contains("writer 'add' proven"), "{out}");
+    std::fs::write(d.join("u.cell"), "cell U { on f(x) { return x } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "u.cell"]);
+    assert!(out.contains("`x: Any`"), "{out}");
+    std::fs::write(d.join("c.cell"), "cell C { const LIMIT = 5  on f() { return 1 } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "c.cell"]);
+    assert!(out.contains("a cell has no constants"), "{out}");
+}
