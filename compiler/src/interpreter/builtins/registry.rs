@@ -332,10 +332,13 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Push data to a runtime-chosen SSE stream name on the event bus."),
 
     // ── http (outbound) ─────────────────────────────────────────────
-    doc("http_get", "http", "http_get(url: String, opts?: {max_bytes, timeout}) -> Map|String",
-        "GET a URL; JSON bodies parse to a Map/List, errors return {error}."),
-    doc("http_post", "http", "http_post(url: String, body) -> Map|String",
-        "POST a JSON body to a URL; JSON responses parse to a Map/List."),
+    doc("http_get", "http", "http_get(url: String, opts?: {timeout, max_bytes, headers}) -> Map|List|String",
+        "GET a URL. 2xx: the body (JSON parsed). Never raises: otherwise {error, kind, status, body} — kind http_status (status + the upstream body), timeout, refused or network. timeout defaults to 30000 ms."),
+    doc("http_post", "http", "http_post(url: String, body, opts?: {timeout, max_bytes, headers}) -> Map|List|String",
+        "POST body (a Map/List is sent as JSON, a String as is). Same result shape and default timeout as http_get. Also http_put, http_patch, http_delete(url, opts?)."),
+    doc("http_put", "http", "http_put(url: String, body, opts?) -> Map|List|String", "PUT; same shape as http_post."),
+    doc("http_patch", "http", "http_patch(url: String, body, opts?) -> Map|List|String", "PATCH; same shape as http_post."),
+    doc("http_delete", "http", "http_delete(url: String, opts?) -> Map|List|String", "DELETE; same shape as http_get."),
     doc("ws_connect", "http", "ws_connect(url: String) -> Map",
         "Open a WebSocket connection; incoming messages dispatch as signals."),
     doc("ws_send", "http", "ws_send(msg) -> ()",

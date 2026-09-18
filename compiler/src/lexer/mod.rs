@@ -1,10 +1,18 @@
 use crate::ast::Span;
 use thiserror::Error;
 
+/// A character as it should appear in a message: a NUL byte or another
+/// control character used to be printed raw.
+fn show_char(c: char) -> String {
+    if c.is_control() { format!("{:?} (U+{:04X})", c, c as u32) } else { format!("'{}'", c) }
+}
+
 #[derive(Error, Debug)]
 pub enum LexError {
-    #[error("unexpected character '{ch}'")]
+    #[error("unexpected character {}", show_char(*ch))]
     UnexpectedChar { ch: char, pos: usize },
+    #[error("invalid escape {text} — \\u{{…}} takes a hex code point (\\u{{1F600}})")]
+    InvalidEscape { pos: usize, text: String },
     #[error("unterminated string")]
     UnterminatedString { pos: usize },
     #[error("unterminated block comment")]
@@ -435,8 +443,31 @@ impl<'a> Lexer<'a> {
                                 match self.peek() {
                                     Some('n') => { self.advance(); s.push('\n'); }
                                     Some('t') => { self.advance(); s.push('\t'); }
+                                    Some('r') => { self.advance(); s.push('\r'); }
+                                    Some('0') => { self.advance(); s.push('\0'); }
                                     Some('\\') => { self.advance(); s.push('\\'); }
                                     Some('"') => { self.advance(); s.push('"'); }
+                                    // \u{1F600}: a Unicode scalar (used to reach the
+                                    // interpolator as `{1F600}` and fail at run time)
+                                    Some('u') if self.peek_next() == Some('{') => {
+                                        let esc_start = self.pos - 1;
+                                        self.advance(); self.advance();
+                                        let mut hex = String::new();
+                                        while let Some(c) = self.peek() {
+                                            if c == '}' { break; }
+                                            hex.push(c);
+                                            self.advance();
+                                        }
+                                        if self.peek() != Some('}') {
+                                            return Err(LexError::UnterminatedString { pos: esc_start });
+                                        }
+                                        self.advance();
+                                        match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                                            Some(ch) => s.push(ch),
+                                            None => return Err(LexError::InvalidEscape { pos: esc_start, text: format!("\\u{{{}}}", hex) }),
+                                        }
+                                    }
+                                    // other backslashes stay literal (regex patterns: "\d+")
                                     _ => s.push('\\'),
                                 }
                             }
@@ -549,9 +580,38 @@ impl<'a> Lexer<'a> {
         let mut num_str = String::new();
         let mut is_float = false;
 
+        // 0x1F / 0b101 / 0o17 — used to lex as `0` then an identifier `x1F`
+        if self.peek() == Some('0') {
+            if let Some(r) = self.peek_next() {
+                let radix = match r { 'x' | 'X' => 16, 'b' | 'B' => 2, 'o' | 'O' => 8, _ => 0 };
+                if radix != 0 {
+                    self.advance(); self.advance();
+                    let mut digits = String::new();
+                    while let Some(c) = self.peek() {
+                        if c.is_digit(radix) { digits.push(c); self.advance(); }
+                        else if c == '_' { self.advance(); }
+                        else { break; }
+                    }
+                    if digits.is_empty() || self.peek().is_some_and(|c| c.is_ascii_alphanumeric()) {
+                        return Err(LexError::InvalidNumber { pos: start });
+                    }
+                    let value = rug::Integer::from_str_radix(&digits, radix as i32)
+                        .map_err(|_| LexError::InvalidNumber { pos: start })?;
+                    let token = match value.to_i64() {
+                        Some(v) => Token::IntLit(v),
+                        None => Token::BigIntLit(value.to_string()),
+                    };
+                    return Ok(SpannedToken { token, span: Span::new(start, self.pos) });
+                }
+            }
+        }
+
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 num_str.push(c);
+                self.advance();
+            } else if c == '_' && self.peek_next().is_some_and(|n| n.is_ascii_digit()) && !num_str.is_empty() {
+                // 1_000_000: underscores between digits are separators
                 self.advance();
             } else if c == '.' && !is_float {
                 // Check if next char is a digit (not a method call)
@@ -647,8 +707,8 @@ impl<'a> Lexer<'a> {
                         span: Span::new(start, self.pos),
                     });
                 } else {
-                    // Not a duration suffix, back up
-                    self.pos = suffix_start;
+                    // `12abc` is neither a number nor a duration
+                    return Err(LexError::InvalidNumber { pos: start });
                 }
             }
         }

@@ -47,6 +47,13 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
         };
         {
             for_each_call(body, &mut |name, args, span| {
+                if name == "transition" && args.len() != 2 && !params.contains_key("transition") {
+                    out.push(LiteralIssue {
+                        kind: "argument_count",
+                        message: format!("transition() takes 2 arguments (instance id, target state), got {} — `transition(id, \"shipped\")`", args.len()),
+                        span,
+                    });
+                }
                 if name == "transition" {
                     if let (Some(states), Some(Spanned { node: Expr::Literal(Literal::String(target)), .. })) = (&states, args.get(1)) {
                         // "{g}_x" is interpolated at runtime: a dynamic target, not this text

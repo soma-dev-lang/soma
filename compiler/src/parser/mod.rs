@@ -1924,6 +1924,21 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<Spanned<Statement>, ParseError> {
+        // nested blocks share the expression depth budget: 10 000 nested
+        // `if` used to overflow the compiler's own stack (SIGABRT)
+        if self.depth >= MAX_EXPR_DEPTH {
+            return Err(ParseError::FixIt {
+                message: format!("blocks nested more than {} levels deep — move the inner part into its own handler", MAX_EXPR_DEPTH),
+                span: self.peek_span(),
+            });
+        }
+        self.depth += 1;
+        let r = self.parse_statement_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<Spanned<Statement>, ParseError> {
         let start = self.peek_span();
         match self.peek() {
             Token::Let => {
@@ -2430,7 +2445,7 @@ impl Parser {
     fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         if self.depth >= MAX_EXPR_DEPTH {
             return Err(ParseError::FixIt {
-                message: format!("expression nested more than {} levels deep — split it into `let` bindings", MAX_EXPR_DEPTH),
+                message: format!("nested more than {} levels deep (expressions and blocks together) — split it into `let` bindings or a helper handler", MAX_EXPR_DEPTH),
                 span: self.peek_span(),
             });
         }
@@ -2542,6 +2557,14 @@ impl Parser {
     fn parse_additive(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut left = self.parse_multiplicative()?;
         while matches!(self.peek(), Token::Plus | Token::Minus) {
+            // `"neg"  -1..1 -> "small"`: the `-1` starts the NEXT match arm
+            // (a negative pattern), it is not a subtraction from this result
+            if matches!(self.peek(), Token::Minus)
+                && matches!(self.peek_at(1), Token::IntLit(_) | Token::FloatLit(_) | Token::BigIntLit(_))
+                && matches!(self.peek_at(2), Token::DotDot | Token::Arrow | Token::OrOr)
+            {
+                break;
+            }
             let op = match self.peek() {
                 Token::Plus => BinOp::Add,
                 Token::Minus => BinOp::Sub,
@@ -3222,6 +3245,17 @@ impl Parser {
             self.advance();
             let lit = self.parse_literal()?;
             match lit.node {
+                // -10..-2 / -5..5: a range with a negative lower bound
+                Literal::Int(n) if self.check(&Token::DotDot) => {
+                    self.advance();
+                    let neg = if self.check(&Token::Minus) { self.advance(); true } else { false };
+                    if let Token::IntLit(to) = self.peek().clone() {
+                        self.advance();
+                        Ok(MatchPattern::Range { from: -n, to: if neg { -to } else { to } })
+                    } else {
+                        Err(ParseError::Expected { expected: "an Int upper bound after `..`".to_string(), found: self.peek().clone(), span: self.peek_span() })
+                    }
+                }
                 Literal::Int(n) => Ok(MatchPattern::Literal(Literal::Int(-n))),
                 Literal::BigInt(s) => Ok(MatchPattern::Literal(Literal::BigInt(format!("-{}", s)))),
                 Literal::Float(n) => Ok(MatchPattern::Literal(Literal::Float(-n))),
@@ -3238,9 +3272,10 @@ impl Parser {
             if let Literal::Int(from) = lit.node {
                 if self.check(&Token::DotDot) {
                     self.advance();
+                    let neg = if self.check(&Token::Minus) { self.advance(); true } else { false };
                     if let Token::IntLit(to) = self.peek().clone() {
                         self.advance();
-                        return Ok(MatchPattern::Range { from, to });
+                        return Ok(MatchPattern::Range { from, to: if neg { -to } else { to } });
                     }
                 }
             }

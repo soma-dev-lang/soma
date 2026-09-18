@@ -401,7 +401,12 @@ impl StateMachineSection {
     /// message — so a wildcard un-terminates otherwise final states unless
     /// they are listed in `except`. `soma verify` points that out.
     pub fn wildcard_applies(&self, t: &Transition, state: &str) -> bool {
-        state != t.to && !t.except.iter().any(|e| e == state)
+        // `*` ranges over the states THIS machine declares: an instance
+        // stored in a state an older program had (renamed since) is not
+        // silently swept out through `* -> cancelled` — it needs a migration
+        let declared = self.initial == state
+            || self.transitions.iter().any(|x| x.node.to == state || (x.node.from != "*" && x.node.from == state));
+        declared && state != t.to && !t.except.iter().any(|e| e == state)
     }
 }
 

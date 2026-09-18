@@ -134,11 +134,13 @@ struct Walker<'a> {
     /// > 0 while walking inside a `try { }` — issues found there are
     /// recoverable by design and demote to warnings.
     try_depth: usize,
+    /// > 0 inside a `for` / `while` body (`break` is legal there)
+    loop_depth: usize,
 }
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0 }
+        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0 }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -146,7 +148,29 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_stmts(&mut self, stmts: &[Spanned<Statement>]) {
-        for stmt in stmts {
+        for (i, stmt) in stmts.iter().enumerate() {
+            // `let j = 1 2`: the `2` is a statement of its own that does
+            // nothing (only the LAST statement of a block is a value)
+            if i + 1 < stmts.len() {
+                if let Statement::ExprStmt { expr } = &stmt.node {
+                    let inert = matches!(&expr.node,
+                        Expr::Literal(_) | Expr::Ident(_) | Expr::BinaryOp { .. } | Expr::CmpOp { .. }
+                        | Expr::ListLiteral(_) | Expr::FieldAccess { .. } | Expr::Not(_))
+                        && !expr_has_call(&expr.node);
+                    if inert {
+                        self.issues.push(InterpolationIssue {
+                            message: format!(
+                                "`{}` on its own does nothing — a value that is not the last statement of its block is thrown away (a missing operator between two values? `let x = a b` is two statements)",
+                                crate::ast::render_expr(&expr.node)
+                            ),
+                            span: expr.span,
+                            warning: false,
+                            habit: false,
+                            kind: "unused_value",
+                        });
+                    }
+                }
+            }
             self.walk_stmt(stmt);
         }
     }
@@ -220,6 +244,32 @@ impl<'a> Walker<'a> {
                 self.scoped(&[], |w| w.walk_stmts(else_body));
             }
             Statement::For { var, iter, body, .. } => {
+                // `for r in rows { r.v = 2 }`: r is a COPY — the write is
+                // lost unless r is used afterwards (written back, pushed…)
+                if let Some(pos) = body.iter().position(|b| matches!(&b.node, Statement::IndexSet { name, .. } if name == var)) {
+                    let mut later: HashSet<String> = HashSet::new();
+                    for b in &body[pos + 1..] {
+                        if let Statement::IndexSet { name, index, value } = &b.node {
+                            if name == var {
+                                crate::interpreter::free_names_expr(&index.node, &mut later);
+                                crate::interpreter::free_names_expr(&value.node, &mut later);
+                                continue;
+                            }
+                        }
+                        crate::interpreter::free_names_stmts(std::slice::from_ref(b), &mut later);
+                    }
+                    if !later.contains(var.as_str()) {
+                        self.issues.push(InterpolationIssue {
+                            message: format!(
+                                "`{var}` is a copy of the element, so this write is lost when the iteration ends — write it back (`for i in range(0, len(xs)) {{ let {var} = xs[i]  {var}.f = …  xs[i] = {var} }}`, or `rows[i] = {var}` for a List slot)"
+                            ),
+                            span: body[pos].span,
+                            warning: true,
+                            habit: true,
+                            kind: "write_to_loop_copy",
+                        });
+                    }
+                }
                 self.walk_expr(iter);
                 let var = var.clone();
                 self.scoped(&[var], |w| {
@@ -227,14 +277,18 @@ impl<'a> Walker<'a> {
                     // those names exist, so flagging them would be a false
                     // positive for any string evaluated after the binding.
                     bind_stmts(body, &mut w.scope);
+                    w.loop_depth += 1;
                     w.walk_stmts(body);
+                    w.loop_depth -= 1;
                 });
             }
             Statement::While { condition, body, .. } => {
                 self.walk_expr(condition);
                 self.scoped(&[], |w| {
                     bind_stmts(body, &mut w.scope);
+                    w.loop_depth += 1;
                     w.walk_stmts(body);
+                    w.loop_depth -= 1;
                 });
             }
             Statement::Emit { args, .. } => {
@@ -268,7 +322,18 @@ impl<'a> Walker<'a> {
                     self.walk_expr(a);
                 }
             }
-            Statement::Break | Statement::Continue => {}
+            Statement::Break | Statement::Continue => {
+                if self.loop_depth == 0 {
+                    self.issues.push(InterpolationIssue {
+                        message: format!("`{}` outside a loop — it only means something inside `for` / `while` (to leave a handler, `return`)",
+                            if matches!(stmt.node, Statement::Break) { "break" } else { "continue" }),
+                        span: stmt.span,
+                        warning: false,
+                        habit: false,
+                        kind: "break_outside_loop",
+                    });
+                }
+            }
         }
     }
 
@@ -831,5 +896,16 @@ pub(super) fn bind_pattern(pattern: &MatchPattern, scope: &mut HashSet<String>) 
             }
         },
         MatchPattern::Literal(_) | MatchPattern::Wildcard | MatchPattern::Range { .. } => {}
+    }
+}
+
+fn expr_has_call(e: &Expr) -> bool {
+    match e {
+        Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::Pipe { .. } => true,
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => expr_has_call(&left.node) || expr_has_call(&right.node),
+        Expr::Not(i) => expr_has_call(&i.node),
+        Expr::FieldAccess { target, .. } => expr_has_call(&target.node),
+        Expr::ListLiteral(items) => items.iter().any(|i| expr_has_call(&i.node)),
+        _ => false,
     }
 }

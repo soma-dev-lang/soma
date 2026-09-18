@@ -28,7 +28,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     // V1.6: tool-capability enforcement. If the LLM dispatched into a tool
     // with declared capabilities, the http/* builtins refuse URLs that do
     // not match any declared scope.
-    if matches!(name, "http_get" | "http_post") {
+    if matches!(name, "http_get" | "http_post" | "http_put" | "http_patch" | "http_delete") {
         if let Some(caps) = interp.current_tool_caps.clone() {
             if let Some(Value::String(url)) = args.first() {
                 if !url_matches_any(url, &caps) {

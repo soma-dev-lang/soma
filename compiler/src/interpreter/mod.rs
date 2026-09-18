@@ -173,11 +173,19 @@ pub fn span_to_location(source: &str, offset: usize) -> (usize, usize) {
 pub fn format_error_context(source: &str, span_start: usize) -> String {
     let (line_num, col) = span_to_location(source, span_start);
     // Extract the source line
-    let line_text = source.split('\n').nth(line_num - 1).unwrap_or("");
+    let full_line = source.split('\n').nth(line_num - 1).unwrap_or("");
+    // a 40 KB generated line used to be echoed whole: show a window of it
+    // around the caret; control characters (a NUL byte) are shown escaped
+    let chars: Vec<char> = full_line.chars().map(|c| if c.is_control() && c != '\t' { '·' } else { c }).collect();
+    let caret = col.saturating_sub(1).min(chars.len());
+    let (from, to) = (caret.saturating_sub(60), (caret + 60).min(chars.len()));
+    let mut line_text: String = chars[from..to].iter().collect();
+    if from > 0 { line_text = format!("…{}", line_text); }
+    if to < chars.len() { line_text.push('…'); }
     let line_num_str = format!("{}", line_num);
     let gutter_width = line_num_str.len();
     let padding = " ".repeat(gutter_width);
-    let caret_offset = " ".repeat(col.saturating_sub(1));
+    let caret_offset = " ".repeat(caret - from + if from > 0 { 1 } else { 0 });
     format!(
         "{} |\n{} | {}\n{} | {}^",
         padding, line_num_str, line_text, padding, caret_offset
@@ -415,7 +423,7 @@ impl Value {
     pub fn as_int(&self) -> Result<i64, RuntimeError> {
         match self {
             Value::Int(si) => si.to_i64().ok_or_else(|| RuntimeError::TypeError("BigInt too large for i64".to_string())),
-            other => Err(RuntimeError::TypeError(format!("expected Int, got {:?}", other))),
+            other => Err(RuntimeError::TypeError(format!("expected Int, got {} {}", value_type_name(other), short_value(other)))),
         }
     }
 
@@ -427,15 +435,15 @@ impl Value {
         match self {
             Value::Float(n) => Ok(*n),
             Value::Int(si) => Ok(si.to_f64()),
-            other => Err(RuntimeError::TypeError(format!("expected Float, got {:?}", other))),
+            other => Err(RuntimeError::TypeError(format!("expected Float, got {} {}", value_type_name(other), short_value(other)))),
         }
     }
 
     fn as_bool(&self) -> Result<bool, RuntimeError> {
         match self {
             Value::Bool(b) => Ok(*b),
-            Value::Int(si) => Ok(si.to_i64() != Some(0)),
-            other => Err(RuntimeError::TypeError(format!("expected Bool, got {:?}", other))),
+            // `!0` used to be `true`: a condition is a Bool, as in `if`
+            other => Err(RuntimeError::TypeError(format!("expected Bool, got {} {} — compare it: `x == 0`, `s == \"\"`, `xs == []`", value_type_name(other), short_value(other)))),
         }
     }
 
@@ -537,6 +545,8 @@ pub struct Interpreter {
     /// `mock <handler> …` in a test cell: handler name → queued answers
     /// (Ok = value returned, Err = message raised) consumed one per call.
     pub handler_stubs: HashMap<String, std::collections::VecDeque<Result<Value, String>>>,
+    /// a real network call under `soma test` was already reported
+    pub(crate) net_noted: bool,
     /// `mock now <unix seconds>`: the clock the builtins answer with.
     pub frozen_now: Option<i64>,
     pub(crate) auto_mock_noted: bool,
@@ -708,6 +718,7 @@ impl Interpreter {
             approve_queue: std::collections::VecDeque::new(),
             test_auto_mock: false,
             handler_stubs: HashMap::new(),
+            net_noted: false,
             frozen_now: None,
             auto_mock_noted: false,
             current_tool_caps: None,
@@ -841,7 +852,7 @@ impl Interpreter {
                 }
             }
             if stuck > 0 {
-                out.push(format!("{} instance(s) of state machine '{}' are stored in a state the program no longer declares (e.g. {}): they can take no transition — migrate or delete .soma_data/", stuck, sm_name, sample));
+                out.push(format!("{} instance(s) of state machine '{}' are stored in a state the program no longer declares (e.g. {}): they can take no transition, not even a `*` edge — move them with a one-shot program that still declares the old state and an edge out of it (`soma run migrate.cell _migrate`), or delete .soma_data/", stuck, sm_name, sample));
             }
         }
         // slot invariants over stored values
@@ -867,6 +878,58 @@ impl Interpreter {
             if bad > 0 {
                 let _ = exprs;
                 out.push(format!("{} stored value(s) of slot '{}' violate its invariant today (e.g. {}): verify proves the invariant for future writes only — fix the data or the invariant", bad, slot_name, sample));
+            }
+        }
+        // stored values of another TYPE than the slot declares (a slot
+        // re-typed `Map<String, Int>` → `Map<String, Map>`: the old Ints are
+        // read back as Ints and crash the handlers that expect records)
+        let mut keys: Vec<String> = self.storage.keys().filter(|k| k.contains('.') && !k.starts_with("__")).cloned().collect();
+        keys.sort();
+        for key in keys {
+            let (cell_name, slot_name) = key.split_once('.').map(|(c, s)| (c.to_string(), s.to_string())).unwrap();
+            if self.slot_value_type(&cell_name, &slot_name).is_none() { continue; }
+            let Some(backend) = self.storage.get(&key).cloned() else { continue };
+            let values: Vec<(String, Value)> = if self.slot_kind(&cell_name, &slot_name) == Some("List") {
+                backend.list().into_iter().take(10_000).enumerate().map(|(i, v)| (format!("#{}", i), auto_deserialize(stored_to_value(v)))).collect()
+            } else {
+                backend.keys().into_iter().take(10_000).filter_map(|k| backend.get(&k).map(|v| (k, auto_deserialize(stored_to_value(v))))).collect()
+            };
+            let mut bad = 0usize;
+            let mut sample = String::new();
+            for (k, v) in &values {
+                if self.check_slot_value_type(&cell_name, &slot_name, v).is_err() {
+                    bad += 1;
+                    if sample.is_empty() { sample = format!("{} = {} {}", k, value_type_name(v), short_value(v)); }
+                }
+            }
+            if bad > 0 {
+                out.push(format!("{} stored value(s) of slot '{}' are not of its declared type {} (e.g. {}): the slot's type changed since they were written — migrate them (read, convert, set) or rename the slot", bad, slot_name, self.slot_value_type(&cell_name, &slot_name).unwrap_or_default(), sample));
+            }
+        }
+        // tables no slot reads any more (a renamed slot is a NEW empty slot;
+        // the old rows stay in the file, invisible)
+        if let Some(conn) = crate::runtime::storage::shared_connection() {
+            let expected: std::collections::HashSet<String> = self.storage.keys()
+                .filter_map(|k| k.split_once('.').map(|(c, s)| format!("{}_{}", c, s)))
+                .collect();
+            let cells: Vec<String> = self.cells.keys().cloned().collect();
+            let c = conn.lock().unwrap_or_else(|e| e.into_inner());
+            let tables: Vec<String> = c.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+                .and_then(|mut st| st.query_map([], |r| r.get::<_, String>(0)).map(|rows| rows.filter_map(|r| r.ok()).collect()))
+                .unwrap_or_default();
+            let mut orphans: Vec<String> = Vec::new();
+            for t in tables {
+                if t.ends_with("_log") || t.contains("__sm_") || t.starts_with("sqlite_") || expected.contains(&t) { continue; }
+                let Some(cell) = cells.iter().find(|c| t.starts_with(&format!("{}_", c))) else { continue };
+                let rows: i64 = c.query_row(&format!("SELECT (SELECT COUNT(*) FROM \"{0}\") + (SELECT COUNT(*) FROM \"{0}_log\")", t), [], |r| r.get(0))
+                    .or_else(|_| c.query_row(&format!("SELECT COUNT(*) FROM \"{}\"", t), [], |r| r.get(0)))
+                    .unwrap_or(0);
+                if rows > 0 {
+                    orphans.push(format!("'{}' ({} row(s))", &t[cell.len() + 1..], rows));
+                }
+            }
+            if !orphans.is_empty() {
+                out.push(format!("slot data no slot declares any more: {} — a renamed or removed slot; its rows are still in .soma_data/soma.db (rename the slot back to read them, or copy them over in a one-shot handler)", orphans.join(", ")));
             }
         }
         out
@@ -2332,7 +2395,7 @@ impl Interpreter {
                         }
                     }
                     _ => Err(ExecError::Runtime(RuntimeError::TypeError(
-                        format!("cannot access field '{}' on {:?}", field, target_val),
+                        format!("cannot read field '{}' of {} {} — it is not a map or a record", field, value_type_name(&target_val), short_value(&target_val)),
                     )))
                 }
             }
@@ -2742,8 +2805,20 @@ impl Interpreter {
                 }
             }
             _ => {
+                // UFCS reaches slots too: `rows.any(r => …)` is
+                // `any(rows, r => …)` over the slot's whole content
+                if let Some(whole) = self.materialize_slot(cell_name, slot_name) {
+                    let mut all = vec![whole];
+                    all.extend(args.iter().cloned());
+                    if let Some(r) = builtins::call_lambda_builtin(self, method, &all, cell_name) {
+                        return r.map_err(ExecError::Runtime);
+                    }
+                    if let Some(r) = self.call_builtin(method, &all, cell_name) {
+                        return r.map_err(ExecError::Runtime);
+                    }
+                }
                 Err(ExecError::Runtime(RuntimeError::TypeError(
-                    format!("unknown method '{}' on memory slot '{}'", method, slot_name),
+                    format!("unknown method '{}' on memory slot '{}' — slot methods are get/set/delete/push/keys/values/len, and any builtin taking the slot's content first (`{}.{}(…)` = `{}({}, …)`)", method, slot_name, slot_name, method, method, slot_name),
                 )))
             }
         }
@@ -3552,10 +3627,16 @@ impl Interpreter {
                 BinOp::Or => Ok(Value::Bool(*a || *b)),
                 _ => Err(RuntimeError::TypeError("invalid op for bools".to_string())),
             },
-            _ => Err(RuntimeError::TypeError(format!(
-                "cannot {} {} and {}: {} {} {}",
-                binop_verb(op), value_type_name(l), value_type_name(r), l, op, r
-            ))),
+            _ => {
+                // `counts[k] += 1` on a key that is not there yet
+                let hint = if matches!(l, Value::Unit) || matches!(r, Value::Unit) {
+                    " — one side is () (a missing key or field?): default it, `(m.get(k) ?? 0) + 1`"
+                } else { "" };
+                Err(RuntimeError::TypeError(format!(
+                    "cannot {} {} and {}: {} {} {}{}",
+                    binop_verb(op), value_type_name(l), value_type_name(r), l, op, r, hint
+                )))
+            }
         }
     }
 
@@ -3740,6 +3821,41 @@ impl Interpreter {
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma. Delegates to sub-modules in builtins/.
     pub fn call_builtin(&mut self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+        // `mock http_post map(...)` in a test cell scripts a builtin like a
+        // handler (it used to be accepted and ignored — the test then made
+        // a real network call)
+        if !self.handler_stubs.is_empty() {
+            if let Some(answer) = self.handler_stubs.get_mut(name).and_then(|q| q.pop_front()) {
+                let is_http = name.starts_with("http_");
+                return Some(match answer {
+                    Ok(v) => Ok(v),
+                    Err(msg) => {
+                        let (kind, detail) = match msg.split_once(": ") {
+                            Some((k, d)) if !k.is_empty() && !k.contains(' ') => (k.to_string(), d.to_string()),
+                            _ => (msg.clone(), msg.clone()),
+                        };
+                        if is_http {
+                            // http_* never raise: a scripted failure is the error map
+                            let status = kind.strip_prefix("status_").and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
+                            Ok(map_from_pairs(vec![
+                                ("error".to_string(), Value::String(format!("{}: {}", kind, detail))),
+                                ("kind".to_string(), Value::String(if status > 0 { "http_status".to_string() } else { kind.clone() })),
+                                ("status".to_string(), Value::Int(SomaInt::from_i64(status))),
+                                ("body".to_string(), Value::Unit),
+                            ]))
+                        } else {
+                            Err(RuntimeError::Domain { kind: kind.clone(), message: format!("{}: {}", kind, detail) })
+                        }
+                    }
+                });
+            }
+        }
+        if self.test_auto_mock && name.starts_with("http_") && !self.net_noted {
+            self.net_noted = true;
+            if let Some(Value::String(url)) = args.first() {
+                eprintln!("note: this test makes a REAL network call ({} {}) — script it with `mock {} map(...)` or `mock {} error \"timeout: …\"`", name, url, name, name);
+            }
+        }
         // `mock now 1000` in a test: a frozen clock (now / now_ms / today
         // derive from it) — sticky until the next `mock now`
         if let Some(frozen) = self.frozen_now {
@@ -5134,4 +5250,10 @@ fn free_names_constraint(c: &Constraint, out: &mut HashSet<String>) {
         Constraint::Not(i) => free_names_constraint(&i.node, out),
         Constraint::Descriptive(_) => {}
     }
+}
+
+/// A value as a message shows it: Soma's own rendering, at most 40 chars.
+pub(crate) fn short_value(v: &Value) -> String {
+    let t = match v { Value::String(s) => format!("{:?}", s), other => format!("{}", other) };
+    if t.chars().count() > 40 { format!("{}…", t.chars().take(40).collect::<String>()) } else { t }
 }

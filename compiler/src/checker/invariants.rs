@@ -188,7 +188,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             .collect();
 
         // every write site in every handler: (handler, slot, value expr)
-        let mut writes: Vec<(String, String, Expr, bool, Vec<usize>)> = Vec::new();
+        let mut writes: Vec<(String, String, Expr, bool, Vec<usize>, Option<String>)> = Vec::new();
         for on in handlers.values() {
             collect_writes_stmts(&on.body, &on.signal_name, false, &mut writes);
         }
@@ -197,7 +197,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         // local variable ranges, per (handler, write site): the facts that
         // hold differ by block
         let mut locals: HashMap<(String, Vec<usize>), HashMap<String, Known>> = HashMap::new();
-        for (name, _, _, _, path) in &writes {
+        for (name, _, _, _, path, _) in &writes {
             if let Some(on) = handlers.get(name) {
                 locals.entry((name.clone(), path.clone())).or_insert_with(|| local_ranges(on, &hyp, &handlers, path));
             }
@@ -213,9 +213,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         };
 
         for (inv, targets, inv_text) in &guarded {
-            let relevant: Vec<&(String, String, Expr, bool, Vec<usize>)> = writes
+            let relevant: Vec<&(String, String, Expr, bool, Vec<usize>, Option<String>)> = writes
                 .iter()
-                .filter(|(_, slot, _, _, _)| targets.contains(slot))
+                .filter(|(_, slot, _, _, _, _)| targets.contains(slot))
                 .collect();
             if relevant.is_empty() {
                 result.checks.push(VerifyCheck::Pass(format!(
@@ -225,7 +225,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             }
             let parts = conjuncts(inv);
             let mut runtime_checked: Vec<String> = Vec::new();
-            for (handler, slot, value_expr, in_try, wpath) in relevant {
+            for (handler, slot, value_expr, in_try, wpath, wkey) in relevant {
                 // a delete removes an entry that already satisfied a VALUE
                 // invariant; only a `size` clause can flip on it
                 if matches!(value_expr, Expr::Ident(n) if n == "<deleted entry>") {
@@ -248,7 +248,36 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 };
                 let known = ctx.range_of(value_expr);
                 let inductive = uses_slot_read(value_expr, &ctx);
-                let verdicts: Vec<Proof> = parts.iter().map(|c| prove(c, slot, known)).collect();
+                let mut verdicts: Vec<Proof> = parts.iter().map(|c| prove(c, slot, known)).collect();
+                // `size <= K` after a write that adds at most one entry:
+                // proven when the writer required the slot's size < K
+                // (`require rows.size < 500`, `require len(rows) < 500`)
+                // …and only for the handler's ONE adding write to this slot,
+                // outside any loop (two pushes after one require add two)
+                // a set on a key the handler knows exists does not grow the slot
+                let key_exists = |path: &Vec<usize>, key: &Option<String>| -> bool {
+                    let Some(k) = key else { return false };
+                    let Some(on) = handlers.get(handler) else { return false };
+                    existing_key_facts(&on.body, &[], slot).iter().any(|(fp, fk, excl)| path.starts_with(fp) && fk == k && excl.as_ref().map_or(true, |e| !path.starts_with(e)))
+                };
+                if size_upper_bound_any(&parts, slot) && key_exists(wpath, wkey) {
+                    for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
+                        if size_upper_bound(c, slot).is_some() { *v = Proof::Holds; }
+                    }
+                }
+                let adds_here = writes.iter().filter(|(h, sl, e, _, p, k)| h == handler && sl == slot
+                    && !matches!(e, Expr::Ident(n) if n == "<deleted entry>") && !key_exists(p, k)).count();
+                let in_loop = wpath.iter().any(|step| step % 4 == 2);
+                for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
+                    if *v == Proof::Holds || adds_here != 1 || in_loop { continue; }
+                    let Some(k) = size_upper_bound(c, slot) else { continue };
+                    let before = [format!("{}.size", slot), format!("{}.len", slot), format!("len({})", slot), format!("size({})", slot)]
+                        .iter()
+                        .filter_map(|r| ctx.vars.get(&format!("__expr__{}", r)).copied().and_then(bounds))
+                        .map(|(_, hi)| hi)
+                        .fold(f64::INFINITY, f64::min);
+                    if before + 1.0 <= k { *v = Proof::Holds; }
+                }
                 let how = if inductive { "proven by induction" } else { "proven" };
 
                 if verdicts.iter().any(|v| *v == Proof::Violated) && *in_try {
@@ -297,6 +326,8 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let mut why: Vec<String> = names.iter().filter(|n| bounds(ctx.range_of(&Expr::Ident((*n).clone()))).is_none()).map(|n| {
                         let params: Vec<&str> = on.map(|o| o.params.iter().map(|p| p.name.as_str()).collect()).unwrap_or_default();
                         if params.contains(&n.as_str()) {
+                            let numeric = on.map(|o| o.params.iter().any(|p| &p.name == n && matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "Float" || t == "BigInt"))).unwrap_or(false);
+                            if !numeric { return String::new(); }
                             format!("`{n}` is a parameter (narrow it: `require {n} >= 0 else …`)")
                         } else {
                             let mut assigns: Vec<(&str, &Expr)> = Vec::new();
@@ -313,12 +344,22 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             }
                         }
                     }).collect();
+                    why.retain(|w| !w.is_empty());
                     why.sort();
                     let tag = if open.len() == parts.len() {
                         format!("{handler} → {slot}")
                     } else {
                         format!("{handler} → {slot} [{}]", open.join(" && "))
                     };
+                    // a `size` clause does not depend on the written value
+                    let open_size: Vec<f64> = parts.iter().zip(&verdicts)
+                        .filter(|(_, v)| **v != Proof::Holds)
+                        .filter_map(|(c, _)| size_upper_bound(c, slot))
+                        .collect();
+                    let all_size = !open_size.is_empty() && open_size.len() == parts.iter().zip(&verdicts).filter(|(_, v)| **v != Proof::Holds).count();
+                    if all_size {
+                        why = vec![format!("the slot may grow past {} — put `require len({}) < {}` before the handler's one write that adds to it (not in a loop)", open_size[0], slot, open_size[0])];
+                    }
                     let tag = if why.is_empty() { tag } else { format!("{tag} because {}", why.join("; ")) };
                     if !runtime_checked.contains(&tag) {
                         runtime_checked.push(tag);
@@ -1044,11 +1085,11 @@ fn flip(op: CmpOp) -> CmpOp {
 /// and the atomic handler rolls the write back).
 pub(crate) fn block_step(index: usize, branch: usize) -> usize { index * 4 + branch }
 
-fn collect_writes_stmts(stmts: &[Spanned<Statement>], handler: &str, in_try: bool, out: &mut Vec<(String, String, Expr, bool, Vec<usize>)>) {
+fn collect_writes_stmts(stmts: &[Spanned<Statement>], handler: &str, in_try: bool, out: &mut Vec<(String, String, Expr, bool, Vec<usize>, Option<String>)>) {
     collect_writes_stmts_at(stmts, handler, in_try, &[], out)
 }
 
-fn collect_writes_stmts_at(stmts: &[Spanned<Statement>], handler: &str, in_try: bool, path: &[usize], out: &mut Vec<(String, String, Expr, bool, Vec<usize>)>) {
+fn collect_writes_stmts_at(stmts: &[Spanned<Statement>], handler: &str, in_try: bool, path: &[usize], out: &mut Vec<(String, String, Expr, bool, Vec<usize>, Option<String>)>) {
     let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
     for (i, stmt) in stmts.iter().enumerate() {
         match &stmt.node {
@@ -1073,7 +1114,7 @@ fn collect_writes_stmts_at(stmts: &[Spanned<Statement>], handler: &str, in_try: 
             // A local of the same name is filtered out later (only guarded
             // slot names are kept).
             Statement::IndexSet { name, index, value } => {
-                out.push((handler.to_string(), name.clone(), value.node.clone(), in_try, path.to_vec()));
+                out.push((handler.to_string(), name.clone(), value.node.clone(), in_try, path.to_vec(), Some(render_expr(&index.node))));
                 collect_writes_expr(&index.node, handler, in_try, path, out);
                 collect_writes_expr(&value.node, handler, in_try, path, out);
             }
@@ -1105,23 +1146,23 @@ fn push_slot_write(
     handler: &str,
     in_try: bool,
     path: &[usize],
-    out: &mut Vec<(String, String, Expr, bool, Vec<usize>)>,
+    out: &mut Vec<(String, String, Expr, bool, Vec<usize>, Option<String>)>,
 ) {
     match method {
         "set" | "put" if args.len() >= 2 => {
-            out.push((handler.to_string(), slot.to_string(), args[1].node.clone(), in_try, path.to_vec()));
+            out.push((handler.to_string(), slot.to_string(), args[1].node.clone(), in_try, path.to_vec(), Some(render_expr(&args[0].node))));
         }
         "push" | "append" if !args.is_empty() => {
-            out.push((handler.to_string(), slot.to_string(), args[0].node.clone(), in_try, path.to_vec()));
+            out.push((handler.to_string(), slot.to_string(), args[0].node.clone(), in_try, path.to_vec(), None));
         }
         "delete" | "remove" => {
-            out.push((handler.to_string(), slot.to_string(), Expr::Ident("<deleted entry>".to_string()), in_try, path.to_vec()));
+            out.push((handler.to_string(), slot.to_string(), Expr::Ident("<deleted entry>".to_string()), in_try, path.to_vec(), None));
         }
         _ => {}
     }
 }
 
-fn collect_writes_expr(expr: &Expr, handler: &str, in_try: bool, path: &[usize], out: &mut Vec<(String, String, Expr, bool, Vec<usize>)>) {
+fn collect_writes_expr(expr: &Expr, handler: &str, in_try: bool, path: &[usize], out: &mut Vec<(String, String, Expr, bool, Vec<usize>, Option<String>)>) {
     match expr {
         Expr::MethodCall { target, method, args } => {
             if let Expr::Ident(slot) = &target.node {
@@ -1392,4 +1433,84 @@ fn pattern_binders(p: &MatchPattern, out: &mut HashSet<String>) {
         },
         _ => {}
     }
+}
+
+/// `size <= K` / `rows.size < K` / `len(rows) <= K` as an invariant clause:
+/// the largest size it allows.
+fn size_upper_bound(c: &Expr, slot: &str) -> Option<f64> {
+    let is_size = |e: &Expr| match e {
+        Expr::Ident(n) => n == "size",
+        Expr::FieldAccess { target, field } => matches!(&target.node, Expr::Ident(n) if n == slot) && (field == "size" || field == "len"),
+        Expr::FnCall { name, args } => (name == "len" || name == "size") && args.len() == 1 && matches!(&args[0].node, Expr::Ident(n) if n == slot),
+        _ => false,
+    };
+    let Expr::CmpOp { left, op, right } = c else { return None };
+    let (op, k) = match (is_size(&left.node), const_of(&right.node), const_of(&left.node), is_size(&right.node)) {
+        (true, Some(k), _, _) => (*op, k),
+        (_, _, Some(k), true) => (flip(*op), k),
+        _ => return None,
+    };
+    match op { CmpOp::Le => Some(k), CmpOp::Lt => Some(k - 1.0), _ => None }
+}
+
+fn size_upper_bound_any(parts: &[&Expr], slot: &str) -> bool {
+    parts.iter().any(|c| size_upper_bound(c, slot).is_some())
+}
+
+/// `slot.get(K) != ()` / `slot.get(K) == ()` / `slot.has(K)` → (K, key is present?)
+fn key_presence(e: &Expr, slot: &str, negate: bool) -> Option<(String, bool)> {
+    let get_key = |t: &Expr| -> Option<String> {
+        match t {
+            Expr::MethodCall { target, method, args } if (method == "get" || method == "has") && args.len() == 1
+                && matches!(&target.node, Expr::Ident(n) if n == slot) => Some(render_expr(&args[0].node)),
+            _ => None,
+        }
+    };
+    match e {
+        Expr::CmpOp { left, op, right } if matches!(&right.node, Expr::Literal(Literal::Unit)) => {
+            let k = get_key(&left.node)?;
+            let present = match op { CmpOp::Ne => true, CmpOp::Eq => false, _ => return None };
+            Some((k, present != negate))
+        }
+        Expr::MethodCall { method, .. } if method == "has" => Some((get_key(e)?, !negate)),
+        Expr::Not(i) => key_presence(&i.node, slot, !negate),
+        _ => None,
+    }
+}
+
+/// Where a key of `slot` is known to exist: (block path, key rendering,
+/// excluded sub-path).
+fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str) -> Vec<(Vec<usize>, String, Option<Vec<usize>>)> {
+    let mut out = Vec::new();
+    let sub = |i: usize, b: usize| -> Vec<usize> { let mut v = path.to_vec(); v.push(block_step(i, b)); v };
+    for (i, st) in stmts.iter().enumerate() {
+        match &st.node {
+            Statement::Require { constraint, .. } => {
+                if let Constraint::Comparison { left, op, right } = &constraint.node {
+                    // `require e` is stored as `e == true`
+                    let e = if *op == CmpOp::Eq && matches!(&right.node, Expr::Literal(Literal::Bool(true))) {
+                        left.node.clone()
+                    } else {
+                        Expr::CmpOp { left: Box::new(left.clone()), op: *op, right: Box::new(right.clone()) }
+                    };
+                    if let Some((k, true)) = key_presence(&e, slot, false) { out.push((path.to_vec(), k, None)); }
+                }
+            }
+            Statement::If { condition, then_body, else_body } => {
+                if let Some((k, present)) = key_presence(&condition.node, slot, false) {
+                    if present {
+                        out.push((sub(i, 0), k, None));
+                    } else {
+                        out.push((sub(i, 1), k.clone(), None));
+                        if else_body.is_empty() && exits(then_body) { out.push((path.to_vec(), k, Some(sub(i, 0)))); }
+                    }
+                }
+                out.extend(existing_key_facts(then_body, &sub(i, 0), slot));
+                out.extend(existing_key_facts(else_body, &sub(i, 1), slot));
+            }
+            Statement::For { body, .. } | Statement::While { body, .. } => out.extend(existing_key_facts(body, &sub(i, 2), slot)),
+            _ => {}
+        }
+    }
+    out
 }

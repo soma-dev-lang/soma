@@ -28,6 +28,9 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
         .map(|a| {
             if let Ok(n) = a.parse::<i64>() {
                 interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n))
+            } else if let Ok(big) = a.parse::<rug::Integer>() {
+                // 99999999999999999999 is an Int, not a Float saturated to i64
+                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(big))
             } else if let Ok(n) = a.parse::<f64>() {
                 interpreter::Value::Float(n)
             } else if a == "true" {

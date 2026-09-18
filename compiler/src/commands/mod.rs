@@ -111,6 +111,7 @@ pub(crate) fn lex_error_position(e: &lexer::LexError) -> Option<usize> {
         lexer::LexError::UnterminatedString { pos } => Some(*pos),
         lexer::LexError::UnterminatedComment { pos } => Some(*pos),
         lexer::LexError::InvalidNumber { pos } => Some(*pos),
+        lexer::LexError::InvalidEscape { pos, .. } => Some(*pos),
     }
 }
 

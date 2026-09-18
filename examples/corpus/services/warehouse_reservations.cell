@@ -1,16 +1,19 @@
 // WAREHOUSE RESERVATIONS — two cells: a stock ledger with hard bounds and a
 // reservation lifecycle with a supervisor guard, behind one HTTP router.
 //
-// Enforced: on-hand quantity stays in [0, 10000] per SKU; at most 500 SKUs
-// (`units.size <= 500`, an entry-count bound); a reservation above 100 units
-// only reaches `held` when a supervisor is named (guard, enforced at the
-// transition). A hold that would overdraw stock ends `rejected` and stock is
-// untouched — the failing `try` block is rolled back to where it started.
-// Proven: shipped requires picked AND held; released never ships; rejected
-// and shipped are final (`* -> rejected except [shipped, released]`).
+// Proven (`soma verify --strict` is green): on-hand quantity stays in
+// [0, 10000] per SKU and there are at most 500 SKUs — every writer narrows
+// its value with a `require` before the one write, so the invariants hold by
+// induction instead of being checked at run time; shipped requires picked AND
+// held; released never ships; rejected and shipped are final
+// (`* -> rejected except [shipped, released]`).
+// Enforced at the transition: a reservation above 100 units only reaches
+// `held` when a supervisor is named (a guard). A hold that would overdraw
+// stock ends `rejected` and stock is untouched — the failing `try` block is
+// rolled back to where it started.
 //
 //   soma check  warehouse_reservations.cell
-//   soma verify warehouse_reservations.cell
+//   soma verify --strict warehouse_reservations.cell
 //   soma test   warehouse_reservations.cell
 
 cell Stock {
@@ -19,6 +22,7 @@ cell Stock {
         signal on_hand(sku: String) -> Int
         signal _take(sku: String, qty: Int) -> Int
         signal _give_back(sku: String, qty: Int) -> Int
+        signal _add_sku(sku: String, qty: Int) -> Int
     }
     memory {
         units: Map<String, Int> [persistent]
@@ -26,18 +30,33 @@ cell Stock {
         invariant units.size <= 500
     }
     on on_hand(sku: String) { return units.get(sku) ?? 0 }
+    // a NEW SKU is the only write that grows the slot: the require on its
+    // size makes `units.size <= 500` provable
     on receive(sku: String, qty: Int) {
-        require qty > 0 else InvalidQuantity
-        units.set(sku, on_hand(sku) + qty)
+        let have = units.get(sku) ?? 0
+        require qty > 0 && have + qty <= 10000 else InvalidQuantity "{qty} of {sku}: {have} on hand, cap 10000"
+        if units.get(sku) == () { _add_sku(sku, have + qty) } else { units.set(sku, have + qty) }
         return on_hand(sku)
+    }
+    on _add_sku(sku: String, qty: Int) {
+        require len(units) < 500 else SkuLimit "at most 500 SKUs"
+        require qty >= 0 && qty <= 10000 else InvalidQuantity
+        units.set(sku, qty)
+        return qty
     }
     on _take(sku: String, qty: Int) {
-        units.set(sku, on_hand(sku) - qty)          // "invariant" when it would go negative
-        return on_hand(sku)
+        let have = units.get(sku) ?? 0
+        require units.get(sku) != () else UnknownSku "{sku} was never received"
+        require qty > 0 && qty <= have else Insufficient "{qty} of {sku} requested, {have} on hand"
+        units.set(sku, have - qty)
+        return have - qty
     }
     on _give_back(sku: String, qty: Int) {
-        units.set(sku, on_hand(sku) + qty)
-        return on_hand(sku)
+        let have = units.get(sku) ?? 0
+        require units.get(sku) != () else UnknownSku "{sku} was never received"
+        require qty > 0 && have + qty <= 10000 else InvalidQuantity
+        units.set(sku, have + qty)
+        return have + qty
     }
 }
 
@@ -67,6 +86,7 @@ cell Reservations {
 
     on reserve(id: String, sku: String, qty: Int) {
         if skus.get(id) != () { fail("conflict", "reservation {id} exists") }
+        require qty > 0 else InvalidQuantity "qty must be positive, got {qty}"
         skus.set(id, sku)
         qtys.set(id, qty)
         return reservation(id)
@@ -154,8 +174,10 @@ cell test WarehouseTests {
         assert release("r4").state == "held" || reservation("r4").state == "released"
         assert on_hand("bolt") == 1000
         // bounds
-        assert_fails receive("widget", 20000) matching "invariant"
-        assert_fails reserve("r5", "widget", 0) matching "invariant"
+        assert_fails receive("widget", 20000) matching "InvalidQuantity"
+        assert_fails reserve("r5", "widget", 0) matching "InvalidQuantity"
+        assert_fails units.set("widget", 20000) matching "invariant"      // the wall itself
+        assert_fails _take("ghost", 1) matching "UnknownSku"
         // HTTP
         assert request("GET", "/reservations/nope", "")._status == 404
         assert request("POST", "/reservations/ship/r2", "")._status == 409   // rejected is final
