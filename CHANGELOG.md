@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- An interpolation segment holding a block (`"{if c { 1 } else { 2 }}"`)
+  ends at its matching brace; `.size` on a record without that field is `()`;
+  `from_json` checks a declared variant's shape (a missing or mistyped field
+  raises kind `type`).
 - A stack overflow is not caught by `try`; lambdas handing function values to
   map/filter are a termination ⚠; a computed delegate in `request` owns the
   cell's handlers; face tools are not HTTP endpoints.

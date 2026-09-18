@@ -95,8 +95,10 @@ answers `GET`/`HEAD` with `405` (`Allow: POST`) — for the auto-exposed
 match, so match on `method` for the ones that write: with CORS open to every
 origin, a GET that writes is writable by any web page (`<img src=…>`). A JSON
 body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
-`_values` is refused (400): a client cannot forge a record or a sum-type
-variant.
+`_values` anywhere is refused (400), whatever the type of `body` — also for
+`body: String`: a client cannot forge a record or a sum-type variant.
+`from_json` on other text that names a declared variant checks its shape
+(a missing or mistyped field raises kind `type`).
 
 ## Realtime: WebSocket, SSE, events
 

@@ -252,7 +252,7 @@ fn segments(s: &str) -> Vec<String> {
         if b[pos] == b'{' && b.get(pos + 1) == Some(&b'{') { pos += 2; continue; }
         if b[pos] == b'}' && b.get(pos + 1) == Some(&b'}') { pos += 2; continue; }
         if b[pos] == b'{' {
-            if let Some(end) = s[pos + 1..].find('}') {
+            if let Some(end) = crate::interpreter::interp_segment_end(s, pos) {
                 let seg = &s[pos + 1..pos + 1 + end];
                 let quantifier = seg.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ');
                 if !(seg.is_empty() || seg.contains(':') || seg.contains(';') || quantifier) {

@@ -2491,3 +2491,21 @@ fn cycle31_findings() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("undefined function '_total'"), "{out}");
 }
+
+#[test]
+fn cycle32_findings() {
+    let d = dir("cycle32");
+    // a block inside an interpolation segment ends at its matching brace
+    std::fs::write(d.join("i.cell"), "cell I {\n  on f(c: Bool) {\n    let xs = [1, 2]\n    return \"a {if c { 1 } else { 2 }} {xs.map(x => { x * 2 })} b\"\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "i.cell", "f", "true"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("a 1 [2, 4] b"), "{out}");
+    // a record has no `.size` pseudo-field; a plain map keeps it
+    std::fs::write(d.join("r.cell"), "cell R {\n  on f(n: Int) {\n    let r = Item { name: \"x\" }\n    return [r.size, map(\"a\", n).size]\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "r.cell", "f", "1"]);
+    assert!(out.contains("[null, 1]") || out.contains("[(), 1]"), "{out}");
+    // from_json cannot build a variant without its declared fields
+    std::fs::write(d.join("j.cell"), "cell type Pay { variants { Charged { tx: String }  Cash } }\ncell J {\n  on f(s: String) {\n    let v = try { from_json(s) }\n    return v.kind\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "j.cell", "f", r#"{"_type":"Pay","_variant":"Charged"}"#]);
+    assert!(out.contains("type"), "{out}");
+}

@@ -147,6 +147,8 @@ match r {
 
 ```soma
 map("k", v)   map()                // no {k: v} literal;   record: Name { k: v }
+m.k   m["size"]                    // a key; m.len / m.size / m.keys: the entry count / keys
+                                   // when the map has no such key (a record: () ) — m["size"] is always the key
 [1, 2, 3]     []                   // list literals
 x == ()       x ?? 0               // null is (); no null / None / undefined
 if c { a } else { b }              // is an expression; no ternary; && || !  (no and/or/not)
@@ -391,12 +393,13 @@ a server; `soma serve app.cell -p 8080` serves it. Static files: `static/`.
 be reachable over HTTP with `_` (`on _debit(…)`); `start`/`init` are never
 endpoints. A handler that changes state (a slot write, a transition, an emit,
 a call into another cell) answers GET/HEAD with 405 — POST to it. A request
-body may not carry `_type`/`_variant`/`_values` (a client cannot forge a
-record or a variant). Only a map built by `response()` / `html()` / `redirect()`
+body may not carry `_type`/`_variant`/`_values` anywhere in its JSON, even
+for a `body: String` handler (a client cannot forge a record or a variant). Only a map built by `response()` / `html()` / `redirect()`
 is an HTTP response: a returned map with `_status` keys from client data is
 plain JSON. Response header values with CR/LF are dropped. A handler that
-calls `from_json` on client text builds whatever declared variant it names —
-validate it. Realtime: `on ws(msg: String)` (port+1, same-origin browsers
+calls `from_json` on other client text (a ws message, a decoded field)
+builds whatever declared variant it names — shape-checked (a missing or
+mistyped field raises kind `type`), but validate WHICH variant. Realtime: `on ws(msg: String)` (port+1, same-origin browsers
 only), `publish(stream, data)`, `sse(...)` routes — pushes (publish and emit)
 leave AT COMMIT, never from a rolled-back handler; an `emit` target is not an
 HTTP endpoint (`soma docs serving`, Realtime). `NaN`/`inf` in a path
@@ -835,8 +838,10 @@ answers `GET`/`HEAD` with `405` (`Allow: POST`) — for the auto-exposed
 match, so match on `method` for the ones that write: with CORS open to every
 origin, a GET that writes is writable by any web page (`<img src=…>`). A JSON
 body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
-`_values` is refused (400): a client cannot forge a record or a sum-type
-variant.
+`_values` anywhere is refused (400), whatever the type of `body` — also for
+`body: String`: a client cannot forge a record or a sum-type variant.
+`from_json` on other text that names a declared variant checks its shape
+(a missing or mistyped field raises kind `type`).
 
 ## Realtime: WebSocket, SSE, events
 

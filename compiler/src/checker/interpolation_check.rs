@@ -708,7 +708,7 @@ impl<'a> Walker<'a> {
                     });
                     return;
                 }
-                if let Some(end) = s[pos + 1..].find('}') {
+                if let Some(end) = crate::interpreter::interp_segment_end(s, pos) {
                     let expr_str = &s[pos + 1..pos + 1 + end];
                     // Skipped as CSS/HTML — runtime advances one byte
                     // and rescans, so nested segments are still found.

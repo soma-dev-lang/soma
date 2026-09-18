@@ -884,3 +884,18 @@ analysis never exposed a half-analysed result.
 ### Open
 - [ ] car-rental/lib/tests.cell calls `seed()` from the app that imports it (it can never run on its own) — now a check error.
 - [ ] Writing a List slot by index is O(n); `soma run` picks one of two same-named handlers silently.
+
+### Cycle 32 — realistic port (shop) + attack
+
+Shop port 7.5/10. Attack (prover, termination, cost, GET→405, route
+ownership, static traversal, WS origin, 300 concurrent payments, 200k-deep
+JSON): no HIGH — every guarantee attacked held.
+
+### Fixed
+- [x] `"{if c { 1 } else { 2 }}"` printed garbage with a clean check — an interpolation segment holding a block ends at its matching brace (runtime and checker agree).
+- [x] `r.size` on a record without that field gave the entry count — `()`; a plain map keeps `.len` / `.size` / `.keys` when it has no such key (`m["size"]` always reads the key), documented.
+- [x] `from_json(from_json(body))` built a `Charged` without its `tx` — a match check proved exhaustive raised "non-exhaustive match" at run time; from_json now checks a declared variant's shape (kind `type`).
+- [x] Docs said `body: String` + from_json was the way to accept a client-named variant, but the reserved-key 400 applies to every body — documented as such.
+
+### Open
+- [ ] Runtime errors inside an imported file report the importer's path.

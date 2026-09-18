@@ -2748,6 +2748,12 @@ impl Interpreter {
                         if let Some(v) = entries.get(field) {
                             return Ok(v.clone());
                         }
+                        // a record or variant has declared fields: a missing
+                        // `size` is absent data, not the entry count
+                        let is_record = entries.contains_key("_type") || entries.contains_key("_variant");
+                        if is_record {
+                            return Ok(Value::Unit);
+                        }
                         match field.as_str() {
                             "keys" => return Ok(Value::List(entries.keys().map(|k| Value::String(k.clone())).collect())),
                             "values" => return Ok(Value::List(entries.values().cloned().collect())),
@@ -3452,7 +3458,7 @@ impl Interpreter {
                 continue;
             }
             if byte == b'{' {
-                if let Some(end) = s[pos + 1..].find('}') {
+                if let Some(end) = interp_segment_end(s, pos) {
                     let expr_str = &s[pos + 1..pos + 1 + end];
 
                     // Skip empty or HTML-like content (class names, CSS)
@@ -4461,7 +4467,36 @@ impl Interpreter {
                 _ => {}
             }
         }
-        builtins::call_builtin(self, name, args, cell_name)
+        let out = builtins::call_builtin(self, name, args, cell_name);
+        // `from_json(text)` names a declared variant: it must have the
+        // declared shape, or a match `soma check` proved exhaustive raised
+        // "non-exhaustive match" at run time (a `Charged` without `tx`)
+        if name == "from_json" {
+            if let Some(Ok(v)) = &out {
+                if let Err(m) = self.decoded_variants_ok(v) {
+                    return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("from_json: {}", m) }));
+                }
+            }
+        }
+        out
+    }
+
+    fn decoded_variants_ok(&self, v: &Value) -> Result<(), String> {
+        match v {
+            Value::Variant { type_name, variant, fields } => {
+                if self.type_variants.contains_key(type_name.as_str()) {
+                    self.variant_ok(type_name, variant, fields)?;
+                }
+                match fields {
+                    VariantValue::Unit => Ok(()),
+                    VariantValue::Tuple(vs) => vs.iter().try_for_each(|x| self.decoded_variants_ok(x)),
+                    VariantValue::Struct(m) => m.values().try_for_each(|x| self.decoded_variants_ok(x)),
+                }
+            }
+            Value::List(xs) => xs.iter().try_for_each(|x| self.decoded_variants_ok(x)),
+            Value::Map(m) => m.values().try_for_each(|x| self.decoded_variants_ok(x)),
+            _ => Ok(()),
+        }
     }
 
     /// Execute a state transition
@@ -6127,4 +6162,29 @@ pub(crate) fn reserved_storage_key(v: &Value) -> Option<String> {
         Value::Variant { fields: VariantValue::Tuple(xs), .. } => xs.iter().find_map(reserved_storage_key),
         _ => None,
     }
+}
+
+/// Length of the `{…}` interpolation segment opening at byte `open`
+/// (relative to `open + 1`): the first `}` — or, when the segment holds a
+/// block (`{if c { 1 } else { 2 }}`, `{xs.map(x => { x })}`), the brace
+/// that closes it at depth 0. The first-`}` rule printed a block as
+/// garbage text with no check error.
+pub(crate) fn interp_segment_end(s: &str, open: usize) -> Option<usize> {
+    let rest = &s[open + 1..];
+    let first = rest.find('}')?;
+    if !rest[..first].contains('{') || rest.trim_start().starts_with('{') {
+        return Some(first);
+    }
+    let mut depth = 0i32;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                if depth == 0 { return Some(i); }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    Some(first)
 }
