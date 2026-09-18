@@ -702,7 +702,16 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             if structural > 0 { why.push(format!("{} cell{} with failed checks — state machine or invariants (see ✗ lines)", structural, if structural == 1 { "" } else { "s" })); }
             if temporal > 0 { why.push(format!("{} temporal propert{} failed", temporal, if temporal == 1 { "y" } else { "ies" })); }
             if !unknown_states.is_empty() { why.push(format!("{} propert{} on unknown states", unknown_states.len(), if unknown_states.len() == 1 { "y" } else { "ies" })); }
-            if strict_warnings > 0 { why.push(format!("--strict: {} ⚠ line{} (runtime-checked or unprovable)", strict_warnings, if strict_warnings == 1 { "" } else { "s" })); }
+            if strict_warnings > 0 {
+                why.push(format!("--strict: {} ⚠ line{} (runtime-checked or unprovable)", strict_warnings, if strict_warnings == 1 { "" } else { "s" }));
+                // the ⚠ lines sit among dozens of ✓: repeat them by the verdict
+                eprintln!("--strict failures:");
+                for r in &all_results {
+                    for c in &r.checks {
+                        if let checker::verify::VerifyCheck::Warning(m) = c { eprintln!("  ⚠ {}", m); }
+                    }
+                }
+            }
             eprintln!("VERIFY FAILED — {}", why.join("; "));
         } else {
             eprintln!("VERIFY OK");

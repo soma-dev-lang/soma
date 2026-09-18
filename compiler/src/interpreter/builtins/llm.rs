@@ -237,9 +237,16 @@ fn variant_struct(name: &str, fields: Vec<(&str, Value)>) -> Value {
 
 /// Create a trace entry for a think() call
 pub fn trace_think(iteration: i64, prompt: &str, tokens: i64, total: i64, finish: &str) -> Value {
+    trace_think_with(iteration, prompt, "", tokens, total, finish)
+}
+
+/// A Think step with its system prompt (an audit of "what did the model
+/// see" needs both).
+pub fn trace_think_with(iteration: i64, prompt: &str, system: &str, tokens: i64, total: i64, finish: &str) -> Value {
     variant_struct("Think", vec![
         ("iteration", Value::Int(SomaInt::from_i64(iteration))),
         ("prompt", Value::String(prompt.to_string())),
+        ("system", Value::String(system.to_string())),
         ("tokens", Value::Int(SomaInt::from_i64(tokens))),
         ("total_tokens", Value::Int(SomaInt::from_i64(total))),
         ("finish_reason", Value::String(finish.to_string())),

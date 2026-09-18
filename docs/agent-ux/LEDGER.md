@@ -240,7 +240,7 @@ Scores: Ruby port (invoice/ledger with dates and money formatting) 17 invocation
 - [ ] `emit` across processes needs `[peers]`; a peer down at start-up is not retried (documented).
 - [ ] `soma fix` repairs missing handlers and `--native-idiv` only (documented as such).
 - [x] Variants round-trip through `to_json` / `from_json` as `{"_type", "_variant", …}` (they used to be a JSON string); `soma serve` renders every body with the same JSON writer (a returned variant is an object, not `{"result": Charged { … }}`).
-- [ ] `trace()` omits the system prompt.
+- [x] `trace()` records the system prompt of each Think step.
 
 ## Cycle 7 (2026-09-18, morning) — 5 fresh agents on the cycle-6 binary
 

@@ -376,7 +376,7 @@ fn agent_think(
         let est = ((prompt.chars().count() + response.chars().count()) as i64 + 3) / 4;
         let est = est.max(1);
         interp.agent_tokens_used += est;
-        interp.agent_trace.push(super::llm::trace_think(0, prompt, est, interp.agent_tokens_used, "stop"));
+        interp.agent_trace.push(super::llm::trace_think_with(0, prompt, system.unwrap_or(""), est, interp.agent_tokens_used, "stop"));
         if interp.agent_conversation.is_empty() {
             interp.agent_conversation.push(serde_json::json!({"role": "system", "content": "mock"}));
         }
@@ -457,8 +457,9 @@ fn agent_think(
         let resp = llm::parse_response(&config, &raw_json);
 
         interp.agent_tokens_used += resp.tokens;
-        interp.agent_trace.push(llm::trace_think(
-            iteration as i64, if iteration == 0 { prompt } else { "(cont)" }, resp.tokens, interp.agent_tokens_used, &resp.finish_reason,
+        interp.agent_trace.push(llm::trace_think_with(
+            iteration as i64, if iteration == 0 { prompt } else { "(cont)" }, if iteration == 0 { system.unwrap_or("") } else { "" },
+            resp.tokens, interp.agent_tokens_used, &resp.finish_reason,
         ));
 
         // Tool calls
