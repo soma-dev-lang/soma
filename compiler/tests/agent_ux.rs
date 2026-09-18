@@ -744,7 +744,7 @@ cell test T {
     assert nothing() == ()
     assert_fails len() matching "len(x: String|List|Map) -> Int — called with 0 arguments"
     assert_fails from_json("") matching "not valid JSON"
-    assert_fails to_int(1e19) matching "outside the Int range"
+    assert to_int(1e19) == 10000000000000000000
     assert_fails sum([1, "a"]) matching "needs numbers"
     assert "false"
   }
@@ -1600,4 +1600,34 @@ cell C {
     let (out, code) = soma_in(&d, &["verify", "s.cell"]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("does not parse"), "{out}");
+}
+
+/// Cycle 16: native argument types are checked; native random is an Int
+/// with arguments; native loop_bound is enforced; big Floats convert
+/// exactly; bit_len is exact; while [loop_bound] terminates for verify.
+#[test]
+fn cycle16_findings() {
+    let d = dir("cycle16");
+    std::fs::write(d.join("n.cell"), r#"
+cell N {
+  on sq(n: Int) [native] { return n * n }
+  on r() [native] { let a = random(10)  let b = random(10, 20)  return a + b }
+  on lb(n: Int) [native] { let t = n  let k = 0  while [loop_bound(3)] t > 0 { t = t - 1  k = k + 1 }  return k }
+  on main() { let v = map("f", 2.5)  let x = try { sq(v.f) }  return x.kind }
+  on big() { return [to_int(1e20), bit_len(shl(1, 100))] }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "n.cell", "main"]);
+    assert!(out.contains("type"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "n.cell", "r"]);
+    assert_eq!(code, 0, "{out}");
+    let v: i64 = out.lines().find_map(|l| l.trim().parse().ok()).unwrap();
+    assert!((10..30).contains(&v), "{out}");
+    let (out, code) = soma_in(&d, &["run", "n.cell", "lb", "10"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("loop_bound"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "n.cell", "big"]);
+    assert!(out.contains("[100000000000000000000, 101]"), "{out}");
+    let (out, _) = soma_in(&d, &["verify", "n.cell"]);
+    assert!(!out.contains("handler `lb`: while-loop"), "{out}");
 }

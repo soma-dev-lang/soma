@@ -447,3 +447,23 @@ properties and all invariants proven — after routing around B1.
 - [ ] Runtime errors in an imported file point into the importing file.
 - [ ] A JSON body number beyond Float range reads as `inf`.
 
+## Cycle 16 (2026-09-18) — Monte Carlo, graphs and big integers ported from Python
+
+7/10: all three ports bit-identical to Python (native 35-50x faster than CPython,
+interpreted BigInt faster than CPython); a persistent job queue survived kill -9
+mid-job. The native backend disagreed with the interpreter in four places.
+
+### Fixed
+- [x] **Native argument types** were not checked: `sq(2.5)` squared 2.5's bit pattern, `half(3)` read 3 as 5e-324, a String gave an index panic (a Float `paths` would have looped 4.6e18 times holding the lock). Native handlers type-check their arguments like interpreted ones (kind `type`).
+- [x] **Native `random`** ignored its arguments, answered Floats and used a fixed seed; both backends now share a clock-seeded splitmix64 (`random()` has 53 bits — the interpreter's had 6 decimals).
+- [x] **Native buffers** accepted a Float index (truncated silently): a check error now.
+- [x] **Native `loop_bound`** was not enforced (101 iterations under a bound of 100): checked in Direct and BigInt code.
+- [x] `while [loop_bound(N)]` satisfies verify's termination check (it is now enforced everywhere).
+- [x] `to_int` / `floor` / `ceil` / `round` of a large finite Float give the exact Int (they raised); native falls back to BigInt for them.
+- [x] `bit_len` of a BigInt is exact (the interpreter estimated from the decimal length); `gcd` works on BigInts (it truncated them).
+- [x] A 64-bit-plus Int literal in [native] says how to build it; the shl doc's mask no longer suggests a literal native refuses; a missing `cargo` says to install Rust; docs: cargo, .soma_cache, float printing, native indexes.
+
+### Open
+- [ ] Native errors carry no line number.
+- [ ] Interpreted numeric loops are 4-8x slower than CPython.
+

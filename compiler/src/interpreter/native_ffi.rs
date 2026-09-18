@@ -316,7 +316,7 @@ fn build_dylib(
             .args(["build", "--release", "--quiet"])
             .current_dir(&proj_dir)
             .output()
-            .map_err(|e| format!("cargo not found: {}", e))?;
+            .map_err(|e| format!("[native] needs the Rust toolchain: `cargo` was not found on PATH ({}) — install it (https://rustup.rs) or drop [native] to run interpreted", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

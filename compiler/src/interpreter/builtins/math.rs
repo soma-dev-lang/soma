@@ -78,8 +78,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let r = n.round();
                     if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
                         Ok(Value::Int(SomaInt::from_i64(r as i64)))
+                    } else if r.is_finite() {
+                        // Int is arbitrary precision: 1e300 has an exact integer value
+                        Ok(Value::Int(SomaInt::from_rug(rug::Integer::from_f64(r).unwrap())))
                     } else {
-                        Err(RuntimeError::TypeError(format!("round: {} is out of integer range", n)))
+                        Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("round: {} has no integer value", n) })
                     }
                 }
                 Value::Int(si) => Ok(Value::Int(si.clone())),
@@ -92,8 +95,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let r = n.floor();
                     if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
                         Ok(Value::Int(SomaInt::from_i64(r as i64)))
+                    } else if r.is_finite() {
+                        // Int is arbitrary precision: 1e300 has an exact integer value
+                        Ok(Value::Int(SomaInt::from_rug(rug::Integer::from_f64(r).unwrap())))
                     } else {
-                        Err(RuntimeError::TypeError(format!("floor: {} is out of integer range", n)))
+                        Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("floor: {} has no integer value", n) })
                     }
                 }
                 Value::Int(si) => Ok(Value::Int(si.clone())),
@@ -106,8 +112,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let r = n.ceil();
                     if r.is_finite() && r >= i64::MIN as f64 && r <= i64::MAX as f64 {
                         Ok(Value::Int(SomaInt::from_i64(r as i64)))
+                    } else if r.is_finite() {
+                        // Int is arbitrary precision: 1e300 has an exact integer value
+                        Ok(Value::Int(SomaInt::from_rug(rug::Integer::from_f64(r).unwrap())))
                     } else {
-                        Err(RuntimeError::TypeError(format!("ceil: {} is out of integer range", n)))
+                        Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("ceil: {} has no integer value", n) })
                     }
                 }
                 Value::Int(si) => Ok(Value::Int(si.clone())),
@@ -281,44 +290,34 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         // random(max) → int 0..max (exclusive)
         // random(min, max) → int min..max (exclusive)
         "random" => {
+            // splitmix64 seeded once from the clock: full 53-bit floats (it
+            // gave 6 decimals: 0.969512) and the native backend's generator
             use std::cell::Cell;
-            use std::time::{SystemTime, UNIX_EPOCH};
-
-            thread_local! {
-                static RAND_COUNTER: Cell<u64> = Cell::new(0);
-            }
-
-            // Simple PRNG: use system time nanos as seed, mixed with a
-            // per-thread counter so rapid successive calls differ.
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH)
-                .unwrap_or_default().subsec_nanos() as u64;
-
-            let mut x = RAND_COUNTER.with(|c| {
-                let count = c.get();
-                c.set(count.wrapping_add(1));
-                nanos ^ count
+            thread_local! { static RNG: Cell<u64> = Cell::new(0); }
+            let z = RNG.with(|c| {
+                let mut st = c.get();
+                if st == 0 {
+                    st = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64 | 1;
+                }
+                st = st.wrapping_add(0x9E3779B97F4A7C15);
+                c.set(st);
+                let mut z = st;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                z ^ (z >> 31)
             });
-
-            // xorshift-style mixing
-            x = x ^ (x >> 7) ^ (x << 13);
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-
+            let below = |n: u64| -> u64 { ((z as u128 * n as u128) >> 64) as u64 };
             if args.is_empty() {
-                // random() → float 0.0..1.0
-                let f = (x % 1_000_000) as f64 / 1_000_000.0;
-                Some(Ok(Value::Float(f)))
+                Some(Ok(Value::Float((z >> 11) as f64 / (1u64 << 53) as f64)))
             } else if args.len() == 1 {
-                // random(max) → int 0..max
                 let max = val_to_i64(&args[0]);
                 if max <= 0 { return Some(Ok(Value::Int(SomaInt::from_i64(0)))); }
-                Some(Ok(Value::Int(SomaInt::from_i64((x % max as u64) as i64))))
+                Some(Ok(Value::Int(SomaInt::from_i64(below(max as u64) as i64))))
             } else {
-                // random(min, max) → int min..max
                 let min = val_to_i64(&args[0]);
                 let max = val_to_i64(&args[1]);
                 if max <= min { return Some(Ok(Value::Int(SomaInt::from_i64(min)))); }
-                let range = (max - min) as u64;
-                Some(Ok(Value::Int(SomaInt::from_i64(min + (x % range) as i64))))
+                Some(Ok(Value::Int(SomaInt::from_i64(min + below((max - min) as u64) as i64))))
             }
         }
         // Bit operations on Int — arbitrary precision, like Python: a bit
@@ -369,30 +368,19 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             })))
         }
         "bit_len" if args.len() >= 1 => {
+            // exact, BigInt included (it estimated from the decimal length:
+            // 26370 vs native 26373), of the magnitude like the native backend
             match &args[0] {
-                Value::Int(si) => {
-                    let s = si.to_string();
-                    // approximate; for SomaInt-as-i64 use leading_zeros, otherwise estimate
-                    if let Some(v) = si.to_i64() {
-                        let bits = if v == 0 { 0 } else { 64 - v.unsigned_abs().leading_zeros() as i64 };
-                        Some(Ok(Value::Int(SomaInt::from_i64(bits))))
-                    } else {
-                        // BigInt: estimate from decimal length
-                        let len = if s.starts_with('-') { s.len() - 1 } else { s.len() };
-                        let bits = ((len as f64) * 3.3219280948873626) as i64 + 1;
-                        Some(Ok(Value::Int(SomaInt::from_i64(bits))))
-                    }
-                }
+                Value::Int(_) => Some(Ok(Value::Int(SomaInt::from_i64(big_of(&args[0]).significant_bits() as i64)))),
                 _ => Some(Ok(Value::Int(SomaInt::from_i64(0)))),
             }
         }
         // Number theory
         "gcd" if args.len() >= 2 => {
-            let mut a = val_to_i64(&args[0]).unsigned_abs();
-            let mut b = val_to_i64(&args[1]).unsigned_abs();
-            while b != 0 { let t = b; b = a % b; a = t; }
-            // gcd(i64::MIN, 0) is 2^63: it does not fit an i64 (it came back negative)
-            Some(Ok(Value::Int(SomaInt::from_rug(rug::Integer::from(a)))))
+            // on the arbitrary-precision Ints (val_to_i64 truncated BigInts;
+            // gcd(i64::MIN, 0) came back negative)
+            let g = big_of(&args[0]).gcd(&big_of(&args[1]));
+            Some(Ok(Value::Int(SomaInt::from_rug(g))))
         }
         "sqrt_int" if args.len() >= 1 => {
             // exact integer square root, BigInt included (a 20-digit input

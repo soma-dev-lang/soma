@@ -183,7 +183,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("bnot", "math", "bnot(a: Int) -> Int",
         "Bitwise NOT."),
     doc("shl", "math", "shl(a: Int, n: Int) -> Int",
-        "Exact left shift (a * 2^n), arbitrary precision like every Int op. For a 64-bit wrapping shift (xorshift), mask: band(shl(x, 13), 18446744073709551615)."),
+        "Exact left shift (a * 2^n), arbitrary precision like every Int op. For a 64-bit wrapping shift (xorshift), mask: band(shl(x, 13), M) with M = shl(1, 64) - 1 bound once (a literal beyond 64 bits is not allowed in [native]); values past 2^63 run [native] code in BigInt mode — prefer 32-bit xorshift masks for speed."),
     doc("shr", "math", "shr(a: Int, n: Int) -> Int",
         "Arithmetic shift right by n bits (wrapping)."),
     doc("bit_test", "math", "bit_test(a: Int, i: Int) -> Int",

@@ -1105,6 +1105,30 @@ impl Interpreter {
 
         // Check for [native] FFI handler first — fast path
         let native_key = (cell_name.to_string(), signal_name.to_string());
+        // the declared parameter types, as for an interpreted handler: the
+        // FFI reinterpreted the bits (sq(2.5) squared 2.5's bit pattern)
+        let args = if self.native_handlers.contains_key(&native_key) {
+            let params: Option<Vec<Param>> = self.cells.get(cell_name).and_then(|c| c.sections.iter().find_map(|s| match &s.node {
+                Section::OnSignal(on) if on.signal_name == signal_name => Some(on.params.clone()),
+                _ => None,
+            }));
+            match params {
+                Some(params) => {
+                    if args.len() != params.len() {
+                        return Err(RuntimeError::TypeError(format!("{}() expected {} arguments, got {}", signal_name, params.len(), args.len())));
+                    }
+                    let mut checked = Vec::with_capacity(args.len());
+                    for (p, a) in params.iter().zip(args.into_iter()) {
+                        match check_param_type(p, a) {
+                            Ok(v) => checked.push(v),
+                            Err(m) => return Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("{}(): {}", signal_name, m) }),
+                        }
+                    }
+                    checked
+                }
+                None => args,
+            }
+        } else { args };
         if self.native_handlers.contains_key(&native_key) {
             let native = self.native_handlers.get(&native_key).unwrap();
             match native_ffi::call_native(native, &args) {

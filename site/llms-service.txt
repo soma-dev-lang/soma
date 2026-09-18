@@ -534,7 +534,14 @@ Interpreter is the reference semantics (linear-time `map`/`filter`/indexing;
 a 20k-row CSV aggregation runs in ~0.3 s interpreted). Annotate hot handlers
 `[native]` for Rust-codegen: measured at rustc -O parity (16.8 ns/op) on
 numeric loops; a native compile failure aborts the run (there is no silent
-fall-back to the interpreter).
+fall-back to the interpreter). It needs `cargo` (rustup) on PATH; the first
+compile takes seconds and is cached in `.soma_cache/` beside the program.
+Arguments are type-checked at the call like any handler; `random(n)` /
+`random(lo, hi)` are Ints, `random()` a Float; buffer indexes are Ints from 0
+(no negative indexes); an Int literal beyond 64 bits is refused (build it:
+`shl(1, 64) - 1`); `[loop_bound(N)]` is checked; recursion deeper than
+20,000 calls raises stack_overflow. Floats print with the shortest
+round-trip digits, never in exponent form (`1e-7` prints `0.0000001`).
 `soma check` verifies the native vocabulary (every handler, every error at
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and

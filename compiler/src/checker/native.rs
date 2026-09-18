@@ -151,6 +151,29 @@ pub fn check_native_handler(
             problem = Some(format!("grows the String `{}` with + — build text with strbuf() / sb_push / sb_finish", n));
         }
     }
+    // a Float buffer index was truncated silently (buf_set(b, 1.7, 9) wrote b[1])
+    if problem.is_none() {
+        let mut floats: HashSet<String> = params.iter()
+            .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Float"))
+            .map(|p| p.name.clone()).collect();
+        for st in body {
+            if let Statement::Let { name, value } = &st.node {
+                if has_float_literal(&value.node) || matches!(&value.node, Expr::FnCall { name, args } if name == "random" && args.is_empty()) {
+                    floats.insert(name.clone());
+                }
+            }
+        }
+        let floaty = |e: &Expr| has_float_literal(e) || matches!(e, Expr::Ident(n) if floats.contains(n))
+            || matches!(e, Expr::FnCall { name, args } if name == "random" && args.is_empty());
+        crate::checker::literals::for_each_expr(body, &mut |e| {
+            if problem.is_some() { return; }
+            if let Expr::FnCall { name, args } = e {
+                if matches!(name.as_str(), "buf_get" | "buf_set" | "buf_get_f" | "buf_set_f") && args.get(1).map_or(false, |a| floaty(&a.node)) {
+                    problem = Some(format!("{}() with a Float index — an index is an Int (use floor() / to_int() explicitly)", name));
+                }
+            }
+        });
+    }
     if let Some(reason) = problem {
         return Err(NativeCheckError { handler_name: handler_name.to_string(), reason });
     }
@@ -374,6 +397,10 @@ fn check_expr(handler_name: &str, expr: &Expr, siblings: &NativeSiblings) -> Res
                     }
                     Ok(())
                 }
+                Literal::BigInt(b) => Err(NativeCheckError {
+                    handler_name: handler_name.to_string(),
+                    reason: format!("uses the Int literal {} beyond 64 bits — build it at run time (`shl(1, 64) - 1`, `shl(0x9E3779B9, 32) + 0x7F4A7C15`), or keep this code interpreted", b),
+                }),
                 _ => Err(NativeCheckError {
                     handler_name: handler_name.to_string(),
                     reason: format!("uses unsupported literal type {:?}", lit),

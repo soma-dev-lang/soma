@@ -322,18 +322,23 @@ pub fn generate_native_source_with_config(
     }
 
     if uses_random {
-        out.push_str("thread_local! { static _SOMA_RNG_STATE: std::cell::Cell<u64> = std::cell::Cell::new(0x12345678_9abcdef0); }\n\n");
-        out.push_str("#[inline(always)]\nfn _soma_random() -> f64 {\n");
+        // splitmix64 seeded from the clock, like the interpreter (a fixed
+        // seed gave the same "random" numbers on every run)
+        out.push_str("thread_local! { static _SOMA_RNG_STATE: std::cell::Cell<u64> = std::cell::Cell::new(0); }\n\n");
+        out.push_str("#[inline(always)]\nfn _soma_random_u64() -> u64 {\n");
         out.push_str("    _SOMA_RNG_STATE.with(|cell| {\n");
-        out.push_str("        let mut s = cell.get();\n");
-        out.push_str("        s ^= s >> 12;\n");
-        out.push_str("        s ^= s << 25;\n");
-        out.push_str("        s ^= s >> 27;\n");
-        out.push_str("        cell.set(s);\n");
-        out.push_str("        let r = s.wrapping_mul(0x2545F4914F6CDD1D);\n");
-        out.push_str("        (r >> 11) as f64 / ((1u64 << 53) as f64)\n");
+        out.push_str("        let mut st = cell.get();\n");
+        out.push_str("        if st == 0 { st = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) | 1; }\n");
+        out.push_str("        st = st.wrapping_add(0x9E3779B97F4A7C15);\n");
+        out.push_str("        cell.set(st);\n");
+        out.push_str("        let mut z = st;\n");
+        out.push_str("        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);\n");
+        out.push_str("        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);\n");
+        out.push_str("        z ^ (z >> 31)\n");
         out.push_str("    })\n");
         out.push_str("}\n\n");
+        out.push_str("#[inline(always)]\nfn _soma_random() -> f64 { (_soma_random_u64() >> 11) as f64 / ((1u64 << 53) as f64) }\n\n");
+        out.push_str("#[inline(always)]\nfn _soma_random_below(lo: i64, hi: i64) -> i64 { if hi <= lo { return lo; } lo + (((_soma_random_u64() as u128) * ((hi - lo) as u128)) >> 64) as i64 }\n\n");
     }
 
     // ── Shared buffer for Rug mode ──
@@ -3591,6 +3596,7 @@ impl FnGenerator {
             Expr::Not(_) => NativeType::Bool,
             Expr::FnCall { name, args } => {
                 match name.as_str() {
+                    "random" if !args.is_empty() => NativeType::Int,
                     "random" | "sqrt" | "log" | "exp" | "pow" | "sin" | "cos" => NativeType::Float,
                     "to_string" => NativeType::String,
                     "to_float" => NativeType::Float,
@@ -3881,18 +3887,25 @@ impl FnGenerator {
                 }
                 s
             }
-            Statement::While { condition, body, .. } => {
+            Statement::While { condition, body, bound } => {
+                // a declared [loop_bound(N)] is checked, as in the interpreter
                 let cond = self.gen_expr_direct(&condition.node, NativeType::Bool);
-                let mut s = format!("{}while {} {{\n", ind, cond);
+                let mut s = String::new();
+                if bound.is_some() { s.push_str(&format!("{}let mut _lb_n: u64 = 0;\n", ind)); }
+                s.push_str(&format!("{}while {} {{\n", ind, cond));
+                if let Some(b) = bound { s.push_str(&format!("{}    _lb_n += 1; if _lb_n > {}u64 {{ panic!(\"soma:loop_bound: [loop_bound({})] exceeded — the declared bound is part of the cost/termination proof\") }}\n", ind, b, b)); }
                 for st in body {
                     s.push_str(&self.gen_stmt_direct(&st.node, indent + 1));
                 }
                 s.push_str(&format!("{}}}\n", ind));
                 s
             }
-            Statement::For { var, iter, body, bound: _ } => {
+            Statement::For { var, iter, body, bound } => {
                 let iter_code = self.gen_for_iter_direct(&iter.node);
-                let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
+                let mut s = String::new();
+                if bound.is_some() { s.push_str(&format!("{}let mut _lb_n: u64 = 0;\n", ind)); }
+                s.push_str(&format!("{}for {} in {} {{\n", ind, var, iter_code));
+                if let Some(b) = bound { s.push_str(&format!("{}    _lb_n += 1; if _lb_n > {}u64 {{ panic!(\"soma:loop_bound: [loop_bound({})] exceeded — the declared bound is part of the cost/termination proof\") }}\n", ind, b, b)); }
                 for st in body {
                     s.push_str(&self.gen_stmt_direct(&st.node, indent + 1));
                 }
@@ -4350,7 +4363,17 @@ impl FnGenerator {
                 // flush: the dylib has its own stdout buffer the host never drains
                 return format!("{{ use std::io::Write; let mut _o = std::io::stdout(); let _ = _o.write_all({}.as_bytes()); let _ = _o.flush(); 0i64 }}", s);
             }
-            "random" => "_soma_random()".to_string(),
+            // random(max) / random(min, max) are Ints, like the interpreter
+            "random" if args.len() == 1 => {
+                let m = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                self.coerce_direct(format!("_soma_random_below(0, {})", m), NativeType::Int, target_ty)
+            }
+            "random" if args.len() == 2 => {
+                let lo = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let hi = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                self.coerce_direct(format!("_soma_random_below({}, {})", lo, hi), NativeType::Int, target_ty)
+            }
+            "random" => self.coerce_direct("_soma_random()".to_string(), NativeType::Float, target_ty),
             "sqrt" | "log" | "exp" | "sin" | "cos" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
                 let method = match name { "log" => "ln", other => other };
@@ -4397,13 +4420,14 @@ impl FnGenerator {
                 // NaN / ±inf / beyond i64 raise, as the interpreter does —
                 // `as i64` saturated silently (floor(NaN) was 0)
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
-                format!("({{ let _f: f64 = ({}).{}(); if !_f.is_finite() || _f.abs() >= 9.223372036854775e18 {{ panic!(\"soma:{}: {{}} is out of integer range\", _f) }} _f as i64 }})", a, name, name)
+                // beyond i64: a plain panic → the BigInt (Rug) variant computes it exactly
+                format!("({{ let _f: f64 = ({}).{}(); if !_f.is_finite() {{ panic!(\"soma:range: {}: {{}} has no integer value\", _f) }} if _f.abs() >= 9.223372036854775e18 {{ panic!(\"attempt to convert a Float beyond 64 bits (overflow)\") }} _f as i64 }})", a, name, name)
             }
             "to_int" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
                 let a = self.gen_expr_direct(&args[0].node, a_ty);
                 if a_ty == NativeType::Float {
-                    format!("({{ let _f: f64 = {}; if !_f.is_finite() || _f.abs() >= 9.223372036854775e18 {{ panic!(\"soma:range: to_int({{}}) is outside the Int range — use round() or keep it a Float\", _f) }} _f as i64 }})", a)
+                    format!("({{ let _f: f64 = {}; if !_f.is_finite() {{ panic!(\"soma:range: to_int({{}}) has no integer value — keep it a Float\", _f) }} if _f.abs() >= 9.223372036854775e18 {{ panic!(\"attempt to convert a Float beyond 64 bits (overflow)\") }} _f as i64 }})", a)
                 } else {
                     format!("({} as i64)", a)
                 }
@@ -4795,7 +4819,7 @@ impl FnGenerator {
                 }
                 s
             }
-            Statement::While { condition, body, .. } => {
+            Statement::While { condition, body, bound } => {
                 let cond = self.gen_cond_rug(&condition.node);
                 let mut s = String::new();
 
@@ -4817,12 +4841,14 @@ impl FnGenerator {
                 let mut child = ctx.clone();
                 child.hoisted.extend(new_hoisted.iter().cloned());
 
+                if bound.is_some() { s.push_str(&format!("{}let mut _lb_n: u64 = 0;\n", ind)); }
                 s.push_str(&format!("{}while {} {{\n", ind, cond));
+                if let Some(b) = bound { s.push_str(&format!("{}    _lb_n += 1; if _lb_n > {}u64 {{ panic!(\"soma:loop_bound: [loop_bound({})] exceeded — the declared bound is part of the cost/termination proof\") }}\n", ind, b, b)); }
                 s.push_str(&self.gen_body_rug(body, indent + 1, &child));
                 s.push_str(&format!("{}}}\n", ind));
                 s
             }
-            Statement::For { var, iter, body, bound: _ } => {
+            Statement::For { var, iter, body, bound } => {
                 // In Rug mode every Int local the body sees is an Integer
                 // unless the classifier proved it small: the range yields
                 // i64, so bind the loop variable as the type the body
@@ -4831,13 +4857,15 @@ impl FnGenerator {
                 let iter_code = self.gen_for_iter_direct(&iter.node);
                 let small = self.small_int_vars.contains(var)
                     || self.var_types.get(var).copied().unwrap_or(NativeType::Int) != NativeType::Int;
+                let pre = if bound.is_some() { format!("{}let mut _lb_n: u64 = 0;\n", ind) } else { String::new() };
+                let guard = match bound { Some(b) => format!("{}    _lb_n += 1; if _lb_n > {}u64 {{ panic!(\"soma:loop_bound: [loop_bound({})] exceeded — the declared bound is part of the cost/termination proof\") }}\n", ind, b, b), None => String::new() };
                 if small {
-                    let mut s = format!("{}for {} in {} {{\n", ind, var, iter_code);
+                    let mut s = format!("{}{}for {} in {} {{\n{}", pre, ind, var, iter_code, guard);
                     s.push_str(&self.gen_body_rug(body, indent + 1, ctx));
                     s.push_str(&format!("{}}}\n", ind));
                     s
                 } else {
-                    let mut s = format!("{}for _soma_{} in {} {{\n{}    let mut {}: Integer = Integer::from(_soma_{});\n", ind, var, iter_code, ind, var, var);
+                    let mut s = format!("{}{}for _soma_{} in {} {{\n{}{}    let mut {}: Integer = Integer::from(_soma_{});\n", pre, ind, var, iter_code, guard, ind, var, var);
                     s.push_str(&self.gen_body_rug(body, indent + 1, ctx));
                     s.push_str(&format!("{}}}\n", ind));
                     s
@@ -5837,7 +5865,7 @@ impl FnGenerator {
                 } else {
                     // a Float beyond i64 is an exact BigInt here; NaN/inf raise
                     let a = self.gen_expr_direct(&args[0].node, a_ty);
-                    format!("({{ let _f: f64 = {} as f64; if !_f.is_finite() {{ panic!(\"soma:range: to_int({{}}) is outside the Int range — use round() or keep it a Float\", _f) }} Integer::from_f64(_f.trunc()).unwrap() }})", a)
+                    format!("({{ let _f: f64 = {} as f64; if !_f.is_finite() {{ panic!(\"soma:range: to_int({{}}) has no integer value — keep it a Float\", _f) }} Integer::from_f64(_f.trunc()).unwrap() }})", a)
                 }
             }
             "round" if args.len() == 2 => {
@@ -5987,6 +6015,15 @@ impl FnGenerator {
                 let exp = self.gen_int_borrow_rug(&args[1].node);
                 let m = self.gen_int_borrow_rug(&args[2].node);
                 format!("{{ if Integer::from({}) < 0 {{ panic!(\"soma:type: pow_mod(): negative exponent\") }} if Integer::from({}) == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} ({}).pow_mod({}, {}).expect(\"pow_mod failed\") }}", exp, m, base, exp, m)
+            }
+            "random" if args.len() == 1 => {
+                let m = self.gen_int_to_i64_rug(&args[0].node);
+                format!("Integer::from(_soma_random_below(0, {}))", m)
+            }
+            "random" if args.len() == 2 => {
+                let lo = self.gen_int_to_i64_rug(&args[0].node);
+                let hi = self.gen_int_to_i64_rug(&args[1].node);
+                format!("Integer::from(_soma_random_below({}, {}))", lo, hi)
             }
             "sqrt_int" if args.len() == 1 => {
                 let a = self.gen_expr_rug(&args[0].node);

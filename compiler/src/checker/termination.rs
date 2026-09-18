@@ -428,13 +428,16 @@ fn check_stmt_termination(
             }
         }
 
-        Statement::While { condition, body, .. } => {
+        Statement::While { condition, body, bound } => {
             check_expr_termination(&condition.node, handler_name, params, reasons);
-            // While loops are NEVER structurally terminating without
-            // additional analysis. Flag them unconditionally.
-            // Future: check for [loop_bound(N)] on while loops.
+            // `while [loop_bound(N)] cond { … }` terminates: iteration N+1
+            // raises (checked at run time, interpreter and native)
+            if bound.is_some() {
+                for s in body { check_stmt_termination(&s.node, handler_name, params, reasons); }
+                return;
+            }
             reasons.push(format!(
-                "handler `{}`: while-loop without provable termination bound (consider replacing with a bounded for-loop or adding a max-iteration guard)",
+                "handler `{}`: while-loop without provable termination bound (write `while [loop_bound(N)] cond {{ … }}`, or a for-loop over a bounded range)",
                 handler_name
             ));
 

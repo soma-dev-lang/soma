@@ -237,11 +237,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "to_int" => {
             // a Float outside i64 (1e19, inf, NaN) used to saturate silently
             let float_to_int = |n: f64| -> Result<Value, RuntimeError> {
-                if !n.is_finite() || n.abs() >= 9.223372036854775e18 {
+                if !n.is_finite() {
                     return Err(RuntimeError::Domain {
                         kind: "range".to_string(),
-                        message: format!("range: to_int({}) is outside the Int range — use round() or keep it a Float", n),
+                        message: format!("to_int({}) has no integer value — keep it a Float", n),
                     });
+                }
+                // truncation toward zero, BigInt-exact beyond i64 (to_int(1e20) raised)
+                if n.abs() >= 9.223372036854775e18 {
+                    return Ok(Value::Int(SomaInt::from_rug(rug::Integer::from_f64(n.trunc()).unwrap())));
                 }
                 Ok(Value::Int(SomaInt::from_i64(n as i64)))
             };
