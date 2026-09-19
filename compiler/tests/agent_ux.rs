@@ -2841,3 +2841,34 @@ fn cycle46_findings() {
     let (out, _) = soma_in(&d, &["verify", "k.cell"]);
     assert!(!out.contains("writer 'zero' proven"), "{out}");
 }
+
+#[test]
+fn cycle47_findings() {
+    let d = dir("cycle47");
+    // a scripted think reply longer than max_tokens raises like a provider
+    std::fs::write(d.join("t.cell"), "cell agent A {\n  on ask(q: String) { return think(q, map(\"max_tokens\", 10)) }\n}\ncell test T {\n  rules {\n    mock think \"this scripted reply is certainly much longer than ten tokens of text\"\n    assert_fails ask(\"q\") matching \"llm\"\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "t.cell"]);
+    assert_eq!(code, 0, "{out}");
+    // a huge declared Content-Length does not take the server down
+    std::fs::write(d.join("s.cell"), "cell S {\n  memory { c: Map<String, Int> [persistent] }\n  on bump(k: String) { c.set(k, (c.get(k) ?? 0) + 1) return 1 }\n}\n").unwrap();
+    let port = 19850 + (std::process::id() % 40) as u16;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "s.cell", "-p", &port.to_string()]).current_dir(&d)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let mut up = false;
+    for _ in 0..50 { if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; } std::thread::sleep(std::time::Duration::from_millis(100)); }
+    assert!(up);
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(3))).ok();
+    s.write_all(b"POST /bump/x HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000000000000\r\n\r\nabc").unwrap();
+    let mut buf = [0u8; 64];
+    let n = s.read(&mut buf).unwrap_or(0);
+    assert!(String::from_utf8_lossy(&buf[..n]).contains("413"));
+    drop(s);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let alive = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(alive, "serve died on a huge Content-Length");
+}

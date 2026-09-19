@@ -29,3 +29,9 @@ url = "2"
 rustc-hash = "1"
 indexmap = "2"
 libloading = "0.8"
+
+# tiny_http 0.12.0 with one fix: EqualReader::drop drained the unread body
+# with a single allocation of the DECLARED length (a 3-byte request declaring
+# Content-Length 10^15 aborted `soma serve`). See vendor/tiny_http/SOMA_PATCH.
+[patch.crates-io]
+tiny_http = { path = "vendor/tiny_http" }

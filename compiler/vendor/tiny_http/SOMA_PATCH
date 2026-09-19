@@ -1,0 +1,3 @@
+soma patch of tiny_http 0.12.0 (MIT OR Apache-2.0, licenses kept):
+src/util/equal_reader.rs — Drop drains the unread body in 64 KiB chunks
+instead of one allocation of the declared Content-Length.

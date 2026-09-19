@@ -783,7 +783,8 @@ soma run   app.cell request GET /stats ""     # call the router with no server
 1. `GET /static/<file>` serves `<project>/static/<file>` — confined to that
    directory (`..` and symlinks cannot escape it; dotfiles such as `.env`
    are never served). A request carrying both Content-Length and
-   Transfer-Encoding is refused (400).
+   Transfer-Encoding, or a repeated / non-numeric Content-Length, is refused
+   (400); a declared body past 256 MB is refused (413) before it is read.
 2. A path that the cell's `request(method, path, body)` handler **matches
    explicitly** — a literal (`"/stats"`) or a prefix pattern (`"/hold/" + id`)
    in one of its `match` arms, or a path it tests (`path == "/reset"`,

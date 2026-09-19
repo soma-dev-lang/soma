@@ -1282,6 +1282,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // …and a Content-Length that is repeated, a list, or not plain
             // digits (`0` then `<n>` made the declared body a second request)
             let cls: Vec<String> = request.headers().iter().filter(|h| h.field.as_str().as_str().eq_ignore_ascii_case("content-length")).map(|h| h.value.as_str().trim().to_string()).collect();
+            // a declared length past 256 MB is refused before any read: the
+            // body reader allocated the DECLARED size (`Content-Length:
+            // 1000000000000000` aborted the process on a 3-byte body)
+            const MAX_BODY: u64 = 256 * 1024 * 1024;
+            if cls.len() == 1 && cls[0].bytes().all(|b| b.is_ascii_digit()) && !cls[0].is_empty()
+                && cls[0].parse::<u64>().map_or(true, |n| n > MAX_BODY) {
+                poison(&request);
+                let resp = tiny_http::Response::from_string(error_body("the request body is larger than 256 MB (put the limit you need on the proxy)", "payload_too_large"))
+                    .with_status_code(413);
+                let _ = request.respond(cors(resp));
+                continue;
+            }
             if cls.len() > 1 || cls.iter().any(|v| v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit())) {
                 poison(&request);
                 // …and the connection closes: the bytes after the first length

@@ -426,6 +426,14 @@ fn agent_think(
 
     if let Some(mock) = mock_val {
         let response = match (&scripted, mock.as_str()) {
+            // a scripted reply longer than max_tokens (~4 characters per
+            // token) is what a real provider refuses (kind llm): the test
+            // exercises that path instead of under-counting tokens
+            (Some(Ok(text)), _) if max_tokens.map_or(false, |m| (text.chars().count() as u64 + 3) / 4 > m) => {
+                return Err(RuntimeError::Domain { kind: "llm".to_string(), message: format!(
+                    "llm: the scripted reply is ~{} tokens for max_tokens {} — a provider reply over the cap raises (raise max_tokens, or script a shorter reply)",
+                    (text.chars().count() + 3) / 4, max_tokens.unwrap_or(0)) });
+            }
             (Some(Ok(text)), _) => text.clone(),
             // a real provider stops at max_tokens: so does the mock (~4
             // characters per token) — a scripted reply is kept as written

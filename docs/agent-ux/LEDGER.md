@@ -1132,3 +1132,18 @@ handler lock.
 
 ### Open
 - [ ] `s == "" || s == "x"` for String literal writes is not proven; native vocabulary lacks atan / atan2 / asin / acos; WS replies and publish pushes use different JSON spacing; `verify --strict` repeats ⚠ lines in its summary.
+
+### Cycle 47 — realistic port (crowdfunding, 7 files) + attack on the newest rules
+
+Crowdfunding port 8/10: 20 concurrent pledges for the last reward → one
+201; 30 on a 3-unit reward → exactly 3; the per-backer daily limit held
+under concurrency; 9 temporal properties proven. The attack on the newest
+rules (equal-clause proofs, disjunctions, size bounds, List keys, deep
+types, arity checks, smuggling defenses) found them sound.
+
+### Fixed
+- [x] **One 15-byte request killed `soma serve`**: a declared `Content-Length: 1000000000000000` with a 3-byte body aborted the process ("memory allocation … failed") — tiny_http's `EqualReader::drop` drained the unread body with ONE allocation of the declared length. tiny_http is vendored (compiler/vendor/tiny_http, MIT/Apache) with a chunked drain, and a declared body past 256 MB is refused 413 before any read.
+- [x] Port: a `mock think` reply longer than its max_tokens was returned whole (and under-counted) — it raises kind `llm`, as a provider's over-cap reply does.
+
+### Open
+- [ ] `Map` / `List` parameters and returns accept `()` (the documented "absent record" leniency), not only a trailing optional Map; `-> List<Int>` returning `["a"]` is caught at run time, not by check; a GET route calling think() spends tokens from any web page (CORS *).

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A huge declared Content-Length no longer aborts `soma serve` (tiny_http
+  vendored with a chunked drain; bodies past 256 MB are refused 413).
+- A scripted `mock think` reply longer than max_tokens raises kind `llm`.
 - Bus peers have bounded send queues (a peer that stops reading is
   disconnected); WebSocket clients are also dropped past 64 MB queued; the
   WebSocket Origin check refuses userinfo and control characters.
