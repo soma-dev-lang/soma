@@ -2662,3 +2662,29 @@ fn cycle38_findings() {
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("cannot be used") && !out.contains("panicked"), "{out}");
 }
+
+#[test]
+fn cycle39_findings() {
+    let d = dir("cycle39");
+    // `mock Email.send` does not stub Sms.send; a test helper may not shadow
+    std::fs::write(d.join("m.cell"), "cell Email { on send(to: String) { return \"email\" } }\ncell Sms { on send(to: String) { return \"sms\" } }\ncell App { on welcome(u: String) { return Sms.send(u) } }\ncell test T {\n  rules {\n    mock Email.send \"email-sent\"\n    assert welcome(\"bob\") == \"email-sent\"\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "m.cell"]);
+    assert_ne!(code, 0, "{out}");
+    std::fs::write(d.join("s.cell"), "cell Cart { on total(xs: List) { return 0 } }\ncell test T {\n  rules { assert total([1, 2, 3]) == 6 }\n  on total(xs: List) { return sum(xs) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "s.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("test helper `total`"), "{out}");
+    // `value` outside an invariant; monotone versions proven by their require
+    std::fs::write(d.join("v.cell"), "cell P {\n  memory {\n    versions: Map<String, Int> [persistent]\n    invariant value >= (versions.get(key) ?? 0)\n  }\n  on bump(id: String) {\n    let next = (versions.get(id) ?? 0) + 1\n    require next >= (versions.get(id) ?? 0) else Stale\n    versions.set(id, next)\n  }\n  on bad(id: String, a: Map) {\n    require a.x >= (versions.get(id) ?? 0) else Stale\n    a.x = 0\n    versions.set(id, a.x)\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "v.cell"]);
+    assert!(out.contains("writer 'bump' proven"), "{out}");
+    assert!(!out.contains("writer 'bad' proven"), "{out}");
+    std::fs::write(d.join("u.cell"), "cell U { on f(x: Int) { require value >= 0 else Bad  return x } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "u.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("exists only inside a memory `invariant`"), "{out}");
+    // test cells that assert nothing fail
+    std::fs::write(d.join("e.cell"), "cell A { on f() { return 1 } }\ncell test T { rules { let x = f() } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "e.cell"]);
+    assert_ne!(code, 0, "{out}");
+}

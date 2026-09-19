@@ -132,6 +132,11 @@ pub fn cmd_replay(
                     diverged += 1;
                 }
             }
+            // the recorded call raised the same kind: as recorded
+            Err(e) if matches!(&entry.result, interpreter::Value::Map(m) if m.get("__error__").map_or(false, |k| format!("{}", k) == e.kind())) => {
+                println!("  #{:<4}  {}.{}({})  ok (raised {} as recorded)", i + 1, entry.cell, entry.handler, fmt_args(&entry.args), e.kind());
+                ok += 1;
+            }
             Err(e) => {
                 println!("  #{:<4}  {}.{}  ERROR: {}", i + 1, entry.cell, entry.handler, e);
                 diverged += 1;

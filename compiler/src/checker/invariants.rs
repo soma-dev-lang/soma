@@ -430,6 +430,29 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         if size_upper_bound(c, slot).is_some() { *v = Proof::Holds; }
                     }
                 }
+                // a clause that IS a require at this write (`require next >=
+                // (versions.get(id) ?? 0)` for `value >= (versions.get(key) ?? 0)`):
+                // it holds when nothing between can change what it reads — the
+                // handler's ONE write to this slot, and no handler it calls,
+                // emits to or dispatches (think tools) could write it either
+                {
+                    let one_write = writes.iter().filter(|(h, sl, _, _, _, _)| h == handler && sl == slot).count() == 1;
+                    let calls_handlers = handlers.get(handler).map_or(true, |on| {
+                        let names: HashSet<&str> = all_handlers.iter().map(|(_, o)| o.signal_name.as_str()).collect();
+                        calls_of(&on.body, &cell_names, cell_tools.get(&cell.node.name).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers)
+                            .iter().any(|(_, n)| names.contains(n.as_str()))
+                    });
+                    // outside any loop: a second pass writes again after the
+                    // first changed what the clause reads (`value > old`)
+                    let looped = wpath.iter().any(|step| step % 4 == 2 || *step == usize::MAX / 2);
+                    if one_write && !calls_handlers && !looped {
+                        for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
+                            if *v != Proof::Holds && ctx.vars.contains_key(&format!("__req__{}", subst_render(c, slot, value_expr, wkey.as_deref()))) {
+                                *v = Proof::Holds;
+                            }
+                        }
+                    }
+                }
                 let mut adds_here = writes.iter().filter(|(h, sl, e, _, p, k)| h == handler && sl == slot
                     && !matches!(e, Expr::Ident(n) if n == "<deleted entry>") && !key_exists(p, k)).count();
                 // a handler reachable from here (a sibling, another cell's
@@ -549,7 +572,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 // the clause over the WRITTEN expression: `require room - amount >= 0`
                                 // is exactly the fact that proves `room - amount` (a bound on the
                                 // parameter alone was the wrong advice for an upper bound)
-                                .map(|(c, _)| subst_render(c, slot, value_expr)).collect();
+                                .map(|(c, _)| subst_render(c, slot, value_expr, wkey.as_deref())).collect();
                             if matches!(value_expr, Expr::FnCall { name, .. } if name == "map" || name == "with") {
                                 // a field of a built map: a require over it proves nothing
                                 return format!("`{n}` is a parameter and the invariant reads a field of a Map value — record-field invariants are checked at run time");
@@ -585,7 +608,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             let num = |x: f64| if x == f64::INFINITY { "∞".to_string() } else if x == f64::NEG_INFINITY { "-∞".to_string() } else if x == 0.0 { "0".to_string() } else { format!("{}", x) };
                             let open_txt: Vec<String> = parts.iter().zip(&verdicts)
                                 .filter(|(_, v)| **v != Proof::Holds)
-                                .map(|(c, _)| subst_render(c, slot, value_expr)).collect();
+                                .map(|(c, _)| subst_render(c, slot, value_expr, wkey.as_deref())).collect();
                             let (l, r) = (if lo.is_finite() { "[" } else { "(" }, if hi.is_finite() { "]" } else { ")" });
                             why.push(format!("`{}` is only known to lie in {}{}, {}{} — narrow it: `require {} else …`",
                                 render_expr(value_expr), l, num(lo), num(hi), r, open_txt.join(" && ")));
@@ -916,6 +939,16 @@ fn local_ranges_at(
     let mut assigns: Vec<(&str, &Expr)> = Vec::new();
     collect_assigns(&on.body, &mut assigns);
     let params: HashSet<&str> = on.params.iter().map(|p| p.name.as_str()).collect();
+    // names whose PARTS are written (`a.x = 500`, `a["x"] = …`, `xs[0] = …`,
+    // `a.x += …`): a require over `a.x` says nothing after such a write
+    let mut part_written: HashSet<String> = HashSet::new();
+    crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+        Statement::IndexSet { name, .. } => { part_written.insert(name.split('.').next().unwrap_or(name).to_string()); }
+        Statement::Assign { name, .. } if name.contains('.') || name.contains('[') => {
+            part_written.insert(name.split(|c| c == '.' || c == '[').next().unwrap_or(name).to_string());
+        }
+        _ => {}
+    });
 
     let mut vars: HashMap<String, Known> = HashMap::new();
     for round in 0..4 {
@@ -1035,6 +1068,20 @@ fn local_ranges_at(
                     collect_idents(left, &mut used);
                     collect_idents(right, &mut used);
                     if !used.iter().all(|u| scope.contains(u)) { continue; }
+                }
+                // the whole comparison, as text: an invariant clause that IS
+                // this require (over the written value) holds at the write —
+                // only when every name in it is bound once (see the use site)
+                if !negated {
+                    // every name, Index / field targets included (`xs[0]`:
+                    // collect_idents saw none, so the check passed vacuously)
+                    let mut used: HashSet<String> = HashSet::new();
+                    crate::interpreter::free_names_expr(left, &mut used);
+                    crate::interpreter::free_names_expr(right, &mut used);
+                    if used.iter().all(|u| !dup.contains(u.as_str()) && !reassigned_param(u) && !part_written.contains(u.as_str())) {
+                        let cmp = Expr::CmpOp { left: Box::new(Spanned::new(left.clone(), Span::new(0, 0))), op, right: Box::new(Spanned::new(right.clone(), Span::new(0, 0))) };
+                        vars.insert(format!("__req__{}", render_expr(&cmp)), Known::Exact(1.0));
+                    }
                 }
                 // `require b <= a` (two once-bound names): a - b >= 0 — kept
                 // as a fact the subtraction rule reads
@@ -2047,24 +2094,31 @@ fn can_exit(st: &Spanned<Statement>) -> bool {
 /// `c` with the slot name replaced by the written value, rendered — on the
 /// AST (a text replace turned `key != "admin"` into `"1dmin"`), with the
 /// value parenthesised when it is an operation (`(n + 1) % 2`).
-fn subst_render(c: &Expr, slot: &str, value: &Expr) -> String {
+/// The invariant clause over the WRITTEN value, as a `require` a handler can
+/// write: the slot name and `value` become the written expression, `key`
+/// the written key (`require value >= …` was suggested — `value` does not
+/// exist in a handler).
+fn subst_render(c: &Expr, slot: &str, value: &Expr, key: Option<&str>) -> String {
     let shown = match value {
         Expr::BinaryOp { .. } => format!("({})", render_expr(value)),
         _ => render_expr(value),
     };
-    fn go(e: &Expr, slot: &str, shown: &str) -> Expr {
-        let b = |x: &Spanned<Expr>| Box::new(Spanned::new(go(&x.node, slot, shown), x.span));
+    fn go(e: &Expr, slot: &str, shown: &str, key: Option<&str>) -> Expr {
+        let b = |x: &Spanned<Expr>| Box::new(Spanned::new(go(&x.node, slot, shown, key), x.span));
         match e {
-            Expr::Ident(n) if n == slot => Expr::Ident(shown.to_string()),
+            Expr::Ident(n) if n == slot || n == "value" => Expr::Ident(shown.to_string()),
+            Expr::Ident(n) if n == "key" && key.is_some() => Expr::Ident(key.unwrap_or("key").to_string()),
             Expr::BinaryOp { left, op, right } => Expr::BinaryOp { left: b(left), op: *op, right: b(right) },
             Expr::CmpOp { left, op, right } => Expr::CmpOp { left: b(left), op: *op, right: b(right) },
             Expr::Not(i) => Expr::Not(b(i)),
-            Expr::FnCall { name, args } => Expr::FnCall { name: name.clone(), args: args.iter().map(|a| Spanned::new(go(&a.node, slot, shown), a.span)).collect() },
+            Expr::FnCall { name, args } => Expr::FnCall { name: name.clone(), args: args.iter().map(|a| Spanned::new(go(&a.node, slot, shown, key), a.span)).collect() },
+            // `versions.get(key)` keeps its slot receiver, its key is the written one
+            Expr::MethodCall { target, method, args } => Expr::MethodCall { target: target.clone(), method: method.clone(), args: args.iter().map(|a| Spanned::new(go(&a.node, slot, shown, key), a.span)).collect() },
             Expr::FieldAccess { target, field } => Expr::FieldAccess { target: b(target), field: field.clone() },
             other => other.clone(),
         }
     }
-    render_expr(&go(c, slot, &shown))
+    render_expr(&go(c, slot, &shown, key))
 }
 
 fn type_mentions_float(t: &TypeExpr) -> bool {

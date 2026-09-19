@@ -998,3 +998,18 @@ traversal and symlinks, kill -9, concurrent processes) found no crash.
 
 ### Open
 - [ ] One handler looping over a client Int holds the process lock for minutes (serialized handlers, no per-request time limit — documented); no linear solve / inverse / eigenvectors builtin; property tests take one Int only; `read_csv` types `1E3` as a Float.
+
+### Cycle 39 — realistic port (collaborative wiki) + attack on the test runner and tooling
+
+Wiki port 7.5/10: 20 concurrent PUTs on one version → one 200, nineteen
+409; XSS-safe rendering; WebSocket origin checks held.
+
+### Fixed
+- [x] **`mock Cell.handler` ignored the cell** (`mock Email.send` answered `Sms.send` — the test passed on wrong code; `mock Nope.charge` stubbed `Pay.charge`) — qualified mocks stub that cell's handler only; a mock naming no handler / cell is a check error.
+- [x] **A test cell's own `on total(…)` silently replaced `Cart.total`** in its assertions (and `on len` the builtin) — a check error.
+- [x] Mocks did not reach `[native]` calls to a mocked sibling (tests passed interpreted, failed native) — a native handler is interpreted while a mock is pending.
+- [x] `soma describe` JSON and the dashboard dropped `except` from `*` edges (drew done → failed); `soma run --record` skipped calls that raised (replay compares their kind now); `soma fix` exited 0 with errors left; test cells asserting nothing passed; `soma docs … | head` panicked.
+- [x] Port: a memory slot inside a nested lambda was "a function value" (false termination ⚠); `value` / `key` / `size` passed check in handlers and raised at run time, and verify suggested exactly that (`require value >= …`) — hints substitute the written value and key; a `require` that IS the invariant clause over the written value now proves it (one write to the slot, outside loops, no callee that could write it, no name rebound or partly written in between — `a.x = 500` after `require a.x …` is not proven).
+
+### Open
+- [ ] `soma install` never checks soma.lock hashes nor refreshes path dependencies; `use x` silently prefers an installed package over a local x.cell; replay re-runs real side effects; `fix --native-idiv` can turn a Float `/` into idiv; WebSocket connections have no id / disconnect hook.

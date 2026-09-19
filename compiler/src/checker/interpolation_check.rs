@@ -74,6 +74,25 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
         if matches!(cell.kind, CellKind::Test) {
             let mut w = Walker::new(&index);
             w.in_test = true;
+            // a test helper named like a program handler or a builtin replaces
+            // it in this test's assertions: `on total(xs)` in the test made
+            // `assert total(…)` test the helper, not Cart.total
+            let program_cells: Vec<&CellDef> = super::names::collect_cells(program).into_iter()
+                .filter(|c| matches!(c.kind, CellKind::Cell | CellKind::Agent)).collect();
+            for section in &cell.sections {
+                if let Section::OnSignal(on) = &section.node {
+                    let n = &on.signal_name;
+                    let owner = program_cells.iter().find(|c| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(o) if &o.signal_name == n)));
+                    let msg = if let Some(c) = owner {
+                        Some(format!("test helper `{n}` has the name of {}.{n} — the test's calls would run the helper instead of the code under test; rename it (`_{n}`)", c.name))
+                    } else if super::names::builtin_names().contains(n.as_str()) {
+                        Some(format!("test helper `{n}` has the name of the builtin `{n}` — it would replace it in this test; rename it (`_{n}`)"))
+                    } else { None };
+                    if let Some(message) = msg {
+                        w.issues.push(InterpolationIssue { message, span: section.span, warning: false, habit: false, kind: "test_helper_shadows" });
+                    }
+                }
+            }
             for section in &cell.sections {
                 if let Section::Rules(rules) = &section.node {
                     for rule in &rules.rules {
@@ -84,7 +103,24 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                                 let var = var.clone();
                                 w.scoped(&[var], |w| w.walk_expr(body));
                             }
-                            Rule::MockThink { reply, .. } | Rule::MockApprove { reply } | Rule::MockHandler { reply, .. } => w.walk_expr(reply),
+                            Rule::MockHandler { name, reply, .. } => {
+                                // `mock Email.send …` stubs Email's send only; a
+                                // mock naming nothing (`mock chrage`, `Nope.charge`)
+                                // never fires — the test then proves nothing
+                                let bad = match name.split_once('.') {
+                                    Some((c, h)) => if !index.cells.contains(c) { Some(format!("`mock {name}`: no cell `{c}` in this program")) }
+                                        else if !index.arity.keys().any(|(cc, hh)| cc == c && hh == h) { Some(format!("`mock {name}`: cell `{c}` has no handler `{h}`")) }
+                                        else { None },
+                                    None => if !index.handler_map.contains_key(name) && !super::names::builtin_names().contains(name.as_str()) && !matches!(name.as_str(), "now" | "now_ms") {
+                                        Some(format!("`mock {name}`: no handler or builtin named `{name}` — this mock would never fire"))
+                                    } else { None },
+                                };
+                                if let Some(message) = bad {
+                                    w.issues.push(InterpolationIssue { message, span: rule.span, warning: false, habit: false, kind: "mock_target" });
+                                }
+                                w.walk_expr(reply)
+                            }
+                            Rule::MockThink { reply, .. } | Rule::MockApprove { reply } => w.walk_expr(reply),
                             _ => {}
                         }
                     }
@@ -492,10 +528,22 @@ impl<'a> Walker<'a> {
                     });
                     return;
                 }
+                // `value` / `key` / `size` exist only inside a memory invariant
+                // (`require value >= 0` passed check and raised at run time)
                 if !self.known(name)
                     && !super::names::builtin_names().contains(name.as_str())
-                    && !matches!(name.as_str(), "true" | "false" | "_" | "self" | "value" | "key" | "size")
+                    && !matches!(name.as_str(), "true" | "false" | "_" | "self")
                 {
+                    if matches!(name.as_str(), "value" | "key" | "size") {
+                        self.issues.push(InterpolationIssue {
+                            message: format!("`{name}` exists only inside a memory `invariant` (the value / key being written, the slot's size) — in a handler use the local that holds it"),
+                            span,
+                            warning: false,
+                            habit: false,
+                            kind: "undefined_variable",
+                        });
+                        return;
+                    }
                     self.report_undefined_ident(name, span);
                 }
             }

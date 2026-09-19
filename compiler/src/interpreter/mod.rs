@@ -1246,8 +1246,11 @@ impl Interpreter {
         signal_name: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
-        // a scripted answer from a test cell replaces the body (one per call)
-        if let Some(q) = self.handler_stubs.get_mut(signal_name) {
+        // a scripted answer from a test cell replaces the body (one per call):
+        // `mock Cell.h` for this cell's h first, then a bare `mock h`
+        let qualified = format!("{}.{}", cell_name, signal_name);
+        let stub_key = if self.handler_stubs.get(&qualified).map_or(false, |q| !q.is_empty()) { qualified } else { signal_name.to_string() };
+        if let Some(q) = self.handler_stubs.get_mut(&stub_key) {
             if let Some(answer) = q.pop_front() {
                 return match answer {
                     Ok(v) => Ok(v),
@@ -1298,7 +1301,11 @@ impl Interpreter {
                 None => args,
             }
         } else { args };
-        if self.native_handlers.contains_key(&native_key) {
+        // a test that mocks a handler: the native code would call its
+        // sibling directly, past the mock (`assert_fails outer(1)` passed
+        // interpreted and failed with [native]) — interpret it, the
+        // backends agree by construction
+        if self.native_handlers.contains_key(&native_key) && self.handler_stubs.values().all(|q| q.is_empty()) {
             let native = self.native_handlers.get(&native_key).unwrap();
             match native_ffi::call_native(native, &args) {
                 Ok(val) => {
@@ -1352,8 +1359,14 @@ impl Interpreter {
             },
             err => err,
         };
-        if let Ok(ref val) = result {
-            self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), val);
+        match result {
+            Ok(ref val) => self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), val),
+            // a call that raised is logged too (`{"__error__": kind}`): replay
+            // then sees a call that used to fail and now succeeds
+            Err(ref e) => {
+                let marker = map_from_pairs(vec![("__error__".to_string(), Value::String(e.kind()))]);
+                self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), &marker);
+            }
         }
         result
     }

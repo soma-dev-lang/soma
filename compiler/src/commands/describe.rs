@@ -121,11 +121,17 @@ fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
             }
             Section::State(sm) => {
                 let transitions: Vec<serde_json::Value> = sm.transitions.iter()
-                    .map(|t| serde_json::json!({
-                        "from": t.node.from,
-                        "to": t.node.to,
-                        "has_guard": t.node.guard.is_some(),
-                    }))
+                    .map(|t| {
+                        let mut v = serde_json::json!({
+                            "from": t.node.from,
+                            "to": t.node.to,
+                            "has_guard": t.node.guard.is_some(),
+                        });
+                        // `* -> failed except [done]`: without it the graph
+                        // (and the dashboard drawn from it) had done → failed
+                        if !t.node.except.is_empty() { v["except"] = serde_json::json!(t.node.except); }
+                        v
+                    })
                     .collect();
 
                 let states: Vec<String> = {

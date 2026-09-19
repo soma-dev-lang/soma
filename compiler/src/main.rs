@@ -292,6 +292,17 @@ enum Commands {
 }
 
 fn main() {
+    // `soma docs builtins | head`: stdout closed by the reader is the end of
+    // the output, not a crash (it panicked "failed printing to stdout")
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.payload().downcast_ref::<String>().map(|s| s.as_str())
+            .or_else(|| info.payload().downcast_ref::<&str>().copied()).unwrap_or("");
+        if msg.contains("failed printing to stdout") && msg.contains("Broken pipe") {
+            std::process::exit(0);
+        }
+        prev(info);
+    }));
     // Run on a thread with an 8 MB stack to prevent SIGABRT on deep recursion
     // before the interpreter's own depth guard (max_depth: 512) can fire.
     // 512 MB of (virtual, lazily committed) stack: a value nested 45,000

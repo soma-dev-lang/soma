@@ -203,8 +203,8 @@ cell test MyTests {                // a name and a `rules` block are required; i
         mock think "billing"                     // next think() reply; or a list to queue
         mock think error "timeout"               // next think() fails
         mock approve false                       // next approve() answer (one per call)
-        mock price_check 120                     // next call of ANY handler (a tool, an
-        mock Notifier.send error "down"          // http wrapper) answers / raises instead;
+        mock price_check 120                     // next call of the handler of that name (a tool, an
+        mock Notifier.send error "down"          // http wrapper) — Cell.h: THAT cell's only — answers / raises instead;
                                                  // error "not_found: x" raises kind not_found
         mock now 1700000000                      // freeze now()/now_ms()/today() until the next mock now (1700000000.25 or `mock now_ms …` for sub-second)
         property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // 0..100 = 0…99, every value (≤ 20k); ONE Int variable over a range
@@ -215,7 +215,9 @@ cell test MyTests {                // a name and a `rules` block are required; i
 and — with no LLM key configured — mocks `think()` (echo: reply = prompt).
 A mock answers the NEXT matching call, even one in a later rule (a queue like
 `mock think ["a", "b"]` spans rules); a mock still unused after a rule that
-raised is discarded (with a note). Each `cell test` starts with fresh slots,
+raised is discarded (with a note). A mock naming no handler, a test helper
+named like a program handler or a builtin, and test cells that assert nothing
+are errors. Each `cell test` starts with fresh slots,
 machines, mocks and trace(). `soma test --json` gives one record per rule.
 `approve()` never answers on its own: unscripted it raises `approval_required`
 (also under serve; SOMA_APPROVE=always|never is the explicit unattended
@@ -236,7 +238,10 @@ source, `file:line`, left/right, and the fields a value really has when
 - A slot is a Map or a List (`n: Int` is a check error). Read a
   whole slot by its bare name (`history`, `counts`); write with
   `counts.set(k, v)` / `counts[k] = v` / `history.push(x)`; `history = …` is
-  an error. An invariant on a Map slot applies to every value written; it is
+  an error. An invariant on a Map slot applies to every value written (`value`
+  / `key` name the value and key being written — only inside an invariant;
+  `slot.get(key)` there is the value BEFORE the write: `invariant value >=
+  (versions.get(key) ?? 0)` keeps versions monotone); it is
   a pure condition — no handler call, think(), transition(), I/O or network,
   even inside a lambda or an interpolation (a check error).
 - `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,

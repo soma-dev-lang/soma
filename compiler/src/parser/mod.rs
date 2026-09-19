@@ -1050,11 +1050,13 @@ impl Parser {
                 // stub any handler of the program (a tool, an http wrapper)
                 if let Token::Ident(name) | Token::TypeIdent(name) = self.peek().clone() {
                     self.advance();
-                    // `mock Notifier.send …` — the cell is documentation; stubs are by handler name
+                    // `mock Notifier.send …` stubs THAT cell's handler only
+                    // (the cell name was ignored: `mock Email.send` caught
+                    // `Sms.send`, `mock Nope.charge` caught `Pay.charge`)
                     let name = if self.check(&Token::Dot) {
                         self.advance();
                         let (h, _) = self.expect_ident()?;
-                        h
+                        format!("{}.{}", name, h)
                     } else { name };
                     let is_error = matches!(self.peek(), Token::Ident(s) if s == "error");
                     if is_error { self.advance(); }

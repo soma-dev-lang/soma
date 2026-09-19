@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `mock Cell.handler` stubs that cell's handler only; mocks naming nothing,
+  test helpers shadowing program handlers or builtins, and test cells with no
+  assertion are errors; mocks reach `[native]` sibling calls.
+- `--record` logs calls that raised; `describe` / the dashboard keep
+  `except` on `*` edges; `soma fix` exits 1 when errors remain.
+- A `require` that is exactly an invariant clause over the written value
+  proves it (monotone versions); `value` / `key` / `size` outside an
+  invariant are check errors; slots in nested lambdas are not function values.
 - `soma serve` refuses to start on a damaged database (`quick_check`); a
   file that is not a database is a clean error, not a panic.
 - A materialized `range()` is capped at 10M elements; dotfiles under

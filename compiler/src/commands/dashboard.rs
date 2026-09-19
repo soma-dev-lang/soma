@@ -50,11 +50,13 @@ fn cell_to_json(cell: &CellDef, report: &BudgetReport) -> String {
             states_vec.sort();
 
             let transitions: Vec<serde_json::Value> = sm.transitions.iter().map(|t| {
-                serde_json::json!({
+                let mut v = serde_json::json!({
                     "from": t.node.from,
                     "to": t.node.to,
                     "has_guard": t.node.guard.is_some(),
-                })
+                });
+                if !t.node.except.is_empty() { v["except"] = serde_json::json!(t.node.except); }
+                v
             }).collect();
 
             state_machines.push(serde_json::json!({
@@ -461,7 +463,7 @@ function drawStateMachine(sm) {{
   // Draw transitions
   const transMap = {{}};
   sm.transitions.forEach(t => {{
-    const froms = t.from === "*" ? states : [t.from];
+    const froms = t.from === "*" ? states.filter(s => !(t.except || []).includes(s)) : [t.from];
     froms.forEach(f => {{
       if (f === t.to) return; // self-loop handled separately
       const key = f + "->" + t.to;

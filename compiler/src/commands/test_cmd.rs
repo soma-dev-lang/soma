@@ -429,6 +429,9 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
     }
 
     say!(out_lines, json, "\n{} tests: {} passed, {} failed", total, passed, failed);
+    // test cells that assert nothing prove nothing: not a pass
+    let empty = total == 0;
+    if empty { say!(out_lines, json, "  note: the test cells hold no assert / assert_fails / property — nothing was tested"); }
 
     if json {
         let mut cell = String::new();
@@ -464,11 +467,11 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
         }
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({
             "file": file_name, "total": total, "passed": passed, "failed": failed,
-            "ok": failed == 0, "results": records,
+            "ok": failed == 0 && !empty, "results": records,
         })).unwrap());
     }
 
-    if failed > 0 {
+    if failed > 0 || empty {
         process::exit(1);
     }
 }

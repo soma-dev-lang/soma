@@ -133,6 +133,12 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
                 }
                 let mut safe: std::collections::HashSet<String> = std::collections::HashSet::new();
                 top_lets(&on.body, &mut safe);
+                // a memory slot holds data, never a function value (`history |>
+                // filter(…)` inside a nested lambda was "calls the function value")
+                for sec in &cell.sections {
+                    if let Section::Memory(m) = &sec.node { for sl in &m.slots { safe.insert(sl.node.name.clone()); } }
+                }
+                // (a parameter shadowing a slot may be a function value)
                 for p in &on.params { safe.remove(&p.name); }
                 let risky = |n: &str| !handler_names.contains(n) && !builtins.contains(n) && !safe.contains(n) && !n.starts_with(|c: char| c.is_uppercase());
                 const HIGHER: &[&str] = &["map", "filter", "find", "reduce", "any", "all", "count", "sort_by", "each", "flat_map", "fold", "group_by", "min_by", "max_by"];

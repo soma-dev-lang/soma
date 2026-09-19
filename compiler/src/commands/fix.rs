@@ -407,7 +407,8 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
         } else {
             println!("  \u{2717} No auto-fixable errors found.");
         }
-        return;
+        // errors remain: a failing exit, as `soma check` gives
+        std::process::exit(1);
     }
 
     // 4. Write the fixed file back
@@ -444,6 +445,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
             println!("  \u{2717} {} error(s) remain after fixes.", recheck_errors.len());
         }
     }
+    if !recheck_errors.is_empty() { std::process::exit(1); }
 }
 
 /// Remove a specific property from a memory slot's property list in the source.
