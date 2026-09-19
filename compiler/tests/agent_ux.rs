@@ -2568,3 +2568,23 @@ fn cycle34_attack_findings() {
     let (out, code) = soma_in(&d, &["check", "l.cell"]);
     assert_eq!(code, 0, "{out}");
 }
+
+#[test]
+fn cycle35_findings() {
+    let d = dir("cycle35");
+    // `x |> h` (a bare handler name) is a call for every analysis
+    std::fs::write(d.join("p.cell"), "cell App {\n  on up(n: Int) { return (n + 1) |> up }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "p.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("handler `up`"), "{out}");
+    // a field of a String / List raises instead of reading ()
+    std::fs::write(d.join("f.cell"), "cell F {\n  on f(s: String) { return s.worker ?? \"dflt\" }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "f.cell", "f", "x"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("cannot read field 'worker' of String"), "{out}");
+    // I/O in an invariant is a check error
+    std::fs::write(d.join("i.cell"), "cell I {\n  memory {\n    c: Map<String, Int> [persistent]\n    invariant c >= 0 && read_file(\"gate.txt\") == \"open\"\n  }\n  on put() { c.set(\"a\", 1) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "i.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("calls read_file()"), "{out}");
+}

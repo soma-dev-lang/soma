@@ -217,7 +217,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `ws_connect` | `ws_connect(url: String) -> Map` | Open a WebSocket connection; incoming messages dispatch as signals. |
 | `ws_send` | `ws_send(msg) -> ()` | Send a message on the current WebSocket connection; errors if not connected. |
 | `link` | `link(addr: "host:port") -> ()` | Open a TCP signal-bus link to a peer node. |
-| `subscribe` | `subscribe(url: String) -> ()` | Subscribe to a remote event stream; events dispatch as signals. |
+| `subscribe` | `subscribe(url: String) -> ()` | Subscribe to a remote event stream; an {"event", "data"} message runs on event(data) only for an event this program emits or soma.toml [bus] accept lists (else refused); other text runs on ws(msg). |
 
 ## time
 

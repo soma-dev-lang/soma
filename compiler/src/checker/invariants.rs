@@ -106,7 +106,7 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                     _ => {}
                 });
                 for f in &fns {
-                    if crate::checker::names::EFFECT_BUILTINS.contains(&f.as_str()) { effects.push(f.clone()); }
+                    if crate::checker::names::EFFECT_BUILTINS.contains(&f.as_str()) || crate::checker::names::IO_BUILTINS.contains(&f.as_str()) { effects.push(f.clone()); }
                 }
                 for f in effects {
                     issues.push(InvariantIssue {
@@ -563,7 +563,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         .collect();
                     let all_size = !open_size.is_empty() && open_size.len() == parts.iter().zip(&verdicts).filter(|(_, v)| **v != Proof::Holds).count();
                     if all_size {
-                        why = vec![format!("the slot may grow past {} — put `require len({}) < {}` before the handler's one write that adds to it (not in a loop)", open_size[0], slot, open_size[0])];
+                        why = vec![format!("the slot may grow past {} — put `require len({}) < {}` before the handler's one write that adds to it (not in a loop), or, to update an entry that exists, `require {}.get(k) != ()` with `k` a plain local (`let k = r.id`, not `r.id`)", open_size[0], slot, open_size[0], slot)];
                     }
                     let tag = if why.is_empty() { tag } else { format!("{tag} because {}", why.join("; ")) };
                     if !runtime_checked.contains(&tag) {

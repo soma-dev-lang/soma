@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `x |> h` with a bare handler name is a call for every analysis
+  (termination, cost, route ownership, GET→405, model-driven recursion).
+- `subscribe()` dispatches only events the program emits or `[bus] accept`
+  lists; invariants and guards may not read files, print or read stdin.
+- `.field` on a String or a List raises kind `type`; serve lists only real
+  endpoints; `[native]` literal arithmetic that overflows i64 promotes to
+  BigInt as interpreted code does.
 - Capability-scoped tools cannot load files (`load`, `include`,
   `par_read_files`, …) or `link()`; invariants are pure conditions (no
   handler call or effect builtin, however hidden); a tool calling back its

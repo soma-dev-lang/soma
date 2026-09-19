@@ -2533,7 +2533,13 @@ impl Parser {
         let mut left = self.parse_additive()?;
         while self.check(&Token::Pipe) {
             self.advance();
-            let right = self.parse_additive()?;
+            let mut right = self.parse_additive()?;
+            // `x |> h` is `x |> h()` (the runtime calls h(x)): as a bare
+            // name it was invisible to termination, cost, route ownership
+            // and GET→405 — `n |> up` recursed with "✓ terminates"
+            if let Expr::Ident(name) = &right.node {
+                right = Spanned::new(Expr::FnCall { name: name.clone(), args: vec![] }, right.span);
+            }
             let span = left.span.merge(right.span);
             left = Spanned::new(Expr::Pipe {
                 left: Box::new(left),

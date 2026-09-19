@@ -791,8 +791,8 @@ impl<'a> Checker<'a> {
                             if bad.is_some() { return; }
                             match e {
                                 Expr::FnCall { name, .. } if handlers.contains(name) => bad = Some(format!("calls the handler `{}`", name)),
-                                Expr::FnCall { name, .. } if names::EFFECT_BUILTINS.contains(&name.as_str()) => bad = Some(format!("calls {}()", name)),
-                                Expr::MethodCall { method, .. } if names::EFFECT_BUILTINS.contains(&method.as_str()) => bad = Some(format!("calls .{}()", method)),
+                                Expr::FnCall { name, .. } if names::EFFECT_BUILTINS.contains(&name.as_str()) || names::IO_BUILTINS.contains(&name.as_str()) => bad = Some(format!("calls {}()", name)),
+                                Expr::MethodCall { method, .. } if names::EFFECT_BUILTINS.contains(&method.as_str()) || names::IO_BUILTINS.contains(&method.as_str()) => bad = Some(format!("calls .{}()", method)),
                                 Expr::FnCall { name, .. } if !builtins.contains(name.as_str()) && !name.starts_with(|c: char| c.is_uppercase()) => bad = Some(format!("calls `{}`, which is not a builtin (undefined function)", name)),
                                 Expr::MethodCall { method, .. } if matches!(method.as_str(), "set" | "put" | "delete" | "remove" | "push" | "append" | "clear") || handlers.contains(method) =>
                                     bad = Some(format!("calls .{}()", method)),

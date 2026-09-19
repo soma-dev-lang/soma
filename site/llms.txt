@@ -148,7 +148,8 @@ match r {
 ```soma
 map("k", v)   map()                // no {k: v} literal;   record: Name { k: v }
 m.k   m["size"]                    // a key; m.len / m.size / m.keys: the entry count / keys
-                                   // when the map has no such key (a record: () ) — m["size"] is always the key
+                                   // when the map has no such key (a record: () ) — m["size"] is always the key;
+                                   // a List / String has only .len / .size (.first / .last); any other field raises kind `type`
 [1, 2, 3]     []                   // list literals
 x == ()       x ?? 0               // null is (); no null / None / undefined; `??` only runs its right side on ()
 5 == ""                            // raises kind `type` (Int vs String is a bug); nested values of different types are just unequal

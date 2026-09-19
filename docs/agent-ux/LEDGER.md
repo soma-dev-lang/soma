@@ -935,3 +935,19 @@ period close → exactly the accepted ones exist, verify --strict green.
 ### Open
 - [ ] `soma test` "raised at line N" and the max-rounds error point at the wrong line; serve's `endpoints:` line lists request-owned handlers; GET /<tool> answers 405 (POST 404).
 - [ ] A constant `idiv(i64::MIN, -1)` in a [native] handler fails the rustc build after a clean check.
+
+### Cycle 35 — realistic port (multi-tenant job queue) + attack
+
+Job-queue port 8.5/10: 20 workers claiming 15 jobs → each leased once in
+priority order, idempotency and rate limit exact under load, lease expiry →
+retry → dead-letter live, verify --strict green with 4 temporal properties.
+
+### Fixed
+- [x] **`x |> h` (a bare handler name) was invisible to every analysis** — the runtime calls h(x): `n |> up` recursed with "✓ terminates", `7 |> wipe` wrote on GET, `1 |> wipe` inside request left POST /wipe open around its auth, `q |> think` escaped the cost bound, a tool `q |> ask` looped the model 512 times. The parser makes it `x |> h()`.
+- [x] `subscribe()` ran any public handler a remote stream named (`on ws`, a `wipe`) — the bus's policy: only events the program emits or `[bus] accept` lists.
+- [x] File reads, `print`, `read_stdin`, `recall` were accepted in invariants and guards — check errors (`random` / `now` stay: no effect).
+- [x] `[native]` `(0 - 9223372036854775807 - 1) * -1` panicked (two small operands, an overflowing product) — the whole operation must fit i64 to stay i64; `to_string(i64::MAX + 1)` natively failed the rustc build (an untyped panic block).
+- [x] Port: `.field` on a String / List read `()` (a JSON body `"str"` passed with every `??` default) — kind `type`; serve's `endpoints:` line and 404 listing named request-owned handlers, and GET on them answered 405 (confirming they exist); the size-invariant hint names the `require slot.get(k) != ()` route.
+
+### Open
+- [ ] `"k" |> c.set(99)` passes check, fails at run time; `--fresh` beside a running `soma run` deletes its committed data; no scheduler failover after the tick owner dies; replay re-runs http_post / write_file; a renamed machine is only warned about under serve; a cross-process emit ping-pong livelocks silently.

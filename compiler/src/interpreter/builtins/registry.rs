@@ -354,7 +354,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("link", "http", "link(addr: \"host:port\") -> ()",
         "Open a TCP signal-bus link to a peer node."),
     doc("subscribe", "http", "subscribe(url: String) -> ()",
-        "Subscribe to a remote event stream; events dispatch as signals."),
+        "Subscribe to a remote event stream; an {\"event\", \"data\"} message runs on event(data) only for an event this program emits or soma.toml [bus] accept lists (else refused); other text runs on ws(msg)."),
 
     // ── time ────────────────────────────────────────────────────────
     nondet("now", "time", "now() -> Int",

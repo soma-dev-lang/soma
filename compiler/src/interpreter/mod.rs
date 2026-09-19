@@ -2818,7 +2818,7 @@ impl Interpreter {
                     Value::List(ref items) => {
                         // list.length, list.len, list.first, list.last
                         match field.as_str() {
-                            "length" | "len" => Ok(Value::Int(SomaInt::from_i64(items.len() as i64))),
+                            "length" | "len" | "size" => Ok(Value::Int(SomaInt::from_i64(items.len() as i64))),
                             "first" => Ok(items.first().cloned().unwrap_or(Value::Unit)),
                             "last" => Ok(items.last().cloned().unwrap_or(Value::Unit)),
                             // matrix pseudo-fields (parens-free): m.T, m.shape
@@ -2835,15 +2835,21 @@ impl Interpreter {
                                 if let Ok(idx) = field.parse::<usize>() {
                                     Ok(items.get(idx).cloned().unwrap_or(Value::Unit))
                                 } else {
-                                    Ok(Value::Unit)
+                                    // `body.worker` on a JSON body that was a list
+                                    // read () and every `??` default applied
+                                    Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                        "cannot read field '{}' of List {} — it is not a map or a record (a List has .len, .first, .last)", field, short_value(&target_val)))))
                                 }
                             }
                         }
                     }
                     Value::String(ref s) => {
                         match field.as_str() {
-                            "length" | "len" => Ok(Value::Int(SomaInt::from_i64(s.chars().count() as i64))),
-                            _ => Ok(Value::Unit),
+                            "length" | "len" | "size" => Ok(Value::Int(SomaInt::from_i64(s.chars().count() as i64))),
+                            // a JSON body `"str"` sent to a Map-shaped handler
+                            // passed with every field defaulted by `??`
+                            _ => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "cannot read field '{}' of String {} — it is not a map or a record (from_json(s) parses JSON text)", field, short_value(&target_val))))),
                         }
                     }
                     _ => Err(ExecError::Runtime(RuntimeError::TypeError(
@@ -3960,6 +3966,15 @@ impl Interpreter {
                                 }
                                 if event_name.starts_with('_') || parsed.get("data").map_or(false, forged) {
                                     eprintln!("subscribe: refused event '{}' (a private handler, or forged _type/_variant data)", event_name);
+                                    continue;
+                                }
+                                // the bus's policy: only an EVENT (one this program
+                                // emits, or soma.toml [bus] accept lists) — a remote
+                                // stream ran `on ws` and a public `wipe` handler
+                                let accepted = EVENT_LISTENERS.get().map_or(false, |e| e.contains(event_name))
+                                    || BUS_ACCEPT.get().map_or(false, |a| a.iter().any(|x| x == event_name));
+                                if !accepted || matches!(event_name, "request" | "start" | "init" | "ws") {
+                                    eprintln!("subscribe: refused event '{}' — not emitted by this program nor listed in soma.toml [bus] accept", event_name);
                                     continue;
                                 }
                                 let data = parsed.get("data")

@@ -2205,7 +2205,8 @@ fn try_fold_int_literal_arith(left: &Expr, op: BinOp, right: &Expr) -> Option<St
     };
     Some(match folded {
         Some(v) => format!("({}i64)", v),
-        None => "{ panic!(\"i64 overflow in literal arithmetic\") }".to_string(),
+        // typed: inside format!("{}", …) an untyped `!` block became `()` (E0277)
+        None => "{ let _v: i64 = panic!(\"i64 overflow in literal arithmetic\"); _v }".to_string(),
     })
 }
 
@@ -5164,8 +5165,14 @@ impl FnGenerator {
                 );
             }
         }
-        // If both operands are small (i64), do pure i64 arithmetic
-        if self.is_small_int_expr(left) && self.is_small_int_expr(right) {
+        // If both operands are small (i64), do pure i64 arithmetic — and the
+        // whole operation too (MIN * -1 of two small literals overflowed)
+        let whole = Expr::BinaryOp {
+            left: Box::new(Spanned::new(left.clone(), crate::ast::Span::new(0, 0))),
+            op,
+            right: Box::new(Spanned::new(right.clone(), crate::ast::Span::new(0, 0))),
+        };
+        if self.is_small_int_expr(left) && self.is_small_int_expr(right) && self.is_small_int_expr(&whole) {
             let l = self.gen_expr_direct(left, NativeType::Int);
             let r = self.gen_expr_direct(right, NativeType::Int);
             return format!("Integer::from({} {} {})", l, op_str, r);
@@ -5573,11 +5580,34 @@ impl FnGenerator {
 
     /// True if expr only references small_int_vars or i64 literals.
     fn is_small_int_expr(&self, expr: &Expr) -> bool {
+        // literal arithmetic is small only when it does not overflow i64:
+        // `(0 - 9223372036854775807 - 1) * -1` panicked where the
+        // interpreter promotes to BigInt
+        fn fold(e: &Expr) -> Option<Option<i64>> {
+            match e {
+                Expr::Literal(Literal::Int(n)) => Some(Some(*n)),
+                Expr::BinaryOp { left, op, right } => {
+                    let (l, r) = (fold(&left.node)?, fold(&right.node)?);
+                    let (Some(l), Some(r)) = (l, r) else { return Some(None) };
+                    Some(match op {
+                        BinOp::Add => l.checked_add(r),
+                        BinOp::Sub => l.checked_sub(r),
+                        BinOp::Mul => l.checked_mul(r),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            }
+        }
+        if let Some(v) = fold(expr) { return v.is_some(); }
         match expr {
             Expr::Literal(Literal::Int(_)) => true,
             Expr::Ident(name) => self.small_int_vars.contains(name),
             Expr::BinaryOp { left, right, .. } => {
-                self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node)
+                // a near-i64::MAX literal next to a small variable overflows too
+                let huge = |e: &Expr| matches!(e, Expr::Literal(Literal::Int(n)) if n.unsigned_abs() >= 1 << 31);
+                !huge(&left.node) && !huge(&right.node)
+                    && self.is_small_int_expr(&left.node) && self.is_small_int_expr(&right.node)
             }
             _ => false,
         }

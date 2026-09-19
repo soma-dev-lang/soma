@@ -330,7 +330,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     eprintln!("soma serve v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("cell: {}", cell_name);
     // the public endpoints (private `_x` handlers and the router are not routed)
-    let public: Vec<&String> = handler_names.iter().filter(|h| routable(&handler_names, h)).collect();
+    let public: Vec<&String> = handler_names.iter().filter(|h| routable(&handler_names, h) && !request_routes.first_segments().contains(h)).collect();
     eprintln!("endpoints: [{}]{}", public.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
         if handler_names.iter().any(|h| h == "request") { " + request router" } else { "" });
     if scale_section.is_some() {
@@ -1445,7 +1445,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 Some(sig)
             } else {
                 let sig = url_path.trim_start_matches('/').split('/').next().unwrap_or("");
-                if handler_names.iter().any(|h| h == sig) && routable(&handler_names, sig) && !request_routes.matches(url_path) { Some(sig) } else { None }
+                // a request-owned handler or tool is not an endpoint: its GET is
+                // request's (a 404 there), not a 405 that confirms it exists
+                if handler_names.iter().any(|h| h == sig) && routable(&handler_names, sig) && !request_routes.matches(url_path)
+                    && !request_routes.first_segments().iter().any(|f| f == sig) { Some(sig) } else { None }
             };
             if let Some(sig) = target.filter(|s| mutating.contains(*s)) {
                 let msg = format!("{}() changes state: call it with POST (a {} must not write)", sig, method);
@@ -1661,7 +1664,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 )
             } else {
                 // public handlers only, as a real JSON array
-                let public: Vec<&String> = handler_names.iter().filter(|h| routable(&handler_names, h)).collect();
+                let public: Vec<&String> = handler_names.iter().filter(|h| routable(&handler_names, h) && !request_routes.first_segments().contains(h)).collect();
                 let resp = tiny_http::Response::from_string(
                     format!("{}", interpreter::map_from_pairs(vec![
                         ("error".to_string(), interpreter::Value::String(format!("no handler for '{}'", url))),

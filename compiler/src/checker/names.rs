@@ -17,6 +17,13 @@ const INLINE_BUILTIN_NAMES: &[&str] = &["append", "_coalesce"];
 /// Builtins with an effect beyond their value: a state change, an LLM call,
 /// I/O, the network, the bus. A guard or an invariant (a condition) may not
 /// call them; a handler that does is not a GET.
+/// I/O a condition may not do either: an invariant runs on every write,
+/// a guard on every transition() (`print` there, `read_stdin` blocked a write).
+pub const IO_BUILTINS: &[&str] = &[
+    "read_file", "read_csv", "read_files", "par_read_files", "read_stdin", "load", "include", "load_template",
+    "print", "recall", "word_count", "par_word_count",
+];
+
 pub const EFFECT_BUILTINS: &[&str] = &[
     "think", "think_json", "transition", "publish", "remember", "delegate", "next_id",
     "write_file", "write_csv", "write_str", "http_get", "http_post", "http_put", "http_patch", "http_delete",
