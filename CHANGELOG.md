@@ -1,6 +1,65 @@
 # Changelog
 
-## Unreleased
+## 2.7.0 — 2026-09-19
+
+- Hordes (attack pass): nested hordes and hordes started from callbacks run
+  under their parent's budget (a nested horde spent 6 000 tokens past a
+  "proven" 100); check refuses a computed target or options (an HTTP client
+  could pick a private handler or drop the budget) and literal options out of
+  range, and warns on public callbacks; two servers on one `.soma_data` run
+  each horde once (a lease, taken over when its server stops); hordes are
+  persisted under serve / run even without a `[persistent]` slot; the queue
+  tables cannot be reached from a slot named `_hordes`; only the owner cell
+  reads or cancels a horde; the rate limiter is an exact 60 s sliding window.
+- Hordes (quality pass, phase 5): a crash while a horde was cancelling
+  resumes it as cancelled with counts that add up; a restart does not resume
+  a horde whose handlers the new code renamed (it says why, state `paused`);
+  under `soma test` a horde runs after the caller commits, like serve (a
+  callback can cancel it); `on_error` receives `{error, kind, detail}`;
+  tasks the budget stopped count as cancelled; `soma verify` prints each
+  horde bound once and `--strict` fails on an unbounded one; each task
+  starts with a fresh model context. Dashboard: live hordes at `/__soma/`.
+  `SOMA_LLM_MOCK=rules:mocks.json` answers by prompt pattern. Corpus:
+  `agents/horde_audit.cell`, `agents/horde_rounds.cell`.
+- Hordes (phase 4): rounds for simulations — `snapshot` (every agent sees
+  the same world), `apply` (results applied at the end in input order, once),
+  `seed` (reproducible `random()` per task), `instance` (per-agent
+  remember/recall and conversation across rounds); `vote(handler, input, k)`.
+  10 000 agents × 20 rounds: 46 s, identical on every run.
+- Hordes (phase 3): `budget_tokens` is a hard ceiling — each think() of a
+  horde reserves an upper bound (request bytes + max_tokens) before calling
+  the model, waits outside the lock for calls in flight when it does not fit
+  yet, and is refused (kind `budget`, state `exhausted`) when it never will.
+  `soma verify` prints each horde's cost bound; in a cell with `cost { }` a
+  horde over inputs of unknown size needs a literal `budget_tokens`.
+- Hordes (phase 2): `horde(Reviewer.review, docs, map("concurrency", 200,
+  "on_result", "_store", "on_done", "_done"))` runs a `[task]` handler once
+  per input with a bounded pool and returns an id at once; `horde_status`,
+  `horde_results`, `horde_cancel`. The queue is persisted with the data and
+  resumes after a restart; each result is recorded (and `on_result` called)
+  with the task's last step, so once even after `kill -9`. Retries
+  (`max_attempts`), `on_error`, `on_done`. Provider limits `[agent] rpm` /
+  `tpm` (SOMA_LLM_RPM / SOMA_LLM_TPM) shared by every think(). 10 000 tasks
+  with a 2 s mocked model at concurrency 500: 41 s. Check validates the
+  target, callbacks and options.
+- `[task]` handlers (hordes, phase 1): `on h(…) [task]` runs as steps —
+  each `think()` commits the current step and waits for the model outside
+  the handler lock, so concurrent requests overlap their model calls (200 ×
+  2 s mocked calls in ~9 s). A failure rolls back the current step only; the
+  prover carries no fact across a `think()`. Ticks take it too:
+  `every 1min [task] { … }`, `after 5s [task] { … }`.
+  `SOMA_LLM_MOCK_LATENCY_MS` gives the mock a latency.
+- Check warns when a plain handler or tick (`on request` routing, a
+  listener) calls a `[task]` handler — it would hold the lock; when a
+  `[task]` reads a slot before a `think()` and writes it after; when a `try`
+  writes and thinks; when a `[task]` has no `think()`. `[task, native]` and
+  unknown handler annotations (`[tsak]`) are errors.
+- Records: `r.field = v` on a record, `is_a(r, "Line")`, `keys(r)` /
+  `values(r)`; a record prints `Line { sku: a, qty: 2 }`.
+- Cost: a loop over a collection of unknown size counts once (a lower
+  bound, the bound stays advisory) instead of an invented ×100 that could
+  report a false "budget exceeded"; verify counts think() call sites.
+- "undefined function" points at the call, not the handler header.
 
 - Scheduler: a second `soma serve` takes over the every/after blocks when
   the owner stops; the lock is per program; each tick's token budget starts

@@ -46,7 +46,7 @@ sit in `authorized` until someone acts.
 | Transitions | `transition()` to an undeclared edge raises `invalid_transition` with the valid targets. Guards raise `guard_failed`. |
 | `[immutable]` slots | an entry, once written, never changes: a List slot only grows by `push`, a Map slot only gains new keys — overwriting or deleting an entry raises `kind "invariant"` and the slot is unchanged (an append-only audit log). |
 | **Atomic handlers** | a handler that raises leaves no memory write and no transition behind: they are rolled back. Effects outside the program (an HTTP call, a file, an email, an LLM call) are not undone. A failing `try { }` block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their value). Consequence: an error means "nothing happened" — to *record* a refusal (a reservation moved to `rejected`), return it as a value instead of raising. |
-| **Serialized handlers** | under `soma serve`, top-level handler invocations run one at a time: read-modify-write needs no lock. |
+| **Serialized handlers** | under `soma serve`, top-level handler invocations run one at a time: read-modify-write needs no lock. Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
 | `require` / `ensure` / `fail` | raise; errors carry a `kind` a caller can branch on. |
 | Token budget | `set_budget(N)` stops `think()` when the budget is spent; a `set_budget` inside a model's tool call can only lower it. |
 | Exhaustive `match` | a missing sum-type arm is a `soma check` error, not a runtime surprise. |

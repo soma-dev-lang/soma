@@ -1228,6 +1228,32 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         });
     }
 
+    // hordes: workers are interpreters over the same storage, like ticks;
+    // a horde left running by a stopped server resumes
+    {
+        let prog = program.clone();
+        let slots = storage_slots.clone();
+        let natives = natives.clone();
+        let bus = event_bus.clone();
+        let pbus = peer_bus.clone();
+        let ws = shared_ws_out.clone();
+        let cl = cluster_node.clone();
+        let sh = sharded_slots.clone();
+        let _ = crate::interpreter::horde::FACTORY.set(Box::new(move || {
+            let mut interp = interpreter::Interpreter::new(&prog);
+            interp.native_handlers = (*natives).clone();
+            interp.set_storage_raw(&slots);
+            interp.ensure_state_machine_storage();
+            interp.event_bus = Some(bus.clone());
+            interp.peer_bus = Some(pbus.clone());
+            if let Some(ref c) = cl { interp.set_cluster(c.clone(), &sh); }
+            if let Ok(g) = ws.lock() { interp.ws_out = g.clone(); }
+            interp
+        }));
+        crate::interpreter::horde::prepare(&program);
+        crate::interpreter::horde::recover(&program);
+    }
+
     // Spawn scheduler threads for `every` sections
     // In cluster mode, only the leader runs `every` blocks
     let mut no_schedule = NO_SCHEDULE.load(std::sync::atomic::Ordering::Relaxed);
@@ -1304,6 +1330,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     eprintln!("scheduler: every {}ms (skipped — not leader)", every.interval_ms);
                     continue;
                 }
+                let tick_task = every.task;
                 let interval = every.interval_ms;
                 let body = every.body.clone();
                 let prog = program.clone();
@@ -1355,7 +1382,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             }
                         }
                         let mut env = rustc_hash::FxHashMap::default();
-                        match interp.exec_every(&body, &mut env, &cname) {
+                        match interp.exec_tick(&body, &mut env, &cname, tick_task) {
                             Err(e) => eprintln!("[scheduler:{}] tick error (rolled back): {}", cname, e),
                             Ok(_) if interp.last_commit_writes > 0 => eprintln!("[scheduler:{}] tick committed {} write(s)", cname, interp.last_commit_writes),
                             Ok(_) => {}
@@ -1364,6 +1391,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 });
             }
             if let ast::Section::After(ref after) = section.node {
+                let tick_task = after.task;
                 let delay = after.interval_ms;
                 let body = after.body.clone();
                 let prog = program.clone();
@@ -1395,7 +1423,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         interp.ws_out = ws_guard.clone();
                     }
                     let mut env = rustc_hash::FxHashMap::default();
-                    match interp.exec_every(&body, &mut env, &cname) {
+                    match interp.exec_tick(&body, &mut env, &cname, tick_task) {
                         Err(e) => eprintln!("[after:{}] error (rolled back): {}", cname, e),
                         Ok(_) => eprintln!("[after:{}] ran, committed {} write(s)", cname, interp.last_commit_writes),
                     }
@@ -1739,6 +1767,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         }
 
         // ── Verification dashboard ─────────────────────────────────────
+        if url == "/__soma/hordes" {
+            let body = crate::interpreter::horde::live_statuses().to_string();
+            let resp = tiny_http::Response::from_string(body)
+                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+            let _ = request.respond(resp);
+            return;
+        }
         if url == "/__soma/" || url == "/__soma" {
             let html = super::dashboard::render_dashboard(&program);
             // same-origin only: with `Access-Control-Allow-Origin: *` any

@@ -3774,3 +3774,503 @@ cell agent R {
     let (out, _) = soma_in(&d, &["verify", "q.cell"]);
     assert!(out.contains("runtime-checked") && !out.contains("writer 'inc' proven by induction (writes v + 1)"), "{out}");
 }
+
+#[test]
+fn cycle67_task_entry_points_lints_and_records() {
+    let d = dir("cycle67");
+    // a [task] reached through a plain `request` / tick: warned; misspelled
+    // annotations are errors; stale reads and try-writes are warned
+    std::fs::write(d.join("a.cell"), r#"
+cell agent A {
+    memory { stock: Map<String, Int> [persistent] }
+    on ask(q: String) [task] {
+        let n = stock.get(q) ?? 0
+        let r = think("x", map("max_tokens", 10))
+        stock.set(q, n + 1)
+        return r
+    }
+    on t2() [task] {
+        let x = try {
+            stock.set("b", 2)
+            think("x")
+        }
+        return x
+    }
+    on plain() [task] { stock.set("a", 1) }
+    after 300ms { ask("z") }
+    on request(method: String, path: String, body: String) {
+        return match map("method", method, "path", path) {
+            {method: "POST", path: "/ask/" + q} -> ask(q)
+            _ -> response(404, "")
+        }
+    }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["check", "a.cell"]);
+    assert!(out.contains("handler `request` calls [task] `ask`") && out.contains("[task]`"), "{out}");
+    assert!(out.contains("this `after` tick calls [task] `ask`") && out.contains("after 300ms [task]"), "{out}");
+    assert!(out.contains("reads 'stock' before a think() and writes it after"), "{out}");
+    assert!(out.contains("this try writes a slot and calls think()"), "{out}");
+    assert!(out.contains("[task] on `plain` has no think()"), "{out}");
+    std::fs::write(d.join("b.cell"), "cell A { on t() [tsak] { return 1 }\n on n() [task, native] { return think(\"x\") } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "b.cell"]);
+    assert!(code != 0 && out.contains("unknown handler annotation [tsak]") && out.contains("did you mean [task]"), "{out}");
+    assert!(out.contains("both [task] and [native]"), "{out}");
+    // the step before a think() stays committed after a failure, under
+    // `soma test` too (no mock latency needed)
+    std::fs::write(d.join("f.cell"), r#"
+cell agent A {
+    memory { m: Map<String, Int> [persistent] }
+    on t1(k: String) [task] {
+        m.set(k, 1)
+        let r = think("x", map("max_tokens", 10))
+        fail("boom", "x")
+    }
+    on get(k: String) { return m.get(k) ?? 0 }
+}
+cell test T {
+    rules {
+        mock think "hi"
+        assert (try { A.t1("p") }).error != ()
+        assert A.get("p") == 1
+        mock think error "down"
+        assert (try { A.t1("q") }).error != ()
+        assert A.get("q") == 1
+    }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "f.cell"]);
+    assert!(code == 0 && out.contains("4 passed"), "{out}");
+    // records: field assignment, is_a, keys/values on a struct variant
+    std::fs::write(d.join("r.cell"), r#"
+cell type Line { variants { Line { sku: String, qty: Int } } }
+cell App {
+    on main() {
+        let l = Line { sku: "a", qty: 1 }
+        l.qty = l.qty + 1
+        print(l)
+        print(is_a(l, "Line"))
+        print(keys(l))
+        print(try { l.nope = 3 })
+    }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "r.cell"]);
+    assert!(out.contains("Line { sku: a, qty: 2 }") && out.contains("true") && out.contains("[\"sku\", \"qty\"]") && out.contains("has no field 'nope'"), "{out}");
+    // undefined function: the error points at the call, not the header
+    std::fs::write(d.join("u.cell"), "cell A {\n  on main() {\n    let a = 1\n    print(repeat(\"x\", 3))\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "u.cell"]);
+    assert!(out.contains("u.cell:4:"), "{out}");
+}
+
+#[test]
+fn cycle67_task_ticks_do_not_block_requests() {
+    let d = dir("cycle67_tick");
+    std::fs::write(d.join("a.cell"), r#"
+cell agent A {
+    memory { done: Map<String, Int> [persistent] }
+    on ask(q: String) [task] {
+        let r = think("hi {q}", map("max_tokens", 50))
+        done.set(q, 1)
+    }
+    on ping() { return done.len }
+    after 200ms [task] { for i in range(0, 4) { ask("t{i}") } }
+}
+"#).unwrap();
+    let port = 21300 + (std::process::id() % 50) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "a.cell", "-p", &port.to_string()])
+        .env("SOMA_LLM_MOCK", "echo").env("SOMA_LLM_MOCK_LATENCY_MS", "1500")
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let t0 = std::time::Instant::now();
+    let _ = http(port, "POST", "/ping");
+    let waited = t0.elapsed();
+    std::thread::sleep(std::time::Duration::from_millis(6500));
+    let end = http(port, "POST", "/ping");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    assert!(waited < std::time::Duration::from_millis(700), "a [task] tick waits outside the lock: {waited:?}");
+    assert!(end.contains('4'), "{end}");
+}
+
+#[test]
+fn horde_phase2_queue_pool_resume_exactly_once() {
+    let d = dir("horde_phase2");
+    let src = r#"
+cell Audit {
+    memory {
+        verdicts: Map<String, Map> [persistent, immutable]
+        runs: List<String> [persistent]
+    }
+    on launch(n: Int, c: Int) {
+        let docs = range(0, n) |> map(i => map("id", "d{i}", "text", "doc {i}"))
+        return horde(Reviewer.review, docs, map("concurrency", c, "on_result", "_store", "on_done", "_done"))
+    }
+    on bad() {
+        return horde(Reviewer.review, [map("id", "ok", "text", "x"), map("id", "bad", "text", "y")], map("on_result", "_store", "on_error", "_err", "max_attempts", 2))
+    }
+    on _store(v: Map) { verdicts.set(v.id, v) }
+    on _done(h: String) { runs.push(h) }
+    on _err(d: Map, e: Map) { runs.push("err {d.id} {e.kind}") }
+    on status(h: String) { return horde_status(h) }
+    on stop(h: String) { return horde_cancel(h) }
+    on count() { return map("verdicts", verdicts.len, "runs", runs) }
+}
+cell agent Reviewer {
+    on review(d: Map) [task] {
+        let r = think("risk of {d.text}", map("max_tokens", 50))
+        require d.id != "bad" else BadDoc
+        return map("id", d.id, "note", r)
+    }
+}
+"#;
+    std::fs::write(d.join("h.cell"), format!("{src}\ncell test T {{\n  rules {{\n    let h = Audit.launch(5, 2)\n    assert Audit.status(h).done == 5\n    assert Audit.count().verdicts == 5\n    assert Audit.count().runs == [h]\n    let h2 = Audit.bad()\n    assert Audit.status(h2).failed == 1\n    assert horde_results(h2)[0].id == \"ok\"\n    assert Audit.count().runs[1] == \"err bad BadDoc\"\n  }}\n}}\n")).unwrap();
+    let (out, code) = soma_in(&d, &["test", "h.cell"]);
+    assert!(code == 0 && out.contains("6 passed"), "{out}");
+    // check: a wrong target / option is an error
+    std::fs::write(d.join("bad.cell"), "cell A {\n on go(xs: List) { return horde(two, xs, map(\"concurency\", 5)) }\n on two(a: Int, b: Int) { return a }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "bad.cell"]);
+    assert!(code != 0 && out.contains("takes exactly one") && out.contains("unknown option `concurency`"), "{out}");
+
+    // serve: a pool, then kill -9 in the middle and a restart
+    std::fs::write(d.join("s.cell"), src).unwrap();
+    let port = 21200 + (std::process::id() % 50) as u16;
+    let serve = || Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "s.cell", "-p", &port.to_string()])
+        .env("SOMA_LLM_MOCK", "echo").env("SOMA_LLM_MOCK_LATENCY_MS", "400")
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("serve");
+    let wait_up = || { for _ in 0..80 { if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { return true; } std::thread::sleep(std::time::Duration::from_millis(100)); } false };
+    let post = |path: &str, body: &str| -> String {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = write!(s, "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    };
+    let mut child = serve();
+    assert!(wait_up(), "server did not start");
+    let t0 = std::time::Instant::now();
+    let r = post("/launch", r#"{"n": 1500, "c": 100}"#);
+    assert!(r.contains("Audit:h1") && t0.elapsed() < std::time::Duration::from_secs(3), "horde() returns at once: {r}");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mid = post("/status", r#"{"h": "Audit:h1"}"#);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(mid.contains("\"state\":\"running\""), "{mid}");
+    let mut child = serve();
+    assert!(wait_up(), "server did not restart");
+    let mut last = String::new();
+    for _ in 0..150 {
+        last = post("/status", r#"{"h": "Audit:h1"}"#);
+        if last.contains("\"state\":\"done\"") { break; }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let count = post("/count", "");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(last.contains("\"done\":1500") && last.contains("\"failed\":0"), "{last}");
+    assert!(count.contains("\"verdicts\":1500") && count.contains("\"runs\":[\"Audit:h1\"]"), "each result written once, on_done once: {count}");
+}
+
+#[test]
+fn horde_phase3_budget_by_reservation_and_cost_bound() {
+    let d = dir("horde_phase3");
+    std::fs::write(d.join("b.cell"), r#"
+cell Main {
+    memory { out: Map<String, String> [persistent] }
+    on go(n: Int, b: Int) {
+        let xs = range(0, n) |> map(i => "question number {i} about something long enough")
+        return horde(ask, xs, map("concurrency", 100, "budget_tokens", b, "on_result", "_keep"))
+    }
+    on lit() { return horde(ask, ["a", "b", "c"], map("max_attempts", 2)) }
+    on ask(q: String) [task] { return map("q", q, "a", think("{q}", map("max_tokens", 40))) }
+    on _keep(r: Map) { out.set(r.q, r.a) }
+    on st(h: String) { return horde_status(h) }
+}
+cell test T {
+    rules {
+        let h = Main.go(50, 400)
+        assert horde_status(h).state == "exhausted"
+        assert horde_status(h).tokens <= 400
+        assert horde_status(h).done >= 1
+    }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "b.cell"]);
+    assert!(code == 0 && out.contains("3 passed"), "{out}");
+    let (out, _) = soma_in(&d, &["verify", "b.cell"]);
+    assert!(out.contains("horde(ask, …) in `lit` ≤ 240 reply tokens") && out.contains("budget_tokens is computed"), "{out}");
+    // concurrent: 100 calls in flight never pass the ceiling
+    let port = 21100 + (std::process::id() % 50) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "b.cell", "-p", &port.to_string()])
+        .env("SOMA_LLM_MOCK", "echo").env("SOMA_LLM_MOCK_LATENCY_MS", "200")
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("serve");
+    let mut up = false;
+    for _ in 0..80 { if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; } std::thread::sleep(std::time::Duration::from_millis(100)); }
+    let post = |path: &str, body: &str| -> String {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = write!(s, "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    };
+    let _ = post("/go", r#"{"n": 600, "b": 10000}"#);
+    let mut last = String::new();
+    for _ in 0..150 {
+        last = post("/st", r#"{"h": "Main:h1"}"#);
+        if last.contains("\"state\":\"exhausted\"") || last.contains("\"state\":\"done\"") { break; }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    let tokens: i64 = last.split("\"tokens\":").nth(1).and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse().ok()).unwrap_or(-1);
+    assert!(last.contains("\"state\":\"exhausted\"") && tokens > 9000 && tokens <= 10000, "the budget is used, never passed: {last}");
+}
+
+#[test]
+fn horde_phase4_rounds_are_reproducible_and_vote_tallies() {
+    let d1 = dir("horde_phase4_a");
+    let d2 = dir("horde_phase4_b");
+    let src = r#"
+cell Market {
+    memory {
+        state: Map<String, Int> [persistent]
+        trace: List<String> [persistent]
+    }
+    on main(n: Int, rounds: Int) {
+        state.set("n", n)
+        state.set("last", rounds)
+        state.set("round", 1)
+        return start_round()
+    }
+    on start_round() {
+        let r = state.get("round") ?? 1
+        let price = state.get("price") ?? 60
+        let pop = range(0, state.get("n") ?? 10) |> map(i => map("id", "c{i}"))
+        return horde(Consumer.act, pop, map("snapshot", map("price", price), "apply", "_apply",
+            "seed", 1000 + r, "instance", "id", "on_done", "_next", "concurrency", 50))
+    }
+    on _apply(me: Map, res: Map) {
+        state.set("demand", (state.get("demand") ?? 0) + res.buy)
+        state.set("hash", ((state.get("hash") ?? 7) * 31 + res.buy * 17 + res.seen) % 1000000007)
+    }
+    on _next(h: String) {
+        let d = state.get("demand") ?? 0
+        let p = state.get("price") ?? 60
+        state.set("price", if d * 2 > (state.get("n") ?? 10) { p + 1 } else { p - 1 })
+        let np = state.get("price") ?? 0
+        trace.push("demand {d} price {np}")
+        state.set("demand", 0)
+        let r = (state.get("round") ?? 1) + 1
+        state.set("round", r)
+        if r <= (state.get("last") ?? 1) { start_round() }
+    }
+    on report() { return map("hash", state.get("hash"), "trace", trace) }
+    on poll(q: String) { return vote(Consumer.judge, q, 3) }
+}
+cell agent Consumer {
+    on act(me: Map, world: Map) [task] {
+        let mood = think("price {world.price}", map("max_tokens", 20))
+        let seen = recall("last_price") ?? 0
+        remember("last_price", world.price)
+        let buy = if world.price < 40 + random(40) { 1 } else { 0 }
+        return map("id", me.id, "buy", buy, "seen", seen)
+    }
+    on judge(q: String) [task] { return think("ok? {q}", map("max_tokens", 20)) }
+}
+"#;
+    let mut reports = Vec::new();
+    for d in [&d1, &d2] {
+        std::fs::write(d.join("m.cell"), src).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "m.cell", "main", "300", "6"])
+            .env("SOMA_LLM_MOCK", "echo").current_dir(d).output().expect("run");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let rep = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "m.cell", "report"]).current_dir(d).output().expect("report");
+        reports.push(String::from_utf8_lossy(&rep.stdout).to_string());
+    }
+    assert!(reports[0].matches("demand").count() == 6, "six rounds ran: {}", reports[0]);
+    assert_eq!(reports[0], reports[1], "same seed, same simulation");
+    // under soma test: inline, same semantics; vote tallies
+    std::fs::write(d1.join("t.cell"), format!("{src}\ncell test T {{\n  rules {{\n    let h = Market.main(20, 2)\n    assert len(Market.report().trace) == 2\n    assert Market.poll(\"x\").unanimous == true\n    assert Market.poll(\"x\").k == 3\n  }}\n}}\n")).unwrap();
+    let (out, code) = soma_in(&d1, &["test", "t.cell"]);
+    assert!(code == 0 && out.contains("3 passed"), "{out}");
+    // check: a snapshot needs a 2-parameter target; apply and on_result exclude each other
+    std::fs::write(d1.join("bad.cell"), "cell A {\n on go(xs: List) { return horde(one, xs, map(\"snapshot\", 1, \"apply\", \"_a\", \"on_result\", \"_a\")) }\n on one(x: Int) { return x }\n on _a(r: Int) { }\n}\n").unwrap();
+    let (out, code) = soma_in(&d1, &["check", "bad.cell"]);
+    assert!(code != 0 && out.contains("takes two parameters (input, snapshot)") && out.contains("exclude each other"), "{out}");
+}
+
+#[test]
+fn cycle68_horde_recovery_test_semantics_and_verify() {
+    let d = dir("cycle68");
+    // soma test: the horde runs after the caller commits (its next
+    // statements first, as under serve); a callback can cancel it
+    std::fs::write(d.join("t.cell"), r#"
+cell App {
+    memory { owner: Map<String, String> [persistent]
+             report: Map<String, String> [persistent] }
+    on go(name: String) {
+        let h = horde(W.work, [1, 2], map("on_done", "_done"))
+        owner.set(h, name)
+        return h
+    }
+    on _done(h: String) { report.set(owner.get(h) ?? "UNKNOWN", h) }
+    on halt(xs: List) {
+        let h = horde(W.work, xs, map("on_result", "_stop"))
+        owner.set("cur", h)
+        return h
+    }
+    on _stop(r: String) { horde_cancel(owner.get("cur")) }
+    on rep(k: String) { return report.get(k) }
+}
+cell W { on work(n: Int) [task] { return think("doc {n}", map("max_tokens", 50)) } }
+cell test T {
+    rules {
+        let h = App.go("acme")
+        assert App.rep("acme") == h
+        let h2 = App.halt([1, 2, 3, 4])
+        assert horde_status(h2).state == "cancelled"
+        assert horde_status(h2).done + horde_status(h2).cancelled == 4
+    }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "t.cell"]);
+    assert!(code == 0 && out.contains("3 passed"), "{out}");
+    // check: on_error receives a Map
+    std::fs::write(d.join("e.cell"), "cell A {\n on go(xs: List) { return horde(w, xs, map(\"on_error\", \"_e\")) }\n on w(x: Int) { return x }\n on _e(x: Int, e: String) { }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "e.cell"]);
+    assert!(code != 0 && out.contains("receives the error as a Map"), "{out}");
+    // verify: one line per horde, with or without invariants; --strict fails on an unbounded one
+    std::fs::write(d.join("v.cell"), "cell App {\n memory { c: Map<String, Int> [persistent]\n invariant c >= 0 }\n on go(body: Map) { return horde(W.work, body.xs) }\n}\ncell W { on work(n: Int) [task] { return think(\"doc {n}\", map(\"max_tokens\", 50)) } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "v.cell"]);
+    assert!(out.matches("cost: horde(W.work").count() == 1, "{out}");
+    let (out, code) = soma_in(&d, &["verify", "--strict", "v.cell"]);
+    assert!(code != 0 && out.contains("VERIFY FAILED"), "{out}");
+
+    // serve: cancel, kill -9, restart → cancelled, counts add up; a renamed
+    // callback: the horde is not resumed (paused)
+    std::fs::write(d.join("s.cell"), r#"
+cell App {
+    memory { ids: Map<String, String> [persistent]
+             out: Map<String, String> [persistent] }
+    on go(n: Int) {
+        let h = horde(W.work, range(0, n), map("concurrency", 20, "on_result", "_store"))
+        ids.set("h", h)
+        return h
+    }
+    on _store(r: String) { out.set(r, r) }
+    on st() { return horde_status(ids.get("h")) }
+    on stop() { return horde_cancel(ids.get("h")) }
+}
+cell W { on work(n: Int) [task] { return think("doc {n}", map("max_tokens", 50)) } }
+"#).unwrap();
+    let port = 21400 + (std::process::id() % 50) as u16;
+    let serve = |lat: &str| Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "s.cell", "-p", &port.to_string()])
+        .env("SOMA_LLM_MOCK", "echo").env("SOMA_LLM_MOCK_LATENCY_MS", lat)
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("serve");
+    let wait_up = || { for _ in 0..80 { if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { return true; } std::thread::sleep(std::time::Duration::from_millis(100)); } false };
+    let post = |path: &str| -> String {
+        use std::io::{Read, Write};
+        let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
+        let _ = write!(s, "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    };
+    let mut child = serve("1000");
+    assert!(wait_up());
+    let _ = post("/go/200");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let _ = post("/stop");
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut child = serve("0");
+    assert!(wait_up());
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let st = post("/st");
+    let _ = child.kill();
+    let _ = child.wait();
+    let num = |k: &str| -> i64 { st.split(&format!("\"{k}\":")).nth(1).and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse().ok()).unwrap_or(-1) };
+    assert!(st.contains("\"state\":\"cancelled\"") && num("done") + num("cancelled") + num("failed") == 200, "{st}");
+
+    let _ = std::fs::remove_dir_all(d.join(".soma_data"));
+    let mut child = serve("1000");
+    assert!(wait_up());
+    let _ = post("/go/100");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let _ = child.kill();
+    let _ = child.wait();
+    let src = std::fs::read_to_string(d.join("s.cell")).unwrap();
+    std::fs::write(d.join("s.cell"), src.replace("_store", "_save")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_soma")).args(["serve", "s.cell", "-p", &port.to_string()])
+        .env("SOMA_LLM_MOCK", "echo").current_dir(&d).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().expect("serve");
+    assert!(wait_up());
+    // the killed server's lease goes stale after 5 s; the scan runs each second
+    std::thread::sleep(std::time::Duration::from_millis(7000));
+    let st = post("/st");
+    let mut out = out;
+    let _ = out.kill();
+    let o = out.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("NOT resumed") && err.contains("`App._store` no longer exists"), "{err}");
+    assert!(st.contains("\"state\":\"paused\""), "{st}");
+}
+
+#[test]
+fn cycle68_attack_nested_budget_literal_calls_and_owner_scope() {
+    let d = dir("cycle68_attack");
+    // check: computed target / options, bad literals, public callbacks
+    std::fs::write(d.join("c.cell"), r#"
+cell A {
+    on a(t: String) { return horde("W." + t, [1, 2]) }
+    on b(o: Map) { return horde(W.w, [1, 2], o) }
+    on c() { return horde(W.w, [1, 2], map("concurrency", 0, "max_attempts", 200, "budget_tokens", -1)) }
+    on d() { return horde(W.w, map("x", 1)) }
+    on e() { return horde(W.w, [1], map("on_result", "store")) }
+    on store(r: String) { }
+}
+cell W { on w(n: Int) [task] { return think("x {n}", map("max_tokens", 5)) } }
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "c.cell"]);
+    assert!(code != 0, "{out}");
+    for needle in ["write the handler at the call", "write the options as `map(", "concurrency must be an Int in 1..1000",
+                   "max_attempts must be an Int in 1..10", "budget_tokens must be a positive Int", "the inputs must be a List", "handler `store` is public"] {
+        assert!(out.contains(needle), "missing {needle}: {out}");
+    }
+    // a nested horde runs under its parent's budget; another cell cannot read it
+    std::fs::write(d.join("n.cell"), r#"
+cell Audit {
+    memory { ids: List<String> [persistent] }
+    on go() { return horde(W.work, [1, 2, 3], map("budget_tokens", 100)) }
+    on peek() { return horde_status("W:h1") }
+}
+cell W {
+    on work(n: Int) [task] {
+        let h = horde(W.leaf, range(0, 20), map("concurrency", 5))
+        return think("w {n}", map("max_tokens", 10))
+    }
+    on leaf(n: Int) [task] { return think("leaf {n}", map("max_tokens", 200)) }
+}
+cell test T {
+    rules {
+        let h = Audit.go()
+        assert horde_status(h).tokens + horde_status("W:h1").tokens + horde_status("W:h2").tokens + horde_status("W:h3").tokens <= 100
+        assert (try { Audit.peek() }).kind == "not_found"
+    }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "n.cell"]);
+    assert!(code == 0 && out.contains("2 passed"), "{out}");
+}

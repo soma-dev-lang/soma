@@ -1,3 +1,15 @@
+use std::cell::Cell;
+thread_local! {
+    /// random()'s splitmix64 state, per thread (0 = not seeded yet)
+    static RNG: Cell<u64> = Cell::new(0);
+}
+
+/// A horde task with a `seed`: its random() draws are the same on every
+/// run, whichever worker thread runs it. Returns the previous state.
+pub fn set_rng_state(state: u64) -> u64 {
+    RNG.with(|c| c.replace(state))
+}
+
 use super::super::{Value, RuntimeError};
 use super::val_to_i64;
 use crate::interpreter::soma_int::SomaInt;
@@ -376,8 +388,6 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "random" => {
             // splitmix64 seeded once from the clock: full 53-bit floats (it
             // gave 6 decimals: 0.969512) and the native backend's generator
-            use std::cell::Cell;
-            thread_local! { static RNG: Cell<u64> = Cell::new(0); }
             let z = RNG.with(|c| {
                 let mut st = c.get();
                 if st == 0 {

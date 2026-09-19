@@ -88,7 +88,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         // ── Agent memory: remember(key, value), recall(key) ─────────
         "remember" => {
             if args.len() >= 2 {
-                let key = format!("{}", args[0]);
+                // a horde task running as an agent instance: its own keys
+                let key = match &interp.horde_instance { Some(i) => format!("{}/{}", i, args[0]), None => format!("{}", args[0]) };
                 let val = &args[1];
 
                 // the cell's own agent memory (it used to be written into
@@ -106,6 +107,8 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         "recall" => {
             if let Some(Value::String(key)) = args.first() {
+                let scoped = interp.horde_instance.as_ref().map(|i| format!("{}/{}", i, key));
+                let key = scoped.as_ref().unwrap_or(key);
                 // opened here too: a recall in a new process (or another
                 // serve thread) found no table and answered null
                 if let Some(v) = agent_memory(interp, cell_name).get(key) {
@@ -159,6 +162,29 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             } else {
                 Some(Err(RuntimeError::TypeError("delegate(cell_name, signal_name, ...args) requires at least 2 args".to_string())))
             }
+        }
+        // ── Hordes: one handler over many inputs, a bounded pool ─────
+        "horde" if (2..=3).contains(&args.len()) => {
+            let (Value::String(target), Value::List(inputs)) = (&args[0], &args[1]) else {
+                return Some(Err(RuntimeError::TypeError("horde(handler, inputs: List, opts?: Map) — handler is `Cell.handler` or \"Cell.handler\"".to_string())));
+            };
+            Some(interp.horde_start(cell_name, target, inputs.clone(), args.get(2)))
+        }
+        "vote" if args.len() == 3 => {
+            let (Value::String(target), Value::Int(k)) = (&args[0], &args[2]) else {
+                return Some(Err(RuntimeError::TypeError("vote(handler, input, k: Int) — handler is `Cell.handler` or \"Cell.handler\"".to_string())));
+            };
+            Some(interp.horde_vote(cell_name, target, args[1].clone(), k.to_i64().unwrap_or(0)))
+        }
+        "horde_status" | "horde_results" | "horde_cancel" if args.len() == 1 => {
+            let Value::String(id) = &args[0] else {
+                return Some(Err(RuntimeError::TypeError(format!("{}(id: String) — the id horde() returned", name))));
+            };
+            Some(match name {
+                "horde_status" => interp.horde_status(cell_name, id),
+                "horde_results" => interp.horde_results(cell_name, id),
+                _ => interp.horde_cancel(cell_name, id),
+            })
         }
         // ── Agent: set_budget(max_tokens) ──────────────────────────
         "set_budget" => {
@@ -455,7 +481,10 @@ fn agent_think(
 
     // Scripted replies (`mock think …`) come first, whatever the mode.
     let scripted = interp.mock_queue.pop_front();
-    if let Some(Err(msg)) = &scripted {
+    // a scripted failure happens AFTER the step boundary, as a provider
+    // error would (the test rolled back what production had committed)
+    if let Some(Err(msg)) = scripted.clone() {
+        interp.outside_unit(|| ());
         interp.agent_trace.push(super::llm::trace_think(0, prompt, 0, 0, "error"));
         return Err(RuntimeError::TypeError(format!("think() failed: {} (scripted by `mock think error`)", msg)));
     }
@@ -466,9 +495,23 @@ fn agent_think(
     if let Some(mock) = mock_val {
         // SOMA_LLM_MOCK_LATENCY_MS: a mocked model that takes time, to test
         // concurrency offline (inside a `[task]` it waits outside the lock)
-        if let Some(ms) = std::env::var("SOMA_LLM_MOCK_LATENCY_MS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|m| *m > 0) {
-            interp.outside_unit(|| std::thread::sleep(std::time::Duration::from_millis(ms.min(600_000))));
-        }
+        // …and ALWAYS ends a `[task]` step, latency or not: the step
+        // semantics depended on the mock's latency (soma test rolled the
+        // whole handler back where production kept the first step)
+        let ms = std::env::var("SOMA_LLM_MOCK_LATENCY_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+        // the rate limits apply to a mock too (a horde's pacing is testable offline)
+        let (rpm, tpm) = cfg.map(|c| (c.rpm, c.tpm)).unwrap_or((0, 0));
+        let want = ((prompt.chars().count() as u64 + 3) / 4) + max_tokens.unwrap_or(1000);
+        // a horde's budget: reserve the bound BEFORE the (mocked) call —
+        // outside the lock in a [task], where it may wait for calls in flight
+        let bound = crate::interpreter::horde::request_bound(prompt.len() + system.map_or(0, |s| s.len()), 2, max_tokens.unwrap_or(2048));
+        let (budget, can_wait) = (interp.horde_budget.clone(), interp.task_unit.is_some());
+        let reservation = interp.outside_unit(|| -> Result<_, RuntimeError> {
+            let r = crate::interpreter::horde::Reservation::take(budget, bound, can_wait)?;
+            super::llm::limiter::acquire(rpm, tpm, want);
+            if ms > 0 { std::thread::sleep(std::time::Duration::from_millis(ms.min(600_000))) }
+            Ok(r)
+        })?;
         let response = match (&scripted, mock.as_str()) {
             // a scripted reply longer than max_tokens (~4 characters per
             // token) is what a real provider refuses (kind llm): the test
@@ -484,6 +527,30 @@ fn agent_think(
             // a real provider stops at max_tokens: so does the mock (~4
             // characters per token) — a scripted reply is kept as written
             (_, "echo") => cap_reply(prompt, max_tokens),
+            // `rules:mocks.json` — [{"match": "risk", "reply": "{\"risk\": 3}"},
+            // {"cell": "Judge", "reply": "yes"}, …]: the first rule whose
+            // `match` is in the prompt (and `cell` is the calling agent)
+            // answers; none: an echo
+            (_, s) if s.starts_with("rules:") => {
+                let rules = mock_rules(&s[6..]).map_err(|e| RuntimeError::TypeError(format!("think() mock rules: {}", e)))?;
+                let hit = rules.iter().find(|r| {
+                    r.get("match").and_then(|m| m.as_str()).map_or(true, |m| prompt.contains(m))
+                        && r.get("cell").and_then(|c| c.as_str()).map_or(true, |c| c == cell_name)
+                });
+                match hit.and_then(|r| r.get("reply")) {
+                    Some(serde_json::Value::String(t)) => {
+                        let tokens = (t.chars().count() as u64 + 3) / 4;
+                        if let Some(m) = max_tokens.filter(|&m| tokens > m) {
+                            return Err(RuntimeError::Domain { kind: "llm".to_string(), message: format!(
+                                "llm: the mock rule's reply is ~{} tokens for max_tokens {} — a provider reply over the cap raises", tokens, m) });
+                        }
+                        t.clone()
+                    }
+                    // a JSON reply written as JSON
+                    Some(other) => other.to_string(),
+                    None => cap_reply(prompt, max_tokens),
+                }
+            }
             (_, s) if s.starts_with("fixed:") => {
                 let text = &s[6..];
                 let tokens = (text.chars().count() as u64 + 3) / 4;
@@ -499,7 +566,7 @@ fn agent_think(
                 // `try { think(..) }` must not be able to swallow it
                 eprintln!(
                     "error: unknown LLM mock mode '{}' (SOMA_LLM_MOCK or [agent] mock) — expected `echo` \
-                     (reply = the prompt) or `fixed:<text>`",
+                     (reply = the prompt), `fixed:<text>` or `rules:<file.json>`",
                     other
                 );
                 std::process::exit(2);
@@ -513,6 +580,7 @@ fn agent_think(
         let reply_tokens = match max_tokens { Some(m) if m > 0 => reply_tokens.min(m as i64), _ => reply_tokens };
         let est = (prompt.chars().count() as i64 + 3) / 4 + reply_tokens;
         let est = est.max(1);
+        if let Some(r) = reservation { r.settle(est); }
         interp.agent_tokens_used += est;
         interp.agent_trace.push(super::llm::trace_think_with(0, prompt, system.unwrap_or(""), est, interp.agent_tokens_used, "stop"));
         if interp.agent_conversation.is_empty() {
@@ -564,6 +632,7 @@ fn agent_think(
         timeout_ms: timeout_ms.unwrap_or_else(|| std::env::var("SOMA_LLM_TIMEOUT_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(60_000)),
     };
 
+    let (limit_rpm, limit_tpm) = cfg.map(|c| (c.rpm, c.tpm)).unwrap_or((0, 0));
     let tools = build_tool_definitions(interp, cell_name);
 
     // Multi-turn setup — an explicit system prompt replaces the previous
@@ -601,7 +670,17 @@ fn agent_think(
         let body = llm::build_request_body(&config, &interp.agent_conversation, &tools, json_mode, max_tokens);
         // a `[task]` step boundary: the wait for the model runs outside the
         // handler lock (other requests and tasks proceed meanwhile)
-        let raw_json = interp.outside_unit(|| llm::send_with_retry(&config, &body))?;
+        let body_bytes = body.to_string().len();
+        let want = (body_bytes as u64 + 3) / 4 + max_tokens.unwrap_or(1000);
+        let (rpm, tpm) = (limit_rpm, limit_tpm);
+        let bound = crate::interpreter::horde::request_bound(body_bytes, interp.agent_conversation.len(), max_tokens.unwrap_or(2048));
+        let (budget, can_wait) = (interp.horde_budget.clone(), interp.task_unit.is_some());
+        let (raw_json, reservation) = interp.outside_unit(|| -> Result<_, RuntimeError> {
+            let r = crate::interpreter::horde::Reservation::take(budget, bound, can_wait)?;
+            llm::limiter::acquire(rpm, tpm, want);
+            // a failed call gives its reservation back (Reservation's Drop)
+            Ok((llm::send_with_retry(&config, &body)?, r))
+        })?;
         let mut resp = llm::parse_response(&config, &raw_json);
         // a provider that omits `usage` (or reports a negative count) spent
         // tokens all the same: estimate ~4 characters per token, as the mock
@@ -633,6 +712,9 @@ fn agent_think(
         // an under-reported reply is charged at its measured size too
         // (set_budget / tokens_used relied on the provider's count)
         if measured > reported { interp.agent_tokens_used += measured - reported; }
+        // the horde's budget: the real charge replaces the reservation (a
+        // provider that ignored max_tokens is charged all of it, and raises)
+        if let Some(r) = reservation { r.settle(resp.tokens + (measured - reported).max(0)); }
         let cap = max_tokens.unwrap_or(2048) as i64;
         if out > cap {
             return Err(RuntimeError::Domain { kind: "llm".to_string(), message: format!("llm: the provider returned {} reply tokens for max_tokens {} — it ignored the cap the cost bound relies on", out, cap) });
@@ -902,8 +984,31 @@ fn with_cell_conversation(interp: &mut Interpreter, cell_name: &str, f: impl FnO
     result
 }
 
+/// `SOMA_LLM_MOCK=rules:<file>`: the rules, read once per path (relative
+/// to the working directory, else to the program's directory).
+fn mock_rules(path: &str) -> Result<Vec<serde_json::Value>, String> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Vec<serde_json::Value>>>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(r) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(path) { return Ok(r.clone()); }
+    let p = std::path::PathBuf::from(path);
+    let text = std::fs::read_to_string(&p)
+        .or_else(|_| {
+            let dir = crate::runtime::storage::data_dir();
+            std::fs::read_to_string(dir.parent().unwrap_or(std::path::Path::new(".")).join(&p))
+        })
+        .map_err(|e| format!("cannot read {}: {}", path, e))?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{} is not JSON: {}", path, e))?;
+    let rules = match v {
+        serde_json::Value::Array(a) => a,
+        serde_json::Value::Object(ref o) if o.get("rules").map_or(false, |r| r.is_array()) => o["rules"].as_array().cloned().unwrap_or_default(),
+        _ => return Err(format!("{}: expected a list of {{\"match\", \"cell\", \"reply\"}} rules", path)),
+    };
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_string(), rules.clone());
+    Ok(rules)
+}
+
 /// The cell's own agent-memory table (persistent under run/serve).
-fn agent_memory(interp: &mut Interpreter, cell_name: &str) -> std::sync::Arc<dyn crate::runtime::storage::StorageBackend> {
+pub(crate) fn agent_memory(interp: &mut Interpreter, cell_name: &str) -> std::sync::Arc<dyn crate::runtime::storage::StorageBackend> {
     let slot_key = format!("{}.__agent_memory", cell_name);
     if !interp.storage.contains_key(&slot_key) {
         let persistent = crate::interpreter::PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)

@@ -399,7 +399,27 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
     for line in interp.audit_stored_data() {
         eprintln!("warning: stored data: {}", line);
     }
+    // hordes: workers over the same storage; `soma run` waits for them
+    {
+        let prog = program.clone();
+        let slots = interp.storage.clone();
+        let natives = interp.native_handlers.clone();
+        let cfg = interp.agent_config.clone();
+        let models = interp.agent_models.clone();
+        let _ = crate::interpreter::horde::FACTORY.set(Box::new(move || {
+            let mut w = interpreter::Interpreter::new(&prog);
+            w.set_storage_raw(&slots);
+            w.ensure_state_machine_storage();
+            w.native_handlers = natives.clone();
+            w.agent_config = cfg.clone();
+            w.agent_models = models.clone();
+            w
+        }));
+        crate::interpreter::horde::prepare(&program);
+        crate::interpreter::horde::recover(&program);
+    }
     let result = interp.call_signal(&cell_name, &signal_name, actual_args);
+    crate::interpreter::horde::wait_all();
     // move the committed rows from the WAL into the database file before
     // exiting: left in the WAL, one damaged frame silently dropped every
     // later commit (an [immutable] log read back empty, quick_check "ok")

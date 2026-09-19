@@ -67,6 +67,12 @@ pub struct AgentConfig {
     /// in this cell asks for a capability missing from this list.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Provider rate limits shared by every think() of the process (a
+    /// horde's workers included): requests and tokens per minute; 0 = none.
+    #[serde(default)]
+    pub rpm: u64,
+    #[serde(default)]
+    pub tpm: u64,
 }
 
 fn default_retries() -> usize { 3 }
@@ -81,6 +87,8 @@ impl Default for AgentConfig {
             retries: 3,
             mock: String::new(),
             capabilities: Vec::new(),
+            rpm: 0,
+            tpm: 0,
         }
     }
 }

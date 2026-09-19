@@ -2,6 +2,7 @@ pub mod builtins;
 pub mod native_ffi;
 pub mod soma_int;
 pub mod record_log;
+pub mod horde;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -34,6 +35,9 @@ pub(crate) enum UndoOp {
     Push(BusEvent),
     /// a cross-process `emit` line for the [peers] bus, sent at commit
     PeerSend(String),
+    /// a horde started / cancelled: applied to the live registry (workers
+    /// start) when the unit commits; undoing it is dropping it
+    Horde(horde::Commit),
 }
 
 /// One handler at a time. `soma serve` runs each request on its own thread
@@ -491,7 +495,7 @@ impl std::fmt::Display for Value {
                 VariantValue::Struct(entries) => {
                     write!(f, "{} {{", variant)?;
                     for (i, (k, v)) in entries.iter().enumerate() {
-                        if i > 0 { write!(f, ", ")?; }
+                        if i > 0 { write!(f, ",")?; }
                         write!(f, " {}: {}", k, v)?;
                     }
                     write!(f, " }}")
@@ -762,6 +766,18 @@ pub struct Interpreter {
     pub(crate) agent_pending_approval: Option<String>,
     /// Agent LLM config (from soma.toml [agent] section)
     pub agent_config: Option<crate::pkg::manifest::AgentConfig>,
+    /// The budget of the horde this interpreter runs a task of: every
+    /// think() reserves against it before calling the model.
+    pub(crate) horde_budget: Option<Arc<horde::Budget>>,
+    /// the agent instance a horde task runs as (`instance` option): its
+    /// remember() / recall() keys are its own
+    pub(crate) horde_instance: Option<String>,
+    /// the horde this interpreter runs a task / callback of
+    pub(crate) horde_current: Option<String>,
+    /// hordes to run synchronously once the current unit has committed
+    /// (no workers: `soma test`), and the guard against running them nested
+    pub(crate) deferred_hordes: Vec<(horde::Spec, Vec<Value>)>,
+    pub(crate) running_deferred: bool,
     /// Named model configs (from soma.toml [models.*] sections)
     pub agent_models: std::collections::HashMap<String, crate::pkg::manifest::AgentConfig>,
     // ── V1: record/replay ───────────────────────────────────────────
@@ -1004,6 +1020,11 @@ impl Interpreter {
             agent_trace: Vec::new(),
             agent_pending_approval: None,
             agent_config: DEFAULT_AGENT.get().and_then(|d| d.0.clone()),
+            horde_budget: None,
+            horde_instance: None,
+            horde_current: None,
+            deferred_hordes: Vec::new(),
+            running_deferred: false,
             agent_models: DEFAULT_AGENT.get().map(|d| d.1.clone()).unwrap_or_default(),
             record_handlers,
             record_log_path: None,
@@ -1056,6 +1077,20 @@ impl Interpreter {
 
     /// Execute an `every` block's body
     pub fn exec_every(&mut self, body: &[Spanned<Statement>], env: &mut Env, cell_name: &str) -> Result<Value, RuntimeError> {
+        self.exec_tick(body, env, cell_name, false)
+    }
+
+    /// Run a tick's body: one atomic unit, or `[task]` steps
+    /// (`every 5s [task] { … }`) whose think()s wait outside the lock.
+    pub fn exec_tick(&mut self, body: &[Spanned<Statement>], env: &mut Env, cell_name: &str, task: bool) -> Result<Value, RuntimeError> {
+        if task && self.journal.is_none() && self.task_unit.is_none() {
+            return self.run_task(|s| match s.exec_body(body, env, cell_name, "_every") {
+                Ok(v) | Err(ExecError::Return(v)) => Ok(v),
+                Err(ExecError::Break) => Err(RuntimeError::TypeError("break outside of loop".to_string())),
+                Err(ExecError::Continue) => Err(RuntimeError::TypeError("continue outside of loop".to_string())),
+                Err(ExecError::Runtime(e)) => Err(e),
+            });
+        }
         // a tick is a handler invocation: serialized with requests AND
         // rolled back when it raises (its writes used to stay committed)
         let outcome = self.atomically(|s| s.exec_body(body, env, cell_name, "_every"));
@@ -1209,6 +1244,8 @@ impl Interpreter {
             let mut gone_cells: Vec<String> = Vec::new();
             for t in &tables {
                 if t.ends_with("_log") || t.starts_with("sqlite_") || expected.contains(t) { continue; }
+                // a horde's queue (`Audit__horde-meta`, `Audit__horde-tasks`)
+                if t.ends_with("__horde-meta") || t.ends_with("__horde-tasks") { continue; }
                 let log = format!("{}_log", t);
                 let rows = count(t) + if table_set.contains(&log) { count(&log) } else { 0 };
                 if rows == 0 { continue; }
@@ -1679,6 +1716,18 @@ impl Interpreter {
                     }
                     Some(Value::Map(entries)) => {
                         entries.insert(format!("{}", idx_val), new_val);
+                        Ok(Value::Unit)
+                    }
+                    // a record: `l.qty = v` on a struct variant sets a declared field
+                    Some(Value::Variant { variant, fields: VariantValue::Struct(fs), .. }) => {
+                        let key = match &idx_val { Value::String(k) => k.clone(), other => format!("{}", other) };
+                        if !fs.contains_key(&key) {
+                            let known: Vec<&str> = fs.keys().map(|k| k.as_str()).collect();
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "{} has no field '{}' (fields: {})", variant, key, known.join(", ")
+                            ))));
+                        }
+                        fs.insert(key, new_val);
                         Ok(Value::Unit)
                     }
                     Some(other) => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
@@ -2402,7 +2451,20 @@ impl Interpreter {
                     }
                 }
                 let mut arg_vals = Vec::new();
-                for arg in args {
+                // `horde(Reviewer.review, …)` / `horde(review, …)`: the first
+                // argument names a handler, it is not evaluated
+                let handler_ref = if (name == "horde" || (name == "vote" && args.len() == 3)) && !self.user_handler_takes(name, args.len()) {
+                    match args.first().map(|a| &a.node) {
+                        Some(Expr::FieldAccess { target, field }) => match &target.node {
+                            Expr::Ident(c) if !env.contains_key(c) && self.cells.contains_key(c) => Some(format!("{}.{}", c, field)),
+                            _ => None,
+                        },
+                        Some(Expr::Ident(h)) if !env.contains_key(h) && self.handler_arities.contains_key(h) => Some(h.clone()),
+                        _ => None,
+                    }
+                } else { None };
+                for (i, arg) in args.iter().enumerate() {
+                    if i == 0 { if let Some(r) = &handler_ref { arg_vals.push(Value::String(r.clone())); continue; } }
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
 
@@ -4758,7 +4820,7 @@ impl Interpreter {
                 },
                 Some(UndoOp::Unappend { backend }) => backend.unappend(),
                 Some(UndoOp::RestoreList { backend, prev }) => backend.replace_list(prev),
-                Some(UndoOp::Push(_)) | Some(UndoOp::PeerSend(_)) => {}
+                Some(UndoOp::Push(_)) | Some(UndoOp::PeerSend(_)) | Some(UndoOp::Horde(_)) => {}
                 None => break,
             }
         }
@@ -4789,12 +4851,14 @@ impl Interpreter {
     fn unit_end(&mut self, unit: Unit, ok: bool) {
         // how many writes / transitions the invocation committed (a
         // scheduler tick logs it — ticks were invisible in the serve log)
-        self.last_commit_writes = if ok { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_) | UndoOp::PeerSend(_))).count()) } else { 0 };
+        self.last_commit_writes = if ok { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Horde(_))).count()) } else { 0 };
         let mut peer_lines: Vec<String> = Vec::new();
+        let mut hordes: Vec<horde::Commit> = Vec::new();
         let pushes: Vec<BusEvent> = if ok {
             self.journal.take().unwrap_or_default().into_iter().filter_map(|u| match u {
                 UndoOp::Push(e) => Some(e),
                 UndoOp::PeerSend(l) => { peer_lines.push(l); None }
+                UndoOp::Horde(c) => { hordes.push(c); None }
                 _ => None,
             }).collect()
         } else { Vec::new() };
@@ -4805,6 +4869,14 @@ impl Interpreter {
         }
         // committed: now the clients (and the other processes) may hear about it
         for e in pushes { self.send_bus_now(e); }
+        // …and the hordes it started may run (the lock is still held: the
+        // workers wait for it like any request)
+        for c in hordes {
+            match c {
+                horde::Commit::Sync { spec, inputs } => self.deferred_hordes.push((spec, inputs)),
+                c => horde::apply_commit(c),
+            }
+        }
         if !peer_lines.is_empty() {
             if let Some(ref peers) = self.peer_bus {
                 if let Ok(mut senders) = peers.lock() {
@@ -4828,6 +4900,7 @@ impl Interpreter {
             self.rollback_to(0);
         }
         self.unit_end(unit, result.is_ok());
+        self.run_deferred_hordes();
         result
     }
 
@@ -4842,6 +4915,7 @@ impl Interpreter {
         let result = f(self);
         if result.is_err() { self.rollback_to(0); }
         if let Some(u) = self.task_unit.take() { self.unit_end(u, result.is_ok()); }
+        self.run_deferred_hordes();
         result
     }
 
@@ -6642,7 +6716,7 @@ fn undo(op: UndoOp) {
         },
         UndoOp::Unappend { backend } => backend.unappend(),
         UndoOp::RestoreList { backend, prev } => backend.replace_list(prev),
-        UndoOp::Push(_) | UndoOp::PeerSend(_) => {}
+        UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Horde(_) => {}
     }
 }
 

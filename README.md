@@ -18,6 +18,11 @@ not as an add-on, but as the reason the language exists:
   crosses it completes, up to its `max_tokens`; a prompt that alone overruns
   what is left is refused before it is sent); tool calls are
   capability-scoped. The model proposes — the language disposes.
+- **Hordes of agents, one ceiling.** `horde(Reviewer.review, docs, map(
+  "concurrency", 500, "budget_tokens", 2000000, "on_result", "_store"))` runs a
+  `[task]` agent once per input: model calls wait outside the lock, every call
+  reserves its worst case against the token ceiling first, the queue survives
+  a restart and each result is recorded once. 10 000 mocked 2 s tasks in 41 s.
 
 ```soma
 cell Ledger {

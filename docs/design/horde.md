@@ -169,9 +169,9 @@ cell Market {
 | Phase | Livrable | Accepté quand |
 |---|---|---|
 | 1 ✅ | handlers `[task]` : `think()` hors verrou, étapes transactionnelles (fait : 200 × 2 s en 9,3 s) | 200 `think()` mockés de 2 s en parallèle finissent en < 10 s ; aucune écriture perdue ; les tests existants passent |
-| 2 | `horde` / `horde_status` / `horde_cancel`, file persistée, pool, limiteur RPM/TPM | 10 000 tâches mockées (latence 2 s, concurrence 500) en < 2 min ; `kill -9` au milieu puis reprise : chaque résultat écrit une fois |
-| 3 | budget par réservation, preuve de coût de horde | le plafond n'est jamais dépassé, même avec un fournisseur qui ignore `max_tokens` ; `verify` affiche la borne |
-| 4 | `vote`, `snapshot`/tours, instances d'agents (cas B) | simulation de 10 000 agents × 20 tours reproductible à l'identique avec la même graine |
+| 2 ✅ | `horde` / `horde_status` / `horde_cancel`, file persistée, pool, limiteur RPM/TPM (fait : 10 000 × 2 s, concurrence 500, en 41 s ; `kill -9` après 2 500 puis reprise : 10 000 résultats dans une Map `[immutable]`, chacun une fois) | 10 000 tâches mockées (latence 2 s, concurrence 500) en < 2 min ; `kill -9` au milieu puis reprise : chaque résultat écrit une fois |
+| 3 ✅ | budget par réservation, preuve de coût de horde (fait : 1 000 tâches, 200 en vol, budget 20 000 → 19 896 dépensés, jamais au-delà ; `verify` affiche la borne ; un fournisseur qui ignore `max_tokens` est détecté et facturé, le plafond suppose qu'il le respecte) | le plafond n'est jamais dépassé, même avec un fournisseur qui ignore `max_tokens` ; `verify` affiche la borne |
+| 4 ✅ | `vote`, `snapshot`/tours, instances d'agents (cas B) (fait : `snapshot` + `apply` en ordre d'entrée + `seed` + `instance` ; 10 000 agents × 20 tours en 46 s, deux exécutions identiques) | simulation de 10 000 agents × 20 tours reproductible à l'identique avec la même graine |
 | 5 | tableau de bord, mocks par motif, doc + exemples du corpus | un agent externe écrit un audit de 10 000 documents depuis la doc seule |
 
 ## 11. Questions ouvertes

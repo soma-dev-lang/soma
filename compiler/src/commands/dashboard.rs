@@ -396,6 +396,7 @@ h1 {{
 <body>
 <h1>Soma Verification Dashboard</h1>
 <p class="subtitle">Live analysis of cell state machines, memory budgets, and verification properties</p>
+<div id="hordes"></div>
 <div id="root"></div>
 <script>
 "use strict";
@@ -636,6 +637,25 @@ function render() {{
 }}
 
 render();
+
+// hordes: live progress, polled (same origin)
+function renderHordes(list) {{
+  const el = document.getElementById('hordes');
+  if (!list || !list.length) {{ el.innerHTML = ''; return; }}
+  let h = '<div class="cell-card"><div class="cell-header"><h2>Hordes</h2></div><div class="cell-body"><ul class="verif-list">';
+  list.forEach(x => {{
+    const s = x.status || {{}};
+    const total = s.total || 0, fin = (s.done || 0) + (s.failed || 0) + (s.cancelled || 0);
+    const pct = total ? Math.round(100 * fin / total) : 100;
+    h += '<li class="verif-item"><div class="verif-body"><div class="verif-property">' + escapeHtml(x.id) + ' — ' + escapeHtml(x.target) + ' — ' + escapeHtml(String(s.state)) + ' ' + pct + '%</div>';
+    h += '<div class="verif-detail">queued ' + s.queued + ' · running ' + s.running + ' · done ' + s.done + ' · failed ' + s.failed + ' · cancelled ' + s.cancelled + ' · tokens ' + s.tokens + (s.budget_tokens ? ' / ' + s.budget_tokens : '') + '</div></div></li>';
+  }});
+  el.innerHTML = h + '</ul></div></div>';
+}}
+function pollHordes() {{
+  fetch('/__soma/hordes').then(r => r.json()).then(renderHordes).catch(() => {{}}).finally(() => setTimeout(pollHordes, 1000));
+}}
+pollHordes();
 </script>
 </body>
 </html>"##, cells_json = cells_json)

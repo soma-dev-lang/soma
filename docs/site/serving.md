@@ -138,8 +138,118 @@ body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
 Each request runs on its own thread, and **top-level handler invocations are
 serialized**: one handler at a time, process-wide. A handler that raises is
 rolled back (writes and transitions). You do not need locks or compensation
-code; you do pay for it in throughput, and a `think()` call holds the line
-for as long as the model takes.
+code; you do pay for it in throughput, and in a plain handler a `think()` call
+holds the line for as long as the model takes.
+
+### `[task]` handlers: think outside the lock
+
+`on review(d: Doc) [task] { … }` runs as **steps**: each `think()` ends the
+current step (its writes commit), waits for the model outside the lock, then a
+new step starts. Concurrent requests overlap their model calls (200 × 2 s
+mocked calls finish in about 9 s instead of 400 s). Rules:
+
+- A failure rolls back the **current step only**; steps before the last
+  `think()` stay committed. A `try` around a `think()` cannot undo writes made
+  before that `think()` (check warns: write after the think instead).
+- Anything read before a `think()` may have changed after it: read, `require`
+  and write in the step after the last `think()` (check warns when a slot is
+  read before and written after). The prover carries no fact across a
+  `think()` in a `[task]` handler; such writes are checked at run time.
+- Only the entry point decides. A `[task]` handler called from a plain handler
+  — `on request(…)` routing to it, an `emit` listener, another cell — runs
+  inside that caller's atomic unit and holds the lock; mark the caller
+  `[task]` too (`on request(method: String, path: String, body: String) [task]`).
+  Ticks take it after the period: `every 1min [task] { … }`, `after 5s [task] { … }`.
+  Check warns when a plain handler or tick calls a `[task]` handler.
+- A `[task]` handler without `think()` is one atomic unit, like a plain one;
+  `[task]` and `[native]` exclude each other.
+- `SOMA_LLM_MOCK_LATENCY_MS=2000` gives the mock a latency, to test the overlap.
+
+### Hordes: one `[task]` handler over many inputs
+
+```soma
+on audit(docs: List) {
+    return horde(Reviewer.review, docs, map("concurrency", 200,
+        "on_result", "_store", "on_done", "_summarize", "max_attempts", 2))
+}
+on _store(v: Map) { verdicts.set(v.id, v) }      // verdicts: [persistent, immutable]
+```
+
+`horde()` returns an id (`Audit:h1`) at once; a pool of `concurrency`
+workers (default 8, at most 1000) runs the target once per input. Poll
+`horde_status(id)`, read `horde_results(id)`, stop with `horde_cancel(id)`.
+
+- **Persisted queue.** The horde and its tasks are written in the caller's
+  transaction (a rolled-back caller starts nothing) to soma.db — under serve and
+  run always, even without a `[persistent]` slot. A restarted server resumes
+  unfinished hordes. With several servers on one `.soma_data`, each horde runs
+  in one of them (a lease renewed every second); when that server stops,
+  another takes it over about 6 s later.
+- **Written at the call.** The target and the options are part of the call:
+  `horde(Reviewer.review, docs, map(…))` with literal option names and
+  literal handler names. Check refuses a computed target or an options map
+  from a variable or a request (an HTTP client could otherwise pick the
+  handler or drop the budget); name callbacks `_store` (a public callback is
+  an HTTP endpoint too — check warns). Only the owner cell (and test rules)
+  can read or cancel a horde.
+- **Exactly once, where it matters.** A task's result is recorded, and
+  `on_result` called, in the same atomic unit as the target's last step: after
+  a `kill -9`, a task is either recorded or run again, never recorded twice.
+  Steps before its last `think()` may run again — keep them idempotent or
+  write only in the last step.
+- **Failures.** A task that raises is retried (at the back of the queue) up to
+  `max_attempts` (default 1), then `on_error(input, error)` runs — `error` is
+  the Map a `try` gives, `{error, kind, detail}` — and the task counts as
+  failed. `on_done(id)` runs once when nothing is left, cancellation included.
+- **Deploys.** A restart resumes unfinished hordes only if the target and the
+  callbacks still exist with the same arities; otherwise it prints why and
+  leaves the tasks waiting (restore the handler, or cancel the horde).
+- **Status.** `running` counts tasks waiting for the rate limiter too; right
+  after `horde_cancel` in the same handler the state is `cancelling`.
+- **Rate limits.** `[agent] rpm` / `tpm` in soma.toml (or `SOMA_LLM_RPM` /
+  `SOMA_LLM_TPM`) bound every `think()` of the process, workers included: at
+  most `rpm` requests and `tpm` tokens in any 60 s window. A 429 from the
+  provider pauses every caller.
+- **Budget.** `map("budget_tokens", 2000000)` is a hard ceiling for the whole
+  horde: before each `think()` of a task (or of `on_result` / `on_done`) the
+  runtime reserves an upper bound of the call — the request's bytes (a token
+  is at least a byte) plus its `max_tokens` — and settles the real count after.
+  A call that does not fit yet waits, outside the lock, for calls in flight to
+  settle; one that can never fit is refused (kind `budget`) and the horde stops
+  (`state: "exhausted"`; the tasks it stopped count as cancelled, without
+  `on_error`). Measured: 600 tasks, 100 in flight, budget 10 000 → exhausted at
+  9 900–10 000, never above. The ceiling assumes the provider honors
+  `max_tokens` (one that does not is detected, kind `llm`, and charged), and it
+  counts settled calls: calls in flight at a `kill -9` reached the provider and
+  are sent again after the restart — up to `concurrency` × (request +
+  `max_tokens`) more than the counter shows.
+- **Nested hordes.** A horde started inside a task or a callback of a
+  budgeted horde runs under that budget too: the whole tree cannot spend past
+  the root's ceiling. `on_done`'s `think()` counts as well — keep headroom for
+  it (it fails, kind `budget`, on an exhausted horde).
+- **Cost proof.** `soma verify` prints each horde's bound: a literal
+  `budget_tokens`; else inputs × per-task cost × `max_attempts` when the inputs
+  are a literal list or range; else unbounded. In a cell with
+  `cost { tokens: N }`, a horde without a literal `budget_tokens` over inputs
+  of unknown size makes the bound unprovable (a check error).
+- **Rounds.** For a simulation, `map("snapshot", world, "apply", "_apply",
+  "seed", 7, "instance", "id")`: the target takes `(input, snapshot)`, so every
+  agent of the round sees the same world; `apply` runs at the end, in input
+  order, once per task — the result does not depend on which reply came back
+  first; `on_done` may start the next round. `seed` makes `random()` in task
+  *i* draw the same numbers on every run; `instance` names the input field
+  that identifies an agent — its `remember()` / `recall()` and its model
+  conversation carry over to its next round. Measured: 10 000 agents × 20
+  rounds in 46 s, identical on two runs.
+- **Votes.** `vote(Judge.check, claim, 5)` asks 5 agents the same thing and
+  returns `{winner, count, k, unanimous, errors, votes}`; inside a `[task]`
+  step under serve / run the calls run at once.
+- Without workers (`soma test`) a horde runs right after the calling handler
+  commits — its next statements (mapping the id to a batch, …) run first, as
+  under serve — one task per unit; `soma run` waits for its hordes before
+  exiting.
+- Measured: 10 000 tasks against a 2 s mocked model at concurrency 500 in 41 s;
+  a `kill -9` after 2 500 of them, then a restart: 10 000 results, each once.
 
 ## Storage
 

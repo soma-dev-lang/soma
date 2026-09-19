@@ -1614,6 +1614,19 @@ impl Parser {
 
     // ── Every (scheduler) ─────────────────────────────────────────────
 
+    /// Optional `[task]` after a tick's period: `every 5s [task] { … }`.
+    fn parse_tick_task(&mut self) -> Result<bool, ParseError> {
+        if !self.check(&Token::LBracket) { return Ok(false); }
+        self.advance();
+        let tok = self.tokens[self.pos].clone();
+        let (name, _) = self.expect_ident()?;
+        if name != "task" {
+            return Err(ParseError::Expected { expected: "`[task]` (the only tick annotation)".to_string(), found: tok.token, span: tok.span });
+        }
+        self.expect(Token::RBracket)?;
+        Ok(true)
+    }
+
     fn parse_every_section(&mut self) -> Result<EverySection, ParseError> {
         self.expect(Token::Every)?;
         // Parse interval: 30s, 5min, 1h, 500ms, or bare number (seconds)
@@ -1651,6 +1664,7 @@ impl Parser {
             }
         };
 
+        let task = self.parse_tick_task()?;
         self.expect(Token::LBrace)?;
         let mut body = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1658,7 +1672,7 @@ impl Parser {
         }
         self.expect(Token::RBrace)?;
 
-        Ok(EverySection { interval_ms, body })
+        Ok(EverySection { interval_ms, body, task })
     }
 
     // ── After (one-shot delayed) ──────────────────────────────────
@@ -1699,6 +1713,7 @@ impl Parser {
             }
         };
 
+        let task = self.parse_tick_task()?;
         self.expect(Token::LBrace)?;
         let mut body = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1706,7 +1721,7 @@ impl Parser {
         }
         self.expect(Token::RBrace)?;
 
-        Ok(EverySection { interval_ms, body })
+        Ok(EverySection { interval_ms, body, task })
     }
 
     // ── Scale (Orchestration) ───────────────────────────────────────

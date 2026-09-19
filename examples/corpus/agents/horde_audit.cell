@@ -1,0 +1,57 @@
+// A horde: one [task] agent per document, a bounded pool, a hard token
+// budget, each verdict stored exactly once, a summary at the end.
+// Demonstrates: horde(), on_result / on_error / on_done, budget_tokens,
+// horde_status, an [immutable] result slot (a second write would raise).
+//
+// Serve: SOMA_LLM_MOCK=echo SOMA_LLM_MOCK_LATENCY_MS=1000 soma serve horde_audit.cell
+//        POST /audit {"n": 2000}   then GET /progress   (and /__soma/ for the dashboard)
+// Test:  SOMA_LLM_MOCK=echo soma test horde_audit.cell
+
+cell Audit {
+    face {
+        signal audit(n: Int) -> String
+        signal progress() -> Map
+        signal summary() -> Map
+    }
+    memory {
+        verdicts: Map<String, Map> [persistent, immutable]
+        failures: Map<String, String> [persistent]
+        batch: Map<String, String> [persistent]
+    }
+    on audit(n: Int) {
+        let docs = range(0, n) |> map(i => map("id", "doc-{i}", "text", "contract {i}: the supplier may terminate at will"))
+        let h = horde(Reviewer.review, docs, map(
+            "concurrency", 200, "budget_tokens", 2000000, "max_attempts", 2,
+            "on_result", "_store", "on_error", "_failed", "on_done", "_finish"))
+        batch.set("current", h)
+        return h
+    }
+    on _store(v: Map) { verdicts.set(v.id, v) }
+    on _failed(d: Map, e: Map) { failures.set(d.id, e.kind) }
+    on _finish(h: String) { batch.set("finished", h) }
+    on progress() { return horde_status(batch.get("current") ?? "") }
+    on summary() {
+        let high = verdicts.values() |> filter(v => v.risk == "high")
+        return map("reviewed", len(verdicts), "high", len(high), "failed", len(failures))
+    }
+}
+
+cell agent Reviewer {
+    on review(d: Map) [task] {
+        require len(d.text) > 0 else EmptyDocument
+        let note = think("Risk of: {d.text}", map("max_tokens", 60))
+        let risk = if contains(d.text, "terminate at will") { "high" } else { "low" }
+        return map("id", d.id, "risk", risk, "note", note)
+    }
+}
+
+cell test AuditTest {
+    rules {
+        let h = Audit.audit(20)
+        assert Audit.progress().state == "done"
+        assert Audit.progress().done == 20
+        assert Audit.summary().reviewed == 20
+        assert Audit.summary().high == 20
+        assert Audit.summary().failed == 0
+    }
+}

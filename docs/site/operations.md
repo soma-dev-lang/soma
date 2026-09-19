@@ -97,6 +97,8 @@ Make `_migrate` idempotent (check before writing) and back up
 |---|---|
 | `SOMA_LLM_KEY` (or `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) | the provider key for `think()`; without one `soma test` mocks and `soma serve` raises kind `llm` |
 | `SOMA_LLM_MOCK=echo` \| `fixed:<text>` | `think()` never reaches a provider (overrides `[agent] mock` in soma.toml); `soma serve` prints `llm: MOCK …` at start-up when the program calls think; an `echo` reply is cut at max_tokens (~4 characters per token) like a provider's, a `fixed:` reply over max_tokens raises kind `llm` as a scripted `mock think` does |
+| `SOMA_LLM_MOCK_LATENCY_MS=2000` | a mocked `think()` waits that long (outside the lock in a `[task]` handler): tests concurrency and hordes offline |
+| `SOMA_LLM_RPM` / `SOMA_LLM_TPM` | provider limits (requests / tokens per minute) shared by every `think()` of the process — override `[agent] rpm` / `tpm`; 0 = none |
 | `SOMA_LLM_TIMEOUT_MS` | one provider round-trip cap (default 60 000) |
 | `SOMA_APPROVE=always` \| `never` | answers `approve()` when no terminal is attached (`soma serve` fails closed otherwise: 403 `approval_required`) |
 | `PORT` | not read — pass `-p` |

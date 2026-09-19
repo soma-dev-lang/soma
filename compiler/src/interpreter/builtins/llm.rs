@@ -124,6 +124,7 @@ pub fn send_with_retry(
                 let retryable = !timed_out && ["429", "500", "502", "503", "529"]
                     .iter().any(|code| last_error.contains(code));
                 let delay = std::time::Duration::from_millis(500 * (1 << retry));
+                if last_error.contains("429") { limiter::pause(delay); }
                 if retryable && retry < config.max_retries && std::time::Instant::now() + delay < deadline {
                     eprintln!("[agent] retry {}/{} after {:?}: {}", retry + 1, config.max_retries, delay, last_error);
                     std::thread::sleep(delay);
@@ -305,4 +306,76 @@ pub fn trace_transition(instance: &str, from: &str, to: &str) -> Value {
         ("to", Value::String(to.to_string())),
         ("timestamp", Value::Int(SomaInt::from_i64(now_ts()))),
     ])
+}
+
+
+/// Provider rate limits (`[agent] rpm` / `tpm`, or SOMA_LLM_RPM /
+/// SOMA_LLM_TPM): token buckets shared by every thread of the process, so
+/// 500 horde workers stay under the provider's quota; a 429 makes every
+/// caller wait, not only the one that got it.
+pub mod limiter {
+    //! Exact sliding windows: at most `rpm` requests and `tpm` tokens in ANY
+    //! 60 s window (a token bucket that starts full let 2 × rpm through in
+    //! the first minute).
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    struct Window { reqs: VecDeque<Instant>, toks: VecDeque<(Instant, f64)>, tok_sum: f64, paused_until: Option<Instant> }
+    static W: Mutex<Option<Window>> = Mutex::new(None);
+    const MINUTE: Duration = Duration::from_secs(60);
+
+    fn limits(cfg_rpm: u64, cfg_tpm: u64) -> (f64, f64) {
+        let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok());
+        (env("SOMA_LLM_RPM").unwrap_or(cfg_rpm) as f64, env("SOMA_LLM_TPM").unwrap_or(cfg_tpm) as f64)
+    }
+
+    /// Wait until one request of ~`tokens` tokens fits both limits.
+    pub fn acquire(cfg_rpm: u64, cfg_tpm: u64, tokens: u64) {
+        let (rpm, tpm) = limits(cfg_rpm, cfg_tpm);
+        if rpm <= 0.0 && tpm <= 0.0 { return; }
+        loop {
+            let wait = {
+                let mut g = W.lock().unwrap_or_else(|e| e.into_inner());
+                let w = g.get_or_insert_with(|| Window { reqs: VecDeque::new(), toks: VecDeque::new(), tok_sum: 0.0, paused_until: None });
+                let now = Instant::now();
+                while w.reqs.front().map_or(false, |t| now.duration_since(*t) >= MINUTE) { w.reqs.pop_front(); }
+                while w.toks.front().map_or(false, |(t, _)| now.duration_since(*t) >= MINUTE) { let (_, n) = w.toks.pop_front().unwrap(); w.tok_sum -= n; }
+                // a request larger than a whole minute's tokens waits for an
+                // empty window, then goes
+                let need = if tpm > 0.0 { (tokens as f64).min(tpm) } else { 0.0 };
+                match w.paused_until {
+                    Some(t) if t > now => Some(t - now),
+                    _ => {
+                        let ok_r = rpm <= 0.0 || (w.reqs.len() as f64) < rpm;
+                        let ok_t = tpm <= 0.0 || w.tok_sum + need <= tpm;
+                        if ok_r && ok_t {
+                            if rpm > 0.0 { w.reqs.push_back(now); }
+                            if tpm > 0.0 { w.toks.push_back((now, need)); w.tok_sum += need; }
+                            None
+                        } else {
+                            let wr = if ok_r { Duration::ZERO } else { w.reqs.front().map_or(Duration::ZERO, |t| (*t + MINUTE).saturating_duration_since(now)) };
+                            let wt = if ok_t { Duration::ZERO } else {
+                                // until enough old tokens leave the window
+                                let mut left = w.tok_sum + need - tpm;
+                                let mut until = Duration::ZERO;
+                                for (t, n) in w.toks.iter() { left -= n; until = (*t + MINUTE).saturating_duration_since(now); if left <= 0.0 { break; } }
+                                until
+                            };
+                            Some(wr.max(wt).max(Duration::from_millis(1)))
+                        }
+                    }
+                }
+            };
+            match wait { None => return, Some(d) => std::thread::sleep(d.min(Duration::from_secs(5))) }
+        }
+    }
+
+    /// A 429: every caller pauses for `d`.
+    pub fn pause(d: Duration) {
+        let mut g = W.lock().unwrap_or_else(|e| e.into_inner());
+        let w = g.get_or_insert_with(|| Window { reqs: VecDeque::new(), toks: VecDeque::new(), tok_sum: 0.0, paused_until: None });
+        let until = Instant::now() + d;
+        if w.paused_until.map_or(true, |t| t < until) { w.paused_until = Some(until); }
+    }
 }

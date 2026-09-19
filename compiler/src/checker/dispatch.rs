@@ -235,7 +235,7 @@ pub fn check_program(program: &Program) -> (Vec<DispatchFinding>, Vec<DispatchFi
                                 "undefined function '{name}'{suggestion} — no cell defines a \
                                  handler 'on {name}(...)' and it is not a builtin"
                             ),
-                            span: section.span,
+                            span: call_span(body, &name).unwrap_or(section.span),
                         });
                     }
                     Some(definers) => {
@@ -660,4 +660,23 @@ fn index_native(program: &Program, name: &str) -> bool {
             _ => false,
         })
     })
+}
+
+
+/// The span of the innermost statement that calls `name` (an error used to
+/// point at the handler's header, lines away from the call).
+fn call_span(body: &[Spanned<Statement>], name: &str) -> Option<crate::ast::Span> {
+    for st in body {
+        let mut here = false;
+        visit_calls(std::slice::from_ref(st), &mut |n, _, _| if n == name { here = true; });
+        if !here { continue; }
+        let inner: Vec<&[Spanned<Statement>]> = match &st.node {
+            Statement::If { then_body, else_body, .. } => vec![then_body.as_slice(), else_body.as_slice()],
+            Statement::For { body, .. } | Statement::While { body, .. } => vec![body.as_slice()],
+            _ => vec![],
+        };
+        for b in inner { if let Some(sp) = call_span(b, name) { return Some(sp); } }
+        return Some(st.span);
+    }
+    None
 }

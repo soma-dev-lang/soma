@@ -66,11 +66,13 @@ struct CostWalk<'a> {
     /// handler key → the rounds of ITS cell (a call into an agent with tools
     /// in another cell was counted with the caller's single round)
     rounds_of: Option<&'a std::collections::HashMap<String, i64>>,
+    /// one line per horde() call: (bounded, what verify prints)
+    horde_notes: std::rc::Rc<std::cell::RefCell<Vec<(bool, String)>>>,
 }
 
 impl<'a> CostWalk<'a> {
     fn new(handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>) -> Self {
-        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), latency_sites: Vec::new(), handlers, stack: Vec::new(), rounds: 1, rounds_of: None }
+        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), latency_sites: Vec::new(), handlers, stack: Vec::new(), rounds: 1, rounds_of: None, horde_notes: Default::default() }
     }
 
     /// A fresh accumulator for a nested scope (loop body, lambda, callee).
@@ -84,6 +86,89 @@ impl<'a> CostWalk<'a> {
             stack: self.stack.clone(),
             rounds: self.rounds,
             rounds_of: self.rounds_of,
+            horde_notes: self.horde_notes.clone(),
+        }
+    }
+
+    /// `horde(target, inputs, opts)` spends, at most: a literal
+    /// `budget_tokens` (reserved before each think(): a hard ceiling), else
+    /// inputs × (target + on_result) × max_attempts + on_done — bounded only
+    /// when the inputs are a literal list / range. It returns at once: no
+    /// latency for the caller.
+    fn visit_horde(&mut self, args: &[Spanned<Expr>], handler_name: &str) {
+        for a in args.iter().skip(1) { self.visit_expr(&a.node, handler_name); }
+        let kv: Vec<(String, &Expr)> = match args.get(2).map(|a| &a.node) {
+            Some(Expr::FnCall { name, args: kv }) if name == "map" => kv.chunks(2).filter_map(|c| match (&c[0].node, c.get(1)) {
+                (Expr::Literal(Literal::String(k)), Some(v)) => Some((k.clone(), &v.node)), _ => None }).collect(),
+            _ => Vec::new(),
+        };
+        let get = |k: &str| kv.iter().rev().find(|(kk, _)| kk == k).map(|(_, v)| *v);
+        if args.len() == 3 && !matches!(&args[2].node, Expr::FnCall { name, .. } if name == "map") {
+            self.unbounded_sites.push(format!("{}::horde with options computed at run time", handler_name));
+            self.horde_notes.borrow_mut().push((false, format!("horde(…) in `{}`: its options are computed — its cost cannot be bounded", handler_name)));
+            return;
+        }
+        let lit_int = |k: &str| match get(k) { Some(Expr::Literal(Literal::Int(n))) => Some(*n), _ => None };
+        let lit_str = |k: &str| match get(k) { Some(Expr::Literal(Literal::String(x))) => Some(x.clone()), _ => None };
+        let target: Option<String> = match args.first().map(|a| &a.node) {
+            Some(Expr::FieldAccess { target, field }) => match &target.node { Expr::Ident(c) => Some(format!("{}.{}", c, field)), _ => None },
+            Some(Expr::Ident(h)) => Some(h.clone()),
+            Some(Expr::Literal(Literal::String(t))) => Some(t.clone()),
+            _ => None,
+        };
+        let label = format!("horde({}, …) in `{}`", target.clone().unwrap_or_else(|| "?".to_string()), handler_name);
+        if target.is_none() {
+            self.unbounded_sites.push(format!("{}::horde with a computed target", handler_name));
+            self.horde_notes.borrow_mut().push((false, format!("{label}: the target is computed — its cost cannot be bounded")));
+            return;
+        }
+        if let Some(b) = lit_int("budget_tokens") {
+            self.tokens = self.tokens.saturating_add(b.max(0));
+            self.horde_notes.borrow_mut().push((true, format!("{label} ≤ {b} tokens — budget_tokens: every think() of its tasks and callbacks reserves its bound first (a hard ceiling while the provider honors max_tokens)")));
+            return;
+        }
+        if get("budget_tokens").is_some() {
+            self.unbounded_sites.push(format!("{}::horde with a computed budget_tokens", handler_name));
+            self.horde_notes.borrow_mut().push((false, format!("{label}: budget_tokens is computed — the spend is capped at run time, not proven")));
+            return;
+        }
+        let attempts = match get("max_attempts") { None => 1, Some(Expr::Literal(Literal::Int(n))) => (*n).clamp(1, 10), Some(_) => 10 };
+        let walk = |me: &CostWalk<'a>, key: &str| -> Option<CostWalk<'a>> {
+            let body = me.handlers.get(key).copied()?;
+            let mut w = me.child();
+            if me.stack.iter().any(|h| h == key) { w.unbounded_sites.push(format!("{}::recursive horde of {}", handler_name, key)); return Some(w); }
+            w.stack.push(key.to_string());
+            if let Some(r) = me.rounds_of.and_then(|m| m.get(key)) { w.rounds = *r; }
+            for st in body { w.visit_stmt(&st.node, key); }
+            Some(w)
+        };
+        let mut per_tokens = 0i64;
+        let mut per_sites: Vec<String> = Vec::new();
+        for key in [target.clone(), lit_str("on_result"), lit_str("apply")].into_iter().flatten() {
+            if let Some(w) = walk(self, &key) { per_tokens += w.tokens; per_sites.extend(w.unbounded_sites); }
+        }
+        let (done_tokens, done_sites) = lit_str("on_done").and_then(|k| walk(self, &k)).map_or((0, Vec::new()), |w| (w.tokens, w.unbounded_sites));
+        self.unbounded_sites.extend(done_sites);
+        self.tokens = self.tokens.saturating_add(done_tokens);
+        if per_tokens == 0 && per_sites.is_empty() {
+            self.horde_notes.borrow_mut().push((true, format!("{label}: its tasks call no think()")));
+            return;
+        }
+        if !per_sites.is_empty() {
+            self.horde_notes.borrow_mut().push((false, format!("{label}: one task's cost is unbounded ({}) — give it a literal `budget_tokens`", per_sites.join(", "))));
+            self.unbounded_sites.extend(per_sites);
+            return;
+        }
+        match args.get(1).and_then(|a| literal_range_len(&a.node)) {
+            Some(n) => {
+                let t = per_tokens.saturating_mul(n).saturating_mul(attempts);
+                self.tokens = self.tokens.saturating_add(t);
+                self.horde_notes.borrow_mut().push((true, format!("{label} ≤ {} reply tokens — {} input(s) × {} per task × {} attempt(s){} (prompts are not counted: `budget_tokens` caps them too)", t.saturating_add(done_tokens), n, per_tokens, attempts, if done_tokens > 0 { " + on_done" } else { "" })));
+            }
+            None => {
+                self.unbounded_sites.push(format!("{}::horde over inputs of unknown size (give it a literal `budget_tokens`)", handler_name));
+                self.horde_notes.borrow_mut().push((false, format!("{label}: {} reply tokens per task × inputs of unknown size — unbounded; a literal `budget_tokens` makes it a proven ceiling", per_tokens)));
+            }
         }
     }
 
@@ -161,9 +246,8 @@ impl<'a> CostWalk<'a> {
                 let mut inner = self.child();
                 for s in body { inner.visit_stmt(&s.node, handler_name); }
                 // Iteration count: [loop_bound(N)], else a literal range.
-                // Anything else (a list, a computed range) is unknown: the
-                // x100 figure below is then an ESTIMATE, and a body that
-                // spends makes the whole bound advisory, not proven.
+                // Anything else (a list, a computed range) is unknown: a
+                // body that spends makes the whole bound advisory, not proven.
                 // a literal list / range longer than the declared bound: the
                 // real count (the loop raises at run time anyway)
                 let known = match (bound.map(|b| b as i64), literal_range_len(&iter.node)) {
@@ -177,7 +261,10 @@ impl<'a> CostWalk<'a> {
                         handler_name
                     ), t);
                 }
-                let mult = known.unwrap_or(100);
+                // unknown count: once (a LOWER bound, like an unbounded
+                // while) — ×100 "computed 150000 tokens > declared" was an
+                // invented figure reported as a proven excess
+                let mult = known.unwrap_or(1);
                 self.tokens += inner.tokens.saturating_mul(mult);
                 self.latency_ms += inner.latency_ms.saturating_mul(mult);
                 self.unbounded_sites.extend(inner.unbounded_sites);
@@ -218,6 +305,33 @@ impl<'a> CostWalk<'a> {
 
     fn visit_expr(&mut self, expr: &Expr, handler_name: &str) {
         match expr {
+            Expr::FnCall { name, args } if name == "horde" && !self.handlers.contains_key("horde") => self.visit_horde(args, handler_name),
+            // vote(target, input, k): k runs of the target
+            Expr::FnCall { name, args } if name == "vote" && args.len() == 3 && !self.handlers.contains_key("vote") => {
+                self.visit_expr(&args[1].node, handler_name);
+                let target: Option<String> = match &args[0].node {
+                    Expr::FieldAccess { target, field } => match &target.node { Expr::Ident(c) => Some(format!("{}.{}", c, field)), _ => None },
+                    Expr::Ident(h) => Some(h.clone()),
+                    Expr::Literal(Literal::String(t)) => Some(t.clone()),
+                    _ => None,
+                };
+                let body = target.as_deref().and_then(|t| self.handlers.get(t).copied());
+                let k = match &args[2].node { Expr::Literal(Literal::Int(n)) => Some((*n).clamp(1, 25)), _ => None };
+                match (target, body, k) {
+                    (Some(t), Some(body), Some(k)) if !self.stack.iter().any(|h| h == &t) => {
+                        let mut w = self.child();
+                        w.stack.push(t.clone());
+                        if let Some(r) = self.rounds_of.and_then(|m| m.get(t.as_str())) { w.rounds = *r; }
+                        for st in body { w.visit_stmt(&st.node, &t); }
+                        self.tokens = self.tokens.saturating_add(w.tokens.saturating_mul(k));
+                        // voters run at once: the wait is one voter's
+                        self.latency_ms = self.latency_ms.saturating_add(w.latency_ms);
+                        self.unbounded_sites.extend(w.unbounded_sites);
+                        self.latency_sites.extend(w.latency_sites);
+                    }
+                    _ => self.unbounded_sites.push(format!("{}::vote with a computed target or k", handler_name)),
+                }
+            }
             Expr::FnCall { name, args } => {
                 if name == "think" || name == "think_json" {
                     let (max_tokens, timeout_ms) = extract_think_opts(args);
@@ -656,4 +770,63 @@ fn literal_range_len(iter: &Expr) -> Option<i64> {
         2 => Some((lit(&args[1])? - lit(&args[0])?).max(0)),
         _ => None,
     }
+}
+
+
+/// Every cell's handlers, for the cost walk (as the checker builds them).
+pub fn all_handlers_of(program: &crate::ast::Program) -> AllHandlers {
+    program.cells.iter().map(|c| {
+        let mut hs: std::collections::HashMap<String, Vec<Spanned<Statement>>> = c.node.sections.iter().filter_map(|s| match &s.node {
+            Section::OnSignal(h) => Some((h.signal_name.clone(), h.body.clone())),
+            _ => None,
+        }).collect();
+        if c.node.sections.iter().any(|s| matches!(&s.node, Section::Face(f) if f.declarations.iter().any(|d| matches!(d.node, FaceDecl::Tool(_))))) {
+            hs.insert("__has_tools__".to_string(), Vec::new());
+        }
+        (c.node.name.clone(), hs)
+    }).collect()
+}
+
+/// The cost bound of each horde() call of `cell` — `soma verify` prints them.
+pub fn horde_bounds(cell: &CellDef, all: &AllHandlers) -> Vec<(bool, String)> {
+    let mut handlers: std::collections::HashMap<String, &[Spanned<Statement>]> = std::collections::HashMap::new();
+    let mut rounds_of: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for (cname, hs) in all {
+        let r = if hs.contains_key("__has_tools__") { 10 } else { 1 };
+        for (hname, body) in hs {
+            handlers.insert(format!("{}.{}", cname, hname), body.as_slice());
+            rounds_of.insert(format!("{}.{}", cname, hname), r);
+            if cname != &cell.name { handlers.entry(hname.clone()).or_insert(body.as_slice()); rounds_of.entry(hname.clone()).or_insert(r); }
+        }
+    }
+    for s in &cell.sections {
+        if let Section::OnSignal(h) = &s.node {
+            handlers.insert(h.signal_name.clone(), h.body.as_slice());
+            if let Some(r) = rounds_of.get(&format!("{}.{}", cell.name, h.signal_name)).copied() { rounds_of.insert(h.signal_name.clone(), r); }
+        }
+    }
+    let notes: std::rc::Rc<std::cell::RefCell<Vec<(bool, String)>>> = Default::default();
+    for section in &cell.sections {
+        let (hname, body): (String, &[Spanned<Statement>]) = match &section.node {
+            Section::OnSignal(h) => (h.signal_name.clone(), &h.body),
+            Section::Every(e) => (format!("every@{}ms", e.interval_ms), &e.body),
+            Section::After(e) => (format!("after@{}ms", e.interval_ms), &e.body),
+            _ => continue,
+        };
+        let mut calls = false;
+        crate::checker::literals::for_each_expr(body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "horde") { calls = true; });
+        if !calls { continue; }
+        let mut w = CostWalk::new(&handlers);
+        w.rounds_of = Some(&rounds_of);
+        w.horde_notes = notes.clone();
+        w.stack.push(hname.clone());
+        // only the horde() calls written in this handler (not in callees)
+        for st in body {
+            crate::checker::literals::for_each_expr(std::slice::from_ref(st), &mut |e| if let Expr::FnCall { name, args } = e {
+                if name == "horde" { w.visit_horde(args, &hname); }
+            });
+        }
+    }
+    let v = notes.borrow().clone();
+    v
 }

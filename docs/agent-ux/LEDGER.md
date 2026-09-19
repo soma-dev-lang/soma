@@ -1517,3 +1517,103 @@ processes, raising ticks rolled back, leap years / month ends right.
 
 ### Open
 - [ ] Out-of-range `mock now` silently uses the real clock; `days_in_month` accepts wrong types; `every 1` / `1year` units undocumented; no "until" temporal property.
+
+### Cycle 67 — horde phase 1 quality: realistic port (document review with [task]) + attack ([task] steps)
+
+Port 6.5/10: 300 concurrent reviews with 1.5 s mock latency in 4.6 s,
+kill -9 mid-think resumed with no loss or duplicate, [immutable] store and
+cost proof held. But `[task]` only worked as a direct endpoint.
+
+### Fixed
+- [x] **Port: a [task] handler reached through `on request` (or a tick) ran inside the caller's unit** — 20 × 1.5 s calls serialized (31 s; 543 s in the port). Check warns and names the fix (`on request(…) [task]`); ticks take `every 1min [task] { … }` / `after 5s [task] { … }` and then wait outside the lock (a recovery tick blocked every request 541 s).
+- [x] **Attack: a think() reached through a helper did not end the prover's facts** (a "proven" size bound broken under concurrency) — task_with_think is transitive; size proofs are skipped in a [task] that thinks.
+- [x] **Attack/port: step commit depended on the mock latency** (no latency: the whole task rolled back; `soma test` disagreed with production) — every think(), mocked, scripted-failing or real, ends the step.
+- [x] Port: `[tsak]` / `[nativ]` accepted silently — unknown handler annotations are errors with a suggestion; `[task, native]` is an error.
+- [x] Attack: stale read (a slot read before think() and written after), writes inside a `try` that thinks, and a [task] without think() — check warnings; docs say what a step is and what survives a failure.
+- [x] Attack: records could not be updated (`l.qty = …`), `is_a(l, "Line")` was false, `keys(l)` raised — all work; a record printed with a double space.
+- [x] Port: the size hint said "put the require before the write" when it already was — in a [task] it explains that no fact crosses a think().
+- [x] Port: a loop over a collection of unknown size counted ×100 ("computed 150000 tokens") — counted once, advisory; verify says "think() at N sites".
+- [x] Port: "undefined function" pointed at the handler header — it points at the call.
+- [x] Docs: serving.md / guarantees.md / llms.txt said every handler holds the lock during think() — [task] section added.
+
+### Open
+- [ ] Concurrent duplicates of one [task] each pay a model call (no claim) — horde phase 2's persisted queue; `to_int("x")` returns () rather than raising.
+
+### Horde phase 2 — persisted queue, pool, rate limits
+
+Acceptance (docs/design/horde.md): 10 000 mocked tasks (2 s latency,
+concurrency 500) in 41 s < 2 min; `kill -9` after 2 500, restart: 7 500
+resumed, 10 000 results in an `[immutable]` Map (a duplicate would have
+raised), `on_done` once. RPM 30 × 40 tasks: 20.4 s (30 at once, 10 paced).
+Cancel: running tasks finish, 1 970 cancelled, on_done once; restart keeps it
+cancelled.
+
+### Built
+- [x] `horde(target, inputs, opts)` / `horde_status` / `horde_results` / `horde_cancel`; ids name their cell (`Audit:h1`).
+- [x] Queue in `<Cell>__hordes` / `<Cell>__horde_tasks`, written in the caller's unit; workers start at commit (UndoOp::Horde); `--fresh` resets them; the orphan-slot audit ignores them.
+- [x] Result + on_result in the unit of the target's last step; a record already `done` (another process) rolls the step back.
+- [x] Retries, on_error, on_done once (closed flag in the same unit); inline under `soma test`; `soma run` waits.
+- [x] Token-bucket limiter (`[agent] rpm`/`tpm`, env overrides), mocks included; 429 pauses every caller.
+- [x] Check: unknown target / wrong arity / unknown option / callback arity are errors; a thinking non-[task] target is a warning.
+
+### Open
+- [ ] Budget by reservation and the horde cost proof (phase 3); steps before a task's last think() may re-run after a crash (documented).
+
+### Horde phase 3 — budget by reservation, horde cost proof
+
+1 000 tasks, 200 in flight, budget 20 000: 829 done, 19 896 tokens, never
+above. The first version refused as soon as reservations in flight filled
+the budget (4 032 of 20 000 used) — a call now waits outside the lock for
+calls in flight to settle, and is refused only when it cannot fit after them.
+
+### Built
+- [x] `budget_tokens`: Budget {spent, reserved} per horde; think() (mock and provider) reserves request bytes + max_tokens, settles the measured count; a failed call gives its reservation back (Drop).
+- [x] Exhaustion stops the horde (state `exhausted`, the rest counted cancelled), survives a restart; no retry of a `budget` failure.
+- [x] Cost walk: horde() adds a literal budget_tokens, else n × (target + on_result) × max_attempts + on_done for a literal list/range, else an unbounded site (a declared `cost { }` becomes unprovable); `soma verify` prints the bound per horde.
+
+### Open
+- [ ] The ceiling assumes the provider honors max_tokens (one that does not is detected and charged, not prevented).
+
+### Horde phase 4 — rounds, instances, vote
+
+10 000 agents × 20 rounds (seeded random, per-instance memory, ordered
+apply, on_done starting the next round): 47.3 s and 45.8 s, the two reports
+identical (price trace + a hash over every applied result).
+
+### Built
+- [x] `snapshot` (target takes (input, snapshot)), `apply` (in input order at close, each in its own unit with an `applied` mark), `seed` (per task/attempt RNG state), `instance` (remember/recall scoped, conversation saved in the last step).
+- [x] `vote(target, input, k)`: concurrent in a [task] step under serve/run, sequential otherwise; cost walk counts k × target.
+- [x] Fixed on the way: a worker reused its model context from task to task (one input's conversation reached the next) — each task starts fresh; `soma run` could exit between rounds (a horde was "closed" before its on_done had started the next one).
+
+### Open
+- [ ] A crash re-runs the steps before a task's last think() (memory written there is written twice): documented.
+
+### Cycle 68 — horde quality: realistic port (contract review, 7/10) + attack
+
+Port: 5 000 docs × 1.5 s at concurrency 500 in 17 s; 20 000 docs in 31 s
+(650 tasks/s of a 667 ceiling); kill -9 at 2 000/5 000 → every doc
+accounted once; budget 50 000 exhausted at 49 494.
+
+### Fixed
+- [x] **Port: kill -9 while cancelling** — the restart said "done", 50 tasks vanished from the counts; it resumes as cancelled (unrun tasks counted cancelled).
+- [x] **Port: verify lost the horde bound** with an invariant and no machine, printed it twice with a machine, and `--strict` passed an unbounded horde — one line per horde, always; `--strict` fails; JSON has `hordes`.
+- [x] **Port: a deploy renaming a callback burned the batch** (1 600 docs paid then failed) — a restart checks target and callbacks first and leaves the horde `paused`, saying why.
+- [x] **Port: `soma test` ran the whole horde inside horde()** (the caller's `owner.set(h, …)` came after on_done; cancel untestable) — without workers the horde runs after the caller commits, one task per unit.
+- [x] Port: on_error got a String — it gets `{error, kind, detail}` (check: a String-typed parameter is an error); budget-stopped tasks count cancelled, without on_error.
+- [x] Port: status right after horde_cancel said running — `cancelling`.
+- [x] Self-review: a worker reused one input's model conversation for the next — each task starts fresh.
+- [x] Phase 5: dashboard section (`/__soma/hordes`), `SOMA_LLM_MOCK=rules:<file>` (reply by prompt substring / cell), corpus examples, builtins docs list every option and state.
+
+### Open
+- [ ] Budget ceiling counts settled calls (in-flight calls at a kill -9 are sent twice) — documented; no way to list hordes or re-run only the failed tasks yet.
+
+### Cycle 68 attack — fixed
+- [x] **Nested hordes escaped the budget and the proof** (outer "≤ 100", 6 006 spent; an on_result → horde chain ran forever under a proven bound) — a horde started in a task or callback reserves on its own budget AND its parent's (chained); the tree stops at the root's ceiling (measured: 4 tokens).
+- [x] **Computed target / options** (`horde("W." + t, …)` let a client run private `_wipe`; `horde(W.w, xs, o)` with `o` from the request dropped the budget and picked callbacks; verify said "no think()") — check requires the target and a literal `map(...)` with literal names; the cost walk marks them unbounded.
+- [x] **Two servers on one .soma_data** both resumed the horde (a failure overwrote a recorded result; the survivor of a kill never took over) — per-horde lease {runner, beat}, renewed each second, claimed in a unit; takeover after 5 s; a failure never overwrites a done record. Measured: 1 000 tasks, kill, two servers → one resumes, 1 000 results, 1 000 on_result.
+- [x] Hordes of a program without [persistent] vanished at a restart — persisted under serve/run always.
+- [x] A slot `_hordes` WAS the queue table (a program could rewrite its queue, the budget included) — tables `<Cell>__horde-meta` / `__horde-tasks` (a `-` no slot name has).
+- [x] Check let concurrency 0 / max_attempts 200 / budget -1 / a Map as inputs through; public callbacks unflagged — errors / a warning.
+- [x] Any cell could read or cancel another's horde — owner (and test rules) only.
+- [x] RPM 30 let ~62 calls through the first minute — an exact sliding window (40 calls at RPM 30: 60 s).
+- [x] (frozen binary only) soma test rolled a task back whole / stopped chains at 511 — the sync rewrite runs one task per unit like serve.

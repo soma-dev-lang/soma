@@ -1,0 +1,61 @@
+// A population simulation in rounds: every agent of a round sees the same
+// world (snapshot), results are applied at the end in input order (apply),
+// random() is seeded per task, and each agent remembers its last round
+// (instance) — the same seed gives the same simulation, run after run.
+// on_done starts the next round.
+//
+// Run:  SOMA_LLM_MOCK=echo soma run horde_rounds.cell main 1000 10
+// Test: SOMA_LLM_MOCK=echo soma test horde_rounds.cell
+
+cell Market {
+    memory {
+        state: Map<String, Int> [persistent]
+        history: List<String> [persistent]
+    }
+    on main(n: Int, rounds: Int) {
+        state.set("n", n)
+        state.set("last", rounds)
+        state.set("round", 1)
+        return start_round()
+    }
+    on start_round() {
+        let r = state.get("round") ?? 1
+        let price = state.get("price") ?? 60
+        let people = range(0, state.get("n") ?? 10) |> map(i => map("id", "p{i}"))
+        return horde(Shopper.decide, people, map(
+            "snapshot", map("price", price), "apply", "_apply", "on_done", "_close",
+            "seed", 100 + r, "instance", "id", "concurrency", 100, "budget_tokens", 500000))
+    }
+    on _apply(res: Map) { state.set("demand", (state.get("demand") ?? 0) + res.buy) }
+    on _close(h: String) {
+        let d = state.get("demand") ?? 0
+        let p = state.get("price") ?? 60
+        let n = state.get("n") ?? 1
+        let next = if d * 2 > n { p + 1 } else { p - 1 }
+        state.set("price", next)
+        history.push("demand {d} → price {next}")
+        state.set("demand", 0)
+        let r = (state.get("round") ?? 1) + 1
+        state.set("round", r)
+        if r <= (state.get("last") ?? 1) { start_round() }
+    }
+    on report() { return history }
+}
+
+cell agent Shopper {
+    on decide(me: Map, world: Map) [task] {
+        let mood = think("The price is {world.price}. Buy?", map("max_tokens", 20))
+        let paid_before = recall("last_price") ?? world.price
+        remember("last_price", world.price)
+        let patience = random(30)
+        let buy = if world.price <= paid_before + 1 && world.price < 50 + patience { 1 } else { 0 }
+        return map("id", me.id, "buy", buy)
+    }
+}
+
+cell test RoundsTest {
+    rules {
+        let h = Market.main(30, 3)
+        assert len(Market.report()) == 3
+    }
+}

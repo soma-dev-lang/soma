@@ -387,11 +387,30 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // a `[task]` handler's think() ends a step: other requests and
                 // tasks may write between a read / require before it and this
                 // write — no fact about locals holds across it
-                let task_with_think = handlers.get(handler).map_or(false, |on| on.properties.iter().any(|p| p == "task") && {
+                // …also a think() in a handler it reaches (a helper, delegate,
+                // an emit listener): it ends the step all the same
+                let task_with_think = handlers.get(handler).map_or(false, |on| on.properties.iter().any(|p| p == "task")) && {
+                    let me = cell.node.name.clone();
+                    let mut seen: HashSet<(String, String)> = HashSet::new();
+                    let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
                     let mut t = false;
-                    crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { t = true; });
+                    while let Some((c, h)) = stack.pop() {
+                        if t || !seen.insert((c.clone(), h.clone())) { continue; }
+                        let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
+                        crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { t = true; });
+                        for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
+                            match target {
+                                None => {
+                                    if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) { stack.push((c.clone(), name)); }
+                                    else { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                }
+                                Some(tg) if tg == "*" => { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                Some(tg) => stack.push((tg, name)),
+                            }
+                        }
+                    }
                     t
-                });
+                };
                 if task_with_think { vars_w.clear(); }
                 if rewritten {
                     let get_pat = format!("{}.get(", slot);
@@ -629,7 +648,8 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // run the write many times
                 let in_loop = wpath.iter().any(|step| step % 4 == 2 || *step == usize::MAX / 2);
                 for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
-                    if *v == Proof::Holds || adds_here != 1 || in_loop { continue; }
+                    // a [task] handler that thinks: the size read by the require may be stale
+                    if *v == Proof::Holds || adds_here != 1 || in_loop || task_with_think { continue; }
                     let Some(k) = size_upper_bound(c, slot) else { continue };
                     let before = [format!("{}.size", slot), format!("{}.len", slot), format!("len({})", slot), format!("size({})", slot)]
                         .iter()
@@ -782,7 +802,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         .filter_map(|(c, _)| size_upper_bound(c, slot))
                         .collect();
                     let all_size = !open_size.is_empty() && open_size.len() == parts.iter().zip(&verdicts).filter(|(_, v)| **v != Proof::Holds).count();
-                    if all_size {
+                    if all_size && task_with_think {
+                        why = vec![format!("'{}' is a [task] handler: the prover carries no fact across its think() (other requests may add to '{}' meanwhile), so this write stays checked at run time — keep a `require len({}) < {}` AFTER the last think(), just before the write, so the refusal is a clean error", handler, slot, slot, open_size[0])];
+                    } else if all_size {
                         why = vec![format!("the slot may grow past {} — put `require len({}) < {}` before the handler's one write that adds to it (not in a loop), or, to update an entry that exists, `require {}.get(k) != ()` with `k` a plain local (`let k = r.id`, not `r.id`)", open_size[0], slot, open_size[0], slot)];
                     }
                     let tag = if why.is_empty() { tag } else { format!("{tag} because {}", why.join("; ")) };

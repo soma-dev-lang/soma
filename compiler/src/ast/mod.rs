@@ -149,6 +149,9 @@ pub enum VariantFields {
 pub struct EverySection {
     pub interval_ms: u64,
     pub body: Vec<Spanned<Statement>>,
+    /// `every 5s [task] { … }`: the tick runs as `[task]` steps (a think()
+    /// in it, or in a handler it calls, waits outside the lock)
+    pub task: bool,
 }
 
 // ── Cost (V1.6) ─────────────────────────────────────────────────────

@@ -444,6 +444,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
 
     let mut all_results = Vec::new();
     let mut all_cell_names: Vec<String> = Vec::new();
+    // horde cost bounds, printed when no state machine gives verify more to say
+    let mut horde_lines: Vec<(bool, String)> = Vec::new();
     let mut machine_cells: Vec<String> = Vec::new();
     let mut all_temporal = Vec::new();
     let mut total_cells: usize = 0;
@@ -530,6 +532,10 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         }
         let results = checker::verify::verify_program(&program);
         all_results.extend(results);
+        {
+            let all = checker::cost::all_handlers_of(&program);
+            for c in &program.cells { horde_lines.extend(checker::cost::horde_bounds(&c.node, &all)); }
+        }
 
         // Run temporal property checks on each state machine
         for cell in &program.cells {
@@ -665,6 +671,12 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             println!("{{\"state_machines\":[], \"temporal\":[], \"passed\": true, \"note\": \"no state machine: nothing beyond soma check was proven\"}}");
         } else {
             eprintln!("No state machine in this program: nothing to prove beyond `soma check` (invariants and lifecycles are what verify proves).");
+            for (ok, line) in &horde_lines { println!("  {} cost: {}", if *ok { "✓" } else { "⚠" }, line); }
+            // --strict: an unbounded horde is no proof
+            if strict && horde_lines.iter().any(|(ok, _)| !ok) {
+                println!("VERIFY FAILED — --strict: {} horde cost bound(s) unprovable", horde_lines.iter().filter(|(ok, _)| !ok).count());
+                std::process::exit(1);
+            }
             if orphan_props {
                 eprintln!("note: the soma.toml beside this file declares [verify] properties; none applies here (no state machine)");
             }
@@ -727,7 +739,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     // require, an unprovable termination) is a failure, not a ⚠ — a CI
     // gate on the exit code could not see the downgrade otherwise
     let strict_warnings: usize = if strict {
-        all_results.iter().map(|r| r.checks.iter().filter(|c| matches!(c, checker::verify::VerifyCheck::Warning(_))).count()).sum()
+        all_results.iter().map(|r| r.checks.iter().filter(|c| matches!(c, checker::verify::VerifyCheck::Warning(_))).count()).sum::<usize>()
+            + horde_lines.iter().filter(|(ok, _)| !ok).count()
     } else { 0 };
     let has_failures = all_results.iter().any(|r| r.has_failures())
         || all_temporal.iter().any(|(_, rs)| rs.iter().any(|r| !r.passed))
@@ -777,6 +790,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             "passed": !has_failures,
             "state_machines": sm_results,
             "temporal": temporal_results,
+            "hordes": horde_lines.iter().map(|(ok, l)| serde_json::json!({"status": if *ok { "pass" } else { "warning" }, "message": format!("cost: {}", l)})).collect::<Vec<_>>(),
         });
         if total_cells > 1 {
             output["note"] = serde_json::json!(
@@ -787,6 +801,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     } else {
         // Human-readable output
         print!("{}", checker::verify::format_results(&all_results));
+        // each horde's cost bound, once
+        for (ok, line) in &horde_lines { println!("  {} cost: {}", if *ok { "✓" } else { "⚠" }, line); }
 
         for (name, results) in &all_temporal {
             print!("{}", format_property_results(name, results));
@@ -891,6 +907,8 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
                 let cell = &c.node.name;
                 names.push(format!("{}__counters", cell).to_ascii_lowercase());
                 names.push(format!("{}__agent_memory", cell).to_ascii_lowercase());
+                names.push(format!("{}__horde-meta", cell).to_ascii_lowercase());
+                names.push(format!("{}__horde-tasks", cell).to_ascii_lowercase());
                 for sec in &c.node.sections {
                     match &sec.node {
                         ast::Section::Memory(m) => for slot in &m.slots { names.push(format!("{}_{}", cell, slot.node.name).to_ascii_lowercase()); },

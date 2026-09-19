@@ -132,6 +132,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let Value::Map(m) = &args[0] else { return None };
             Some(Ok(Value::List(m.keys().map(|k| Value::String(k.clone())).collect())))
         }
+        // a record (struct variant): its declared field names / values
+        "keys" if args.len() == 1 && matches!(args[0], Value::Variant { fields: crate::interpreter::VariantValue::Struct(_), .. }) => {
+            let Value::Variant { fields: crate::interpreter::VariantValue::Struct(fs), .. } = &args[0] else { return None };
+            Some(Ok(Value::List(fs.keys().map(|k| Value::String(k.clone())).collect())))
+        }
+        "values" if args.len() == 1 && matches!(args[0], Value::Variant { fields: crate::interpreter::VariantValue::Struct(_), .. }) => {
+            let Value::Variant { fields: crate::interpreter::VariantValue::Struct(fs), .. } = &args[0] else { return None };
+            Some(Ok(Value::List(fs.values().cloned().collect())))
+        }
         "values" if args.len() == 1 && matches!(args[0], Value::Map(_)) => {
             let Value::Map(m) = &args[0] else { return None };
             Some(Ok(Value::List(m.values().cloned().collect())))

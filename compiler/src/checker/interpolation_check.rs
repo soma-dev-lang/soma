@@ -241,6 +241,68 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                             }
                         }
                     }
+                    // `[task]` handlers: a think() ends a step (its writes commit)
+                    if on.properties.iter().any(|p| p == "task") {
+                        let has_think = |stmts: &[Spanned<Statement>]| {
+                            let mut t = false;
+                            super::literals::for_each_expr(stmts, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { t = true; });
+                            t
+                        };
+                        let slot_writes = |stmts: &[Spanned<Statement>]| -> Vec<String> {
+                            let mut w: Vec<String> = Vec::new();
+                            super::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+                                Statement::MethodCall { target, method, .. } if cell_slots.contains(target) && matches!(method.as_str(), "set" | "push" | "delete" | "remove" | "put") => w.push(target.clone()),
+                                Statement::IndexSet { name, .. } if cell_slots.contains(name) => w.push(name.clone()),
+                                _ => {}
+                            });
+                            super::literals::for_each_expr(stmts, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
+                                if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) && matches!(method.as_str(), "set" | "push" | "delete" | "remove" | "put") { w.push(t.clone()); } }
+                            });
+                            w
+                        };
+                        if on.properties.iter().any(|p| p == "native") {
+                            issues.push(InterpolationIssue { message: format!("handler `{}` is both [task] and [native] — a native handler cannot call think(); drop one", on.signal_name), span: section.span, warning: false, habit: false, kind: "task_native" });
+                        }
+                        let body_thinks = has_think(&on.body);
+                        // a stale read: read before the think, written after
+                        if let Some(i) = on.body.iter().position(|st| has_think(std::slice::from_ref(st))) {
+                            let mut read: Vec<String> = Vec::new();
+                            super::literals::for_each_expr(&on.body[..i], &mut |e| match e {
+                                Expr::MethodCall { target, method, .. } if matches!(method.as_str(), "get" | "has" | "len" | "size" | "keys" | "values") => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
+                                Expr::Index { target, .. } => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
+                                Expr::FnCall { name, args } if matches!(name.as_str(), "len" | "keys" | "values") => { if let Some(Expr::Ident(t)) = args.first().map(|a| &a.node) { if cell_slots.contains(t) { read.push(t.clone()); } } }
+                                _ => {}
+                            });
+                            let written = slot_writes(&on.body[i..]);
+                            let mut stale: Vec<String> = read.into_iter().filter(|r| written.contains(r)).collect();
+                            stale.sort(); stale.dedup();
+                            for sl in stale {
+                                issues.push(InterpolationIssue {
+                                    message: format!("[task] `{}` reads '{}' before a think() and writes it after: other requests may write '{}' while the model runs — read (and re-check) it after the think()", on.signal_name, sl, sl),
+                                    span: section.span, warning: true, habit: true, kind: "task_stale_read",
+                                });
+                            }
+                        } else if !body_thinks {
+                            issues.push(InterpolationIssue {
+                                message: format!("[task] on `{}` has no think() in its body — it runs as one atomic unit like a plain handler (a think() in a handler it calls still ends a step)", on.signal_name),
+                                span: section.span, warning: true, habit: true, kind: "task_without_think",
+                            });
+                        }
+                        // a `try` holding writes AND a think: the writes before the
+                        // think commit at it and are not undone if the try fails
+                        super::literals::for_each_expr(&on.body, &mut |e| if let Expr::Try(inner) = e {
+                            let mut stmts: Vec<Spanned<Statement>> = Vec::new();
+                            super::literals::for_each_stmt_in_expr(&inner.node, &mut |st| stmts.push(Spanned::new(st.clone(), section.span)));
+                            let mut thinks = false;
+                            super::literals::for_each_in_expr(&inner.node, &mut |x| if matches!(x, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { thinks = true; });
+                            if thinks && !slot_writes(&stmts).is_empty() {
+                                issues.push(InterpolationIssue {
+                                    message: format!("[task] `{}`: this try writes a slot and calls think() — the writes made before the think() commit at it and are NOT undone if the try fails; write after the think()", on.signal_name),
+                                    span: section.span, warning: true, habit: true, kind: "task_try_write",
+                                });
+                            }
+                        });
+                    }
                     for m in count_field_defaults(&on.body) {
                         issues.push(InterpolationIssue { message: m, span: section.span, warning: true, habit: true, kind: "count_field_default" });
                     }
@@ -256,6 +318,193 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
         }
     }
 
+    // a `[task]` handler reached from a plain handler or tick runs INSIDE
+    // that caller's atomic unit: its think() then holds the lock (20 × 1.5 s
+    // served one at a time behind `on request`)
+    {
+        let cells = super::names::collect_cells(program);
+        let mut tasks: HashSet<(String, String)> = HashSet::new();
+        for c in &cells {
+            for sec in &c.sections {
+                if let Section::OnSignal(on) = &sec.node {
+                    if on.properties.iter().any(|p| p == "task") { tasks.insert((c.name.clone(), on.signal_name.clone())); }
+                }
+            }
+        }
+        if !tasks.is_empty() {
+            for c in &cells {
+                if matches!(c.kind, CellKind::Test) { continue; }
+                for sec in &c.sections {
+                    let (who, body, fix): (String, &[Spanned<Statement>], String) = match &sec.node {
+                        Section::OnSignal(on) if !on.properties.iter().any(|p| p == "task") =>
+                            (format!("handler `{}`", on.signal_name), &on.body, format!("mark it `on {}(…) [task]`", on.signal_name)),
+                        Section::Every(ev) if !ev.task => ("this `every` tick".to_string(), &ev.body, format!("write `every {}ms [task] {{ … }}`", ev.interval_ms)),
+                        Section::After(ev) if !ev.task => ("this `after` tick".to_string(), &ev.body, format!("write `after {}ms [task] {{ … }}`", ev.interval_ms)),
+                        _ => continue,
+                    };
+                    let mut hit: Vec<String> = Vec::new();
+                    super::literals::for_each_expr(body, &mut |e| match e {
+                        Expr::FnCall { name, .. } if tasks.contains(&(c.name.clone(), name.clone())) => hit.push(name.clone()),
+                        Expr::MethodCall { target, method, .. } => if let Expr::Ident(t) = &target.node {
+                            if tasks.contains(&(t.clone(), method.clone())) { hit.push(format!("{}.{}", t, method)); }
+                        },
+                        _ => {}
+                    });
+                    super::literals::for_each_stmt_deep(body, &mut |st| if let Statement::MethodCall { target, method, .. } = st {
+                        if tasks.contains(&(target.clone(), method.clone())) { hit.push(format!("{}.{}", target, method)); }
+                    });
+                    hit.sort(); hit.dedup();
+                    if let Some(h) = hit.first() {
+                        issues.push(InterpolationIssue {
+                            message: format!("{} calls [task] `{}` but is not a task itself: `{}` then runs inside the caller's atomic unit and its think() holds the lock (concurrent requests wait) — {}", who, h, h, fix),
+                            span: sec.span, warning: true, habit: true, kind: "task_called_atomically",
+                        });
+                    }
+                }
+            }
+        }
+    }
+    // horde(target, inputs, opts): the target and the callbacks exist with
+    // the right arity, the options are known
+    {
+        let cells = super::names::collect_cells(program);
+        let handler = |c: &str, h: &str| cells.iter().find(|x| x.name == c).and_then(|x| x.sections.iter().find_map(|s| match &s.node {
+            Section::OnSignal(on) if on.signal_name == h => Some(on), _ => None }));
+        for c in &cells {
+            for sec in &c.sections {
+                let body = match &sec.node {
+                    Section::OnSignal(on) => &on.body,
+                    Section::Every(e) | Section::After(e) => &e.body,
+                    _ => continue,
+                };
+                let mut calls: Vec<(bool, &Vec<Spanned<Expr>>)> = Vec::new();
+                super::literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
+                    if name == "horde" { calls.push((false, args)); }
+                    if name == "vote" && args.len() == 3 && handler(&c.name, "vote").is_none() { calls.push((true, args)); }
+                });
+                for (is_vote, args) in calls {
+                    let what = if is_vote { "vote" } else { "horde" };
+                    let mut err = |m: String, warning: bool, kind: &'static str| issues.push(InterpolationIssue { message: m, span: args.first().map_or(sec.span, |a| a.span), warning, habit: warning, kind });
+                    // what runs, and what it may cost, must be read at the call:
+                    // a computed target let an HTTP client run a private
+                    // handler, computed options hid the cost and the callbacks
+                    if !matches!(args.first().map(|a| &a.node), Some(Expr::FieldAccess { .. }) | Some(Expr::Ident(_)) | Some(Expr::Literal(Literal::String(_)))) {
+                        err(format!("{}(): write the handler at the call (`Cell.handler`, `handler` or \"Cell.handler\") — a computed target could run any handler, private ones included, and its cost cannot be proven", what), false, "horde_target");
+                    }
+                    if let Some(a) = args.get(1) {
+                        if matches!(&a.node, Expr::Literal(_) | Expr::Record { .. }) && !is_vote || (!is_vote && matches!(&a.node, Expr::FnCall { name, .. } if name == "map")) {
+                            err("horde(): the inputs must be a List (one task per element)".to_string(), false, "horde_inputs");
+                        }
+                    }
+                    if is_vote {
+                        match args.get(2).map(|a| &a.node) {
+                            Some(Expr::Literal(Literal::Int(k))) if (1..=25).contains(k) => {}
+                            Some(Expr::Literal(_)) => err("vote(): k must be an Int in 1..25".to_string(), false, "horde_option"),
+                            _ => {}
+                        }
+                    }
+                    if !is_vote && args.len() == 3 && !matches!(&args[2].node, Expr::FnCall { name, .. } if name == "map") {
+                        err("horde(): write the options as `map(\"key\", value, …)` at the call — they decide which handlers run and what the horde may cost (options from a variable or a request cannot be checked)".to_string(), false, "horde_option");
+                    }
+                    let target: Option<(String, String)> = match args.first().map(|a| &a.node) {
+                        Some(Expr::FieldAccess { target, field }) => match &target.node { Expr::Ident(cn) => Some((cn.clone(), field.clone())), _ => None },
+                        Some(Expr::Ident(h)) => Some((c.name.clone(), h.clone())),
+                        Some(Expr::Literal(Literal::String(t))) => Some(match t.split_once('.') { Some((a, b)) => (a.to_string(), b.to_string()), None => (c.name.clone(), t.clone()) }),
+                        _ => None,
+                    };
+                    let opt_keys: Vec<String> = match args.get(2).map(|a| &a.node) {
+                        Some(Expr::FnCall { name, args: kv }) if name == "map" && !is_vote => kv.chunks(2).filter_map(|c| match &c[0].node { Expr::Literal(Literal::String(k)) => Some(k.clone()), _ => None }).collect(),
+                        _ => Vec::new(),
+                    };
+                    let want_params = if opt_keys.iter().any(|k| k == "snapshot") { 2 } else { 1 };
+                    if opt_keys.iter().any(|k| k == "on_result") && opt_keys.iter().any(|k| k == "apply") {
+                        err("horde(): on_result (as results arrive) and apply (in input order, at the end) exclude each other — pick one".to_string(), false, "horde_option");
+                    }
+                    if let Some((tc, th)) = target {
+                        // a bare name may live in another cell
+                        let found = handler(&tc, &th).map(|on| (tc.clone(), on)).or_else(|| if tc == c.name {
+                            cells.iter().find_map(|x| handler(&x.name, &th).map(|on| (x.name.clone(), on)))
+                        } else { None });
+                        match found {
+                            None => err(format!("horde(): no handler `{}.{}`", tc, th), false, "horde_target"),
+                            Some((tc, on)) => {
+                                let want_params = if is_vote { 1 } else { want_params };
+                                if on.params.len() != want_params {
+                                    err(if want_params == 2 {
+                                        format!("horde(): with a snapshot, `{}.{}` takes two parameters (input, snapshot) — it takes {}", tc, th, on.params.len())
+                                    } else {
+                                        format!("horde(): `{}.{}` takes {} parameter(s) — a horde handler takes exactly one (the input), or two (input, snapshot) with a `snapshot` option", tc, th, on.params.len())
+                                    }, false, "horde_target");
+                                } else if !on.properties.iter().any(|p| p == "task") && {
+                                    let mut t = false;
+                                    super::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { t = true; });
+                                    t
+                                } {
+                                    err(format!("horde(): `{}.{}` is not [task] — each task then holds the lock through its think(), and the horde runs one task at a time: mark it `on {}(…) [task]`", tc, th, th), true, "horde_not_task");
+                                }
+                            }
+                        }
+                    }
+                    if let Some(Expr::FnCall { name, args: kv }) = args.get(2).map(|a| &a.node).filter(|_| !is_vote) {
+                        if name == "map" {
+                            for pair in kv.chunks(2) {
+                                let Expr::Literal(Literal::String(k)) = &pair[0].node else {
+                                    err("horde(): option names must be literal strings".to_string(), false, "horde_option");
+                                    continue
+                                };
+                                let val = pair.get(1).map(|v| &v.node);
+                                let lit_int = |lo: i64, hi: i64| match val { Some(Expr::Literal(Literal::Int(n))) => Some((lo..=hi).contains(n)), Some(Expr::Literal(_)) => Some(false), _ => None };
+                                match k.as_str() {
+                                    "concurrency" => if lit_int(1, 1000) == Some(false) { err("horde(): concurrency must be an Int in 1..1000".to_string(), false, "horde_option"); },
+                                    "max_attempts" => if lit_int(1, 10) == Some(false) { err("horde(): max_attempts must be an Int in 1..10".to_string(), false, "horde_option"); },
+                                    "budget_tokens" => if lit_int(1, i64::MAX) == Some(false) { err("horde(): budget_tokens must be a positive Int".to_string(), false, "horde_option"); },
+                                    "seed" | "snapshot" | "instance" => {}
+                                    "on_result" | "on_done" | "on_error" | "apply" => {
+                                        if !matches!(val, Some(Expr::Literal(Literal::String(_)))) {
+                                            err(format!("horde(): {} must name a handler with a literal string (\"_store\") — a computed name could run any handler", k), false, "horde_callback");
+                                        }
+                                        if let Some(Expr::Literal(Literal::String(h))) = val {
+                                            if !h.starts_with('_') && handler(&c.name, h).is_some() {
+                                                err(format!("horde(): {} handler `{}` is public — it is an HTTP endpoint too, a client can call it with forged data: name it `_{}`", k, h, h), true, "horde_callback_public");
+                                            }
+                                            let want: &[usize] = match k.as_str() { "on_result" | "apply" => &[1, 2], "on_done" => &[1], _ => &[2] };
+                                            match handler(&c.name, h) {
+                                                None => err(format!("horde(): {} names `{}`, which is not a handler of cell `{}`", k, h, c.name), false, "horde_callback"),
+                                                Some(on) if k == "on_error" && on.params.len() == 2 && matches!(&on.params[1].ty.node, crate::ast::TypeExpr::Simple(t) if t != "Map" && t != "Any") =>
+                                                    err(format!("horde(): on_error handler `{}` receives the error as a Map {{error, kind, detail}} — declare `{}: Map`", h, on.params[1].name), false, "horde_callback"),
+                                                Some(on) if !want.contains(&on.params.len()) => err(format!("horde(): {} handler `{}` takes {} parameter(s); it is called with {}", k, h, on.params.len(),
+                                                    match k.as_str() { "on_result" | "apply" => "(result) or (input, result)", "on_done" => "(horde_id)", _ => "(input, error)" }), false, "horde_callback"),
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    other => err(format!("horde(): unknown option `{}` — options: concurrency, max_attempts, budget_tokens, seed, snapshot, instance, on_result, apply, on_done, on_error", other), false, "horde_option"),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // a misspelled handler annotation (`[tsak]`, `[nativ]`) was accepted
+    // silently — the handler then ran without it
+    for c in super::names::collect_cells(program) {
+        for sec in &c.sections {
+            if let Section::OnSignal(on) = &sec.node {
+                for p in &on.properties {
+                    const KNOWN: [&str; 4] = ["native", "task", "deterministic", "record"];
+                    if !KNOWN.contains(&p.as_str()) {
+                        let near = KNOWN.iter().find(|k| strsim_close(k, p)).map(|k| format!(" — did you mean [{}]?", k)).unwrap_or_default();
+                        issues.push(InterpolationIssue {
+                            message: format!("unknown handler annotation [{}] on `{}`{} (known: [native], [task], [deterministic], [record])", p, on.signal_name, near),
+                            span: sec.span, warning: false, habit: false, kind: "unknown_handler_property",
+                        });
+                    }
+                }
+            }
+        }
+    }
     issues
 }
 
@@ -772,8 +1021,10 @@ impl<'a> Walker<'a> {
                     self.walk_expr(a);
                 }
             }
-            Expr::FnCall { args, .. } => {
-                for a in args {
+            Expr::FnCall { name, args } => {
+                for (i, a) in args.iter().enumerate() {
+                    // `horde(review, …)` / `horde(Reviewer.review, …)` names a handler
+                    if i == 0 && (name == "horde" || (name == "vote" && args.len() == 3)) && matches!(&a.node, Expr::Ident(_) | Expr::FieldAccess { .. }) { continue; }
                     self.walk_expr(a);
                 }
             }
@@ -1320,4 +1571,20 @@ fn expr_has_call(e: &Expr) -> bool {
         Expr::ListLiteral(items) => items.iter().any(|i| expr_has_call(&i.node)),
         _ => false,
     }
+}
+
+
+/// One edit (insert, delete, substitute or swap of neighbours) apart.
+fn strsim_close(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let n = a.len(); let m = b.len();
+    let mut d = vec![vec![0usize; m + 1]; n + 1];
+    for i in 0..=n { d[i][0] = i; }
+    for j in 0..=m { d[0][j] = j; }
+    for i in 1..=n { for j in 1..=m {
+        let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+        d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+        if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] { d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1); }
+    } }
+    d[n][m] <= 2
 }

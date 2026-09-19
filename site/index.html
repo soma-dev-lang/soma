@@ -228,7 +228,7 @@ footer {
   "description": "Experimental cell-based programming language with state-machine checks, memory properties, agent-oriented tooling, and a Rust implementation.",
   "url": "https://soma-lang.dev",
   "downloadUrl": "https://github.com/soma-dev-lang/soma",
-  "softwareVersion": "2.6.1",
+  "softwareVersion": "2.7.0",
   "license": "https://github.com/soma-dev-lang/soma/blob/main/LICENSE",
   "codeRepository": "https://github.com/soma-dev-lang/soma",
   "programmingLanguage": "Rust",
@@ -412,6 +412,14 @@ eventually = ["filled", "rejected"]</code></pre>
     }
 }</code></pre>
   <p>The verifier can check the lifecycle graph and literal transition targets. <code>set_budget</code> tracks token use for real LLM calls. None of this proves the LLM response is correct, safe, or useful.</p>
+  <h3>Hordes</h3>
+  <p>A <code>[task]</code> handler runs as steps: each <code>think()</code> commits the writes before it and waits for the model outside the handler lock, so many requests overlap their model calls. <code>horde()</code> runs such a handler once per input with a bounded pool:</p>
+<pre><code>on audit(docs: List) {
+    return horde(Reviewer.review, docs, map("concurrency", 500,
+        "budget_tokens", 2000000, "on_result", "_store", "on_done", "_summarize"))
+}
+on _store(v: Map) { verdicts.set(v.id, v) }   // verdicts: [persistent, immutable]</code></pre>
+  <p>The queue is persisted and resumes after a restart; each result is recorded, and <code>on_result</code> called, with the task's last step — once, also across a <code>kill -9</code>. Every <code>think()</code> of the horde (nested hordes included) reserves its worst case against <code>budget_tokens</code> first, so the spend stays under the ceiling while the provider honors <code>max_tokens</code>. <code>soma verify</code> prints each horde's cost bound. Rounds (<code>snapshot</code>, <code>apply</code> in input order, <code>seed</code>, per-agent <code>instance</code> memory) make a population simulation reproducible. Measured with a mocked 2 s model: 10 000 tasks at concurrency 500 in 41 s; 10 000 agents × 20 rounds in 46 s, identical on two runs.</p>
 </section>
 
 <section id="runtime">
@@ -469,6 +477,7 @@ soma serve app.cell -p 8080                   # then: curl -X POST localhost:808
     <li>Native codegen supports a subset of handlers. The general interpreter remains the reference path.</li>
     <li>Memory-budget proofs depend on the static cost model and declared bounds such as capacities and loop bounds. Calls to unbounded builtins produce advisory output instead of a proof.</li>
     <li>Agent token budgeting bounds token use; it does not prove semantic correctness or safety of model output.</li>
+    <li>A horde's <code>budget_tokens</code> ceiling assumes the provider honors <code>max_tokens</code> and counts settled calls: calls in flight at a crash are sent again after the restart. A <code>[task]</code> handler is atomic per step, not as a whole: steps before its last <code>think()</code> may run again after a crash.</li>
     <li>Cloud deployment commands generate scaffolding and invoke external provider CLIs. They do not remove the need for provider configuration, credentials, or review.</li>
   </ul>
 </section>

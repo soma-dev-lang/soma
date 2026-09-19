@@ -225,8 +225,8 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                         format!("can dispatch [{}]", tools.join(", "))
                     };
                     result.checks.push(VerifyCheck::Pass(
-                        format!("effects: handler `{}` calls think() {}× — {}",
-                                eff.handler, eff.think_sites, summary)
+                        format!("effects: handler `{}` calls think() at {} site{} (the cost line counts loop rounds) — {}",
+                                eff.handler, eff.think_sites, if eff.think_sites == 1 { "" } else { "s" }, summary)
                     ));
                 }
 
