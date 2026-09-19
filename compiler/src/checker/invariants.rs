@@ -239,6 +239,16 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             }))
             .collect();
         let cell_names: HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
+        // every handler of each cell: a computed `delegate` may run any
+        let cell_handlers: HashMap<String, Vec<String>> = program.cells.iter().map(|c| (c.node.name.clone(),
+            c.node.sections.iter().filter_map(|s| match &s.node { Section::OnSignal(o) => Some(o.signal_name.clone()), _ => None }).collect())).collect();
+        // the face tools of each cell: a think() there may run any of them
+        // (a tool that pushed to the slot broke a "proven" size bound)
+        let cell_tools: HashMap<String, Vec<String>> = program.cells.iter().map(|c| (c.node.name.clone(),
+            c.node.sections.iter().filter_map(|s| match &s.node {
+                Section::Face(f) => Some(f.declarations.iter().filter_map(|d| match &d.node { FaceDecl::Tool(t) => Some(t.name.clone()), _ => None }).collect::<Vec<_>>()),
+                _ => None,
+            }).flatten().collect())).collect();
 
         // every write site in every handler: (handler, slot, value expr)
         let mut writes: Vec<(String, String, Expr, bool, Vec<usize>, Option<String>)> = Vec::new();
@@ -316,7 +326,19 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     handlers: &handlers,
                     depth: 0,
                 };
-                let known = ctx.range_of(value_expr);
+                // a bare `c.get(k)` / `c[k]` WRITTEN as is may be () (a missing
+                // key): the invariant cannot hold of it (the runtime refuses the
+                // write, kind invariant) — `c.get(k) + 1` raises before writing
+                fn may_be_unit(e: &Expr) -> bool {
+                    match e {
+                        Expr::MethodCall { method, .. } if method == "get" => true,
+                        Expr::Index { .. } => true,
+                        Expr::IfExpr { then_result, else_result, .. } => may_be_unit(&then_result.node) || may_be_unit(&else_result.node),
+                        Expr::Match { arms, .. } => arms.iter().any(|a| may_be_unit(&a.result.node)),
+                        _ => false,
+                    }
+                }
+                let known = if may_be_unit(value_expr) { Known::Unknown } else { ctx.range_of(value_expr) };
                 let inductive = uses_slot_read(value_expr, &ctx);
                 let mut verdicts: Vec<Proof> = parts.iter().map(|c| prove(c, slot, known)).collect();
                 // `size <= K` after a write that adds at most one entry:
@@ -337,7 +359,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         if hit || !seen.insert((c.clone(), h.clone())) { continue; }
                         if c == me && writes.iter().any(|(wh, sl, e, _, _, _)| *wh == h && sl == slot && matches!(e, Expr::Ident(n) if n == "<deleted entry>")) { hit = true; break; }
                         let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
-                        for (target, name) in calls_of(&on.body, &cell_names) {
+                        for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
                             match target {
                                 None => {
                                     if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) { stack.push((c.clone(), name)); }
@@ -425,7 +447,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                         {
                             adds_here += 1;
                         }
-                        for (target, name) in calls_of(&on.body, &cell_names) {
+                        for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
                             match target {
                                 // a bare call: the calling cell's own handler, else any definer
                                 None => {
@@ -569,6 +591,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 render_expr(value_expr), l, num(lo), num(hi), r, open_txt.join(" && ")));
                         }
                     }
+                    if may_be_unit(value_expr) {
+                        why = vec![format!("`{}` may be () (a missing key), which no invariant holds of — write `{} ?? <default>`", render_expr(value_expr), render_expr(value_expr))];
+                    }
                     if nan_open {
                         why = vec![format!("'{}' holds Floats and `{}` may be NaN (sqrt(-1.0), 0.0 / 0.0, inf - inf), which fails every comparison — the write is checked at run time", slot, render_expr(value_expr))];
                     }
@@ -658,7 +683,16 @@ fn bounds(k: Known) -> Option<(f64, f64)> {
 
 fn mk(lo: f64, hi: f64) -> Known {
     const EXACT: f64 = 9007199254740992.0; // 2^53: beyond it f64 rounds (i64::MAX + 10 == i64::MAX)
-    if lo.is_nan() || hi.is_nan() || (lo.is_finite() && lo.abs() > EXACT) || (hi.is_finite() && hi.abs() > EXACT) {
+    // `>=`: a result that ROUNDED to 2^53 is past it too (`v + 1` after
+    // `require v <= 2^53` computed 2^53 and "proved" `<= 2^53`)
+    if lo.is_nan() || hi.is_nan() {
+        return Known::Unknown;
+    }
+    // past 2^53 an f64 end may be rounded: widen it soundly (outward) instead
+    // of losing the whole range — `?? 9223372036854775807` keeps its `>= 0`
+    let lo = if lo.is_finite() && lo.abs() >= EXACT { if lo > 0.0 { EXACT - 1.0 } else { f64::NEG_INFINITY } } else { lo };
+    let hi = if hi.is_finite() && hi.abs() >= EXACT { if hi < 0.0 { -(EXACT - 1.0) } else { f64::INFINITY } } else { hi };
+    if lo.is_infinite() && hi.is_infinite() {
         Known::Unknown
     } else if lo == hi {
         Known::Exact(lo)
@@ -720,7 +754,7 @@ impl RangeCtx<'_> {
             // a match whose arms all have bounded results
             Expr::Match { arms, .. } if !arms.is_empty() =>
                 arms.iter().map(|a| self.range_of(&a.result.node)).reduce(join).unwrap_or(Known::Unknown),
-            Expr::Literal(Literal::Int(n)) => Known::Exact(*n as f64),
+            Expr::Literal(Literal::Int(n)) => mk(*n as f64, *n as f64),
             Expr::Literal(Literal::Float(f)) => Known::Exact(*f),
             Expr::Ident(n) => self.vars.get(n).copied().unwrap_or(Known::Unknown),
             Expr::BinaryOp { left, op, right } => {
@@ -1332,7 +1366,7 @@ static UNKNOWN_EXPR: Expr = Expr::Literal(Literal::Unit);
 /// Constant-fold a value expression where possible.
 fn static_value(expr: &Expr) -> Known {
     match expr {
-        Expr::Literal(Literal::Int(n)) => Known::Exact(*n as f64),
+        Expr::Literal(Literal::Int(n)) => mk(*n as f64, *n as f64),
         Expr::Literal(Literal::Float(f)) => Known::Exact(*f),
         Expr::BinaryOp { left, op, right } => {
             let (Known::Exact(a), Known::Exact(b)) =
@@ -1341,10 +1375,10 @@ fn static_value(expr: &Expr) -> Known {
                 return Known::Unknown;
             };
             match op {
-                BinOp::Add => Known::Exact(a + b),
-                BinOp::Sub => Known::Exact(a - b),
-                BinOp::Mul => Known::Exact(a * b),
-                BinOp::Div if b != 0.0 => Known::Exact(a / b),
+                BinOp::Add => mk(a + b, a + b),
+                BinOp::Sub => mk(a - b, a - b),
+                BinOp::Mul => mk(a * b, a * b),
+                BinOp::Div if b != 0.0 => mk(a / b, a / b),
                 _ => Known::Unknown,
             }
         }
@@ -1355,7 +1389,7 @@ fn static_value(expr: &Expr) -> Known {
             else {
                 return Known::Unknown;
             };
-            if lo <= hi { Known::Range(lo, hi) } else { Known::Unknown }
+            if lo <= hi { mk(lo, hi) } else { Known::Unknown }
         }
         _ => Known::Unknown,
     }
@@ -1958,8 +1992,21 @@ fn existing_key_facts(stmts: &[Spanned<Statement>], path: &[usize], slot: &str, 
 
 /// The handlers a body can call: `f(..)` (cell None), `Cell.h(..)` (Some(cell)),
 /// `emit ev(..)` (Some("*")).
-fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>) -> Vec<(Option<String>, String)> {
+fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[String], cell_handlers: &HashMap<String, Vec<String>>) -> Vec<(Option<String>, String)> {
     let mut out: Vec<(Option<String>, String)> = Vec::new();
+    // `delegate("A", op, x)` with a computed handler may run any handler of
+    // A (a computed cell: any handler anywhere) — it "proved" a size bound
+    crate::checker::literals::for_each_expr(stmts, &mut |e| if let Expr::FnCall { name, args } = e {
+        if name == "delegate" && args.len() >= 2 && !matches!(args[1].node, Expr::Literal(Literal::String(_))) {
+            match &args[0].node {
+                Expr::Literal(Literal::String(c)) => for h in cell_handlers.get(c).into_iter().flatten() { out.push((Some(c.clone()), h.clone())); },
+                _ => for (c, hs) in cell_handlers { for h in hs { out.push((Some(c.clone()), h.clone())); } },
+            }
+        }
+    });
+    let mut thinks = false;
+    crate::checker::literals::for_each_expr(stmts, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { thinks = true; });
+    if thinks { for t in tools { out.push((None, t.clone())); } }
     crate::checker::literals::for_each_expr(stmts, &mut |e| match e {
         Expr::FnCall { name, .. } => out.push((None, name.clone())),
         Expr::MethodCall { target, method, .. } => {

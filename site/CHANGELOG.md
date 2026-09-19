@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The invariant prover is exact for Ints past 2^53 (intervals widen
+  outward instead of rounding), counts think() tools and computed delegates
+  among a handler's callees, and does not prove a bare slot read that may be
+  `()`.
+- `http_get` in a loop, lambda or tool no longer makes a token bound
+  advisory (only a latency bound); a saturated cost peak is advisory.
+- `[native]` `i64::MIN / -1` raises instead of returning a rounded Float;
+  guarded transitions in lambdas see the handler's locals; refinement paths
+  keep their parentheses.
 - Statements inside block lambdas, `try { }`, if-expressions and match arms
   (`slot[k] = v`, `emit`) are seen by GET→405, the listener set, the
   termination graph, the size prover and guard / invariant purity.

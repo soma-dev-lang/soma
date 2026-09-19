@@ -14,7 +14,7 @@
 //   #9  model capability check   — `think(..., "requires", ["json_mode"])`
 //   #4  tool capabilities        — `tool send_reply(...) [capability: "smtp:gmail.com"]`
 //   #5  structured trace         — `transition()` and `think()` push TraceStep variants
-//   #2  cost lattice             — `cost { tokens, latency, usd }`
+//   #2  cost lattice             — `cost { tokens, usd }`
 //   #3  effect tracking          — `tools_allowed` narrows think()'s dispatch set
 //   #8  property-based tests     — `tests.cell`
 //   #7  protocol verification    — `protocol Escalation { ... }`
@@ -102,13 +102,14 @@ cell agent Atlas [model: claude_sonnet] {
         meta:     Map<String, Int>     [persistent, consistent]
     }
 
-    // V1.6 #2: cost-budget proof obligation, all three axes.
-    // `soma check` walks every think() / http_* call site, sums
-    // max_tokens across handlers (max, not sum), and refuses to build
-    // if peak > declared. USD comes from the model's price table.
+    // V1.6 #2: cost-budget proof obligation. `soma check` walks every
+    // think() / http_* call site, sums max_tokens across handlers (max, not
+    // sum), and refuses to build if peak > declared. USD comes from the
+    // model's price table. No `latency` axis here: the model may call the
+    // I/O tools (read_calendar, send_reply) any number of times, so a
+    // latency bound is not provable (check says so).
     cost {
         tokens: 4000
-        latency: 12s
         usd: 2.00
     }
 

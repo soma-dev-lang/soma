@@ -2615,3 +2615,22 @@ fn cycle36_findings() {
     let (out, _) = soma_in(&d, &["run", "q.cell", "request", "GET", "/a?x=1", ""]);
     assert!(out.contains("\"/a\"") && out.contains("\"x\": \"1\""), "{out}");
 }
+
+#[test]
+fn cycle37_findings() {
+    let d = dir("cycle37");
+    // Int bounds past 2^53 are not "proven" through f64 rounding
+    std::fs::write(d.join("h.cell"), "cell B {\n  memory {\n    bal: Map<String, Int> [persistent]\n    invariant bal <= 9007199254740992\n  }\n  on deposit(k: String, v: Int) {\n    require v <= 9007199254740992 else Big\n    bal.set(k, v + 1)\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "h.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(!out.contains("writer 'deposit' proven"), "{out}");
+    // a bare slot read written as is may be ()
+    std::fs::write(d.join("u.cell"), "cell U {\n  memory {\n    c: Map [persistent]\n    invariant c >= 0\n  }\n  on w(k: String) { c.set(k, c.get(k)) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "u.cell"]);
+    assert!(out.contains("may be () (a missing key)"), "{out}");
+    // an http_get in a lambda does not make a token bound advisory
+    std::fs::write(d.join("c.cell"), "cell agent A {\n  cost { tokens: 300 }\n  on go(ids: List) {\n    let rows = ids |> map(i => http_get(\"http://127.0.0.1:1/o/{i}\"))\n    return think(\"sum {rows}\", map(\"max_tokens\", 100))\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "c.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("'tokens' bound proven"), "{out}");
+}

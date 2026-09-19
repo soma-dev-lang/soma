@@ -51,6 +51,10 @@ struct CostWalk<'a> {
     tokens: i64,
     latency_ms: i64,
     unbounded_sites: Vec<String>,
+    /// sites unbounded in LATENCY only (an http_get in a loop): they make a
+    /// latency bound advisory, not a token bound (a fetch loop blocked the
+    /// common agent pattern's token proof)
+    latency_sites: Vec<String>,
     /// Sibling handlers of the cell, by name — a call to one of them
     /// spends whatever its body spends.
     handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>,
@@ -66,7 +70,7 @@ struct CostWalk<'a> {
 
 impl<'a> CostWalk<'a> {
     fn new(handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>) -> Self {
-        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), handlers, stack: Vec::new(), rounds: 1, rounds_of: None }
+        Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), latency_sites: Vec::new(), handlers, stack: Vec::new(), rounds: 1, rounds_of: None }
     }
 
     /// A fresh accumulator for a nested scope (loop body, lambda, callee).
@@ -75,6 +79,7 @@ impl<'a> CostWalk<'a> {
             tokens: 0,
             latency_ms: 0,
             unbounded_sites: Vec::new(),
+            latency_sites: Vec::new(),
             handlers: self.handlers,
             stack: self.stack.clone(),
             rounds: self.rounds,
@@ -87,10 +92,22 @@ impl<'a> CostWalk<'a> {
         worst.tokens = worst.tokens.max(branch.tokens);
         worst.latency_ms = worst.latency_ms.max(branch.latency_ms);
         self.unbounded_sites.extend(branch.unbounded_sites);
+        self.latency_sites.extend(branch.latency_sites);
     }
 
     fn spends(&self) -> bool {
-        self.tokens > 0 || self.latency_ms > 0 || !self.unbounded_sites.is_empty()
+        self.tokens > 0 || self.latency_ms > 0 || !self.unbounded_sites.is_empty() || !self.latency_sites.is_empty()
+    }
+
+    /// Spends TOKENS (a think, or something unbounded in tokens).
+    fn spends_tokens(&self) -> bool {
+        self.tokens > 0 || !self.unbounded_sites.is_empty()
+    }
+
+    /// An unbounded repetition of `inner`: tokens make every bound advisory,
+    /// latency alone only the latency bound.
+    fn unbounded(&mut self, site: String, spends_tokens: bool) {
+        if spends_tokens { self.unbounded_sites.push(site); } else { self.latency_sites.push(site); }
     }
 
     fn visit_stmt(&mut self, stmt: &Statement, handler_name: &str) {
@@ -126,15 +143,18 @@ impl<'a> CostWalk<'a> {
                 // condition) spends (a counting loop made every cost bound
                 // "advisory")
                 if bound.is_none() && (inner.spends() || cond.spends()) {
-                    self.unbounded_sites.push(format!("{}::while-loop", handler_name));
+                    let t = inner.spends_tokens() || cond.spends_tokens();
+                    self.unbounded(format!("{}::while-loop", handler_name), t);
                 }
                 self.tokens += cond.tokens.saturating_mul(mult + 1);
                 self.latency_ms += cond.latency_ms.saturating_mul(mult + 1);
                 self.unbounded_sites.extend(cond.unbounded_sites);
+                self.latency_sites.extend(cond.latency_sites);
                 self.tokens += inner.tokens.saturating_mul(mult);
                 // Latency in a loop is sequential — multiply.
                 self.latency_ms += inner.latency_ms.saturating_mul(mult);
                 self.unbounded_sites.extend(inner.unbounded_sites);
+                self.latency_sites.extend(inner.latency_sites);
             }
             Statement::For { iter, body, bound, .. } => {
                 self.visit_expr(&iter.node, handler_name);
@@ -151,15 +171,17 @@ impl<'a> CostWalk<'a> {
                     (b, l) => b.or(l),
                 };
                 if known.is_none() && inner.spends() {
-                    self.unbounded_sites.push(format!(
+                    let t = inner.spends_tokens();
+                    self.unbounded(format!(
                         "{}::for-loop over a collection of unknown size (write `for [loop_bound(N)] x in xs`)",
                         handler_name
-                    ));
+                    ), t);
                 }
                 let mult = known.unwrap_or(100);
                 self.tokens += inner.tokens.saturating_mul(mult);
                 self.latency_ms += inner.latency_ms.saturating_mul(mult);
                 self.unbounded_sites.extend(inner.unbounded_sites);
+                self.latency_sites.extend(inner.latency_sites);
             }
             Statement::MethodCall { args, .. } => {
                 for a in args { self.visit_expr(&a.node, handler_name); }
@@ -187,6 +209,7 @@ impl<'a> CostWalk<'a> {
                     self.tokens += callee.tokens;
                     self.latency_ms += callee.latency_ms;
                     self.unbounded_sites.extend(callee.unbounded_sites);
+                    self.latency_sites.extend(callee.latency_sites);
                 }
             }
             _ => {}
@@ -242,6 +265,7 @@ impl<'a> CostWalk<'a> {
                         self.tokens += callee.tokens;
                         self.latency_ms += callee.latency_ms;
                         self.unbounded_sites.extend(callee.unbounded_sites);
+                        self.latency_sites.extend(callee.latency_sites);
                     }
                 }
             }
@@ -269,6 +293,7 @@ impl<'a> CostWalk<'a> {
                             self.tokens += callee.tokens;
                             self.latency_ms += callee.latency_ms;
                             self.unbounded_sites.extend(callee.unbounded_sites);
+                            self.latency_sites.extend(callee.latency_sites);
                         }
                     }
                 }
@@ -287,13 +312,15 @@ impl<'a> CostWalk<'a> {
                     _ => {}
                 }
                 if inner.spends() {
-                    self.unbounded_sites.push(format!(
+                    let t = inner.spends_tokens();
+                    self.unbounded(format!(
                         "{}::lambda body spends (runs once per element)", handler_name
-                    ));
+                    ), t);
                 }
                 self.tokens += inner.tokens;
                 self.latency_ms += inner.latency_ms;
                 self.unbounded_sites.extend(inner.unbounded_sites);
+                self.latency_sites.extend(inner.latency_sites);
             }
             // one arm / branch runs: the peak is the MAX over them (two
             // think() in the two branches of an if were summed: a correct
@@ -415,6 +442,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
     let mut peak_tokens_in = String::new();
     let mut peak_latency_in = String::new();
     let mut advisory_sites: Vec<String> = Vec::new();
+    let mut latency_advisory: Vec<String> = Vec::new();
     // Own handlers by name; other cells' handlers by bare name (the runtime
     // resolves a bare call to any cell that defines it) and as
     // `Cell.handler` — a 5×think() helper in another cell used to be
@@ -468,6 +496,8 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
                         for st in body { probe.visit_stmt(&st.node, t); }
                         if probe.tokens > 0 || !probe.unbounded_sites.is_empty() {
                             walk.unbounded_sites.push(format!("tool '{}' calls think() — the model may call it any number of times", t));
+                        } else if probe.latency_ms > 0 || !probe.latency_sites.is_empty() {
+                            walk.latency_sites.push(format!("tool '{}' waits on I/O — the model may call it any number of times", t));
                         }
                     }
                 }
@@ -479,6 +509,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
             if walk.tokens > peak_tokens { peak_tokens = walk.tokens; peak_tokens_in = hname.clone(); }
             if walk.latency_ms > peak_latency_ms { peak_latency_ms = walk.latency_ms; peak_latency_in = hname.clone(); }
             advisory_sites.extend(walk.unbounded_sites);
+            latency_advisory.extend(walk.latency_sites);
         }
     }
 
@@ -491,6 +522,11 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
 
     let mut findings = Vec::new();
 
+    // a peak that saturated i64 (loop_bound(2^62) × max_tokens 4) is not a
+    // bound: it "proved" tokens ≤ i64::MAX
+    if peak_tokens == i64::MAX {
+        advisory_sites.push("the computed peak overflows i64 (a loop_bound too large)".to_string());
+    }
     // With an unbounded site the computed peaks are LOWER bounds: they
     // can still prove a budget is exceeded, never that it holds.
     advisory_sites.sort();
@@ -518,12 +554,20 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         }
     }
     if let Some(declared) = cost.latency_ms {
+        latency_advisory.sort();
+        latency_advisory.dedup();
+        if !latency_advisory.is_empty() {
+            findings.push(CostFinding::Advisory {
+                axis: "latency",
+                reason: format!("{} unbounded I/O site(s): [{}]", latency_advisory.len(), latency_advisory.join(", ")),
+            });
+        }
         if peak_latency_ms > declared {
             findings.push(CostFinding::Exceeded {
                 axis: "latency", declared, computed: peak_latency_ms, unit: "ms",
                 where_: format!("peak in {}.{}", cell.name, peak_latency_in),
             });
-        } else if bounded {
+        } else if bounded && latency_advisory.is_empty() {
             findings.push(CostFinding::Proven {
                 axis: "latency", computed: peak_latency_ms, declared, unit: "ms",
             });

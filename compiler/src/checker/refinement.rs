@@ -373,29 +373,9 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
 /// the verifier output. SMT integration in V1.4 will replace this with
 /// real predicate logic.
 fn render_expr(e: &Expr) -> String {
-    match e {
-        Expr::Literal(Literal::Int(n)) => n.to_string(),
-        Expr::Literal(Literal::String(s)) => format!("\"{}\"", s),
-        Expr::Literal(Literal::Bool(b)) => b.to_string(),
-        Expr::Literal(Literal::Float(f)) => f.to_string(),
-        Expr::Literal(Literal::BigInt(s)) => s.clone(),
-        Expr::Literal(Literal::Unit) => "()".to_string(),
-        Expr::Literal(_) => "<literal>".to_string(),
-        Expr::Ident(s) => s.clone(),
-        Expr::FieldAccess { target, field } => format!("{}.{}", render_expr(&target.node), field),
-        Expr::CmpOp { left, op, right } => format!("{} {} {}", render_expr(&left.node), op, render_expr(&right.node)),
-        Expr::BinaryOp { left, op, right } => format!("{} {} {}", render_expr(&left.node), op, render_expr(&right.node)),
-        Expr::Not(e) => format!("!{}", render_expr(&e.node)),
-        Expr::FnCall { name, args } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| render_expr(&a.node)).collect();
-            format!("{}({})", name, arg_strs.join(", "))
-        }
-        Expr::MethodCall { target, method, args } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| render_expr(&a.node)).collect();
-            format!("{}.{}({})", render_expr(&target.node), method, arg_strs.join(", "))
-        }
-        _ => "…".to_string(),
-    }
+    // the AST renderer keeps the parentheses precedence needs:
+    // `(x == 1 || x == 2) && y > 3` printed as `x == 1 || x == 2 && y > 3`
+    crate::ast::render_expr(e)
 }
 
 fn render_pattern(p: &MatchPattern) -> String {

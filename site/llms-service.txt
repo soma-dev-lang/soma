@@ -508,7 +508,7 @@ cell agent Researcher {
     state job { initial: idle  idle -> working  working -> done  * -> failed except [done] }
     on search(q: String) { return to_json(http_get("https://api.x.com/search?q={q}")) }
     on research(topic: String) {
-        set_budget(8000)                              // token cap: the think() that crosses it completes, the NEXT one raises kind budget
+        set_budget(8000)                              // token cap: the provider round that crosses it completes, the NEXT round (a later tool round of the same think() too) raises kind budget
         transition(topic, "working")                  // one machine instance per topic
         let r = try { think("Research {topic}", map("max_tokens", 2000, "max_rounds", 3)) }
         if r.error != () {
@@ -525,11 +525,15 @@ cell agent Researcher {
 // The model may call only the face's `tool`s (never a private or other
 // handler), with typed arguments, within their capabilities (URL patterns with
 // `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
-// tool that calls think() makes a `cost` bound unprovable) — the scope binds
+// tool that calls think() makes a `cost` bound unprovable, a tool doing I/O a
+// `latency` bound; I/O in a loop or lambda leaves a `tokens` bound provable) — the scope binds
 // MODEL calls only (your own code calling the tool handler is not
 // restricted), and a tool is not an HTTP endpoint; `mock think` scripts text
 // replies only (to test tool calls offline, point [agent] url at a fake
-// OpenAI-compatible server); a tool call that raises is rolled
+// OpenAI-chat-compatible server: tools go out as `tools`, results come back
+// as `role: "tool"` messages, think_json sets response_format json_object,
+// usage.total_tokens feeds tokens_used(), usage.completion_tokens is held to
+// max_tokens); a tool call that raises is rolled
 // back. `map("max_rounds", N)` caps the tool-call rounds of one think();
 // `map("tools_allowed", ["lookup"])` offers only those tools to that call
 // (classify with no refund tool in reach); a `*` in a capability stays in
@@ -545,7 +549,9 @@ cell agent Researcher {
 // configured — set SOMA_LLM_MOCK=echo for offline tests with a soma.toml key;
 // `mock h [[1, 2]]` scripts ONE List answer ([1, 2] is a queue of two).
 // approve(msg) is a gate a PERSON answers: tests script it (mock approve),
-// serve raises approval_required unless SOMA_APPROVE says otherwise.
+// serve raises approval_required unless SOMA_APPROVE says otherwise (and
+// the handler rolls back) — for a web flow, commit a pending state in one
+// request and decide in another (POST /decide/…); approve() is for run/test.
 // think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.
 // Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT, or
 // [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level

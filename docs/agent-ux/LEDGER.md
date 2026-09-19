@@ -964,3 +964,20 @@ Restaurant port 8/10: 20 orders racing for the last beef → one 201, stock 0;
 
 ### Open
 - [ ] Termination false positives: `if !(n > 0) { return 0 }` as a base case, a base case inside `try`; `m.a.b = 1` on a local map fails at run time with a `with` message; `1..10` in a match pattern is inclusive while `in 0..100` in a property is not; a face `-> Int` returning a computed String passes check.
+
+### Cycle 37 — realistic port (support tickets + LLM triage agent) + attack on the provers
+
+Support port 8/10: think_json triage with a scoped http tool against a
+fake orders API and a fake OpenAI server making real tool calls, a proven
+1200-token bound, 8-state machine with 7 temporal properties, verify --strict
+green. The attack ran 600 random interval expressions with no false ✓.
+
+### Fixed
+- [x] **Int bounds above 2^53 were "proven" through f64 rounding** (`require v <= 2^53` then `v + 1` "✓ <= 2^53"; `9007199254740993 - 9007199254740992` folded to 0) — an interval end past 2^53 is widened outward (a lower bound stays ≥ 2^53 − 1), Int literals and constant folds go through the same guard.
+- [x] **The size proof ignored think() tools**: a tool pushing to the slot broke a "proven" `rows.size <= 3` — a handler that calls think() reaches its cell's tools; a computed `delegate(…, op, …)` reaches every handler of the cell.
+- [x] A bare `c.get(k)` / `c[k]` written as is on an untyped Map was "proven" but may be () — runtime-checked, with the `?? default` fix named.
+- [x] `[native]` `i64::MIN / -1` returned a rounded Float — the too-large-quotient error; `idiv(MIN, -1)` as literals failed the rustc build (unconditional_panic allowed; BigInt fallback at run time); a cost peak saturating i64 "proved" `tokens: i64::MAX` — advisory.
+- [x] Port: `http_get` in a lambda / unbounded loop / tool made the TOKEN bound advisory — I/O only makes a `latency` bound advisory (examples/atlas dropped a latency axis whose proof ignored its I/O tools); a guarded transition() inside a lambda lost the handler locals the guard reads; refinement paths dropped parentheses; `[verify] cells` naming no cell of the file says NONE applies; docs: approve() web flow, budget per provider round, the OpenAI-compatible wire format.
+
+### Open
+- [ ] `A.rows.push(x)` inside A and `let g = rows.push` pass check, fail at run time; `rows[0][0] = 5` reported "may grow"; `x > 10 == true` does not parse; a computed-delegate recursion repeats "delegate error: " thousands of times.

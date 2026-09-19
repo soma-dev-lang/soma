@@ -26,7 +26,6 @@ State machine 'triage': 8 states, initial 'Received'
 $ soma check examples/atlas/app.cell
 
   ✓ cost: 'tokens' bound proven — peak 300 tokens ≤ declared 4000 tokens
-  ✓ cost: 'latency' bound proven — peak 10000 ms ≤ declared 12000 ms
   ✓ cost: 'usd' bound proven — peak 900 milli-USD ≤ declared 1000 milli-USD
 ```
 
@@ -37,7 +36,7 @@ $ soma check examples/atlas/app.cell
 | Sum types in memory | `intents: Map<String, Intent> [persistent, consistent]` |
 | Typed state machine | `state triage: TriageState { ... }` — every transition validated against the variant set |
 | Refinement | `approve ⟶ {Sent [if current == "AwaitingApproval"], ...}` — extracted automatically |
-| Cost lattice | `cost { tokens: 4000; latency: 12s; usd: 1.00 }` |
+| Cost lattice | `cost { tokens: 4000; usd: 2.00 }` (no latency axis: the model may call the I/O tools any number of times) |
 | Tool capabilities | `tool send_reply [capability: "smtp:gmail.com"]` — runtime guard refuses other hosts |
 | Model capabilities | `think(..., "requires", list("json_mode"))` — claude_sonnet advertises this in `soma.toml` |
 | Effect tracking | `think(..., "tools_allowed", list("vault_read"))` — verifier reports the narrowed dispatch set |

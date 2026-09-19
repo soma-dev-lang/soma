@@ -755,7 +755,10 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                 + (!cfg.always.is_empty()) as usize
                 + cfg.after.values().map(|a| (!a.eventually.is_empty()) as usize + a.never.len()).sum::<usize>()
                 + cfg.before.values().map(|b| (!b.requires.is_empty()) as usize + b.requires_all.len()).sum::<usize>();
-            if user_props > 0 {
+            if user_props > 0 && !targeted_present {
+                // `cells = ["Nope"]`: loaded, and applied to nothing here
+                eprintln!("soma.toml: {} user-defined properties loaded — NONE applies to this file ([verify] cells = {:?} names no cell of it)", user_props, cfg.cells);
+            } else if user_props > 0 {
                 eprintln!("soma.toml: {} user-defined properties loaded", user_props);
             }
         }

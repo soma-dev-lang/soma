@@ -2604,6 +2604,7 @@ impl Interpreter {
                 // closure env is cloned for each call) — 104 s for 20k rows.
                 let mut names: HashSet<String> = HashSet::new();
                 free_names_expr(&body.node, &mut names);
+                self.add_guard_names(&mut names);
                 let captured: HashMap<String, Value> = env.iter()
                     .filter(|(k, _)| names.contains(k.as_str()))
                     .map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -2619,6 +2620,7 @@ impl Interpreter {
                 let mut names: HashSet<String> = HashSet::new();
                 free_names_stmts(stmts, &mut names);
                 free_names_expr(&result.node, &mut names);
+                self.add_guard_names(&mut names);
                 let captured: HashMap<String, Value> = env.iter()
                     .filter(|(k, _)| names.contains(k.as_str()))
                     .map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -4574,6 +4576,23 @@ impl Interpreter {
     }
 
     /// Execute a state transition
+    /// A lambda that calls transition() captures the names the transition
+    /// guards read (the calling handler's locals): `ids |> map(i =>
+    /// transition(i, "b"))` raised "undefined variable: cents" in a guard
+    /// `soma check` had accepted.
+    fn add_guard_names(&self, names: &mut HashSet<String>) {
+        if !names.contains("transition") { return; }
+        for cell in self.cells.values() {
+            for sec in &cell.sections {
+                if let Section::State(sm) = &sec.node {
+                    for t in &sm.transitions {
+                        if let Some(g) = &t.node.guard { free_names_expr(&g.node, names); }
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn do_transition(&mut self, id: &str, target: &str) -> Result<Value, RuntimeError> {
         self.do_transition_for("", id, target)
     }
