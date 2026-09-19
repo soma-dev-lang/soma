@@ -333,7 +333,9 @@ impl CheckWarning {
     pub fn is_note(&self) -> bool {
         // a descriptive promise is documentation by design: a note, not a
         // warning that nags on every check
-        matches!(self, CheckWarning::BudgetOk { .. } | CheckWarning::CostProven { .. } | CheckWarning::UnverifiablePromise { .. })
+        // …and an implied property ('immutable' implies 'consistent'):
+        // "7 warnings" was 1 warning and 6 of these
+        matches!(self, CheckWarning::BudgetOk { .. } | CheckWarning::CostProven { .. } | CheckWarning::UnverifiablePromise { .. } | CheckWarning::PropertyImplication { .. })
     }
 }
 

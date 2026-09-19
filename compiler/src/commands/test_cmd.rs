@@ -634,8 +634,9 @@ fn run_property(
         // the rules' `let` fixtures are in scope, like for any other rule
         let mut env = fixtures.clone();
         env.insert(var.to_string(), interpreter::Value::Int(interpreter::SomaInt::from_i64(r)));
+        // the value that raised is named, as a counter-example is
         let v = interp.eval_expr_with_env(body, &env, "", "")
-            .map_err(|e| describe_error(&e))?;
+            .map_err(|e| format!("{} (for {} = {})", describe_error(&e), var, r))?;
         // a property is a Bool (a mask or "false" read as true)
         match v {
             interpreter::Value::Bool(true) => {}

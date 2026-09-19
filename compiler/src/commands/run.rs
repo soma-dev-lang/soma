@@ -8,6 +8,9 @@ use crate::runtime;
 use crate::vm;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
+/// `soma run --fresh`: the reset, run once the program passed its check
+pub static FRESH_HOOK: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> = std::sync::Mutex::new(None);
+
 pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Option<&str>, record_all: bool, registry: &mut Registry) {
     if use_jit {
         eprintln!("warning: --jit is deprecated and ignored. Mark hot numeric handlers [native] instead (see `soma docs agent`, Performance).");
@@ -40,6 +43,7 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
             std::process::exit(1);
         }
     }
+    if let Some(hook) = FRESH_HOOK.lock().unwrap_or_else(|e| e.into_inner()).take() { hook(); }
 
     // the handler name is matched on the RAW first token, before numeric
     // parsing: `soma run z.cell nan` called another handler with NaN, and
@@ -396,6 +400,13 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         eprintln!("warning: stored data: {}", line);
     }
     let result = interp.call_signal(&cell_name, &signal_name, actual_args);
+    // move the committed rows from the WAL into the database file before
+    // exiting: left in the WAL, one damaged frame silently dropped every
+    // later commit (an [immutable] log read back empty, quick_check "ok")
+    if let Some(conn) = crate::runtime::storage::shared_connection() {
+        let c = conn.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+    }
     // `soma run` has no bus: an emit meant for [peers] committed its
     // writes and reached nobody, without a word (an admin fix skipped the
     // notification service)

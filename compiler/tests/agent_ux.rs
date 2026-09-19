@@ -3614,3 +3614,69 @@ cell test T { rules { assert go() == "not_found" } }
     let (out, code) = soma_in(&r, &["replay", "app.cell"]);
     assert!(code == 0 && out.contains("0 diverged"), "{out}");
 }
+
+/// Cycle 65: your handler named like a network builtin (subscribe, link,
+/// ws_connect, ws_send) wins at its arity; a `cell test` helper's writes
+/// are held to the slot's invariants and `[immutable]`; `--fresh` deletes
+/// nothing when the program fails check; a raising property names its
+/// value; notes are not counted as warnings.
+#[test]
+fn cycle65_findings() {
+    passes("cycle65_shadow", r#"
+cell S {
+    on subscribe(a: String, b: String, c: String) { return "mine" }
+    on link(a: String) { return "mylink" }
+    on t() { return subscribe("x", "y", "z") + link("u") }
+}
+cell test T { rules { assert t() == "minemylink" } }
+"#);
+    passes("cycle65_helpers", r#"
+cell App {
+    memory {
+        inv: Map<String, Int> [persistent, immutable]
+        bal: Map<String, Int> [persistent]
+        invariant bal >= 0
+    }
+    on read(k: String) { return inv.get(k) }
+}
+cell test T {
+    rules {
+        assert_fails _w()
+        assert_fails _neg() matching "invariant"
+    }
+    on _w() { inv.set("a", 1)  inv.set("a", 2)  return read("a") }
+    on _neg() { bal.set("x", -5)  return bal.get("x") }
+}
+"#);
+    let d = dir("cycle65_fresh");
+    std::fs::write(d.join("k.cell"), "cell K { memory { d: Map<String, Int> [persistent] }  on put() { d.set(\"a\", (d.get(\"a\") ?? 0) + 1)  return d.get(\"a\") } }\n").unwrap();
+    let _ = soma_in(&d, &["run", "k.cell", "put"]);
+    std::fs::write(d.join("k.cell"), "cell K { memory { d: Map<String, Int> [persistent] }  on put() { return nope } }\n").unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "k.cell", "put"]);
+    assert!(d.join(".soma_data/soma.db").exists(), "a failing check deletes nothing");
+
+    let p = dir("cycle65_prop");
+    std::fs::write(p.join("p.cell"), "cell C { on credit(r: Int) { require r <= 31 else BadRemaining  return r } }\ncell test T { rules { property \"p\" forall r: Int in 0..33 ensures credit(r) >= 0 } }\n").unwrap();
+    let (out, _) = soma_in(&p, &["test", "p.cell"]);
+    assert!(out.contains("r = 32"), "{out}");
+}
+
+/// Cycle 65 (attack): `soma run` checkpoints the WAL; a damaged BigInt
+/// row reads back as text (reported by the audit), not 0; a handler reached
+/// from request through a model tool is not an endpoint; an `ensure` after
+/// an early return is a check warning.
+#[test]
+fn cycle65_attack() {
+    let d = dir("cycle65_wal");
+    std::fs::write(d.join("app.cell"), "cell K { memory { l: List<String> [persistent, immutable] }  on push(v: String) { l.push(v) }  on dump() { return l } }\n").unwrap();
+    let _ = soma_in(&d, &["run", "app.cell", "push", "a"]);
+    let _ = soma_in(&d, &["run", "app.cell", "push", "b"]);
+    let wal = d.join(".soma_data/soma.db-wal");
+    let wal_len = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+    assert_eq!(wal_len, 0, "the committed rows are in the database file, not left in the WAL");
+
+    let e = dir("cycle65_ensure");
+    std::fs::write(e.join("en.cell"), "cell E { memory { l: List<String> [persistent] }\n  on f6() { l.push(\"x\")  if true { return \"early\" }  ensure false } }\n").unwrap();
+    let (out, _) = soma_in(&e, &["check", "en.cell"]);
+    assert!(out.contains("before this `ensure`"), "{out}");
+}

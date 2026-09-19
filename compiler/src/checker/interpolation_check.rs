@@ -192,6 +192,23 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                     }
                     w.walk_stmts(&on.body);
                     issues.extend(w.issues);
+                    // `ensure` runs where it stands: a `return` before it skips
+                    // the postcondition (the write committed, exit 0)
+                    {
+                        let mut returned = false;
+                        for st in &on.body {
+                            if let Statement::Ensure { .. } = &st.node {
+                                if returned {
+                                    issues.push(InterpolationIssue {
+                                        message: format!("handler `{}` can `return` before this `ensure`, which then never runs — check the postcondition before each early return, or restructure so the handler falls through to it", on.signal_name),
+                                        span: st.span, warning: true, habit: true, kind: "ensure_after_return",
+                                    });
+                                }
+                                continue;
+                            }
+                            super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| if matches!(x, Statement::Return { .. }) { returned = true; });
+                        }
+                    }
                     for m in count_field_defaults(&on.body) {
                         issues.push(InterpolationIssue { message: m, span: section.span, warning: true, habit: true, kind: "count_field_default" });
                     }

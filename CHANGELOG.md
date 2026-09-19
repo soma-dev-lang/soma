@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Your handler named `subscribe`, `link`, `ws_connect` or `ws_send` wins
+  over the network builtin at its arity; `cell test` helpers are held to
+  the declaring cell's invariants and `[immutable]`.
+- `soma run` checkpoints the WAL on exit; a damaged BigInt row is reported
+  instead of reading as 0; `--fresh` resets data only after the check
+  passes; handlers reached from `request` through a model tool are not
+  endpoints; `ensure` after an early `return` is a check warning; a raising
+  `forall` names its value; notes are not counted as warnings.
 - Soundness: a `require` on a slot read no longer proves writes made after
   the slot was rewritten (here, through a helper or `delegate`); handlers
   reached from `request` through an `emit` at any depth are not endpoints.

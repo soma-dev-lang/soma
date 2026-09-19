@@ -343,49 +343,57 @@ fn main_inner() {
         Commands::Tokens { file } => cmd_tokens(&file),
         Commands::Run { file, args, jit, signal, record, fresh } => {
             runtime::storage::set_data_dir_beside(&file);
-            // `--fresh --record` starts a new log: the old one described runs
-            // from storage `--fresh` just deleted (replay then "diverged"). It
-            // is kept beside, renamed.
-            if fresh && record {
-                let log = interpreter::record_log::default_log_path(&file);
-                if log.exists() {
-                    let prev = log.with_extension("somalog.prev");
-                    let _ = std::fs::rename(&log, &prev);
-                    eprintln!("fresh: started a new record log ({} kept as {})", log.display(), prev.display());
-                }
-            }
+            // --fresh deletes data only once the program passes `soma check`
+            // (a program with an error wiped the database, then refused to run)
             if fresh {
-                // the database lives beside the program (see operations.md)
-                let data = runtime::storage::data_dir();
-                // not under a running `soma serve` (it holds a shared lock)
-                if let Ok(conn) = rusqlite::Connection::open(data.join("serve.lock")) {
-                    let _ = conn.busy_timeout(std::time::Duration::from_millis(0));
-                    if data.join("serve.lock").exists() && conn.execute_batch("BEGIN EXCLUSIVE").is_err() {
-                        eprintln!("error: --fresh: a `soma serve` is running on {} — stop it first (deleting its database under it loses everything it writes next)", data.display());
-                        std::process::exit(1);
+                let file = file.clone();
+                let hook: Box<dyn FnOnce() + Send> = Box::new(move || {
+                // `--fresh --record` starts a new log: the old one described runs
+                // from storage `--fresh` just deleted (replay then "diverged"). It
+                // is kept beside, renamed.
+                if fresh && record {
+                    let log = interpreter::record_log::default_log_path(&file);
+                    if log.exists() {
+                        let prev = log.with_extension("somalog.prev");
+                        let _ = std::fs::rename(&log, &prev);
+                        eprintln!("fresh: started a new record log ({} kept as {})", log.display(), prev.display());
                     }
                 }
-                // the database is per DIRECTORY: `--fresh other.cell` wiped
-                // the app's data beside it — when other programs' cells have
-                // tables there, only THIS program's tables are reset
-                if data.join("soma.db").exists() {
-                    let (own, foreign) = cells_in_db(&file, &data.join("soma.db"));
-                    if !foreign.is_empty() {
-                        if let Ok(conn) = rusqlite::Connection::open(data.join("soma.db")) {
-                            for t in &own { let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{}\"", t.replace('"', "\"\""))); }
+                if fresh {
+                    // the database lives beside the program (see operations.md)
+                    let data = runtime::storage::data_dir();
+                    // not under a running `soma serve` (it holds a shared lock)
+                    if let Ok(conn) = rusqlite::Connection::open(data.join("serve.lock")) {
+                        let _ = conn.busy_timeout(std::time::Duration::from_millis(0));
+                        if data.join("serve.lock").exists() && conn.execute_batch("BEGIN EXCLUSIVE").is_err() {
+                            eprintln!("error: --fresh: a `soma serve` is running on {} — stop it first (deleting its database under it loses everything it writes next)", data.display());
+                            std::process::exit(1);
                         }
-                        eprintln!("fresh: reset {} table(s) of this program — {} also holds tables {} (other programs in this directory), kept",
-                            own.len(), data.display(), foreign.join(", "));
-                        return commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry);
+                    }
+                    // the database is per DIRECTORY: `--fresh other.cell` wiped
+                    // the app's data beside it — when other programs' cells have
+                    // tables there, only THIS program's tables are reset
+                    if data.join("soma.db").exists() {
+                        let (own, foreign) = cells_in_db(&file, &data.join("soma.db"));
+                        if !foreign.is_empty() {
+                            if let Ok(conn) = rusqlite::Connection::open(data.join("soma.db")) {
+                                for t in &own { let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{}\"", t.replace('"', "\"\""))); }
+                            }
+                            eprintln!("fresh: reset {} table(s) of this program — {} also holds tables {} (other programs in this directory), kept",
+                                own.len(), data.display(), foreign.join(", "));
+                            return;
+                        }
+                    }
+                    if data.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&data) {
+                            eprintln!("error: --fresh: cannot remove {}: {}", data.display(), e);
+                            std::process::exit(1);
+                        }
+                        eprintln!("fresh: removed {}", data.display());
                     }
                 }
-                if data.exists() {
-                    if let Err(e) = std::fs::remove_dir_all(&data) {
-                        eprintln!("error: --fresh: cannot remove {}: {}", data.display(), e);
-                        std::process::exit(1);
-                    }
-                    eprintln!("fresh: removed {}", data.display());
-                }
+                });
+                *commands::run::FRESH_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
             }
             commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry)
         }

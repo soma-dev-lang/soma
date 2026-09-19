@@ -233,6 +233,21 @@ pub fn explicit_routes_in(program: &Program, cell: &CellDef) -> ExplicitRoutes {
             }
         }
         stmt_edges(&h.body, &cells, &mut edges);
+        // a think() may call any face `tool` of this cell — and what the tool
+        // calls (request → think → tool w21 → w22 left POST /w22 open)
+        let mut thinks = false;
+        super::literals::for_each_expr(&h.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { thinks = true; });
+        if thinks {
+            if let Some(c) = program.cells.iter().find(|c| c.node.name == cur) {
+                for sec in &c.node.sections {
+                    if let Section::Face(face) = &sec.node {
+                        for d in &face.declarations {
+                            if let FaceDecl::Tool(t) = &d.node { edges.push((Some(cur.clone()), t.name.clone())); }
+                        }
+                    }
+                }
+            }
+        }
         // at any depth: an `emit` in a match arm's block, a try, a lambda
         // (request → match arm → emit wev → wipe3 left POST /wipe3 open)
         super::literals::for_each_stmt_deep(&h.body, &mut |st| match st {

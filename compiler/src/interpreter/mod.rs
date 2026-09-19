@@ -2420,8 +2420,13 @@ impl Interpreter {
                     }
                 }
 
+                // YOUR handler of that name and arity wins over these network
+                // builtins too (`on subscribe(a, b, c)` ran the WebSocket
+                // subscribe; `link(user_text)` opened a socket)
+                let user_net = matches!(name.as_str(), "ws_connect" | "ws_send" | "link" | "subscribe")
+                    && self.user_handler_takes(name, arg_vals.len());
                 // raw sockets are outside a capability-scoped tool
-                if matches!(name.as_str(), "ws_connect" | "connect" | "subscribe") {
+                if !user_net && matches!(name.as_str(), "ws_connect" | "connect" | "subscribe") {
                     if let Some(caps) = self.current_tool_caps.as_ref() {
                         if !caps.iter().any(|c| c == "*") {
                             return Err(ExecError::Runtime(RuntimeError::TypeError(format!("capability denied: {}() is outside this tool's capabilities {:?}", name, caps))));
@@ -2429,14 +2434,14 @@ impl Interpreter {
                     }
                 }
                 // WebSocket builtins — need &mut self
-                if name == "ws_connect" {
+                if !user_net && name == "ws_connect" {
                     if let Some(Value::String(url)) = arg_vals.first() {
                         return self.do_ws_connect(url, cell_name)
                             .map_err(ExecError::Runtime);
                     }
                     return Err(ExecError::Runtime(RuntimeError::TypeError("ws_connect(url)".to_string())));
                 }
-                if name == "ws_send" {
+                if !user_net && name == "ws_send" {
                     if let Some(ref out) = self.ws_out {
                         let msg = match arg_vals.first() {
                             Some(Value::String(s)) => s.clone(),
@@ -2451,14 +2456,14 @@ impl Interpreter {
                     return Err(ExecError::Runtime(RuntimeError::TypeError("ws_send: not connected".to_string())));
                 }
                 // connect(host:port) — open a TCP signal bus link
-                if name == "link" {
+                if !user_net && name == "link" {
                     if let Some(Value::String(addr)) = arg_vals.first() {
                         return self.do_connect(addr, cell_name)
                             .map_err(ExecError::Runtime);
                     }
                     return Err(ExecError::Runtime(RuntimeError::TypeError("connect(\"host:port\")".to_string())));
                 }
-                if name == "subscribe" {
+                if !user_net && name == "subscribe" {
                     if let Some(Value::String(url)) = arg_vals.first() {
                         return self.do_subscribe(url, cell_name)
                             .map_err(ExecError::Runtime);
@@ -4249,6 +4254,8 @@ impl Interpreter {
     }
 
     fn slot_invariants_use_size(&self, cell_name: &str, slot_name: &str) -> bool {
+        let owner = self.slot_owner(cell_name, slot_name);
+        let cell_name = owner.as_str();
         let invs = self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None });
         let Some(invs) = invs else { return false };
         let mut names: HashSet<String> = HashSet::new();
@@ -4257,6 +4264,8 @@ impl Interpreter {
     }
 
     fn slot_invariants_use_key(&self, cell_name: &str, slot_name: &str) -> bool {
+        let owner = self.slot_owner(cell_name, slot_name);
+        let cell_name = owner.as_str();
         let invs = self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None });
         let Some(invs) = invs else { return false };
         let mut names: HashSet<String> = HashSet::new();
@@ -4265,6 +4274,8 @@ impl Interpreter {
     }
 
     fn slot_has_invariants(&self, cell_name: &str, slot_name: &str) -> bool {
+        let owner = self.slot_owner(cell_name, slot_name);
+        let cell_name = owner.as_str();
         // the unqualified key only without a cell (a test rule): another
         // cell's invariant on a slot of the same name refused valid writes
         self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None }).map_or(false, |v| !v.is_empty())
@@ -4279,6 +4290,8 @@ impl Interpreter {
         size_after: i64,
         op: &str,
     ) -> Result<(), ExecError> {
+        let owner = self.slot_owner(cell_name, slot_name);
+        let cell_name = owner.as_str();
         let prefixed = format!("{}.{}", cell_name, slot_name);
         let invs = match self.invariants.get(&prefixed).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None }) {
             Some(v) if !v.is_empty() => v.clone(),
@@ -4979,10 +4992,25 @@ impl Interpreter {
             .or(Some("Map"))
     }
 
+    /// The cell that DECLARES `slot`: a `cell test` helper writing
+    /// `inv.set(..)` by bare name ran with the test cell's name, found no
+    /// invariant under it and wrote past every rule, `[immutable]` included
+    fn slot_owner<'a>(&self, cell_name: &'a str, slot: &str) -> String {
+        let declares = |c: &CellDef| c.sections.iter().any(|s| matches!(&s.node, Section::Memory(m) if m.slots.iter().any(|sl| sl.node.name == slot)));
+        if self.cells.get(cell_name).map_or(false, |c| declares(c)) { return cell_name.to_string(); }
+        let mut owners = self.cell_order.iter().filter(|n| self.cells.get(*n).map_or(false, |c| c.kind != CellKind::Test && declares(c)));
+        match (owners.next(), owners.next()) {
+            (Some(o), None) => o.clone(),
+            _ => cell_name.to_string(),
+        }
+    }
+
     /// `[immutable]` slot: entries never change after they are written —
     /// append / add a new key only (the property was a promise nothing
     /// enforced; an audit log's tail could be deleted)
     fn slot_immutable(&self, cell_name: &str, name: &str) -> bool {
+        let owner = self.slot_owner(cell_name, name);
+        let cell_name = owner.as_str();
         let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
             Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name)
                 .map(|sl| sl.node.properties.iter().any(|p| p.node.name() == "immutable")),
@@ -5577,7 +5605,14 @@ pub(crate) fn stored_to_value(stored: StoredValue) -> Value {
     use crate::runtime::storage::StoredVariantFields;
     match stored {
         StoredValue::Int(n) => Value::Int(SomaInt::from_i64(n)),
-        StoredValue::BigInt(d) => Value::Int(SomaInt::from_decimal_str(&d)),
+        // damaged digits read as 0 (a balance silently reset): they come
+        // back as the text they are, which the start-up audit reports and
+        // arithmetic refuses
+        StoredValue::BigInt(d) => {
+            let t = d.trim();
+            let digits = t.strip_prefix('-').unwrap_or(t);
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) { Value::Int(SomaInt::from_decimal_str(t)) } else { Value::String(d) }
+        }
         StoredValue::Float(n) => Value::Float(n),
         StoredValue::String(s) => Value::String(s),
         StoredValue::Bool(b) => Value::Bool(b),

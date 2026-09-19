@@ -1481,3 +1481,23 @@ programs and their 221 verify verdicts held — and these did not.
 
 ### Open
 - [ ] `[verify] cells = […]` still prints other machines' temporal results; no strict CSV mode; no Decimal type.
+
+### Cycle 65 — realistic port (SaaS subscription billing) + attack on the newest guarantees ([immutable], require facts, routing, delegate, integrity)
+
+Billing port 7.5/10: 50 concurrent redemptions of a 10-use coupon → exactly
+10, also across two serve processes; a webhook replayed 5× applied once,
+across kill -9; proration exact to the cent. Attack: every [immutable] write
+path refused; ~80 require-fact shapes gave no false ✓; delegate kept every
+kind; routing hid every call form but one.
+
+### Fixed
+- [x] **Port: builtins `subscribe` / `link` / `ws_connect` / `ws_send` took over a user handler of the same name and arity** (`link(user_text)` opened a socket) — your handler wins, as for every other builtin.
+- [x] **Port: a `cell test` helper's writes skipped every invariant, `[immutable]` included** (checked under the test cell's name) — writes are held to the rules of the cell that declares the slot.
+- [x] **Attack: committed rows stayed in the WAL after `soma run`; one damaged frame erased an [immutable] log silently** — `soma run` checkpoints the WAL into the database file before exiting.
+- [x] Attack: a damaged BigInt row read back as 0 — it reads back as the text it is, which the start-up audit reports.
+- [x] Attack: a handler reached from `request` through a model tool (think → tool → helper) was an HTTP endpoint — think() edges to the cell's tools.
+- [x] Attack: `ensure` after an early `return` never runs — a check warning.
+- [x] Port: `soma run --fresh` deleted the data before the program failed its check — the reset runs only after the check passes; a raising `forall` names its value; implied-property notes are no longer counted as warnings.
+
+### Open
+- [ ] Two programs in one directory can alias tables by name (`K.m_x` vs `K_m.x`) and bypass [immutable] — one directory per program; quick_check misses index/table mismatches (integrity_check would catch them, at a cost); handlers called only from init / ticks / ws are still public endpoints unless `_private`.
