@@ -122,6 +122,14 @@ impl<'a> CostWalk<'a> {
             self.horde_notes.borrow_mut().push((false, format!("{label}: the target is computed — its cost cannot be bounded")));
             return;
         }
+        if let Some(t) = &target {
+            let short = t.rsplit('.').next().unwrap_or(t);
+            if self.stack.iter().any(|h| h == t || h == short) {
+                self.unbounded_sites.push(format!("{}::horde of itself", handler_name));
+                self.horde_notes.borrow_mut().push((false, format!("{label}: its target starts this horde again — each task fans out, it does not terminate (budget_tokens does not stop it: it spends no token)")));
+                return;
+            }
+        }
         if let Some(b) = lit_int("budget_tokens") {
             self.tokens = self.tokens.saturating_add(b.max(0));
             self.horde_notes.borrow_mut().push((true, format!("{label} ≤ {b} tokens — budget_tokens: every think() of its tasks and callbacks reserves its bound first (a hard ceiling while the provider honors max_tokens)")));
@@ -144,7 +152,8 @@ impl<'a> CostWalk<'a> {
         };
         let mut per_tokens = 0i64;
         let mut per_sites: Vec<String> = Vec::new();
-        for key in [target.clone(), lit_str("on_result"), lit_str("apply")].into_iter().flatten() {
+        // on_error runs once per failed task (at most every task)
+        for key in [target.clone(), lit_str("on_result"), lit_str("apply"), lit_str("on_error")].into_iter().flatten() {
             if let Some(w) = walk(self, &key) { per_tokens += w.tokens; per_sites.extend(w.unbounded_sites); }
         }
         let (done_tokens, done_sites) = lit_str("on_done").and_then(|k| walk(self, &k)).map_or((0, Vec::new()), |w| (w.tokens, w.unbounded_sites));

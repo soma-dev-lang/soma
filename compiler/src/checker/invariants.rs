@@ -243,8 +243,8 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         // `every` / `after` blocks write slots too: they are writers (their
         // writes were invisible — "no handler writes to guarded slots")
         let ticks: Vec<OnSection> = cell.node.sections.iter().enumerate().filter_map(|(i, s)| match &s.node {
-            Section::Every(e) => Some(OnSection { signal_name: format!("every {}ms #{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: vec![] }),
-            Section::After(e) => Some(OnSection { signal_name: format!("after {}ms #{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: vec![] }),
+            Section::Every(e) => Some(OnSection { signal_name: format!("every {}ms #{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: if e.task { vec!["task".to_string()] } else { vec![] } }),
+            Section::After(e) => Some(OnSection { signal_name: format!("after {}ms #{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: if e.task { vec!["task".to_string()] } else { vec![] } }),
             _ => None,
         }).collect();
         let mut handlers: HashMap<String, &OnSection> = cell
@@ -257,12 +257,15 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         let handlers = handlers;
         // every handler of the program, for growth that goes through
         // another cell (`B.relay(x)` → `A.extra(x)`, which pushes)
-        let all_handlers: Vec<(String, &OnSection)> = program.cells.iter()
+        let mut all_handlers: Vec<(String, &OnSection)> = program.cells.iter()
             .flat_map(|c| c.node.sections.iter().filter_map(move |s| match &s.node {
                 Section::OnSignal(on) => Some((c.node.name.clone(), on)),
                 _ => None,
             }))
             .collect();
+        // this cell's ticks too (a `[task]` tick's think() ends a step)
+        for t in &ticks { all_handlers.push((cell.node.name.clone(), t)); }
+        let all_handlers = all_handlers;
         let cell_names: HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
         // every handler of each cell: a computed `delegate` may run any
         let cell_handlers: HashMap<String, Vec<String>> = program.cells.iter().map(|c| (c.node.name.clone(),
@@ -397,7 +400,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     while let Some((c, h)) = stack.pop() {
                         if t || !seen.insert((c.clone(), h.clone())) { continue; }
                         let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
-                        crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { t = true; });
+                        crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json" || name == "vote") { t = true; });
                         for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
                             match target {
                                 None => {
@@ -2297,7 +2300,7 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[Stri
         }
     });
     let mut thinks = false;
-    crate::checker::literals::for_each_expr(stmts, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { thinks = true; });
+    crate::checker::literals::for_each_expr(stmts, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json" || name == "vote") { thinks = true; });
     if thinks { for t in tools { out.push((None, t.clone())); } }
     crate::checker::literals::for_each_expr(stmts, &mut |e| match e {
         Expr::FnCall { name, .. } => out.push((None, name.clone())),

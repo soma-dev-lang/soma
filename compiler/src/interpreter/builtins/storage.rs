@@ -190,7 +190,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         "set_budget" => {
             if let Some(Value::Int(si)) = args.first() {
                 let n = si.to_i64().unwrap_or(0).max(0);
-                if interp.tool_depth > 0 {
+                // …and from any handler another handler called: a library
+                // agent's set_budget(100000) lifted the caller's 10
+                if interp.tool_depth > 0 || (interp.current_depth > 1 && interp.agent_token_budget > 0) {
                     // reached from a model's tool call (a delegated agent's own
                     // set_budget): it may only LOWER what is left — it replaced
                     // the caller's 300 with 8000 and reset tokens_used, so the

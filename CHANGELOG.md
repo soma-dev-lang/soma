@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Soundness: a `[task]` tick (`every … [task]`) and `vote()` end a step —
+  the prover keeps no fact across them (a "proven" `members.size <= 3` was
+  broken at run time); the stale-read, try-write and no-think lints follow
+  helpers, other cells' agents, emit listeners and `"{think(…)}"`, and
+  apply to `[task]` ticks.
+- Hordes: a horde whose task starts a horde of itself is flagged by verify
+  and stopped (hordes started from tasks nest at most 4 deep; rounds started
+  by on_done do not nest; at most 1 000 000 queued tasks per process); a
+  server that lost a horde's lease stops recording its tasks (results after
+  on_done); a horde's creator no longer resumes it a second time (double
+  concurrency); `on_error` counts in the cost bound; `seed` covers apply and
+  on_done; `instance` memory is per owner cell; status says done inside
+  on_done; check: `seed` / `instance` / on_done parameter types.
+- Records: `r.field += 1`, `r["field"]`, `xs[0].field = v`, `with(record, …)`;
+  a field write must match its declared type.
+- Strings: `"{\"a\": {\"b\": 1}}"` kept its last `}` — a `}` closing a
+  literal `{` is never half of a `}}` escape.
+- A handler another handler called can only lower the caller's `set_budget`.
+- Docs: `SOMA_LLM_MOCK=rules:<file>` format; `keys(record)`.
+
 ## 2.7.0 — 2026-09-19
 
 - Hordes (attack pass): nested hordes and hordes started from callbacks run

@@ -26,6 +26,13 @@ pub static FACTORY: OnceLock<Factory> = OnceLock::new();
 
 /// Most workers one horde may start (each is a thread and an interpreter).
 pub const MAX_CONCURRENCY: usize = 1000;
+/// Most tasks queued at once in one process, all hordes together: a horde
+/// whose task starts a horde of itself grew without end (5 GB in 2 min).
+pub const MAX_QUEUED: usize = 1_000_000;
+/// Hordes started from a TASK of a horde nest at most this deep (rounds
+/// started by on_done / apply do not nest): a horde of itself fanned out
+/// without end.
+pub const MAX_NEST: usize = 4;
 
 #[derive(Clone, Debug)]
 pub struct Spec {
@@ -54,6 +61,8 @@ pub struct Spec {
     /// the horde whose task / callback started this one, and its budget
     pub parent: Option<String>,
     pub parent_budget: Option<Arc<Budget>>,
+    /// 0 for a horde started outside any horde task
+    pub depth: usize,
 }
 
 /// `budget_tokens`: a hard ceiling for the whole horde. Every think() of a
@@ -187,6 +196,8 @@ struct Live {
     stopped: usize,
     tokens: i64,
     cancelled: bool,
+    /// the lease went to another process: stop, do not close
+    lost: bool,
     /// one worker closes it (apply, on_done)…
     closing: bool,
     /// …and it is closed once that committed (a horde started by on_done
@@ -316,6 +327,12 @@ impl Interpreter {
 
     /// `horde(handler, inputs, opts)`: returns the horde's id.
     pub(crate) fn horde_start(&mut self, owner: &str, target: &str, inputs: Vec<Value>, opts: Option<&Value>) -> Result<Value, RuntimeError> {
+        let queued: usize = live().0.lock().unwrap_or_else(|e| e.into_inner()).values().map(|l| l.queue.len() + l.running).sum::<usize>()
+            + self.deferred_hordes.iter().map(|(_, i)| i.len()).sum::<usize>();
+        if queued + inputs.len() > MAX_QUEUED {
+            return Err(RuntimeError::Domain { kind: "limit".to_string(), message: format!(
+                "horde(): {} task(s) already queued in this process, {} more would pass {} — a horde that starts hordes of itself does not end", queued, inputs.len(), MAX_QUEUED) });
+        }
         let (target_cell, handler) = self.horde_target(owner, target)?;
         let mut spec = Spec {
             id: String::new(), owner: owner.to_string(), target_cell, handler,
@@ -323,7 +340,12 @@ impl Interpreter {
             concurrency: 8, max_attempts: 1, total: inputs.len(), budget_tokens: None,
             snapshot: None, apply: None, seed: None, instance: None,
             parent: self.horde_current.clone(), parent_budget: self.horde_budget.clone(),
+            depth: match (&self.horde_current, self.horde_closing) { (None, _) => 0, (Some(_), false) => self.horde_depth + 1, (Some(_), true) => self.horde_depth },
         };
+        if spec.depth > MAX_NEST {
+            return Err(RuntimeError::Domain { kind: "limit".to_string(), message: format!(
+                "horde(): hordes started from horde tasks nest at most {} deep — `{}` starts hordes of itself? (rounds belong in on_done)", MAX_NEST, target) });
+        }
         if let Some(o) = opts {
             let Value::Map(m) = o else { return Err(RuntimeError::TypeError("horde(): opts must be a map, e.g. map(\"concurrency\", 50)".to_string())) };
             for (k, v) in m.iter() {
@@ -399,6 +421,7 @@ impl Interpreter {
             ("seed".to_string(), spec.seed.map(int).unwrap_or(Value::Unit)),
             ("instance".to_string(), spec.instance.clone().map(Value::String).unwrap_or(Value::Unit)),
             ("parent".to_string(), spec.parent.clone().map(Value::String).unwrap_or(Value::Unit)),
+            ("depth".to_string(), int(spec.depth as i64)),
             // a nested horde without its own ceiling runs under its parent's
             ("parent_budget".to_string(), spec.parent_budget.as_ref().map(|b| int(b.limit)).unwrap_or(Value::Unit)),
             ("on_result".to_string(), spec.on_result.clone().map(Value::String).unwrap_or(Value::Unit)),
@@ -447,6 +470,7 @@ impl Interpreter {
     fn horde_run_sync(&mut self, spec: Spec, inputs: Vec<Value>) {
         let saved_budget = self.horde_budget.take();
         let saved_current = self.horde_current.replace(spec.id.clone());
+        let (saved_depth, saved_closing) = (self.horde_depth, self.horde_closing);
         self.horde_budget = Budget::for_horde(spec.budget_tokens, 0, spec.parent_budget.clone());
         let convs = std::mem::take(&mut self.agent_conversations);
         let conv = std::mem::take(&mut self.agent_conversation);
@@ -477,11 +501,15 @@ impl Interpreter {
         self.agent_token_budget = cap;
         self.horde_budget = saved_budget;
         self.horde_current = saved_current;
+        self.horde_depth = saved_depth;
+        self.horde_closing = saved_closing;
     }
 
     /// Before a task (each attempt): its seed, its agent instance (memory and
     /// conversation), its arguments.
     fn horde_task_begin(&mut self, spec: &Spec, idx: usize, input: &Value, attempt: u32) -> Vec<Value> {
+        self.horde_depth = spec.depth;
+        self.horde_closing = false;
         if let Some(seed) = spec.seed {
             // splitmix of (seed, index, attempt): the same draws on every run
             let mut z = (seed as u64) ^ (idx as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ (attempt as u64).wrapping_mul(0xD1B54A32D192ED03);
@@ -489,7 +517,8 @@ impl Interpreter {
             z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
             super::builtins::math::set_rng_state((z ^ (z >> 31)) | 1);
         }
-        self.horde_instance = spec.instance.as_ref().and_then(|f| field(input, f)).map(|v| match v { Value::String(x) => x.clone(), other => format!("{}", other) });
+        // an instance is its owner cell's: TenantB's "p1" is not TenantA's
+        self.horde_instance = spec.instance.as_ref().and_then(|f| field(input, f)).map(|v| format!("{}:{}", spec.owner, match v { Value::String(x) => x.clone(), other => format!("{}", other) }));
         if let Some(inst) = self.horde_instance.clone() {
             let mem = super::builtins::storage::agent_memory(self, &spec.target_cell);
             if let Some(Value::List(msgs)) = mem.get(&format!("{}/__conversation", inst)).map(stored_to_value) {
@@ -505,8 +534,17 @@ impl Interpreter {
     fn horde_finish(&mut self, spec: &Spec, idx: usize, input: &Value, result: &Value, tokens: i64, attempts: u32) -> Result<bool, RuntimeError> {
         let (_, tasks) = backends(&spec.owner);
         let key = task_key(&spec.id, idx);
+        // recorded by another process, or this one lost the horde's lease
+        // (paused past 5 s, then taken over): the last step is NOT kept
+        let elsewhere = |why: &str| RuntimeError::Domain { kind: "horde_elsewhere".to_string(), message: why.to_string() };
         if let Some(prev) = tasks.get(&key).map(stored_to_value) {
-            if field_str(&prev, "state").as_deref() == Some("done") { return Ok(false); }
+            if field_str(&prev, "state").as_deref() == Some("done") { return Err(elsewhere("already recorded")); }
+        }
+        if FACTORY.get().is_some() && !super::IN_TEST.load(std::sync::atomic::Ordering::Relaxed) {
+            let (hordes, _) = backends(&spec.owner);
+            if let Some(l) = hordes.get(&lease_key(&spec.id)).map(stored_to_value) {
+                if field_str(&l, "runner").unwrap_or_default() != me() { return Err(elsewhere("lease lost")); }
+            }
         }
         if let Some(h) = spec.on_result.clone() {
             let args = if self.handler_params(&spec.owner, &h) == Some(2) { vec![input.clone(), result.clone()] } else { vec![result.clone()] };
@@ -584,6 +622,10 @@ impl Interpreter {
     /// unit with its `applied` mark (exactly once across a restart). An
     /// apply that raises marks its task failed.
     fn horde_apply_all(&mut self, spec: &Spec) {
+        self.horde_closing = true;
+        self.horde_depth = spec.depth;
+        // apply and on_done draw reproducibly too (seed, past the tasks' range)
+        if let Some(seed) = spec.seed { super::builtins::math::set_rng_state(((seed as u64) ^ 0xA5A5_5A5A_DEAD_BEEF) | 1); }
         let Some(h) = spec.apply.clone() else { return };
         let (_, tasks) = backends(&spec.owner);
         let two = self.handler_params(&spec.owner, &h) == Some(2);
@@ -621,6 +663,8 @@ impl Interpreter {
 
     /// Nothing left to run: mark the horde closed and call `on_done` — once.
     fn horde_close(&mut self, spec: &Spec) -> Result<(), RuntimeError> {
+        self.horde_closing = true;
+        self.horde_depth = spec.depth;
         let (hordes, _) = backends(&spec.owner);
         let Some(meta) = hordes.get(&spec.id).map(stored_to_value) else { return Ok(()) };
         if matches!(field(&meta, "closed"), Some(Value::Bool(true))) { return Ok(()); }
@@ -652,7 +696,7 @@ impl Interpreter {
                 let stopped = l.cancelled || over || pending_cancel;
                 let queued = if stopped { 0 } else { l.queue.len() };
                 let cancelled = if stopped { l.queue.len() } else { 0 } + l.stopped;
-                let state = match (l.closed, l.cancelled, over) {
+                let state = match (l.closed || l.closing, l.cancelled, over) {
                     (true, true, _) => "cancelled", (true, _, true) => "exhausted", (true, _, _) => "done",
                     (false, true, _) => "cancelling", (false, _, true) => "exhausting",
                     _ if pending_cancel => "cancelling", _ => "running",
@@ -760,7 +804,7 @@ pub(crate) fn apply_commit(c: Commit) {
                     queue: queue.iter().map(|(i, _)| *i).collect(),
                     inputs: queue.into_iter().collect(),
                     attempts: HashMap::new(), running: 0, done, failed, stopped: 0, tokens,
-                    cancelled, closing: closed, closed,
+                    cancelled, lost: false, closing: closed, closed,
                     budget: Budget::for_horde(spec.budget_tokens, tokens, spec.parent_budget.clone()),
                 });
             }
@@ -777,7 +821,7 @@ pub(crate) fn apply_commit(c: Commit) {
     }
 }
 
-enum Outcome { Done(i64), Retry(i64), Failed(i64), Stopped(i64) }
+enum Outcome { Done(i64), Retry(i64), Failed(i64), Stopped(i64), Elsewhere }
 
 fn worker(id: &str) {
     let Some(factory) = FACTORY.get() else { return };
@@ -789,7 +833,7 @@ fn worker(id: &str) {
         let next = {
             let mut reg = live().0.lock().unwrap_or_else(|e| e.into_inner());
             let Some(l) = reg.get_mut(id) else { return };
-            if l.cancelled || exhausted(l) { None } else {
+            if l.cancelled || l.lost || exhausted(l) { None } else {
                 l.queue.pop_front().map(|i| {
                     l.running += 1;
                     let a = *l.attempts.get(&i).unwrap_or(&0) + 1;
@@ -807,12 +851,19 @@ fn worker(id: &str) {
             Outcome::Retry(t) => { l.tokens += t; l.attempts.insert(idx, attempt); l.queue.push_back(idx); }
             Outcome::Failed(t) => { l.failed += 1; l.tokens += t; l.inputs.remove(&idx); }
             Outcome::Stopped(t) => { l.stopped += 1; l.tokens += t; l.inputs.remove(&idx); }
+            // another process runs this horde now: stop here, it closes it
+            Outcome::Elsewhere => { l.inputs.remove(&idx); l.lost = true; }
         }
     }
     // the last worker out closes the horde
     let spec = {
         let mut reg = live().0.lock().unwrap_or_else(|e| e.into_inner());
         let Some(l) = reg.get_mut(id) else { return };
+        if l.lost {
+            // not ours any more: drop it from this process (the other closes it)
+            if l.running == 0 { reg.remove(id); live().1.notify_all(); }
+            return;
+        }
         if l.running > 0 || l.closing || (!l.cancelled && !exhausted(l) && !l.queue.is_empty()) { return; }
         l.closing = true;
         (l.spec.clone(), exhausted(l))
@@ -853,9 +904,10 @@ fn run_one(interp: &mut Interpreter, spec: &Spec, idx: usize, input: &Value, att
     interp.horde_instance = None;
     let spent = interp.agent_tokens_used;
     match r {
-        Ok(true) => Outcome::Done(spent),
-        // another process recorded it: this run's last step was not kept
-        Ok(false) => Outcome::Done(0),
+        Ok(_) => Outcome::Done(spent),
+        // another process recorded it / runs the horde now: the last step
+        // was rolled back; not counted here
+        Err(e) if e.kind() == "horde_elsewhere" => Outcome::Elsewhere,
         // stopped by the budget: not a failure of the input (no on_error)
         Err(e) if e.kind() == "budget" && interp.horde_budget.as_ref().map_or(false, |b| b.is_exhausted()) => {
             let _ = interp.atomically(|me| -> Result<(), RuntimeError> { me.horde_mark_stopped(spec, idx, input); Ok(()) });
@@ -943,7 +995,10 @@ fn scan(program: &crate::ast::Program) {
             if matches!(field(&meta, "closed"), Some(Value::Bool(true))) { continue; }
             // someone else runs it (a fresh lease)
             if let Some(l) = hordes.get(&lease_key(&id)).map(stored_to_value) {
-                if field_str(&l, "runner").unwrap_or_default() != me() && now_ms() - field_int(&l, "beat") < LEASE_STALE_MS { continue; }
+                let runner = field_str(&l, "runner").unwrap_or_default();
+                // ours: this process started it (its registry entry is being
+                // made) — resuming it would run it twice
+                if runner == me() || now_ms() - field_int(&l, "beat") < LEASE_STALE_MS { continue; }
             }
             let target = field_str(&meta, "target").unwrap_or_default();
             let Some((tc, h)) = target.split_once('.') else { continue };
@@ -960,6 +1015,7 @@ fn scan(program: &crate::ast::Program) {
                 seed: match field(&meta, "seed") { Some(Value::Int(i)) => i.to_i64(), _ => None },
                 instance: opt("instance"),
                 parent: opt("parent"),
+                depth: field_int(&meta, "depth").max(0) as usize,
                 // after a restart a nested horde gets its parent's ceiling
                 // again, less its own recorded spend (documented)
                 parent_budget: match field(&meta, "parent_budget") { Some(Value::Int(i)) => i.to_i64().map(|b| Arc::new(Budget::new(b, 0))), _ => None },
@@ -988,7 +1044,10 @@ fn scan(program: &crate::ast::Program) {
             let Some(factory) = FACTORY.get() else { return };
             let mut interp = factory();
             let (o, i) = (owner.clone(), id.clone());
-            if !interp.atomically(|me| -> Result<bool, RuntimeError> { Ok(me.horde_claim(&o, &i)) }).unwrap_or(false) { continue; }
+            if !interp.atomically(|me| -> Result<bool, RuntimeError> {
+                if live().0.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&i) { return Ok(false); }
+                Ok(me.horde_claim(&o, &i))
+            }).unwrap_or(false) { continue; }
             eprintln!("[horde {}] resuming: {} task(s) to run, {} done, {} failed{}", id, if cancelled { 0 } else { queue.len() }, done, failed, if cancelled { " (cancelled)" } else { "" });
             // a cancelled horde keeps its unrun tasks queued (counted cancelled)
             apply_commit(Commit::Start { spec, queue, done, failed, tokens, closed: false, cancelled });

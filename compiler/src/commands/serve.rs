@@ -1981,7 +1981,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         Some(v) if matches!(v, interpreter::Value::Map(_) | interpreter::Value::List(_)) => v,
                         _ if body.trim().is_empty() => interpreter::Value::Map(Default::default()),
                         _ => {
-                            let msg = if request_body_type.as_str() == "Map" {
+                            let msg = if request_body_type.as_str() == "Map" && body.trim_start().starts_with('{') {
+                                "request body is not a JSON object Soma reads: malformed, or nested deeper than the limit (the `request` handler declares body: Map)".to_string()
+                            } else if request_body_type.as_str() == "Map" {
                                 "request body must be a JSON object `{…}` (the `request` handler declares body: Map)".to_string()
                             } else {
                                 format!("request body must be a JSON {} (the `request` handler declares body: {})",

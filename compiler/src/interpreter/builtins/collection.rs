@@ -198,6 +198,20 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "with" => {
             match args.first() {
+                // a record: its declared fields only (types checked where it lands)
+                Some(Value::Variant { type_name, variant, fields: crate::interpreter::VariantValue::Struct(fs) }) => {
+                    let mut out = fs.clone();
+                    let mut i = 1;
+                    while i + 1 < args.len() {
+                        let key = format!("{}", args[i]);
+                        if !out.contains_key(&key) {
+                            return Some(Err(RuntimeError::TypeError(format!("{} has no field '{}' (fields: {})", variant, key, fs.keys().map(|x| x.as_str()).collect::<Vec<_>>().join(", ")))));
+                        }
+                        out.insert(key, args[i + 1].clone());
+                        i += 2;
+                    }
+                    Some(Ok(Value::Variant { type_name: type_name.clone(), variant: variant.clone(), fields: crate::interpreter::VariantValue::Struct(out) }))
+                }
                 Some(Value::Map(entries)) => {
                     let mut result = entries.clone();
                     let mut i = 1;

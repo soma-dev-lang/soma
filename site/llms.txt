@@ -286,7 +286,9 @@ source, `file:line`, left/right, and the fields a value really has when
   `rows.get(i)`, `rows.len` — all invariant-checked. A Map slot's `.keys` /
   `.values` / `.entries` come SORTED by key (every backend); a LOCAL map
   (`keys(m)` on a `let`) and a record's own fields keep insertion order.
-  `keys(record)` includes `"_type"`.
+  `keys(record)` / `values(record)` on a record (`Line { … }`) are its
+  declared fields, in order; `r.field = v`, `r.field += 1` and
+  `xs[0].field = v` check the field's declared type.
 - A bare call to a name two cells define (`pack(id)` with `Orders.pack` and
   `Warehouse.pack`) is a check error from a third cell: qualify it
   (`Warehouse.pack(id)`). Inside `Warehouse` the bare call runs Warehouse's
@@ -666,7 +668,10 @@ cell agent Researcher {
 // the handler rolls back) — for a web flow, commit a pending state in one
 // request and decide in another (POST /decide/…); approve() is for run/test.
 // think(prompt, map(..)) or think(prompt, system, map(..)): options go LAST.
-// Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT, or
+// Offline: `mock think …` in tests, SOMA_LLM_MOCK=echo | fixed:TEXT |
+// rules:mocks.json — a list of {"match": "substring of the prompt",
+// "cell": "AgentCell", "reply": "text" or a JSON value}: the first rule whose
+// match / cell fit answers, none: an echo — or
 // [agent] mock = "echo" in soma.toml. Record/replay: `soma run --record` (not serve) logs each top-level
 // call; `soma replay` re-runs them from EMPTY storage with the soma.toml
 // [agent], calls think() again (replies are not recorded) and compares the

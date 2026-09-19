@@ -3809,9 +3809,9 @@ cell agent A {
     let (out, _) = soma_in(&d, &["check", "a.cell"]);
     assert!(out.contains("handler `request` calls [task] `ask`") && out.contains("[task]`"), "{out}");
     assert!(out.contains("this `after` tick calls [task] `ask`") && out.contains("after 300ms [task]"), "{out}");
-    assert!(out.contains("reads 'stock' before a think() and writes it after"), "{out}");
-    assert!(out.contains("this try writes a slot and calls think()"), "{out}");
-    assert!(out.contains("[task] on `plain` has no think()"), "{out}");
+    assert!(out.contains("reads 'stock' before a think()"), "{out}");
+    assert!(out.contains("this try writes a slot and reaches a think()"), "{out}");
+    assert!(out.contains("[task] on `plain` makes no think()"), "{out}");
     std::fs::write(d.join("b.cell"), "cell A { on t() [tsak] { return 1 }\n on n() [task, native] { return think(\"x\") } }\n").unwrap();
     let (out, code) = soma_in(&d, &["check", "b.cell"]);
     assert!(code != 0 && out.contains("unknown handler annotation [tsak]") && out.contains("did you mean [task]"), "{out}");
@@ -4273,4 +4273,72 @@ cell test T {
 "#).unwrap();
     let (out, code) = soma_in(&d, &["test", "n.cell"]);
     assert!(code == 0 && out.contains("2 passed"), "{out}");
+}
+
+#[test]
+fn cycle69_step_boundaries_self_hordes_records_braces_budgets() {
+    let d = dir("cycle69");
+    // a [task] tick and vote(): the prover keeps no fact across them; lints see them transitively
+    std::fs::write(d.join("t.cell"), r#"
+cell Club {
+    memory {
+        members: List<String> [persistent]
+        invariant members.size <= 3
+    }
+    every 1s [task] {
+        require len(members) < 3 else Full
+        let x = think("x", map("max_tokens", 5))
+        members.push("tick")
+    }
+    on join_vote(who: String) [task] {
+        require len(members) < 3 else Full
+        let v = vote(Club._j, who, 2)
+        members.push(who)
+    }
+    on join_helper(who: String) [task] {
+        let r = try {
+            _save(who)
+            fail("x", "y")
+        }
+        return r
+    }
+    on _save(w: String) {
+        members.push(w)
+        let x = think("q", map("max_tokens", 5))
+    }
+    on _j(w: String) [task] { return think("ok {w}", map("max_tokens", 5)) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "t.cell"]);
+    assert!(!out.contains("writer 'join_vote' proven") && !out.contains("writer 'every 1000ms #5' proven") && out.contains("every 1000ms"), "{out}");
+    let (out, _) = soma_in(&d, &["check", "t.cell"]);
+    assert!(out.contains("tick `every 1000ms` reads 'members'") && out.contains("`join_vote` reads 'members'") && out.contains("`join_helper`: this try writes a slot"), "{out}");
+    assert!(!out.contains("`join_vote` makes no think()"), "{out}");
+    // a horde of itself: verify warns, and it stops (nesting limit)
+    std::fs::write(d.join("r.cell"), "cell Boss { on go(n: Int) { return horde(Boss.go, [n, n], map(\"budget_tokens\", 100)) } }\ncell test T { rules {\n let h = Boss.go(1)\n assert h != ()\n } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "r.cell"]);
+    assert!(out.contains("starts this horde again"), "{out}");
+    let (out, code) = soma_in(&d, &["test", "r.cell"]);
+    assert!(code == 0, "{out}");
+    // records: += on a field, nested field set, declared types enforced
+    std::fs::write(d.join("rec.cell"), r#"
+cell type Line { variants { Line { sku: String, qty: Int } } }
+cell A {
+    on main() {
+        let l = Line { sku: "x", qty: 1 }
+        l.qty += 1
+        let xs = [l]
+        xs[0].qty = 7
+        print(xs[0].qty + l.qty)
+        print(try { l.qty = "bad" })
+        print("{\"a\": {\"b\": 1}}")
+    }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["run", "rec.cell"]);
+    assert!(out.contains("9") && out.contains("Line.qty: expected Int") && out.contains("{\"a\": {\"b\": 1}}"), "{out}");
+    // a called handler's set_budget cannot lift the caller's
+    std::fs::write(d.join("b.cell"), "cell agent Inner { on ask(q: String) { set_budget(100000)\n return think(q, map(\"max_tokens\", 50)) } }\ncell Outer { on main() { set_budget(10)\n let r = try { Inner.ask(\"a long prompt that costs far more than ten tokens, surely more than ten\") }\n return r.kind } }\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "b.cell", "main"]).env("SOMA_LLM_MOCK", "echo").current_dir(&d).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("budget"), "{}", String::from_utf8_lossy(&out.stdout));
 }

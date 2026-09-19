@@ -1617,3 +1617,24 @@ accounted once; budget 50 000 exhausted at 49 494.
 - [x] Any cell could read or cancel another's horde — owner (and test rules) only.
 - [x] RPM 30 let ~62 calls through the first minute — an exact sliding window (40 calls at RPM 30: 60 s).
 - [x] (frozen binary only) soma test rolled a task back whole / stopped chains at 511 — the sync rewrite runs one task per unit like serve.
+
+### Cycle 69 — helpdesk port (7.5/10) + attack on 2.7.0
+
+Port: 300 parallel submits with a 500 ms model in 0.58 s ([task] overlap);
+100 parallel same-key submits → one ticket; agent cap exact under 100
+assigns and two servers; kill -9 during a nightly horde → exactly once;
+tick failover; SSE isolation.
+
+### Fixed
+- [x] **Attack: `every … [task]` ticks — the prover carried facts across think()** (verify "proven", runtime violation) — ticks carry [task] into the prover and the lints.
+- [x] **Attack: vote() in a [task] released the lock unseen** (proven invariant violated; 180 paid from 100) — vote is a step boundary for the prover and the lints; lints transitive (helpers, `Cell.h`, emit listeners, interpolated think).
+- [x] **Port: `"{\"a\": {\"b\": 1}}"` dropped a `}`** — literal-brace depth.
+- [x] **Attack: a horde of itself** ran away (5 GB) with verify OK — verify ⚠, nesting ≤ 4 from tasks, 1M queued cap.
+- [x] Attack: a server that lost the lease recorded 2 results after on_done — finish checks the lease; the step rolls back (the "already recorded" path used to COMMIT its last step).
+- [x] Port: the creator resumed its own new horde (double concurrency, 4/20 runs) — scan skips hordes whose lease is this process's, re-checks the registry inside the claim.
+- [x] Port: a called handler's set_budget lifted the caller's — only lowers.
+- [x] Attack: on_error missing from the cost bound; seed not covering apply/on_done; instance memory shared across owner cells; `l.qty += 1`, `xs[0].qty = v`, untyped field writes; check gaps (seed/instance/on_done types; vote messages said horde()).
+- [x] Docs: rules: mock format; keys(record).
+
+### Open
+- [ ] horde_status tokens exclude callbacks without a budget; a budget-refused `apply` counts failed; `soma run` sees `running: 0` for a horde a server runs; owner-only access can be bypassed by a lambda passed to the owner's handler; the reserved word `agent` as a field name.

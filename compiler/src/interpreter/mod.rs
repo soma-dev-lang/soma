@@ -774,6 +774,10 @@ pub struct Interpreter {
     pub(crate) horde_instance: Option<String>,
     /// the horde this interpreter runs a task / callback of
     pub(crate) horde_current: Option<String>,
+    pub(crate) horde_depth: usize,
+    /// running a horde's apply / on_done (a horde started there is the next
+    /// round, not a nested one)
+    pub(crate) horde_closing: bool,
     /// hordes to run synchronously once the current unit has committed
     /// (no workers: `soma test`), and the guard against running them nested
     pub(crate) deferred_hordes: Vec<(horde::Spec, Vec<Value>)>,
@@ -1023,6 +1027,8 @@ impl Interpreter {
             horde_budget: None,
             horde_instance: None,
             horde_current: None,
+            horde_depth: 0,
+            horde_closing: false,
             deferred_hordes: Vec::new(),
             running_deferred: false,
             agent_models: DEFAULT_AGENT.get().map(|d| d.1.clone()).unwrap_or_default(),
@@ -1719,7 +1725,7 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     // a record: `l.qty = v` on a struct variant sets a declared field
-                    Some(Value::Variant { variant, fields: VariantValue::Struct(fs), .. }) => {
+                    Some(Value::Variant { type_name, variant, fields: VariantValue::Struct(fs) }) => {
                         let key = match &idx_val { Value::String(k) => k.clone(), other => format!("{}", other) };
                         if !fs.contains_key(&key) {
                             let known: Vec<&str> = fs.keys().map(|k| k.as_str()).collect();
@@ -1727,6 +1733,19 @@ impl Interpreter {
                                 "{} has no field '{}' (fields: {})", variant, key, known.join(", ")
                             ))));
                         }
+                        // the declared field type holds (`l.qty = "x"` on qty: Int was kept)
+                        let fty = match self.variant_fields.get(&(type_name.clone(), variant.clone())) {
+                            Some(crate::ast::VariantFields::Struct(fields)) => fields.iter().find(|(f, _)| *f == key).map(|(_, t)| t.node.clone()),
+                            _ => None,
+                        };
+                        let new_val = match fty {
+                            Some(t) => {
+                                let v = self.coerce_records(&t, new_val).map_err(|e| ExecError::Runtime(RuntimeError::TypeError(format!("{}.{}: {}", variant, key, e))))?;
+                                self.value_fits(&t, &v).map_err(|e| ExecError::Runtime(RuntimeError::TypeError(format!("{}.{}: {}", variant, key, e))))?;
+                                v
+                            }
+                            None => new_val,
+                        };
                         fs.insert(key, new_val);
                         Ok(Value::Unit)
                     }
@@ -3109,6 +3128,13 @@ impl Interpreter {
                     }
                 }
                 let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
+                // a record's field by name (`l["qty"]`, and `l.qty += 1`)
+                if let (Value::Variant { variant, fields: VariantValue::Struct(fs), .. }, Value::String(k)) = (&target_val, &idx_val) {
+                    return match fs.get(k) {
+                        Some(v) => Ok(v.clone()),
+                        None => Err(ExecError::Runtime(RuntimeError::TypeError(format!("{} has no field '{}' (fields: {})", variant, k, fs.keys().map(|x| x.as_str()).collect::<Vec<_>>().join(", "))))),
+                    };
+                }
                 match target_val {
                     Value::List(ref items) => {
                         let i = list_position(&idx_val, items.len(), "list").map_err(ExecError::Runtime)?;
@@ -3759,8 +3785,18 @@ impl Interpreter {
     fn interpolate_string(&mut self, s: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> Result<String, ExecError> {
         let mut result = String::with_capacity(s.len());
         let mut pos = 0;
+        // `{` kept as literal text (JSON, CSS) still open: the `}` that
+        // closes one is text too, never half of a `}}` escape
+        // (`"{\"a\": {\"b\": 1}}"` printed `{"a": {"b": 1}`)
+        let mut literal_open = 0usize;
         while pos < s.len() {
             let byte = s.as_bytes()[pos];
+            if byte == b'}' && literal_open > 0 {
+                literal_open -= 1;
+                result.push('}');
+                pos += 1;
+                continue;
+            }
             // {{ and }} escape literal braces
             if byte == b'{' && s.as_bytes().get(pos + 1) == Some(&b'{') {
                 result.push('{');
@@ -3782,6 +3818,7 @@ impl Interpreter {
                     let quantifier = expr_str.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ');
                     if expr_str.is_empty() || expr_str.contains(':') || expr_str.contains(';') || quantifier {
                         result.push('{');
+                        literal_open += 1;
                         pos += 1;
                         continue;
                     }
@@ -3795,6 +3832,7 @@ impl Interpreter {
                         // Not parseable as an expression — treat the brace as literal text
                         InterpResult::NotAnExpr => {
                             result.push('{');
+                            literal_open += 1;
                             pos += 1;
                             continue;
                         }
@@ -4956,6 +4994,26 @@ impl Interpreter {
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma. Delegates to sub-modules in builtins/.
     pub fn call_builtin(&mut self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
+        // `with(record, "field", v)` (also `xs[0].qty = v`): the declared
+        // field type holds, as for `l.qty = v`
+        if name == "with" && args.len() >= 3 && !self.user_handler_takes(name, args.len()) {
+            if let Value::Variant { type_name, variant, fields: VariantValue::Struct(_) } = &args[0] {
+                if let Some(crate::ast::VariantFields::Struct(fields)) = self.variant_fields.get(&(type_name.clone(), variant.clone())).cloned() {
+                    let mut coerced = args.to_vec();
+                    let mut i = 1;
+                    while i + 1 < coerced.len() {
+                        let key = format!("{}", coerced[i]);
+                        if let Some((_, t)) = fields.iter().find(|(f, _)| *f == key) {
+                            let v = match self.coerce_records(&t.node, coerced[i + 1].clone()) { Ok(v) => v, Err(e) => return Some(Err(RuntimeError::TypeError(format!("{}.{}: {}", variant, key, e)))) };
+                            if let Err(e) = self.value_fits(&t.node, &v) { return Some(Err(RuntimeError::TypeError(format!("{}.{}: {}", variant, key, e)))); }
+                            coerced[i + 1] = v;
+                        }
+                        i += 2;
+                    }
+                    return builtins::call_builtin(self, name, &coerced, cell_name);
+                }
+            }
+        }
         // `mock http_post map(...)` in a test cell scripts a builtin like a
         // handler (it used to be accepted and ignored — the test then made
         // a real network call)

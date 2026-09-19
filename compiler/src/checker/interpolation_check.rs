@@ -75,6 +75,7 @@ fn count_field_defaults(body: &[Spanned<Statement>]) -> Vec<String> {
 pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
     let index = ProgramIndex::build(program);
     let mut issues = Vec::new();
+    let boundary = step_boundaries(program);
 
     // Handlers a test cell targets with `assert_fails handler(...)` are
     // EXPECTED to raise — interpolation issues in them demote to
@@ -243,65 +244,7 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                     }
                     // `[task]` handlers: a think() ends a step (its writes commit)
                     if on.properties.iter().any(|p| p == "task") {
-                        let has_think = |stmts: &[Spanned<Statement>]| {
-                            let mut t = false;
-                            super::literals::for_each_expr(stmts, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { t = true; });
-                            t
-                        };
-                        let slot_writes = |stmts: &[Spanned<Statement>]| -> Vec<String> {
-                            let mut w: Vec<String> = Vec::new();
-                            super::literals::for_each_stmt_deep(stmts, &mut |st| match st {
-                                Statement::MethodCall { target, method, .. } if cell_slots.contains(target) && matches!(method.as_str(), "set" | "push" | "delete" | "remove" | "put") => w.push(target.clone()),
-                                Statement::IndexSet { name, .. } if cell_slots.contains(name) => w.push(name.clone()),
-                                _ => {}
-                            });
-                            super::literals::for_each_expr(stmts, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
-                                if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) && matches!(method.as_str(), "set" | "push" | "delete" | "remove" | "put") { w.push(t.clone()); } }
-                            });
-                            w
-                        };
-                        if on.properties.iter().any(|p| p == "native") {
-                            issues.push(InterpolationIssue { message: format!("handler `{}` is both [task] and [native] — a native handler cannot call think(); drop one", on.signal_name), span: section.span, warning: false, habit: false, kind: "task_native" });
-                        }
-                        let body_thinks = has_think(&on.body);
-                        // a stale read: read before the think, written after
-                        if let Some(i) = on.body.iter().position(|st| has_think(std::slice::from_ref(st))) {
-                            let mut read: Vec<String> = Vec::new();
-                            super::literals::for_each_expr(&on.body[..i], &mut |e| match e {
-                                Expr::MethodCall { target, method, .. } if matches!(method.as_str(), "get" | "has" | "len" | "size" | "keys" | "values") => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
-                                Expr::Index { target, .. } => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
-                                Expr::FnCall { name, args } if matches!(name.as_str(), "len" | "keys" | "values") => { if let Some(Expr::Ident(t)) = args.first().map(|a| &a.node) { if cell_slots.contains(t) { read.push(t.clone()); } } }
-                                _ => {}
-                            });
-                            let written = slot_writes(&on.body[i..]);
-                            let mut stale: Vec<String> = read.into_iter().filter(|r| written.contains(r)).collect();
-                            stale.sort(); stale.dedup();
-                            for sl in stale {
-                                issues.push(InterpolationIssue {
-                                    message: format!("[task] `{}` reads '{}' before a think() and writes it after: other requests may write '{}' while the model runs — read (and re-check) it after the think()", on.signal_name, sl, sl),
-                                    span: section.span, warning: true, habit: true, kind: "task_stale_read",
-                                });
-                            }
-                        } else if !body_thinks {
-                            issues.push(InterpolationIssue {
-                                message: format!("[task] on `{}` has no think() in its body — it runs as one atomic unit like a plain handler (a think() in a handler it calls still ends a step)", on.signal_name),
-                                span: section.span, warning: true, habit: true, kind: "task_without_think",
-                            });
-                        }
-                        // a `try` holding writes AND a think: the writes before the
-                        // think commit at it and are not undone if the try fails
-                        super::literals::for_each_expr(&on.body, &mut |e| if let Expr::Try(inner) = e {
-                            let mut stmts: Vec<Spanned<Statement>> = Vec::new();
-                            super::literals::for_each_stmt_in_expr(&inner.node, &mut |st| stmts.push(Spanned::new(st.clone(), section.span)));
-                            let mut thinks = false;
-                            super::literals::for_each_in_expr(&inner.node, &mut |x| if matches!(x, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { thinks = true; });
-                            if thinks && !slot_writes(&stmts).is_empty() {
-                                issues.push(InterpolationIssue {
-                                    message: format!("[task] `{}`: this try writes a slot and calls think() — the writes made before the think() commit at it and are NOT undone if the try fails; write after the think()", on.signal_name),
-                                    span: section.span, warning: true, habit: true, kind: "task_try_write",
-                                });
-                            }
-                        });
+                        task_lints(&format!("`{}`", on.signal_name), &on.body, &cell.name, &cell_slots, &boundary, section.span, on.properties.iter().any(|p| p == "native"), &mut issues);
                     }
                     for m in count_field_defaults(&on.body) {
                         issues.push(InterpolationIssue { message: m, span: section.span, warning: true, habit: true, kind: "count_field_default" });
@@ -312,6 +255,9 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                     w.cell_slots = cell_slots.clone();
                     w.walk_stmts(&ev.body);
                     issues.extend(w.issues);
+                    if ev.task {
+                        task_lints(&format!("tick `{} {}ms`", if matches!(section.node, Section::Every(_)) { "every" } else { "after" }, ev.interval_ms), &ev.body, &cell.name, &cell_slots, &boundary, section.span, false, &mut issues);
+                    }
                 }
                 _ => {}
             }
@@ -426,7 +372,7 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                             cells.iter().find_map(|x| handler(&x.name, &th).map(|on| (x.name.clone(), on)))
                         } else { None });
                         match found {
-                            None => err(format!("horde(): no handler `{}.{}`", tc, th), false, "horde_target"),
+                            None => err(format!("{}(): no handler `{}.{}`", what, tc, th), false, "horde_target"),
                             Some((tc, on)) => {
                                 let want_params = if is_vote { 1 } else { want_params };
                                 if on.params.len() != want_params {
@@ -440,7 +386,7 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                                     super::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { t = true; });
                                     t
                                 } {
-                                    err(format!("horde(): `{}.{}` is not [task] — each task then holds the lock through its think(), and the horde runs one task at a time: mark it `on {}(…) [task]`", tc, th, th), true, "horde_not_task");
+                                    err(format!("{}(): `{}.{}` is not [task] — each call then holds the lock through its think(), one at a time: mark it `on {}(…) [task]`", what, tc, th, th), true, "horde_not_task");
                                 }
                             }
                         }
@@ -458,7 +404,9 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                                     "concurrency" => if lit_int(1, 1000) == Some(false) { err("horde(): concurrency must be an Int in 1..1000".to_string(), false, "horde_option"); },
                                     "max_attempts" => if lit_int(1, 10) == Some(false) { err("horde(): max_attempts must be an Int in 1..10".to_string(), false, "horde_option"); },
                                     "budget_tokens" => if lit_int(1, i64::MAX) == Some(false) { err("horde(): budget_tokens must be a positive Int".to_string(), false, "horde_option"); },
-                                    "seed" | "snapshot" | "instance" => {}
+                                    "seed" => if matches!(val, Some(Expr::Literal(l)) if !matches!(l, Literal::Int(_))) { err("horde(): seed must be an Int".to_string(), false, "horde_option"); },
+                                    "instance" => if matches!(val, Some(Expr::Literal(l)) if !matches!(l, Literal::String(_))) { err("horde(): instance names an input field: a String".to_string(), false, "horde_option"); },
+                                    "snapshot" => {}
                                     "on_result" | "on_done" | "on_error" | "apply" => {
                                         if !matches!(val, Some(Expr::Literal(Literal::String(_)))) {
                                             err(format!("horde(): {} must name a handler with a literal string (\"_store\") — a computed name could run any handler", k), false, "horde_callback");
@@ -470,6 +418,8 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                                             let want: &[usize] = match k.as_str() { "on_result" | "apply" => &[1, 2], "on_done" => &[1], _ => &[2] };
                                             match handler(&c.name, h) {
                                                 None => err(format!("horde(): {} names `{}`, which is not a handler of cell `{}`", k, h, c.name), false, "horde_callback"),
+                                                Some(on) if k == "on_done" && on.params.len() == 1 && matches!(&on.params[0].ty.node, crate::ast::TypeExpr::Simple(t) if t != "String" && t != "Any") =>
+                                                    err(format!("horde(): on_done handler `{}` receives the horde id — declare `{}: String`", h, on.params[0].name), false, "horde_callback"),
                                                 Some(on) if k == "on_error" && on.params.len() == 2 && matches!(&on.params[1].ty.node, crate::ast::TypeExpr::Simple(t) if t != "Map" && t != "Any") =>
                                                     err(format!("horde(): on_error handler `{}` receives the error as a Map {{error, kind, detail}} — declare `{}: Map`", h, on.params[1].name), false, "horde_callback"),
                                                 Some(on) if !want.contains(&on.params.len()) => err(format!("horde(): {} handler `{}` takes {} parameter(s); it is called with {}", k, h, on.params.len(),
@@ -1587,4 +1537,134 @@ fn strsim_close(a: &str, b: &str) -> bool {
         if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] { d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1); }
     } }
     d[n][m] <= 2
+}
+
+
+/// Handlers (cell, name) whose run reaches a `[task]` step boundary — a
+/// think() / think_json() / vote(), directly or through a handler they
+/// call (same cell, `Cell.h`, an emit's listeners): each of those waits for
+/// the model outside the lock.
+pub(crate) struct Boundary { handlers: HashSet<(String, String)>, signals: HashSet<String>, bodies: std::collections::HashMap<(String, String), Vec<Spanned<Statement>>> }
+
+fn direct_boundary(e: &Expr) -> bool {
+    match e {
+        Expr::FnCall { name, .. } => matches!(name.as_str(), "think" | "think_json" | "vote"),
+        // "{think(…)}" inside a string
+        Expr::Literal(Literal::String(t)) => t.contains('{') && (t.contains("think(") || t.contains("think_json(") || t.contains("vote(")),
+        _ => false,
+    }
+}
+
+impl Boundary {
+    fn expr(&self, cell: &str, e: &Expr) -> bool {
+        direct_boundary(e) || match e {
+            Expr::FnCall { name, .. } => self.handlers.contains(&(cell.to_string(), name.clone())) || (!name.contains('.') && self.handlers.iter().any(|(_, h)| h == name) && !matches!(name.as_str(), "horde")),
+            Expr::MethodCall { target, method, .. } => matches!(&target.node, Expr::Ident(c) if self.handlers.contains(&(c.clone(), method.clone()))),
+            _ => false,
+        }
+    }
+    pub(crate) fn stmts(&self, cell: &str, stmts: &[Spanned<Statement>]) -> bool {
+        let mut t = false;
+        super::literals::for_each_expr(stmts, &mut |e| if self.expr(cell, e) { t = true; });
+        super::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+            Statement::Emit { signal_name, .. } if self.signals.contains(signal_name) => t = true,
+            Statement::MethodCall { target, method, .. } if self.handlers.contains(&(target.clone(), method.clone())) => t = true,
+            _ => {}
+        });
+        t
+    }
+    fn in_expr(&self, cell: &str, e: &Expr) -> bool {
+        let mut t = self.expr(cell, e);
+        super::literals::for_each_in_expr(e, &mut |x| if self.expr(cell, x) { t = true; });
+        let mut stmts: Vec<Spanned<Statement>> = Vec::new();
+        super::literals::for_each_stmt_in_expr(e, &mut |st| stmts.push(Spanned::new(st.clone(), crate::ast::Span::new(0, 0))));
+        t || self.stmts(cell, &stmts)
+    }
+}
+
+fn step_boundaries(program: &Program) -> Boundary {
+    let cells = super::names::collect_cells(program);
+    let mut b = Boundary { handlers: HashSet::new(), signals: HashSet::new(), bodies: Default::default() };
+    for c in &cells { for sec in &c.sections { if let Section::OnSignal(on) = &sec.node { b.bodies.insert((c.name.clone(), on.signal_name.clone()), on.body.clone()); } } }
+    loop {
+        let mut grew = false;
+        for c in &cells {
+            for sec in &c.sections {
+                let Section::OnSignal(on) = &sec.node else { continue };
+                let key = (c.name.clone(), on.signal_name.clone());
+                if b.handlers.contains(&key) { continue; }
+                if b.stmts(&c.name, &on.body) {
+                    b.handlers.insert(key);
+                    b.signals.insert(on.signal_name.clone());
+                    grew = true;
+                }
+            }
+        }
+        if !grew { break; }
+    }
+    b
+}
+
+#[allow(clippy::too_many_arguments)]
+fn task_lints(label: &str, body: &[Spanned<Statement>], cell: &str, cell_slots: &HashSet<String>, boundary: &Boundary, span: crate::ast::Span, native: bool, issues: &mut Vec<InterpolationIssue>) {
+    let has_think = |stmts: &[Spanned<Statement>]| boundary.stmts(cell, stmts);
+    let slot_writes = |stmts: &[Spanned<Statement>]| -> Vec<String> {
+        let mut w: Vec<String> = Vec::new();
+        super::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+            Statement::MethodCall { target, method, .. } if cell_slots.contains(target) && matches!(method.as_str(), "set" | "push" | "delete" | "remove" | "put") => w.push(target.clone()),
+            Statement::IndexSet { name, .. } if cell_slots.contains(name) => w.push(name.clone()),
+            _ => {}
+        });
+        super::literals::for_each_expr(stmts, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
+            if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) && matches!(method.as_str(), "set" | "push" | "delete" | "remove" | "put") { w.push(t.clone()); } }
+        });
+        w
+    };
+    if native {
+        issues.push(InterpolationIssue { message: format!("handler {} is both [task] and [native] — a native handler cannot call think(); drop one", label), span, warning: false, habit: false, kind: "task_native" });
+    }
+    // a stale read: read before a step boundary, written after
+    if let Some(i) = body.iter().position(|st| has_think(std::slice::from_ref(st))) {
+        let mut read: Vec<String> = Vec::new();
+        super::literals::for_each_expr(&body[..=i], &mut |e| match e {
+            Expr::MethodCall { target, method, .. } if matches!(method.as_str(), "get" | "has" | "len" | "size" | "keys" | "values") => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
+            Expr::FieldAccess { target, field } if matches!(field.as_str(), "len" | "size" | "count") => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
+            Expr::Index { target, .. } => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
+            Expr::Ident(t) if cell_slots.contains(t) => read.push(t.clone()),
+            Expr::FnCall { name, args } if matches!(name.as_str(), "len" | "keys" | "values") => { if let Some(Expr::Ident(t)) = args.first().map(|a| &a.node) { if cell_slots.contains(t) { read.push(t.clone()); } } }
+            _ => {}
+        });
+        // reads in the boundary statement itself happen before its wait
+        let written = slot_writes(&body[i + 1..]);
+        let mut stale: Vec<String> = read.into_iter().filter(|r| written.contains(r)).collect();
+        stale.sort(); stale.dedup();
+        for sl in stale {
+            issues.push(InterpolationIssue {
+                message: format!("[task] {} reads '{}' before a think() / vote() (or a handler that makes one) and writes it after: other requests may write '{}' while the model runs — read (and re-check) it after", label, sl, sl),
+                span, warning: true, habit: true, kind: "task_stale_read",
+            });
+        }
+    } else {
+        issues.push(InterpolationIssue {
+            message: format!("[task] on {} makes no think() / vote() (nor calls a handler that does) — it runs as one atomic unit like a plain handler", label),
+            span, warning: true, habit: true, kind: "task_without_think",
+        });
+    }
+    // a `try` holding writes AND a boundary: the writes before it commit
+    // there and are not undone if the try fails
+    super::literals::for_each_expr(body, &mut |e| if let Expr::Try(inner) = e {
+        let mut stmts: Vec<Spanned<Statement>> = Vec::new();
+        super::literals::for_each_stmt_in_expr(&inner.node, &mut |st| stmts.push(Spanned::new(st.clone(), span)));
+        // …a helper of this cell called in the try writes too
+        let mut helper_writes = false;
+        super::literals::for_each_in_expr(&inner.node, &mut |x| if let Expr::FnCall { name, .. } = x {
+            if let Some(b) = boundary.bodies.get(&(cell.to_string(), name.clone())) { if !slot_writes(b).is_empty() { helper_writes = true; } }
+        });
+        if boundary.in_expr(cell, &inner.node) && (!slot_writes(&stmts).is_empty() || helper_writes) {
+            issues.push(InterpolationIssue {
+                message: format!("[task] {}: this try writes a slot and reaches a think() / vote() — the writes made before it commit there and are NOT undone if the try fails; write after it", label),
+                span, warning: true, habit: true, kind: "task_try_write",
+            });
+        }
+    });
 }
