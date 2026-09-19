@@ -69,7 +69,7 @@ A handler may return:
 
 An error the handler does not catch is answered by its kind, as
 `{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `unauthorized`,
-`unauthenticated` → 401; `guard_failed`,
+`unauthenticated` → 401; `rate_limited`, `too_many_requests` → 429; `guard_failed`,
 `forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
 409; `invariant`, `ensure` → 422; `json`, `type`, `date` (parse_date / add_days on a bad date), `range`, `division_by_zero` and your
 own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,

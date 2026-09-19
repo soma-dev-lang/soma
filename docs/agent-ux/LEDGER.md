@@ -1290,3 +1290,24 @@ routes, token cost bounds, forall and rollback — and found five breaks.
 
 ### Open
 - [ ] Float/String `==` raises a type error that reads like a parameter error; a GET on a handler calling a pure helper of another cell answers 405; `value.field` invariants apply to every slot without warning; native `hm_inc` overflow raises kind type; Int/Float comparison is lossy past 2^53.
+
+### Cycle 56 — realistic port (turn-based game server: lobby, matchmaking, WS/SSE, timers, ELO, native minimax) + attack (WS/SSE framing and auth, new builtins, scheduler, soundness)
+
+Game port 7.5/10: two players moving at the same instant were serialized
+(one wins, the other gets 403/400); forfeits by the tick pushed over SSE;
+state and ELO survived restarts; native negamax searched the full tree in
+~20 ms. Attack: WS masking/UTF-8/RSV/length/fragmentation and Origin checks,
+SSE authorization, cost via delegate and emit, scheduler atomicity and
+single-runner all held; no crash.
+
+### Fixed
+- [x] Attack: `"hello" |> map(f)` / `"hello".map(f)` still built `{"hello": <lambda>}` (the Map constructor) — a type error like every other non-list.
+- [x] Port: `response(429, body)` returned from `on ws` was sent as `{"_status", "_body"}` — the socket gets the body.
+- [x] Port: WS error bodies named private handlers (HTTP hides them) — hidden too.
+- [x] Port: a binary WS frame was dropped silently — logged and answered with a `type` error.
+- [x] Port: no status for throttling — kinds `rate_limited` / `too_many_requests` answer 429.
+- [x] Port: `d.cell` (a reserved word as a JSON field) — the error shows `d["cell"]`.
+- [x] Port: the guard-binding error said a handler "takes that transition" when its target only MAY take the guarded edge — the message explains that the edge is chosen at run time and offers a slot keyed by `_id`.
+
+### Open
+- [ ] No per-connection WS identity or open/close hook; a counter cannot commit while the request raises (rate limiting of failing requests); native index errors carry Rust text and no line; termination warnings do not name the caller.

@@ -1080,6 +1080,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                     Ok(val) => {
                                         eprintln!("ws: message → ok {}ms", started.elapsed().as_millis());
                                         if !matches!(val, interpreter::Value::Unit) {
+                                            // a `response(429, body)` shared with HTTP: the
+                                            // socket gets the body, not `{"_status", "_body"}`
+                                            let val = match &val {
+                                                interpreter::Value::Map(m) if m.contains_key("_status") && m.contains_key("_body") => m.get("_body").cloned().unwrap_or(interpreter::Value::Unit),
+                                                _ => val,
+                                            };
                                             let response = format!("{}", val);
                                             if let Ok(mut ws_w) = ws_write.lock() {
                                                 let _ = ws_w.send(tungstenite::Message::Text(response));
@@ -1090,7 +1096,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                     Err(e) => {
                                         // the same shape as an HTTP error: {"error", "kind"}
                                         eprintln!("ws: message → error ({}) {}", e.kind(), e);
-                                        let err_msg = error_body(&format!("{}", e), &e.kind());
+                                        let err_msg = error_body(&hide_private_names(&format!("{}", e)), &e.kind());
                                         if let Ok(mut ws_w) = ws_write.lock() {
                                             let _ = ws_w.send(tungstenite::Message::Text(err_msg));
                                         }
@@ -1100,6 +1106,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             Ok(tungstenite::Message::Close(_)) | Err(_) => {
                                 eprintln!("ws: client disconnected");
                                 break;
+                            }
+                            // a binary frame was dropped without a word
+                            Ok(tungstenite::Message::Binary(_)) => {
+                                eprintln!("ws: binary frame ignored (`on ws` receives text frames)");
+                                if let Ok(mut ws_w) = ws_write.lock() {
+                                    let _ = ws_w.send(tungstenite::Message::Text(error_body("binary frames are not supported — send text (JSON) frames", "type")));
+                                    let _ = ws_w.flush();
+                                }
                             }
                             _ => {}
                         }
@@ -2173,6 +2187,7 @@ pub(crate) fn status_for_kind(kind: &str) -> u16 {
         "not_found" => 404,
         // there was no way to answer 401 without a try/response() per route
         "unauthorized" | "unauthenticated" => 401,
+        "rate_limited" | "too_many_requests" => 429,
         "guard_failed" | "forbidden" | "approval_required" => 403,
         "invalid_transition" | "conflict" => 409,
         "invariant" | "ensure" => 422,

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `"s" |> map(f)` and `"s".map(f)` raise a type error; kinds
+  `rate_limited` / `too_many_requests` answer 429.
+- WebSocket: a returned `response(…)` sends its body; error bodies hide
+  private handler names; binary frames are answered with an error.
+- Clearer errors for reserved words used as JSON fields (`d["cell"]`) and
+  for guard locals of a handler that may take a guarded edge.
 - Soundness: `"C".delegate(…)` / `"C" |> delegate(…)` are seen by the
   termination and size proofs; a `let` hiding a slot no longer lends the
   slot's bound; the `latency` bound counts retries (think `timeout` now

@@ -49,6 +49,7 @@ Body: `{"error": "<message>", "kind": "<kind>"}`.
 |---|---|---|
 | `not_found` | 404 | `fail("not_found", …)` |
 | `unauthorized`, `unauthenticated` | 401 | `require token_ok else unauthorized` |
+| `rate_limited`, `too_many_requests` | 429 | `require hits < 10 else rate_limited` |
 | `guard_failed`, `forbidden`, `approval_required` | 403 | a transition guard; `fail("forbidden")`; `approve()` with nobody to answer |
 | `invalid_transition`, `conflict` | 409 | `transition()` off the machine; `fail("conflict")` |
 | `invariant`, `ensure` | 422 | a memory invariant refusing a write; `ensure` |

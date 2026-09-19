@@ -433,7 +433,7 @@ handler and a route share a name unless the route delegates to that handler. `bo
 before the handler runs, kind json; `soma run` parses its text argument the
 same way). In a test cell pass the Map itself — `request("POST", "/x",
 map("a", 1))`: a String argument there is a `type` error, not parsed. A raised error
-answers with its kind: not_found → 404, unauthorized → 401, guard_failed → 403, invalid_transition
+answers with its kind: not_found → 404, unauthorized → 401, rate_limited → 429, guard_failed → 403, invalid_transition
 → 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
 `{"error": message, "kind": tag}`. A plain return answers 200: a map/list as
 JSON, `()` as `null`, a String or number as `{"result": …}` (a String
@@ -854,7 +854,7 @@ A handler may return:
 
 An error the handler does not catch is answered by its kind, as
 `{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `unauthorized`,
-`unauthenticated` → 401; `guard_failed`,
+`unauthenticated` → 401; `rate_limited`, `too_many_requests` → 429; `guard_failed`,
 `forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
 409; `invariant`, `ensure` → 422; `json`, `type`, `date` (parse_date / add_days on a bad date), `range`, `division_by_zero` and your
 own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
@@ -1041,6 +1041,7 @@ Body: `{"error": "<message>", "kind": "<kind>"}`.
 |---|---|---|
 | `not_found` | 404 | `fail("not_found", …)` |
 | `unauthorized`, `unauthenticated` | 401 | `require token_ok else unauthorized` |
+| `rate_limited`, `too_many_requests` | 429 | `require hits < 10 else rate_limited` |
 | `guard_failed`, `forbidden`, `approval_required` | 403 | a transition guard; `fail("forbidden")`; `approve()` with nobody to answer |
 | `invalid_transition`, `conflict` | 409 | `transition()` off the machine; `fail("conflict")` |
 | `invariant`, `ensure` | 422 | a memory invariant refusing a write; `ensure` |

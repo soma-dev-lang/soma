@@ -168,11 +168,12 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                         if !bound.contains(*n) {
                             issues.push(GuardIssue {
                                 message: format!(
-                                    "guard on `{} -> {}` reads '{}', but handler `{}` — which takes that \
-                                     transition — has no variable '{}'. A guard sees the locals of the handler \
+                                    "guard on `{} -> {}` reads '{}', but handler `{}` has no variable '{}' — its \
+                                     transition() toward `{}` takes this edge whenever the instance is in `{}` (which \
+                                     edge runs is decided at run time). A guard sees the locals of the handler \
                                      calling transition(), the cell's memory slots, and _id / _from / _to: bind \
-                                     `let {} = …` before the call",
-                                    tr.node.from, tr.node.to, n, on.signal_name, n, n
+                                     `let {} = …` before the call, or have the guard read a slot keyed by _id",
+                                    tr.node.from, tr.node.to, n, on.signal_name, n, tr.node.to, tr.node.from, n
                                 ),
                                 span: guard.span,
                             });

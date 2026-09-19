@@ -3151,3 +3151,28 @@ fn cycle55_soundness() {
     let (out, _) = soma_in(&d, &["check", "lat.cell"]);
     assert!(!out.contains("'latency' bound proven"), "a sleep counts toward latency: {out}");
 }
+
+/// Cycle 56: `"s" |> map(f)` / `"s".map(f)` raise (not the Map
+/// constructor); `rate_limited` answers 429; a reserved-word field error
+/// shows `d["cell"]`.
+#[test]
+fn cycle56_findings() {
+    passes("cycle56", r#"
+cell T {
+    on pipe() { return "hello" |> map(x => x) }
+    on meth() { return "hello".map(x => x) }
+    on ok() { return [1, 2] |> map(x => x * 2) }
+}
+cell test R {
+    rules {
+        assert_fails pipe()
+        assert_fails meth()
+        assert ok() == [2, 4]
+    }
+}
+"#);
+    let d = dir("cycle56_field");
+    std::fs::write(d.join("f.cell"), "cell F { on f(d: Map) { return d.cell } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "f.cell"]);
+    assert!(out.contains("d[\"cell\"]"), "{out}");
+}

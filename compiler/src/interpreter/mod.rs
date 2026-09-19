@@ -2792,6 +2792,14 @@ impl Interpreter {
                             all_args.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                         }
                         let user_wins = self.user_handler_takes(name, all_args.len());
+                        // `"hello" |> map(f)` is the higher-order map, never the
+                        // Map constructor `map("hello", f)` ({"hello": <lambda>})
+                        if !user_wins && name == "map" && all_args.len() == 2
+                            && matches!(all_args[0], Value::String(_))
+                            && matches!(all_args[1], Value::Lambda { .. } | Value::LambdaBlock { .. }) {
+                            let t: String = format!("{}", all_args[0]).chars().take(30).collect();
+                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!("map(list, f) needs a List, got String {}", t))));
+                        }
                         // Check lambda builtins first (map, filter, etc.)
                         if !user_wins && all_args.iter().any(|v| matches!(v, Value::Lambda { .. } | Value::LambdaBlock { .. })) {
                             if let Some(val) = builtins::call_lambda_builtin(self, name, &all_args, cell_name) {
@@ -3009,6 +3017,13 @@ impl Interpreter {
                 }
                 // Evaluate target and call method on the value
                 let target_val = self.eval_expr(&target.node, env, cell_name, signal_name)?;
+                // `"hello".map(f)`: the higher-order map, not the constructor
+                if method == "map" && arg_vals.len() == 1 && matches!(target_val, Value::String(_))
+                    && matches!(arg_vals[0], Value::Lambda { .. } | Value::LambdaBlock { .. })
+                    && !self.user_handler_takes("map", 2) {
+                    let t: String = format!("{}", target_val).chars().take(30).collect();
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!("map(list, f) needs a List, got String {}", t))));
+                }
                 match (&target_val, method.as_str()) {
                     (Value::List(items), "get") => {
                         if let Some(Value::Int(si)) = arg_vals.first() {

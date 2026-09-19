@@ -160,7 +160,7 @@ fn reserved_error(t: &Token, span: Span) -> Option<ParseError> {
         message: if matches!(w, "require" | "let" | "return" | "for" | "while" | "break" | "continue") {
             format!("`{w}` starts a statement and cannot stand where a value is expected (a lambda `x => …`, an operand, an argument) — in a lambda write a block (`x => {{ {w} …  x }}`), or move it into the handler body; as a name it is reserved (`{w}_id`)")
         } else {
-            format!("`{w}` is a reserved word in Soma and cannot name a variable, parameter or field — rename it (`{w}_id`, `the_{w}`)")
+            format!("`{w}` is a reserved word in Soma and cannot name a variable, parameter or field — rename it (`{w}_id`, `the_{w}`); to read a JSON field of that name write `d[\"{w}\"]`")
         },
         span,
     })
