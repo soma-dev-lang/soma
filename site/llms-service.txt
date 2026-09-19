@@ -257,7 +257,9 @@ source, `file:line`, left/right, and the fields a value really has when
 - Every parameter has a type (`x: Any` takes a value of any kind — check it
   with `type_of(x)`); element types too (`xs: List<Int>`).
 - Declared parameter types are enforced at runtime: `add(points: Int)` given
-  `2.5` raises kind `type` (400) before the body runs — no `is_int` check needed.
+  `2.5` raises kind `type` (400) before the body runs — no `is_int` check needed;
+  a missing value `()` is refused for a List parameter (a Map parameter accepts
+  `()`: an absent record, such as an empty tree).
 - Values are copies: `let row = s[k]  row.count += 1` changes `row` only —
   write it back (`s[k] = row`); a map read from a slot is a copy too
   (`cards.set(id, c)` after editing `c`). Records keep their field order.

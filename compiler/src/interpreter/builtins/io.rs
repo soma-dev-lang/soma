@@ -147,10 +147,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let (Value::String(path), content) = (&args[0], &args[1]) {
                     let text = format!("{}", content);
-                    match std::fs::write(path, &text) {
+                    match write_creating_dirs(path, &text) {
                         Ok(_) => Some(Ok(Value::Bool(true))),
                         Err(e) => Some(Ok(map_from_pairs(vec![
-                            ("error".to_string(), Value::String(format!("{}", e))),
+                            ("error".to_string(), Value::String(format!("{}: {}", path, e))),
                         ]))),
                     }
                 } else {
@@ -196,10 +196,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() >= 2 {
                 if let (Value::String(path), Value::List(items)) = (&args[0], &args[1]) {
                     let output = csv_text(items);
-                    match std::fs::write(path, &output) {
+                    match write_creating_dirs(path, &output) {
                         Ok(_) => Some(Ok(Value::Bool(true))),
                         Err(e) => Some(Ok(map_from_pairs(vec![
-                            ("error".to_string(), Value::String(format!("{}", e))),
+                            ("error".to_string(), Value::String(format!("{}: {}", path, e))),
                         ]))),
                     }
                 } else {
@@ -545,8 +545,13 @@ fn csv_text(items: &[Value]) -> String {
             s.to_string()
         }
     };
-    if let Some(Value::Map(first)) = items.first() {
-        let headers: Vec<&str> = first.keys().map(|k| k.as_str()).collect();
+    if let Some(Value::Map(_)) = items.first() {
+        // every key of every row, in first-seen order (a key only in a
+        // later row was dropped with its value)
+        let mut headers: Vec<&str> = Vec::new();
+        for it in items {
+            if let Value::Map(m) = it { for k in m.keys() { if !headers.contains(&k.as_str()) { headers.push(k.as_str()); } } }
+        }
         output.push_str(&headers.iter().map(|h| quote(h, false)).collect::<Vec<_>>().join(","));
         output.push('\n');
         // Write rows
@@ -668,4 +673,14 @@ fn path_refused(path: &str, builtin: &str) -> Option<RuntimeError> {
         }
     }
     None
+}
+
+/// `write_csv("zreports/z.csv", …)`: the directory is created (it answered
+/// "No such file or directory" and an end-of-day job committed without its
+/// report). The path guard ran before.
+fn write_creating_dirs(path: &str, content: &str) -> std::io::Result<()> {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() { std::fs::create_dir_all(parent)?; }
+    }
+    std::fs::write(path, content)
 }

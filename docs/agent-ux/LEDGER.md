@@ -1439,3 +1439,23 @@ CRLF / non-UTF-8 / huge inputs handled cleanly, exit codes as documented.
 
 ### Open
 - [ ] Programs sharing a directory can still alias tables by name (`A.b_data` vs `A_b.data`) — one directory per program; a return value `{"__error__": …}` replays like a raise; the deploy Dockerfile misses sibling imports and static/; a literal-bounded native while loop is not proven to terminate; memory is not returned after large bursts.
+
+### Cycle 63 — realistic port (restaurant POS, kitchen display, inventory) + attack (verifier soundness, round 2)
+
+POS port 8/10: one payment of each check from three terminals at once;
+kill -9 mid-burst left nothing half-written; exact cents throughout.
+Soundness attack: ~400 generated invariant shapes, 25 termination shapes and
+every state-machine route gave no false ✓ — except the five below.
+
+### Fixed
+- [x] **Attack: a negative index on a List slot was checked as `key = -2`** and got past `invariant key != 0 || value == 0` — checked at the real index.
+- [x] **Attack: a List delete shifts later elements**, breaking key-dependent invariants without a write, while verify said a delete cannot break a value invariant — shifted elements are re-checked at their new index; verify reports such deletes as runtime-checked. The start-up audit checked List elements with an empty key (false reports) — with their index.
+- [x] Attack: a size invariant was "proven" for a handler that calls itself before its write — self-recursion counts as another adding write.
+- [x] Attack: on an untyped / Any slot the induction assumed Int values (`c < 10` ⇒ `c + 1 <= 10`, false for 9.5) — only Int slots and Int parameters get integer narrowing.
+- [x] Attack: the latency bound was "proven" at 0 ms for a write to a FIFO and a `subscribe` whose peer never answers — file writes and connections make it advisory; `subscribe` connects within 5 s and handshakes within 10 s.
+- [x] Port: `()` passed a `List` parameter — refused (a Map parameter still accepts `()`, an absent record).
+- [x] Port: a slot-less invariant with several slots silently guarded all of them — a check warning; `write_file` / `write_csv` create the directory (errors name the path); `to_csv` keeps every column; a state named `on` gets a hint.
+- [x] Site: /agents no longer says a failed handler needs no compensation for external effects; the README no longer calls replay deterministic for LLM / HTTP calls.
+
+### Open
+- [ ] "Paid at most once" (a write-once invariant after `require … == ()`) is still reported runtime-checked without a reason; the reply-token cap is an estimate when a provider under-reports; time-of-day builtins.

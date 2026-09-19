@@ -42,6 +42,7 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
         if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
+        set_slot_int(&cell.node);
         for section in &cell.node.sections {
             let Section::Memory(mem) = &section.node else { continue };
             let slot_names: HashSet<&str> =
@@ -170,6 +171,27 @@ enum Proof {
     Unknown,
 }
 
+/// Record which slots of `cell` hold Ints (Map<K, Int>, List<Int>):
+/// untyped / Any / Float slots may hold 9.5, so a read of them gets no
+/// integer narrowing
+fn set_slot_int(cell: &CellDef) {
+    SLOT_INT.with(|m| {
+        let mut m = m.borrow_mut();
+        m.clear();
+        for sec in &cell.sections {
+            if let Section::Memory(mem) = &sec.node {
+                for sl in &mem.slots {
+                    let int = match &sl.node.ty.node {
+                        TypeExpr::Generic { args, .. } => args.last().map_or(false, |a| matches!(&a.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt")),
+                        _ => false,
+                    };
+                    m.insert(sl.node.name.clone(), int);
+                }
+            }
+        }
+    });
+}
+
 pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
     let mut results = Vec::new();
 
@@ -177,6 +199,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
+        set_slot_int(&cell.node);
 
         // invariant → the slots it guards (same scoping rule as runtime)
         let mut guarded: Vec<(Expr, Vec<String>, String)> = Vec::new();
@@ -304,6 +327,15 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     collect_idents(inv, &mut names);
                     let mut fns = HashSet::new();
                     collect_fn_names(inv, &mut fns);
+                    // a List delete SHIFTS the later elements: an invariant
+                    // about `key` (the index) can break without a write
+                    let list_slot = cell.node.sections.iter().any(|sec| matches!(&sec.node, Section::Memory(m)
+                        if m.slots.iter().any(|sl| sl.node.name == *slot && matches!(&sl.node.ty.node, TypeExpr::Simple(t) | TypeExpr::Generic { name: t, .. } if t == "List"))));
+                    let keyed = names.contains("key") || names.contains("_key");
+                    if list_slot && keyed {
+                        runtime_checked.push(format!("{handler} → {slot} (a List delete shifts the later elements to new indexes; `key` changes without a write — checked at run time)"));
+                        continue;
+                    }
                     if !names.contains("size") && !names.contains("len") && !fns.contains("len") && !fns.contains("size") {
                         result.checks.push(VerifyCheck::Pass(format!(
                             "invariant {inv_text} — writer '{handler}' only deletes from '{slot}' (a value invariant cannot break on a delete)"
@@ -516,7 +548,12 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let me = cell.node.name.clone();
                     let mut seen: HashSet<(String, String)> = HashSet::new();
                     let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
+                    let mut recursive = false;
                     while let Some((c, h)) = stack.pop() {
+                        // reached again: the handler calls itself (directly or
+                        // through others) — every nested run adds too
+                        // (`w` recursing before its write was "proven")
+                        if c == me && h == *handler && !seen.is_empty() { recursive = true; }
                         if !seen.insert((c.clone(), h.clone())) { continue; }
                         let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
                         if (c != me || h != *handler) && c == me
@@ -542,6 +579,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             }
                         }
                     }
+                    if recursive { adds_here += 1; }
                 }
                 // a loop body, or a lambda (`xs |> map(i => rows.push(i))`) may
                 // run the write many times
@@ -1074,6 +1112,15 @@ fn local_ranges_at(
     let int_params: HashSet<&str> = on.params.iter()
         .filter(|p| matches!(&p.ty.node, TypeExpr::Simple(t) if t == "Int" || t == "BigInt"))
         .map(|p| p.name.as_str()).collect();
+    // this handler's parameters while it is analysed — restored after, as
+    // the analysis descends into callees (a callee's `a: Float` made the
+    // caller's local `a` non-Int)
+    struct RestoreParams(Option<HashSet<String>>);
+    impl Drop for RestoreParams {
+        fn drop(&mut self) { if let Some(p) = self.0.take() { NON_INT_PARAMS.with(|np| *np.borrow_mut() = p); } }
+    }
+    let _restore = RestoreParams(Some(NON_INT_PARAMS.with(|np| std::mem::replace(&mut *np.borrow_mut(),
+        on.params.iter().filter(|p| !int_params.contains(p.name.as_str())).map(|p| p.name.clone()).collect()))));
     let reassigned_param = |n: &str| params.contains(n) && assigns.iter().any(|(m, _)| *m == n);
     // requires that always run when the handler commits: the top-level
     // ones, and those directly inside a loop body (a per-iteration `let`
@@ -1411,11 +1458,27 @@ fn constraint_comparisons(c: &Constraint) -> Vec<(&Expr, CmpOp, &Expr)> {
 
 /// An expression that cannot produce a fraction: no Float literal, no `/`,
 /// no float-producing builtin. Used to tighten strict bounds on integers.
+thread_local! {
+    /// slots of the cell being verified: name → its values are Ints
+    static SLOT_INT: std::cell::RefCell<HashMap<String, bool>> = std::cell::RefCell::new(HashMap::new());
+    /// parameters of the handler being analysed that are NOT Int
+    static NON_INT_PARAMS: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
+}
+
 fn looks_int(expr: &Expr) -> bool {
+    // a read of an untyped / Any / Float slot, or a Float parameter, is not
+    // an Int: `require c < 10` does not make `c + 1 <= 10` (9.5 + 1)
+    let slot_read_int = |target: &Expr| -> Option<bool> {
+        let Expr::Ident(n) = target else { return None };
+        SLOT_INT.with(|m| m.borrow().get(n).copied())
+    };
     match expr {
         Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => true,
         Expr::Literal(Literal::Float(_)) => false,
         Expr::Literal(_) => true,
+        Expr::Ident(n) if NON_INT_PARAMS.with(|p| p.borrow().contains(n)) => false,
+        Expr::MethodCall { target, method, .. } if method == "get" && slot_read_int(&target.node).is_some() => slot_read_int(&target.node).unwrap_or(false),
+        Expr::Index { target, .. } if slot_read_int(&target.node).is_some() => slot_read_int(&target.node).unwrap_or(false),
         Expr::Ident(_) => true,
         Expr::BinaryOp { left, op, right } => !matches!(op, BinOp::Div) && looks_int(&left.node) && looks_int(&right.node),
         Expr::FnCall { name, args } => !matches!(name.as_str(), "to_float" | "avg" | "sqrt" | "pow" | "log" | "exp" | "sin" | "cos" | "quantile" | "median" | "pstdev" | "variance")
@@ -1884,6 +1947,18 @@ pub fn lint_program(program: &Program) -> Vec<InvariantIssue> {
             let Section::Memory(mem) = &section.node else { continue };
             let slots: Vec<String> = mem.slots.iter().map(|s| s.node.name.clone()).collect();
             for inv in &mem.invariants {
+                // an invariant naming no slot guards EVERY slot of the memory
+                // (`invariant get_status(key) != "paid"` refused every write
+                // to an unrelated counter) — say so when there are several
+                let refs = deep_idents(&inv.node);
+                if slots.len() > 1 && !slots.iter().any(|sl| refs.contains(sl.as_str())) {
+                    out.push(InvariantIssue {
+                        message: format!(
+                            "`invariant {}` names no slot, so it guards EVERY slot of this memory ({}) — name the slot it is about (e.g. `{}.get(key)` / `len({})`), or move it to a memory of its own",
+                            render_expr(&inv.node), slots.join(", "), slots[0], slots[0]),
+                        span: inv.span,
+                    });
+                }
                 let mut hits: Vec<(String, String)> = Vec::new();
                 find_len_of_slot(&inv.node, &slots, &mut hits);
                 for (func, slot) in hits {

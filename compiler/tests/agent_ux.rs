@@ -3502,3 +3502,50 @@ cell test T {
 }
 "#);
 }
+
+/// Cycle 63: `()` is refused for a List parameter; write_file / write_csv
+/// create the directory; to_csv keeps every column; a slot-less invariant
+/// with several slots is a check warning; a state named `on` gets a hint.
+#[test]
+fn cycle63_findings() {
+    let d = dir("cycle63");
+    std::fs::write(d.join("w.cell"), "cell W {\n  on f(xs: List<Int>, n: Int) { return 1 }\n  on lst() { let r = try { f((), 1) }  return r.kind }\n  on wr() { return write_file(\"zr/x/y.txt\", \"a\") }\n  on csv() { return to_csv([map(\"a\", 1), map(\"b\", 2)]) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "w.cell", "lst"]);
+    assert!(out.contains("type"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "w.cell", "wr"]);
+    assert!(out.contains("true") && d.join("zr/x/y.txt").exists(), "{out}");
+    let (out, _) = soma_in(&d, &["run", "w.cell", "csv"]);
+    assert!(out.contains("a,b"), "{out}");
+    std::fs::write(d.join("inv.cell"), "cell I { memory { a: Map<String, Int> [persistent]  b: Map<String, Int> [persistent]  invariant key != \"\" }  on p() { a.set(\"k\", 1) } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "inv.cell"]);
+    assert!(out.contains("names no slot"), "{out}");
+    std::fs::write(d.join("on.cell"), "cell S { state shift { initial: off  off -> on }  on go() { return 1 } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "on.cell"]);
+    assert!(out.contains("`on` is a keyword"), "{out}");
+}
+
+/// Cycle 63 (soundness round 2): a negative List index is checked at its
+/// real index; a List delete re-checks shifted elements against a `key`
+/// invariant (and verify no longer proves it); a size proof counts a
+/// self-recursive writer; an untyped slot's reads are not assumed Int.
+#[test]
+fn cycle63_soundness() {
+    let d = dir("cycle63_sound");
+    std::fs::write(d.join("li.cell"), "cell L {\n  memory { slots: List<Int> [persistent]  invariant key != 0 || value == 0 }\n  on seed() { slots.push(0)  slots.push(5)  return slots }\n  on poke_neg(v: Int) { slots[0 - len(slots)] = v  return slots }\n  on drop0() { slots.delete(0)  return slots }\n}\n").unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "li.cell", "seed"]);
+    let (out, _) = soma_in(&d, &["run", "li.cell", "poke_neg", "99"]);
+    assert!(out.contains("rejected write"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "li.cell", "drop0"]);
+    assert!(out.contains("rejected shift"), "{out}");
+    assert!(!out.contains("violate its invariant"), "valid list data is not reported: {out}");
+    let (out, _) = soma_in(&d, &["verify", "li.cell"]);
+    assert!(!out.contains("only deletes from 'slots'"), "{out}");
+
+    std::fs::write(d.join("sr.cell"), "cell R {\n  memory { m: Map<String, Int> [persistent]  invariant m.size <= 2 }\n  on w(k: String, n: Int) {\n    if n <= 0 { return 0 }\n    require len(m) < 2 else Full\n    let sub = w(k + \"r\", n - 1)\n    m.set(k, 1)\n    return len(m)\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "sr.cell"]);
+    assert!(code != 0 && !out.contains("VERIFY OK"), "{out}");
+
+    std::fs::write(d.join("an.cell"), "cell A {\n  memory { stock: Map [persistent]  invariant stock >= 0 && stock <= 10 }\n  on inc(k: String) { let c = stock.get(k) ?? 0  require c < 10 else Full  stock.set(k, c + 1)  return 1 }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "an.cell"]);
+    assert!(code != 0 && out.contains("runtime-checked"), "{out}");
+}

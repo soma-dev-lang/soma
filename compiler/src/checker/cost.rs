@@ -280,7 +280,10 @@ impl<'a> CostWalk<'a> {
                 if name == "approve" {
                     self.latency_sites.push(format!("{}::approve (waits for a person)", handler_name));
                 }
-                if matches!(name.as_str(), "read_stdin" | "read_file" | "read_csv" | "read_files" | "par_read_files" | "load" | "include" | "load_template") {
+                // writes block too (a FIFO blocked forever at "peak 0 ms"), and
+                // a subscription waits on another server's handshake
+                if matches!(name.as_str(), "read_stdin" | "read_file" | "read_csv" | "read_files" | "par_read_files" | "load" | "include" | "load_template"
+                    | "write_file" | "write_csv" | "append_file" | "subscribe" | "ws_connect" | "connect") {
                     self.latency_sites.push(format!("{}::{} (file / stdin I/O)", handler_name, name));
                 }
                 if matches!(name.as_str(), "http_get" | "http_post" | "http_put" | "http_delete") {

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Soundness: a negative List index is checked at its real index; a List
+  delete re-checks shifted elements against `key` invariants (verify
+  reports it runtime-checked); a self-recursive writer counts for size
+  proofs; untyped / Any slots get no integer narrowing; file writes and
+  `subscribe` make a latency bound advisory, `subscribe` has connect and
+  handshake timeouts.
+- `()` is refused for a List parameter; a slot-less invariant over several
+  slots is a check warning; `write_file` / `write_csv` create the directory;
+  `to_csv` keeps every column.
+- Site: external effects are not rolled back (/agents); replay re-runs LLM
+  and HTTP calls live (README).
 ## 2.6.1 — 2026-09-19
 
 - Site and README: the stated guarantees now match the documented ones —

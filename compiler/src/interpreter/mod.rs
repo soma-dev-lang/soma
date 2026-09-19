@@ -1248,7 +1248,9 @@ impl Interpreter {
             let mut sample = String::new();
             for (i, v) in items.into_iter().enumerate() {
                 let val = self.from_slot(&cell_name, &slot_name, stored_to_value(v));
-                if self.check_invariants(&cell_name, &slot_name, "", &val, size, "read").is_err() {
+                // the element's index is its key (it was checked with ""
+                // and valid data at #0 was reported)
+                if self.check_invariants(&cell_name, &slot_name, &i.to_string(), &val, size, "read").is_err() {
                     bad += 1;
                     if sample.is_empty() { sample = format!("#{} = {}", i, short_value(&val)); }
                 }
@@ -3235,7 +3237,9 @@ impl Interpreter {
                             "{}[{}]: index out of bounds (the List slot has {} items) — push() appends", slot_name, raw, xs.len()))));
                     }
                     let val = self.check_slot_value_type(cell_name, slot_name, &args[1])?;
-                    self.check_invariants(cell_name, slot_name, &raw.to_string(), &val, xs.len() as i64, "write")?;
+                    // the REAL index: `slots[-2] = v` was checked with key -2
+                    // and got past `invariant key != 0 || value == 0`
+                    self.check_invariants(cell_name, slot_name, &idx.to_string(), &val, xs.len() as i64, "write")?;
                     let prev = backend.list();
                     if let Some(j) = self.journal.as_mut() {
                         j.push(UndoOp::RestoreList { backend: backend.clone(), prev });
@@ -3258,7 +3262,16 @@ impl Interpreter {
                     // and as verify says (every value invariant refused the
                     // delete here while verify proved the writer safe)
                     if self.slot_invariants_use_size(cell_name, slot_name) {
-                        self.check_invariants(cell_name, slot_name, &raw.to_string(), &old, xs.len() as i64 - 1, "delete")?;
+                        self.check_invariants(cell_name, slot_name, &idx.to_string(), &old, xs.len() as i64 - 1, "delete")?;
+                    }
+                    // a List delete SHIFTS the later elements to new indexes: an
+                    // invariant about `key` (or the value at a key) is checked
+                    // for each of them at its new place (`drop0` left 5 at #0
+                    // under `key != 0 || value == 0`)
+                    if self.slot_invariants_use_key(cell_name, slot_name) {
+                        for i in (idx as usize + 1)..xs.len() {
+                            self.check_invariants(cell_name, slot_name, &(i - 1).to_string(), &xs[i], xs.len() as i64 - 1, "shift")?;
+                        }
                     }
                     let prev = backend.list();
                     if let Some(j) = self.journal.as_mut() {
@@ -4066,13 +4079,24 @@ impl Interpreter {
         let host = parsed.host_str().unwrap_or("localhost");
         let port = parsed.port().unwrap_or(80);
 
-        let stream = std::net::TcpStream::connect(format!("{}:{}", host, port)).map_err(|e| {
+        // bounded: a server that accepts TCP and never answers the handshake
+        // held the handler — and, serialized, the whole server — forever
+        use std::net::ToSocketAddrs;
+        let addr = format!("{}:{}", host, port).to_socket_addrs().ok().and_then(|mut a| a.next()).ok_or_else(|| {
+            RuntimeError::TypeError(format!("subscribe: cannot resolve {}:{}", host, port))
+        })?;
+        let stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)).map_err(|e| {
             RuntimeError::TypeError(format!("subscribe: {}", e))
         })?;
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
+        let timeout_handle = stream.try_clone().ok();
 
         let (ws, _) = tungstenite::client::client(url, stream).map_err(|e| {
-            RuntimeError::TypeError(format!("subscribe handshake: {}", e))
+            RuntimeError::TypeError(format!("subscribe handshake (10 s limit): {}", e))
         })?;
+        // linked: reads wait for events again
+        if let Some(h) = timeout_handle { let _ = h.set_read_timeout(None); }
 
         // Reader thread: blocks on read, dispatches to handlers
         let cells = self.cells.clone();
@@ -4217,6 +4241,14 @@ impl Interpreter {
         names.iter().any(|n| matches!(n.as_str(), "size" | "_slot_len" | "len" | "count"))
     }
 
+    fn slot_invariants_use_key(&self, cell_name: &str, slot_name: &str) -> bool {
+        let invs = self.invariants.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() { self.invariants.get(slot_name) } else { None });
+        let Some(invs) = invs else { return false };
+        let mut names: HashSet<String> = HashSet::new();
+        for inv in invs { free_names_expr(inv, &mut names); }
+        names.contains("key") || names.contains("_key")
+    }
+
     fn slot_has_invariants(&self, cell_name: &str, slot_name: &str) -> bool {
         // the unqualified key only without a cell (a test rule): another
         // cell's invariant on a slot of the same name refused valid writes
@@ -4260,7 +4292,7 @@ impl Interpreter {
             // for push and the text "0" for rows[0] = v, so `entries.get(key)`
             // never found the element a write-once invariant guards)
             let key_val = if self.slot_kind(cell_name, slot_name) == Some("List") {
-                key_str.parse::<i64>().map(|i| Value::Int(SomaInt::from_i64(i))).unwrap_or_else(|_| Value::String(key_str.to_string()))
+                key_str.trim_start_matches('#').parse::<i64>().map(|i| Value::Int(SomaInt::from_i64(i))).unwrap_or_else(|_| Value::String(key_str.to_string()))
             } else { Value::String(key_str.to_string()) };
             env.insert("key".to_string(), key_val);
             env.insert("size".to_string(), Value::Int(SomaInt::from_i64(size_after)));
@@ -5413,8 +5445,10 @@ pub(crate) fn check_param_type(param: &Param, val: Value) -> Result<Value, Strin
         | ("Bool", Value::Bool(_)) | ("Map", Value::Map(_)) | ("List", Value::List(_)) => Ok(val),
         // `Map` is the corpus's spelling for "a record": variants, an absent
         // record (`()`) and callbacks pass; `List` accepts an absent list.
-        ("Map", Value::Variant { .. } | Value::Unit | Value::Lambda { .. } | Value::LambdaBlock { .. })
-        | ("List", Value::Unit) => Ok(val),
+        // `Map` is the corpus's spelling for "a record": variants, an absent
+        // record (`()`, an empty tree) and callbacks pass. A missing value is
+        // NOT a List: `f(body.seats)` with `seats` absent ran with `()`
+        ("Map", Value::Variant { .. } | Value::Unit | Value::Lambda { .. } | Value::LambdaBlock { .. }) => Ok(val),
         // a Float is not an Int, whatever its value (a computed 1.0 was taken
         // while `[1.0]` for List<Int>, an Int slot and a literal were refused);
         // HTTP / CLI text already converts integral numbers at the boundary

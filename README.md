@@ -141,8 +141,9 @@ the corpus by `tools/build_site.py`, so the site cannot drift.
 
 **Soma running agents:** `cell agent` + `think()` + a state machine =
 a lifecycle whose exits are proven reachable, token budgets that stop the next call, capability-scoped
-tools, human approval gates, and deterministic replay (`--record` /
-`soma replay`) for audits.
+tools, human approval gates, and record / replay of handler inputs
+(`--record` / `soma replay`) for audits — the program's own logic replays
+exactly; LLM and HTTP calls are made again live, so their answers may differ.
 
 ## Packages
 

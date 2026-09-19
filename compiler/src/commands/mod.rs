@@ -205,6 +205,8 @@ fn foreign_syntax_hint(message: &str, source: &str, offset: usize) -> Option<Str
         "match arms use `->`; `=>` is for lambdas"
     } else if quote_inside_interpolation(t) && message.contains("expected") {
         "an unescaped `\"` inside `{…}` ends the string: escape it (`\"{pad_left(s, 4, \\\"0\\\")}\"`) or bind the value first (`let v = …`, then `\"{v}\"`)"
+    } else if message.contains("found 'on'") && (t.contains("->") || t.contains("initial")) {
+        "`on` is a keyword (it starts a handler) — name the state differently (`on_shift`, `active`)"
     } else if has("forall") && message.contains("expected ensures") {
         "a property takes ONE variable: encode pairs in it (`forall n: Int in 0..10000 ensures f(idiv(n, 100), n % 100) …`)"
     } else if has("**") {
