@@ -1417,3 +1417,25 @@ the accept list held.
 
 ### Open
 - [ ] from_csv pads/drops fields of rows with the wrong width (documented); no Decimal type; no time-of-day scheduling; one machine per cell.
+
+### Cycle 62 — realistic port (ride-hailing dispatch: matching, surge, payouts, native geometry) + attack (CLI and tooling surface)
+
+Dispatch port 8/10: 200 concurrent rides over 50 drivers, no double
+assignment; 10 × 20 parallel completions → exactly one 200 each; fares
+matched Python Decimal HALF_UP on every trip; fares = payouts + commission
+over 2 016 trips. CLI attack: every subcommand on missing / empty / BOM /
+CRLF / non-UTF-8 / huge inputs handled cleanly, exit codes as documented.
+
+### Fixed
+- [x] **Attack: `run --fresh a.cell` reset cell `A_b`'s tables of another program** (ownership by name prefix) — a program owns exactly its `<Cell>_<slot>`, `<Cell>__sm_<machine>`, counters and agent-memory tables.
+- [x] Attack: an unreadable soma.toml (Latin-1, a directory, a dangling link) was ignored and verify said OK — fails closed.
+- [x] Attack: `soma fix` treated character columns as bytes (panicked on `"日本語";`, edited inside `"éé;;"`) — positions converted.
+- [x] Attack: `soma run app.cell` without a handler ran the first declared — even `_wipe` — `main` / `run` first, never a private handler.
+- [x] Attack: `soma build -o app.cell` replaced the source with Rust — refused; `soma deploy` no longer overwrites an existing Dockerfile / fly.toml / wrangler.toml / task definition.
+- [x] Attack: `verify --json` printed a text line before the JSON when check failed (and dropped the errors) — one JSON document with `check_errors`.
+- [x] Attack: `soma replay` read a String that looked like a number as an Int ("007" diverged, "1" vs 1 passed) — BigInts are tagged in the log; unreadable log lines and an empty log fail the replay.
+- [x] Attack: the dashboard answered `Access-Control-Allow-Origin: *` (any site could read invariant source) — same-origin only; repl / build banners show the real version.
+- [x] Port: no asin / acos / pi, and no trig beyond sin/cos in `[native]` — asin, acos, pi everywhere; tan, atan, atan2, asin, acos, pi in native (identical results).
+
+### Open
+- [ ] Programs sharing a directory can still alias tables by name (`A.b_data` vs `A_b.data`) — one directory per program; a return value `{"__error__": …}` replays like a raise; the deploy Dockerfile misses sibling imports and static/; a literal-bounded native while loop is not proven to terminate; memory is not returned after large bursts.

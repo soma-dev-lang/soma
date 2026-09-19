@@ -8,6 +8,15 @@ use crate::registry::Registry;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
 pub fn cmd_build(path: &PathBuf, output: Option<&Path>, registry: &mut Registry) {
+    // `-o app.cell` replaced the program's source with generated Rust
+    if let Some(o) = output {
+        let is_cell = o.extension().map_or(false, |e| e.eq_ignore_ascii_case("cell"));
+        let same = std::fs::canonicalize(o).ok().zip(std::fs::canonicalize(path).ok()).map_or(false, |(a, b)| a == b);
+        if is_cell || same {
+            eprintln!("error: soma build -o {}: that is a Soma source file — choose an output such as app.rs", o.display());
+            std::process::exit(1);
+        }
+    }
     let source = read_source(path);
     let file_str = path.display().to_string();
     let tokens = lex_with_location(&source, Some(&file_str));

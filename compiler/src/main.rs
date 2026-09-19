@@ -79,7 +79,7 @@ enum Commands {
         /// Default off — no perf overhead unless asked.
         #[arg(long)]
         record: bool,
-        /// Start from empty storage: delete `.soma_data/` beside the program first
+        /// Start from empty storage: delete `.soma_data/` beside the program first (only this program's tables when other programs' cells also keep data there)
         #[arg(long)]
         fresh: bool,
     },
@@ -363,7 +363,7 @@ fn main_inner() {
                         if let Ok(conn) = rusqlite::Connection::open(data.join("soma.db")) {
                             for t in &own { let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{}\"", t.replace('"', "\"\""))); }
                         }
-                        eprintln!("fresh: reset {} table(s) of this program — {} also holds data of {} (other programs in this directory), kept",
+                        eprintln!("fresh: reset {} table(s) of this program — {} also holds tables {} (other programs in this directory), kept",
                             own.len(), data.display(), foreign.join(", "));
                         return commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry);
                     }
@@ -462,15 +462,19 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                 // to be printed without the warning), then STOP: a proof
                 // about a program that does not check proves nothing
                 // on stdout with the verdict: verify's whole report is stdout
-                println!("{} fails `soma check` — fix these before verifying:", path.display());
+                // under --json stdout is ONE JSON document, with the errors
+                // in it (a text line came first and the errors were dropped)
+                if !json { println!("{} fails `soma check` — fix these before verifying:", path.display()); }
                 let mut in_error = false;
+                let mut errors: Vec<String> = Vec::new();
                 for line in chk.report().lines() {
-                    if line.starts_with("error") { in_error = true; }
+                    if line.starts_with("error") { in_error = true; errors.push(line.to_string()); }
                     else if line.starts_with("warning") || line.starts_with("advisory") || line.starts_with("✓") || line.starts_with("✗") || line.starts_with("note") { in_error = false; }
+                    else if in_error { if let Some(last) = errors.last_mut() { last.push('\n'); last.push_str(line); } }
                     if in_error && !json { println!("  {}", line); }
                 }
                 if json {
-                    println!("{}", serde_json::json!({"ok": false, "verdict": "VERIFY FAILED — soma check failed", "cells": []}));
+                    println!("{}", serde_json::json!({"ok": false, "verdict": "VERIFY FAILED — soma check failed", "cells": [], "check_errors": errors}));
                 } else {
                     println!("VERIFY FAILED — soma check failed (fix the errors above, then verify)");
                 }
@@ -858,11 +862,24 @@ fn cmd_tokens(path: &PathBuf) {
 /// The tables of `db` owned by the cells of `file` (and of its lib/ and
 /// installed packages), and the cell prefixes of the other tables.
 fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Vec<String>) {
+    // the EXACT tables this program owns (a name prefix took cell `A_b`'s
+    // tables for cell `A`'s and reset another program's data)
     let mut names: Vec<String> = Vec::new();
     let mut add_file = |p: &std::path::Path, names: &mut Vec<String>| {
         if let Ok(src) = std::fs::read_to_string(p) {
             let program = commands::parse(commands::lex(&src));
-            for c in &program.cells { names.push(c.node.name.to_ascii_lowercase()); }
+            for c in &program.cells {
+                let cell = &c.node.name;
+                names.push(format!("{}__counters", cell).to_ascii_lowercase());
+                names.push(format!("{}__agent_memory", cell).to_ascii_lowercase());
+                for sec in &c.node.sections {
+                    match &sec.node {
+                        ast::Section::Memory(m) => for slot in &m.slots { names.push(format!("{}_{}", cell, slot.node.name).to_ascii_lowercase()); },
+                        ast::Section::State(sm) => names.push(format!("{}__sm_{}", cell, sm.name).to_ascii_lowercase()),
+                        _ => {}
+                    }
+                }
+            }
         }
     };
     add_file(file, &mut names);
@@ -888,9 +905,10 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
     for t in tables {
         let lt = t.to_ascii_lowercase();
         if lt.starts_with('_') || lt.starts_with("sqlite_") || !lt.contains('_') { continue; }
-        if names.iter().any(|n| lt.starts_with(&format!("{}_", n))) { own.push(t); continue; }
-        let prefix = t.split('_').next().unwrap_or("").to_string();
-        if !prefix.is_empty() && !foreign.contains(&prefix) { foreign.push(prefix); }
+        let base = lt.strip_suffix("_log").unwrap_or(&lt);
+        if names.iter().any(|n| n == &lt || n == base) { own.push(t); continue; }
+        let name = t.strip_suffix("_log").unwrap_or(&t).to_string();
+        if !foreign.contains(&name) { foreign.push(name); }
     }
     (own, foreign)
 }

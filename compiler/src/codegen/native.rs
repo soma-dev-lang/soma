@@ -2636,6 +2636,7 @@ fn collect_tab_final<'a>(
 const PURE_BUILTINS: &[&str] = &[
     "sqrt", "log", "exp", "pow", "abs", "min", "max",
     "len", "nth", "range", "floor", "ceil", "round", "sin", "cos",
+    "tan", "atan", "atan2", "asin", "acos", "pi",
     "to_float", "to_int", "to_string",
     "band", "bor", "bxor", "bnot", "shl", "shr", "bit_len",
     "bit_test", "bit_set", "bit_clr", "bit_next",
@@ -3678,7 +3679,7 @@ impl FnGenerator {
             Expr::FnCall { name, args } => {
                 match name.as_str() {
                     "random" if !args.is_empty() => NativeType::Int,
-                    "random" | "sqrt" | "log" | "exp" | "pow" | "sin" | "cos" => NativeType::Float,
+                    "random" | "sqrt" | "log" | "exp" | "pow" | "sin" | "cos" | "tan" | "atan" | "atan2" | "asin" | "acos" | "pi" => NativeType::Float,
                     "to_string" => NativeType::String,
                     "to_float" => NativeType::Float,
                     "to_int" | "len" | "floor" | "ceil" | "round" => NativeType::Int,
@@ -4461,11 +4462,22 @@ impl FnGenerator {
                 self.coerce_direct(format!("_soma_random_below({}, {})", lo, hi), NativeType::Int, target_ty)
             }
             "random" => self.coerce_direct("_soma_random()".to_string(), NativeType::Float, target_ty),
-            "sqrt" | "log" | "exp" | "sin" | "cos" => {
+            "sqrt" | "log" | "exp" | "sin" | "cos" | "tan" | "atan" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
                 let method = match name { "log" => "ln", other => other };
                 format!("({}).{}()", a, method)
             }
+            // asin / acos refuse an argument outside [-1, 1] as interpreted
+            "asin" | "acos" if args.len() == 1 => {
+                let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
+                format!("{{ let _x: f64 = {}; if !(-1.0..=1.0).contains(&_x) {{ panic!(\"soma:range: {}({{}}) — the argument must be in [-1, 1]\", _x) }} _x.{}() }}", a, name, name)
+            }
+            "atan2" if args.len() == 2 => {
+                let y = self.gen_expr_direct(&args[0].node, NativeType::Float);
+                let x = self.gen_expr_direct(&args[1].node, NativeType::Float);
+                format!("({}).atan2({})", y, x)
+            }
+            "pi" if args.is_empty() => "std::f64::consts::PI".to_string(),
             "pow" => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::Float);
                 let b = self.gen_expr_direct(&args[1].node, NativeType::Float);

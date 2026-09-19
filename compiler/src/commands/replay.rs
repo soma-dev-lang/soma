@@ -36,13 +36,17 @@ pub fn cmd_replay(
         process::exit(1);
     }
 
-    let entries = match record_log::read_all(&log_path) {
+    let (entries, bad_lines) = match record_log::read_all_counting(&log_path) {
         Ok(e) => e,
         Err(e) => { eprintln!("error: failed to read {}: {}", log_path.display(), e); process::exit(1); }
     };
+    // a replay that checked nothing, or skipped lines, is not a pass
+    if bad_lines > 0 {
+        eprintln!("error: {}: {} line(s) are not log entries (truncated or edited) — the replay cannot vouch for them", log_path.display(), bad_lines);
+    }
     if entries.is_empty() {
-        eprintln!("warning: {} contains no entries", log_path.display());
-        return;
+        eprintln!("error: {} contains no entries — nothing was replayed", log_path.display());
+        process::exit(1);
     }
 
     // If --at is provided, slice the entries to those at-or-before that timestamp.
@@ -146,6 +150,10 @@ pub fn cmd_replay(
 
     println!("--------------------------------------------------------------");
     println!("replayed {} entries: {} ok, {} diverged", entries.len(), ok, diverged);
+    if bad_lines > 0 {
+        println!("  and {} unreadable line(s)", bad_lines);
+        process::exit(1);
+    }
     if diverged > 0 {
         process::exit(1);
     }

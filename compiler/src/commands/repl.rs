@@ -5,7 +5,7 @@ use crate::registry::Registry;
 use super::lex;
 
 pub fn cmd_repl(_registry: &mut Registry) {
-    eprintln!("soma repl v0.1.0 — type expressions to evaluate, :quit to exit");
+    eprintln!("soma repl v{} — type expressions to evaluate, :quit to exit", env!("CARGO_PKG_VERSION"));
 
     let empty_program = ast::Program {
         imports: vec![],

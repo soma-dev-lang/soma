@@ -161,12 +161,20 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
         // This used to put step 3 ahead of step 2, which made
         // `soma run fact.cell 5` try to call `run(5)` and error out
         // even when `compute(n: Int)` was right there.
+        //   `main` / `run` first, and never a `_private` handler: `soma run
+        //   app.cell` ran `_wipe`, the first one declared
         let n_args = arg_values.len();
-        let default = handler_params.iter().find(|(h, p)| h == "run" && *p == n_args)
-            .or_else(|| handler_params.iter().find(|(_, p)| *p == n_args))
-            .or_else(|| handler_params.iter().find(|(h, _)| h == "run"))
-            .or_else(|| handler_params.iter().find(|(_, p)| *p == 0))
-            .unwrap_or(&handler_params[0]);
+        let public: Vec<&(String, usize)> = handler_params.iter().filter(|(h, _)| !h.starts_with('_')).collect();
+        if public.is_empty() {
+            eprintln!("error: cell '{}' has only private (`_`) handlers — name the one to run: soma run <file> <handler> …", cell_name);
+            process::exit(1);
+        }
+        let default = public.iter().find(|(h, p)| (h == "main" || h == "run") && *p == n_args)
+            .or_else(|| public.iter().find(|(_, p)| *p == n_args))
+            .or_else(|| public.iter().find(|(h, _)| h == "main" || h == "run"))
+            .or_else(|| public.iter().find(|(_, p)| *p == 0))
+            .copied()
+            .unwrap_or(public[0]);
         (default.0.clone(), arg_values)
     };
 
@@ -270,12 +278,20 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
         // This used to put step 3 ahead of step 2, which made
         // `soma run fact.cell 5` try to call `run(5)` and error out
         // even when `compute(n: Int)` was right there.
+        //   `main` / `run` first, and never a `_private` handler: `soma run
+        //   app.cell` ran `_wipe`, the first one declared
         let n_args = arg_values.len();
-        let default = handler_params.iter().find(|(h, p)| h == "run" && *p == n_args)
-            .or_else(|| handler_params.iter().find(|(_, p)| *p == n_args))
-            .or_else(|| handler_params.iter().find(|(h, _)| h == "run"))
-            .or_else(|| handler_params.iter().find(|(_, p)| *p == 0))
-            .unwrap_or(&handler_params[0]);
+        let public: Vec<&(String, usize)> = handler_params.iter().filter(|(h, _)| !h.starts_with('_')).collect();
+        if public.is_empty() {
+            eprintln!("error: cell '{}' has only private (`_`) handlers — name the one to run: soma run <file> <handler> …", cell_name);
+            process::exit(1);
+        }
+        let default = public.iter().find(|(h, p)| (h == "main" || h == "run") && *p == n_args)
+            .or_else(|| public.iter().find(|(_, p)| *p == n_args))
+            .or_else(|| public.iter().find(|(h, _)| h == "main" || h == "run"))
+            .or_else(|| public.iter().find(|(_, p)| *p == 0))
+            .copied()
+            .unwrap_or(public[0]);
         (default.0.clone(), arg_values)
     };
 
@@ -415,8 +431,8 @@ fn unknown_handler_or_default(
     arg_values: Vec<interpreter::Value>,
 ) -> (String, Vec<interpreter::Value>) {
     let n_args = arg_values.len();
-    let by_arity = handler_params.iter().find(|(h, p)| h == "run" && *p == n_args)
-        .or_else(|| handler_params.iter().find(|(_, p)| *p == n_args));
+    let by_arity = handler_params.iter().find(|(h, p)| (h == "run" || h == "main") && *p == n_args)
+        .or_else(|| handler_params.iter().find(|(h, p)| *p == n_args && !h.starts_with('_')));
     let identifier_like = name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         && name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_');
     // a handler takes the rest of the args → the token was meant as a name

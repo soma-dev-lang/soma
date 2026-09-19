@@ -70,7 +70,16 @@ pub fn find_stdlib() -> PathBuf {
 /// printing "passed".
 fn validate_manifest_beside(path: &PathBuf) {
     let toml_path = path.parent().unwrap_or(std::path::Path::new(".")).join("soma.toml");
-    let Ok(content) = fs::read_to_string(&toml_path) else { return };
+    // present but unreadable (not UTF-8, a directory, a dangling link):
+    // its [verify] properties were dropped and verify said OK — fail closed
+    if fs::symlink_metadata(&toml_path).is_err() { return; }
+    let content = match fs::read_to_string(&toml_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {} cannot be read ({}) — its [verify] properties and [agent] settings would be ignored; save it as UTF-8 text", toml_path.display(), e);
+            fatal_exit();
+        }
+    };
     if let Ok(m) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
         if !m.peers.is_empty() { HAS_PEERS.store(true, std::sync::atomic::Ordering::Relaxed); }
     }

@@ -68,6 +68,7 @@ fn is_native_type(ty: &TypeExpr) -> bool {
 pub(crate) const ALLOWED_BUILTINS: &[&str] = &[
     "sqrt", "log", "exp", "pow", "abs", "min", "max", "random",
     "len", "nth", "range", "floor", "ceil", "round", "sin", "cos",
+    "tan", "atan", "atan2", "asin", "acos", "pi",
     // Pipe operations (generate parallel native code)
     "map", "filter", "reduce", "fold",
     // Type conversions
@@ -345,7 +346,7 @@ fn has_float_literal(e: &Expr) -> bool {
     match e {
         Expr::Literal(Literal::Float(_)) => true,
         Expr::BinaryOp { left, right, .. } => has_float_literal(&left.node) || has_float_literal(&right.node),
-        Expr::FnCall { name, args } => matches!(name.as_str(), "sqrt" | "to_float" | "sin" | "cos" | "exp" | "log") || args.iter().any(|a| has_float_literal(&a.node)),
+        Expr::FnCall { name, args } => matches!(name.as_str(), "sqrt" | "to_float" | "sin" | "cos" | "tan" | "atan" | "atan2" | "asin" | "acos" | "pi" | "exp" | "log") || args.iter().any(|a| has_float_literal(&a.node)),
         _ => false,
     }
 }
@@ -848,7 +849,7 @@ fn scan_expr(expr: &Expr, env: &std::collections::HashMap<String, Num>, hits: &m
         Expr::FnCall { name, args } => {
             let tys: Vec<Num> = args.iter().map(|a| scan_expr(&a.node, env, hits)).collect();
             match name.as_str() {
-                "to_float" | "sqrt" | "log" | "exp" | "pow" | "sin" | "cos" | "random" => Num::Float,
+                "to_float" | "sqrt" | "log" | "exp" | "pow" | "sin" | "cos" | "tan" | "atan" | "atan2" | "asin" | "acos" | "pi" | "random" => Num::Float,
                 "to_int" | "idiv" | "gcd" | "len" | "floor" | "ceil" | "round" | "pow_mod"
                 | "sqrt_int" | "band" | "bor" | "bxor" | "bnot" | "shl" | "shr" | "bit_len" => Num::Int,
                 "abs" | "min" | "max" => {

@@ -655,7 +655,9 @@ round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.000
 a printed map or list too; `format("%.3e", x)` for scientific notation); to_json — HTTP bodies included — uses JSON's shortest form (`1.18e21`).
 An SSE `data:` line and a WebSocket push carry the value as JSON on one line
 (a String payload is quoted, so a client cannot forge another event).
-`soma check` verifies the native vocabulary (every handler, every error at
+Native math: sqrt, log, exp, pow, abs, min, max, floor, ceil, round, sin,
+cos, tan, atan, atan2, asin, acos, pi() (asin/acos outside [-1, 1] raise
+kind range, as interpreted). `soma check` verifies the native vocabulary (every handler, every error at
 once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
 an Int slot refuses a non-exact `/` instead of truncating. One difference:

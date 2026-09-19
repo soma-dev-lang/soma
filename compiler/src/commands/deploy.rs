@@ -311,8 +311,8 @@ fn generate_cloudflare(
         d1_bindings,
     );
 
-    std::fs::write(base_dir.join("Dockerfile"), &dockerfile).unwrap();
-    std::fs::write(base_dir.join("wrangler.toml"), &wrangler).unwrap();
+    write_new(&base_dir.join("Dockerfile"), &dockerfile);
+    write_new(&base_dir.join("wrangler.toml"), &wrangler);
 
     eprintln!("generated: Dockerfile");
     eprintln!("generated: wrangler.toml");
@@ -356,8 +356,8 @@ fn generate_fly(
     );
 
 
-    std::fs::write(base_dir.join("Dockerfile"), &dockerfile).unwrap();
-    std::fs::write(base_dir.join("fly.toml"), &fly_toml).unwrap();
+    write_new(&base_dir.join("Dockerfile"), &dockerfile);
+    write_new(&base_dir.join("fly.toml"), &fly_toml);
     eprintln!("generated: Dockerfile");
     eprintln!("generated: fly.toml");
 
@@ -432,9 +432,8 @@ fn generate_aws(
         }]
     });
 
-    std::fs::write(base_dir.join("Dockerfile"), &dockerfile).unwrap();
-    std::fs::write(base_dir.join("task-definition.json"),
-        serde_json::to_string_pretty(&task_def).unwrap()).unwrap();
+    write_new(&base_dir.join("Dockerfile"), &dockerfile);
+    write_new(&base_dir.join("task-definition.json"), &serde_json::to_string_pretty(&task_def).unwrap());
 
     eprintln!("generated: Dockerfile");
     eprintln!("generated: task-definition.json");
@@ -450,5 +449,18 @@ fn generate_aws(
         if provider.resolve.get(&key).map(|s| s.as_str()) == Some("dynamodb") {
             eprintln!("  6. aws dynamodb create-table --table-name soma_{}_{} --attribute-definitions ...", pkg, slot);
         }
+    }
+}
+
+/// A deployment file is written only if it does not exist: a hand-edited
+/// Dockerfile / fly.toml was replaced without a word
+fn write_new(path: &std::path::Path, content: &str) {
+    if path.exists() {
+        eprintln!("  {} exists — kept (delete it to regenerate)", path.display());
+        return;
+    }
+    if let Err(e) = std::fs::write(path, content) {
+        eprintln!("error: cannot write {}: {}", path.display(), e);
+        std::process::exit(1);
     }
 }

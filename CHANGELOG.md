@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `soma run --fresh` resets exactly this program's tables (a cell `A`
+  reset another program's `A_b`); an unreadable soma.toml fails closed;
+  `soma run` without a handler prefers `main` / `run` and never runs a
+  `_private` one; `soma build -o x.cell` is refused and `soma deploy`
+  keeps existing files; `verify --json` is JSON when check fails.
+- `soma fix` handles non-ASCII lines; `soma replay` keeps numeric-looking
+  Strings as Strings and fails on unreadable or empty logs; the dashboard
+  is same-origin only.
+- New `asin`, `acos`, `pi()`; `tan`, `atan`, `atan2`, `asin`, `acos`, `pi`
+  in `[native]`.
 - Bus: a connection must send its first line within 10 s; at most 256
   are open at once (half-open connections held a thread each).
 - `require <Int builtin>` is a check error like `if`; `soma run --fresh`

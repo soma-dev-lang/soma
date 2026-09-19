@@ -3433,3 +3433,72 @@ cell test T { rules { assert rt()  assert r0() == "0.0" } }
     let db = f.join(".soma_data/soma.db");
     assert!(db.exists(), "the app's database survives");
 }
+
+/// Cycle 62 (CLI attack): `--fresh` owns exact table names (cell `A` does
+/// not reset `A_b`); an unreadable soma.toml fails closed; `soma fix`
+/// counts characters, not bytes; `soma run` with no handler never picks a
+/// private one; `build -o x.cell` is refused; `verify --json` stays JSON
+/// when check fails; a String that looks like a number replays as a String.
+#[test]
+fn cycle62_findings() {
+    let d = dir("cycle62");
+    std::fs::write(d.join("a.cell"), "cell A { memory { data: Map<String, Int> [persistent] }  on put(k: String, v: Int) { data.set(k, v)  return data.len }  on show() { return data.len } }\n").unwrap();
+    std::fs::write(d.join("b.cell"), "cell A_b { memory { data: Map<String, Int> [persistent] }  on put(k: String, v: Int) { data.set(k, v)  return data.len }  on show() { return data.len } }\n").unwrap();
+    let _ = soma_in(&d, &["run", "b.cell", "put", "x", "1"]);
+    let _ = soma_in(&d, &["run", "a.cell", "put", "z", "3"]);
+    let _ = soma_in(&d, &["run", "--fresh", "a.cell", "show"]);
+    let (out, _) = soma_in(&d, &["run", "b.cell", "show"]);
+    assert!(out.trim().ends_with('1'), "A_b keeps its data: {out}");
+
+    let t = dir("cycle62_toml");
+    std::fs::write(t.join("app.cell"), "cell A { state s { initial: x  x -> y }  on go(id: String) { transition(id, \"y\")  return 1 } }\n").unwrap();
+    std::fs::write(t.join("soma.toml"), b"# propri\xe9t\xe9s\n[verify]\nnever = [\"y\"]\n").unwrap();
+    let (out, code) = soma_in(&t, &["verify", "app.cell"]);
+    assert!(code != 0 && out.contains("cannot be read"), "{out}");
+
+    let f = dir("cycle62_fix");
+    std::fs::write(f.join("f.cell"), "cell F {\n  on main() {\n    let z = \"日本語\";\n    let y = \"éé;;\"\n    return y\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&f, &["fix", "f.cell"]);
+    assert!(!out.contains("panicked"), "{out}");
+    let src = std::fs::read_to_string(f.join("f.cell")).unwrap();
+    assert!(src.contains("\"éé;;\"") && !src.contains("\"日本語\";"), "{src}");
+
+    let r = dir("cycle62_run");
+    std::fs::write(r.join("d.cell"), "cell A { on _wipe() { return \"WIPED\" }  on zeta() { return \"zeta\" }  on main() { return \"main\" } }\n").unwrap();
+    let (out, _) = soma_in(&r, &["run", "d.cell"]);
+    assert!(out.contains("main") && !out.contains("WIPED"), "{out}");
+    let (out, code) = soma_in(&r, &["build", "d.cell", "-o", "d.cell"]);
+    assert!(code != 0, "{out}");
+    assert!(std::fs::read_to_string(r.join("d.cell")).unwrap().starts_with("cell A"), "the source is intact");
+
+    let v = dir("cycle62_verify");
+    std::fs::write(v.join("x.cell"), "cell X { on f() { return \"{nope}\" } }\n").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_soma")).args(["verify", "--json", "x.cell"]).current_dir(&v).output().unwrap();
+    let js: serde_json::Value = serde_json::from_slice(&o.stdout).expect("verify --json is JSON");
+    assert_eq!(js["ok"], false);
+
+    let p = dir("cycle62_replay");
+    std::fs::write(p.join("c.cell"), "cell C { on code(x: String) { return x } }\n").unwrap();
+    let _ = soma_in(&p, &["run", "--record", "c.cell", "code", "007"]);
+    let (out, code) = soma_in(&p, &["replay", "c.cell"]);
+    assert!(code == 0 && out.contains("1 ok"), "{out}");
+}
+
+/// Cycle 62 (port): asin / acos / pi, and trig in `[native]` matching the
+/// interpreter.
+#[test]
+fn cycle62_trig() {
+    passes("cycle62_trig", r#"
+cell G {
+    on hn(a: Float, c: Float) [native] { return asin(sqrt(a)) + atan2(c, 1.0) + acos(a) + pi() + tan(0.0) }
+    on hi(a: Float, c: Float) { return asin(sqrt(a)) + atan2(c, 1.0) + acos(a) + pi() + tan(0.0) }
+    on bad() { return asin(2.0) }
+}
+cell test T {
+    rules {
+        assert hn(0.25, 0.5) == hi(0.25, 0.5)
+        assert_fails bad()
+    }
+}
+"#);
+}

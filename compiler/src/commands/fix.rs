@@ -150,6 +150,13 @@ fn detect_indent(source: &str, cell_name: &str) -> String {
 /// anything else can run: `;` between statements, `=>` in match arms, `-> T`
 /// on a handler. Each round re-lexes / re-parses; stops at the first error
 /// it cannot mend. Returns the descriptions of what changed.
+/// Positions from the lexer / parser count CHARACTERS: slicing the text
+/// needs the byte offset (`"日本語";` panicked, `"éé;;"` edited inside the
+/// string).
+fn char_to_byte(src: &str, c: usize) -> usize {
+    src.char_indices().nth(c).map(|(b, _)| b).unwrap_or(src.len())
+}
+
 fn syntax_fixes(source: &mut String) -> Vec<String> {
     let mut done: Vec<String> = Vec::new();
     for _ in 0..40 {
@@ -157,10 +164,11 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
         let tokens = match lex.tokenize() {
             Ok(t) => t,
             Err(e) => {
-                let Some(pos) = super::lex_error_position(&e) else { break };
+                let Some(cpos) = super::lex_error_position(&e) else { break };
+                let pos = char_to_byte(source, cpos);
                 if matches!(e, crate::lexer::LexError::UnexpectedChar { .. }) && source[pos..].starts_with(';') {
                     // `a = 1; b = 2` — two spaces separate statements on one line
-                    let (line, _) = crate::interpreter::span_to_location(source, pos);
+                    let (line, _) = crate::interpreter::span_to_location(source, cpos);
                     source.replace_range(pos..pos + 1, "  ");
                     done.push(format!("line {}: removed ';' (one statement per line, or two spaces between statements)", line));
                     continue;
@@ -173,10 +181,11 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
             Ok(_) => break,
             Err(e) => {
                 let msg = e.to_string();
-                let Some(span) = e.span() else { break };
+                let Some(cspan) = e.span() else { break };
                 // a position in an imported file: not this text
-                if span.start > source.len() { break; }
-                let (line, _) = crate::interpreter::span_to_location(source, span.start);
+                if cspan.start > source.chars().count() { break; }
+                let (line, _) = crate::interpreter::span_to_location(source, cspan.start);
+                let span = crate::ast::Span::new(char_to_byte(source, cspan.start), char_to_byte(source, cspan.end));
                 if msg.starts_with("match arms use '->'") && source[span.start..].starts_with("=>") {
                     source.replace_range(span.start..span.start + 2, "->");
                     done.push(format!("line {}: match arm `=>` → `->`", line));
@@ -254,7 +263,8 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     let mut idiom_edits: Vec<(usize, usize, &str, String)> = Vec::new();
     for error in &errors {
         if let CheckError::Static { kind: "foreign_idiom", message, span } = error {
-            if span.start >= source.len() { continue; }
+            if span.start >= source.chars().count() { continue; }
+            let span = crate::ast::Span::new(char_to_byte(&source, span.start), char_to_byte(&source, span.end));
             let word = source[span.start..span.end.min(source.len())].to_string();
             let to = match word.as_str() {
                 "null" | "None" | "nil" | "undefined" | "NULL" => "()",

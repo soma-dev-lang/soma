@@ -148,13 +148,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(t.chars().next().map(|c| Value::Int(SomaInt::from_i64(c as i64)))
                 .ok_or_else(|| RuntimeError::TypeError("ord(\"\"): empty string".to_string())))
         }
-        "sin" | "cos" | "tan" | "atan" | "atan2" => {
+        // π (no argument): geometry without a hand-typed constant
+        "pi" if args.is_empty() => Some(Ok(Value::Float(std::f64::consts::PI))),
+        "sin" | "cos" | "tan" | "atan" | "atan2" | "asin" | "acos" => {
             let f = |v: &Value| match v { Value::Float(n) => Some(*n), Value::Int(si) => Some(si.to_f64()), _ => None };
             let Some(x) = args.first().and_then(f) else {
                 return Some(Err(RuntimeError::TypeError(format!("{}(x: Float) needs a number", name))));
             };
             Some(Ok(Value::Float(match name {
                 "sin" => x.sin(), "cos" => x.cos(), "tan" => x.tan(), "atan" => x.atan(),
+                // outside [-1, 1] there is no angle (NaN would flow on silently)
+                "asin" | "acos" if !(-1.0..=1.0).contains(&x) => return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: {}({}) — the argument must be in [-1, 1]", name, x) })),
+                "asin" => x.asin(), "acos" => x.acos(),
                 _ => { let Some(y) = args.get(1).and_then(f) else { return Some(Err(RuntimeError::TypeError("atan2(y, x)".to_string()))) }; x.atan2(y) }
             })))
         }

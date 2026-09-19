@@ -1700,11 +1700,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // ── Verification dashboard ─────────────────────────────────────
         if url == "/__soma/" || url == "/__soma" {
             let html = super::dashboard::render_dashboard(&program);
+            // same-origin only: with `Access-Control-Allow-Origin: *` any
+            // site could read the program's invariants and structure
             let resp = tiny_http::Response::from_string(html)
                 .with_header(
                     tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap()
                 );
-            let _ = request.respond(cors(resp));
+            let _ = request.respond(resp);
             return;
         }
 

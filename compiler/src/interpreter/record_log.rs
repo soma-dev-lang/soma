@@ -106,16 +106,28 @@ pub fn append(path: &Path, entry: &RecordEntry) -> std::io::Result<()> {
 }
 
 pub fn read_all(path: &Path) -> std::io::Result<Vec<RecordEntry>> {
+    let (entries, bad) = read_all_counting(path)?;
+    if bad > 0 {
+        eprintln!("warning: {}: {} line(s) are not log entries (truncated or edited) — skipped", path.display(), bad);
+    }
+    Ok(entries)
+}
+
+/// The entries, and the number of lines that are not entries (a truncated
+/// or edited line was dropped silently and could hide a divergent entry)
+pub fn read_all_counting(path: &Path) -> std::io::Result<(Vec<RecordEntry>, usize)> {
     let f = std::fs::File::open(path)?;
     let mut entries = Vec::new();
+    let mut bad = 0usize;
     for line in BufReader::new(f).lines() {
         let line = line?;
         if line.trim().is_empty() { continue; }
-        if let Some(e) = RecordEntry::from_json_line(&line) {
-            entries.push(e);
+        match RecordEntry::from_json_line(&line) {
+            Some(e) => entries.push(e),
+            None => bad += 1,
         }
     }
-    Ok(entries)
+    Ok((entries, bad))
 }
 
 /// Default log path next to a source file.
@@ -129,9 +141,11 @@ pub fn default_log_path(source: &Path) -> PathBuf {
 
 pub fn value_to_json(v: &Value) -> serde_json::Value {
     match v {
+        // a BigInt is tagged: as a bare string it made every numeric-
+        // looking String ("007", "{n}") replay as an Int
         Value::Int(si) => match si.to_i64() {
             Some(n) => serde_json::Value::from(n),
-            None => serde_json::Value::String(si.to_string()),
+            None => serde_json::json!({"__soma_int__": si.to_string()}),
         },
         Value::Float(n) => serde_json::Value::from(*n),
         Value::String(s) => serde_json::Value::String(s.clone()),
@@ -181,13 +195,12 @@ pub fn json_to_value(v: &serde_json::Value) -> Value {
                 Value::Float(n.as_f64().unwrap_or(0.0))
             }
         }
-        serde_json::Value::String(s) => {
-            // BigInt encoded as decimal string
-            if let Ok(i) = s.parse::<i64>() {
-                Value::Int(SomaInt::from_i64(i))
-            } else {
-                Value::String(s.clone())
-            }
+        serde_json::Value::String(s) => Value::String(s.clone()),
+        serde_json::Value::Object(obj) if obj.len() == 1 && obj.get("__soma_int__").map_or(false, |v| v.is_string()) => {
+            let t = obj["__soma_int__"].as_str().unwrap_or("0");
+            if t.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()) && !t.trim_start_matches('-').is_empty() {
+                Value::Int(SomaInt::from_decimal_str(t))
+            } else { Value::String(t.to_string()) }
         }
         serde_json::Value::Array(arr) => Value::List(arr.iter().map(json_to_value).collect()),
         serde_json::Value::Object(obj) => {
