@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased
+## 2.8.0 — 2026-09-20
+
+- Invariants BETWEEN slots of a cell: `invariant (reserved ?? 0) <= (stock
+  ?? 0)` is checked on every write to either slot (the written one is its
+  new value, the others are read at the same key); verify reports it
+  runtime-checked. The bare form is refused with the fix in the message.
+- `refusal(kind, detail?)`: the body and HTTP status a raised error of that
+  kind would give — refuse a request AND keep what the handler recorded
+  (raising rolls it back).
+- `soma verify` names the cross-cell rules it does not prove (`note:
+  cross-cell: handler X transitions its machine and acts on cell Y`).
+- Check: an `ensure` in a `[task]` handler after writes and a think(); a
+  face parameter whose name differs from the handler's.
+- `delete` on an `[immutable]` List refuses whatever the index (out of
+  range answered `false`); dropping a stalled SSE subscriber is logged, and
+  the docs give its real memory cost.
 
 - Storage: a write the database refuses (a read-only `.soma_data`, a full
   disk) raises kind `storage` and rolls the handler back — `set` / `push`

@@ -948,3 +948,47 @@ pub fn format_results(results: &[VerifyResult]) -> String {
 
     output
 }
+
+
+/// Handlers that transition their own machine AND act on another cell: the
+/// rule between the two machines is outside what verify proves (it is
+/// per-cell). Listed by name so the gap is concrete, not a footnote.
+pub fn cross_cell_notes(program: &Program) -> Vec<String> {
+    // only cells that HAVE a machine: calling a plain audit cell is not a
+    // rule between two lifecycles
+    let cells: std::collections::HashSet<String> = program.cells.iter()
+        .filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_))))
+        .map(|c| c.node.name.clone()).collect();
+    let mut out = Vec::new();
+    for cell in &program.cells {
+        if !matches!(cell.node.kind, crate::ast::CellKind::Cell | crate::ast::CellKind::Agent) { continue; }
+        let has_machine = cell.node.sections.iter().any(|s| matches!(s.node, Section::State(_)));
+        for sec in &cell.node.sections {
+            let Section::OnSignal(on) = &sec.node else { continue };
+            let (mut transitions, mut others) = (false, Vec::new());
+            crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
+                Expr::FnCall { name, args } => {
+                    if name == "transition" { transitions = true; }
+                    if name == "delegate" {
+                        if let Some(Expr::Literal(crate::ast::Literal::String(c))) = args.first().map(|a| &a.node) {
+                            if cells.contains(c) && *c != cell.node.name { others.push(c.clone()); }
+                        }
+                    }
+                }
+                Expr::MethodCall { target, .. } => if let Expr::Ident(c) = &target.node {
+                    if cells.contains(c) && *c != cell.node.name { others.push(c.clone()); }
+                },
+                _ => {}
+            });
+            crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| if let Statement::MethodCall { target, .. } = st {
+                if cells.contains(target) && *target != cell.node.name { others.push(target.clone()); }
+            });
+            others.sort(); others.dedup();
+            if has_machine && transitions && !others.is_empty() {
+                out.push(format!("cross-cell: `{}.{}` transitions its own machine and acts on {} — a rule BETWEEN the two cells' machines (\"not while the subject is withdrawn\") is not verified: state it as a `require` reading the other cell",
+                    cell.node.name, on.signal_name, others.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", ")));
+            }
+        }
+    }
+    out
+}

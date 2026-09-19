@@ -1696,6 +1696,18 @@ fn task_lints(label: &str, body: &[Spanned<Statement>], cell: &str, cell_slots: 
             span, warning: true, habit: true, kind: "task_without_think",
         });
     }
+    // an `ensure` that fails undoes the CURRENT step only: the writes made
+    // before the last think() are already committed
+    if body.iter().any(|st| matches!(st.node, Statement::Ensure { .. })) {
+        if let Some(i) = body.iter().position(|st| has_think(std::slice::from_ref(st))) {
+            if !slot_writes(&body[..i]).is_empty() {
+                issues.push(InterpolationIssue {
+                    message: format!("[task] {}: an `ensure` here undoes the step it runs in, not the writes made before the think() — they are already committed; move those writes after the last think(), or check the condition before them", label),
+                    span, warning: true, habit: true, kind: "task_ensure",
+                });
+            }
+        }
+    }
     // a `try` holding writes AND a boundary: the writes before it commit
     // there and are not undone if the try fails
     super::literals::for_each_expr(body, &mut |e| if let Expr::Try(inner) = e {

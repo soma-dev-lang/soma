@@ -61,18 +61,28 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                     .copied()
                     .filter(|s| deep.contains(*s))
                     .collect();
+                // Several slots of the CELL: a rule between them
+                // (`invariant reserved <= stock`), checked on every write to
+                // any of them — the written one is its new value, the others
+                // are read at the same key. It cannot be proven by induction:
+                // verify reports it runtime-checked.
                 if named.len() > 1 {
                     named.sort();
-                    issues.push(InvariantIssue {
-                        message: format!(
-                            "memory invariant references several slots ({}) — an invariant is \
-                             checked per write, with only the written slot's value in scope, so \
-                             this could never evaluate and every write would be rejected. Write \
-                             one invariant per slot",
-                            named.join(", ")
-                        ),
-                        span: inv.span,
-                    });
+                    let text = crate::ast::render_expr(&inv.node);
+                    // a Map / List slot read at a key it has no entry for is
+                    // () — the bare form would fail on the first write
+                    let keyed = named.iter().any(|n| mem.slots.iter().any(|sl| sl.node.name == **n
+                        && matches!(&sl.node.ty.node, crate::ast::TypeExpr::Generic { name, .. } if name == "Map" || name == "List")));
+                    if keyed && !text.contains("??") {
+                        issues.push(InvariantIssue {
+                            message: format!(
+                                "memory invariant between slots ({}) — the other slot is read at the SAME key, and a key it has no entry for reads as (), which no comparison accepts: default the sides (`(reserved ?? 0) <= (stock ?? 0)`). It is checked on every write to either slot, and stays runtime-checked (verify cannot prove a rule between two slots)",
+                                named.join(", ")
+                            ),
+                            span: inv.span,
+                            // a warning, not an error
+                        });
+                    }
                 }
                 for name in idents {
                     if slot_names.contains(name.as_str())

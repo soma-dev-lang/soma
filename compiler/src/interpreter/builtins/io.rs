@@ -87,6 +87,25 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
             Some(Ok(entries))
         }
+        // refusal(kind, detail): the body and status a RAISED error of that
+        // kind would have produced — for a handler that must refuse AND
+        // record (a rollback would undo the record: return this instead)
+        "refusal" if (1..=2).contains(&args.len()) => {
+            let kind = match args.first() { Some(Value::String(k)) if !k.is_empty() => k.clone(), _ => return Some(Err(RuntimeError::TypeError(
+                "refusal(kind: String, detail?: String) — the kind an error would carry (\"not_found\", \"conflict\", your own tag…)".to_string()))) };
+            let detail = match args.get(1) { Some(Value::String(d)) => d.clone(), Some(other) => format!("{}", other), None => kind.clone() };
+            let status = crate::commands::serve::status_for_kind(&kind) as i64;
+            let body = crate::interpreter::map_from_pairs(vec![
+                ("error".to_string(), Value::String(format!("{}: {}", kind, detail))),
+                ("kind".to_string(), Value::String(kind)),
+                ("detail".to_string(), Value::String(detail)),
+            ]);
+            let mut entries = IndexMap::new();
+            entries.insert("_status".to_string(), Value::Int(SomaInt::from_i64(status)));
+            entries.insert("_body".to_string(), body);
+            entries.insert("_response".to_string(), crate::interpreter::http_marker());
+            Some(Ok(Value::Map(entries)))
+        }
         "response" => {
             let status = args.first().cloned().unwrap_or(Value::Int(SomaInt::from_i64(200)));
             match &status {

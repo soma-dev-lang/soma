@@ -463,6 +463,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     let mut all_cell_names: Vec<String> = Vec::new();
     // horde cost bounds, printed when no state machine gives verify more to say
     let mut horde_lines: Vec<(bool, String)> = Vec::new();
+    let mut cross_cell: Vec<String> = Vec::new();
     let mut machine_cells: Vec<String> = Vec::new();
     let mut all_temporal = Vec::new();
     let mut total_cells: usize = 0;
@@ -552,6 +553,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         {
             let all = checker::cost::all_handlers_of(&program);
             for c in &program.cells { horde_lines.extend(checker::cost::horde_bounds(&c.node, &all)); }
+            cross_cell.extend(checker::verify::cross_cell_notes(&program));
         }
 
         // Run temporal property checks on each state machine
@@ -689,6 +691,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         } else {
             eprintln!("No state machine in this program: nothing to prove beyond `soma check` (invariants and lifecycles are what verify proves).");
             for (ok, line) in &horde_lines { println!("  {} cost: {}", if *ok { "✓" } else { "⚠" }, line); }
+            for line in &cross_cell { eprintln!("note: {}", line); }
             // --strict: an unbounded horde is no proof
             if strict && horde_lines.iter().any(|(ok, _)| !ok) {
                 println!("VERIFY FAILED — --strict: {} horde cost bound(s) unprovable", horde_lines.iter().filter(|(ok, _)| !ok).count());
@@ -820,6 +823,8 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
         print!("{}", checker::verify::format_results(&all_results));
         // each horde's cost bound, once
         for (ok, line) in &horde_lines { println!("  {} cost: {}", if *ok { "✓" } else { "⚠" }, line); }
+        // what verify does NOT cover, named (it is per-cell)
+        for line in &cross_cell { eprintln!("note: {}", line); }
 
         for (name, results) in &all_temporal {
             print!("{}", format_property_results(name, results));

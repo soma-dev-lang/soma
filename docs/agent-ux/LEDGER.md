@@ -1695,3 +1695,27 @@ concurrent checkouts never oversold.
 
 ### Open
 - [ ] Cross-slot invariants (`reserved <= stock`) are still inexpressible; `soma fix` prints "no auto-fixable errors" after fixing some; `replay` mis-attributes derived divergence; `soma env` lists the git checkout as a package; `soma add nosuchpkg` writes an unvalidated dependency; inf/NaN persist but serialize as null; a query key with no value is dropped.
+
+### Cycle 73 — clinical trial port (8/10) + concurrency attack (nothing central broken)
+
+Port: 1 747 lines, 93 structural proofs + 130 temporal, 215 assertions;
+427 req/s; 32 simultaneous enrolments of one subject → 1 accepted;
+kill -9 mid-load → 0 torn records. Attack: atomicity held for every write
+kind from every entry point (HTTP, ws, SSE, ticks, init/start, emit
+listeners, [task] steps, horde tasks and callbacks, vote voters, delegate,
+test rules), under kill -9, and serialization held across two processes,
+hordes, ticks and 200 concurrent [task] withdrawals.
+
+### Built
+- [x] **Invariants between slots** — the feature both the accounting and warehouse ports asked for (`invariant (reserved ?? 0) <= (stock ?? 0)`), enforced on writes to either slot, runtime-checked by design.
+- [x] **`refusal(kind, detail)`** — refuse AND keep the audit row (a raised error rolls it back; the port had to hand-write status mapping).
+- [x] **verify names cross-cell gaps** — on the trial program it points at 5 handlers, `Visits.finish_visit` among them: exactly where the port's own bug lived.
+
+### Fixed
+- [x] Attack: an `ensure` in a [task] handler kept the writes made before the think() (the docs promised a full rollback) — check warns, docs corrected.
+- [x] Port: `.delete(i)` out of range on an [immutable] List answered `false` instead of refusing.
+- [x] Port: a face parameter name that differs from the handler's passed check (a JSON body is matched by name).
+- [x] Attack: a stalled SSE subscriber held ~104 MB silently — the drop is logged and the docs give the real figure (1024 events × event size).
+
+### Open
+- [ ] `[verify]` is one global table (no per-machine sections); dates are UTC-only with no time-of-day; `clamp` as a proof hint needs the `ensure` pairing idiom documented.

@@ -2703,7 +2703,7 @@ fn cycle40_findings() {
     std::fs::write(d.join("x.cell"), "cell App {\n  memory {\n    a: Map<String, Int> [persistent]\n    b: Map<String, String> [persistent]\n    invariant a + len(\"{b}\") <= 10\n  }\n  on wa(v: Int) { a.set(\"x\", v) }\n}\n").unwrap();
     let (out, code) = soma_in(&d, &["check", "x.cell"]);
     assert_ne!(code, 0, "{out}");
-    assert!(out.contains("references several slots"), "{out}");
+    assert!(out.contains("invariant between slots"), "{out}");
     // an undefined function in a property body is a check error
     std::fs::write(d.join("p.cell"), "cell A { on f(n: Int) { return n } }\ncell test T { rules { property \"p\" forall n: Int in 0..5 ensures nosuch(n) >= 0 } }\n").unwrap();
     let (out, code) = soma_in(&d, &["check", "p.cell"]);
@@ -4531,4 +4531,92 @@ fn cycle72_storage_errors_indexed_lists_packages_and_cli() {
     std::fs::write(d3.join("c.cell"), "cell C { on mp(m: Map) { return m } }\n").unwrap();
     let (out, code) = soma_in(&d3, &["run", "c.cell", "mp", "{\"a\":{\"b\":{\"_variant\":\"X\"}}}"]);
     assert!(code != 0 && out.contains("reserved key '_variant'"), "{out}");
+}
+
+#[test]
+fn cycle73_invariants_between_slots() {
+    let d = dir("cycle73");
+    std::fs::write(d.join("s.cell"), r#"
+cell Stock {
+    memory {
+        stock: Map<String, Int> [persistent]
+        reserved: Map<String, Int> [persistent]
+        invariant (reserved ?? 0) <= (stock ?? 0)
+    }
+    on add(k: String, n: Int) { stock.set(k, n) }
+    on hold(k: String, n: Int) { reserved.set(k, n) }
+    on state(k: String) { return map("s", stock.get(k), "r", reserved.get(k)) }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["check", "s.cell"]);
+    assert!(code == 0, "{out}");
+    assert_eq!(soma_in(&d, &["run", "s.cell", "add", "x", "5"]).1, 0);
+    assert_eq!(soma_in(&d, &["run", "s.cell", "hold", "x", "3"]).1, 0);
+    // over stock: refused, and the slot is unchanged
+    let (out, code) = soma_in(&d, &["run", "s.cell", "hold", "x", "9"]);
+    assert!(code != 0 && out.contains("memory invariant violated on 'reserved'"), "{out}");
+    // …and lowering stock under what is reserved is refused too
+    let (out, code) = soma_in(&d, &["run", "s.cell", "add", "x", "1"]);
+    assert!(code != 0 && out.contains("memory invariant violated on 'stock'"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "s.cell", "state", "x"]);
+    assert!(out.contains("\"s\": 5") && out.contains("\"r\": 3"), "{out}");
+    // verify says it is runtime-checked, never proven
+    let (out, _) = soma_in(&d, &["verify", "s.cell"]);
+    assert!(out.contains("runtime-checked") && !out.contains("proven by induction"), "{out}");
+    // the bare form is refused with the fix in the message
+    std::fs::write(d.join("b.cell"), "cell S {\n memory {\n  a: Map<String, Int> [persistent]\n  b: Map<String, Int> [persistent]\n  invariant b <= a\n }\n on w(k: String, n: Int) { b.set(k, n) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "b.cell"]);
+    assert!(code != 0 && out.contains("read at the SAME key") && out.contains("?? 0"), "{out}");
+}
+
+#[test]
+fn cycle73_refusal_cross_cell_notes_and_immutable_delete() {
+    let d = dir("cycle73_b");
+    // refusal(): the status and body a raised error would give, kept writes
+    std::fs::write(d.join("r.cell"), r#"
+cell Kits {
+    memory { log: List<String> [persistent, immutable]
+             state_of: Map<String, String> [persistent] }
+    on retire(k: String) {
+        log.push("retire {k}")
+        if (state_of.get(k) ?? "new") == "retired" {
+            return refusal("conflict", "kit {k} is already retired")
+        }
+        state_of.set(k, "retired")
+        return map("ok", true)
+    }
+    on look(k: String) { return map("state", state_of.get(k) ?? "none", "log", log.len) }
+}
+"#).unwrap();
+    assert_eq!(soma_in(&d, &["run", "r.cell", "retire", "K1"]).1, 0);
+    let (out, code) = soma_in(&d, &["run", "r.cell", "retire", "K1"]);
+    assert!(code == 0 && out.contains("\"kind\": \"conflict\"") && out.contains("409"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "r.cell", "look", "K1"]);
+    assert!(out.contains("\"log\": 2"), "the refusal kept its audit row: {out}");
+    // verify names the cross-cell rules it does not prove
+    std::fs::write(d.join("c.cell"), r#"
+cell Subjects {
+    state s { initial: enrolled  enrolled -> withdrawn }
+    on withdraw(id: String) { transition(id, "withdrawn") }
+    on status(id: String) { return get_status(id) }
+}
+cell Visits {
+    state v { initial: scheduled  scheduled -> done }
+    on finish(id: String, subject: String) {
+        let st = Subjects.status(subject)
+        transition(id, "done")
+        return st
+    }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "c.cell"]);
+    assert!(out.contains("cross-cell: `Visits.finish`") && out.contains("`Subjects`"), "{out}");
+    // an [immutable] List refuses a delete, in range or not
+    std::fs::write(d.join("i.cell"), "cell L {\n memory { rows: List [persistent, immutable] }\n on del(i: Int) { return rows.delete(i) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "i.cell", "del", "0"]);
+    assert!(code != 0 && out.contains("immutable"), "{out}");
+    // a face parameter name that differs from the handler's is a warning
+    std::fs::write(d.join("f.cell"), "cell S {\n face { signal put(qty: Int, stock: String) -> Int }\n on put(qty: Int, whatever: String) { return qty }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "f.cell"]);
+    assert!(out.contains("the face calls it `stock`, the handler `whatever`"), "{out}");
 }

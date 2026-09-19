@@ -228,7 +228,7 @@ footer {
   "description": "Experimental cell-based programming language with state-machine checks, memory properties, agent-oriented tooling, and a Rust implementation.",
   "url": "https://soma-lang.dev",
   "downloadUrl": "https://github.com/soma-dev-lang/soma",
-  "softwareVersion": "2.7.0",
+  "softwareVersion": "2.8.0",
   "license": "https://github.com/soma-dev-lang/soma/blob/main/LICENSE",
   "codeRepository": "https://github.com/soma-dev-lang/soma",
   "programmingLanguage": "Rust",
@@ -298,7 +298,7 @@ $ soma run quota.cell consume ana 40      →  0</code></pre>
 $ soma run q2.cell consume ana 60  →  error: memory invariant violated on 'used': … rejected write of 120; the slot is unchanged</code></pre>
   <table>
     <tr><th>Proven (every input)</th><th>Checked at runtime</th><th>Not covered</th></tr>
-    <tr><td>The bound, when every write is narrowed like above; the lifecycle of every declared state machine; declared token bounds.</td><td>Every invariant on every write; transitions and guards; typed parameters; token budgets.</td><td>Business rules you did not write (the <code>n &gt; 0</code> line is yours: without it a negative amount would <em>give back</em> quota and still satisfy the invariant); external effects; what an LLM answers. <a href="/docs/guarantees.md">Full table</a>.</td></tr>
+    <tr><td>The bound, when every write is narrowed like above; the lifecycle of every declared state machine; declared token bounds.</td><td>Every invariant on every write — including one BETWEEN two slots of a cell (<code>invariant (reserved ?? 0) &lt;= (stock ?? 0)</code>, checked on writes to either); transitions and guards; typed parameters; token budgets.</td><td>Rules that span two CELLS (verify is per cell — it names each handler where one is at stake); business rules you did not write (the <code>n &gt; 0</code> line is yours: without it a negative amount would <em>give back</em> quota and still satisfy the invariant); external effects; what an LLM answers. <a href="/docs/guarantees.md">Full table</a>.</td></tr>
   </table>
 </section>
 

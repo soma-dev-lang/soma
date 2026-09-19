@@ -1698,6 +1698,15 @@ impl<'a> Checker<'a> {
                             let (ft, ht) = (crate::commands::describe::format_type(&fp.ty.node), crate::commands::describe::format_type(&hp.ty.node));
                             // positional: the TYPE at each position must agree
                             // (a face parameter's name is documentation)
+                            // the NAME matters too: an HTTP JSON body and
+                            // `soma describe` follow the face, the handler
+                            // reads its own parameter names
+                            if fp.name != hp.name {
+                                self.warnings.push(CheckWarning::HabitWarning {
+                                    message: format!("parameter {} of `{}`: the face calls it `{}`, the handler `{}` — an HTTP JSON body is matched by NAME (the handler's), and `soma describe` publishes the face's: use one name", i + 1, sig.name, fp.name, hp.name),
+                                    span: *span,
+                                });
+                            }
                             if ft != ht && ft != "Any" && ht != "Any" {
                                 self.errors.push(CheckError::Static {
                                     kind: "face_mismatch",

@@ -71,6 +71,19 @@ cell App {
     memory {
         data: Map<String, Int> [persistent, consistent]
         invariant data >= 0                  // checked BEFORE every write;
+        // between two slots of the cell (a rule no single slot can state):
+        // reserved: Map<String, Int> [persistent]
+        // invariant (reserved ?? 0) <= (data ?? 0)
+        // — checked on every write to EITHER slot; the written slot is its new
+        // value, the other is read AT THE SAME KEY (a key it lacks reads as
+        // (): default both sides with `?? 0`). verify reports it
+        // runtime-checked: a rule between slots is not proven by induction.
+        // Between two CELLS nothing is proven (verify is per cell): it lists
+        // `note: cross-cell: …` for each handler that transitions its machine
+        // while acting on another cell's — enforce those with a `require`.
+        // To refuse AND keep what you wrote (an audit row), `return
+        // refusal("conflict", "…")` instead of raising: same body and status
+        // a raised error would give, without the rollback.
     }                                        // violating write rejected, slot unchanged
     state flow {                             // model-checked by `soma verify`
         initial: draft
@@ -339,7 +352,9 @@ source, `file:line`, left/right, and the fields a value really has when
   narrows it; the ⚠ line says why (`` `v` = a.balance — not bounded ``, or
   `` `v` is only known to lie in [0, ∞) — narrow it: `require v <= 100 else …` ``).
 - `ensure cond` at the end of a handler raises kind `ensure` (422) when the
-  postcondition is false — the whole handler is rolled back.
+  postcondition is false — the whole handler is rolled back. In a `[task]`
+  handler it undoes the CURRENT step only: writes made before the last
+  think() are already committed (check warns).
 - Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
   `add_days`, `add_months`, `days_between`, `months_between`, `days_in_month`,
   `format_date(ts)` (a date argument may also be an Int Unix time in seconds,

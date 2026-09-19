@@ -271,5 +271,5 @@ cell M {
     );
     let (out, code) = soma(&["check", &p]);
     assert_ne!(code, 0, "an invariant no write can satisfy must fail check: {out}");
-    assert!(out.contains("references several slots (a, b)"), "got: {out}");
+    assert!(out.contains("invariant between slots (a, b)") && out.contains("?? 0"), "got: {out}");
 }

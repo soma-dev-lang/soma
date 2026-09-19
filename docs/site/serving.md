@@ -118,7 +118,10 @@ body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
   `{"event": "stream", "data": …}` and to the SSE clients subscribed to that
   name; an `emit ev(data)` is cell-to-cell: it reaches only SSE clients that
   NAME it (`sse("ev")`), never WebSocket clients (a client that stops reading
-  is dropped after 1024 queued events or 64 MB queued; a bus peer that stops
+  is dropped after 1024 queued events (a WebSocket client also at 64 MB
+  queued) and the drop is logged — so a stalled SSE subscriber can hold
+  1024 × the size of one event in memory (100 KB events: ~100 MB each): keep
+  events small, or put a proxy with its own buffering in front; a bus peer that stops
   reading is disconnected after 1024 queued events). Both are sent AT COMMIT: a handler
   that raises (or a `try` that rolls back) pushes nothing. WebSocket clients
   have no per-client routing: EVERY one receives every `publish`, so do not

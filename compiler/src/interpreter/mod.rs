@@ -3414,11 +3414,14 @@ impl Interpreter {
                     let xs = items();
                     let raw = match &args[0] { Value::Int(i) => i.to_i64().unwrap_or(0), _ => 0 };
                     let idx = if raw < 0 { raw + xs.len() as i64 } else { raw };
-                    if idx < 0 || idx as usize >= xs.len() {
-                        return Ok(Value::Bool(false));
-                    }
+                    // an [immutable] slot refuses a delete, in range or not
+                    // (out of range answered `false`, so a test could not
+                    // tell a refusal from a miss)
                     if self.slot_immutable(cell_name, slot_name) {
                         return Err(Self::immutable_refusal(slot_name, &format!("deleting element #{}", idx)));
+                    }
+                    if idx < 0 || idx as usize >= xs.len() {
+                        return Ok(Value::Bool(false));
                     }
                     let old = xs[idx as usize].clone();
                     // only a `size` clause can flip on a delete — as for a Map slot,
@@ -4550,6 +4553,23 @@ impl Interpreter {
             } else { Value::String(key_str.to_string()) };
             env.insert("key".to_string(), key_val);
             env.insert("size".to_string(), Value::Int(SomaInt::from_i64(size_after)));
+            // a rule BETWEEN slots (`invariant reserved <= stock`): the other
+            // slots of the cell read at the same key (a Map / List slot), or
+            // whole (anything else) — the written slot is its new value
+            {
+                let others: Vec<String> = crate::checker::invariants::deep_idents(inv).into_iter()
+                    .filter(|n| n != slot_name && self.slot_kind(cell_name, n).is_some())
+                    .collect();
+                for other in others {
+                    let kind = self.slot_kind(cell_name, &other);
+                    let v = match kind {
+                        Some("Map") | Some("List") => self.call_storage_method(cell_name, &other, "get", &[env.get("key").cloned().unwrap_or(Value::Unit)])
+                            .unwrap_or(Value::Unit),
+                        _ => self.call_storage_method(cell_name, &other, "get", &[env.get("key").cloned().unwrap_or(Value::Unit)]).unwrap_or(Value::Unit),
+                    };
+                    env.insert(other, v);
+                }
+            }
             // legacy bindings (pre-V1.8 invariants)
             env.insert("_slot_len".to_string(), Value::Int(SomaInt::from_i64(size_after)));
             env.insert("_slot_name".to_string(), Value::String(slot_name.to_string()));
@@ -4866,8 +4886,15 @@ impl Interpreter {
     fn send_bus_now(&self, event: BusEvent) {
         if let Some(ref bus) = self.event_bus {
             if let Ok(mut senders) = bus.lock() {
-                // a full queue is a client that is not reading: drop it
+                // a full queue is a client that is not reading: drop it —
+                // and say so (a silent drop looked like a lost event)
+                let before = senders.len();
                 senders.retain(|sender| sender.try_send(event.clone()).is_ok());
+                let dropped = before - senders.len();
+                if dropped > 0 {
+                    eprintln!("sse: {} subscriber(s) stopped reading ({} events queued each) — dropped; {} left",
+                        dropped, BUS_QUEUE, senders.len());
+                }
             }
         }
     }
