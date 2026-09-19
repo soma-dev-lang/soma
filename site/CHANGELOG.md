@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.6.0 — 2026-09-19
 
 - soma.lock records a sha256 of each package's files: a package modified
   after install is refused at import, and `soma install` restores it.
