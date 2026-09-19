@@ -38,6 +38,20 @@ fn resolve_package(
     cache_dir: &Path,
     lock: &mut LockFile,
 ) -> Result<PathBuf, String> {
+    // a `path` dependency the author edited: the cache (and the lock's
+    // hash) stayed at the old copy — every build and test ran against it
+    if let Some(local) = dep.local_path() {
+        let cached_path = cache_dir.join(name);
+        let src = PathBuf::from(local);
+        if cached_path.exists() && src.exists() {
+            let (mut a, mut b) = (installed_cell_files(&src), installed_cell_files(&cached_path));
+            a.sort(); b.sort();
+            if a != b || content_sha256(&src, &a) != content_sha256(&cached_path, &b) {
+                eprintln!("  {} local: the source changed — reinstalling", name);
+                let _ = std::fs::remove_dir_all(&cached_path);
+            }
+        }
+    }
     // Check if already locked and cached
     if let Some(locked) = lock.get(name) {
         let cached_path = cache_dir.join(name);

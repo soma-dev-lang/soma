@@ -3301,7 +3301,27 @@ impl Interpreter {
 
     /// Dispatch a method call to a storage backend.
     /// Handles: get(key), set(key, val), delete(key), append(val), len(), list()
+    /// A slot method, and then: did the database refuse the write? A
+    /// read-only `.soma_data` (or a full disk) used to make every `set` a
+    /// silent no-op answered 200 — the handler raises and rolls back.
     fn call_storage_method(
+        &mut self,
+        cell_name: &str,
+        slot_name: &str,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Value, ExecError> {
+        let r = self.call_storage_method_inner(cell_name, slot_name, method, args);
+        if let Some(e) = crate::runtime::storage::take_write_error() {
+            return Err(ExecError::Runtime(RuntimeError::Domain {
+                kind: "storage".to_string(),
+                message: format!("storage: the database refused a write to '{}' ({}) — nothing was stored (a read-only .soma_data, a full disk?)", slot_name, e),
+            }));
+        }
+        r
+    }
+
+    fn call_storage_method_inner(
         &mut self,
         cell_name: &str,
         slot_name: &str,

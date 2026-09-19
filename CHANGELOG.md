@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Storage: a write the database refuses (a read-only `.soma_data`, a full
+  disk) raises kind `storage` and rolls the handler back — `set` / `push`
+  were silent no-ops answered 200; `rows[i]` on a persistent List is an
+  indexed read again (20 000 reads: 0.09 s, was 0.72 s; 100 000 took 17 s).
+- Packages: `soma install` reinstalls a `path` dependency whose source
+  changed (every build and test kept running against the first copy).
+- `soma test <dir>` / `soma check <dir>` run every .cell under a directory.
+- `soma serve`: SIGINT stops it (a shell that starts it in the background
+  leaves SIGINT ignored); `-w` checks the new file before stopping the
+  running one, and says when the server died; `-p 0` prints the port the OS
+  gave; a damaged database is refused before the banner.
+- CLI: a Map argument carrying `_type` / `_variant` / `_values` at any depth
+  is refused, as over HTTP.
+- The prover reaches further: `x % n` / `mod(x, n)`, `x * x`, `len("abc")`,
+  `idiv`, `sqrt_int`, `band(x, mask)`, and the documented monotone counter
+  `invariant value >= (seq.get(key) ?? 0)` written as `+ n` or `max(…)`.
+
 - Soundness: `vote()` is in the call graph of every proof — a size
   invariant past a vote whose target wrote the slot was "proven" (and
   raised), recursion through vote was "proven" to terminate, its latency

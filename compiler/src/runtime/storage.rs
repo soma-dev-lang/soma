@@ -458,6 +458,21 @@ impl SqliteBackend {
     }
 }
 
+/// The last write the database refused (a read-only .soma_data, a full
+/// disk): the handler that caused it raises instead of answering 200 while
+/// the write silently did nothing.
+static WRITE_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn note_write_error(what: &str, e: &dyn std::fmt::Display) {
+    let mut g = WRITE_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() { *g = Some(format!("{}: {}", what, e)); }
+}
+
+/// Takes the pending write error, if any (checked after each slot write).
+pub fn take_write_error() -> Option<String> {
+    WRITE_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
 impl StorageBackend for SqliteBackend {
     fn get(&self, key: &str) -> Option<StoredValue> {
         let conn = self.conn.lock().unwrap();
@@ -474,28 +489,28 @@ impl StorageBackend for SqliteBackend {
     fn set(&self, key: &str, value: StoredValue) {
         let conn = self.conn.lock().unwrap();
         let (val_str, type_tag) = Self::store_typed(&value);
-        conn.execute(
+        if let Err(e) = conn.execute(
             &format!("INSERT OR REPLACE INTO \"{}\" (key, value, type) VALUES (?1, ?2, ?3)", self.table),
             rusqlite::params![key, val_str, type_tag],
-        ).ok();
+        ) { note_write_error("write", &e); }
     }
 
     fn delete(&self, key: &str) -> bool {
         let conn = self.conn.lock().unwrap();
-        let changes = conn.execute(
+        let changes = match conn.execute(
             &format!("DELETE FROM \"{}\" WHERE key = ?1", self.table),
             rusqlite::params![key],
-        ).unwrap_or(0);
+        ) { Ok(n) => n, Err(e) => { note_write_error("delete", &e); 0 } };
         changes > 0
     }
 
     fn append(&self, value: StoredValue) {
         let conn = self.conn.lock().unwrap();
         let (val_str, type_tag) = Self::store_typed(&value);
-        conn.execute(
+        if let Err(e) = conn.execute(
             &format!("INSERT INTO \"{}_log\" (value, type) VALUES (?1, ?2)", self.table),
             rusqlite::params![val_str, type_tag],
-        ).ok();
+        ) { note_write_error("append", &e); }
     }
 
     fn unappend(&self) {
@@ -518,12 +533,24 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn list_get(&self, i: usize) -> Option<StoredValue> {
-        let logged: i64 = {
-            let conn = self.conn.lock().unwrap();
-            conn.query_row(&format!("SELECT COUNT(*) FROM \"{}_log\"", self.table), [], |r| r.get(0)).unwrap_or(0)
-        };
-        if logged == 0 { return self.list().into_iter().nth(i); }
+        // `rows[i]` is one indexed lookup: the log's ids are contiguous
+        // (append adds one, unappend drops the last, replace_list rewrites
+        // them), so the i-th row is `MIN(id) + i` — COUNT(*) + OFFSET made
+        // every read a scan (40 000 reads took 2.8 s, 100 000 took 17 s)
         let conn = self.conn.lock().unwrap();
+        let row = |id: i64| conn.query_row(
+            &format!("SELECT value, type FROM \"{}_log\" WHERE id = ?1", self.table),
+            rusqlite::params![id],
+            |r| { let v: String = r.get(0)?; let t: String = r.get(1)?; Ok(Self::load_typed(&v, &t)) },
+        ).ok();
+        let min_id: Option<i64> = conn.query_row(&format!("SELECT MIN(id) FROM \"{}_log\"", self.table), [], |r| r.get(0)).ok().flatten();
+        let Some(min) = min_id else {
+            drop(conn);
+            // no log rows: a list kept under the key/value table
+            return self.list().into_iter().nth(i);
+        };
+        if let Some(v) = row(min + i as i64) { return Some(v); }
+        // a gap (an older database): fall back to the ordered scan
         conn.query_row(
             &format!("SELECT value, type FROM \"{}_log\" ORDER BY id LIMIT 1 OFFSET ?1", self.table),
             rusqlite::params![i as i64],

@@ -4444,3 +4444,91 @@ cell App {
     let (out, code) = soma_in(&d, &["check", "s.cell"]);
     assert!(code == 0, "{out}");
 }
+
+#[test]
+fn cycle72_prover_reaches_modulo_squares_and_monotone_counters() {
+    let d = dir("cycle72");
+    std::fs::write(d.join("p.cell"), r#"
+cell A {
+    memory {
+        r: Map<String, Int>
+        invariant r >= 0 && r <= 10
+        seq: Map<String, Int> [persistent]
+        invariant value >= (seq.get(key) ?? 0)
+    }
+    on put(k: String, x: Int) { require x >= 0 else Neg
+        r.set(k, x % 11) }
+    on put2(k: String, x: Int) { require x >= 0 else Neg
+        r.set(k, mod(x, 11)) }
+    on sq(k: String, x: Int) { r.set(k, min(x * x, 10)) }
+    on lit(k: String) { r.set(k, len("abc")) }
+    on bump(k: String) { seq.set(k, (seq.get(k) ?? 0) + 1) }
+    on setmax(k: String, x: Int) { seq.set(k, max(seq.get(k) ?? 0, x)) }
+    on bad(k: String, x: Int) { seq.set(k, x) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "p.cell"]);
+    for h in ["'put' proven", "'put2' proven", "'sq' proven", "'lit' proven", "'bump' proven", "'setmax' proven"] {
+        assert!(out.contains(h), "missing {h}: {out}");
+    }
+    assert!(out.contains("bad → seq"), "an arbitrary value stays runtime-checked: {out}");
+    // …and the monotone rule does not survive a think() in a [task]
+    std::fs::write(d.join("t.cell"), r#"
+cell agent A {
+    memory { seq: Map<String, Int> [persistent]
+             invariant value >= (seq.get(key) ?? 0) }
+    on bump(k: String) [task] {
+        let v = (seq.get(k) ?? 0) + 1
+        let r = think("x", map("max_tokens", 5))
+        seq.set(k, v)
+    }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "t.cell"]);
+    assert!(!out.contains("'bump' proven"), "{out}");
+}
+
+#[test]
+fn cycle72_storage_errors_indexed_lists_packages_and_cli() {
+    let d = dir("cycle72_rt");
+    // a refused write raises instead of answering as if it had worked
+    std::fs::write(d.join("w.cell"), "cell RO {\n memory { data: Map<String, Int> [persistent] }\n on add(k: String, v: Int) { data.set(k, v)\n return data.get(k) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "w.cell", "add", "a", "1"]);
+    assert!(code == 0 && out.contains('1'), "{out}");
+    let db = d.join(".soma_data");
+    let mut perms = std::fs::metadata(&db).unwrap().permissions();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; perms.set_mode(0o555); }
+    std::fs::set_permissions(&db, perms.clone()).unwrap();
+    for f in std::fs::read_dir(&db).unwrap().flatten() {
+        let mut p = std::fs::metadata(f.path()).unwrap().permissions();
+        #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; p.set_mode(0o444); }
+        let _ = std::fs::set_permissions(f.path(), p);
+    }
+    let (out, code) = soma_in(&d, &["run", "w.cell", "add", "b", "2"]);
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; let mut p = std::fs::metadata(&db).unwrap().permissions(); p.set_mode(0o755); let _ = std::fs::set_permissions(&db, p);
+        for f in std::fs::read_dir(&db).unwrap().flatten() { let mut p = std::fs::metadata(f.path()).unwrap().permissions(); p.set_mode(0o644); let _ = std::fs::set_permissions(f.path(), p); } }
+    assert!(code != 0 && out.contains("the database refused a write"), "{out}");
+
+    // rows[i] on a persistent List is an indexed read, not a scan
+    let d2 = dir("cycle72_list");
+    std::fs::write(d2.join("l.cell"), "cell L {\n memory { rows: List [persistent] }\n on fill(n: Int) { for i in range(0, n) { rows.push(i) }\n return rows.len }\n on idx(n: Int) { let t = 0\n for i in range(0, n) { t += rows[i] }\n return t }\n}\n").unwrap();
+    let (_, code) = soma_in(&d2, &["run", "l.cell", "fill", "20000"]);
+    assert_eq!(code, 0);
+    let t0 = std::time::Instant::now();
+    let (out, _) = soma_in(&d2, &["run", "l.cell", "idx", "20000"]);
+    assert!(out.contains("199990000"), "{out}");
+    assert!(t0.elapsed() < std::time::Duration::from_secs(3), "20k indexed reads took {:?}", t0.elapsed());
+
+    // `soma test <dir>` runs every .cell under it
+    let d3 = dir("cycle72_dir");
+    std::fs::create_dir_all(d3.join("lib")).unwrap();
+    std::fs::write(d3.join("lib/a.cell"), "cell A { on one() { return 1 } }\ncell test T { rules { assert A.one() == 1 } }\n").unwrap();
+    std::fs::write(d3.join("lib/b.cell"), "cell B { on two() { return 2 } }\ncell test U { rules { assert B.two() == 2 } }\n").unwrap();
+    let (out, code) = soma_in(&d3, &["test", "lib"]);
+    assert!(code == 0 && out.contains("test: 2 file(s), 0 failed"), "{out}");
+
+    // nested reserved keys in a CLI Map argument are refused, as over HTTP
+    std::fs::write(d3.join("c.cell"), "cell C { on mp(m: Map) { return m } }\n").unwrap();
+    let (out, code) = soma_in(&d3, &["run", "c.cell", "mp", "{\"a\":{\"b\":{\"_variant\":\"X\"}}}"]);
+    assert!(code != 0 && out.contains("reserved key '_variant'"), "{out}");
+}

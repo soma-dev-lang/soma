@@ -32,9 +32,33 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
 
             if current != last_modified {
                 last_modified = current;
+                // check the new file BEFORE stopping the running one: a
+                // syntax error used to close the port while the watcher
+                // process stayed alive (a supervisor saw a healthy process
+                // and a dead port)
+                let ok = std::process::Command::new(&exe).args(["check", path.to_str().unwrap()])
+                    .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
+                    .output().map(|o| (o.status.success(), String::from_utf8_lossy(&o.stderr).to_string()))
+                    .unwrap_or((false, String::new()));
+                if !ok.0 {
+                    eprintln!("\n--- file changed but does NOT check — still serving the last good version ---");
+                    for l in ok.1.lines().filter(|l| l.starts_with("error") || l.starts_with("  ")) { eprintln!("{}", l); }
+                    eprintln!("---\n");
+                    continue;
+                }
                 eprintln!("\n--- file changed, reloading... ---\n");
                 let _ = child.kill();
                 let _ = child.wait();
+                break;
+            }
+            // the child died on its own (a port taken, a damaged database):
+            // say so instead of watching a closed port
+            if let Ok(Some(st)) = child.try_wait() {
+                eprintln!("--- the server stopped ({}) — waiting for a change to retry ---", st);
+                while fs::metadata(path).ok().and_then(|m| m.modified().ok()) == last_modified {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                last_modified = fs::metadata(path).ok().and_then(|m| m.modified().ok());
                 break;
             }
         }
@@ -299,6 +323,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             process::exit(1);
         }
     }
+    // physical integrity BEFORE anything is announced: the banner used to
+    // print "listening on …" and only then refuse to start
+    if let Err(why) = crate::runtime::storage::integrity_check() {
+        eprintln!("error: .soma_data/soma.db is damaged ({}) — restore it from a backup, or move it aside (`mv .soma_data .soma_data.bad`) to start with empty storage; serve refuses to answer from it", why);
+        process::exit(1);
+    }
     let server = tiny_http::Server::http(&addr).unwrap_or_else(|e| {
         eprintln!("error: cannot start server on {}: {}", addr, e);
         process::exit(1);
@@ -324,6 +354,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         }));
     }
 
+    // `-p 0` asks the OS for a free port: say which one (the banner said
+    // ":0", and the probe above cannot see a port that does not exist yet)
+    let port = match server.server_addr().to_ip() { Some(sa) if port == 0 => sa.port(), _ => port };
     eprintln!("soma serve v{}", env!("CARGO_PKG_VERSION"));
     eprintln!("cell: {}", cell_name);
     // the public endpoints (private `_x` handlers and the router are not routed)
@@ -874,12 +907,6 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let mut interp = interpreter::Interpreter::new(&program);
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
-        // physical integrity first: a page damaged mid-file was served as
-        // truth (rows silently missing, an invariant between slots broken)
-        if let Err(why) = crate::runtime::storage::integrity_check() {
-            eprintln!("error: .soma_data/soma.db is damaged ({}) — restore it from a backup, or move it aside (`mv .soma_data .soma_data.bad`) to start with empty storage; serve refuses to answer from it", why);
-            process::exit(1);
-        }
         for line in interp.audit_stored_data() {
             eprintln!("warning: stored data: {}", line);
         }

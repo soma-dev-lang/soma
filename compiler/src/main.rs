@@ -292,6 +292,17 @@ enum Commands {
 }
 
 fn main() {
+    // a shell that starts `soma serve` in the background leaves SIGINT
+    // IGNORED (POSIX): `kill -INT` then did nothing, and a supervisor
+    // believed it had stopped the server — take the default back
+    #[cfg(unix)]
+    unsafe {
+        extern "C" { fn signal(sig: i32, handler: usize) -> usize; }
+        const SIGINT: i32 = 2;
+        const SIG_DFL: usize = 0;
+        const SIG_IGN: usize = 1;
+        if signal(SIGINT, SIG_DFL) != SIG_IGN { signal(SIGINT, SIG_DFL); }
+    }
     // `soma docs builtins | head`: stdout closed by the reader is the end of
     // the output, not a crash (it panicked "failed printing to stdout")
     let prev = std::panic::take_hook();
@@ -329,7 +340,10 @@ fn main_inner() {
     }
 
     match cli.command {
-        Commands::Check { file, json } => commands::check::cmd_check(&file, json, &mut registry),
+        Commands::Check { file, json } => {
+            if file.is_dir() { run_over_dir("check", &file, json); }
+            commands::check::cmd_check(&file, json, &mut registry)
+        }
         Commands::Lint { file, json } => commands::lint::cmd_lint(&file, json),
         Commands::Fix { file, json, native_idiv } => {
             if native_idiv {
@@ -406,7 +420,10 @@ fn main_inner() {
                 commands::serve::cmd_serve(&file, port, &host, verbose, join.as_deref(), no_check, &mut registry);
             }
         }
-        Commands::Test { file, json } => commands::test_cmd::cmd_test(&file, json, &mut registry),
+        Commands::Test { file, json } => {
+            if file.is_dir() { run_over_dir("test", &file, json); }
+            commands::test_cmd::cmd_test(&file, json, &mut registry)
+        }
         Commands::Replay { file, log, at } => commands::replay::cmd_replay(&file, log.as_ref(), at.as_deref(), &mut registry),
         Commands::Init { name } => commands::init::cmd_init(name.as_deref()),
         Commands::Add { package, version, git, path } => commands::init::cmd_add(&package, version.as_deref(), git.as_deref(), path.as_deref()),
@@ -948,4 +965,39 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
         if !foreign.contains(&name) { foreign.push(name); }
     }
     (own, foreign)
+}
+
+
+/// `soma test lib/` (also check): every .cell file under the directory, one
+/// after another — a project-wide gate used to need a shell loop.
+fn run_over_dir(cmd: &str, dir: &std::path::Path, json: bool) -> ! {
+    fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(d) else { return };
+        let mut es: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        es.sort();
+        for p in es {
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            // not the installed packages, not the data directory, no dotfiles
+            if name.starts_with('.') || name == "node_modules" { continue; }
+            if p.is_dir() { walk(&p, out); } else if p.extension().is_some_and(|x| x == "cell") { out.push(p); }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir, &mut files);
+    if files.is_empty() {
+        eprintln!("no .cell file under {}", dir.display());
+        std::process::exit(1);
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("soma"));
+    let (mut failed, total) = (0usize, files.len());
+    for f in &files {
+        eprintln!("── {} ──", f.display());
+        let mut c = std::process::Command::new(&exe);
+        c.arg(cmd).arg(f);
+        if json { c.arg("--json"); }
+        let ok = c.status().map(|s| s.success()).unwrap_or(false);
+        if !ok { failed += 1; }
+    }
+    eprintln!("{}: {} file(s), {} failed", cmd, total, failed);
+    std::process::exit(if failed > 0 { 1 } else { 0 });
 }

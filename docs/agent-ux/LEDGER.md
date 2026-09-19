@@ -1677,3 +1677,21 @@ writer kind, state machines and temporal properties — except via vote().
 
 ### Open
 - [ ] No addressing on the bus (every link gets every event; refusals fill logs); `<deleted entry> has no known range` on a `len(chunks)` invariant; completeness gaps: `v * v >= 0`, `x % n` with x ≥ 0, `len(literal)`, the monotone-counter invariant, size lower bounds, bracket-form size writes, terminating mutual recursion r → s(n - 1); `let f = App.r` passes check; `m.append` on a Map slot passes check.
+
+### Cycle 72 — warehouse port split into packages (8/10) + runtime/CLI attack
+
+Port: 185 tests over a local package + 4 libraries; verify --strict OK;
+[native] kernels 255×/365× the interpreted loop, but 0.98× at cart
+granularity (the FFI crossing costs more than the arithmetic); 80
+concurrent checkouts never oversold.
+
+### Fixed
+- [x] **Attack: a read-only `.soma_data` lost every write silently** (200 OK, exit 0, the handler's own read-back empty) — a refused write raises kind `storage` and the handler rolls back.
+- [x] **Attack: `rows[i]` on a persistent List scanned the log** (COUNT(*) + OFFSET: 2.8 s for 40 000 reads, 17 s for 100 000) — indexed by id; 20 000 reads 0.72 s → 0.09 s.
+- [x] **Port: `soma install` never refreshed an edited `path` dependency** — the source's content is compared with the cached copy.
+- [x] Port: no project-wide gate — `soma test`/`check` take a directory.
+- [x] Attack: SIGINT ignored; `serve -w` closed the port on a syntax error and stayed alive; `-p 0` printed ":0"; the banner printed "listening" before refusing a damaged database; a CLI Map argument took nested `_type`/`_variant`.
+- [x] Prover completeness (from cycles 70-71): modulo, squares, len of a literal, idiv/sqrt_int/band, and the monotone counter the docs recommend (not across a think()).
+
+### Open
+- [ ] Cross-slot invariants (`reserved <= stock`) are still inexpressible; `soma fix` prints "no auto-fixable errors" after fixing some; `replay` mis-attributes derived divergence; `soma env` lists the git checkout as a package; `soma add nosuchpkg` writes an unvalidated dependency; inf/NaN persist but serialize as null; a query key with no value is dropped.

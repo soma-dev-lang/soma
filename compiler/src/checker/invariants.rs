@@ -441,6 +441,57 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 let known = if may_be_unit(value_expr) { Known::Unknown } else { ctx.range_of(value_expr) };
                 let inductive = uses_slot_read(value_expr, &ctx);
                 let mut verdicts: Vec<Proof> = parts.iter().map(|c| prove(c, slot, known)).collect();
+                // a monotone counter, the shape the docs recommend:
+                // `invariant value >= (seq.get(key) ?? 0)` written by
+                // `seq.set(k, (seq.get(k) ?? 0) + n)` with n ≥ 0, or by
+                // `max(seq.get(k) ?? 0, x)` — the new value is the old one
+                // or more, whatever the old one is
+                for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
+                    // …not across a think(): the value read before it may be stale
+                    if *v == Proof::Holds || task_with_think { continue; }
+                    let Expr::CmpOp { left, op, right } = c else { continue };
+                    if !matches!(op, CmpOp::Ge | CmpOp::Gt) { continue; }
+                    if !matches!(&left.node, Expr::Ident(n) if n == "value" || n == slot) { continue; }
+                    // right side: this slot read at `key` (?? 0 allowed)
+                    let reads_own_key = |e: &Expr| -> bool {
+                        let inner = match e { Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => &args[0].node, other => other };
+                        match inner {
+                            Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 =>
+                                matches!(&target.node, Expr::Ident(t) if t == slot) && matches!(&args[0].node, Expr::Ident(k) if k == "key"),
+                            Expr::Index { target, index } =>
+                                matches!(&target.node, Expr::Ident(t) if t == slot) && matches!(&index.node, Expr::Ident(k) if k == "key"),
+                            _ => false,
+                        }
+                    };
+                    if !reads_own_key(&right.node) { continue; }
+                    // the written value: old + n (n ≥ 0, and > 0 for a strict >), or max(old, …)
+                    let same_key = |e: &Expr| -> bool {
+                        let inner = match e { Expr::FnCall { name, args } if name == "_coalesce" && args.len() == 2 => &args[0].node, other => other };
+                        let key_expr = match inner {
+                            Expr::MethodCall { target, method, args } if method == "get" && args.len() == 1 && matches!(&target.node, Expr::Ident(t) if t == slot) => Some(&args[0].node),
+                            Expr::Index { target, index } if matches!(&target.node, Expr::Ident(t) if t == slot) => Some(&index.node),
+                            _ => None,
+                        };
+                        match (key_expr, wkey.as_deref()) {
+                            (Some(Expr::Ident(k)), Some(wk)) => k == wk,
+                            _ => false,
+                        }
+                    };
+                    let grows = match value_expr {
+                        Expr::BinaryOp { left: a, op: BinOp::Add, right: b } => {
+                            let (inc, other) = if same_key(&a.node) { (Some(&b.node), true) } else if same_key(&b.node) { (Some(&a.node), true) } else { (None, false) };
+                            other && match (inc.map(|e| ctx.range_of(e)).and_then(bounds), op) {
+                                (Some((lo, _)), CmpOp::Ge) => lo >= 0.0,
+                                (Some((lo, _)), CmpOp::Gt) => lo > 0.0,
+                                _ => false,
+                            }
+                        }
+                        Expr::FnCall { name, args } if name == "max" && args.len() == 2 && matches!(op, CmpOp::Ge) =>
+                            args.iter().any(|a| same_key(&a.node)),
+                        _ => false,
+                    };
+                    if grows { *v = Proof::Holds; }
+                }
                 // `size <= K` after a write that adds at most one entry:
                 // proven when the writer required the slot's size < K
                 // (`require rows.size < 500`, `require len(rows) < 500`)
@@ -968,6 +1019,22 @@ impl RangeCtx<'_> {
                         }
                     }
                 }
+                // `v * v` is never negative, whatever v is
+                let same_var = matches!((&left.node, &right.node), (Expr::Ident(a), Expr::Ident(b)) if a == b);
+                if matches!(op, BinOp::Mul) && same_var && bounds(self.range_of(&left.node)).is_none() {
+                    return mk(0.0, f64::INFINITY);
+                }
+                // `x % n` with a literal n: |x % n| < n (and ≥ 0 when x is)
+                if matches!(op, BinOp::Mod) {
+                    if let Some((nl, nh)) = bounds(self.range_of(&right.node)) {
+                        if nl == nh && nl != 0.0 {
+                            let n = nl.abs();
+                            let lo = match bounds(self.range_of(&left.node)) { Some((l, _)) if l >= 0.0 => 0.0, _ => -(n - 1.0) };
+                            return mk(lo, n - 1.0);
+                        }
+                        let _ = nh;
+                    }
+                }
                 let (Some((al, ah)), Some((bl, bh))) =
                     (bounds(self.range_of(&left.node)), bounds(self.range_of(&right.node)))
                 else {
@@ -1041,7 +1108,33 @@ impl RangeCtx<'_> {
                     }
                     None => mk(0.0, f64::INFINITY),
                 },
-                ("len", 1) => mk(0.0, f64::INFINITY),
+                // `len("abc")` / `len([1, 2])`: exactly what it is
+                ("len", 1) => match &args[0].node {
+                    Expr::Literal(Literal::String(t)) => { let n = t.chars().count() as f64; mk(n, n) }
+                    Expr::ListLiteral(items) => { let n = items.len() as f64; mk(n, n) }
+                    _ => mk(0.0, f64::INFINITY),
+                },
+                // `mod(a, n)` / `idiv(a, n)` / `sqrt_int(x)` / `band(x, mask)`
+                ("mod", 2) => match bounds(self.range_of(&args[1].node)) {
+                    Some((nl, nh)) if nl == nh && nl != 0.0 => {
+                        let n = nl.abs();
+                        let lo = match bounds(self.range_of(&args[0].node)) { Some((l, _)) if l >= 0.0 => 0.0, _ => -(n - 1.0) };
+                        mk(lo, n - 1.0)
+                    }
+                    _ => Known::Unknown,
+                },
+                ("idiv", 2) => match (bounds(self.range_of(&args[0].node)), bounds(self.range_of(&args[1].node))) {
+                    (Some((al, ah)), Some((bl, _))) if al >= 0.0 && bl >= 1.0 => mk(0.0, ah / bl),
+                    _ => Known::Unknown,
+                },
+                ("sqrt_int", 1) => match bounds(self.range_of(&args[0].node)) {
+                    Some((lo, hi)) if lo >= 0.0 => mk(0.0, hi.sqrt().ceil()),
+                    _ => mk(0.0, f64::INFINITY),
+                },
+                ("band", 2) => match (bounds(self.range_of(&args[0].node)), bounds(self.range_of(&args[1].node))) {
+                    (Some((al, _)), Some((ml, mh))) if al >= 0.0 && ml == mh && ml >= 0.0 => mk(0.0, ml),
+                    _ => Known::Unknown,
+                },
                 // a sibling handler: `on total() { return counts.get("n") ?? 0 }`,
                 // or `_drop_hold(id, sku)` returning a slot read — its
                 // parameters are unknown inside, its returns are joined

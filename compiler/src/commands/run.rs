@@ -538,7 +538,7 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
             }
         }
     }
-    args.into_iter().enumerate().map(|(i, arg)| {
+    let coerced: Vec<interpreter::Value> = args.into_iter().enumerate().map(|(i, arg)| {
         let Some(param) = params.get(i) else { return arg };
         // `request`'s headers map: lower-case names, as `soma serve` gives them
         if signal_name == "request" && param.name == "headers" {
@@ -592,7 +592,26 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
             ("Map" | "List", other) => fail(&format!("'{}'", other)),
             _ => arg,
         }
-    }).collect()
+    }).collect();
+    // the storage encoding's own keys, at ANY depth — HTTP refuses them
+    // everywhere, the CLI took a nested `{"_variant": …}`
+    for (v, p) in coerced.iter().zip(params.iter()) {
+        fn reserved(v: &interpreter::Value) -> Option<String> {
+            match v {
+                interpreter::Value::Map(m) => m.iter().find_map(|(k, x)| {
+                    if matches!(k.as_str(), "_type" | "_variant" | "_values") { Some(k.clone()) } else { reserved(x) }
+                }),
+                interpreter::Value::List(xs) => xs.iter().find_map(reserved),
+                _ => None,
+            }
+        }
+        if let Some(k) = reserved(v) {
+            eprintln!("error: argument '{}' of signal '{}' carries the reserved key '{}' — `_type`, `_variant` and `_values` belong to the storage encoding",
+                p.name, signal_name, k);
+            process::exit(1);
+        }
+    }
+    coerced
 }
 
 fn run_with_runtime(program: ast::Program, args: &[interpreter::Value]) {
