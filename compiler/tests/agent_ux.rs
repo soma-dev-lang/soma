@@ -3405,3 +3405,31 @@ cell test T {
     let out = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(out.contains("own bus port"), "{out}");
 }
+
+/// Cycle 61: `require <Int builtin>` is a check error; to_csv round-trips;
+/// round(-0.001, 2) is 0.0; `--fresh` does not delete another program's
+/// database.
+#[test]
+fn cycle61_findings() {
+    let d = dir("cycle61");
+    std::fs::write(d.join("rq.cell"), "cell R {\n  on f(s: String) {\n    require regex_match(s, \"^a\") else bad\n    return 1\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "rq.cell"]);
+    assert!(code != 0 && out.contains("answers an Int"), "{out}");
+    passes("cycle61_csv", r#"
+cell C {
+    on rt() { let rows = [map("id", "007", "n", "a,b"), map("id", "8", "n", "x")]  return from_csv(to_csv(rows)) == rows }
+    on r0() { return to_string(round(-0.001, 2)) }
+}
+cell test T { rules { assert rt()  assert r0() == "0.0" } }
+"#);
+    let f = dir("cycle61_fresh");
+    std::fs::write(f.join("app.cell"), "cell App { memory { d: Map<String, Int> [persistent] }  on put(k: String) { d.set(k, 1)  return 1 } }\n").unwrap();
+    std::fs::write(f.join("other.cell"), "cell Other { on main() { return 2 } }\n").unwrap();
+    let _ = soma_in(&f, &["run", "app.cell", "put", "a"]);
+    let (out, code) = soma_in(&f, &["run", "--fresh", "other.cell", "main"]);
+    assert!(code == 0 && out.contains("kept"), "{out}");
+    let (out, _) = soma_in(&f, &["run", "app.cell", "put", "a"]);
+    assert!(!out.contains("error"), "{out}");
+    let db = f.join(".soma_data/soma.db");
+    assert!(db.exists(), "the app's database survives");
+}

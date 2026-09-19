@@ -467,6 +467,10 @@ impl<'a> Walker<'a> {
             }
             Statement::Require { constraint, else_signal } => {
                 self.walk_constraint(&constraint.node);
+                // `require regex_match(s, p) else bad`: an Int builtin as the
+                // condition passed check, then raised "cannot compare Int and
+                // Bool" (the `if` form was already caught)
+                self.int_builtin_in_constraint(constraint);
                 // `require … else Bad "detail {x}"`: the detail is interpolated
                 // when the require fails — an undefined name answered 500
                 // instead of the 400 `Bad`
@@ -525,6 +529,31 @@ impl<'a> Walker<'a> {
             Constraint::Not(inner) => self.walk_constraint(&inner.node),
             // Predicate args are not evaluated at runtime — stay silent.
             Constraint::Predicate { .. } | Constraint::Descriptive(_) => {}
+        }
+    }
+
+    fn int_builtin_in_constraint(&mut self, c: &Spanned<Constraint>) {
+        match &c.node {
+            Constraint::Predicate { name, .. } if !self.index.handler_map.contains_key(name) => {
+                if let Some(b) = crate::interpreter::builtins::registry::BUILTINS.iter().find(|b| b.name == name) {
+                    if b.signature.trim_end().ends_with("-> Int") {
+                        self.issues.push(InterpolationIssue {
+                            message: format!("{}() answers an Int (1 or 0), not a Bool — compare it: `require {}(…) == 1 else …`", name, name),
+                            span: c.span,
+                            warning: false,
+                            habit: false,
+                            kind: "int_as_bool",
+                        });
+                    }
+                }
+            }
+            // a bare call is parsed as `call == true`
+            Constraint::Comparison { left, op: CmpOp::Eq | CmpOp::Ne, right } if matches!(right.node, Expr::Literal(Literal::Bool(_))) => {
+                self.int_builtin_as_bool(left);
+            }
+            Constraint::And(a, b) | Constraint::Or(a, b) => { self.int_builtin_in_constraint(a); self.int_builtin_in_constraint(b); }
+            Constraint::Not(inner) => self.int_builtin_in_constraint(inner),
+            _ => {}
         }
     }
 

@@ -1397,3 +1397,23 @@ no unsound ✓ — and the bus gaps below.
 
 ### Open
 - [ ] verify's reason for an unproven write-once invariant points at value bounds; `??` does not catch an out-of-range index; `next_id()` is one counter per cell; delivery across processes is still fire-and-forget.
+
+### Cycle 61 — realistic port (university registrar: enrollment, waitlist, grading, advisor agent) + attack (the reworked peer bus)
+
+Registrar port 8/10: 100 students racing for 3 seats → exactly 3 enrolled,
+97 waitlisted with unique positions; rounding (half-up on the decimal text)
+and GPA exact; 10k-row CSV import in 0.1 s. Bus attack: forged/replayed
+HELLOs could not steal or stop delivery; a 3-node full mesh delivered each
+event exactly once; kill/restart/SIGSTOP matrices lost nothing silently;
+the accept list held.
+
+### Fixed
+- [x] **Attack: half-open bus connections held a thread each with no limit** (800 → 789 threads) — the first line must arrive within 10 s; at most 256 bus connections.
+- [x] Port: `require regex_match(s, p) else bad` passed check, then raised "cannot compare Int and Bool" — a check error, as for `if`.
+- [x] Port: `soma run --fresh other.cell` deleted the database of another program in the same directory — when other programs' cells have tables there, only this program's tables are reset.
+- [x] Port: the docs said recursion stops at 20 000 calls (that is `[native]`; interpreted handlers stop at 512) — both stated.
+- [x] Port: no CSV-to-String — `to_csv(rows)`; `round(-0.001, 2)` is 0.0, not -0.0; the negative-digits error no longer says "ignored"; a multi-variable `forall` gets a hint.
+- [x] Doc: cross-process echo loops are not detected (a hop count or seen-id guards them).
+
+### Open
+- [ ] from_csv pads/drops fields of rows with the wrong width (documented); no Decimal type; no time-of-day scheduling; one machine per cell.

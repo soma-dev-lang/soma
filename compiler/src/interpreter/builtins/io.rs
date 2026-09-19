@@ -184,53 +184,18 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "read_files" | "par_read_files" | "word_count" | "par_word_count" => {
             return call_bulk_io(name, args);
         }
+        // CSV as a String (an HTTP download): no temp file
+        "to_csv" => {
+            match args.first() {
+                Some(Value::List(items)) if args.len() == 1 => Some(Ok(Value::String(csv_text(items)))),
+                _ => Some(Err(RuntimeError::TypeError("to_csv(rows: List<Map>) -> String".to_string()))),
+            }
+        }
         "write_csv" => {
             // write_csv(path, list_of_maps)
             if args.len() >= 2 {
                 if let (Value::String(path), Value::List(items)) = (&args[0], &args[1]) {
-                    let mut output = String::new();
-                    // Extract headers from first row
-                    // a cell a reader would split, trim or re-type is quoted:
-                    // separators, quotes, newlines, edge spaces — and a String
-                    // that reads as a number ("12", "1e5", "-0") — and a List or
-                    // Map is its JSON text (["a", "b"] shifted the row)
-                    let quote = |s: &str, text: bool| -> String {
-                        let numeric = text && !s.is_empty() && (s.parse::<f64>().is_ok() || s.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()));
-                        // an empty String is `""`: a one-column row of it was a
-                        // blank line, which read_csv skips (24 rows in, 23 out)
-                        if numeric || (text && s.is_empty()) || s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
-                            || s.starts_with(char::is_whitespace) || s.ends_with(char::is_whitespace) {
-                            format!("\"{}\"", s.replace('"', "\"\""))
-                        } else {
-                            s.to_string()
-                        }
-                    };
-                    if let Some(Value::Map(first)) = items.first() {
-                        let headers: Vec<&str> = first.keys().map(|k| k.as_str()).collect();
-                        output.push_str(&headers.iter().map(|h| quote(h, false)).collect::<Vec<_>>().join(","));
-                        output.push('\n');
-                        // Write rows
-                        for item in items {
-                            if let Value::Map(entries) = item {
-                                let vals: Vec<String> = headers.iter().map(|h| {
-                                    entries.get(*h)
-                                        .map(|v| match v {
-                                            Value::String(s) => quote(s, true),
-                                            // `()` is an empty cell (it was the text "null")
-                                            Value::Unit => String::new(),
-                                            Value::List(_) | Value::Map(_) | Value::Variant { .. } => quote(&super::string::to_json_string(v), false),
-                                            other => quote(&format!("{}", other), false),
-                                        })
-                                        .unwrap_or_default()
-                                }).collect();
-                                let line = vals.join(",");
-                                // a row of only empty cells is `""`, not a blank
-                                // line read_csv would skip (the row was lost)
-                                output.push_str(if line.is_empty() && !headers.is_empty() { "\"\"" } else { &line });
-                                output.push('\n');
-                            }
-                        }
-                    }
+                    let output = csv_text(items);
                     match std::fs::write(path, &output) {
                         Ok(_) => Some(Ok(Value::Bool(true))),
                         Err(e) => Some(Ok(map_from_pairs(vec![
@@ -558,6 +523,55 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
         rows.push(Value::Map(entries));
     }
     Ok(Value::List(rows))
+}
+
+/// The CSV text write_csv writes (header from the first row, quoting that
+/// read_csv reads back exactly).
+fn csv_text(items: &[Value]) -> String {
+    let mut output = String::new();
+    // Extract headers from first row
+    // a cell a reader would split, trim or re-type is quoted:
+    // separators, quotes, newlines, edge spaces — and a String
+    // that reads as a number ("12", "1e5", "-0") — and a List or
+    // Map is its JSON text (["a", "b"] shifted the row)
+    let quote = |s: &str, text: bool| -> String {
+        let numeric = text && !s.is_empty() && (s.parse::<f64>().is_ok() || s.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()));
+        // an empty String is `""`: a one-column row of it was a
+        // blank line, which read_csv skips (24 rows in, 23 out)
+        if numeric || (text && s.is_empty()) || s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
+            || s.starts_with(char::is_whitespace) || s.ends_with(char::is_whitespace) {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    };
+    if let Some(Value::Map(first)) = items.first() {
+        let headers: Vec<&str> = first.keys().map(|k| k.as_str()).collect();
+        output.push_str(&headers.iter().map(|h| quote(h, false)).collect::<Vec<_>>().join(","));
+        output.push('\n');
+        // Write rows
+        for item in items {
+            if let Value::Map(entries) = item {
+                let vals: Vec<String> = headers.iter().map(|h| {
+                    entries.get(*h)
+                        .map(|v| match v {
+                            Value::String(s) => quote(s, true),
+                            // `()` is an empty cell (it was the text "null")
+                            Value::Unit => String::new(),
+                            Value::List(_) | Value::Map(_) | Value::Variant { .. } => quote(&super::string::to_json_string(v), false),
+                            other => quote(&format!("{}", other), false),
+                        })
+                        .unwrap_or_default()
+                }).collect();
+                let line = vals.join(",");
+                // a row of only empty cells is `""`, not a blank
+                // line read_csv would skip (the row was lost)
+                output.push_str(if line.is_empty() && !headers.is_empty() { "\"\"" } else { &line });
+                output.push('\n');
+            }
+        }
+    }
+    output
 }
 
 fn parse_csv(text: &str, delim: char) -> Result<Vec<Vec<(String, bool)>>, usize> {

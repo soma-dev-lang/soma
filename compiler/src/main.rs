@@ -354,6 +354,20 @@ fn main_inner() {
                         std::process::exit(1);
                     }
                 }
+                // the database is per DIRECTORY: `--fresh other.cell` wiped
+                // the app's data beside it — when other programs' cells have
+                // tables there, only THIS program's tables are reset
+                if data.join("soma.db").exists() {
+                    let (own, foreign) = cells_in_db(&file, &data.join("soma.db"));
+                    if !foreign.is_empty() {
+                        if let Ok(conn) = rusqlite::Connection::open(data.join("soma.db")) {
+                            for t in &own { let _ = conn.execute_batch(&format!("DROP TABLE IF EXISTS \"{}\"", t.replace('"', "\"\""))); }
+                        }
+                        eprintln!("fresh: reset {} table(s) of this program — {} also holds data of {} (other programs in this directory), kept",
+                            own.len(), data.display(), foreign.join(", "));
+                        return commands::run::cmd_run(&file, &args, jit, signal.as_deref(), record, &mut registry);
+                    }
+                }
                 if data.exists() {
                     if let Err(e) = std::fs::remove_dir_all(&data) {
                         eprintln!("error: --fresh: cannot remove {}: {}", data.display(), e);
@@ -839,4 +853,44 @@ fn cmd_tokens(path: &PathBuf) {
     for tok in &tokens {
         println!("{:?}  @ {:?}", tok.token, tok.span);
     }
+}
+
+/// The tables of `db` owned by the cells of `file` (and of its lib/ and
+/// installed packages), and the cell prefixes of the other tables.
+fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Vec<String>) {
+    let mut names: Vec<String> = Vec::new();
+    let mut add_file = |p: &std::path::Path, names: &mut Vec<String>| {
+        if let Ok(src) = std::fs::read_to_string(p) {
+            let program = commands::parse(commands::lex(&src));
+            for c in &program.cells { names.push(c.node.name.to_ascii_lowercase()); }
+        }
+    };
+    add_file(file, &mut names);
+    let base = file.parent().unwrap_or(std::path::Path::new("."));
+    fn walk(d: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if let Ok(es) = std::fs::read_dir(d) {
+            for e in es.flatten() {
+                let p = e.path();
+                if p.is_dir() { walk(&p, out); } else if p.extension().map_or(false, |x| x == "cell") { out.push(p); }
+            }
+        }
+    }
+    let mut deps = Vec::new();
+    walk(&base.join("lib"), &mut deps);
+    walk(&base.join(".soma_env").join("packages"), &mut deps);
+    walk(&base.join("packages"), &mut deps);
+    for d in deps { add_file(&d, &mut names); }
+    let Ok(conn) = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return (Vec::new(), Vec::new()) };
+    let Ok(mut st) = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'") else { return (Vec::new(), Vec::new()) };
+    let tables: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).map(|it| it.flatten().collect()).unwrap_or_default();
+    let mut foreign: Vec<String> = Vec::new();
+    let mut own: Vec<String> = Vec::new();
+    for t in tables {
+        let lt = t.to_ascii_lowercase();
+        if lt.starts_with('_') || lt.starts_with("sqlite_") || !lt.contains('_') { continue; }
+        if names.iter().any(|n| lt.starts_with(&format!("{}_", n))) { own.push(t); continue; }
+        let prefix = t.split('_').next().unwrap_or("").to_string();
+        if !prefix.is_empty() && !foreign.contains(&prefix) { foreign.push(prefix); }
+    }
+    (own, foreign)
 }

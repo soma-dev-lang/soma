@@ -178,7 +178,9 @@ is a `configure(a, b)` handler writing a `config` slot; subclasses are the
 variants of a `cell type`, overridden methods one exhaustive `match` each.
 A script is `on main() { print(…) }` run with `soma run --fresh app.cell main`:
 `soma run` prints the handler's returned value (return nothing from main),
-and slots persist in `.soma_data/` between runs unless `--fresh`; `soma test`
+and slots persist in `.soma_data/` between runs unless `--fresh` (one
+database per DIRECTORY: when other programs' cells have data there,
+`--fresh` resets only this program's tables); `soma test`
 starts empty. `counts[k] += 1` on a missing key is `() + 1` — write
 `(counts.get(k) ?? 0) + 1`; `for r in rows { r.v = 2 }` changes a copy
 (check warns). Number literals: `1_000_000`, `0xFF`, `0b101`; strings:
@@ -339,7 +341,8 @@ source, `file:line`, left/right, and the fields a value really has when
   cells); unquoted cells auto-typed (`1.00` → 1.0), quoted cells and `007` stay
   Strings; `read_csv(path, map("raw", true))` keeps all text (exact money);
   `map("delimiter", ";")` reads `;` files (other options are refused);
-  `from_csv(text, opts?)` parses CSV text already in memory (an upload).
+  `from_csv(text, opts?)` parses CSV text already in memory (an upload);
+  `to_csv(rows)` is the text `write_csv` writes (a download).
   `write_csv` quotes what a reader would change (a String "12" stays a String;
   a List cell is its JSON text). One builtin call builds at most 100,000,000
   characters / matrix cells (`pad_left`, `format` widths, `zeros`…) and a List
@@ -645,8 +648,9 @@ compile takes seconds and is cached in `.soma_cache/` beside the program.
 Arguments are type-checked at the call like any handler; `random(n)` /
 `random(lo, hi)` are Ints, `random()` a Float; buffer indexes are Ints from 0
 (no negative indexes); an Int literal beyond 64 bits is refused (build it:
-`shl(1, 64) - 1`); `[loop_bound(N)]` is checked; recursion deeper than
-20,000 calls raises stack_overflow. Floats print with the shortest
+`shl(1, 64) - 1`); `[loop_bound(N)]` is checked; a `[native]` handler's
+recursion deeper than 20,000 calls raises stack_overflow (interpreted
+handlers: 512 — walk deep structures with an explicit stack). Floats print with the shortest
 round-trip digits; print/to_string never use exponent form (`1e-7` prints `0.0000001`, a Float inside
 a printed map or list too; `format("%.3e", x)` for scientific notation); to_json — HTTP bodies included — uses JSON's shortest form (`1.18e21`).
 An SSE `data:` line and a WebSocket push carry the value as JSON on one line

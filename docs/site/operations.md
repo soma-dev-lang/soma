@@ -134,7 +134,11 @@ restarts, or that was dropped for reading too slowly is reconnected (every
 1 s, backing off to 30 s; `peer: … linked again`). Two processes that list
 each other exchange each event once (a link opens with `HELLO`, and the
 side that has its own link to the other only receives on it); a `[peers]`
-address that is this process's own bus port is refused. Events emitted while it
+address that is this process's own bus port is refused. A bus connection
+must send its first line within 10 s, and at most 256 are open at once.
+There is no loop detection ACROSS processes: `A.on tick { emit pong }` with
+`B.on pong { emit tick }` runs forever — guard such chains with a hop count
+or an id already seen. Events emitted while it
 is down are logged NOT delivered — they are not queued. This
 is the experimental corner of Soma; single-process is the supported shape.
 Delivery is fire-and-forget: an event emitted while no peer is connected (or

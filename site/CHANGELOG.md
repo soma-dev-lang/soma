@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Bus: a connection must send its first line within 10 s; at most 256
+  are open at once (half-open connections held a thread each).
+- `require <Int builtin>` is a check error like `if`; `soma run --fresh`
+  resets only this program's tables when other programs share the database.
+- New `to_csv(rows)`; `round` never returns -0.0; clearer errors for
+  negative `round` digits and multi-variable `forall`; recursion limits
+  documented (512 interpreted, 20 000 `[native]`).
 - Peer bus: two processes listing each other exchange each event once
   (links open with `HELLO`); closed connections free their thread and
   socket; a `[peers]` address that is this process is refused; the

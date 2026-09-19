@@ -432,10 +432,24 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             };
             eprintln!("bus: listening on :{}", bus_port);
 
+            // bounded: each connection holds a thread (500 half-open
+            // connections that never sent a line held 500 threads)
+            static BUS_CONNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            const BUS_MAX_CONNS: usize = 256;
             for stream in listener.incoming() {
                 let stream = match stream { Ok(s) => s, Err(_) => continue };
+                if BUS_CONNS.load(std::sync::atomic::Ordering::SeqCst) >= BUS_MAX_CONNS {
+                    eprintln!("bus: refused a connection — {} are open (the limit)", BUS_MAX_CONNS);
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+                BUS_CONNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 stream.set_nodelay(true).ok();
-                let read_stream = match stream.try_clone() { Ok(s) => s, Err(_) => continue };
+                // the first line (HELLO, EVENT, CLUSTER…) must come within
+                // 10 s: a connection that never speaks is closed
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let timeout_handle = stream.try_clone().ok();
+                let read_stream = match stream.try_clone() { Ok(s) => s, Err(_) => { BUS_CONNS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst); continue } };
 
                 // this connection's writer is registered on the peer bus once
                 // its first line says who it is (see the reader): a peer we
@@ -485,6 +499,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         // HTTP request line ends the connection
                         if first {
                             first = false;
+                            // it spoke: no deadline for a quiet but live peer
+                            if let Some(h) = &timeout_handle { let _ = h.set_read_timeout(None); }
                             let head = line.split(' ').next().unwrap_or("");
                             if line.contains(" HTTP/") || matches!(head, "GET" | "POST" | "PUT" | "DELETE" | "HEAD" | "OPTIONS" | "PATCH" | "CONNECT" | "TRACE") {
                                 eprintln!("bus: refused an HTTP request on the bus port");
@@ -766,6 +782,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         }
                     }
                     alive.store(false, std::sync::atomic::Ordering::SeqCst);
+                    BUS_CONNS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
                     eprintln!("bus: peer disconnected");
                 });
             }

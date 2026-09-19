@@ -306,6 +306,8 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Write content (stringified) to a file; true on success."),
     doc("read_csv", "io", "read_csv(path: String, opts: Map?) -> List<Map> | {error}",
         "Parse an RFC 4180 CSV (quoted fields, \"\" escapes, multi-line quoted cells, CRLF) with a header row into maps. Unquoted cells are auto-typed Int/Float/String; a quoted cell and a leading-zero id (007) stay Strings; a short row is padded with \"\", extra fields are dropped. map(\"raw\", true) keeps every cell as text (exact money: \"1.00\"); map(\"delimiter\", \";\") reads a `;`-separated file; any other option is refused."),
+    doc("to_csv", "io", "to_csv(rows: List<Map>) -> String",
+        "The CSV text write_csv would write (header from the first row; quoting that from_csv reads back exactly) — for a download without a temp file."),
     doc("from_csv", "io", "from_csv(text: String, opts: Map?) -> List<Map>",
         "read_csv on CSV text already in memory (an uploaded body): same header, typing, raw and delimiter rules."),
     doc("write_csv", "io", "write_csv(path: String, rows: List<Map>) -> Bool | {error}",

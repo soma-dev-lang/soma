@@ -36,10 +36,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             };
             let d = match &args[1] {
                 Value::Int(i) if i.to_i64().map_or(false, |d| d >= 0) => i.to_i64().unwrap_or(0).min(15) as i32,
-                Value::Int(_) => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be ≥ 0 (a negative value was ignored)".to_string()))),
+                Value::Int(_) => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be ≥ 0 (to round to tens, use round(x / 10) * 10)".to_string()))),
                 _ => return Some(Err(RuntimeError::TypeError("round(x, digits): digits must be an Int".to_string()))),
             };
-            Some(Ok(Value::Float(round_decimal(x, d))))
+            // -0.001 rounds to 0.0, not -0.0 (to_fixed / format print 0.00)
+            let r = round_decimal(x, d);
+            Some(Ok(Value::Float(if r == 0.0 { 0.0 } else { r })))
         }
         // Ruby/Python-style floored division and modulo (the result of `mod`
         // has the divisor's sign; `%` keeps the dividend's sign like C/Rust)
