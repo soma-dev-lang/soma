@@ -215,7 +215,7 @@ The `native` section is usable inside `[native]` handlers only.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `http_get` | `http_get(url: String, opts?: {timeout, max_bytes, headers}) -> Map\|List\|String` | GET a URL. 2xx: the body (JSON parsed). Never raises: otherwise {error, kind, status, body} — kind http_status (status + the upstream body), timeout, refused or network. timeout defaults to 30000 ms. |
+| `http_get` | `http_get(url: String, opts?: {timeout, max_bytes, headers}) -> Map\|List\|String` | GET a URL. 2xx: the body (JSON parsed). Never raises on the network or a status: otherwise {error, kind, status, body}; an invalid or unknown option raises kind type — kind http_status (status + the upstream body), timeout, refused or network. timeout defaults to 30000 ms. |
 | `http_post` | `http_post(url: String, body, opts?: {timeout, max_bytes, headers}) -> Map\|List\|String` | POST body (a Map/List is sent as JSON, a String as is). Same result shape and default timeout as http_get. Also http_put, http_patch, http_delete(url, opts?). |
 | `http_put` | `http_put(url: String, body, opts?) -> Map\|List\|String` | PUT; same shape as http_post. |
 | `http_patch` | `http_patch(url: String, body, opts?) -> Map\|List\|String` | PATCH; same shape as http_post. |

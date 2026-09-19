@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Soundness: a `require` on a slot read no longer proves writes made after
+  the slot was rewritten (here, through a helper or `delegate`); handlers
+  reached from `request` through an `emit` at any depth are not endpoints.
+- `[immutable]` slots are enforced: append-only Lists, add-only Maps.
+- CSV "NaN" / "inf" stay text; `soma test` never touches `.soma_data`;
+  `delegate` keeps the callee's error kind; `soma run` refuses a damaged
+  database; `--fresh --record` starts a new log.
 - Soundness: a negative List index is checked at its real index; a List
   delete re-checks shifted elements against `key` invariants (verify
   reports it runtime-checked); a self-recursive writer counts for size

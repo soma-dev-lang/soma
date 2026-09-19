@@ -2285,7 +2285,12 @@ fn client_error_text(e: &interpreter::RuntimeError) -> String {
         if let Some(start) = text.find("memory invariant violated on '") {
             let rest = &text[start + 30..];
             if let Some(q) = rest.find("':") {
-                return format!("{}memory invariant violated on '{}' — the write was refused", &text[..start], &rest[..q]);
+                // the key stays (which freezer was full), the rule does not
+                let key = text.find("(key \"").and_then(|i| text[i + 6..].find('"').map(|j| text[i + 6..i + 6 + j].to_string()));
+                return match key {
+                    Some(k) => format!("{}memory invariant violated on '{}' (key \"{}\") — the write was refused", &text[..start], &rest[..q], k),
+                    None => format!("{}memory invariant violated on '{}' — the write was refused", &text[..start], &rest[..q]),
+                };
             }
         }
     }

@@ -151,7 +151,11 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 let signal_name = format!("{}", args[1]);
                 let signal_args: Vec<Value> = args[2..].to_vec();
                 Some(interp.call_signal(&target_cell, &signal_name, signal_args)
-                    .map_err(|e| RuntimeError::TypeError(format!("delegate error: {}", e))))
+                    // the callee's error AS IS: wrapping it made every kind
+                    // `type` (a not_found answered 400, invalid_transition
+                    // was not catchable by kind) and nested recursion
+                    // printed "delegate error: " 500 times
+                    )
             } else {
                 Some(Err(RuntimeError::TypeError("delegate(cell_name, signal_name, ...args) requires at least 2 args".to_string())))
             }

@@ -512,9 +512,9 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
                 Value::Int(SomaInt::from_decimal_str(val))
             } else if let Some(n) = val.parse::<f64>().ok().filter(|f| f.is_finite()) {
                 Value::Float(n)
-            } else if matches!(val, "NaN" | "inf" | "-inf") {
-                // what write_csv writes for a NaN / infinite Float
-                Value::Float(val.parse::<f64>().unwrap_or(f64::NAN))
+            // "NaN" / "inf" stay text, as parse_float answers () for them: an
+            // instrument's "NaN" error code read as a Float passed every
+            // range check (`v < 70.0` false, `v > 99.0` false → "normal")
             } else {
                 Value::String(val.to_string())
             };

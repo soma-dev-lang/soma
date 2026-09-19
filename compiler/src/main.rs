@@ -343,6 +343,17 @@ fn main_inner() {
         Commands::Tokens { file } => cmd_tokens(&file),
         Commands::Run { file, args, jit, signal, record, fresh } => {
             runtime::storage::set_data_dir_beside(&file);
+            // `--fresh --record` starts a new log: the old one described runs
+            // from storage `--fresh` just deleted (replay then "diverged"). It
+            // is kept beside, renamed.
+            if fresh && record {
+                let log = interpreter::record_log::default_log_path(&file);
+                if log.exists() {
+                    let prev = log.with_extension("somalog.prev");
+                    let _ = std::fs::rename(&log, &prev);
+                    eprintln!("fresh: started a new record log ({} kept as {})", log.display(), prev.display());
+                }
+            }
             if fresh {
                 // the database lives beside the program (see operations.md)
                 let data = runtime::storage::data_dir();

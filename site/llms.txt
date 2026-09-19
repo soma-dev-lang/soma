@@ -14,13 +14,13 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Machine-readable resources
 
-- [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~50 KB
-- [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~90 KB)
+- [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~100 KB
+- [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~130 KB)
 - [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma
 - [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same knowledge packaged as an agent skill
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
 - [gotchas.json](https://soma-lang.dev/gotchas.json): the mistakes models make, each with the real diagnostic and the fix
-- [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~12 KB, summaries, each program's verify verdict and soma.toml)
+- [corpus/domains.json](https://soma-lang.dev/corpus/domains.json): the domains (~3 KB) → one domain's index (~20 KB, summaries, each program's verify verdict and soma.toml)
 - [corpus/index.json](https://soma-lang.dev/corpus/index.json): 300+ verified programs (id, title, features, url) — filter on `features`, then GET the `url` for the raw source. Per domain with summaries: `https://soma-lang.dev/corpus/<domain>/index.json`. Plain listing: [index.md](https://soma-lang.dev/corpus/index.md)
 - [docs/reference.md](https://soma-lang.dev/docs/reference.md), [docs/builtins.md](https://soma-lang.dev/docs/builtins.md), [docs/gotchas.md](https://soma-lang.dev/docs/gotchas.md): raw markdown
 - [repo/index.json](https://soma-lang.dev/repo/index.json): the package registry
@@ -316,7 +316,9 @@ source, `file:line`, left/right, and the fields a value really has when
   read with `opts.step ?? 1`. HTTP headers reach `request` as a fifth
   `headers: Map` parameter (lower-case names).
 - HTTP out: `http_get/post/put/patch/delete(url, body?, map("timeout", ms,
-  "headers", map(...)))` never raise; non-2xx is `{error, kind, status, body}`
+  "headers", map(...)))` never raise on the network (a timeout, a refused
+  connection, a non-2xx answer come back as values); an invalid or unknown
+  option raises kind `type` (a program bug); non-2xx is `{error, kind, status, body}`
   (kind `http_status` — redirects are followed up to 5 hops; a 3xx left unfollowed (a 307/308 answering a POST) is http_status too, a 6th hop is kind `network` (too many redirects) — | `timeout` —
   also a body that stalls — | `too_large` over `max_bytes` | `refused` |
   `network`); default timeout 30 s; invalid option values are refused;
@@ -388,6 +390,10 @@ write and every `transition()` it made is rolled back. A failing `try { }`
 block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their new value), and the handler continues. Under
 `soma serve` handlers run one at a time, so read-modify-write is safe
 (300 parallel payments of 10 against a balance of 1000 pay exactly 100).
+`[immutable]` on a slot makes it append-only: a List slot only grows by
+`push`, a Map slot only gains new keys; overwriting or deleting an entry
+raises kind `invariant` (an audit log that cannot be truncated or rewritten).
+
 With persistent slots the handler IS one SQLite transaction: a process killed
 mid-handler (`kill -9`) leaves nothing of it on disk. `every` / `after` ticks
 are handler invocations too (same rollback). You do not write compensation
@@ -533,7 +539,7 @@ cell agent Researcher {
     state job { initial: idle  idle -> working  working -> done  * -> failed except [done] }
     on search(q: String) { return to_json(http_get("https://api.x.com/search?q={q}")) }
     on research(topic: String) {
-        set_budget(8000)                              // token cap: the provider round that crosses it completes, the NEXT round (a later tool round of the same think() too) raises kind budget
+        set_budget(8000)                              // token cap: a prompt that alone overruns what is left raises kind budget before it is sent; otherwise the provider round that crosses it completes and the NEXT round (a later tool round of the same think() too) raises kind budget
         transition(topic, "working")                  // one machine instance per topic
         let r = try { think("Research {topic}", map("max_tokens", 2000, "max_rounds", 3)) }
         if r.error != () {

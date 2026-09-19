@@ -114,6 +114,7 @@ pub fn explicit_routes(cell: &CellDef) -> ExplicitRoutes {
                 }
             }
             emits(&h.body, &mut called);
+            super::literals::for_each_stmt_deep(&h.body, &mut |st| if let Statement::Emit { signal_name, .. } = st { called.push(signal_name.clone()); });
             for n in called {
                 if n == "request" || !seen.insert(n.clone()) { continue; }
                 if let Some(next) = local.get(n.as_str()) {
@@ -232,6 +233,13 @@ pub fn explicit_routes_in(program: &Program, cell: &CellDef) -> ExplicitRoutes {
             }
         }
         stmt_edges(&h.body, &cells, &mut edges);
+        // at any depth: an `emit` in a match arm's block, a try, a lambda
+        // (request → match arm → emit wev → wipe3 left POST /wipe3 open)
+        super::literals::for_each_stmt_deep(&h.body, &mut |st| match st {
+            Statement::Emit { signal_name, .. } => edges.push((Some("*".to_string()), signal_name.clone())),
+            Statement::MethodCall { target, method, .. } if cells.contains(target) => edges.push((Some(target.clone()), method.clone())),
+            _ => {}
+        });
         // `delegate("Api", op, id)` with a COMPUTED handler name can reach any
         // handler of that cell: all of them are request's (POST /wipe/k
         // skipped the auth check)

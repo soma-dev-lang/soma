@@ -386,6 +386,12 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
 
     // stored data older than the program (an invariant added since, an
     // instance in a removed state): say so, like serve does
+    // a damaged database read back as `()` and `soma run` exited 0 (serve
+    // already refused it): the same quick_check, before anything runs
+    if let Err(why) = crate::runtime::storage::integrity_check() {
+        eprintln!("error: .soma_data/soma.db is damaged ({}) — restore it from a backup; nothing was run", why);
+        process::exit(1);
+    }
     for line in interp.audit_stored_data() {
         eprintln!("warning: stored data: {}", line);
     }

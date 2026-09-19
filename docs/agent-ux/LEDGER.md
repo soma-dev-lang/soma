@@ -1459,3 +1459,25 @@ every state-machine route gave no false ✓ — except the five below.
 
 ### Open
 - [ ] "Paid at most once" (a write-once invariant after `require … == ()`) is still reported runtime-checked without a reason; the reply-token cap is an estimate when a provider under-reports; time-of-day builtins.
+
+### Cycle 64 — realistic port (LIMS: samples, custody chain, freezer slots, QC rules) + attack (the documentation as the attack surface)
+
+LIMS port 8/10: 30 concurrent freezer moves kept slots unique; one of two
+simultaneous reviews won; a batch with one bad row wrote nothing; kill -9
+mid-batch left no partial rows. Doc attack: ~150 claims checked — every
+kind→status row, the /agents Ledger, the homepage demo, all 319 corpus
+programs and their 221 verify verdicts held — and these did not.
+
+### Fixed
+- [x] **Attack: a `require` on a slot read kept "proving" writes after the slot was written again** (a second write in the handler, or one through a helper / delegate) — such facts are dropped once the slot is rewritten; `delegate` with a literal handler (and a computed cell) is followed by the size and write proofs.
+- [x] **Attack: a handler reached from `request` through an `emit` inside a match arm was a public endpoint** (auth bypass) — emits and cell calls are followed at any depth.
+- [x] **Port: `[immutable]` was a promise nothing enforced** — a List slot only grows by push, a Map slot only gains keys; overwrite / delete raise kind invariant (an append-only audit log).
+- [x] Port: CSV "NaN" / "inf" were read as Floats and passed every range check — they stay text, like parse_float.
+- [x] Port: a `.soma_data/` beside the tests made `soma test` open the disk lock on every call (15-60× slower) — tests never touch it.
+- [x] Attack: `delegate` turned every callee error into kind `type` — the callee's error passes through.
+- [x] Attack: `soma run` read a damaged database as `()` and exited 0 — the same quick_check as serve, before anything runs.
+- [x] Attack: `--fresh --record` kept appending to the old log (replay diverged) — a new log, the old one kept as `.somalog.prev`.
+- [x] Docs: resource sizes (~100 / ~130 / ~20 KB), the request-body cap in operations.md, http_* raise on bad options, the set_budget prompt refusal, the error-body shape; the HTTP invariant error names the key again (not the rule); guarantees.md's atomic row names the external-effects exception.
+
+### Open
+- [ ] `[verify] cells = […]` still prints other machines' temporal results; no strict CSV mode; no Decimal type.

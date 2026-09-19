@@ -354,9 +354,44 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     }
                 }
                 let hyp_h = handlers.get(handler).map(|on| hyp_for(on, &hyp)).unwrap_or_else(|| hyp.clone());
+                // a `require` about a READ of this slot (`(used.get(u) ?? 0) + n
+                // <= 100`) no longer describes the slot once it was written
+                // again — by a second write here, or by a handler this one
+                // reaches (a helper, emit, delegate, itself): drop such facts
+                let rewritten = {
+                    let own = writes.iter().filter(|(h, sl, e, _, _, _)| h == handler && sl == slot && !matches!(e, Expr::Ident(n) if n == "<deleted entry>")).count() > 1;
+                    let me = cell.node.name.clone();
+                    let mut seen: HashSet<(String, String)> = HashSet::new();
+                    let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
+                    let mut other = false;
+                    while let Some((c, h)) = stack.pop() {
+                        if c == me && h == *handler && !seen.is_empty() { other = true; }
+                        if !seen.insert((c.clone(), h.clone())) { continue; }
+                        if (c != me || h != *handler) && c == me
+                            && writes.iter().any(|(wh, sl, e, _, _, _)| *wh == h && sl == slot && !matches!(e, Expr::Ident(n) if n == "<deleted entry>")) { other = true; }
+                        let Some((_, on)) = all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) else { continue };
+                        for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(&c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
+                            match target {
+                                None => {
+                                    if all_handlers.iter().any(|(cn, o)| *cn == c && o.signal_name == name) { stack.push((c.clone(), name)); }
+                                    else { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                }
+                                Some(t) if t == "*" => { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                Some(t) => stack.push((t, name)),
+                            }
+                        }
+                    }
+                    own || other
+                };
+                let mut vars_w = locals.get(&(handler.clone(), wpath.clone())).cloned().unwrap_or_default();
+                if rewritten {
+                    let get_pat = format!("{}.get(", slot);
+                    let idx_pat = format!("{}[", slot);
+                    vars_w.retain(|k, _| !(k.starts_with("__") && (k.contains(&get_pat) || k.contains(&idx_pat))));
+                }
                 let ctx = RangeCtx {
                     hyp: &hyp_h,
-                    vars: locals.get(&(handler.clone(), wpath.clone())).cloned().unwrap_or_default(),
+                    vars: vars_w,
                     handlers: &handlers,
                     depth: 0,
                 };
@@ -2216,6 +2251,17 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[Stri
             match &args[0].node {
                 Expr::Literal(Literal::String(c)) => for h in cell_handlers.get(c).into_iter().flatten() { out.push((Some(c.clone()), h.clone())); },
                 _ => for (c, hs) in cell_handlers { for h in hs { out.push((Some(c.clone()), h.clone())); } },
+            }
+        }
+        // a literal handler: that handler of the named cell — or of ANY
+        // cell defining it when the cell is computed (`delegate(c, "helper",
+        // x)` with `c = "App" + ""` was not followed)
+        if name == "delegate" && args.len() >= 2 {
+            if let Expr::Literal(Literal::String(h)) = &args[1].node {
+                match &args[0].node {
+                    Expr::Literal(Literal::String(c)) => out.push((Some(c.clone()), h.clone())),
+                    _ => for (c, hs) in cell_handlers { if hs.contains(h) { out.push((Some(c.clone()), h.clone())); } },
+                }
             }
         }
     });

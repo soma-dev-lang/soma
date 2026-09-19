@@ -63,7 +63,7 @@ A handler that returns normally answers 200 with its value as JSON (`()` is `nul
 
 - Int is arbitrary precision (i64 fast path, BigInt beyond); Float is f64; `7 / 2` is `3.5`.
 - Recursion depth: 512 frames, then `stack_overflow`.
-- Request bodies and paths: no configured cap; 20 MB bodies and 20 KB paths were served without crashing. Put the cap on the proxy.
+- Request bodies: a declared body past 256 MB is refused (413), and a JSON body holding more than ~1 000 000 values (objects and lists weigh more) is refused (413) before it is parsed; paths have no configured cap (20 KB paths were served). Put tighter caps on the proxy.
 - Handlers run one at a time (a process-wide lock): correct under contention, no parallelism inside one process. Throughput is not a goal.
 - `forall` properties in tests walk every value up to 20 000, then sample with a fixed seed.
 - One process, one SQLite file (`.soma_data/soma.db`, created beside the program); no replication unless a `scale` section and a bus join are configured (experimental).

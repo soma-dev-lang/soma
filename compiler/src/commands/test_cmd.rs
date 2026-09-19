@@ -33,6 +33,7 @@ use crate::runtime;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
 pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
+    crate::interpreter::IN_TEST.store(true, std::sync::atomic::Ordering::Relaxed);
     // every line the runner would print, kept for --json
     let mut out_lines: Vec<String> = Vec::new();
     let source = read_source(path);

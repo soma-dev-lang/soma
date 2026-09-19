@@ -3549,3 +3549,68 @@ fn cycle63_soundness() {
     let (out, code) = soma_in(&d, &["verify", "--strict", "an.cell"]);
     assert!(code != 0 && out.contains("runtime-checked"), "{out}");
 }
+
+/// Cycle 64: `[immutable]` slots are append-only (the property was never
+/// enforced); CSV "NaN" / "inf" stay text; `soma test` ignores .soma_data.
+#[test]
+fn cycle64_findings() {
+    passes("cycle64", r#"
+cell A {
+    memory {
+        log: List<Map> [persistent, immutable]
+        seen: Map<String, Int> [persistent, immutable]
+    }
+    on add(x: Int) { log.push(map("x", x))  return log.len }
+    on del(i: Int) { log.delete(i)  return log.len }
+    on ow(i: Int) { log[i] = map("x", 0)  return 1 }
+    on mark(k: String) { seen.set(k, 1)  return 1 }
+    on remark(k: String) { seen[k] = 2  return 1 }
+    on unmark(k: String) { seen.delete(k)  return 1 }
+    on csv() { return from_csv("v\nNaN\n-inf\n1.5\n") |> map(r => type_of(r.v)) }
+}
+cell test T {
+    rules {
+        assert add(1) == 1
+        assert add(2) == 2
+        assert_fails del(1)
+        assert_fails ow(0)
+        assert mark("a") == 1
+        assert_fails remark("a")
+        assert_fails unmark("a")
+        assert mark("b") == 1
+        assert csv() == ["String", "String", "Float"]
+    }
+}
+"#);
+    let d = dir("cycle64_test_data");
+    std::fs::create_dir_all(d.join(".soma_data")).unwrap();
+    std::fs::write(d.join("p.cell"), "cell U { on conv(m: Int) { return m } }\ncell test P { rules { assert conv(1) == 1 } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "p.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!d.join(".soma_data/lock.db").exists(), "soma test does not touch the data directory");
+}
+
+/// Cycle 64 (docs as the attack surface): a require about a slot read does
+/// not prove a later write after the slot was rewritten; delegate keeps the
+/// callee's error kind; `--fresh --record` starts a new log; a handler
+/// reached from `request` through an emit in a match arm is not an endpoint.
+#[test]
+fn cycle64_attack() {
+    let d = dir("cycle64_attack");
+    std::fs::write(d.join("q3.cell"), "cell Q {\n  memory { used: Map<String, Int> [persistent]  invariant used >= 0 && used <= 100 }\n  on consume(u: String, n: Int) {\n    require n > 0 else Bad\n    require (used.get(u) ?? 0) + n <= 100 else Over\n    used.set(u, (used.get(u) ?? 0) + n)\n    used.set(u, (used.get(u) ?? 0) + n)\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "q3.cell"]);
+    assert!(code != 0 && out.contains("runtime-checked"), "{out}");
+
+    passes("cycle64_delegate", r#"
+cell A { on nf() { fail("not_found", "gone") } }
+cell B { on go() { let r = try { delegate("A", "nf") }  return r.kind } }
+cell test T { rules { assert go() == "not_found" } }
+"#);
+
+    let r = dir("cycle64_record");
+    std::fs::write(r.join("app.cell"), "cell C { memory { n: Map<String, Int> [persistent] }  on inc(k: String) { n.set(k, (n.get(k) ?? 0) + 1)  return n.get(k) } }\n").unwrap();
+    let _ = soma_in(&r, &["run", "--fresh", "--record", "app.cell", "inc", "a"]);
+    let _ = soma_in(&r, &["run", "--fresh", "--record", "app.cell", "inc", "a"]);
+    let (out, code) = soma_in(&r, &["replay", "app.cell"]);
+    assert!(code == 0 && out.contains("0 diverged"), "{out}");
+}

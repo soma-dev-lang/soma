@@ -45,6 +45,9 @@ static HANDLER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Set by `soma serve`: no terminal is attached to a request, so `approve()`
 /// can never prompt — it fails closed instead of auto-approving.
 pub static IN_SERVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// `soma test`: storage is in memory — no cross-process lock on disk (a
+/// `.soma_data/` beside the tests made every call open lock.db: 15-60x slower)
+pub static IN_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -3236,6 +3239,9 @@ impl Interpreter {
                         return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
                             "{}[{}]: index out of bounds (the List slot has {} items) — push() appends", slot_name, raw, xs.len()))));
                     }
+                    if self.slot_immutable(cell_name, slot_name) {
+                        return Err(Self::immutable_refusal(slot_name, &format!("overwriting element #{}", idx)));
+                    }
                     let val = self.check_slot_value_type(cell_name, slot_name, &args[1])?;
                     // the REAL index: `slots[-2] = v` was checked with key -2
                     // and got past `invariant key != 0 || value == 0`
@@ -3256,6 +3262,9 @@ impl Interpreter {
                     let idx = if raw < 0 { raw + xs.len() as i64 } else { raw };
                     if idx < 0 || idx as usize >= xs.len() {
                         return Ok(Value::Bool(false));
+                    }
+                    if self.slot_immutable(cell_name, slot_name) {
+                        return Err(Self::immutable_refusal(slot_name, &format!("deleting element #{}", idx)));
                     }
                     let old = xs[idx as usize].clone();
                     // only a `size` clause can flip on a delete — as for a Map slot,
@@ -3338,6 +3347,9 @@ impl Interpreter {
                 let key_str = format!("{}", key);
                 let val_str = format!("{}", val);
 
+                if self.slot_immutable(cell_name, slot_name) && backend.get(&key_str).is_some() {
+                    return Err(Self::immutable_refusal(slot_name, &format!("rewriting key \"{}\"", key_str)));
+                }
                 let coerced = self.check_slot_value_type(cell_name, slot_name, val)?;
                 let val = &coerced;
                 // V1.8: invariants are checked BEFORE the write commits —
@@ -3372,6 +3384,9 @@ impl Interpreter {
                         "delete() requires a key argument".to_string()
                     )))?;
                 let key_str = format!("{}", key);
+                if self.slot_immutable(cell_name, slot_name) && backend.get(&key_str).is_some() {
+                    return Err(Self::immutable_refusal(slot_name, &format!("deleting key \"{}\"", key_str)));
+                }
 
                 // Invariants are checked BEFORE the delete commits, like
                 // set/push: `size` is the entry count after removal, and the
@@ -4964,6 +4979,23 @@ impl Interpreter {
             .or(Some("Map"))
     }
 
+    /// `[immutable]` slot: entries never change after they are written —
+    /// append / add a new key only (the property was a promise nothing
+    /// enforced; an audit log's tail could be deleted)
+    fn slot_immutable(&self, cell_name: &str, name: &str) -> bool {
+        let declared = |cell: &CellDef| cell.sections.iter().find_map(|s| match s.node {
+            Section::Memory(ref mem) => mem.slots.iter().find(|sl| sl.node.name == name)
+                .map(|sl| sl.node.properties.iter().any(|p| p.node.name() == "immutable")),
+            _ => None,
+        });
+        self.cells.get(cell_name).and_then(declared).unwrap_or(false)
+    }
+
+    fn immutable_refusal(slot_name: &str, what: &str) -> ExecError {
+        ExecError::Runtime(RuntimeError::RequireFailed(format!(
+            "memory invariant violated on '{}': the slot is [immutable] — {} is refused (entries never change after they are written); the slot is unchanged", slot_name, what)))
+    }
+
     /// `Map<String, Int>` / `List<Map>`: the declared value type of a slot
     /// (the last type argument), when it is a plain name.
     /// A value read from a slot: a slot of Strings gives back its text
@@ -5504,6 +5536,7 @@ struct CrossProcessLock(Option<rusqlite::Connection>);
 
 impl CrossProcessLock {
     fn acquire() -> Self {
+        if IN_TEST.load(std::sync::atomic::Ordering::Relaxed) { return CrossProcessLock(None); }
         let dir = crate::runtime::storage::data_dir();
         if !dir.is_dir() {
             return CrossProcessLock(None);
