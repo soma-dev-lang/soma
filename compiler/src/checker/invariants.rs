@@ -384,6 +384,15 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     own || other
                 };
                 let mut vars_w = locals.get(&(handler.clone(), wpath.clone())).cloned().unwrap_or_default();
+                // a `[task]` handler's think() ends a step: other requests and
+                // tasks may write between a read / require before it and this
+                // write — no fact about locals holds across it
+                let task_with_think = handlers.get(handler).map_or(false, |on| on.properties.iter().any(|p| p == "task") && {
+                    let mut t = false;
+                    crate::checker::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "think" || name == "think_json") { t = true; });
+                    t
+                });
+                if task_with_think { vars_w.clear(); }
                 if rewritten {
                     let get_pat = format!("{}.get(", slot);
                     let idx_pat = format!("{}[", slot);

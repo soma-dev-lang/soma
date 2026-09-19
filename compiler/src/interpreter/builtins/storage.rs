@@ -464,6 +464,11 @@ fn agent_think(
     }
 
     if let Some(mock) = mock_val {
+        // SOMA_LLM_MOCK_LATENCY_MS: a mocked model that takes time, to test
+        // concurrency offline (inside a `[task]` it waits outside the lock)
+        if let Some(ms) = std::env::var("SOMA_LLM_MOCK_LATENCY_MS").ok().and_then(|v| v.parse::<u64>().ok()).filter(|m| *m > 0) {
+            interp.outside_unit(|| std::thread::sleep(std::time::Duration::from_millis(ms.min(600_000))));
+        }
         let response = match (&scripted, mock.as_str()) {
             // a scripted reply longer than max_tokens (~4 characters per
             // token) is what a real provider refuses (kind llm): the test
@@ -594,7 +599,9 @@ fn agent_think(
         }
 
         let body = llm::build_request_body(&config, &interp.agent_conversation, &tools, json_mode, max_tokens);
-        let raw_json = llm::send_with_retry(&config, &body)?;
+        // a `[task]` step boundary: the wait for the model runs outside the
+        // handler lock (other requests and tasks proceed meanwhile)
+        let raw_json = interp.outside_unit(|| llm::send_with_retry(&config, &body))?;
         let mut resp = llm::parse_response(&config, &raw_json);
         // a provider that omits `usage` (or reports a negative count) spent
         // tokens all the same: estimate ~4 characters per token, as the mock

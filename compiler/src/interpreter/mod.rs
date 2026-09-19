@@ -729,6 +729,10 @@ pub struct Interpreter {
     pub(crate) think_tools_allowed: Option<Vec<String>>,
     /// > 0 while a handler runs as a model's tool call
     pub(crate) tool_depth: u32,
+    /// the open step of a top-level `[task]` handler (think() ends it)
+    pub(crate) task_unit: Option<Unit>,
+    /// incremented at each unit: a `try` savepoint from an earlier step
+    pub(crate) journal_gen: u64,
     /// set by do_connect: false once that peer link is gone
     pub last_link_alive: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// the `cell test` whose rules are running (its helpers win bare calls)
@@ -984,6 +988,8 @@ impl Interpreter {
             outer_tool_caps: Vec::new(),
             think_tools_allowed: None,
             tool_depth: 0,
+            task_unit: None,
+            journal_gen: 0,
             last_link_alive: None,
             current_test_cell: None,
             native_handlers: HashMap::new(),
@@ -1324,7 +1330,11 @@ impl Interpreter {
         // later in the caller's expression was reported inside the callee
         // (`assert request(…).x` "raised at line 3", the handler's line)
         let caller_span = self.last_span;
-        let r = self.atomically(|me| me.call_signal_inner(cell_name, signal_name, args));
+        let r = if self.journal.is_none() && self.task_unit.is_none() && self.handler_is_task(cell_name, signal_name) {
+            self.run_task(|me| me.call_signal_inner(cell_name, signal_name, args))
+        } else {
+            self.atomically(|me| me.call_signal_inner(cell_name, signal_name, args))
+        };
         if r.is_ok() { self.last_span = caller_span; }
         r
     }
@@ -2655,10 +2665,12 @@ impl Interpreter {
             Expr::Try(inner) => {
                 // try { expr } → returns map("value", result) or map("error", message)
                 // savepoint: what a failing `try` block wrote is undone
-                let savepoint = self.journal.as_ref().map(|j| j.len());
+                let savepoint = self.journal.as_ref().map(|j| (self.journal_gen, j.len()));
                 let outcome = self.eval_expr(&inner.node, env, cell_name, signal_name);
-                if let (Err(ExecError::Runtime(_)), Some(mark)) = (&outcome, savepoint) {
-                    self.rollback_savepoint(mark);
+                // a `[task]` step committed inside the try (a think()): what it
+                // committed stays; everything of the current step is undone
+                if let (Err(ExecError::Runtime(_)), Some((gen, mark))) = (&outcome, savepoint) {
+                    self.rollback_savepoint(if gen == self.journal_gen { mark } else { 0 });
                 }
                 // runaway recursion is not caught: a `try` around a
                 // self-applying lambda re-ran it at every level (100% CPU,
@@ -4752,14 +4764,10 @@ impl Interpreter {
         }
     }
 
-    /// Run `f` as ONE atomic unit: serialized against every other top-level
-    /// invocation in the process, and rolled back entirely if it fails.
-    /// Nested use (a handler calling a handler) joins the running unit.
-    pub fn atomically<T, E>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E> {
-        if self.journal.is_some() {
-            return f(self);
-        }
-        let _serial = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    /// Open one atomic unit: the process-wide handler lock, a SQLite
+    /// transaction (or the cross-process file lock), a fresh journal.
+    fn unit_begin(&mut self) -> Unit {
+        let serial = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Across PROCESSES too: two `soma run` on one .soma_data used to
         // lose updates (3000 + 3000 = 3082). With persistent slots the
         // handler IS a SQLite transaction on soma.db (`BEGIN IMMEDIATE`
@@ -4770,17 +4778,20 @@ impl Interpreter {
             let c = c.lock().unwrap_or_else(|e| e.into_inner());
             c.execute_batch("BEGIN IMMEDIATE").is_ok()
         });
-        let _cross = if txn.is_none() { Some(CrossProcessLock::acquire()) } else { None };
+        let cross = if txn.is_none() { Some(CrossProcessLock::acquire()) } else { None };
         self.journal = Some(Vec::new());
-        let result = f(self);
-        if result.is_err() {
-            self.rollback_to(0);
-        }
+        self.journal_gen = self.journal_gen.wrapping_add(1);
+        Unit { _serial: serial, txn, _cross: cross }
+    }
+
+    /// Close the unit: commit (or roll back — the caller already undid the
+    /// journal), then let clients and other processes hear about it.
+    fn unit_end(&mut self, unit: Unit, ok: bool) {
         // how many writes / transitions the invocation committed (a
         // scheduler tick logs it — ticks were invisible in the serve log)
-        self.last_commit_writes = if result.is_ok() { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_) | UndoOp::PeerSend(_))).count()) } else { 0 };
+        self.last_commit_writes = if ok { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_) | UndoOp::PeerSend(_))).count()) } else { 0 };
         let mut peer_lines: Vec<String> = Vec::new();
-        let pushes: Vec<BusEvent> = if result.is_ok() {
+        let pushes: Vec<BusEvent> = if ok {
             self.journal.take().unwrap_or_default().into_iter().filter_map(|u| match u {
                 UndoOp::Push(e) => Some(e),
                 UndoOp::PeerSend(l) => { peer_lines.push(l); None }
@@ -4788,9 +4799,9 @@ impl Interpreter {
             }).collect()
         } else { Vec::new() };
         self.journal = None;
-        if let Some(c) = txn {
+        if let Some(c) = &unit.txn {
             let c = c.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = c.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" });
+            let _ = c.execute_batch(if ok { "COMMIT" } else { "ROLLBACK" });
         }
         // committed: now the clients (and the other processes) may hear about it
         for e in pushes { self.send_bus_now(e); }
@@ -4801,7 +4812,57 @@ impl Interpreter {
                 }
             }
         }
+        drop(unit);
+    }
+
+    /// Run `f` as ONE atomic unit: serialized against every other top-level
+    /// invocation in the process, and rolled back entirely if it fails.
+    /// Nested use (a handler calling a handler) joins the running unit.
+    pub fn atomically<T, E>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E> {
+        if self.journal.is_some() {
+            return f(self);
+        }
+        let unit = self.unit_begin();
+        let result = f(self);
+        if result.is_err() {
+            self.rollback_to(0);
+        }
+        self.unit_end(unit, result.is_ok());
         result
+    }
+
+    /// A `[task]` handler invoked at the top level runs as a sequence of
+    /// atomic STEPS: each `think()` (the wait for a model) ends the current
+    /// step — its writes commit — and runs outside the lock, so other
+    /// requests and tasks proceed; the next step starts after. A failure
+    /// rolls back the current step only.
+    fn run_task<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, RuntimeError>) -> Result<T, RuntimeError> {
+        let unit = self.unit_begin();
+        self.task_unit = Some(unit);
+        let result = f(self);
+        if result.is_err() { self.rollback_to(0); }
+        if let Some(u) = self.task_unit.take() { self.unit_end(u, result.is_ok()); }
+        result
+    }
+
+    /// Run `f` (a wait: a model call, a mocked latency) outside the handler
+    /// lock when this is a `[task]` step boundary; inside it otherwise.
+    pub(crate) fn outside_unit<T>(&mut self, f: impl FnOnce() -> T) -> T {
+        match self.task_unit.take() {
+            Some(unit) => {
+                self.unit_end(unit, true);
+                let r = f();
+                let unit = self.unit_begin();
+                self.task_unit = Some(unit);
+                r
+            }
+            None => f(),
+        }
+    }
+
+    fn handler_is_task(&self, cell_name: &str, signal_name: &str) -> bool {
+        self.cells.get(cell_name).map_or(false, |c| c.sections.iter().any(|s| matches!(&s.node,
+            Section::OnSignal(on) if on.signal_name == signal_name && on.properties.iter().any(|p| p == "task"))))
     }
 
     /// Does the program define a handler `name` taking exactly `argc`
@@ -5622,6 +5683,13 @@ pub(crate) fn lambda_error(e: ExecError) -> RuntimeError {
         ExecError::Return(v) => RuntimeError::TypeError(format!("lambda used `return` (value {}) — a lambda is an expression: `x => expr`", v)),
         ExecError::Break | ExecError::Continue => RuntimeError::TypeError("break/continue inside a lambda".to_string()),
     }
+}
+
+/// One atomic unit in progress (see `Interpreter::unit_begin`).
+pub(crate) struct Unit {
+    _serial: std::sync::MutexGuard<'static, ()>,
+    txn: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
+    _cross: Option<CrossProcessLock>,
 }
 
 /// Exclusive lock shared by every soma process using this directory's

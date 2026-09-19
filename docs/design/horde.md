@@ -168,7 +168,7 @@ cell Market {
 
 | Phase | Livrable | Accepté quand |
 |---|---|---|
-| 1 | handlers `[task]` : `think()` hors verrou, étapes transactionnelles | 200 `think()` mockés de 2 s en parallèle finissent en < 10 s ; aucune écriture perdue ; les tests existants passent |
+| 1 ✅ | handlers `[task]` : `think()` hors verrou, étapes transactionnelles (fait : 200 × 2 s en 9,3 s) | 200 `think()` mockés de 2 s en parallèle finissent en < 10 s ; aucune écriture perdue ; les tests existants passent |
 | 2 | `horde` / `horde_status` / `horde_cancel`, file persistée, pool, limiteur RPM/TPM | 10 000 tâches mockées (latence 2 s, concurrence 500) en < 2 min ; `kill -9` au milieu puis reprise : chaque résultat écrit une fois |
 | 3 | budget par réservation, preuve de coût de horde | le plafond n'est jamais dépassé, même avec un fournisseur qui ignore `max_tokens` ; `verify` affiche la borne |
 | 4 | `vote`, `snapshot`/tours, instances d'agents (cas B) | simulation de 10 000 agents × 20 tours reproductible à l'identique avec la même graine |

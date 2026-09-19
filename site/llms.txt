@@ -557,6 +557,14 @@ cell agent Researcher {
         return map("facts", r.value, "spent", tokens_used())
     }
 }
+// `on ask(q: String) [task] { … think(…) … }` runs as STEPS: each think() ends
+// the current step (its writes commit) and waits for the model OUTSIDE the
+// handler lock, so concurrent requests overlap their model calls (200 × 2 s
+// waits in ~9 s instead of 400 s); a failure rolls back the current step only;
+// `try` around a think undoes the current step's writes; the prover does not
+// carry a read or `require` across a think (another request may write
+// meanwhile). SOMA_LLM_MOCK_LATENCY_MS gives a mock a latency to test it. A
+// plain handler stays one atomic unit.
 // soma verify PROVES the lifecycle; `cost { tokens: N }` (also latency:,
 // usd:) is PROVEN when every think() has a literal max_tokens and runs a
 // known number of times — with tools, × the rounds (`max_rounds`, else 10).

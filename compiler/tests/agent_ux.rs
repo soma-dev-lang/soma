@@ -3708,3 +3708,69 @@ cell test T {
     let (out, _) = soma_in(&d, &["check", "i.cell"]);
     assert!(out.contains("[immutable]"), "{out}");
 }
+
+/// Hordes, phase 1: a `[task]` handler's think() runs outside the handler
+/// lock (concurrent requests overlap their model waits); a failure after a
+/// think rolls back only the current step; a `try` around a think undoes
+/// the current step's writes; the prover drops facts across a think.
+#[test]
+fn horde_phase1_task_handlers() {
+    let d = dir("horde_phase1");
+    std::fs::write(d.join("h.cell"), r#"
+cell agent R {
+    memory { log: List<String> [persistent] }
+    on ask(q: String) [task] {
+        log.push("start {q}")
+        let r = think(q, map("max_tokens", 50))
+        log.push("done {q}")
+        return r
+    }
+    on fails(q: String) [task] {
+        log.push("before")
+        let r = think(q, map("max_tokens", 50))
+        log.push("after")
+        fail("boom")
+    }
+    on guarded(q: String) [task] {
+        let t = try {
+            log.push("in try")
+            let r = think(q, map("max_tokens", 50))
+            log.push("in try after")
+            fail("inner")
+        }
+        return t.kind
+    }
+    on n() { return len(log) }
+    on all() { return log }
+}
+"#).unwrap();
+    let port = 19900 + (std::process::id() % 40) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "h.cell", "-p", &port.to_string()])
+        .env("SOMA_LLM_MOCK", "echo").env("SOMA_LLM_MOCK_LATENCY_MS", "1000")
+        .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let t0 = std::time::Instant::now();
+    let workers: Vec<_> = (0..20).map(|i| std::thread::spawn(move || http(port, "POST", &format!("/ask/q{i}")))).collect();
+    for w in workers { let _ = w.join(); }
+    let elapsed = t0.elapsed();
+    let n = http(port, "POST", "/n");
+    let _ = http(port, "POST", "/fails/x");
+    let _ = http(port, "POST", "/guarded/y");
+    let all = http(port, "POST", "/all");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    assert!(elapsed < std::time::Duration::from_secs(8), "20 × 1 s model waits overlapped: {elapsed:?}");
+    assert!(n.contains("40"), "every write of every step committed: {n}");
+    assert!(all.contains("before") && !all.contains("\"after\""), "a failure after think rolls back only its step: {all}");
+    assert!(all.contains("in try") && !all.contains("in try after"), "try undoes the current step: {all}");
+
+    std::fs::write(d.join("q.cell"), "cell agent Q { memory { c: Map<String, Int> [persistent]  invariant c >= 0 && c <= 10 }\n  on inc(k: String) [task] { let v = c.get(k) ?? 0  require v < 10 else Full  let r = think(\"x\", map(\"max_tokens\", 5))  c.set(k, v + 1)  return r } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "q.cell"]);
+    assert!(out.contains("runtime-checked") && !out.contains("writer 'inc' proven by induction (writes v + 1)"), "{out}");
+}
