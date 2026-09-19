@@ -1210,3 +1210,24 @@ orders through tools.
 
 ### Open
 - [ ] Absolute paths are not confined (only `..` segments and the program's own files are refused); an SSE subscription is authorized once, at subscribe time; no idiom for binding a tool to the calling user.
+
+### Cycle 52 — realistic port (clinic booking) + attack (verifier soundness, native divergence, serving, file builtins)
+
+Clinic port 7.5/10: 30 parallel bookings of one slot → 1 booked, 29 × 409;
+waitlist promotion and rollback exact. Attack: no unsound ✓ in invariants,
+termination, cost or temporal properties; no interpreter/native value
+divergence in ~60 kernels; framing and static confinement held; no crash
+on deep or huge inputs.
+
+### Fixed
+- [x] **Attack: `load` / `include` / `load_template` / `read_files` / `par_read_files` / `word_count` did not refuse `..`** — `load("templates/" + query.tpl)` served any file over HTTP; every path-taking builtin now refuses it (kind `path`).
+- [x] **Port: an `emit` with no `[peers]` opened the bus port**, and any local process ran the program's own listeners with forged data (`EVENT freed "x"`) — the port opens only for `[peers]`, `[bus] accept`, `scale` or `--join`; self-emitted events come in only over a declared peer network.
+- [x] Port: `SOMA_LLM_MOCK=fixed:` cut a reply over max_tokens short while `mock think` raised — it raises kind `llm` too (`echo` stays cut like a provider).
+- [x] Port: a guard local bound AFTER an early `transition(id, "c") return` to another state was refused — only a transition that may take the guarded edge ends the scan.
+- [x] Port: the `len(slot)` lint advised `len(value)`, which bounds EVERY slot — it now says `len(slot)` already means the written value's length.
+- [x] Port: no status for "not authenticated" — kinds `unauthorized` / `unauthenticated` answer 401.
+- [x] Port: an error body named private handlers (`_book(): parameter …`) — hidden from the client, kept in the log.
+- [x] Attack: the loopback Host check read the text before the first ':' (`localhost:9540.evil.com`, `localhost:9540, evil.com` passed); the whole authority is parsed, two Host headers are refused.
+
+### Open
+- [ ] Absolute paths are still not confined; the prover cannot bound strings (`"bk{n}" != ""`); route patterns take one variable; no time zones.

@@ -68,7 +68,8 @@ A handler may return:
 | `redirect(url)` | `302` |
 
 An error the handler does not catch is answered by its kind, as
-`{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `guard_failed`,
+`{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `unauthorized`,
+`unauthenticated` → 401; `guard_failed`,
 `forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
 409; `invariant`, `ensure` → 422; `json`, `type`, `date` (parse_date / add_days on a bad date), `range`, `division_by_zero` and your
 own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
@@ -158,11 +159,12 @@ its last value; the `/__soma/` dashboard is unauthenticated — firewall it), no
 thread each: at the machine's thread limit the process exits with status 70
 so a supervisor restarts it — cap connections in the reverse proxy).
 It binds 127.0.0.1 (`--host 0.0.0.0` to expose it). `PORT + 2` (the signal
-bus) is opened only when a cell uses `emit`, declares `scale`, lists events
-in `[bus] accept`, or `--join` is given — the start-up log says `bus:
+bus) is opened only when soma.toml lists `[peers]` or events in `[bus]
+accept`, a cell declares `scale`, or `--join` is given (an `emit` alone
+stays in this process: no port) — the start-up log says `bus:
 listening` or `bus: not started`. The bus speaks one line per event,
 `EVENT <name> <json>\n` (a line past 16 MB closes the connection); a
-receiver runs only the events its program emits itself or lists in
+receiver runs only the events its program emits itself (with `[peers]` or a cluster) or lists in
 `[bus] accept = ["reading"]` in soma.toml, and never `request`, `ws`,
 `start`/`init` or a `_private` handler. An `emit` goes to every connected
 peer AT COMMIT (a handler that raises sends nothing). An incoming bus event

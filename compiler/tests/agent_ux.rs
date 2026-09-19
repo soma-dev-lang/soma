@@ -2934,3 +2934,76 @@ fn cycle51_findings() {
     let src = std::fs::read_to_string(d.join("f.cell")).unwrap();
     assert!(src.starts_with("cell F"), "the program was overwritten");
 }
+
+/// Cycle 52: every path-taking builtin refuses `..`; a `fixed:` mock over
+/// max_tokens raises like a scripted one; a guard local bound after an
+/// early transition to ANOTHER state is fine; an `emit` without [peers]
+/// opens no bus port; `unauthorized` is 401; error bodies do not name
+/// private handlers; the loopback Host check parses the whole authority.
+#[test]
+fn cycle52_findings() {
+    let d = dir("cycle52");
+    std::fs::write(d.join("f.cell"), "cell F {\n  on a(p: String) { let x = try { load(p) }  return x.kind }\n  on d(p: String) { let x = try { read_files(p, 3) }  return x.kind }\n}\n").unwrap();
+    for (h, p) in [("a", "../x.txt"), ("a", "t/../../x"), ("d", "../..")] {
+        let (out, _) = soma_in(&d, &["run", "--fresh", "f.cell", h, p]);
+        assert!(out.contains("path"), "{h} {p}: {out}");
+    }
+
+    let m = dir("cycle52_mock");
+    std::fs::write(m.join("soma.toml"), "[agent]\nmock = \"fixed:abcdefghijklmnopqrstuvwxyz0123456789\"\n").unwrap();
+    std::fs::write(m.join("t.cell"), "cell T { on ask(q: String) { let r = try { think(\"Q: {q}\", map(\"max_tokens\", 5)) }  return r.kind } }\n").unwrap();
+    let (out, _) = soma_in(&m, &["run", "t.cell", "ask", "x"]);
+    assert!(out.contains("llm"), "a fixed: reply over max_tokens raises kind llm: {out}");
+
+    std::fs::write(d.join("g.cell"), "cell G { state s { initial: a  a -> b { guard { n > 0 } }  a -> c }\n  on go(id: String, k: Int) {\n    if k == 0 { transition(id, \"c\")  return \"c\" }\n    let n = k\n    transition(id, \"b\")\n    return \"b\" } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_eq!(code, 0, "a let after a transition to another state binds the guard local: {out}");
+
+    let s = dir("cycle52_serve");
+    std::fs::write(s.join("app.cell"), r#"
+cell E {
+  memory { log: Map<String, String> [persistent] }
+  on freed(id: String) { log.set(id, "promoted") }
+  on _go(id: String) { emit freed(id) }
+  on _book(time: String) { return time }
+  on request(method: String, path: String, body: String) {
+    if path == "/log" { return log }
+    if path == "/b" { return _book(from_json(body).time) }
+    if path == "/u" { require false else unauthorized }
+    return response(404, "")
+  }
+}
+"#).unwrap();
+    let port = 19650 + (std::process::id() % 100) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "-p", &port.to_string()])
+        .current_dir(&s).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("soma serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let raw = |req: String| -> String {
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        c.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        let _ = c.read_to_string(&mut out);
+        out
+    };
+    let bus_open = std::net::TcpStream::connect(("127.0.0.1", port + 2)).is_ok();
+    let u = if up { http(port, "GET", "/u") } else { String::new() };
+    let b = if up { raw("POST /b HTTP/1.0\r\nHost: localhost\r\nContent-Length: 10\r\n\r\n{\"time\":9}".to_string()) } else { String::new() };
+    let h1 = if up { raw(format!("GET /log HTTP/1.0\r\nHost: localhost:{port}.evil.com\r\n\r\n")) } else { String::new() };
+    let h2 = if up { raw(format!("GET /log HTTP/1.0\r\nHost: localhost:{port}\r\nHost: evil.com\r\n\r\n")) } else { String::new() };
+    let ok = if up { http(port, "GET", "/log") } else { String::new() };
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    assert!(!bus_open, "an emit without [peers] opens no bus port");
+    assert!(u.starts_with("HTTP/1.1 401") || u.starts_with("HTTP/1.0 401"), "unauthorized → 401: {u}");
+    assert!(b.contains("\"type\"") && !b.contains("_book"), "the body names no private handler: {b}");
+    assert!(h1.contains(" 403 "), "Host with a suffix after the port is refused: {h1}");
+    assert!(h2.contains(" 403 "), "two Host headers are refused: {h2}");
+    assert!(ok.contains(" 200 "), "a plain local request passes: {ok}");
+}

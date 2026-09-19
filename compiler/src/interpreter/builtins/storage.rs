@@ -429,6 +429,8 @@ fn agent_think(
             // a scripted reply longer than max_tokens (~4 characters per
             // token) is what a real provider refuses (kind llm): the test
             // exercises that path instead of under-counting tokens
+            // a `fixed:` reply is scripted text too: `soma serve` cut it
+            // short while `soma test` raised, so the two disagreed
             (Some(Ok(text)), _) if max_tokens.map_or(false, |m| (text.chars().count() as u64 + 3) / 4 > m) => {
                 return Err(RuntimeError::Domain { kind: "llm".to_string(), message: format!(
                     "llm: the scripted reply is ~{} tokens for max_tokens {} — a provider reply over the cap raises (raise max_tokens, or script a shorter reply)",
@@ -438,7 +440,16 @@ fn agent_think(
             // a real provider stops at max_tokens: so does the mock (~4
             // characters per token) — a scripted reply is kept as written
             (_, "echo") => cap_reply(prompt, max_tokens),
-            (_, s) if s.starts_with("fixed:") => cap_reply(&s[6..], max_tokens),
+            (_, s) if s.starts_with("fixed:") => {
+                let text = &s[6..];
+                let tokens = (text.chars().count() as u64 + 3) / 4;
+                if let Some(m) = max_tokens.filter(|&m| tokens > m) {
+                    return Err(RuntimeError::Domain { kind: "llm".to_string(), message: format!(
+                        "llm: the fixed mock reply is ~{} tokens for max_tokens {} — a provider reply over the cap raises (raise max_tokens, or use a shorter fixed: reply)",
+                        tokens, m) });
+                }
+                text.to_string()
+            }
             (_, other) => {
                 // a configuration mistake, not a domain error: a handler's
                 // `try { think(..) }` must not be able to swallow it

@@ -431,7 +431,7 @@ handler and a route share a name unless the route delegates to that handler. `bo
 before the handler runs, kind json; `soma run` parses its text argument the
 same way). In a test cell pass the Map itself — `request("POST", "/x",
 map("a", 1))`: a String argument there is a `type` error, not parsed. A raised error
-answers with its kind: not_found → 404, guard_failed → 403, invalid_transition
+answers with its kind: not_found → 404, unauthorized → 401, guard_failed → 403, invalid_transition
 → 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
 `{"error": message, "kind": tag}`. A plain return answers 200: a map/list as
 JSON, `()` as `null`, a String or number as `{"result": …}` (a String

@@ -12,6 +12,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if crate::commands::JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) { eprintln!("{}", line); } else { println!("{}", line); }
             Some(Ok(Value::Unit))
         }
+        // every builtin that takes a path: `load("templates/" + name)` and
+        // `read_files("../..", 3)` read any file past the project (only
+        // read_file / write_file / read_csv / write_csv were guarded)
+        "read_file" | "write_file" | "read_csv" | "write_csv" | "load_template" | "load" | "include"
+        | "read_files" | "par_read_files" | "word_count" | "par_word_count"
+            if matches!(args.first(), Some(Value::String(p)) if path_refused(p, name).is_some()) => {
+            let Some(Value::String(p)) = args.first() else { unreachable!() };
+            Some(Err(path_refused(p, name).unwrap()))
+        }
         "load_template" | "load" | "include" => {
             if let Some(Value::String(path)) = args.first() {
                 match std::fs::read_to_string(path) {
@@ -119,11 +128,6 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     streams.iter().map(|s| Value::String(s.clone())).collect()
                 )),
             ])))
-        }
-        "read_file" | "write_file" | "read_csv" | "write_csv"
-            if matches!(args.first(), Some(Value::String(p)) if path_refused(p, name).is_some()) => {
-            let Some(Value::String(p)) = args.first() else { unreachable!() };
-            Some(Err(path_refused(p, name).unwrap()))
         }
         "read_file" => {
             if let Some(Value::String(path)) = args.first() {

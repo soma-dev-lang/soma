@@ -393,9 +393,20 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         hit
     }));
     // a receiver that only ACCEPTS events (`[bus] accept`) needs the port too
-    let bus_wanted = is_cluster_mode || uses_emit || BUS_ACCEPT.get().map_or(false, |a| !a.is_empty());
+    // an `emit` with no `[peers]` stays in this process: the port was opened
+    // anyway and anyone who could reach it ran the program's own listeners
+    // with forged data (`EVENT freed "x"` promoted a waitlist entry)
+    let has_peers = soma_toml_path.exists() && std::fs::read_to_string(&soma_toml_path).ok()
+        .and_then(|c| toml::from_str::<crate::pkg::manifest::Manifest>(&c).ok())
+        .map_or(false, |m| !m.peers.is_empty());
+    let _ = BUS_PEERS.set(has_peers || is_cluster_mode);
+    let bus_wanted = is_cluster_mode || has_peers || BUS_ACCEPT.get().map_or(false, |a| !a.is_empty());
     if bus_port > 0 && !bus_wanted {
-        eprintln!("bus: not started (no emit / scale / --join; port {} stays closed)", bus_port);
+        if uses_emit {
+            eprintln!("bus: not started (emit stays in this process: no [peers] in soma.toml, no [bus] accept, no scale / --join; port {} stays closed)", bus_port);
+        } else {
+            eprintln!("bus: not started (no [peers] / [bus] accept / scale / --join; port {} stays closed)", bus_port);
+        }
     }
     if bus_port > 0 && bus_wanted {
         let peer_bus_clone = peer_bus.clone();
@@ -692,7 +703,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 // Regular signal — only an EVENT: one this program emits, or
                                 // one soma.toml `[bus] accept` lists (any public 1-argument
                                 // handler of any cell ran — `EVENT drain {}`)
-                                let accepted = EVENT_LISTENERS.get().map_or(false, |e| e.contains(event_name))
+                                // a self-emitted event comes in only over a declared peer
+                                // network ([peers] / cluster), not from any client of the port
+                                let accepted = (BUS_PEERS.get().copied().unwrap_or(false) && EVENT_LISTENERS.get().map_or(false, |e| e.contains(event_name)))
                                     || BUS_ACCEPT.get().map_or(false, |a| a.iter().any(|x| x == event_name));
                                 if !accepted {
                                     eprintln!("bus: refused event '{}' — not emitted by this program nor listed in soma.toml [bus] accept", event_name);
@@ -1244,12 +1257,22 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     for mut request in server.incoming_requests() {
         if http_loopback {
             let header = |n: &str| request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(n)).map(|h| h.value.as_str().to_string());
+            // the WHOLE authority: `localhost:9540.evil.com` and
+            // `localhost:9540, evil.com` passed as `localhost` (the text
+            // before the first ':'); a malformed one is not local
             let hostname = |v: &str| -> String {
                 let v = v.trim();
-                if v.starts_with('[') { v.split(']').next().map(|h| format!("{}]", h)).unwrap_or_default() } else { v.split(':').next().unwrap_or("").to_string() }
+                let (h, rest) = if v.starts_with('[') {
+                    match v.find(']') { Some(i) => (&v[..=i], &v[i + 1..]), None => return "?".to_string() }
+                } else {
+                    match v.find(':') { Some(i) => (&v[..i], &v[i..]), None => (v, "") }
+                };
+                let port_ok = rest.is_empty() || (rest.len() > 1 && rest.starts_with(':') && rest[1..].bytes().all(|b| b.is_ascii_digit()));
+                if port_ok { h.to_string() } else { "?".to_string() }
             };
             let local = |h: &str| matches!(h, "localhost" | "127.0.0.1" | "[::1]" | "");
-            let bad_host = header("host").map_or(false, |h| !local(&hostname(&h).to_ascii_lowercase()));
+            let host_count = request.headers().iter().filter(|h| h.field.as_str().as_str().eq_ignore_ascii_case("host")).count();
+            let bad_host = host_count > 1 || header("host").map_or(false, |h| !local(&hostname(&h).to_ascii_lowercase()));
             let writes = matches!(request.method().as_str().to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
             let bad_origin = writes && header("origin").map_or(false, |o| {
                 // an opaque origin (`null`: a sandboxed iframe, a data: page)
@@ -2026,7 +2049,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             Err(e) => {
                 let kind = e.kind();
                 let status = status_for_kind(&kind);
-                let body = error_body(&format!("{}", e), &kind);
+                let body = error_body(&hide_private_names(&format!("{}", e)), &kind);
                 let mut resp = tiny_http::Response::from_string(body)
                     .with_status_code(status)
                     .with_header(
@@ -2099,6 +2122,28 @@ fn cors<R: std::io::Read>(mut r: tiny_http::Response<R>) -> tiny_http::Response<
     r
 }
 
+/// A client's error body does not name the program's private handlers
+/// (`_book(): parameter 'time' expects String` → `parameter 'time' …`);
+/// the server log keeps the full text.
+fn hide_private_names(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(i) = rest.find("(): ") {
+        let head = &rest[..i];
+        let start = head.rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).map_or(0, |j| j + 1);
+        let name = &head[start..];
+        let last = name.rsplit('.').next().unwrap_or(name);
+        if last.starts_with('_') && last.len() > 1 {
+            out.push_str(&head[..start]);
+        } else {
+            out.push_str(&rest[..i + 4]);
+        }
+        rest = &rest[i + 4..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn error_body(message: &str, kind: &str) -> String {
     format!("{}", interpreter::map_from_pairs(vec![
         ("error".to_string(), interpreter::Value::String(message.to_string())),
@@ -2111,6 +2156,8 @@ fn error_body(message: &str, kind: &str) -> String {
 pub(crate) fn status_for_kind(kind: &str) -> u16 {
     match kind {
         "not_found" => 404,
+        // there was no way to answer 401 without a try/response() per route
+        "unauthorized" | "unauthenticated" => 401,
         "guard_failed" | "forbidden" | "approval_required" => 403,
         "invalid_transition" | "conflict" => 409,
         "invariant" | "ensure" => 422,
@@ -2236,6 +2283,8 @@ fn lifecycle_hook(names: &[String]) -> Option<&'static str> {
 /// Handlers that are the target of an `emit` somewhere in the program: event
 /// listeners, not endpoints (`POST /moved` forged the event)
 use crate::interpreter::{EVENT_LISTENERS, BUS_ACCEPT};
+/// true when this process has a declared peer network ([peers] or cluster)
+static BUS_PEERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 fn routable(names: &[String], h: &str) -> bool {
     // an event listener — emitted here or accepted from other processes — is

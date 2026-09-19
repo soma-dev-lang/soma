@@ -431,7 +431,7 @@ handler and a route share a name unless the route delegates to that handler. `bo
 before the handler runs, kind json; `soma run` parses its text argument the
 same way). In a test cell pass the Map itself — `request("POST", "/x",
 map("a", 1))`: a String argument there is a `type` error, not parsed. A raised error
-answers with its kind: not_found → 404, guard_failed → 403, invalid_transition
+answers with its kind: not_found → 404, unauthorized → 401, guard_failed → 403, invalid_transition
 → 409, invariant → 422, your own `fail("tag")` / `require … else Tag` → 400, as
 `{"error": message, "kind": tag}`. A plain return answers 200: a map/list as
 JSON, `()` as `null`, a String or number as `{"result": …}` (a String
@@ -845,7 +845,8 @@ A handler may return:
 | `redirect(url)` | `302` |
 
 An error the handler does not catch is answered by its kind, as
-`{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `guard_failed`,
+`{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `unauthorized`,
+`unauthenticated` → 401; `guard_failed`,
 `forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
 409; `invariant`, `ensure` → 422; `json`, `type`, `date` (parse_date / add_days on a bad date), `range`, `division_by_zero` and your
 own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
@@ -935,11 +936,12 @@ its last value; the `/__soma/` dashboard is unauthenticated — firewall it), no
 thread each: at the machine's thread limit the process exits with status 70
 so a supervisor restarts it — cap connections in the reverse proxy).
 It binds 127.0.0.1 (`--host 0.0.0.0` to expose it). `PORT + 2` (the signal
-bus) is opened only when a cell uses `emit`, declares `scale`, lists events
-in `[bus] accept`, or `--join` is given — the start-up log says `bus:
+bus) is opened only when soma.toml lists `[peers]` or events in `[bus]
+accept`, a cell declares `scale`, or `--join` is given (an `emit` alone
+stays in this process: no port) — the start-up log says `bus:
 listening` or `bus: not started`. The bus speaks one line per event,
 `EVENT <name> <json>\n` (a line past 16 MB closes the connection); a
-receiver runs only the events its program emits itself or lists in
+receiver runs only the events its program emits itself (with `[peers]` or a cluster) or lists in
 `[bus] accept = ["reading"]` in soma.toml, and never `request`, `ws`,
 `start`/`init` or a `_private` handler. An `emit` goes to every connected
 peer AT COMMIT (a handler that raises sends nothing). An incoming bus event
@@ -1029,6 +1031,7 @@ Body: `{"error": "<message>", "kind": "<kind>"}`.
 | kind | status | raised by |
 |---|---|---|
 | `not_found` | 404 | `fail("not_found", …)` |
+| `unauthorized`, `unauthenticated` | 401 | `require token_ok else unauthorized` |
 | `guard_failed`, `forbidden`, `approval_required` | 403 | a transition guard; `fail("forbidden")`; `approve()` with nobody to answer |
 | `invalid_transition`, `conflict` | 409 | `transition()` off the machine; `fail("conflict")` |
 | `invariant`, `ensure` | 422 | a memory invariant refusing a write; `ensure` |
@@ -1075,7 +1078,7 @@ Make `_migrate` idempotent (check before writing) and back up
 | Variable | Effect |
 |---|---|
 | `SOMA_LLM_KEY` (or `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) | the provider key for `think()`; without one `soma test` mocks and `soma serve` raises kind `llm` |
-| `SOMA_LLM_MOCK=echo` \| `fixed:<text>` | `think()` never reaches a provider (overrides `[agent] mock` in soma.toml); `soma serve` prints `llm: MOCK …` at start-up when the program calls think |
+| `SOMA_LLM_MOCK=echo` \| `fixed:<text>` | `think()` never reaches a provider (overrides `[agent] mock` in soma.toml); `soma serve` prints `llm: MOCK …` at start-up when the program calls think; an `echo` reply is cut at max_tokens (~4 characters per token) like a provider's, a `fixed:` reply over max_tokens raises kind `llm` as a scripted `mock think` does |
 | `SOMA_LLM_TIMEOUT_MS` | one provider round-trip cap (default 60 000) |
 | `SOMA_APPROVE=always` \| `never` | answers `approve()` when no terminal is attached (`soma serve` fails closed otherwise: 403 `approval_required`) |
 | `PORT` | not read — pass `-p` |
@@ -1088,8 +1091,9 @@ missing file read_file returns an `{error}` Map, and a check such as
 `t != ()` or an interpolation (`"Bearer {t}"`) would turn that error text
 into a token anyone can guess (fail closed: the start-up then fails). Relative `read_file` /
 `write_file` paths resolve against the directory `soma` was started in, not
-the `.cell` file's — keep that file out of `static/`. File builtins refuse a
-path with a `..` segment, and a write that would replace a `.cell` source,
+the `.cell` file's — keep that file out of `static/`. File builtins — `read_file`,
+`read_csv`, `load` / `include` / `load_template`, `read_files` included —
+refuse a path with a `..` segment, and a write that would replace a `.cell` source,
 `soma.toml`, `soma.lock` or `.soma_data` (kind `path`); a path built from
 client input still needs a fixed directory and a validated name.
 

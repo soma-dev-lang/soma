@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Every path-taking builtin (`load`, `include`, `load_template`,
+  `read_files`, `par_read_files`, `word_count`) refuses a `..` segment:
+  `load("templates/" + name)` could serve any file.
+- The bus port opens only for `[peers]`, `[bus] accept`, `scale` or
+  `--join`: an in-process `emit` no longer exposes the program's listeners.
+- Kinds `unauthorized` / `unauthenticated` answer 401; error bodies no
+  longer name private handlers; the loopback Host check parses the whole
+  authority and refuses duplicate Host headers.
+- `SOMA_LLM_MOCK=fixed:` over max_tokens raises kind `llm` like a scripted
+  mock; guard locals bound after a transition to another state are accepted.
 - The file write guard is case-insensitive; `self_call` recognises every
   spelling of this machine; `Origin: null` / `file://` writes are refused
   on loopback servers.

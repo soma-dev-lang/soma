@@ -123,16 +123,26 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                     // when that statement is a loop — the loop variable and the
                     // lets of its body before it too (they run every iteration:
                     // `for it in xs { let overdue = …  transition(…) }`)
-                    fn lets_before(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+                    // only a transition() that may take THIS edge stops the scan: an
+                    // early `transition(id, "c")  return` toward another state
+                    // does not (a top-level `let n` after it was refused)
+                    fn lets_before(stmts: &[Spanned<Statement>], to: &str, out: &mut HashSet<String>) {
                         for st in stmts {
                             let mut has_transition = false;
                             super::termination::walk_stmt(&st.node, &mut |e| {
-                                if matches!(e, Expr::FnCall { name, .. } if name == "transition") { has_transition = true; }
+                                if let Expr::FnCall { name, args } = e {
+                                    if name == "transition" {
+                                        has_transition |= match args.get(1).map(|a| &a.node) {
+                                            Some(Expr::Literal(Literal::String(s))) => s == to,
+                                            _ => true,
+                                        };
+                                    }
+                                }
                             });
                             if has_transition {
                                 match &st.node {
-                                    Statement::For { var, body, .. } => { out.insert(var.clone()); lets_before(body, out); }
-                                    Statement::While { body, .. } => lets_before(body, out),
+                                    Statement::For { var, body, .. } => { out.insert(var.clone()); lets_before(body, to, out); }
+                                    Statement::While { body, .. } => lets_before(body, to, out),
                                     _ => {}
                                 }
                                 break;
@@ -142,7 +152,7 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                             }
                         }
                     }
-                    lets_before(&on.body, &mut unconditional);
+                    lets_before(&on.body, &tr.node.to, &mut unconditional);
                     for n in &free {
                         if bound.contains(*n) && !unconditional.contains(*n) {
                             issues.push(GuardIssue {

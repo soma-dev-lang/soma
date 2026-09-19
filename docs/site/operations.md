@@ -48,6 +48,7 @@ Body: `{"error": "<message>", "kind": "<kind>"}`.
 | kind | status | raised by |
 |---|---|---|
 | `not_found` | 404 | `fail("not_found", …)` |
+| `unauthorized`, `unauthenticated` | 401 | `require token_ok else unauthorized` |
 | `guard_failed`, `forbidden`, `approval_required` | 403 | a transition guard; `fail("forbidden")`; `approve()` with nobody to answer |
 | `invalid_transition`, `conflict` | 409 | `transition()` off the machine; `fail("conflict")` |
 | `invariant`, `ensure` | 422 | a memory invariant refusing a write; `ensure` |
@@ -94,7 +95,7 @@ Make `_migrate` idempotent (check before writing) and back up
 | Variable | Effect |
 |---|---|
 | `SOMA_LLM_KEY` (or `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) | the provider key for `think()`; without one `soma test` mocks and `soma serve` raises kind `llm` |
-| `SOMA_LLM_MOCK=echo` \| `fixed:<text>` | `think()` never reaches a provider (overrides `[agent] mock` in soma.toml); `soma serve` prints `llm: MOCK …` at start-up when the program calls think |
+| `SOMA_LLM_MOCK=echo` \| `fixed:<text>` | `think()` never reaches a provider (overrides `[agent] mock` in soma.toml); `soma serve` prints `llm: MOCK …` at start-up when the program calls think; an `echo` reply is cut at max_tokens (~4 characters per token) like a provider's, a `fixed:` reply over max_tokens raises kind `llm` as a scripted `mock think` does |
 | `SOMA_LLM_TIMEOUT_MS` | one provider round-trip cap (default 60 000) |
 | `SOMA_APPROVE=always` \| `never` | answers `approve()` when no terminal is attached (`soma serve` fails closed otherwise: 403 `approval_required`) |
 | `PORT` | not read — pass `-p` |
@@ -107,8 +108,9 @@ missing file read_file returns an `{error}` Map, and a check such as
 `t != ()` or an interpolation (`"Bearer {t}"`) would turn that error text
 into a token anyone can guess (fail closed: the start-up then fails). Relative `read_file` /
 `write_file` paths resolve against the directory `soma` was started in, not
-the `.cell` file's — keep that file out of `static/`. File builtins refuse a
-path with a `..` segment, and a write that would replace a `.cell` source,
+the `.cell` file's — keep that file out of `static/`. File builtins — `read_file`,
+`read_csv`, `load` / `include` / `load_template`, `read_files` included —
+refuse a path with a `..` segment, and a write that would replace a `.cell` source,
 `soma.toml`, `soma.lock` or `.soma_data` (kind `path`); a path built from
 client input still needs a fixed directory and a validated name.
 

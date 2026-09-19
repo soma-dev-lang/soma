@@ -1886,7 +1886,8 @@ pub fn lint_program(program: &Program) -> Vec<InvariantIssue> {
                         message: format!(
                             "`{func}({slot})` in an invariant measures the VALUE being written to '{slot}', not how \
                              many entries '{slot}' holds. For an entry-count bound write `{slot}.size <= N`; if you \
-                             do mean the value's length, write `{func}(value)`"
+                             do mean the length of each value written to '{slot}', keep `{func}({slot})` (a bare \
+                             `{func}(value)` names no slot, so it would bound the values of EVERY slot of this memory)"
                         ),
                         span: inv.span,
                     });
