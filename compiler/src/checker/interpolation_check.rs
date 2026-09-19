@@ -50,6 +50,13 @@ fn count_field_defaults(body: &[Spanned<Statement>]) -> Vec<String> {
     super::literals::for_each_stmt_deep(body, &mut |st| {
         super::termination::walk_stmt(st, &mut |e| {
             if let Expr::FnCall { name, args } = e {
+                // `to_int(pow(3, 40))`: pow is a Float power — past 2^53 the
+                // Int is off (12157665459056928768, not …801)
+                if name == "to_int" && matches!(args.first().map(|a| &a.node), Some(Expr::FnCall { name: p, .. }) if p == "pow") {
+                    let m = "`to_int(pow(…))`: pow() is a Float power, inexact past 2^53 (to_int(pow(3, 40)) is off by 33) — use `ipow(base, exp)` for an exact Int power".to_string();
+                    if !out.contains(&m) { out.push(m); }
+                    return;
+                }
                 if name != "_coalesce" || args.len() != 2 { return; }
                 if let Expr::FieldAccess { target, field } = &args[0].node {
                     if matches!(field.as_str(), "size" | "len" | "count" | "keys" | "values") {

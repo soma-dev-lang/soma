@@ -212,6 +212,21 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         }
     }
 
+    // `x |> map(f)` on something that is not a list: `map` fell through to
+    // the Map constructor (`{"null": <lambda>}`, found far away) and
+    // `() |> filter(f)` said "undefined function: filter"
+    if matches!(name, "sort_by" | "map" | "filter" | "find" | "any" | "all" | "count")
+        && matches!(args.get(1), Some(Value::Lambda { .. } | Value::LambdaBlock { .. }))
+        && !matches!(args.first(), Some(Value::List(_)))
+        // `map("k", f)` is also the Map constructor with a String key
+        && !(name == "map" && matches!(args.first(), Some(Value::String(_))))
+    {
+        let got = args.first().map(|v| match v {
+            Value::Unit => "() (a missing value)".to_string(),
+            other => format!("{} {}", crate::interpreter::value_type_name(other), { let t: String = format!("{}", other).chars().take(30).collect(); t }),
+        }).unwrap_or_default();
+        return Some(Err(RuntimeError::TypeError(format!("{}(list, f) needs a List, got {}", name, got))));
+    }
     // All these expect (list, lambda) as args
     let list = match args.first() {
         Some(Value::List(items)) => items,

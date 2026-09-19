@@ -983,6 +983,11 @@ fn collect_return_values<'e>(stmts: &'e [Spanned<Statement>], out: &mut Vec<&'e 
 fn hyp_for(on: &OnSection, hyp: &HashMap<String, (f64, f64)>) -> HashMap<String, (f64, f64)> {
     let mut binders: HashSet<String> = HashSet::new();
     collect_binders_stmts(&on.body, &mut binders);
+    // a `let` of a slot's name anywhere in the handler hides the slot too
+    // (`let b = map("x", 1000)  a.set(k, b.get("x"))` took b's bound)
+    super::literals::for_each_stmt_deep(&on.body, &mut |st| {
+        if let Statement::Let { name, .. } = st { binders.insert(name.clone()); }
+    });
     hyp.iter().filter(|(k, _)| !binders.contains(k.as_str())).map(|(k, v)| (k.clone(), *v)).collect()
 }
 

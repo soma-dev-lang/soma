@@ -690,12 +690,45 @@ fn _soma_div_f(a: i64, b: i64) -> f64 {
     } else {
         // exact, but too big for a Float to carry exactly — i64::MIN / -1
         // overflows i64 itself (it returned a rounded Float)
-        match a.checked_div(b) {
-            Some(q) if q.unsigned_abs() <= (1u64 << 53) => {}
+        // the exact quotient itself: operands past 2^53 were rounded
+        // first (9007199254740993 / 3 gave 3002399751580330.5)
+        return match a.checked_div(b) {
+            Some(q) if q.unsigned_abs() <= (1u64 << 53) => q as f64,
             _ => panic!("{}", _SOMA_BIG_QUOTIENT),
-        }
+        };
     }
     a as f64 / b as f64
+}
+
+// read_stdin in a dual-mode handler: an i64 overflow re-runs the handler
+// in BigInt mode, and the second run found stdin consumed (it answered 0
+// where the interpreter answered 12) — the fast run's reads are replayed
+thread_local! {
+    static _SOMA_STDIN: std::cell::RefCell<(Vec<String>, usize, bool, bool)> = std::cell::RefCell::new((Vec::new(), 0, false, false));
+}
+
+#[allow(dead_code)]
+fn _soma_stdin_begin() {
+    _SOMA_STDIN.with(|s| { let mut s = s.borrow_mut(); s.0.clear(); s.1 = 0; s.2 = true; s.3 = false; });
+}
+
+#[allow(dead_code)]
+fn _soma_stdin_replay() {
+    _SOMA_STDIN.with(|s| { let mut s = s.borrow_mut(); s.1 = 0; s.3 = true; });
+}
+
+#[allow(dead_code)]
+fn _soma_read_stdin() -> String {
+    let replayed = _SOMA_STDIN.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.3 && s.1 < s.0.len() { let v = s.0[s.1].clone(); s.1 += 1; Some(v) } else { None }
+    });
+    if let Some(v) = replayed { return v; }
+    use std::io::Read;
+    let mut text = String::new();
+    let _ = std::io::stdin().read_to_string(&mut text);
+    _SOMA_STDIN.with(|s| { let mut s = s.borrow_mut(); if s.2 && !s.3 { s.0.push(text.clone()); } });
+    text
 }
 
 /// 1 if an Int / Int was inexact since the last call; clears the flag.
@@ -794,6 +827,7 @@ fn _soma_div_f_big(a: Integer, b: Integer) -> f64 {
         if q.significant_bits() > 53 {
             panic!("{}", _SOMA_BIG_QUOTIENT);
         }
+        return _soma_i2f(&q);
     }
     _soma_i2f(&a) / _soma_i2f(&b)
 }
@@ -1319,6 +1353,7 @@ fn emit_dualmode_wrapper(
 
     out.push_str(&format!("#[no_mangle]\npub extern \"C\" fn {}() -> i64 {{\n", fn_name));
     out.push_str("    _soma_install_quiet_hook();\n");
+    out.push_str("    _soma_stdin_begin();\n");
     out.push_str("    // Fast path: try Direct (i64/f64). Bail out via None if\n");
     out.push_str("    // any arg doesn't fit i64; catch overflow panics from\n");
     out.push_str("    // checked arithmetic and fall back to the Rug version.\n");
@@ -1363,6 +1398,7 @@ fn emit_dualmode_wrapper(
     out.push_str("    }\n");
 
     // Rug fallback
+    out.push_str("    _soma_stdin_replay();\n");
     let rug_call = rug_call_args.join(", ");
     match ret_type {
         NativeType::Int => {
@@ -4394,7 +4430,7 @@ impl FnGenerator {
                 self.coerce_direct(inner, NativeType::String, target_ty)
             }
             "read_stdin" if args.is_empty() => {
-                let inner = "{ use std::io::Read; let mut _s = String::new(); std::io::stdin().read_to_string(&mut _s).unwrap_or(0); _s }".to_string();
+                let inner = "_soma_read_stdin()".to_string();
                 self.coerce_direct(inner, NativeType::String, target_ty)
             }
             "write_str" if args.len() == 1 => {
@@ -5686,7 +5722,7 @@ impl FnGenerator {
                 format!("std::fs::read_to_string(&{}).unwrap_or_default()", path)
             }
             Expr::FnCall { name, args } if name == "read_stdin" && args.is_empty() => {
-                "{ use std::io::Read; let mut _s = String::new(); std::io::stdin().read_to_string(&mut _s).unwrap_or(0); _s }".to_string()
+                "_soma_read_stdin()".to_string()
             }
             Expr::FnCall { name, args } if name == "regex_replace" && args.len() == 3 => {
                 let pat = match &args[1].node {

@@ -2569,6 +2569,17 @@ impl Parser {
                 right = Spanned::new(Expr::FnCall { name: name.clone(), args: vec![] }, right.span);
             }
             let span = left.span.merge(right.span);
+            // `"C" |> delegate("h", x)` is `delegate("C", "h", x)`: as a pipe
+            // it was invisible to the call graph (a self-delegating handler
+            // "structurally terminated", a size proof missed its writes)
+            if let Expr::FnCall { name, args } = &right.node {
+                if name == "delegate" {
+                    let mut all = vec![left];
+                    all.extend(args.iter().cloned());
+                    left = Spanned::new(Expr::FnCall { name: name.clone(), args: all }, span);
+                    continue;
+                }
+            }
             left = Spanned::new(Expr::Pipe {
                 left: Box::new(left),
                 right: Box::new(right),
@@ -2802,6 +2813,14 @@ impl Parser {
                     let end = self.peek_span();
                     self.expect(Token::RParen)?;
                     let span = expr.span.merge(end);
+                    // `"C".delegate("h", x)` is `delegate("C", "h", x)` (the
+                    // analyses follow only the call form)
+                    if field == "delegate" && matches!(expr.node, Expr::Literal(Literal::String(_))) {
+                        let mut all = vec![expr];
+                        all.extend(args);
+                        expr = Spanned::new(Expr::FnCall { name: field, args: all }, span);
+                        continue;
+                    }
                     expr = Spanned::new(
                         Expr::MethodCall {
                             target: Box::new(expr),

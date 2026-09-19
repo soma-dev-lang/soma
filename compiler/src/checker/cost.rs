@@ -221,9 +221,17 @@ impl<'a> CostWalk<'a> {
             Expr::FnCall { name, args } => {
                 if name == "think" || name == "think_json" {
                     let (max_tokens, timeout_ms) = extract_think_opts(args);
+                    // map("max_rounds", N) with a literal N caps the rounds
+                    let rounds = args.last().and_then(|a| match &a.node {
+                        Expr::FnCall { name, args: kv } if name == "map" => kv.chunks(2)
+                            .filter(|c| matches!(&c[0].node, Expr::Literal(Literal::String(k)) if k == "max_rounds"))
+                            .last()
+                            .and_then(|c| match c.get(1).map(|v| &v.node) { Some(Expr::Literal(Literal::Int(n))) => Some((*n).clamp(1, 10)), _ => None }),
+                        _ => None,
+                    }).map_or(self.rounds, |r| r.min(self.rounds));
+                    let _ = rounds;
                     match max_tokens {
                         Some(t) => {
-                            // map("max_rounds", N) with a literal N caps the rounds
                             let rounds = args.last().and_then(|a| match &a.node {
                                 // the LAST `max_rounds` key wins, as in the map the
                                 // runtime builds (the first was costed, the last ran)
@@ -247,7 +255,24 @@ impl<'a> CostWalk<'a> {
                             })
                         }
                     }
-                    self.latency_ms += timeout_ms.unwrap_or(30_000);
+                    // each provider round waits up to `timeout` (retries
+                    // included, see send_with_retry): a tool loop is rounds × it
+                    self.latency_ms += timeout_ms.unwrap_or(30_000).saturating_mul(rounds);
+                }
+                // waits the latency bound did not count (`sleep(3000)` before a
+                // think still printed "peak 500 ms ≤ 1000 ms"): a literal sleep
+                // adds its time, anything else waits an unknown time
+                if name == "sleep" {
+                    match args.first().map(|a| &a.node) {
+                        Some(Expr::Literal(Literal::Int(ms))) if *ms >= 0 => self.latency_ms = self.latency_ms.saturating_add(*ms),
+                        _ => self.latency_sites.push(format!("{}::sleep (a computed duration)", handler_name)),
+                    }
+                }
+                if name == "approve" {
+                    self.latency_sites.push(format!("{}::approve (waits for a person)", handler_name));
+                }
+                if matches!(name.as_str(), "read_stdin" | "read_file" | "read_csv" | "read_files" | "par_read_files" | "load" | "include" | "load_template") {
+                    self.latency_sites.push(format!("{}::{} (file / stdin I/O)", handler_name, name));
                 }
                 if matches!(name.as_str(), "http_get" | "http_post" | "http_put" | "http_delete") {
                     let timeout = args.get(1).and_then(|a| extract_timeout_ms(&a.node));

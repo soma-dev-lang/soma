@@ -158,55 +158,19 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("write_file(path, content)".to_string())))
             }
         }
+        // CSV text already in memory (an upload): no temp file
+        "from_csv" => {
+            let Some(Value::String(text)) = args.first() else {
+                return Some(Err(RuntimeError::TypeError("from_csv(text: String, opts: Map?)".to_string())));
+            };
+            let opts = match csv_opts(args.get(1), "from_csv") { Ok(o) => o, Err(e) => return Some(Err(e)) };
+            Some(csv_rows(text, opts, "from_csv"))
+        }
         "read_csv" => {
             if let Some(Value::String(path)) = args.first() {
-                // read_csv(path, map("raw", true)): every cell stays text
-                let raw = matches!(args.get(1), Some(Value::Map(m)) if matches!(m.get("raw"), Some(Value::Bool(true))));
+                let opts = match csv_opts(args.get(1), "read_csv") { Ok(o) => o, Err(e) => return Some(Err(e)) };
                 match std::fs::read_to_string(path) {
-                    Ok(content) => {
-                        let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
-                        let mut records = parse_csv(content).into_iter();
-                        let headers: Vec<String> = match records.next() {
-                            Some(h) => h.into_iter().map(|(t, _)| t.trim().to_string()).collect(),
-                            None => return Some(Ok(Value::List(vec![]))),
-                        };
-                        // `sku,qty,qty`: the second `qty` overwrote the first in
-                        // every row, silently — name the duplicate instead
-                        if let Some(dup) = headers.iter().enumerate().find(|(i, h)| !h.is_empty() && headers[..*i].contains(h)).map(|(_, h)| h.clone()) {
-                            return Some(Err(RuntimeError::Domain { kind: "csv".to_string(), message: format!("csv: {}: the header names column '{}' twice — a row is a map, so one would overwrite the other; rename one", path, dup) }));
-                        }
-                        let mut rows = Vec::new();
-                        for rec in records {
-                            if rec.len() == 1 && rec[0].0.trim().is_empty() && !rec[0].1 { continue; }
-                            let mut entries = IndexMap::new();
-                            for (i, header) in headers.iter().enumerate() {
-                                let (text, quoted) = rec.get(i).cloned().unwrap_or((String::new(), false));
-                                // raw keeps the text exactly (spaces included)
-                                let val = if quoted || raw { text.as_str() } else { text.trim() };
-                                // a quoted cell is text; so is `007` (an id,
-                                // not seven); raw mode keeps everything text
-                                let leading_zero = val.len() > 1 && val.starts_with('0') && val.as_bytes()[1].is_ascii_digit();
-                                let typed = if raw || quoted || leading_zero {
-                                    Value::String(val.to_string())
-                                } else if let Ok(n) = val.parse::<i64>() {
-                                    Value::Int(SomaInt::from_i64(n))
-                                } else if val.len() > 1 && val.trim_start_matches('-').len() == val.len() - usize::from(val.starts_with('-')) && val.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()) && !val.trim_start_matches('-').is_empty() {
-                                    // an Int past i64 (shl(1, 70)) came back a Float
-                                    Value::Int(SomaInt::from_decimal_str(val))
-                                } else if let Some(n) = val.parse::<f64>().ok().filter(|f| f.is_finite()) {
-                                    Value::Float(n)
-                                } else if matches!(val, "NaN" | "inf" | "-inf") {
-                                    // what write_csv writes for a NaN / infinite Float
-                                    Value::Float(val.parse::<f64>().unwrap_or(f64::NAN))
-                                } else {
-                                    Value::String(val.to_string())
-                                };
-                                entries.insert(header.clone(), typed);
-                            }
-                            rows.push(Value::Map(entries));
-                        }
-                        Some(Ok(Value::List(rows)))
-                    }
+                    Ok(content) => Some(csv_rows(&content, opts, path)),
                     Err(e) => Some(Ok(map_from_pairs(vec![
                         ("error".to_string(), Value::String(format!("{}", e))),
                     ]))),
@@ -516,7 +480,76 @@ fn call_llm(prompt: &str, extra_args: &[Value]) -> Result<Value, RuntimeError> {
 /// RFC 4180 records: `"a,b"` is one field, `""` inside quotes is a quote,
 /// a quoted field may span lines; CRLF or LF. Each field carries whether it
 /// was quoted.
-fn parse_csv(text: &str) -> Vec<Vec<(String, bool)>> {
+/// `read_csv` / `from_csv` options: `raw` (Bool) and `delimiter` (one
+/// character). Anything else is refused — `map("delimiter", ";")` was
+/// ignored and every `;` file came back as one column.
+fn csv_opts(opts: Option<&Value>, builtin: &str) -> Result<(bool, char), RuntimeError> {
+    let mut raw = false;
+    let mut delim = ',';
+    match opts {
+        None | Some(Value::Unit) => {}
+        Some(Value::Map(m)) => {
+            for (k, v) in m {
+                match (k.as_str(), v) {
+                    ("raw", Value::Bool(b)) => raw = *b,
+                    ("delimiter", Value::String(d)) if d.chars().count() == 1 && !matches!(d.as_str(), "\"" | "\n" | "\r") => delim = d.chars().next().unwrap(),
+                    ("raw" | "delimiter", other) => return Err(RuntimeError::TypeError(format!("{}: option '{}' got {} — raw is a Bool, delimiter one character (not a quote or newline)", builtin, k, other))),
+                    _ => return Err(RuntimeError::TypeError(format!("{}: unknown option '{}' (options: raw, delimiter)", builtin, k))),
+                }
+            }
+        }
+        Some(other) => return Err(RuntimeError::TypeError(format!("{}: options must be a Map, got {}", builtin, crate::interpreter::value_type_name(other)))),
+    }
+    Ok((raw, delim))
+}
+
+fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<Value, RuntimeError> {
+    let path = source;
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let mut records = parse_csv(content, delim).into_iter();
+    let headers: Vec<String> = match records.next() {
+        Some(h) => h.into_iter().map(|(t, _)| t.trim().to_string()).collect(),
+        None => return Ok(Value::List(vec![])),
+    };
+    // `sku,qty,qty`: the second `qty` overwrote the first in
+    // every row, silently — name the duplicate instead
+    if let Some(dup) = headers.iter().enumerate().find(|(i, h)| !h.is_empty() && headers[..*i].contains(h)).map(|(_, h)| h.clone()) {
+        return Err(RuntimeError::Domain { kind: "csv".to_string(), message: format!("csv: {}: the header names column '{}' twice — a row is a map, so one would overwrite the other; rename one", path, dup) });
+    }
+    let mut rows = Vec::new();
+    for rec in records {
+        if rec.len() == 1 && rec[0].0.trim().is_empty() && !rec[0].1 { continue; }
+        let mut entries = IndexMap::new();
+        for (i, header) in headers.iter().enumerate() {
+            let (text, quoted) = rec.get(i).cloned().unwrap_or((String::new(), false));
+            // raw keeps the text exactly (spaces included)
+            let val = if quoted || raw { text.as_str() } else { text.trim() };
+            // a quoted cell is text; so is `007` (an id,
+            // not seven); raw mode keeps everything text
+            let leading_zero = val.len() > 1 && val.starts_with('0') && val.as_bytes()[1].is_ascii_digit();
+            let typed = if raw || quoted || leading_zero {
+                Value::String(val.to_string())
+            } else if let Ok(n) = val.parse::<i64>() {
+                Value::Int(SomaInt::from_i64(n))
+            } else if val.len() > 1 && val.trim_start_matches('-').len() == val.len() - usize::from(val.starts_with('-')) && val.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()) && !val.trim_start_matches('-').is_empty() {
+                // an Int past i64 (shl(1, 70)) came back a Float
+                Value::Int(SomaInt::from_decimal_str(val))
+            } else if let Some(n) = val.parse::<f64>().ok().filter(|f| f.is_finite()) {
+                Value::Float(n)
+            } else if matches!(val, "NaN" | "inf" | "-inf") {
+                // what write_csv writes for a NaN / infinite Float
+                Value::Float(val.parse::<f64>().unwrap_or(f64::NAN))
+            } else {
+                Value::String(val.to_string())
+            };
+            entries.insert(header.clone(), typed);
+        }
+        rows.push(Value::Map(entries));
+    }
+    Ok(Value::List(rows))
+}
+
+fn parse_csv(text: &str, delim: char) -> Vec<Vec<(String, bool)>> {
     let mut records = Vec::new();
     let mut rec: Vec<(String, bool)> = Vec::new();
     let mut field = String::new();
@@ -536,7 +569,7 @@ fn parse_csv(text: &str) -> Vec<Vec<(String, bool)>> {
         }
         match c {
             '"' if field.trim().is_empty() && !quoted => { field.clear(); quoted = true; in_quotes = true; }
-            ',' => { rec.push((std::mem::take(&mut field), quoted)); quoted = false; }
+            c if c == delim => { rec.push((std::mem::take(&mut field), quoted)); quoted = false; }
             '\r' if chars.peek() == Some(&'\n') => {}
             '\n' => {
                 rec.push((std::mem::take(&mut field), quoted));

@@ -81,10 +81,19 @@ pub fn send_with_retry(
     body: &serde_json::Value,
 ) -> Result<serde_json::Value, RuntimeError> {
     let mut last_error = String::new();
+    // `timeout` bounds the WHOLE call, retries and back-off included: the
+    // proven latency bound counted one timeout while three retries of a
+    // failing provider took 6.7 s against a declared 1 s (and a floor of
+    // 1 s made `timeout: 900` wait 1000)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(config.timeout_ms.max(1) as u64);
 
     for retry in 0..=config.max_retries {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(RuntimeError::TypeError(format!("think() request timed out after {} ms (the timeout covers retries): {}", config.timeout_ms, last_error)));
+        }
         let mut req = ureq::post(&config.api_url)
-            .timeout(std::time::Duration::from_millis(config.timeout_ms.max(1_000)))
+            .timeout(left)
             .set("Content-Type", "application/json");
 
         if config.provider == "anthropic" {
@@ -114,8 +123,8 @@ pub fn send_with_retry(
                 let timed_out = { let l = last_error.to_lowercase(); l.contains("timed out") || l.contains("timeout") };
                 let retryable = !timed_out && ["429", "500", "502", "503", "529"]
                     .iter().any(|code| last_error.contains(code));
-                if retryable && retry < config.max_retries {
-                    let delay = std::time::Duration::from_millis(500 * (1 << retry));
+                let delay = std::time::Duration::from_millis(500 * (1 << retry));
+                if retryable && retry < config.max_retries && std::time::Instant::now() + delay < deadline {
                     eprintln!("[agent] retry {}/{} after {:?}: {}", retry + 1, config.max_retries, delay, last_error);
                     std::thread::sleep(delay);
                     continue;

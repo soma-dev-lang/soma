@@ -337,7 +337,9 @@ source, `file:line`, left/right, and the fields a value really has when
   `format("%10.2f", …)` only for display, `money = "{idiv(c, 100)}.{…}"` for exact text.
 - Data: `read_csv(path)` → List<Map>: RFC 4180 (quoted `"a, b"`, `""`, multi-line
   cells); unquoted cells auto-typed (`1.00` → 1.0), quoted cells and `007` stay
-  Strings; `read_csv(path, map("raw", true))` keeps all text (exact money).
+  Strings; `read_csv(path, map("raw", true))` keeps all text (exact money);
+  `map("delimiter", ";")` reads `;` files (other options are refused);
+  `from_csv(text, opts?)` parses CSV text already in memory (an upload).
   `write_csv` quotes what a reader would change (a String "12" stays a String;
   a List cell is its JSON text). One builtin call builds at most 100,000,000
   characters / matrix cells (`pad_left`, `format` widths, `zeros`…) and a List
@@ -540,6 +542,9 @@ cell agent Researcher {
 // soma verify PROVES the lifecycle; `cost { tokens: N }` (also latency:,
 // usd:) is PROVEN when every think() has a literal max_tokens and runs a
 // known number of times — with tools, × the rounds (`max_rounds`, else 10).
+// `latency` counts WAITING: each think()'s `timeout` (a total, retries
+// included) × its rounds, http timeouts and literal sleep()s; approve(),
+// file/stdin reads and computed sleeps make it advisory; CPU time is not in it.
 // The model may call only the face's `tool`s (never a private or other
 // handler), with typed arguments, within their capabilities (URL patterns with
 // `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a
@@ -606,7 +611,8 @@ cell agent Researcher {
    valid_transitions, think, think_json, set_budget, tokens_used.
 10. Floats: compare with a tolerance, never ==.
 11. `7 / 2` is `3.5` — everywhere, `[native]` included. `idiv(7, 2)` is the
-    integer quotient (truncates toward zero, BigInt-exact).
+    integer quotient (truncates toward zero, BigInt-exact). `pow` is a Float
+    power; `ipow(3, 40)` is the exact Int power (no `**` operator).
 12. One memory invariant names one slot; `size` invariants also guard
     `delete`. A cost bound is *proven* only when every `think()` runs a
     known number of times (literal `range`, or an annotated loop: `for [loop_bound(50)] x in xs { … }`, `while [loop_bound(50)] cond { … }` — checked: more iterations raise kind

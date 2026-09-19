@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Soundness: `"C".delegate(…)` / `"C" |> delegate(…)` are seen by the
+  termination and size proofs; a `let` hiding a slot no longer lends the
+  slot's bound; the `latency` bound counts retries (think `timeout` now
+  covers them), tool rounds, `sleep`, and is advisory with approve / file
+  I/O; an interpolated transition target is treated as computed.
+- `[native]`: an exact Int / Int with operands past 2^53 is exact; stdin
+  read before a BigInt re-run is replayed.
+- New `ipow` (exact Int power) and `from_csv(text)`; `read_csv` takes
+  `delimiter` and refuses unknown options; `map`/`filter`/… on a non-list
+  raise a type error; `format("%.2f", Int)` is exact; `to_float` past the
+  Float range raises `range`; `pow` of a non-number raises.
 - In an invariant, `slot.get(key)` reads the stored value on Map- and
   record-valued slots too: write-once invariants on `Map<String, Map>` /
   `List<Map>` slots were not enforced.

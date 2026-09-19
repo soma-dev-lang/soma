@@ -1268,3 +1268,25 @@ scope, argument forgery, `max_rounds`, SSE/log injection all held.
 
 ### Open
 - [ ] No append-only slot declaration; `mock think` cannot script tool calls; tools get no hidden caller context; a think() holds the handler lock; parallel tool calls can split per-call approval thresholds.
+
+### Cycle 55 — realistic port (double-entry bookkeeping, exact money) + attack (soundness of every static guarantee, row by row)
+
+Bookkeeping port 7.5/10: 300 parallel postings of 0.01 moved the balance by
+exactly 300 cents; native IRR / amortization identical to the interpreter.
+Attack held on state machines, interval invariants, other termination
+routes, token cost bounds, forall and rollback — and found five breaks.
+
+### Fixed
+- [x] **Attack: `"C".delegate("h", x)` and `"C" |> delegate("h", x)` were invisible to the call graph** — a self-delegating handler "structurally terminated" (then overflowed the stack) and a size proof missed the delegated write; both forms are parsed as `delegate("C", "h", x)`.
+- [x] **Attack: the `latency` bound was printed proven but did not hold** — LLM retries with back-off took 6.7 s against a proven 1 s; `sleep`, `approve`, file reads were not counted. `timeout` now bounds the whole think() call (retries included, no 1 s floor); latency is × tool rounds; literal sleeps are added; approve / file I/O / computed sleeps make it advisory. It counts waiting, not CPU (documented).
+- [x] Attack: native `/` with operands past 2^53 and an exact quotient was rounded (9007199254740993 / 3 → …330.5) — the exact quotient is returned.
+- [x] Attack: a native handler re-run in BigInt mode read stdin again (answered 0) — the fast run's reads are replayed.
+- [x] Attack: `let b = …` hiding slot `b` lent the slot's bound to `b.get(…)` in an induction proof — a top-level let hides the slot.
+- [x] Attack (minor): an interpolated transition target `"{t}"` was refused as the literal state — treated as computed (in refinement and guard binding).
+- [x] Port: `x |> map(f)` / `filter` / `find` / `any` / `all` / `count` / `sort_by` on a non-list built a Map or said "undefined function" — a type error at the call.
+- [x] Port: no exact Int power — `ipow(a, b)`; `to_int(pow(…))` is a check warning; `2 ** 3` hints at pow/ipow; `pow` of a non-number raises (was 0.0).
+- [x] Port: `read_csv` ignored unknown options — refused; `delimiter` supported; `from_csv(text)` parses CSV in memory.
+- [x] Port: `format("%.2f", BigInt)` went through a Float — exact; `to_float` of an Int past the Float range raises `range` (was inf).
+
+### Open
+- [ ] Float/String `==` raises a type error that reads like a parameter error; a GET on a handler calling a pure helper of another cell answers 405; `value.field` invariants apply to every slot without warning; native `hm_inc` overflow raises kind type; Int/Float comparison is lossy past 2^53.

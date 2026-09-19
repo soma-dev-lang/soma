@@ -194,6 +194,8 @@ fn foreign_syntax_hint(message: &str, source: &str, offset: usize) -> Option<Str
         "Soma has no `{k: v}` literal — a map is `map(\"k\", v)` (empty: `map()`), a record is `Name { k: v }`"
     } else if at.starts_with("=>") && has("match") || (message.contains("'=>'") && has("->") == false && has("match")) {
         "match arms use `->`; `=>` is for lambdas"
+    } else if has("**") {
+        "no `**` operator — `pow(a, b)` is the Float power, `ipow(a, b)` the exact Int power"
     } else if has("===") || has("!==") {
         "no `===` — Soma's `==` is already structural (`!=` for not-equal)"
     } else if t.starts_with("throw ") || has(" throw ") {

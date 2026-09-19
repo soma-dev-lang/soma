@@ -176,11 +176,39 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             })
         }
         "pow" => {
-            if args.len() >= 2 {
-                let base = match &args[0] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
-                let exp = match &args[1] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
-                Some(Ok(Value::Float(base.powf(exp))))
-            } else { Some(Ok(Value::Float(0.0))) }
+            // a non-number was 0.0, silently
+            match (args.first(), args.get(1)) {
+                (Some(Value::Float(_) | Value::Int(_)), Some(Value::Float(_) | Value::Int(_))) => {}
+                _ => return Some(Err(RuntimeError::TypeError(format!("pow(base, exp) needs two numbers, got {}", args.iter().map(|a| crate::interpreter::value_type_name(a)).collect::<Vec<_>>().join(", "))))),
+            }
+            let base = match &args[0] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+            let exp = match &args[1] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
+            Some(Ok(Value::Float(base.powf(exp))))
+        }
+        // exact Int power: `to_int(pow(3, 40))` was off by 33 (a Float)
+        "ipow" => {
+            let (Some(Value::Int(b)), Some(Value::Int(e))) = (args.first(), args.get(1)) else {
+                return Some(Err(RuntimeError::TypeError("ipow(base: Int, exp: Int) needs two Ints (pow() is the Float power)".to_string())));
+            };
+            let Some(mut e) = e.to_i64().filter(|e| *e >= 0) else {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: ipow exponent must be a non-negative Int, got {}", e) }));
+            };
+            let base_bits = b.to_rug().significant_bits() as u64;
+            if base_bits > 1 && (base_bits - 1).saturating_mul(e as u64) > crate::interpreter::soma_int::SomaInt::MAX_BITS {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: ipow({}, {}) is past the limit of {} bits", b, e, crate::interpreter::soma_int::SomaInt::MAX_BITS) }));
+            }
+            let mut acc = crate::interpreter::soma_int::SomaInt::from_i64(1);
+            let mut sq = b.clone();
+            while e > 0 {
+                if e & 1 == 1 {
+                    acc = match acc.checked_big_mul(sq.clone()) { Ok(v) => v, Err(m) => return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: m })) };
+                }
+                e >>= 1;
+                if e > 0 {
+                    sq = match sq.clone().checked_big_mul(sq) { Ok(v) => v, Err(m) => return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: m })) };
+                }
+            }
+            Some(Ok(Value::Int(acc)))
         }
         "sum" => Some(numeric_reduce(args, "sum")),
         "product" => Some(numeric_reduce(args, "product")),

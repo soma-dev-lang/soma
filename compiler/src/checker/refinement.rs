@@ -278,7 +278,9 @@ fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerE
             // First arg is the instance id; we ignore it for refinement.
             if let Some(target_expr) = args.get(1) {
                 match &target_expr.node {
-                    Expr::Literal(Literal::String(s)) => {
+                    // `"{t}"` is interpolated: a computed target (it was
+                    // refused as the literal state "{t}")
+                    Expr::Literal(Literal::String(s)) if !s.contains('{') => {
                         eff.static_transitions.push(TransitionCall {
                             target: s.clone(),
                             path: path.clone(),

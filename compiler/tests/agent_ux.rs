@@ -3096,3 +3096,58 @@ cell test T { rules { let _a = add("a")  assert erase(0) == 0 } }
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!err.contains('\u{1b}') && err.contains("\\u{1b}"), "control characters are escaped: {err:?}");
 }
+
+/// Cycle 55: `x |> map(f)` / `filter` on a non-list is a type error (it
+/// built a Map); `ipow` is an exact Int power and `to_int(pow(…))` is
+/// flagged; read_csv refuses unknown options and reads a `delimiter`;
+/// `from_csv` parses text in memory; `%f` of an Int is exact; `to_float` of
+/// an Int past the Float range raises.
+#[test]
+fn cycle55_findings() {
+    passes("cycle55", r#"
+cell P {
+    on hmap() { let xs = map("a", 1).lines  return xs |> map(l => l.debit) }
+    on hfilter() { let xs = ()  return xs |> filter(l => l > 1) }
+    on p340() { return ipow(3, 40) }
+    on csv() { return from_csv("a;b\n1;\"x;y\"\n", map("delimiter", ";")) }
+    on badopt() { return from_csv("a\n1\n", map("delim", ";")) }
+    on fmt() { return format("%.2f", 123456789012345678901234567890) }
+    on big() { return to_float(shl(1, 1100)) }
+}
+cell test T {
+    rules {
+        assert_fails hmap()
+        assert_fails hfilter()
+        assert p340() == 12157665459056928801
+        assert csv()[0].b == "x;y"
+        assert_fails badopt()
+        assert fmt() == "123456789012345678901234567890.00"
+        assert_fails big()
+    }
+}
+"#);
+    let d = dir("cycle55_lint");
+    std::fs::write(d.join("x.cell"), "cell X { on main() { return to_int(pow(3, 40)) } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "x.cell"]);
+    assert!(out.contains("ipow"), "to_int(pow(…)) points to ipow: {out}");
+}
+
+/// Cycle 55 (attack on the static guarantees): `"C".delegate(…)` and
+/// `"C" |> delegate(…)` are calls for termination and size proofs; a `let`
+/// of a slot's name hides the slot's bound; the latency bound counts
+/// sleep / approve / file I/O and tool rounds.
+#[test]
+fn cycle55_soundness() {
+    let d = dir("cycle55_sound");
+    std::fs::write(d.join("loop.cell"), "cell C {\n  state s { initial: a  a -> b }\n  on go(id: String) { transition(id, \"b\") }\n  on spin(n: Int) { return \"C\".delegate(\"spin\", n) }\n  on spin2(n: Int) { return \"C\" |> delegate(\"spin2\", n) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "loop.cell"]);
+    assert!(code != 0 && !out.contains("VERIFY OK"), "a self-delegating handler is not proven to terminate: {out}");
+
+    std::fs::write(d.join("shadow.cell"), "cell C {\n  memory {\n    a: Map<String, Int> [persistent]\n    invariant a >= 0 && a <= 100\n    b: Map<String, Int> [persistent]\n    invariant b >= 0 && b <= 10\n  }\n  on copy(k: String) {\n    let b = map(\"x\", 1000)\n    a.set(k, b.get(\"x\") ?? 0)\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "--strict", "shadow.cell"]);
+    assert!(!out.contains("writer 'copy' proven"), "a let hiding a slot does not lend its bound: {out}");
+
+    std::fs::write(d.join("lat.cell"), "cell agent L {\n  face { signal go(p: String) -> String }\n  cost { tokens: 100  latency: 1s }\n  on go(p: String) { sleep(3000)  return think(p, map(\"max_tokens\", 100, \"timeout\", 500)) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "lat.cell"]);
+    assert!(!out.contains("'latency' bound proven"), "a sleep counts toward latency: {out}");
+}

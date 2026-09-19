@@ -318,7 +318,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "to_float" => {
             args.first().map(|arg| match arg {
                 Value::Float(n) => Ok(Value::Float(*n)),
-                Value::Int(si) => Ok(Value::Float(si.to_f64())),
+                // past the Float range an Int became `inf`, silently
+                Value::Int(si) => { let f = si.to_f64(); if f.is_finite() { Ok(Value::Float(f)) } else {
+                    Err(RuntimeError::Domain { kind: "range".to_string(), message: "range: to_float: this Int is past the Float range (~1.8e308)".to_string() }) } }
                 Value::String(s) => {
                     if let Ok(f) = s.parse::<f64>() {
                         Ok(Value::Float(f))
@@ -536,6 +538,13 @@ fn printf_subset(fmt: &str, args: &[Value]) -> Result<Value, RuntimeError> {
                 Value::Float(f) => rug::Integer::from_f64(f.trunc()).map(|i| i.to_string()).unwrap_or_default(),
                 other => return Err(RuntimeError::TypeError(format!("format(): %d needs an Int, got {}", super::super::value_type_name(other)))),
             },
+            // an Int is exact: its digits, then `.000…` (a BigInt went
+            // through a Float: 123456789012345678901234567890 printed …877719597056)
+            'f' if matches!(arg, Value::Int(_)) => {
+                let Value::Int(n) = &arg else { unreachable!() };
+                let p = prec.unwrap_or(6);
+                if p == 0 { n.to_string() } else { format!("{}.{}", n, "0".repeat(p)) }
+            }
             'f' => {
                 let x = match &arg { Value::Float(f) => *f, Value::Int(n) => n.to_f64(), other => return Err(RuntimeError::TypeError(format!("format(): %f needs a number, got {}", super::super::value_type_name(other)))) };
                 super::math::fixed_string(x, prec.unwrap_or(6))

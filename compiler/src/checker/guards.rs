@@ -91,8 +91,9 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                             if let Expr::FnCall { name, args } = e {
                                 if name == "transition" && args.len() >= 2 {
                                     match &args[1].node {
+                                        // an interpolated `"{t}"` may be any state
                                         Expr::Literal(Literal::String(s)) => {
-                                            if s == &tr.node.to {
+                                            if s == &tr.node.to || s.contains('{') {
                                                 takes = true;
                                             }
                                         }
@@ -133,7 +134,7 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                                 if let Expr::FnCall { name, args } = e {
                                     if name == "transition" {
                                         has_transition |= match args.get(1).map(|a| &a.node) {
-                                            Some(Expr::Literal(Literal::String(s))) => s == to,
+                                            Some(Expr::Literal(Literal::String(s))) => s == to || s.contains('{'),
                                             _ => true,
                                         };
                                     }
