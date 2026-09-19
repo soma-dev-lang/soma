@@ -43,8 +43,10 @@ fn resolve_package(
         let cached_path = cache_dir.join(name);
         if cached_path.exists() {
             // the cache is reused only if it is what was locked
+            let mut listed = locked.files.clone();
+            listed.sort();
             match &locked.content_sha256 {
-                Some(want) if *want != content_sha256(&cached_path, &locked.files) => {
+                Some(want) if *want != content_sha256(&cached_path, &locked.files) || installed_cell_files(&cached_path) != listed => {
                     eprintln!("  {} {}: the cached copy differs from soma.lock — reinstalling", name, locked.version);
                     let _ = std::fs::remove_dir_all(&cached_path);
                 }
@@ -252,23 +254,55 @@ fn resolve_from_registry(
 
 /// Copy .cell files from src to dest
 fn copy_cell_files(src: &Path, dest: &Path) -> Result<Vec<String>, String> {
+    // the whole tree: `use sub::deep` inside a package broke after install
+    // (only the top directory was copied), and a file planted under sub/
+    // was neither hashed nor removed. The copy starts from an empty dir.
+    let _ = std::fs::remove_dir_all(dest);
     let _ = std::fs::create_dir_all(dest);
     let mut files = Vec::new();
+    fn walk(src: &Path, root: &Path, dest: &Path, files: &mut Vec<String>) -> Result<(), String> {
+        let entries = std::fs::read_dir(src).map_err(|e| format!("cannot read {}: {}", src.display(), e))?;
+        let mut paths: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if meta.file_type().is_symlink() { continue; }
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if name.starts_with('.') { continue; }
+            if meta.is_dir() {
+                walk(&path, root, dest, files)?;
+            } else if path.extension().map_or(false, |e| e == "cell") {
+                let rel = path.strip_prefix(root).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
+                let target = dest.join(&rel);
+                if let Some(parent) = target.parent() { let _ = std::fs::create_dir_all(parent); }
+                std::fs::copy(&path, &target).map_err(|e| format!("cannot copy {}: {}", rel, e))?;
+                files.push(rel);
+            }
+        }
+        Ok(())
+    }
+    walk(src, src, dest, &mut files)?;
+    Ok(files)
+}
 
-    let entries = std::fs::read_dir(src)
-        .map_err(|e| format!("cannot read {}: {}", src.display(), e))?;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map_or(false, |e| e == "cell") {
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-            std::fs::copy(&path, dest.join(&name))
-                .map_err(|e| format!("cannot copy {}: {}", name, e))?;
-            files.push(name);
+/// Every `.cell` file under an installed package (relative, sorted):
+/// compared with the lock's list, so a planted extra file is caught.
+pub fn installed_cell_files(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(d: &Path, root: &Path, out: &mut Vec<String>) {
+        if let Ok(entries) = std::fs::read_dir(d) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() { walk(&p, root, out); }
+                else if p.extension().map_or(false, |x| x.eq_ignore_ascii_case("cell")) {
+                    if let Ok(r) = p.strip_prefix(root) { out.push(r.to_string_lossy().replace('\\', "/")); }
+                }
+            }
         }
     }
-
-    Ok(files)
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
 }
 
 /// Find all .cell files in a directory (recursively)

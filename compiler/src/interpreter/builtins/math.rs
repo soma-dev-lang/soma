@@ -190,6 +190,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let (Some(Value::Int(b)), Some(Value::Int(e))) = (args.first(), args.get(1)) else {
                 return Some(Err(RuntimeError::TypeError("ipow(base: Int, exp: Int) needs two Ints (pow() is the Float power)".to_string())));
             };
+            // |base| <= 1: any non-negative exponent, however large
+            if e.to_rug() >= 0 {
+                match b.to_i64() {
+                    Some(0) => return Some(Ok(Value::Int(SomaInt::from_i64(if e.to_rug() == 0 { 1 } else { 0 })))),
+                    Some(1) => return Some(Ok(Value::Int(SomaInt::from_i64(1)))),
+                    Some(-1) => return Some(Ok(Value::Int(SomaInt::from_i64(if e.to_rug().is_even() { 1 } else { -1 })))),
+                    _ => {}
+                }
+            }
             let Some(mut e) = e.to_i64().filter(|e| *e >= 0) else {
                 return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: ipow exponent must be a non-negative Int, got {}", e) }));
             };
@@ -254,6 +263,27 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         // parse_int("42") = 42; anything that is not exactly an integer
         // ("1.5", "12abc", "", " 7") is () — to_int() is lenient and truncates.
+        // parse_int(s, base): base 2..36, digits only (no 0x prefix) — a
+        // sha256 hex prefix needed a hand-written digit loop
+        "parse_int" if args.len() == 2 => {
+            let (Some(Value::String(t)), Some(Value::Int(b))) = (args.first(), args.get(1)) else {
+                return Some(Err(RuntimeError::TypeError("parse_int(s: String, base: Int)".to_string())));
+            };
+            let Some(base) = b.to_i64().filter(|b| (2..=36).contains(b)) else {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: parse_int base must be 2..36, got {}", b) }));
+            };
+            let (neg, digits) = match t.strip_prefix('-') { Some(d) => (true, d), None => (false, t.strip_prefix('+').unwrap_or(t)) };
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(base as u32)) {
+                return Some(Ok(Value::Unit));
+            }
+            if (digits.len() as u64).saturating_mul(6) > SomaInt::MAX_BITS {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: "range: parse_int input is past the Int size limit".to_string() }));
+            }
+            match rug::Integer::from_str_radix(digits, base as i32) {
+                Ok(n) => { let n = if neg { -n } else { n }; Some(Ok(Value::Int(SomaInt::from_decimal_str(&n.to_string())))) }
+                Err(_) => Some(Ok(Value::Unit)),
+            }
+        }
         "parse_int" => {
             Some(Ok(match args.first() {
                 Some(Value::String(t)) => {

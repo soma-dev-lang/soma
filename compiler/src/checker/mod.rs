@@ -798,6 +798,16 @@ impl<'a> Checker<'a> {
             let base = crate::interpreter::IMPORT_SPAN_BASE;
             let main_has_router = routers.iter().any(|c| c.span.start < base);
             for c in program.cells.iter().filter(|c| c.span.start >= base && matches!(c.node.kind, CellKind::Cell | CellKind::Agent)) {
+                // an imported `every` / `after` runs under soma serve too
+                for sec in &c.node.sections {
+                    if matches!(sec.node, Section::Every(_) | Section::After(_)) {
+                        self.warnings.push(CheckWarning::DispatchShadow {
+                            message: format!("imported cell `{}` declares an `every` / `after` job — it runs under soma serve like your own; if that is not intended, drop the import", c.node.name),
+                            span: sec.span,
+                        });
+                        break;
+                    }
+                }
                 for sec in &c.node.sections {
                     if let Section::OnSignal(on) = &sec.node {
                         if (on.signal_name == "request" && !main_has_router) || on.signal_name == "ws" {

@@ -683,6 +683,8 @@ pub struct Interpreter {
     pub(crate) think_tools_allowed: Option<Vec<String>>,
     /// > 0 while a handler runs as a model's tool call
     pub(crate) tool_depth: u32,
+    /// set by do_connect: false once that peer link is gone
+    pub last_link_alive: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// the `cell test` whose rules are running (its helpers win bare calls)
     pub current_test_cell: Option<String>,
     /// Loaded [native] handler FFI function pointers, keyed by (cell_name, signal_name)
@@ -795,6 +797,9 @@ pub fn bus_event_allowed(name: &str, data: Option<&serde_json::Value>) -> Result
     }
     if data.map_or(false, forged) {
         return Err(format!("refused event '{}' (its data carries _type / _variant)", name));
+    }
+    if data.map_or(false, builtins::string::json_has_inf) {
+        return Err(format!("refused event '{}' (a number beyond the Float range)", name));
     }
     Ok(())
 }
@@ -933,6 +938,7 @@ impl Interpreter {
             outer_tool_caps: Vec::new(),
             think_tools_allowed: None,
             tool_depth: 0,
+            last_link_alive: None,
             current_test_cell: None,
             native_handlers: HashMap::new(),
             cluster: None,
@@ -3921,6 +3927,7 @@ impl Interpreter {
         // a socket the peer closed still "succeeded" into the kernel
         // buffer, and every event after a peer restart vanished silently
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        self.last_link_alive = Some(alive.clone());
         let alive_w = alive.clone();
         let mut write_stream = stream;
         spawn_handler_thread(move || {
@@ -3934,6 +3941,12 @@ impl Interpreter {
                     break;
                 }
             }
+            // the link is over (the peer went away, or it was dropped for
+            // reading too slowly): close the socket so the reader ends too
+            // and the [peers] supervisor reconnects — a dropped slow peer
+            // stayed cut off until a restart
+            alive_w.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = write_stream.shutdown(std::net::Shutdown::Both);
         });
 
         // Reader thread: reads EVENT lines, dispatches to handlers
@@ -6393,7 +6406,11 @@ pub fn json_too_many_values(text: &str) -> bool {
         }
         match b {
             b'"' => in_str = true,
-            b',' | b'[' | b'{' => { n += 1; if n > JSON_MAX_VALUES { return true; } }
+            // weighted by what a value costs once parsed: an empty `{}` is a
+            // whole map (490 000 of them, 1.5 MB, took 180 MB)
+            b',' => { n += 1; if n > JSON_MAX_VALUES { return true; } }
+            b'[' => { n += 2; if n > JSON_MAX_VALUES { return true; } }
+            b'{' => { n += 4; if n > JSON_MAX_VALUES { return true; } }
             _ => {}
         }
     }

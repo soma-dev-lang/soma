@@ -717,6 +717,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                         eprintln!("bus: refused event '{}' (its data carries _type / _variant)", event_name);
                                         continue;
                                     }
+                                    Ok(parsed) if interpreter::builtins::string::json_has_inf(&parsed) => {
+                                        eprintln!("bus: refused event '{}' (a number beyond the Float range)", event_name);
+                                        continue;
+                                    }
                                     Ok(parsed) => interpreter::builtins::serde_json_to_value(&parsed),
                                     Err(_) => interpreter::Value::String(json_data.to_string()),
                                 };
@@ -877,17 +881,57 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
                     for (peer_name, addr) in &manifest.peers {
                         eprintln!("peer: connecting to {} ({})", peer_name, addr);
-                        let mut interp = interpreter::Interpreter::new(&program);
-                        interp.native_handlers = (*natives).clone();
-                        interp.set_storage_raw(&storage_slots);
-                        interp.ensure_state_machine_storage();
-                        interp.event_bus = Some(event_bus.clone());
-                        interp.peer_bus = Some(peer_bus.clone());
-                        if let Some(ref c) = cluster_node { interp.set_cluster(c.clone(), &sharded_slots); }
-                        match interp.do_connect(addr, &cell_name) {
+                        // one link attempt: a fresh interpreter per link
+                        let connect = {
+                            let program = program.clone();
+                            let natives = natives.clone();
+                            let storage_slots = storage_slots.clone();
+                            let event_bus = event_bus.clone();
+                            let peer_bus = peer_bus.clone();
+                            let cluster_node = cluster_node.clone();
+                            let sharded_slots = sharded_slots.clone();
+                            let cell_name = cell_name.clone();
+                            let addr = addr.clone();
+                            move || -> Result<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>, String> {
+                                let mut interp = interpreter::Interpreter::new(&program);
+                                interp.native_handlers = (*natives).clone();
+                                interp.set_storage_raw(&storage_slots);
+                                interp.ensure_state_machine_storage();
+                                interp.event_bus = Some(event_bus.clone());
+                                interp.peer_bus = Some(peer_bus.clone());
+                                if let Some(ref c) = cluster_node { interp.set_cluster(c.clone(), &sharded_slots); }
+                                interp.do_connect(&addr, &cell_name).map(|_| interp.last_link_alive.clone()).map_err(|e| e.to_string())
+                            }
+                        };
+                        let first = connect();
+                        match &first {
                             Ok(_) => eprintln!("peer: {} linked", peer_name),
-                            Err(e) => eprintln!("peer: {} failed: {}", peer_name, e),
+                            Err(e) => eprintln!("peer: {} failed: {} — retrying in the background", peer_name, e),
                         }
+                        // a link that drops (the peer restarted, or was cut
+                        // off for reading too slowly) is re-established; a
+                        // peer down at start-up is retried (both were
+                        // permanent until a restart)
+                        let peer_name = peer_name.clone();
+                        crate::interpreter::spawn_handler_thread(move || {
+                            let mut alive = first.ok().flatten();
+                            let mut backoff = 1u64;
+                            loop {
+                                if let Some(a) = &alive {
+                                    while a.load(std::sync::atomic::Ordering::SeqCst) {
+                                        std::thread::sleep(std::time::Duration::from_millis(500));
+                                    }
+                                    eprintln!("peer: {} link lost — reconnecting", peer_name);
+                                    alive = None;
+                                    backoff = 1;
+                                }
+                                std::thread::sleep(std::time::Duration::from_secs(backoff));
+                                match connect() {
+                                    Ok(a) => { eprintln!("peer: {} linked again", peer_name); alive = a; }
+                                    Err(_) => { backoff = (backoff * 2).min(30); }
+                                }
+                            }
+                        });
                     }
                 }
             }
@@ -1293,14 +1337,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let host_count = request.headers().iter().filter(|h| h.field.as_str().as_str().eq_ignore_ascii_case("host")).count();
             let bad_host = host_count > 1 || header("host").map_or(false, |h| !local(&hostname(&h).to_ascii_lowercase()));
             let writes = matches!(request.method().as_str().to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
-            let bad_origin = writes && header("origin").map_or(false, |o| {
+            // two Origin headers: refused like two Host headers (the first
+            // one was checked)
+            let origin_count = request.headers().iter().filter(|h| h.field.as_str().as_str().eq_ignore_ascii_case("origin")).count();
+            let bad_origin = writes && (origin_count > 1 || header("origin").map_or(false, |o| {
                 // an opaque origin (`null`: a sandboxed iframe, a data: page)
                 // or file:// is not this machine's web app
                 let o_l = o.trim().to_ascii_lowercase();
                 if o_l == "null" || o_l.starts_with("file:") { return true; }
                 let auth = o.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
                 auth.contains('@') || !local(&hostname(auth).to_ascii_lowercase())
-            });
+            }));
             if bad_host || bad_origin {
                 let why = if bad_host { "the Host header names another site (a DNS-rebinding page?) — this server listens on loopback only" } else { "a page from another origin may not change state on a loopback server" };
                 let resp = tiny_http::Response::from_string(error_body(why, "forbidden")).with_status_code(403);
@@ -1458,7 +1505,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         _ => false,
                     }
                 }
-                if reserved_hit.is_none() && out_of_range(&parsed) { reserved_hit = Some("a number beyond Float range"); }
+                if reserved_hit.is_none() && (out_of_range(&parsed) || crate::interpreter::builtins::string::json_has_inf(&parsed)) { reserved_hit = Some("a number beyond Float range"); }
                 Some(json_request_to_value(&parsed))
             } else {
                 None
@@ -2168,6 +2215,16 @@ fn client_error_text(e: &interpreter::RuntimeError) -> String {
     let text = hide_private_names(&format!("{}", e));
     if e.kind() == "guard_failed" {
         if let Some(i) = text.find(": `") { return text[..i].to_string(); }
+    }
+    // `memory invariant violated on 'bal': bal >= 0 && bal != 31337 — …`:
+    // the rule stays in the log
+    if e.kind() == "invariant" || text.contains("memory invariant violated on '") {
+        if let Some(start) = text.find("memory invariant violated on '") {
+            let rest = &text[start + 30..];
+            if let Some(q) = rest.find("':") {
+                return format!("{}memory invariant violated on '{}' — the write was refused", &text[..start], &rest[..q]);
+            }
+        }
     }
     text
 }

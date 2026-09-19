@@ -31,6 +31,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "split" => {
             if args.len() >= 2 {
                 if let (Value::String(s), Value::String(delim)) = (&args[0], &args[1]) {
+                    // an empty delimiter splits into characters (it gave
+                    // ["", "a", "b", "c", ""]: every index one too high)
+                    if delim.is_empty() {
+                        return Some(Ok(Value::List(s.chars().map(|c| Value::String(c.to_string())).collect())));
+                    }
                     let parts: Vec<Value> = s.split(delim.as_str())
                         .map(|p| Value::String(p.to_string()))
                         .collect();
@@ -369,6 +374,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             message: format!("json: not valid JSON: {}", shown),
                         })
                     }
+                    // `1e400` read as Float inf (greater than every number,
+                    // written back as null) — refused as HTTP bodies are
+                    Value::String(s) if serde_json::from_str::<serde_json::Value>(s).map_or(false, |v| json_has_inf(&v)) => Err(RuntimeError::Domain { kind: "json".to_string(), message: "json: a number beyond the Float range (it would read as inf)".to_string() }),
                     Value::String(s) => Ok(json_to_value(s)),
                     Value::Map(_) | Value::List(_) => Ok(arg.clone()),
                     Value::Unit => Ok(Value::Unit),
@@ -601,4 +609,19 @@ fn cached_regex(pat: &str) -> Result<regex::Regex, regex::Error> {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// A JSON number beyond the Float range (`1e400`), anywhere in `v`: it
+/// would read as inf. With serde_json's arbitrary_precision, as_f64() did
+/// not report it — the number's text is parsed.
+pub fn json_has_inf(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Number(n) => {
+            let t = n.to_string();
+            (t.contains('e') || t.contains('E') || t.contains('.')) && t.parse::<f64>().map_or(false, |f| !f.is_finite())
+        }
+        serde_json::Value::Array(xs) => xs.iter().any(json_has_inf),
+        serde_json::Value::Object(m) => m.values().any(json_has_inf),
+        _ => false,
+    }
 }

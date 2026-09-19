@@ -113,8 +113,16 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     }
                 };
                 let mut sorted = items.clone();
+                let nan = |v: &Value| matches!(v, Value::Float(f) if f.is_nan());
                 sorted.sort_by(|a, b| {
-                    let o = super::collection::compare_values(&field_of(a), &field_of(b));
+                    let (x, y) = (field_of(a), field_of(b));
+                    // NaN last in "desc" too
+                    match (nan(&x), nan(&y)) {
+                        (true, false) => return std::cmp::Ordering::Greater,
+                        (false, true) => return std::cmp::Ordering::Less,
+                        _ => {}
+                    }
+                    let o = super::collection::compare_values(&x, &y);
                     if desc { o.reverse() } else { o }
                 });
                 Some(Ok(Value::List(sorted)))
@@ -156,7 +164,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     }
                     let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
                     Some(Ok(num_value(num_sum(&xs))))
-                } else { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
+                } else if matches!(args[0], Value::Unit) { Some(Ok(Value::Int(SomaInt::from_i64(0)))) }
+                // `sum_by("abc", "a")` answered 0
+                else { Some(Err(RuntimeError::TypeError(format!("sum_by(rows, field) needs a List, got {}", crate::interpreter::value_type_name(&args[0]))))) }
             } else {
                 Some(Err(RuntimeError::TypeError("sum_by expects (list, field)".to_string())))
             }

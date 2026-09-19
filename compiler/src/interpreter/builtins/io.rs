@@ -516,7 +516,13 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
     };
     // `sku,qty,qty`: the second `qty` overwrote the first in
     // every row, silently — name the duplicate instead
-    if let Some(dup) = headers.iter().enumerate().find(|(i, h)| !h.is_empty() && headers[..*i].contains(h)).map(|(_, h)| h.clone()) {
+    // `_type,_variant` columns forged a record / variant from client text
+    // (is_a(row, "Role") was true) — refused as in a JSON body
+    if let Some(r) = headers.iter().find(|h| matches!(h.as_str(), "_type" | "_variant" | "_values")) {
+        return Err(RuntimeError::Domain { kind: "csv".to_string(), message: format!("csv: {}: column '{}' is reserved (it marks a record or a variant) — rename it", path, r) });
+    }
+    // two EMPTY header names dropped a column too
+    if let Some(dup) = headers.iter().enumerate().find(|(i, h)| headers[..*i].contains(h)).map(|(_, h)| h.clone()) {
         return Err(RuntimeError::Domain { kind: "csv".to_string(), message: format!("csv: {}: the header names column '{}' twice — a row is a map, so one would overwrite the other; rename one", path, dup) });
     }
     let mut rows = Vec::new();

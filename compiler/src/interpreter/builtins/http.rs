@@ -96,7 +96,12 @@ fn calls_own_server(url: &str) -> bool {
     // any other spelling of this machine (2130706433, 0x7f000001, 0177.0.0.1,
     // [0:0:…:1], a DNS name for 127.0.0.1): resolve it as the request would
     use std::net::ToSocketAddrs;
-    (host.as_str(), port).to_socket_addrs().map_or(false, |mut addrs| addrs.any(|a| a.ip().is_loopback() || a.ip().is_unspecified()))
+    (host.as_str(), port).to_socket_addrs().map_or(false, |mut addrs| addrs.any(|a| {
+        // [::ffff:127.0.0.1] is 127.0.0.1 (it reached this server and
+        // waited on its own handler lock)
+        let ip = match a.ip() { std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(std::net::IpAddr::V6(v6)), other => other };
+        ip.is_loopback() || ip.is_unspecified()
+    }))
 }
 
 fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexmap::IndexMap<String, Value>>) -> Result<Value, RuntimeError> {

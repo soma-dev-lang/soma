@@ -257,7 +257,16 @@ impl<'a> CostWalk<'a> {
                     }
                     // each provider round waits up to `timeout` (retries
                     // included, see send_with_retry): a tool loop is rounds × it
-                    self.latency_ms += timeout_ms.unwrap_or(30_000).saturating_mul(rounds);
+                    // without a literal `timeout` the wait is the provider
+                    // timeout — 60 s by default, and configurable
+                    // (SOMA_LLM_TIMEOUT_MS / [agent]): it was counted as 30 s
+                    match timeout_ms {
+                        Some(t) => self.latency_ms += t.saturating_mul(rounds),
+                        None => {
+                            self.latency_ms += 60_000i64.saturating_mul(rounds);
+                            self.latency_sites.push(format!("{}::think without a literal timeout (the provider timeout is configurable)", handler_name));
+                        }
+                    }
                 }
                 // waits the latency bound did not count (`sleep(3000)` before a
                 // think still printed "peak 500 ms ≤ 1000 ms"): a literal sleep
@@ -276,7 +285,8 @@ impl<'a> CostWalk<'a> {
                 }
                 if matches!(name.as_str(), "http_get" | "http_post" | "http_put" | "http_delete") {
                     let timeout = args.get(1).and_then(|a| extract_timeout_ms(&a.node));
-                    self.latency_ms += timeout.unwrap_or(10_000);
+                    // the runtime default is 30 s (10 s was counted)
+                    self.latency_ms += timeout.unwrap_or(30_000);
                 }
                 for a in args { self.visit_expr(&a.node, handler_name); }
                 // `delegate("Cell", "handler", …)` with literal names runs

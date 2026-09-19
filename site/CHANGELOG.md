@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- `[peers]` links are supervised: a peer down at start-up, restarted, or
+  dropped for reading too slowly is reconnected.
+- Packages: sub-directories are installed and covered by the lock's
+  sha256; a file the lock does not list, or a case-variant `use`, cannot
+  bypass the check; an installed package missing from the lock is refused.
+- Latency bound: http without timeout counts 30 s; a think without a
+  literal timeout makes it advisory. The JSON cap weighs objects and lists;
+  `self_call` catches IPv4-mapped IPv6; CSV cannot carry `_type` /
+  `_variant` columns; invariant source is not sent to clients; duplicate
+  Origin headers are refused; imported `every` / `after` is warned.
+- `split(s, "")` splits into characters; `parse_int(s, base)`; numbers
+  beyond the Float range are refused by `from_json`, HTTP bodies and bus
+  events; NaN sorts last in descending `sort_by`; `ipow` of 0 / ±1 to huge
+  exponents; `sum_by` of a non-list raises.
 ## 2.6.0 — 2026-09-19
 
 - soma.lock records a sha256 of each package's files: a package modified

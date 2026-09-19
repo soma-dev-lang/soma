@@ -259,7 +259,14 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
                     Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
             }
+            // NaN stays last in "desc" too (reversing put it first)
+            let nan = |v: &Value| matches!(v, Value::Float(f) if f.is_nan());
             keyed.sort_by(|a, b| {
+                match (nan(&a.0), nan(&b.0)) {
+                    (true, false) => return std::cmp::Ordering::Greater,
+                    (false, true) => return std::cmp::Ordering::Less,
+                    _ => {}
+                }
                 let o = collection::compare_values(&a.0, &b.0);
                 if desc { o.reverse() } else { o }
             });

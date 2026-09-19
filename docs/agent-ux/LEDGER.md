@@ -1354,3 +1354,25 @@ imported machines and invariants verified.
 
 ### Open
 - [ ] A counter cannot commit while the request raises (rate limiting / brute-force counters of failing requests — second report); the "monotone versions" invariant is not proven for `+1`; list patterns in `match` give no hint; `parse_int` has no radix; `use "/abs/path"` resolves outside the project.
+
+### Cycle 59 — realistic port (IoT telemetry + alerting, two processes over the bus) + attack on everything new in 2.6.0
+
+IoT port 7.5/10: 5 000 points with 500 duplicates and shuffled order exact;
+atomic bus events; verified alert and rollout machines. Attack on 2.6.0:
+lock tampering detected, loopback checks, private-name hiding, stdin replay,
+budget-from-tools, think timeout covering retries all held — and found
+the gaps below.
+
+### Fixed
+- [x] **Port: a peer dropped for reading slowly never reconnected** (both processes up, pipeline cut until a restart) — every `[peers]` link is supervised: a lost, never-established or dropped link is re-established (1 s → 30 s back-off).
+- [x] **Attack: a package's sub-directories were not installed, hashed or restored** (`use sub::x` broke after install; a planted `sub/*.cell` ran) — the whole tree is copied and hashed; a file the lock does not list is refused at import.
+- [x] **Attack: `use MATHX` skipped the sha256 check on a case-insensitive disk** — the lock entry is found case-insensitively; an installed package missing from an existing lock is refused.
+- [x] Attack: the latency bound counted 10 s for an http call without timeout (runtime 30 s) and 30 s for a think (runtime 60 s, configurable) — http counts 30 s; a think without a literal timeout makes latency advisory.
+- [x] Attack: 490 000 `{}` (1.5 MB) passed the JSON cap and took 180 MB — objects and lists weigh more in the cap.
+- [x] Attack: `self_call` missed `[::ffff:127.0.0.1]` — IPv4-mapped addresses are unwrapped.
+- [x] Attack: CSV columns `_type,_variant` forged a record (is_a true) — reserved headers refused; duplicate empty headers too.
+- [x] Attack: NaN came first in a descending sort_by — last in both orders; `ipow(±1 / 0, huge)` answers; `sum_by("abc", …)` raises; imported `every` / `after` is a check warning; invariant source is not sent to clients; two Origin headers are refused.
+- [x] Port: `split(s, "")` gave `["", "a", "b", "c", ""]` — characters; `parse_int(s, base)`; `from_json` (and HTTP bodies / bus events: serde's arbitrary_precision hid it) refuse numbers beyond the Float range.
+
+### Open
+- [ ] Cross-process delivery is fire-and-forget (outbox by hand); a failed bus event names no handler/line; `ipow(2, 16777215)` refused one bit early; lambda `m["k"] = …` copies are not warned.

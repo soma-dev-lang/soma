@@ -349,8 +349,23 @@ fn resolve_pkg_path(base_dir: &Path, pkg_name: &str) -> PathBuf {
             if i < 2 {
                 let lock_path = base_dir.join("soma.lock");
                 if let Ok(lock) = crate::pkg::lock::LockFile::load(&lock_path) {
-                    if let Some(want) = lock.get(pkg_name).and_then(|l| l.content_sha256.clone().map(|h| (h, l.files.clone()))) {
+                    // the name as the lock knows it: `use MATHX` opened the same
+                    // files on a case-insensitive disk and skipped the check
+                    let entry = lock.get(pkg_name).or_else(|| lock.packages.values().find(|l| l.name.eq_ignore_ascii_case(pkg_name)));
+                    if lock_path.exists() && entry.is_none() {
+                        eprintln!("error: package '{}' is installed in {} but not in soma.lock — run `soma install`", pkg_name, c.display());
+                        fatal_exit();
+                    }
+                    if let Some(want) = entry.and_then(|l| l.content_sha256.clone().map(|h| (h, l.files.clone()))) {
                         let got = crate::pkg::resolver::content_sha256(c, &want.1);
+                        let mut listed = want.1.clone();
+                        listed.sort();
+                        let present = crate::pkg::resolver::installed_cell_files(c);
+                        if present != listed {
+                            eprintln!("error: package '{}' in {} holds files soma.lock does not list ({}) — run `soma install` to restore it",
+                                pkg_name, c.display(), present.iter().filter(|f| !listed.contains(f)).cloned().collect::<Vec<_>>().join(", "));
+                            fatal_exit();
+                        }
                         if got != want.0 {
                             eprintln!("error: package '{}' in {} differs from soma.lock (sha256 {}… recorded, {}… on disk) — it was modified after `soma install`; run `soma install` to restore it, or re-lock on purpose",
                                 pkg_name, c.display(), &want.0[..12.min(want.0.len())], &got[..12]);

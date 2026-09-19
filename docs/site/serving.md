@@ -171,9 +171,10 @@ receiver runs only the events its program emits itself (with `[peers]` or a clus
 peer AT COMMIT (a handler that raises sends nothing). An incoming bus event
 waits for the process-wide handler lock like a request (keep handlers short
 on busy links); `start()` runs BEFORE the links to `[peers]` are up, so an
-`emit` there reaches no other process (use `after 2s { … }`). A peer that
-restarts is reconnected when both processes list each other in `[peers]`;
-with a one-way link, restart the sender too, or re-`--join`; `PORT +
+`emit` there reaches no other process (use `after 2s { … }`). Each
+`[peers]` link is re-established when it drops (a peer that restarted, was
+down at start-up, or was cut off for reading too slowly); events emitted
+meanwhile are logged NOT delivered, not queued; `PORT +
 1` only when a cell declares `on ws`. Every response, static files, the
 dashboard and the pre-handler 400s included, carries
 `Access-Control-Allow-Origin: *` (browsers on any origin may call it; put a

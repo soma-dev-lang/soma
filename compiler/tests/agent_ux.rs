@@ -3281,3 +3281,67 @@ fn cycle58_findings() {
     let (out, _) = soma_in(&t, &["check", "app.cell"]);
     assert!(out.contains("imported cell `Helper` defines `request`"), "{out}");
 }
+
+/// Cycle 59: `split(s, "")` splits into characters; `parse_int(s, base)`;
+/// `from_json` refuses a number beyond the Float range.
+#[test]
+fn cycle59_findings() {
+    passes("cycle59", r#"
+cell H {
+    on sp() { return split("abc", "") }
+    on hex() { return parse_int("ff", 16) }
+    on bad() { return parse_int("fg", 16) }
+    on inf() { return from_json("{\"v\": 1e400}") }
+}
+cell test T {
+    rules {
+        assert sp() == ["a", "b", "c"]
+        assert hex() == 255
+        assert bad() == ()
+        assert_fails inf()
+    }
+}
+"#);
+}
+
+/// Cycle 59 (attack on 2.6.0): ipow of 0 / ±1 to any exponent; NaN last
+/// in a descending sort_by; CSV headers cannot forge a record; sum_by of a
+/// non-list raises; a package's sub-directories are installed and a
+/// planted file is refused.
+#[test]
+fn cycle59_attack() {
+    passes("cycle59_attack", r#"
+cell M {
+    on i1() { return ipow(1, 100000000000000000000) }
+    on im() { return ipow(-1, 100000000000000000001) }
+    on srt() { return sort_by([map("v", 1.0), map("v", sqrt(-1.0)), map("v", 0.5)], "v", "desc") |> map(r => to_string(r.v)) }
+    on forge() { return from_csv("_type,_variant,name\nRole,Admin,x\n") }
+    on sb() { return sum_by("abc", "a") }
+}
+cell test T {
+    rules {
+        assert i1() == 1
+        assert im() == -1
+        assert srt() == ["1.0", "0.5", "NaN"]
+        assert_fails forge()
+        assert_fails sb()
+    }
+}
+"#);
+    let root = dir("cycle59_pkg");
+    let pkg = root.join("pkg");
+    std::fs::create_dir_all(pkg.join("sub")).unwrap();
+    std::fs::write(pkg.join("mp.cell"), "use sub::deep\ncell MP { on go(n: Int) { return Deep.dz(n) } }\n").unwrap();
+    std::fs::write(pkg.join("sub/deep.cell"), "cell Deep { on dz(n: Int) { return n + 10 } }\n").unwrap();
+    let app = root.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("soma.toml"), "[package]\nname = \"app\"\n\n[dependencies]\nmp = { path = \"../pkg\" }\n").unwrap();
+    std::fs::write(app.join("app.cell"), "use mp\ncell App { on main() { return MP.go(5) } }\n").unwrap();
+    let (out, code) = soma_in(&app, &["install"]);
+    assert_eq!(code, 0, "{out}");
+    let (out, _) = soma_in(&app, &["run", "app.cell", "main"]);
+    assert!(out.contains("15"), "a package's sub-directory is installed: {out}");
+    std::fs::write(app.join(".soma_env/packages/mp/sub/planted.cell"), "cell Planted { on x() { return 1 } }\n").unwrap();
+    let (out, code) = soma_in(&app, &["run", "app.cell", "main"]);
+    assert!(code != 0 && out.contains("does not list"), "a planted file is refused: {out}");
+}

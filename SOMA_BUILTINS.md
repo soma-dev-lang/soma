@@ -88,7 +88,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `sum` | `sum(list: List) -> Int\|Float` | Sum of a list of numbers (Int-exact unless any element is a Float); 0 when empty. Floats are added left to right without compensation (NumPy's pairwise / Python's fsum can differ in the last bits). |
 | `product` | `product(list: List) -> Int\|Float` | Product of a list of numbers; 1 when empty. |
 | `avg` | `avg(list: List) -> Int\|Float` | Mean of a list of numbers, by the rule of `/`: avg([1, 2]) = 1.5, an exact mean of Ints stays an Int; () when empty. |
-| `parse_int` | `parse_int(s: String) -> Int \| ()` | Strict integer parse: () unless the WHOLE string is an integer ("1.5", "12abc", "" → ()). to_int() is lenient and truncates. |
+| `parse_int` | `parse_int(s: String, base: Int?) -> Int \| ()` | Strict integer parse: () unless the WHOLE string is an integer ("1.5", "12abc", "" → ()). parse_int("ff", 16) = 255 (base 2..36, no 0x prefix). to_int() is lenient and truncates. |
 | `parse_float` | `parse_float(s: String) -> Float \| ()` | Strict float parse: () unless the whole string is a finite number. |
 | `idiv` | `idiv(a: Int, b: Int) -> Int` | Integer division truncating toward zero; errors on division by zero. |
 | `clamp` | `clamp(v, lo, hi) -> Int\|Float` | Constrain v to [lo, hi]; errors if lo > hi. |

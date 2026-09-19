@@ -129,8 +129,10 @@ delivered` (also after a linked peer disconnects); `soma run` opens no bus,
 so an `emit` meant for `[peers]` is reported not delivered there too. A JSON
 request body or bus event with more than 1 000 000 values is refused (413 /
 connection closed) before it is parsed.
-A peer that is down when the process starts is logged as
-`peer: … failed` and not retried — start the receiving process first. This
+Each `[peers]` link is supervised: a peer that is down at start-up, that
+restarts, or that was dropped for reading too slowly is reconnected (every
+1 s, backing off to 30 s; `peer: … linked again`). Events emitted while it
+is down are logged NOT delivered — they are not queued. This
 is the experimental corner of Soma; single-process is the supported shape.
 Delivery is fire-and-forget: an event emitted while no peer is connected (or
 to a peer that dropped) is NOT delivered — the sender logs `bus: event '…'
