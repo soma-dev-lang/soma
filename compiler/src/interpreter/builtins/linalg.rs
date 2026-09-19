@@ -442,6 +442,31 @@ fn opt_get(opts: &Value, key: &str) -> Option<Value> {
     }
 }
 
+/// The declared bounds of a quant builtin hold at run time: `max_obs` /
+/// `max_assets` past the data's size, and an `alpha` outside (0, 1), were
+/// accepted silently (the result used every observation, alpha 1.5 gave a
+/// number).
+fn quant_opts_ok(name: &str, data: &Value, opts: &Value) -> Result<(), RuntimeError> {
+    let range_err = |m: String| RuntimeError::Domain { kind: "range".to_string(), message: format!("{}: {}", name, m) };
+    let (rows, cols) = match data {
+        Value::List(xs) => (xs.len(), match xs.first() { Some(Value::List(r)) => Some(r.len()), _ => None }),
+        _ => (0, None),
+    };
+    if let Some(v) = opt_get(opts, "max_obs") {
+        let m = val_to_usize(&v)?;
+        if rows > m { return Err(range_err(format!("{} observations past max_obs {}", rows, m))); }
+    }
+    if let Some(v) = opt_get(opts, "max_assets") {
+        let m = val_to_usize(&v)?;
+        if let Some(c) = cols { if c > m { return Err(range_err(format!("{} assets past max_assets {}", c, m))); } }
+    }
+    if let Some(v) = opt_get(opts, "alpha") {
+        let a = val_to_f64(&v)?;
+        if !(a > 0.0 && a < 1.0) { return Err(range_err(format!("alpha {} is not a confidence level in (0, 1) — e.g. 0.95", a))); }
+    }
+    Ok(())
+}
+
 fn opt_usize(opts: &Value, key: &str, default: usize) -> Result<usize, RuntimeError> {
     match opt_get(opts, key) {
         Some(v) => val_to_usize(&v),
@@ -1540,7 +1565,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     "clean_covariance expects (returns: List<List<Float>>, opts: Map)".into(),
                 )));
             }
-            Some(clean_covariance_impl(&args[0], &args[1]))
+            Some(quant_opts_ok("clean_covariance", &args[0], &args[1]).and_then(|_| clean_covariance_impl(&args[0], &args[1])))
         }
         // Bouchaud square-root market impact.
         "impact_sqrt" => {
@@ -1569,7 +1594,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 )));
             }
             let opts = args.get(1).cloned().unwrap_or(Value::Map(IndexMap::new()));
-            Some(var_historical_impl(&args[0], &opts))
+            Some(quant_opts_ok("var_historical", &args[0], &opts).and_then(|_| var_historical_impl(&args[0], &opts)))
         }
         // Historical expected shortfall / CVaR.
         "expected_shortfall_historical" => {
@@ -1579,7 +1604,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 )));
             }
             let opts = args.get(1).cloned().unwrap_or(Value::Map(IndexMap::new()));
-            Some(expected_shortfall_historical_impl(&args[0], &opts))
+            Some(quant_opts_ok("expected_shortfall_historical", &args[0], &opts).and_then(|_| expected_shortfall_historical_impl(&args[0], &opts)))
         }
         // Gaussian VaR — assumes N(μ, σ²).  μ / σ inferred from sample
         // unless overridden.
@@ -1590,7 +1615,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 )));
             }
             let opts = args.get(1).cloned().unwrap_or(Value::Map(IndexMap::new()));
-            Some(var_gaussian_impl(&args[0], &opts))
+            Some(quant_opts_ok("var_gaussian", &args[0], &opts).and_then(|_| var_gaussian_impl(&args[0], &opts)))
         }
         // Reshape a flat list of numbers into an r×c matrix.
         // mat(rows, cols, list(a, b, c, ...)).

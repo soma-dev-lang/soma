@@ -295,11 +295,11 @@ The `native` section is usable inside `[native]` handlers only.
 | `importance_sample_rows` | `importance_sample_rows(A, opts: {samples}) -> Map` | Sample rows by squared-norm importance (time-seeded PRNG). |
 | `svd_lowrank` | `svd_lowrank(A, opts: {row_samples, col_samples, rank, max_dim}) -> Map` | Sublinear randomized low-rank SVD with declared sampling bounds. |
 | `regress_sgd` | `regress_sgd(A, b: List<Float>, opts: {eps, lambda, max_iter, max_dim}) -> Map` | Ridge regression via stochastic gradient descent with declared bounds. |
-| `clean_covariance` | `clean_covariance(returns: List<List<Float>>, opts: {method: "rie"\|"clip"\|"raw", eta, center, max_assets, max_obs}) -> Map` | RMT (Bouchaud-Potters) covariance cleaning; .matrix is the cleaned N×N. |
+| `clean_covariance` | `clean_covariance(returns: List<List<Float>>, opts: {method: "rie"\|"clip"\|"raw", eta, center, max_assets, max_obs}) -> Map` | RMT (Bouchaud-Potters) covariance cleaning: rows are observations (T), columns assets (N); the sample covariance divides by T (population — numpy cov uses T-1); center (default true) subtracts each column mean; clip replaces the eigenvalues inside the Marchenko-Pastur bulk by their mean; .matrix is the cleaned N×N, .eigenvalues the cleaned spectrum (no eigenvectors). max_obs / max_assets past the data raise kind range. |
 | `impact_sqrt` | `impact_sqrt(qty: Float, daily_volume: Float, sigma: Float, opts?: {Y}) -> Map` | Bouchaud square-root market-impact law; .bps is expected slippage. |
 | `quantile` | `quantile(values: List<Float>, q: Float) -> Float` | q-th quantile with linear interpolation between the two nearest sorted values (numpy's default): quantile(xs, 0.5) == median(xs). |
-| `var_historical` | `var_historical(returns: List<Float>, opts?: {alpha, max_obs}) -> Float` | Historical Value-at-Risk — no distributional assumption. |
-| `expected_shortfall_historical` | `expected_shortfall_historical(returns: List<Float>, opts?: {alpha, max_obs}) -> Float` | Historical expected shortfall (CVaR) beyond the VaR threshold. |
+| `var_historical` | `var_historical(returns: List<Float>, opts?: {alpha, max_obs}) -> Float` | Historical Value-at-Risk as a POSITIVE loss: -quantile(returns, 1 - alpha) (returns positive for gains); alpha in (0, 1), else kind range; more observations than max_obs raise kind range. |
+| `expected_shortfall_historical` | `expected_shortfall_historical(returns: List<Float>, opts?: {alpha, max_obs}) -> Float` | Historical expected shortfall (CVaR) as a positive loss: minus the mean of the returns at or below the (1 - alpha) quantile; alpha in (0, 1); max_obs as for var_historical. |
 | `var_gaussian` | `var_gaussian(returns: List<Float>, opts?: {alpha, mu, sigma}) -> Float` | Gaussian VaR assuming N(mu, sigma^2); moments inferred unless overridden. |
 
 ## native

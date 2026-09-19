@@ -809,6 +809,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let mut interp = interpreter::Interpreter::new(&program);
         interp.set_storage_raw(&storage_slots);
         interp.ensure_state_machine_storage();
+        // physical integrity first: a page damaged mid-file was served as
+        // truth (rows silently missing, an invariant between slots broken)
+        if let Err(why) = crate::runtime::storage::integrity_check() {
+            eprintln!("error: .soma_data/soma.db is damaged ({}) — restore it from a backup, or move it aside (`mv .soma_data .soma_data.bad`) to start with empty storage; serve refuses to answer from it", why);
+            process::exit(1);
+        }
         for line in interp.audit_stored_data() {
             eprintln!("warning: stored data: {}", line);
         }
@@ -1222,6 +1228,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let natives = natives.clone();
         let spawned = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
         let method = request.method().to_string();
+        // Content-Length AND Transfer-Encoding: an ambiguous framing a proxy
+        // may read differently (request smuggling) — refused (RFC 9112 §6.3)
+        {
+            let has = |n: &str| request.headers().iter().any(|h| h.field.as_str().as_str().eq_ignore_ascii_case(n));
+            if has("content-length") && has("transfer-encoding") {
+                let resp = tiny_http::Response::from_string(error_body("a request may not carry both Content-Length and Transfer-Encoding", "bad_request"))
+                    .with_status_code(400);
+                let _ = request.respond(cors(resp));
+                return;
+            }
+        }
         // `//withdraw/…` collapsed to a handler while `request`'s match saw
         // the empty first segment: one canonical path for every router
         let url = {
@@ -1347,6 +1364,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         if url.starts_with("/static/") {
             // drop any ?query (cache-busting `a.css?v=2`) before hitting disk
             let url_path = url.split('?').next().unwrap_or(&url);
+            // a dotfile (`.env`, `.git/…`) dropped in static/ is not served
+            if url_path.split('/').any(|seg| seg.starts_with('.') && seg != "..") {
+                let resp = tiny_http::Response::from_string("not found").with_status_code(404);
+                let _ = request.respond(cors(resp));
+                return;
+            }
             let file_path = base_dir.join(&url_path[1..]);
             // Canonicalize to prevent path traversal attacks
             let canonical = match file_path.canonicalize() {

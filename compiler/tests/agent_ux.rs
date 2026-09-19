@@ -2634,3 +2634,31 @@ fn cycle37_findings() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("'tokens' bound proven"), "{out}");
 }
+
+#[test]
+fn cycle38_findings() {
+    let d = dir("cycle38");
+    // quant bounds and alpha are enforced
+    std::fs::write(d.join("q.cell"), "cell Q {\n  on f(n: Int) {\n    let r = try { var_historical([0.01, -0.02, 0.03], map(\"alpha\", 1.5)) }\n    let s = try { var_historical([0.01, -0.02, 0.03], map(\"max_obs\", 2)) }\n    return [r.kind, s.kind]\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "q.cell", "f", "1"]);
+    assert!(out.contains(r#"["range", "range"]"#), "{out}");
+    // a materialized range is capped; a for-loop range is not
+    std::fs::write(d.join("r.cell"), "cell R {\n  on f(n: Int) { let r = try { range(0, n) }  return r.kind }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "r.cell", "f", "20000000"]);
+    assert!(out.contains("range"), "{out}");
+    // an emit listener reached through a helper is not "on a route path"
+    std::fs::write(d.join("w.cell"), "cell W {\n  on request(method: String, path: String, body: String) {\n    return match path { \"/pub\" -> _pub()  _ -> response(404, \"no\") }\n  }\n  on _pub() { emit tick(map(\"a\", 1)) return 1 }\n  on tick(data: Map) { return 1 }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "w.cell"]);
+    assert!(!out.contains("share the path /tick"), "{out}");
+    // a statement keyword where a value is expected
+    std::fs::write(d.join("l.cell"), "cell L {\n  on f(ok: Bool) {\n    let g = x => require ok else Nope\n    return 1\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "l.cell"]);
+    assert!(out.contains("starts a statement"), "{out}");
+    // a file that is not a database: a clean error, no panic
+    std::fs::create_dir_all(d.join(".soma_data")).unwrap();
+    std::fs::write(d.join(".soma_data/soma.db"), "garbage garbage garbage garbage garbage garbage garbage garbage garbage garbage garbage garbage").unwrap();
+    std::fs::write(d.join("k.cell"), "cell K {\n  memory { kv: Map<String, String> [persistent] }\n  on n() { return len(kv.keys) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "k.cell", "n"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("cannot be used") && !out.contains("panicked"), "{out}");
+}

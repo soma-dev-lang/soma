@@ -981,3 +981,20 @@ green. The attack ran 600 random interval expressions with no false ✓.
 
 ### Open
 - [ ] `A.rows.push(x)` inside A and `let g = rows.push` pass check, fail at run time; `rows[0][0] = 5` reported "may grow"; `x > 10 == true` does not parse; a computed-delegate recursion repeats "delegate error: " thousands of times.
+
+### Cycle 38 — realistic port (quant portfolio tracker, two peered instances) + runtime attack
+
+Portfolio port 7.5/10: FIFO lots and P&L in exact money, covariance and
+min-variance weights identical to numpy to the last printed digit, a native
+kernel matching the interpreter, two instances exchanging prices over the
+bus. The runtime attack (HTTP fuzzing, slowloris, smuggling, static
+traversal and symlinks, kill -9, concurrent processes) found no crash.
+
+### Fixed
+- [x] **A database damaged mid-file was served as truth** (rows silently missing, a cross-slot invariant broken, no warning) — serve runs `PRAGMA quick_check` at start-up and refuses to answer from a damaged file; a file that is not a database was a Rust panic naming storage.rs — a clean error with the fix, exit 1.
+- [x] `range(0, n)` from a client Int took the server from 126 MB to 2.3 GB — a materialized List is capped at 10M elements (kind range; `for i in range(a, b)` is lazy and not capped).
+- [x] Dotfiles under static/ were served (`.env`, `.git`); a request with both Content-Length and Transfer-Encoding was accepted (smuggling behind a proxy) — 404 / 400.
+- [x] Port: quant builtins ignored their declared bounds (`max_obs`, `max_assets`) and accepted `alpha` 1.5 — kind range; `soma check` warned that an emit listener reached through a helper "shares the path" of a route (it never did); `x => require …` said "reserved word … rename it" — a statement where a value is expected; clean_covariance / VaR / ES conventions documented.
+
+### Open
+- [ ] One handler looping over a client Int holds the process lock for minutes (serialized handlers, no per-request time limit — documented); no linear solve / inverse / eigenvectors builtin; property tests take one Int only; `read_csv` types `1E3` as a Float.

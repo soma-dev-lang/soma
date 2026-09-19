@@ -156,7 +156,12 @@ fn reserved_word(t: &Token) -> Option<&'static str> {
 
 fn reserved_error(t: &Token, span: Span) -> Option<ParseError> {
     reserved_word(t).map(|w| ParseError::FixIt {
-        message: format!("`{w}` is a reserved word in Soma and cannot name a variable, parameter or field — rename it (`{w}_id`, `the_{w}`)"),
+        // `x => require ok else Nope`: a statement where a value is expected
+        message: if matches!(w, "require" | "let" | "return" | "for" | "while" | "break" | "continue") {
+            format!("`{w}` starts a statement and cannot stand where a value is expected (a lambda `x => …`, an operand, an argument) — in a lambda write a block (`x => {{ {w} …  x }}`), or move it into the handler body; as a name it is reserved (`{w}_id`)")
+        } else {
+            format!("`{w}` is a reserved word in Soma and cannot name a variable, parameter or field — rename it (`{w}_id`, `the_{w}`)")
+        },
         span,
     })
 }

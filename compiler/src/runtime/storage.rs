@@ -363,6 +363,26 @@ pub struct SqliteBackend {
 /// writes were committed one statement at a time.
 static SHARED_CONN: std::sync::OnceLock<Arc<std::sync::Mutex<rusqlite::Connection>>> = std::sync::OnceLock::new();
 
+/// A database that cannot be opened or is damaged: a clean diagnostic and
+/// exit 1 (it was a Rust panic naming storage.rs).
+fn db_fatal(path: &std::path::Path, why: &str) -> ! {
+    eprintln!("error: the data file {} cannot be used: {} — restore it from a backup, or move it aside (`mv {} {}.bad`) to start with empty storage", path.display(), why, path.display(), path.display());
+    std::process::exit(1)
+}
+
+/// `PRAGMA quick_check` on the shared database (serve runs it at start-up):
+/// a page damaged mid-file was served as truth, rows silently missing.
+pub fn integrity_check() -> Result<(), String> {
+    let Some(conn) = shared_connection() else { return Ok(()) };
+    let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+    let r: Result<String, _> = conn.query_row("PRAGMA quick_check", [], |row| row.get(0));
+    match r {
+        Ok(s) if s == "ok" => Ok(()),
+        Ok(s) => Err(s),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// The shared connection, if any persistent slot opened the database.
 pub fn shared_connection() -> Option<Arc<std::sync::Mutex<rusqlite::Connection>>> {
     SHARED_CONN.get().cloned()
@@ -373,7 +393,7 @@ impl SqliteBackend {
         let _ = std::fs::create_dir_all(data_dir());
         let db_path = data_dir().join("soma.db");
         let shared = SHARED_CONN.get_or_init(|| {
-            let c = rusqlite::Connection::open(&db_path).expect("failed to open SQLite database");
+            let c = rusqlite::Connection::open(&db_path).unwrap_or_else(|e| db_fatal(&db_path, &e.to_string()));
             let _ = c.busy_timeout(std::time::Duration::from_secs(120));
             c.execute_batch("PRAGMA journal_mode=WAL;").ok();
             Arc::new(std::sync::Mutex::new(c))
@@ -394,7 +414,7 @@ impl SqliteBackend {
                 value TEXT NOT NULL,
                 type TEXT NOT NULL DEFAULT 'string'
             );"
-        )).expect("failed to create tables");
+        )).unwrap_or_else(|e| db_fatal(&db_path, &e.to_string()));
 
         drop(conn);
         Self {

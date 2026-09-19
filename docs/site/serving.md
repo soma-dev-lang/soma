@@ -8,7 +8,9 @@ soma run   app.cell request GET /stats ""     # call the router with no server
 ## Routing: three rules, in this order
 
 1. `GET /static/<file>` serves `<project>/static/<file>` — confined to that
-   directory (`..` cannot escape it).
+   directory (`..` and symlinks cannot escape it; dotfiles such as `.env`
+   are never served). A request carrying both Content-Length and
+   Transfer-Encoding is refused (400).
 2. A path that the cell's `request(method, path, body)` handler **matches
    explicitly** — a literal (`"/stats"`) or a prefix pattern (`"/hold/" + id`)
    in one of its `match` arms, or a path it tests (`path == "/reset"`,

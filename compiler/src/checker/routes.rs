@@ -29,6 +29,18 @@ impl ExplicitRoutes {
         self.exact.iter().any(|p| p == path) || self.prefixes.iter().any(|p| path.starts_with(p.as_str()))
     }
 
+    /// First path segment of the route PATTERNS only (no owned handlers):
+    /// what a same-named public handler can collide with.
+    pub fn path_segments(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.exact.iter().chain(self.prefixes.iter())
+            .filter_map(|p| p.trim_start_matches('/').split('/').next().map(str::to_string))
+            .filter(|s| !s.is_empty())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// First path segment of every explicit route ("/hold/" → "hold").
     pub fn first_segments(&self) -> Vec<String> {
         let mut out: Vec<String> = self
@@ -145,7 +157,9 @@ pub fn check_program(program: &Program) -> Vec<(String, Span)> {
     let mut out = Vec::new();
     for cell in super::names::collect_cells(program) {
         let routes = explicit_routes(cell);
-        let segments = routes.first_segments();
+        // a handler request only REACHES (an emit listener, a helper's callee)
+        // is not on a route path: "share the path /tick" was a false warning
+        let segments = routes.path_segments();
         if segments.is_empty() {
             continue;
         }

@@ -734,6 +734,10 @@ pub fn is_http_response(v: &Value) -> bool {
 /// builds: a single absurd size in a request aborted the whole process
 /// ("memory allocation of 4611686018427387903 bytes failed").
 pub const MAX_BUILT_LEN: usize = 100_000_000;
+/// A materialized List (range(0, n)): ~115 bytes per element, so 10M is ~1 GB
+/// — one `GET /biglist/20000000` took the server from 126 MB to 2.3 GB.
+/// `for i in range(a, b)` is lazy and not limited.
+pub const MAX_LIST_LEN: usize = 10_000_000;
 
 pub static EVENT_LISTENERS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
 /// soma.toml `[bus] accept`: events other processes may send.

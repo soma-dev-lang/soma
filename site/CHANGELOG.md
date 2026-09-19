@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `soma serve` refuses to start on a damaged database (`quick_check`); a
+  file that is not a database is a clean error, not a panic.
+- A materialized `range()` is capped at 10M elements; dotfiles under
+  static/ are not served; Content-Length + Transfer-Encoding is a 400.
+- Quant builtins enforce `max_obs` / `max_assets` and a confidence `alpha` in
+  (0, 1); no false "share the path" warning for emit listeners.
 - The invariant prover is exact for Ints past 2^53 (intervals widen
   outward instead of rounding), counts think() tools and computed delegates
   among a handler's callees, and does not prove a bare slot read that may be
