@@ -59,7 +59,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             // content "say hx-get please" loaded a third-party script)
             let uses_htmx = regex::Regex::new(r#"<[a-zA-Z][^<>]*\shx-[a-z-]+\s*="#).map(|r| r.is_match(&body)).unwrap_or(false);
             if inject_htmx && uses_htmx && !body.contains("htmx.org") {
-                let htmx_tag = "<script src=\"https://unpkg.com/htmx.org@2.0.4\"></script>";
+                // pinned by integrity: whoever controls the CDN cannot swap
+                // the script run on every page (it had no SRI)
+                let htmx_tag = "<script src=\"https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js\" integrity=\"sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+\" crossorigin=\"anonymous\"></script>";
                 if let Some(pos) = body.find("</head>") {
                     body.insert_str(pos, htmx_tag);
                 } else if let Some(pos) = body.find("<body") {

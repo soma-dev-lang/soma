@@ -408,6 +408,18 @@ fn agent_think(
             "token budget exhausted: used {}/{}", interp.agent_tokens_used, interp.agent_token_budget
         )));
     }
+    // the prompt's size is known before it is sent (~4 characters per
+    // token): one that alone overruns what is left is refused here — a
+    // 100 KB document spent 25 328 tokens under set_budget(3000)
+    if interp.agent_token_budget > 0 {
+        let prompt_est = ((prompt.chars().count() + system.map_or(0, |s| s.chars().count())) as i64 + 3) / 4;
+        if interp.agent_tokens_used + prompt_est > interp.agent_token_budget {
+            return Err(RuntimeError::TypeError(format!(
+                "token budget exhausted: the prompt alone is ~{} tokens, {} of {} are left — shorten it (slice / summarize in parts) or raise set_budget",
+                prompt_est, interp.agent_token_budget - interp.agent_tokens_used, interp.agent_token_budget
+            )));
+        }
+    }
 
     // Resolve config: cell [model: x] → soma.toml [models.x] → [agent] → env vars
     let cell_model = interp.cells.get(cell_name).and_then(|c| c.agent_model.clone());

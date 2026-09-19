@@ -94,7 +94,13 @@ impl RecordEntry {
 }
 
 pub fn append(path: &Path, entry: &RecordEntry) -> std::io::Result<()> {
-    let mut f = OpenOptions::new().create(true).append(true).open(path)?;
+    // the log holds arguments and results (passwords, minted tokens):
+    // owner-only, like a key file
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt; opts.mode(0o600); }
+    let mut f = opts.open(path)?;
     writeln!(f, "{}", entry.to_json_line())?;
     Ok(())
 }

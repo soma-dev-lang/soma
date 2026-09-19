@@ -568,6 +568,49 @@ pub struct BusEvent {
 pub type EventBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::SyncSender<BusEvent>>>>;
 pub const BUS_QUEUE: usize = 1024;
 
+/// This process's bus port and a random nonce: an outbound [peers] link
+/// opens with `HELLO <bus_port> <nonce>` so the receiving side knows who
+/// it is (a two-way [peers] pair delivered every event twice; a peer
+/// address that was this very process looped).
+pub static OWN_BUS_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+pub fn process_nonce() -> u64 {
+    static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        h.write_u32(std::process::id());
+        h.finish()
+    })
+}
+/// The resolved addresses of this process's own [peers] (set by serve)
+pub static PEER_ADDRS: std::sync::OnceLock<Vec<std::net::SocketAddr>> = std::sync::OnceLock::new();
+
+/// Writer side of a bus link: sends queued lines until the link is over —
+/// the peer closed (`alive` cleared by the reader), a write failed, or the
+/// queue was dropped — then closes the socket. It polls `alive`: a writer
+/// blocked on an empty queue kept its thread and socket forever after the
+/// peer left (8 000 connect/close cycles = 8 000 threads, fds in CLOSE_WAIT).
+pub fn bus_writer_loop(rx: std::sync::mpsc::Receiver<String>, mut stream: std::net::TcpStream, alive: Arc<std::sync::atomic::AtomicBool>) {
+    use std::io::Write;
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(line) => {
+                if !alive.load(std::sync::atomic::Ordering::SeqCst) || stream.write_all(line.as_bytes()).is_err() || stream.flush().is_err() {
+                    eprintln!("bus: event '{}' NOT delivered to a peer that disconnected", line.split_whitespace().nth(1).unwrap_or("?"));
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !alive.load(std::sync::atomic::Ordering::SeqCst) { break; }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    alive.store(false, std::sync::atomic::Ordering::SeqCst);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+}
+
 /// TCP peer connections for inter-process signal bus
 pub type PeerBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::SyncSender<String>>>>;
 
@@ -3929,25 +3972,13 @@ impl Interpreter {
         let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
         self.last_link_alive = Some(alive.clone());
         let alive_w = alive.clone();
-        let mut write_stream = stream;
-        spawn_handler_thread(move || {
+        {
             use std::io::Write;
-            let not_delivered = |line: &str| eprintln!("bus: event '{}' NOT delivered to a peer that disconnected", line.split_whitespace().nth(1).unwrap_or("?"));
-            for line in rx {
-                if !alive_w.load(std::sync::atomic::Ordering::SeqCst)
-                    || write_stream.write_all(line.as_bytes()).is_err()
-                    || write_stream.flush().is_err() {
-                    not_delivered(&line);
-                    break;
-                }
-            }
-            // the link is over (the peer went away, or it was dropped for
-            // reading too slowly): close the socket so the reader ends too
-            // and the [peers] supervisor reconnects — a dropped slow peer
-            // stayed cut off until a restart
-            alive_w.store(false, std::sync::atomic::Ordering::SeqCst);
-            let _ = write_stream.shutdown(std::net::Shutdown::Both);
-        });
+            let mut s = &stream;
+            let _ = s.write_all(format!("HELLO {} {}\n", OWN_BUS_PORT.load(std::sync::atomic::Ordering::Relaxed), process_nonce()).as_bytes());
+        }
+        let write_stream = stream;
+        spawn_handler_thread(move || bus_writer_loop(rx, write_stream, alive_w));
 
         // Reader thread: reads EVENT lines, dispatches to handlers
         let cells = self.cells.clone();
@@ -4207,6 +4238,20 @@ impl Interpreter {
             _ => return Ok(()),
         };
         for inv in &invs {
+            // the start-up audit has no "value before the write": an
+            // invariant reading `slot.get(key)` (write-once, monotone) is a
+            // rule about WRITES — checked against the stored row itself,
+            // every row of a write-once log was reported as violating it
+            if op == "read" {
+                let mut reads_before = false;
+                crate::checker::literals::for_each_in_expr(inv, &mut |e| match e {
+                    Expr::MethodCall { target, method, .. } if matches!(method.as_str(), "get" | "has" | "contains" | "contains_key")
+                        && matches!(&target.node, Expr::Ident(n) if n == slot_name) => reads_before = true,
+                    Expr::Index { target, .. } if matches!(&target.node, Expr::Ident(n) if n == slot_name) => reads_before = true,
+                    _ => {}
+                });
+                if reads_before { continue; }
+            }
             let mut env = FxHashMap::default();
             env.insert(slot_name.to_string(), val.clone());
             env.insert(INV_SLOT.to_string(), Value::String(slot_name.to_string()));

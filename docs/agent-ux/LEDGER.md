@@ -1376,3 +1376,24 @@ the gaps below.
 
 ### Open
 - [ ] Cross-process delivery is fire-and-forget (outbox by hand); a failed bus event names no handler/line; `ipow(2, 16777215)` refused one bit early; lambda `m["k"] = …` copies are not warned.
+
+### Cycle 60 — realistic port (e-signature workflow, hash-chained audit) + attack (crypto/integrity builtins, HTML escaping, time, the new peer supervisor, soundness)
+
+E-signature port 8.5/10: 20 signers × 2 concurrent posts per link → exactly
+20 × 200 and 20 × 410; a tampered audit row detected; XSS in titles, names
+and content escaped. Attack: sha256/HMAC match Python, secure_eq constant
+time, random_token random under test and serve, dates and leap years right,
+no unsound ✓ — and the bus gaps below.
+
+### Fixed
+- [x] **Attack: two processes listing each other in `[peers]` received every event twice** (two TCP links, an emit on both) — a link opens with `HELLO <bus port> <nonce>`; the side that has its own link to that peer only receives on the inbound one.
+- [x] **Attack: closed bus connections leaked a thread and a socket each** (8 000 connect/close = 8 000 threads; a hostile peer killed the server under a low fd limit; the supervisor leaked one per reconnect) — writers end with their link (they poll it), sockets are closed, a connection is an emit target only after its first line, and the supervisor backs off unless a link stayed up 30 s.
+- [x] **Attack: a `[peers]` address pointing at this very process looped** (300 000 handler runs in 10 s) or tripled each event — refused at start-up (and by nonce on the inbound side).
+- [x] Port: the start-up audit reported every row of a write-once slot as violating `v.get(key) == ()` — invariants about the value before a write are not re-checked against stored rows.
+- [x] Port: a huge prompt passed set_budget (25 328 tokens under 3 000) — a prompt that alone overruns what is left raises `budget` before it is sent.
+- [x] Attack: `body: String` lost its leading whitespace (webhook HMAC never matched) — the exact bytes.
+- [x] Attack: `to_json` let `</script>` / `<!--` close an embedding script — escaped as `<\/` / `<!--` (same JSON).
+- [x] Attack: the injected htmx script had no integrity pin — `integrity="sha384-…"`; `hmac_sha256("", …)` fails closed; `--record` logs are created 0600.
+
+### Open
+- [ ] verify's reason for an unproven write-once invariant points at value bounds; `??` does not catch an out-of-range index; `next_id()` is one counter per cell; delivery across processes is still fire-and-forget.

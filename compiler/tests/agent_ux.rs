@@ -3345,3 +3345,63 @@ cell test T {
     let (out, code) = soma_in(&app, &["run", "app.cell", "main"]);
     assert!(code != 0 && out.contains("does not list"), "a planted file is refused: {out}");
 }
+
+/// Cycle 60: the start-up audit does not flag write-once rows (an
+/// invariant reading `slot.get(key)` is about writes); a prompt that alone
+/// overruns the remaining budget is refused before it is sent.
+#[test]
+fn cycle60_findings() {
+    let d = dir("cycle60");
+    std::fs::write(d.join("wo.cell"), "cell W { memory { v: Map<String, Int> [persistent]  invariant v.get(key) == () }\n  on put(k: String) { v.set(k, 1)  return v.get(k) } }\n").unwrap();
+    let _ = soma_in(&d, &["run", "--fresh", "wo.cell", "put", "a"]);
+    let (out, _) = soma_in(&d, &["run", "wo.cell", "put", "b"]);
+    assert!(!out.contains("violate its invariant"), "valid write-once rows are not reported: {out}");
+    passes("cycle60_budget", r#"
+cell agent B {
+    on go(n: Int) {
+        set_budget(100)
+        let r = try { think(pad_left("", n, "x "), map("max_tokens", 10)) }
+        return r.kind
+    }
+}
+cell test T {
+    rules {
+        mock think "ok"
+        assert go(8000) == "budget"
+    }
+}
+"#);
+}
+
+/// Cycle 60 (integrity attack): to_json never closes a <script>; an empty
+/// HMAC key fails closed; a [peers] address that is this process's own bus
+/// is refused.
+#[test]
+fn cycle60_attack() {
+    passes("cycle60_attack", r#"
+cell J {
+    on j() { return to_json(map("a", "</script><!--x")) }
+    on h() { return hmac_sha256("", "msg") }
+}
+cell test T {
+    rules {
+        assert !contains(j(), "</")
+        assert from_json(j()).a == "</script><!--x"
+        assert_fails h()
+    }
+}
+"#);
+    let d = dir("cycle60_selfpeer");
+    let port = 19700 + (std::process::id() % 40) as u16;
+    std::fs::write(d.join("soma.toml"), format!("[peers]\nme = \"127.0.0.1:{}\"\n", port + 2)).unwrap();
+    std::fs::write(d.join("app.cell"), "cell P { on ping(d: Map) { emit ping(d) }  on go() { emit ping(map(\"a\", 1))  return \"ok\" } }\n").unwrap();
+    let log = d.join("s.log");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "-p", &port.to_string()])
+        .current_dir(&d).stdout(Stdio::null()).stderr(std::fs::File::create(&log).unwrap()).spawn().expect("serve");
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    let _ = child.kill();
+    let _ = child.wait();
+    let out = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(out.contains("own bus port"), "{out}");
+}

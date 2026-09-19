@@ -169,6 +169,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::String(hex(&sha2::Sha256::digest(data.as_bytes())))))
         }
         "hmac_sha256" if args.len() == 2 => {
+            // `hmac_sha256(secret ?? "", body)`: an empty key signs with
+            // nothing — a missing secret, never a choice
+            if matches!(&args[0], Value::String(k) if k.is_empty()) {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: "range: hmac_sha256 with an empty key — the secret is missing (fail closed)".to_string() }));
+            }
             use hmac::Mac;
             let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(format!("{}", args[0]).as_bytes()).expect("hmac takes any key");
             mac.update(format!("{}", args[1]).as_bytes());
@@ -451,7 +456,16 @@ fn write_json_with(v: &Value, out: &mut String, spaced: bool) {
                 out.push_str("null");
             }
         }
-        Value::String(s) => out.push_str(&serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())),
+        // `</script>` / `<!--` inside a string closed the <script> block a
+        // page embedded the JSON in: `<\/` and `\u003c!--` are the same JSON
+        Value::String(s) => {
+            let j = serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string());
+            if j.contains("</") || j.contains("<!--") {
+                out.push_str(&j.replace("</", "<\\/").replace("<!--", "\\u003c!--"));
+            } else {
+                out.push_str(&j);
+            }
+        }
         Value::List(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {

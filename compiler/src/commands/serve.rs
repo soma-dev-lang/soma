@@ -437,11 +437,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 stream.set_nodelay(true).ok();
                 let read_stream = match stream.try_clone() { Ok(s) => s, Err(_) => continue };
 
-                // Register writer for this peer on the peer bus
+                // this connection's writer is registered on the peer bus once
+                // its first line says who it is (see the reader): a peer we
+                // already reach through our own [peers] link is receive-only
                 let (tx, rx) = std::sync::mpsc::sync_channel::<String>(interpreter::BUS_QUEUE);
-                if let Ok(mut senders) = peer_bus_clone.lock() {
-                    senders.push(tx);
-                }
+                let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+                let remote_ip = stream.peer_addr().ok().map(|a| a.ip());
 
                 // If cluster mode, register this connection in the cluster node
                 if let Some(ref cluster) = cluster_for_bus {
@@ -455,16 +456,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     }
                 }
 
-                // Writer: peer bus → TCP lines to peer
-                let mut write_stream = stream;
-                let natives = natives.clone();
-                crate::interpreter::spawn_handler_thread(move || {
-                    use std::io::Write;
-                    for line in rx {
-                        if write_stream.write_all(line.as_bytes()).is_err() { return; }
-                        let _ = write_stream.flush();
-                    }
-                });
+                // Writer: peer bus → TCP lines to peer (ends with the link)
+                let write_stream = stream;
+                let alive_w = alive.clone();
+                crate::interpreter::spawn_handler_thread(move || crate::interpreter::bus_writer_loop(rx, write_stream, alive_w));
 
                 // Reader: TCP lines from peer → dispatch to handlers
                 let prog2 = prog.clone();
@@ -482,6 +477,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     let reader = std::io::BufReader::new(read_stream);
                     eprintln!("bus: peer connected");
                     let mut first = true;
+                    let mut pending_tx = Some(tx);
                     for line in crate::interpreter::bus_lines(reader) {
                         let line = match line { Ok(l) => l, Err(_) => break };
                         // a browser page can POST to the bus port (a cross-
@@ -494,6 +490,29 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 eprintln!("bus: refused an HTTP request on the bus port");
                                 break;
                             }
+                            // `HELLO <bus port> <nonce>` from another Soma process
+                            let mut receive_only = false;
+                            if let Some(rest) = line.strip_prefix("HELLO ") {
+                                let mut it = rest.split_whitespace();
+                                let port: u16 = it.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+                                let nonce: u64 = it.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                                if nonce == crate::interpreter::process_nonce() {
+                                    eprintln!("bus: refused a [peers] link from this very process (a peer address that points at itself)");
+                                    break;
+                                }
+                                // we have our own link to that peer: its events come
+                                // in here, ours go out there — never both ways twice
+                                receive_only = remote_ip.map_or(false, |ip| crate::interpreter::PEER_ADDRS.get().map_or(false, |addrs| addrs.iter().any(|a| a.port() == port && (a.ip() == ip || (a.ip().is_loopback() && ip.is_loopback())))));
+                            }
+                            if !receive_only {
+                                if let Some(tx) = pending_tx.take() {
+                                    if let Ok(mut senders) = pbus.lock() { senders.push(tx); }
+                                }
+                            }
+                            // (a receive-only link keeps its unused sender in
+                            // pending_tx: dropping it ended the writer, which
+                            // closed the socket)
+                            if line.starts_with("HELLO ") { continue; }
                         }
                         // `_private` handlers are not reachable from outside
                         // the process (only the `_cluster_*` replication ones)
@@ -746,6 +765,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             }
                         }
                     }
+                    alive.store(false, std::sync::atomic::Ordering::SeqCst);
                     eprintln!("bus: peer disconnected");
                 });
             }
@@ -879,7 +899,24 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         if soma_toml.exists() {
             if let Ok(content) = std::fs::read_to_string(&soma_toml) {
                 if let Ok(manifest) = toml::from_str::<crate::pkg::manifest::Manifest>(&content) {
+                    if bus_port > 0 && bus_wanted { crate::interpreter::OWN_BUS_PORT.store(bus_port, std::sync::atomic::Ordering::Relaxed); }
+                    {
+                        use std::net::ToSocketAddrs;
+                        let addrs: Vec<std::net::SocketAddr> = manifest.peers.values().filter_map(|a| a.to_socket_addrs().ok()).flatten().collect();
+                        let _ = crate::interpreter::PEER_ADDRS.set(addrs);
+                    }
                     for (peer_name, addr) in &manifest.peers {
+                        // a peer address that is this very process's bus: every
+                        // event came back to it (an emit in the listener looped
+                        // 300 000 times in 10 s)
+                        {
+                            use std::net::ToSocketAddrs;
+                            let own = addr.to_socket_addrs().map_or(false, |mut it| it.any(|a| a.port() == bus_port && (a.ip().is_loopback() || a.ip().is_unspecified())));
+                            if own && bus_port > 0 {
+                                eprintln!("error: peer: {} ({}) is this process's own bus port — not linked (list the OTHER process)", peer_name, addr);
+                                continue;
+                            }
+                        }
                         eprintln!("peer: connecting to {} ({})", peer_name, addr);
                         // one link attempt: a fresh interpreter per link
                         let connect = {
@@ -918,12 +955,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             let mut backoff = 1u64;
                             loop {
                                 if let Some(a) = &alive {
+                                    let since = std::time::Instant::now();
                                     while a.load(std::sync::atomic::Ordering::SeqCst) {
                                         std::thread::sleep(std::time::Duration::from_millis(500));
                                     }
                                     eprintln!("peer: {} link lost — reconnecting", peer_name);
                                     alive = None;
-                                    backoff = 1;
+                                    // a peer that accepts and drops at once is not a
+                                    // healthy link: back off (it reconnected every 1.3 s)
+                                    backoff = if since.elapsed() > std::time::Duration::from_secs(30) { 1 } else { (backoff * 2).min(30) };
                                 }
                                 std::thread::sleep(std::time::Duration::from_secs(backoff));
                                 match connect() {
@@ -1478,6 +1518,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         };
 
         // leading whitespace is JSON too (a pretty-printing client): trim
+        // …for PARSING only: `body: String` stays the exact bytes received
+        // (a webhook HMAC over a body starting with "\n" never matched)
+        let body_exact = body_raw.clone();
         let body_raw = body_raw.trim_start().to_string();
         // `_type` / `_variant` / `_values` anywhere in a client's JSON would
         // forge a record or a sum-type variant (a `Refund` that `Pay` does
@@ -1524,7 +1567,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         } else {
             None
         };
-        let body = body_raw;
+        let _ = body_raw;
+        let body = body_exact;
 
         // a returned map with `_status` IS an HTTP response (its other plain
         // keys become headers): a handler echoing a client object would let

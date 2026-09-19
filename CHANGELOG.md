@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Peer bus: two processes listing each other exchange each event once
+  (links open with `HELLO`); closed connections free their thread and
+  socket; a `[peers]` address that is this process is refused; the
+  reconnect back-off holds for links that drop at once.
+- The start-up audit no longer reports write-once rows; a prompt that
+  alone overruns the remaining `set_budget` raises before it is sent.
+- `body: String` is the exact bytes received; `to_json` escapes `</` and
+  `<!--`; the injected htmx script is pinned with SRI; `hmac_sha256` with
+  an empty key fails closed; `--record` logs are owner-only.
 - `[peers]` links are supervised: a peer down at start-up, restarted, or
   dropped for reading too slowly is reconnected.
 - Packages: sub-directories are installed and covered by the lock's
