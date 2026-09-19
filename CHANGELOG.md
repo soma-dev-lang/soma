@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bus peers have bounded send queues (a peer that stops reading is
+  disconnected); WebSocket clients are also dropped past 64 MB queued; the
+  WebSocket Origin check refuses userinfo and control characters.
+- A split string as the last statement of a loop body is a check error;
+  disjunctive invariants over the written value are proven.
 - Duplicate or list-valued Content-Length is refused and the connection's
   pipelined bytes never run; request-log lines escape control characters.
 - Unary operator chains count toward the nesting limit; a List slot's

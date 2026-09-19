@@ -1516,6 +1516,24 @@ fn static_value(expr: &Expr) -> Known {
 /// (optionally through abs()) against constants, joined with &&.
 fn prove(inv: &Expr, slot: &str, value: Known) -> Proof {
     match inv {
+        // `n == 0 || n == 5`: holds when either side holds for every value
+        // in range (a literal write of 0 was "runtime-checked")
+        Expr::BinaryOp { left, op: BinOp::Or, right } => {
+            // only over the written value: a side reading `key` (or another
+            // name) can RAISE (`key != 0` on a String key) before the other
+            // side is evaluated, and the write is refused
+            let only_value = |e: &Expr| deep_idents(e).iter().all(|n| n == slot || n == "value");
+            if !only_value(&left.node) || !only_value(&right.node) { return Proof::Unknown; }
+            let a = prove(&left.node, slot, value);
+            let b = prove(&right.node, slot, value);
+            if a == Proof::Holds || b == Proof::Holds {
+                Proof::Holds
+            } else if a == Proof::Violated && b == Proof::Violated {
+                Proof::Violated
+            } else {
+                Proof::Unknown
+            }
+        }
         Expr::BinaryOp { left, op: BinOp::And, right } => {
             let a = prove(&left.node, slot, value);
             let b = prove(&right.node, slot, value);

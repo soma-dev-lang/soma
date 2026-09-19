@@ -2824,3 +2824,20 @@ fn cycle45_findings() {
     let (out, code) = soma_in(&d, &["check", "g.cell"]);
     assert_eq!(code, 0, "{out}");
 }
+
+#[test]
+fn cycle46_findings() {
+    let d = dir("cycle46");
+    // a string split by an unescaped quote as the last statement of a loop body
+    std::fs::write(d.join("q.cell"), "cell Q {\n  on f() {\n    let m = map(\"k\", \"v\")\n    let s = \"\"\n    for i in range(0, 2) {\n      s = s + \"<td>{m.k ?? \"\"}</td>\"\n    }\n    return s\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "q.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("unescaped `\"` inside `{…}`"), "{out}");
+    // a literal write proves a disjunction over the value; `key` blocks it
+    std::fs::write(d.join("o.cell"), "cell A {\n  memory {\n    n: Map<String, Int> [persistent]\n    invariant n == 0 || n == 5\n  }\n  on zero(k: String) { n.set(k, 0) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "o.cell"]);
+    assert!(out.contains("writer 'zero' proven"), "{out}");
+    std::fs::write(d.join("k.cell"), "cell A {\n  memory {\n    n: Map<String, Int> [persistent]\n    invariant key != 0 || n == 0\n  }\n  on zero(k: String) { n.set(k, 0) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "k.cell"]);
+    assert!(!out.contains("writer 'zero' proven"), "{out}");
+}

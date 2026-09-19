@@ -215,10 +215,18 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_stmts(&mut self, stmts: &[Spanned<Statement>]) {
+        self.walk_stmts_inner(stmts, false)
+    }
+
+    fn walk_stmts_discarding(&mut self, stmts: &[Spanned<Statement>]) {
+        self.walk_stmts_inner(stmts, true)
+    }
+
+    fn walk_stmts_inner(&mut self, stmts: &[Spanned<Statement>], discard_last: bool) {
         for (i, stmt) in stmts.iter().enumerate() {
             // `let j = 1 2`: the `2` is a statement of its own that does
             // nothing (only the LAST statement of a block is a value)
-            if i + 1 < stmts.len() {
+            if i + 1 < stmts.len() || discard_last {
                 if let Statement::ExprStmt { expr } = &stmt.node {
                     let inert = matches!(&expr.node,
                         Expr::Literal(_) | Expr::Ident(_) | Expr::BinaryOp { .. } | Expr::CmpOp { .. }
@@ -229,7 +237,12 @@ impl<'a> Walker<'a> {
                         let unclosed = |e: &Expr| matches!(e, Expr::Literal(Literal::String(t))
                             if t.matches('{').count() > t.matches('}').count());
                         let prev_open = i > 0 && match &stmts[i - 1].node {
-                            Statement::Return { value } | Statement::ExprStmt { expr: value } | Statement::Let { value, .. } => unclosed(&value.node),
+                            Statement::Return { value } | Statement::ExprStmt { expr: value } | Statement::Let { value, .. } | Statement::Assign { value, .. } => {
+                                // `s = s + "<td>{m.k ?? "` — the open string may sit in an operand
+                                let mut open = unclosed(&value.node);
+                                crate::checker::literals::for_each_in_expr(&value.node, &mut |e| if unclosed(e) { open = true; });
+                                open
+                            }
                             _ => false,
                         };
                         let hint = match &expr.node {
@@ -378,7 +391,10 @@ impl<'a> Walker<'a> {
                     // positive for any string evaluated after the binding.
                     bind_stmts(body, &mut w.scope);
                     w.loop_depth += 1;
-                    w.walk_stmts(body);
+                    // a loop body has no value: its LAST statement is thrown
+                    // away too (`s = s + "<td>{m.k ?? ""}</td>"` split in two
+                    // passed check as the body's "last value")
+                    w.walk_stmts_discarding(body);
                     w.loop_depth -= 1;
                 });
             }
@@ -388,7 +404,10 @@ impl<'a> Walker<'a> {
                 self.scoped(&[], |w| {
                     bind_stmts(body, &mut w.scope);
                     w.loop_depth += 1;
-                    w.walk_stmts(body);
+                    // a loop body has no value: its LAST statement is thrown
+                    // away too (`s = s + "<td>{m.k ?? ""}</td>"` split in two
+                    // passed check as the body's "last value")
+                    w.walk_stmts_discarding(body);
                     w.loop_depth -= 1;
                 });
             }

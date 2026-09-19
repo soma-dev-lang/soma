@@ -427,7 +427,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let read_stream = match stream.try_clone() { Ok(s) => s, Err(_) => continue };
 
                 // Register writer for this peer on the peer bus
-                let (tx, rx) = std::sync::mpsc::channel::<String>();
+                let (tx, rx) = std::sync::mpsc::sync_channel::<String>(interpreter::BUS_QUEUE);
                 if let Ok(mut senders) = peer_bus_clone.lock() {
                     senders.push(tx);
                 }
@@ -520,7 +520,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                             crate::interpreter::spawn_handler_thread(move || {
                                                 if let Ok(stream) = std::net::TcpStream::connect(&pid) {
                                                     stream.set_nodelay(true).ok();
-                                                    let (tx, rx) = std::sync::mpsc::channel::<String>();
+                                                    let (tx, rx) = std::sync::mpsc::sync_channel::<String>(interpreter::BUS_QUEUE);
                                                     if let Ok(mut senders) = pbus_back.lock() {
                                                         senders.push(tx);
                                                     }
@@ -761,7 +761,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     // This ensures _cluster_set events flow from this node to the seed
                     if let Ok(stream) = std::net::TcpStream::connect(seed) {
                         stream.set_nodelay(true).ok();
-                        let (tx, rx) = std::sync::mpsc::channel::<String>();
+                        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(interpreter::BUS_QUEUE);
                         if let Ok(mut senders) = peer_bus.lock() {
                             senders.push(tx);
                         }
@@ -914,7 +914,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             // client that stops reading used to stall the broadcast for all
             // (and their events were then dropped silently); now it alone is
             // dropped when its queue is full
-            let ws_clients: std::sync::Arc<std::sync::Mutex<Vec<(usize, std::sync::mpsc::SyncSender<String>)>>> =
+            // (id, queue, bytes queued): the queue caps EVENTS; the byte count
+            // caps memory — 1024 events of 4 MB each were 4 GB per idle client
+            let ws_clients: std::sync::Arc<std::sync::Mutex<Vec<(usize, std::sync::mpsc::SyncSender<String>, std::sync::Arc<std::sync::atomic::AtomicUsize>)>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let next_client = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -935,14 +937,20 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 // `hi","event":"admin"` rewrote the envelope every client parsed)
                                 let json = format!("{{\"event\":{},\"data\":{}}}", serde_json::to_string(&event.stream).unwrap_or_default(), crate::interpreter::builtins::string::to_json_string(&event.data));
                                 if let Ok(mut clients) = clients.lock() {
-                                    clients.retain(|(_, tx)| match tx.try_send(json.clone()) {
-                                        Ok(()) => true,
+                                    const WS_QUEUE_BYTES: usize = 64 * 1024 * 1024;
+                                    clients.retain(|(_, tx, queued)| {
+                                        if queued.load(std::sync::atomic::Ordering::Relaxed) + json.len() > WS_QUEUE_BYTES {
+                                            eprintln!("ws: a client stopped reading ({} MB queued) — dropped", WS_QUEUE_BYTES >> 20);
+                                            return false;
+                                        }
+                                        match tx.try_send(json.clone()) {
+                                        Ok(()) => { queued.fetch_add(json.len(), std::sync::atomic::Ordering::Relaxed); true }
                                         Err(std::sync::mpsc::TrySendError::Full(_)) => {
                                             eprintln!("ws: a client stopped reading ({} events queued) — dropped", interpreter::BUS_QUEUE);
                                             false
                                         }
                                         Err(_) => false,
-                                    });
+                                    }});
                                 }
                             }
                             Err(_) => break,
@@ -985,7 +993,14 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         let ok = match origin {
                             None => true, // not a browser (a script, a peer)
                             Some(o) => {
-                                let oh = o.split("://").nth(1).unwrap_or("").split(['/', ':']).next().unwrap_or("").to_string();
+                                // the authority, parsed: userinfo (`localhost:1@evil.com`
+                                // named evil.com's origin "localhost") or a control
+                                // character is never what a browser sends — refused
+                                let authority = o.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+                                let bad = authority.contains('@') || o.chars().any(|c| c.is_control());
+                                let oh = if bad { String::new() }
+                                    else if authority.starts_with('[') { authority.split(']').next().map(|h| format!("{}]", h)).unwrap_or_default() }
+                                    else { authority.split(':').next().unwrap_or("").to_string() };
                                 let local = oh == "localhost" || oh == "127.0.0.1" || oh == "[::1]";
                                 // Origin == Host only when serving beyond loopback:
                                 // on 127.0.0.1 a DNS-rebinding page has Origin == Host
@@ -1008,10 +1023,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     let ws_write = std::sync::Arc::new(std::sync::Mutex::new(ws));
                     let my_id = next_client.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let (push_tx, push_rx) = std::sync::mpsc::sync_channel::<String>(interpreter::BUS_QUEUE);
+                    let queued = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
                     {
                         let w = ws_write.clone();
+                        let queued = queued.clone();
                         crate::interpreter::spawn_handler_thread(move || {
                             for text in push_rx {
+                                queued.fetch_sub(text.len().min(queued.load(std::sync::atomic::Ordering::Relaxed)), std::sync::atomic::Ordering::Relaxed);
                                 let Ok(mut ws) = w.lock() else { break };
                                 if ws.send(tungstenite::Message::Text(text)).is_err() || ws.flush().is_err() { break; }
                             }
@@ -1021,7 +1039,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         });
                     }
                     if let Ok(mut c) = clients.lock() {
-                        c.push((my_id, push_tx));
+                        c.push((my_id, push_tx, queued));
                     }
 
                     eprintln!("ws: client connected");
@@ -1075,7 +1093,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     }
 
                     if let Ok(mut c) = clients.lock() {
-                        c.retain(|(id, _)| *id != my_id);
+                        c.retain(|(id, _, _)| *id != my_id);
                     }
                 });
             }

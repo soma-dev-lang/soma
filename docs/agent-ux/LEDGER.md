@@ -1114,3 +1114,21 @@ start-up audit, init templates and offline docs all matched.
 
 ### Open
 - [ ] Two Set-Cookie pairs in response() send only one; the dashboard shows no verify verdicts; `soma describe` has no routes and marks request-owned handlers public; verify is superlinear past ~1000 chained handlers; a write-once proof depends on the written value's bounds.
+
+### Cycle 46 — realistic port (ride-hailing dispatch) + attack on the realtime surface
+
+Dispatch port 7/10: two riders racing for one driver → one match; 20
+riders vs 6 drivers → one trip per driver; the 30 s accept timeout
+re-matched live. The realtime attack found the WebSocket frame parser
+strict and RFC-correct, SSE streams isolated, bus authorization and
+invariants enforced on peer events, and slow readers never stalling the
+handler lock.
+
+### Fixed
+- [x] **The per-peer bus send queue was unbounded**: a peer that stopped reading (or a socket that never read) grew the emitter from 233 MB to 2.25 GB — bounded queues; a peer whose queue is full is disconnected, as a WebSocket client is.
+- [x] The WebSocket per-client queue capped EVENTS (1024) but not bytes (5 idle clients × 4 MB publishes → 1.2 GB) — 64 MB per client too.
+- [x] The WebSocket Origin check read `http://localhost:1@evil.com` as localhost (userinfo) and accepted control characters — the authority is parsed; userinfo / control characters refused.
+- [x] Port: a string split by an unescaped `"` as the LAST statement of a loop body passed check (a loop body has no value) — flagged, with the quote hint also after an assignment; `invariant n == 0 || n == 5` was not proven for a literal write — disjunctions over the written value are proven (a side reading `key` can raise, so it stays runtime-checked).
+
+### Open
+- [ ] `s == "" || s == "x"` for String literal writes is not proven; native vocabulary lacks atan / atan2 / asin / acos; WS replies and publish pushes use different JSON spacing; `verify --strict` repeats ⚠ lines in its summary.

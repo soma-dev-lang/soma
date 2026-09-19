@@ -569,10 +569,24 @@ pub type EventBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::SyncSender<BusEven
 pub const BUS_QUEUE: usize = 1024;
 
 /// TCP peer connections for inter-process signal bus
-pub type PeerBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::Sender<String>>>>;
+pub type PeerBus = Arc<std::sync::Mutex<Vec<std::sync::mpsc::SyncSender<String>>>>;
 
 pub fn new_event_bus() -> EventBus {
     Arc::new(std::sync::Mutex::new(Vec::new()))
+}
+
+/// Send a bus line to every peer. A peer whose queue is full (it stopped
+/// reading, or hung without closing) is DROPPED, as a WebSocket client is:
+/// an unbounded queue grew the emitter to gigabytes.
+pub fn send_to_peers(senders: &mut Vec<std::sync::mpsc::SyncSender<String>>, line: &str) {
+    senders.retain(|s| match s.try_send(line.to_string()) {
+        Ok(()) => true,
+        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            eprintln!("bus: a peer stopped reading ({} events queued) — disconnected", BUS_QUEUE);
+            false
+        }
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+    });
 }
 
 pub fn new_peer_bus() -> PeerBus {
@@ -2127,8 +2141,8 @@ impl Interpreter {
                     // then raised had already told the other process
                     match self.journal.as_mut() {
                         Some(j) => j.push(UndoOp::PeerSend(line)),
-                        None => if let Ok(senders) = peers.lock() {
-                            for sender in senders.iter() { let _ = sender.send(line.clone()); }
+                        None => if let Ok(mut senders) = peers.lock() {
+                            send_to_peers(&mut senders, &line);
                         },
                     }
                 }
@@ -3841,8 +3855,9 @@ impl Interpreter {
             RuntimeError::TypeError(format!("connect clone: {}", e))
         })?;
 
-        // Writer: sends outgoing signals to this peer
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        // Writer: sends outgoing signals to this peer (bounded: a peer that
+        // stops reading is dropped, see send_to_peers)
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(BUS_QUEUE);
 
         // Register this peer's sender in the peer bus
         if let Some(ref peers) = self.peer_bus {
@@ -4507,8 +4522,8 @@ impl Interpreter {
         for e in pushes { self.send_bus_now(e); }
         if !peer_lines.is_empty() {
             if let Some(ref peers) = self.peer_bus {
-                if let Ok(senders) = peers.lock() {
-                    for l in &peer_lines { for sender in senders.iter() { let _ = sender.send(l.clone()); } }
+                if let Ok(mut senders) = peers.lock() {
+                    for l in &peer_lines { send_to_peers(&mut senders, l); }
                 }
             }
         }
