@@ -207,7 +207,7 @@ cell test MyTests {                // a name and a `rules` block are required; i
         mock Notifier.send error "down"          // http wrapper) — Cell.h: THAT cell's only — answers / raises instead;
                                                  // error "not_found: x" raises kind not_found
         mock now 1700000000                      // freeze now()/now_ms()/today() until the next mock now (1700000000.25 or `mock now_ms …` for sub-second)
-        property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // 0..100 = 0…99, every value (≤ 20k); ONE Int variable over a range
+        property "sum" forall n: Int in 0..100 ensures f(n) >= 0   // 0..100 = 0…99, every value (≤ 20k); ONE Int variable over a range; iterations share the test cell's slots (a writing body sees earlier iterations' writes)
     }
 }
 ```
@@ -247,7 +247,8 @@ source, `file:line`, left/right, and the fields a value really has when
   / `key` name the value and key being written — only inside an invariant;
   `slot.get(key)` there is the value BEFORE the write: `invariant value >=
   (versions.get(key) ?? 0)` keeps versions monotone); it is
-  a pure condition — no handler call, think(), transition(), I/O or network,
+  a pure condition (on a List slot `key` is the element's Int index) — no
+  handler call, think(), transition(), I/O or network,
   even inside a lambda or an interpolation (a check error).
 - `r.kind` of a refused write is `"invariant"`; of a bad `transition()`,
   `"invalid_transition"`; of `require … else Tag`, `"Tag"`.
@@ -328,7 +329,7 @@ source, `file:line`, left/right, and the fields a value really has when
   `add_days`, `add_months`, `days_between`, `months_between`, `days_in_month`,
   `format_date(ts)`; ISO strings compare with `<`. Dates are UTC and there
   are no time zones or time-of-day builtins: keep a fixed offset per place
-  (`let local_min = floor_div(now(), 60000) + offset_min`) and parse "HH:MM"
+  (`let local_min = floor_div(now_ms(), 60000) + offset_min` — now() is seconds) and parse "HH:MM"
   yourself (`split(t, ":")`); `every` / `after` run in any cell, `request` or not.
 - Money: Ints in cents (any size, exact); `div_round(n, d)` is HALF_UP
   division (`div_round(cents * bps, 120000)` = BigDecimal interest at scale 2);

@@ -1095,3 +1095,22 @@ one); what it found that was real is fixed below.
 
 ### Open
 - [ ] Int → Float is not coerced inside nested values; huge Floats print all their digits (no exponent); `()` enters a `List` / `Map` parameter (documented optional containers); `write_csv` does not guard against formula injection; a per-key capacity read from another slot cannot be proven.
+
+### Cycle 45 — realistic port (clinic appointments + prescriptions) + open-ended claims audit
+
+Clinic port 8/10: 30 parallel bookings of the last slot (and 5 `soma run`
++ 5 curls across processes) → one winner each; hash-chained audit survives
+GDPR erasure; every authorization bypass tried failed. The claims audit
+found no HIGH: the error-kind → status table, GET→405, static files, the
+start-up audit, init templates and offline docs all matched.
+
+### Fixed
+- [x] **Request smuggling with duplicate / list Content-Length** (`Content-Length: 0` then `<n>` ran the body as a second request) — refused 400 in the accept loop, and the connection is poisoned so the pipelined bytes never run (a check in the handler thread raced them).
+- [x] A 50 000-deep chain of unary operators passed check and aborted `soma serve` with a native stack overflow — unary operators count toward the 400-level depth.
+- [x] **Log injection**: client text in an error detail (`%0A`, `%00`) forged request-log lines — control characters are escaped in every request log line.
+- [x] A List slot's invariant `key` was "" (push) or the text "0" (index write), so `entries.get(key) == ()` guarded nothing — the Int index.
+- [x] The cycle-43 arity check refused the documented `html(200, page, "Set-Cookie", …)` (its registry signature lacked the header pairs); `soma run … ix 1.0` still converted to Int (HTTP refused) — both consistent now.
+- [x] Port: a guard variable bound in a loop body before transition() was "bound only inside a branch"; docs: the time-zone recipe used now() (seconds) as milliseconds; property iterations share slots.
+
+### Open
+- [ ] Two Set-Cookie pairs in response() send only one; the dashboard shows no verify verdicts; `soma describe` has no routes and marks request-owned handlers public; verify is superlinear past ~1000 chained handlers; a write-once proof depends on the written value's bounds.

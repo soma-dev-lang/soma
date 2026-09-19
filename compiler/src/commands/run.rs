@@ -492,8 +492,7 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
         };
         match (ty.as_str(), &arg) {
             ("Int", interpreter::Value::Int(_)) => arg,
-            ("Int", interpreter::Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.0e15 =>
-                interpreter::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
+            // "1.0" is not an Int (HTTP answers 400 type for the same path)
             // a non-canonical spelling ("007", "1_000") is text until a
             // declared Int / Float converts it
             ("Int", interpreter::Value::String(t)) if t.trim().replace('_', "").parse::<rug::Integer>().is_ok() =>

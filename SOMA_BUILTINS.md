@@ -199,7 +199,7 @@ The `native` section is usable inside `[native]` handlers only.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `html` | `html(body) -> Response \| html(status: Int, body) -> Response` | text/html response; auto-injects HTMX on full pages that use hx- attributes. |
+| `html` | `html(body) -> Response \| html(status: Int, body, header_key, header_value, ...) -> Response` | text/html response; auto-injects HTMX on full pages that use hx- attributes. |
 | `response` | `response(status: Int, body, header_key, header_value, ...) -> Response` | Response with explicit status, body, and optional headers. |
 | `redirect` | `redirect(url: String) -> Response` | 302 redirect to `url`. |
 | `sse` | `sse(streams...) -> Response` | Open a Server-Sent-Events connection that receives only the named streams (no name: every stream). |

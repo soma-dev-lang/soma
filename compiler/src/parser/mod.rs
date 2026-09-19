@@ -2715,6 +2715,21 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Spanned<Expr>, ParseError> {
+        // `- - - … 1` (50 000 deep) recursed here past the depth budget and
+        // aborted `soma serve` with a native stack overflow
+        if self.depth >= MAX_EXPR_DEPTH {
+            return Err(ParseError::FixIt {
+                message: format!("nested more than {} levels deep (expressions and blocks together) — split it into `let` bindings or a helper handler", MAX_EXPR_DEPTH),
+                span: self.peek_span(),
+            });
+        }
+        self.depth += 1;
+        let r = self.parse_unary_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn parse_unary_inner(&mut self) -> Result<Spanned<Expr>, ParseError> {
         if self.check(&Token::Bang) {
             let start = self.peek_span();
             self.advance();

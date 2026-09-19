@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Duplicate or list-valued Content-Length is refused and the connection's
+  pipelined bytes never run; request-log lines escape control characters.
+- Unary operator chains count toward the nesting limit; a List slot's
+  invariant `key` is the Int index; `html()` with header pairs passes the
+  arity check; guard variables bound in a loop body are recognised.
 - `emit` arity mismatches are check errors; a computed Float is refused by
   an Int parameter; CSV rows of empty cells survive a round trip and
   duplicate CSV headers are refused.

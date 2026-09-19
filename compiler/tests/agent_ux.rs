@@ -2803,3 +2803,24 @@ fn cycle44_findings() {
     let (out, _) = soma_in(&d, &["run", "r.cell", "f"]);
     assert!(out.contains("csv"), "{out}");
 }
+
+#[test]
+fn cycle45_findings() {
+    let d = dir("cycle45");
+    // documented html() headers pass the arity check; a unary chain is depth-limited
+    std::fs::write(d.join("h.cell"), "cell H { on page() { return html(200, \"<p>x</p>\", \"Set-Cookie\", \"a=b\") } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "h.cell"]);
+    assert_eq!(code, 0, "{out}");
+    std::fs::write(d.join("n.cell"), format!("cell N {{ on f() {{ return 0 {} 1 }} }}\n", "-".repeat(5000))).unwrap();
+    let (out, code) = soma_in(&d, &["check", "n.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("nested more than"), "{out}");
+    // a List slot's invariant `key` is the element's index
+    std::fs::write(d.join("l.cell"), "cell Log {\n  memory {\n    entries: List<String> [persistent]\n    invariant entries.get(key) == ()\n  }\n  on add(v: String) { entries.push(v)  return entries.len }\n  on edit(i: Int, v: String) { entries[i] = v }\n}\ncell test T {\n  rules {\n    assert Log.add(\"a\") == 1\n    assert_fails edit(0, \"forged\") matching \"invariant\"\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["test", "l.cell"]);
+    assert_eq!(code, 0, "{out}");
+    // a guard variable bound in the loop body before transition()
+    std::fs::write(d.join("g.cell"), "cell V {\n  state s {\n    initial: a\n    a -> b { guard { overdue } }\n  }\n  on sweep(ids: List<String>) {\n    for it in ids {\n      let overdue = true\n      transition(it, \"b\")\n    }\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_eq!(code, 0, "{out}");
+}

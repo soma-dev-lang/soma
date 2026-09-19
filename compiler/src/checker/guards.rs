@@ -119,16 +119,30 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                     // calls transition() (`transition(…)  let amount = 5`
                     // passed check and raised undefined_variable)
                     let mut unconditional: HashSet<String> = on.params.iter().map(|p| p.name.clone()).collect();
-                    for st in &on.body {
-                        let mut has_transition = false;
-                        super::termination::walk_stmt(&st.node, &mut |e| {
-                            if matches!(e, Expr::FnCall { name, .. } if name == "transition") { has_transition = true; }
-                        });
-                        if has_transition { break; }
-                        if let Statement::Let { name, .. } | Statement::Assign { name, .. } = &st.node {
-                            unconditional.insert(name.clone());
+                    // the lets before the statement holding transition(), and —
+                    // when that statement is a loop — the loop variable and the
+                    // lets of its body before it too (they run every iteration:
+                    // `for it in xs { let overdue = …  transition(…) }`)
+                    fn lets_before(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+                        for st in stmts {
+                            let mut has_transition = false;
+                            super::termination::walk_stmt(&st.node, &mut |e| {
+                                if matches!(e, Expr::FnCall { name, .. } if name == "transition") { has_transition = true; }
+                            });
+                            if has_transition {
+                                match &st.node {
+                                    Statement::For { var, body, .. } => { out.insert(var.clone()); lets_before(body, out); }
+                                    Statement::While { body, .. } => lets_before(body, out),
+                                    _ => {}
+                                }
+                                break;
+                            }
+                            if let Statement::Let { name, .. } | Statement::Assign { name, .. } = &st.node {
+                                out.insert(name.clone());
+                            }
                         }
                     }
+                    lets_before(&on.body, &mut unconditional);
                     for n in &free {
                         if bound.contains(*n) && !unconditional.contains(*n) {
                             issues.push(GuardIssue {

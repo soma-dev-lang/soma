@@ -1237,19 +1237,55 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         let agent_models = agent_models.clone();
 
         let natives = natives.clone();
+        // framing checks in the ACCEPT loop, in connection order: a check
+        // in the handler thread raced the smuggled request behind it
+        {
+            // a connection that sent a malformed framing is poisoned: the
+            // bytes tiny_http reads after it are a smuggled request (the
+            // server drops `Connection: close`, so the socket stays open)
+            static POISONED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, std::time::Instant>>> = std::sync::OnceLock::new();
+            let poisoned = POISONED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+            if let Some(addr) = request.remote_addr().copied() {
+                let mut p = poisoned.lock().unwrap_or_else(|e| e.into_inner());
+                p.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(60));
+                if p.contains_key(&addr) {
+                    drop(p);
+                    let resp = tiny_http::Response::from_string(error_body("this connection sent a malformed request; open a new one", "bad_request")).with_status_code(400);
+                    let _ = request.respond(cors(resp));
+                    continue;
+                }
+            }
+            let poison = |req: &tiny_http::Request| {
+                if let Some(addr) = req.remote_addr().copied() {
+                    poisoned.lock().unwrap_or_else(|e| e.into_inner()).insert(addr, std::time::Instant::now());
+                }
+            };
+            let has = |n: &str| request.headers().iter().any(|h| h.field.as_str().as_str().eq_ignore_ascii_case(n));
+            // …and a Content-Length that is repeated, a list, or not plain
+            // digits (`0` then `<n>` made the declared body a second request)
+            let cls: Vec<String> = request.headers().iter().filter(|h| h.field.as_str().as_str().eq_ignore_ascii_case("content-length")).map(|h| h.value.as_str().trim().to_string()).collect();
+            if cls.len() > 1 || cls.iter().any(|v| v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit())) {
+                poison(&request);
+                // …and the connection closes: the bytes after the first length
+                // would otherwise be read as a second (smuggled) request
+                let resp = tiny_http::Response::from_string(error_body("a request carries one Content-Length of plain digits", "bad_request"))
+                    .with_status_code(400)
+                    .with_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap());
+                let _ = request.respond(cors(resp));
+                continue;
+            }
+            if has("content-length") && has("transfer-encoding") {
+                poison(&request);
+                let resp = tiny_http::Response::from_string(error_body("a request may not carry both Content-Length and Transfer-Encoding", "bad_request"))
+                    .with_status_code(400);
+                let _ = request.respond(cors(resp));
+                continue;
+            }
+        }
         let spawned = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || {
         let method = request.method().to_string();
         // Content-Length AND Transfer-Encoding: an ambiguous framing a proxy
         // may read differently (request smuggling) — refused (RFC 9112 §6.3)
-        {
-            let has = |n: &str| request.headers().iter().any(|h| h.field.as_str().as_str().eq_ignore_ascii_case(n));
-            if has("content-length") && has("transfer-encoding") {
-                let resp = tiny_http::Response::from_string(error_body("a request may not carry both Content-Length and Transfer-Encoding", "bad_request"))
-                    .with_status_code(400);
-                let _ = request.respond(cors(resp));
-                return;
-            }
-        }
         // `//withdraw/…` collapsed to a handler while `request`'s match saw
         // the empty first segment: one canonical path for every router
         let url = {
@@ -1286,7 +1322,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let resp = tiny_http::Response::from_string(error_body("the request body is not valid UTF-8", "json"))
                     .with_status_code(400)
                     .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
-                eprintln!("{} {} → 400 0ms request body is not valid UTF-8", method, url);
+                eprintln!("{} {} → 400 0ms request body is not valid UTF-8", method, log_safe(&url));
                 let _ = request.respond(cors(resp));
                 return;
             }
@@ -1356,7 +1392,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let resp = tiny_http::Response::from_string(error_body(&msg, "json"))
                 .with_status_code(400)
                 .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
-            eprintln!("{} {} → 400 0ms body carries reserved `{}`", method, url, key);
+            eprintln!("{} {} → 400 0ms body carries reserved `{}`", method, log_safe(&url), key);
             let _ = request.respond(cors(resp));
             return;
         }
@@ -1487,7 +1523,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     .with_status_code(405)
                     .with_header(tiny_http::Header::from_bytes(&b"Allow"[..], &b"POST"[..]).unwrap())
                     .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
-                eprintln!("{} {} → 405 0ms {}", method, url, msg);
+                eprintln!("{} {} → 405 0ms {}", method, log_safe(&url), log_safe(&msg));
                 let _ = request.respond(cors(resp));
                 return;
             }
@@ -1658,7 +1694,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 error_body(&msg, "json"))
                                 .with_status_code(400)
                                 .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
-                            eprintln!("{} {} → 400 0ms {}", method, url, msg);
+                            eprintln!("{} {} → 400 0ms {}", method, log_safe(&url), log_safe(&msg));
                             let _ = request.respond(cors(resp));
                             return;
                         }
@@ -1730,7 +1766,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     let resp = tiny_http::Response::from_string(error_body(&msg, "json"))
                         .with_status_code(400)
                         .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
-                    eprintln!("{} {} → 400 0ms {}", method, url, msg);
+                    eprintln!("{} {} → 400 0ms {}", method, log_safe(&url), log_safe(&msg));
                     let _ = request.respond(cors(resp));
                     return;
                 }
@@ -1765,7 +1801,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 };
 
                 if is_sse {
-                    eprintln!("{} {} → SSE stream", method, url);
+                    eprintln!("{} {} → SSE stream", method, log_safe(&url));
                     // only the streams this client subscribed to (every client
                     // received every publish: tenant B read tenant A's events);
                     // `sse()` with no names subscribes to all of them
@@ -1921,7 +1957,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 // the handler's own CORS origin wins (two headers: browsers reject both)
                 let resp = cors(resp);
                 let elapsed = start_time.elapsed();
-                eprintln!("{} {} → {} {}ms", method, url, status_code, elapsed.as_millis());
+                eprintln!("{} {} → {} {}ms", method, log_safe(&url), status_code, elapsed.as_millis());
                 if let Some(ref vb) = verbose_body {
                     eprintln!("  response body: {}", vb);
                 }
@@ -1940,7 +1976,9 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     );
                 resp.add_header(tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
                 let elapsed = start_time.elapsed();
-                eprintln!("{} {} → {} {}ms {}", method, url, status, elapsed.as_millis(), e);
+                // client text in an error detail (`fail("not_found", "x {id}")`)
+                // may hold %0A / %00: escaped, it cannot forge a log line
+                eprintln!("{} {} → {} {}ms {}", method, log_safe(&url), status, elapsed.as_millis(), log_safe(&e.to_string()));
                 let _ = request.respond(cors(resp));
             }
         }
@@ -2207,4 +2245,9 @@ fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections::HashSet<St
         if direct.len() == before { break; }
     }
     direct
+}
+
+/// Control characters (newline, NUL, ESC…) shown escaped in the request log.
+fn log_safe(s: &str) -> String {
+    s.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect()
 }

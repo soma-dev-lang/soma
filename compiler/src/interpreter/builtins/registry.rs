@@ -328,7 +328,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
         "Render the template once per row, substituting {field} from each map."),
 
     // ── web (HTTP responses) ────────────────────────────────────────
-    doc("html", "web", "html(body) -> Response | html(status: Int, body) -> Response",
+    doc("html", "web", "html(body) -> Response | html(status: Int, body, header_key, header_value, ...) -> Response",
         "text/html response; auto-injects HTMX on full pages that use hx- attributes."),
     doc("response", "web", "response(status: Int, body, header_key, header_value, ...) -> Response",
         "Response with explicit status, body, and optional headers."),

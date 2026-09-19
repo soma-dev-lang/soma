@@ -3291,7 +3291,9 @@ impl Interpreter {
                 // (0 on SQLite), so `rows.size <= N` never refused a push
                 if self.slot_has_invariants(cell_name, slot_name) {
                     let size_after = if self.slot_invariants_use_size(cell_name, slot_name) { backend.list_len() as i64 + 1 } else { 0 };
-                    self.check_invariants(cell_name, slot_name, "", val, size_after, "write")?;
+                    // the pushed element's index is the length before the push
+                    let new_index = backend.list_len().to_string();
+                    self.check_invariants(cell_name, slot_name, &new_index, val, size_after, "write")?;
                 }
                 if let Some(j) = self.journal.as_mut() {
                     j.push(UndoOp::Unappend { backend: backend.clone() });
@@ -4119,7 +4121,13 @@ impl Interpreter {
             let mut env = FxHashMap::default();
             env.insert(slot_name.to_string(), val.clone());
             env.insert("value".to_string(), val.clone());
-            env.insert("key".to_string(), Value::String(key_str.to_string()));
+            // a List slot's key is the element's INDEX, an Int (`key` was ""
+            // for push and the text "0" for rows[0] = v, so `entries.get(key)`
+            // never found the element a write-once invariant guards)
+            let key_val = if self.slot_kind(cell_name, slot_name) == Some("List") {
+                key_str.parse::<i64>().map(|i| Value::Int(SomaInt::from_i64(i))).unwrap_or_else(|_| Value::String(key_str.to_string()))
+            } else { Value::String(key_str.to_string()) };
+            env.insert("key".to_string(), key_val);
             env.insert("size".to_string(), Value::Int(SomaInt::from_i64(size_after)));
             // legacy bindings (pre-V1.8 invariants)
             env.insert("_slot_len".to_string(), Value::Int(SomaInt::from_i64(size_after)));
