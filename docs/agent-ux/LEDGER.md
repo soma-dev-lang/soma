@@ -1249,3 +1249,22 @@ tool cost bounds or List-slot invariants; no crash.
 
 ### Open
 - [ ] A missing field interpolates as `null`; no CSV-from-string parser; a restarted one-way peer is not re-linked; `write_csv(path, [])` writes no header; serve prints "listening" before the bus port binds.
+
+### Cycle 54 — realistic port (agent-driven support desk with tools, approvals, budgets) + attack (the LLM as the attacker)
+
+Support port 7/10: tool scoping (`tools_allowed`, unknown tools, typed
+arguments) refused every scripted misbehaviour; 20 concurrent approvals of
+one refund → one paid. Attack with a fake OpenAI-compatible provider: tool
+scope, argument forgery, `max_rounds`, SSE/log injection all held.
+
+### Fixed
+- [x] **Port: a write-once invariant on a `Map<String, Map>` / `List<Map>` slot did nothing** — `docs.get(key)` read the field `key` of the NEW value (the slot's name is bound to it); in an invariant `slot.get(k)` / `slot[k]` / `slot.has(k)` now read the stored slot.
+- [x] **Attack: approve() printed model-written text raw** — `\r\x1b[2K` erased "Refund 5000" and drew "Refund 5"; control and bidi characters are shown as escapes.
+- [x] **Attack: replies in other shapes skipped max_tokens and the budget** — OpenAI content-part lists and extra Anthropic text blocks were not measured (400 000 characters against a proven 100); an empty/null content returned the provider's raw JSON as the answer. All text is measured; a reply with neither text nor a tool call raises kind `llm`; tool-call ids are measured.
+- [x] **Attack: a delegated agent's `set_budget` reset the caller's** — reached from a tool call it only lowers what is left (300 stayed 300).
+- [x] Attack: `..;/` passed a capability's path scope — refused like `..`.
+- [x] Port: verify said a List `delete` cannot break a value invariant while the runtime refused it — a List delete, like a Map delete, is checked by size invariants only.
+- [x] Port: `require … else budget` (a program's tag named like a runtime kind) answered 500 — 400.
+
+### Open
+- [ ] No append-only slot declaration; `mock think` cannot script tool calls; tools get no hidden caller context; a think() holds the handler lock; parallel tool calls can split per-call approval thresholds.

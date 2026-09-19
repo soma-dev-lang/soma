@@ -509,7 +509,9 @@ caps of the think() calls a handler can make — ×10 provider rounds in an
 agent with tools, or × `map("max_rounds", N)`); prompt tokens are not in it —
 `set_budget` / `tokens_used()` count prompt + reply, per request under serve
 and per rule in a test (return `tokens_used()` from the handler to assert on
-it); `tokens_remaining()` is -1 without a budget, never below 0 with one. A cost bound that cannot
+it); `tokens_remaining()` is -1 without a budget, never below 0 with one; a
+`set_budget` reached from a model's tool call (a delegated agent's own)
+only lowers what is left — it never lifts or resets the caller's. A cost bound that cannot
 be proven (a think() without a literal max_tokens) is a check ERROR.
 
 ## Agents (LLMs inside the cage)
@@ -746,7 +748,7 @@ sit in `authorized` until someone acts.
 | **Atomic handlers** | a handler that raises leaves nothing behind: its memory writes and transitions are rolled back. A failing `try { }` block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their value). Consequence: an error means "nothing happened" — to *record* a refusal (a reservation moved to `rejected`), return it as a value instead of raising. |
 | **Serialized handlers** | under `soma serve`, top-level handler invocations run one at a time: read-modify-write needs no lock. |
 | `require` / `ensure` / `fail` | raise; errors carry a `kind` a caller can branch on. |
-| Token budget | `set_budget(N)` stops `think()` when the budget is spent. |
+| Token budget | `set_budget(N)` stops `think()` when the budget is spent; a `set_budget` inside a model's tool call can only lower it. |
 | Exhaustive `match` | a missing sum-type arm is a `soma check` error, not a runtime surprise. |
 
 ## 3. NOT COVERED — know this before you rely on Soma

@@ -578,6 +578,10 @@ pub fn new_event_bus() -> EventBus {
 /// Send a bus line to every peer. A peer whose queue is full (it stopped
 /// reading, or hung without closing) is DROPPED, as a WebSocket client is:
 /// an unbounded queue grew the emitter to gigabytes.
+/// Env marker naming the slot whose invariant is being evaluated (not a
+/// valid identifier, so no program can bind or read it)
+const INV_SLOT: &str = "#invariant_slot";
+
 pub fn send_to_peers(senders: &mut Vec<std::sync::mpsc::SyncSender<String>>, line: &str) {
     // [peers] are configured but none is connected (a peer down): the event
     // is not delivered — say so (points were debited here, never credited
@@ -677,6 +681,8 @@ pub struct Interpreter {
     /// `map("tools_allowed", [...])` of the running think(): the only tools
     /// offered to (and dispatched for) the model
     pub(crate) think_tools_allowed: Option<Vec<String>>,
+    /// > 0 while a handler runs as a model's tool call
+    pub(crate) tool_depth: u32,
     /// the `cell test` whose rules are running (its helpers win bare calls)
     pub current_test_cell: Option<String>,
     /// Loaded [native] handler FFI function pointers, keyed by (cell_name, signal_name)
@@ -926,6 +932,7 @@ impl Interpreter {
             current_tool_caps: None,
             outer_tool_caps: Vec::new(),
             think_tools_allowed: None,
+            tool_depth: 0,
             current_test_cell: None,
             native_handlers: HashMap::new(),
             cluster: None,
@@ -2917,8 +2924,10 @@ impl Interpreter {
                 // through .get() so `slot[k]` works like slot.get(k).
                 if let Expr::Ident(ref slot_name) = target.node {
                     // a local (or parameter, loop variable, lambda parameter)
-                    // of the slot's name wins, as for every other read
-                    if !env.contains_key(slot_name) && (self.storage.contains_key(slot_name)
+                    // of the slot's name wins, as for every other read — but in
+                    // an invariant `slot[k]` is the stored value, like slot.get(k)
+                    let in_invariant = matches!(env.get(INV_SLOT), Some(Value::String(s)) if s == slot_name);
+                    if (in_invariant || !env.contains_key(slot_name)) && (self.storage.contains_key(slot_name)
                         || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name)))
                     {
                         let key = self.eval_expr(&index.node, env, cell_name, signal_name)?;
@@ -2979,6 +2988,15 @@ impl Interpreter {
                 }
                 // Check if target is a storage slot
                 if let Expr::Ident(ref slot_name) = target.node {
+                    // inside an invariant the slot's name is bound to the value
+                    // being written, but `slot.get(key)` is the STORED value
+                    // (a Map-valued slot read the new value's field `key`,
+                    // so a write-once audit log could be rewritten)
+                    if matches!(env.get(INV_SLOT), Some(Value::String(s)) if s == slot_name)
+                        && matches!(method.as_str(), "get" | "has" | "contains" | "contains_key")
+                    {
+                        return self.call_storage_method(cell_name, slot_name, method, &arg_vals);
+                    }
                     if !env.contains_key(slot_name) && (self.storage.contains_key(slot_name)
                         || self.storage.contains_key(&format!("{}.{}", cell_name, slot_name)))
                     {
@@ -3172,7 +3190,12 @@ impl Interpreter {
                         return Ok(Value::Bool(false));
                     }
                     let old = xs[idx as usize].clone();
-                    self.check_invariants(cell_name, slot_name, &raw.to_string(), &old, xs.len() as i64 - 1, "delete")?;
+                    // only a `size` clause can flip on a delete — as for a Map slot,
+                    // and as verify says (every value invariant refused the
+                    // delete here while verify proved the writer safe)
+                    if self.slot_invariants_use_size(cell_name, slot_name) {
+                        self.check_invariants(cell_name, slot_name, &raw.to_string(), &old, xs.len() as i64 - 1, "delete")?;
+                    }
                     let prev = backend.list();
                     if let Some(j) = self.journal.as_mut() {
                         j.push(UndoOp::RestoreList { backend: backend.clone(), prev });
@@ -4158,6 +4181,7 @@ impl Interpreter {
         for inv in &invs {
             let mut env = FxHashMap::default();
             env.insert(slot_name.to_string(), val.clone());
+            env.insert(INV_SLOT.to_string(), Value::String(slot_name.to_string()));
             env.insert("value".to_string(), val.clone());
             // a List slot's key is the element's INDEX, an Int (`key` was ""
             // for push and the text "0" for rows[0] = v, so `entries.get(key)`

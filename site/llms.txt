@@ -509,7 +509,9 @@ caps of the think() calls a handler can make — ×10 provider rounds in an
 agent with tools, or × `map("max_rounds", N)`); prompt tokens are not in it —
 `set_budget` / `tokens_used()` count prompt + reply, per request under serve
 and per rule in a test (return `tokens_used()` from the handler to assert on
-it); `tokens_remaining()` is -1 without a budget, never below 0 with one. A cost bound that cannot
+it); `tokens_remaining()` is -1 without a budget, never below 0 with one; a
+`set_budget` reached from a model's tool call (a delegated agent's own)
+only lowers what is left — it never lifts or resets the caller's. A cost bound that cannot
 be proven (a think() without a literal max_tokens) is a check ERROR.
 
 ## Agents (LLMs inside the cage)

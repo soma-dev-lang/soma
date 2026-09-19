@@ -132,7 +132,8 @@ fn split_url(u: &str) -> Option<(&str, &str, String)> {
     if authority.is_empty() || authority.contains('@') || authority.contains('%') { return None; }
     let path = rest.split('?').next().unwrap_or("");
     let decoded = path.replace("%2e", ".").replace("%2E", ".").replace("%2f", "/").replace("%2F", "/").replace("%5c", "/").replace("%5C", "/");
-    if decoded.split('/').any(|seg| seg == "." || seg == "..") { return None; }
+    // `..;/` (a path parameter: Tomcat / Spring read it as `..`) too
+    if decoded.split('/').any(|seg| { let seg = seg.split(';').next().unwrap_or(seg); seg == "." || seg == ".." }) { return None; }
     Some((scheme, authority, rest.to_string()))
 }
 

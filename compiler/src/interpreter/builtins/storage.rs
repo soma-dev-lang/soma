@@ -159,7 +159,20 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         // ── Agent: set_budget(max_tokens) ──────────────────────────
         "set_budget" => {
             if let Some(Value::Int(si)) = args.first() {
-                interp.agent_token_budget = si.to_i64().unwrap_or(0);
+                let n = si.to_i64().unwrap_or(0).max(0);
+                if interp.tool_depth > 0 {
+                    // reached from a model's tool call (a delegated agent's own
+                    // set_budget): it may only LOWER what is left — it replaced
+                    // the caller's 300 with 8000 and reset tokens_used, so the
+                    // model bought itself 19 provider calls
+                    // (0 is "no limit": it cannot lift the caller's)
+                    if n == 0 { return Some(Ok(Value::Unit)); }
+                    let used = interp.agent_tokens_used;
+                    let left = if interp.agent_token_budget > 0 { (interp.agent_token_budget - used).max(0) } else { n };
+                    interp.agent_token_budget = used + n.min(left);
+                    return Some(Ok(Value::Unit));
+                }
+                interp.agent_token_budget = n;
                 interp.agent_tokens_used = 0;
                 Some(Ok(Value::Unit))
             } else {
@@ -200,9 +213,19 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         // ── Agent: approve(action) — human-in-the-loop ─────────────
         "approve" => {
-            let Some(Value::String(action)) = args.first() else {
+            let Some(Value::String(raw_action)) = args.first() else {
                 return Some(Err(RuntimeError::TypeError("approve(action: String)".to_string())));
             };
+            // the person must see what the program wrote: a model-written
+            // `\r\x1b[2K` erased the real prompt ("Refund 5000") and drew
+            // a fake one ("Refund 5") — control and bidi characters are shown
+            // as escapes, never interpreted by the terminal
+            let action_owned: String = raw_action.chars().map(|c| {
+                if c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}') {
+                    c.escape_unicode().to_string()
+                } else { c.to_string() }
+            }).collect();
+            let action = &action_owned;
             // 1. scripted by `mock approve …` in a test cell
             if let Some(answer) = interp.approve_queue.pop_front() {
                 interp.agent_trace.push(super::llm::trace_approval(action, if answer { "approved" } else { "refused" }));
@@ -580,7 +603,8 @@ fn agent_think(
         // cost bound — the reply is measured too (~4 characters per token,
         // as the mocks count)
         let reported = raw_json["usage"]["completion_tokens"].as_i64().or_else(|| raw_json["usage"]["output_tokens"].as_i64()).unwrap_or(0);
-        let reply_chars = resp.content.chars().count() + resp.tool_calls.iter().map(|t| t.arguments_json.len() + t.name.len()).sum::<usize>();
+        // the tool call's id too: it is sent back twice on the next round
+        let reply_chars = resp.content.chars().count() + resp.tool_calls.iter().map(|t| t.arguments_json.len() + t.name.len() + t.id.len()).sum::<usize>();
         let measured = ((reply_chars as i64) + 3) / 4;
         let out = reported.max(measured);
         // an under-reported reply is charged at its measured size too
@@ -595,7 +619,9 @@ fn agent_think(
         if !resp.tool_calls.is_empty() {
             llm::push_assistant_tool_message(&config, &mut interp.agent_conversation, &raw_json);
             for tc in &resp.tool_calls {
+                interp.tool_depth += 1;
                 let result = dispatch_tool_call(interp, cell_name, &tc.name, &tc.arguments_json);
+                interp.tool_depth -= 1;
                 interp.agent_trace.push(llm::trace_tool_call(&tc.name, &tc.arguments_json, &format!("{}", result)));
                 llm::push_tool_result(&config, &mut interp.agent_conversation, &tc.id, &format!("{}", result));
             }
@@ -610,7 +636,10 @@ fn agent_think(
             }
             return Ok(Value::String(resp.content));
         }
-        return Ok(Value::String(serde_json::to_string(&raw_json).unwrap_or_default()));
+        // no text and no tool call: the provider's JSON is not the model's
+        // answer (it was returned as the reply — unmeasured, any size)
+        return Err(RuntimeError::Domain { kind: "llm".to_string(), message:
+            "llm: the provider's reply has neither text nor a tool call (empty, null or an unknown content shape)".to_string() });
     }
 
     if tools.is_empty() {

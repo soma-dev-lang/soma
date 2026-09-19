@@ -2057,7 +2057,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             }
             Err(e) => {
                 let kind = e.kind();
-                let status = status_for_kind(&kind);
+                let mut status = status_for_kind(&kind);
+                // `require … else budget` is the program's own refusal: a tag
+                // named like a runtime failure (budget, llm, response) is
+                // still a 400, not a 500
+                if status == 500 && matches!(e, interpreter::RuntimeError::RequireFailed(ref m) if !m.starts_with("memory invariant")) {
+                    status = 400;
+                }
                 let body = error_body(&hide_private_names(&format!("{}", e)), &kind);
                 let mut resp = tiny_http::Response::from_string(body)
                     .with_status_code(status)

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- In an invariant, `slot.get(key)` reads the stored value on Map- and
+  record-valued slots too: write-once invariants on `Map<String, Map>` /
+  `List<Map>` slots were not enforced.
+- approve() shows control characters as escapes (a model could redraw the
+  prompt); every reply shape is measured against max_tokens and the budget,
+  a reply with no text raises kind `llm`; a `set_budget` reached from a tool
+  call can only lower the caller's budget; `..;/` is refused by capability
+  path scopes.
+- A List `delete` is checked by size invariants only (as verify says);
+  `require … else budget` answers 400.
 - A JSON request body or bus event with more than 1 000 000 values is
   refused before parsing (a 15 MB line became 2.4 GB in memory).
 - Events sent after a linked peer disconnected are logged NOT delivered;

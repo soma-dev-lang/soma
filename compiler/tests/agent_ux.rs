@@ -3048,3 +3048,51 @@ fn cycle53_findings() {
     assert!(up, "server did not start");
     assert!(resp.contains(" 413 "), "a body over a million JSON values is refused: {}", &resp[..resp.len().min(200)]);
 }
+
+/// Cycle 54: in an invariant `slot.get(key)` is the STORED value on a
+/// Map-valued slot too (a write-once audit log could be rewritten); a List
+/// delete is checked only by size invariants, as verify says; approve()
+/// shows control characters as escapes; a model's tool call cannot lift the
+/// caller's token budget through a delegated set_budget.
+#[test]
+fn cycle54_findings() {
+    passes("cycle54_writeonce", r#"
+cell Log {
+    memory {
+        docs: Map<String, Map> [persistent]
+        rows: List<Map> [persistent]
+        invariant docs.get(key) == ()
+        invariant rows.get(key) == ()
+    }
+    on put(k: String, v: Int) { docs.set(k, map("v", v)) }
+    on add(v: Int) { rows.push(map("v", v)) }
+    on over(v: Int) { rows[0] = map("v", v) }
+    on show() { return docs.get("a") }
+}
+cell test T {
+    rules {
+        let _a = put("a", 1)
+        let _v = put("v", 1)
+        assert_fails put("a", 2)
+        assert show().v == 1
+        let _r = add(1)
+        assert_fails over(9)
+    }
+}
+"#);
+    passes("cycle54_delete", r#"
+cell L {
+    memory { rows: List<String> [persistent]  invariant rows.get(key) == () }
+    on add(s: String) { rows.push(s) }
+    on erase(i: Int) { rows.delete(i)  return rows.len() }
+}
+cell test T { rules { let _a = add("a")  assert erase(0) == 0 } }
+"#);
+    let d = dir("cycle54_approve");
+    std::fs::write(d.join("ap.cell"), "cell A { on go(m: String) { return approve(m) } }\n").unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["run", "ap.cell", "go", "x\r\u{1b}[2Ky"]).current_dir(&d).env("SOMA_APPROVE", "always")
+        .output().expect("soma");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains('\u{1b}') && err.contains("\\u{1b}"), "control characters are escaped: {err:?}");
+}

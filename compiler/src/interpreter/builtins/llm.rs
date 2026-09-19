@@ -149,7 +149,9 @@ fn parse_anthropic_response(json: &serde_json::Value) -> (String, String, Vec<To
         for block in blocks {
             match block["type"].as_str() {
                 Some("text") => {
-                    if let Some(t) = block["text"].as_str() { text = t.to_string(); }
+                    // every text block counts (the last one alone was kept, and
+                    // measured, so the rest passed max_tokens unseen)
+                    if let Some(t) = block["text"].as_str() { text.push_str(t); }
                 }
                 Some("tool_use") => {
                     tools.push(ToolCall {
@@ -169,7 +171,14 @@ fn parse_openai_response(json: &serde_json::Value) -> (String, String, Vec<ToolC
     let choice = &json["choices"][0];
     let msg = &choice["message"];
     let finish_reason = choice["finish_reason"].as_str().unwrap_or("").to_string();
-    let content = msg["content"].as_str().unwrap_or("").to_string();
+    // `content` may be a list of parts (`[{"type":"text","text":…}]`, as
+    // some OpenAI-compatible servers send): it read as "" — never measured
+    // against max_tokens — and think() returned the raw JSON instead
+    let content = match &msg["content"] {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(parts) => parts.iter().filter_map(|p| p["text"].as_str().or_else(|| p.as_str())).collect::<Vec<_>>().concat(),
+        _ => String::new(),
+    };
     let tokens = json["usage"]["total_tokens"].as_i64().unwrap_or(0);
 
     let mut tools = Vec::new();
