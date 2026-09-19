@@ -632,7 +632,26 @@ pub fn new_event_bus() -> EventBus {
 /// valid identifier, so no program can bind or read it)
 const INV_SLOT: &str = "#invariant_slot";
 
+/// Each configured `[peers]` peer and whether its link is up (the
+/// supervisor in serve sets it): an event emitted while one is down is
+/// reported NOT delivered to it, even when other links carry it (the report
+/// used to depend on ANY link being connected — 50 alerts lost, 3 logged).
+pub static PEER_UP: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, bool>>> = std::sync::OnceLock::new();
+
+pub fn set_peer_up(name: &str, up: bool) {
+    PEER_UP.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), up);
+}
+
 pub fn send_to_peers(senders: &mut Vec<std::sync::mpsc::SyncSender<String>>, line: &str) {
+    if !senders.is_empty() {
+        if let Some(m) = PEER_UP.get() {
+            let down: Vec<String> = m.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, up)| !**up).map(|(n, _)| n.clone()).collect();
+            if !down.is_empty() {
+                let name = line.split_whitespace().nth(1).unwrap_or("?");
+                eprintln!("bus: event '{}' NOT delivered to peer {} (link down) — fire-and-forget: reconcile, or retry from an outbox", name, down.join(", "));
+            }
+        }
+    }
     // [peers] are configured but none is connected (a peer down): the event
     // is not delivered — say so (points were debited here, never credited
     // there, and the log showed only `POST /transfer → 200`)

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Soundness: `vote()` is in the call graph of every proof — a size
+  invariant past a vote whose target wrote the slot was "proven" (and
+  raised), recursion through vote was "proven" to terminate, its latency
+  counted one voter instead of k; `horde()` targets and callbacks are in
+  the termination graph (a horde restarted from on_done ran 20 821 times
+  under "✓ terminates").
+- The wait for a rate limit (`SOMA_LLM_RPM`, `[agent] rpm`) and a mock's
+  latency are inside the think's `timeout` (a "proven" 2 s took 60 s).
+- Bus: an event emitted while a `[peers]` peer's link is down is logged NOT
+  delivered to it, even while other links are up (50 alerts lost, 3
+  logged); docs: `emit` reaches every link, receivers filter by `[bus]
+  accept`.
+- `"{Other.ask(1)}"` is fine again; `range(a, b, step)` has a known length
+  for cost bounds; docs: what `usd` counts.
+
 - Budgets: `set_budget(0)` means no more model calls (it meant "no
   limit": a computed `quota - spent` reaching 0 lifted the cap); a negative
   budget is refused; `vote()`'s concurrent voters reserve against what

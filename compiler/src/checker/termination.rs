@@ -339,6 +339,32 @@ fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
         }
         let mut extra = Vec::new();
         stmt_edges(&on.body, &cells, &mut extra);
+        // vote(target, …) runs its target; horde(target, …) runs it and its
+        // callbacks (a horde started again from on_done ran 20 821 times,
+        // "✓ terminates") — a self-reference here is recursion too
+        let mut via: Vec<String> = Vec::new();
+        crate::checker::literals::for_each_expr(&on.body, &mut |e| if let Expr::FnCall { name, args } = e {
+            if (name == "vote" && args.len() == 3) || name == "horde" {
+                match args.first().map(|a| &a.node) {
+                    Some(Expr::FieldAccess { field, .. }) => via.push(field.clone()),
+                    Some(Expr::Ident(h)) => via.push(h.clone()),
+                    Some(Expr::Literal(Literal::String(t))) => via.push(t.rsplit('.').next().unwrap_or(t).to_string()),
+                    _ => {}
+                }
+                if name == "horde" {
+                    if let Some(Expr::FnCall { name: m, args: kv }) = args.get(2).map(|a| &a.node) {
+                        if m == "map" { for c in kv.chunks(2) {
+                            if let (Expr::Literal(Literal::String(k)), Some(Expr::Literal(Literal::String(h)))) = (&c[0].node, c.get(1).map(|v| &v.node)) {
+                                if matches!(k.as_str(), "on_result" | "apply" | "on_done" | "on_error") { via.push(h.clone()); }
+                            }
+                        } }
+                    }
+                }
+            }
+        });
+        for name in via {
+            if names.contains(name.as_str()) && !calls.contains(&name) { calls.push(name); }
+        }
         for name in extra {
             if names.contains(name.as_str()) && name != on.signal_name && !calls.contains(&name) { calls.push(name); }
         }

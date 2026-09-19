@@ -1659,3 +1659,21 @@ embedded newlines, 26-digit amounts) handled.
 
 ### Open
 - [ ] Literal-vs-interpolation of `{3}` / `{-1}` / `{1 + 1}` and [native] refusing `"{3}"`; to_json(inf) is null; HTTP Int coercion accepts `1_000`; the prover cannot prove the documented `value >= seq.get(key) ?? 0` monotone counter; a duplicate cell name reports only one file; one long import freezes the service (documented).
+
+### Cycle 71 — fleet telemetry port over the peer bus (7/10) + verifier soundness attack
+
+Port: 3 services on [peers]; kill -9 of ingest under load with batch-id
+retries → 34 800 sent / stored, no gap, no duplicate; kill -9 of all three
+→ identical state; rollback after 50 overheating canaries in ~1 s.
+Attack: the prover was sound on arithmetic edges, all slot methods, every
+writer kind, state machines and temporal properties — except via vote().
+
+### Fixed
+- [x] **Attack: vote() missing from the call graph** — a size invariant "proven" under --strict raised at run time; recursion through vote "terminates" then overflowed; latency counted one voter (1 s "proven", 6 s real).
+- [x] **Attack: horde chains through on_done "terminate"** (20 821 hordes in 8 s) — horde targets and callbacks are termination edges.
+- [x] Attack: the rate-limit wait and the mock's latency were outside the think timeout ("proven" 2 s, 60 s real) — inside it (kind llm, timed out).
+- [x] **Port: a down peer went unnoticed when any other link was up** — per-peer link state; each event emitted while a configured peer is down is logged NOT delivered to it.
+- [x] Attack: `"{Other.ask(1)}"` refused by check (my cycle-70 lint) — only a bare cell name is refused; range(a, b, step) bounded; usd semantics documented.
+
+### Open
+- [ ] No addressing on the bus (every link gets every event; refusals fill logs); `<deleted entry> has no known range` on a `len(chunks)` invariant; completeness gaps: `v * v >= 0`, `x % n` with x ≥ 0, `len(literal)`, the monotone-counter invariant, size lower bounds, bracket-form size writes, terminating mutual recursion r → s(n - 1); `let f = App.r` passes check; `m.append` on a Map slot passes check.

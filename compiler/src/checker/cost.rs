@@ -333,8 +333,8 @@ impl<'a> CostWalk<'a> {
                         if let Some(r) = self.rounds_of.and_then(|m| m.get(t.as_str())) { w.rounds = *r; }
                         for st in body { w.visit_stmt(&st.node, &t); }
                         self.tokens = self.tokens.saturating_add(w.tokens.saturating_mul(k));
-                        // voters run at once: the wait is one voter's
-                        self.latency_ms = self.latency_ms.saturating_add(w.latency_ms);
+                        // outside a [task] step the voters run in turn: k waits
+                        self.latency_ms = self.latency_ms.saturating_add(w.latency_ms.saturating_mul(k));
                         self.unbounded_sites.extend(w.unbounded_sites);
                         self.latency_sites.extend(w.latency_sites);
                     }
@@ -777,6 +777,14 @@ fn literal_range_len(iter: &Expr) -> Option<i64> {
     match args.len() {
         1 => lit(&args[0]).map(|n| n.max(0)),
         2 => Some((lit(&args[1])? - lit(&args[0])?).max(0)),
+        // range(a, b, step): ⌈(b - a) / step⌉ elements when it moves toward b
+        3 => {
+            let (a, b, st) = (lit(&args[0])?, lit(&args[1])?, lit(&args[2])?);
+            if st == 0 { return None; }
+            let span = b - a;
+            if span == 0 || (span > 0) != (st > 0) { return Some(0); }
+            Some((span.abs() + st.abs() - 1) / st.abs())
+        }
         _ => None,
     }
 }

@@ -522,10 +522,23 @@ fn agent_think(
         // outside the lock in a [task], where it may wait for calls in flight
         let bound = crate::interpreter::horde::request_bound(prompt.len() + system.map_or(0, |s| s.len()), 2, max_tokens.unwrap_or(2048));
         let (budget, can_wait) = (interp.horde_budget.clone(), interp.task_unit.is_some());
+        // the mock honors the think's `timeout` like a provider (a 3 s mock
+        // under timeout 1000 succeeded: the latency bound was untestable)
+        let tmo = timeout_ms.unwrap_or_else(|| std::env::var("SOMA_LLM_TIMEOUT_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(60_000));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(tmo.max(1));
         let reservation = interp.outside_unit(|| -> Result<_, RuntimeError> {
             let r = crate::interpreter::horde::Reservation::take(budget, bound, can_wait)?;
-            super::llm::limiter::acquire(rpm, tpm, want);
-            if ms > 0 { std::thread::sleep(std::time::Duration::from_millis(ms.min(600_000))) }
+            if !super::llm::limiter::acquire(rpm, tpm, want, deadline) {
+                return Err(RuntimeError::TypeError(format!("think() request timed out after {} ms (waiting for the rate limit — SOMA_LLM_RPM / [agent] rpm)", tmo)));
+            }
+            if ms > 0 {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if std::time::Duration::from_millis(ms) > left {
+                    std::thread::sleep(left);
+                    return Err(RuntimeError::TypeError(format!("think() request timed out after {} ms (the mock takes {} ms — SOMA_LLM_MOCK_LATENCY_MS)", tmo, ms)));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(ms.min(600_000)))
+            }
             Ok(r)
         })?;
         let response = match (&scripted, mock.as_str()) {
@@ -693,9 +706,16 @@ fn agent_think(
         let (budget, can_wait) = (interp.horde_budget.clone(), interp.task_unit.is_some());
         let (raw_json, reservation) = interp.outside_unit(|| -> Result<_, RuntimeError> {
             let r = crate::interpreter::horde::Reservation::take(budget, bound, can_wait)?;
-            llm::limiter::acquire(rpm, tpm, want);
+            // the wait for the rate limit is part of the timeout (it was not:
+            // "proven" 2 s, 60 s under RPM 1)
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(config.timeout_ms.max(1));
+            if !llm::limiter::acquire(rpm, tpm, want, deadline) {
+                return Err(RuntimeError::TypeError(format!("think() request timed out after {} ms (waiting for the rate limit — SOMA_LLM_RPM / [agent] rpm)", config.timeout_ms)));
+            }
+            let mut cfg = config.clone();
+            cfg.timeout_ms = deadline.saturating_duration_since(std::time::Instant::now()).as_millis().max(1) as u64;
             // a failed call gives its reservation back (Reservation's Drop)
-            Ok((llm::send_with_retry(&config, &body)?, r))
+            Ok((llm::send_with_retry(&cfg, &body)?, r))
         })?;
         let mut resp = llm::parse_response(&config, &raw_json);
         // a provider that omits `usage` (or reports a negative count) spent

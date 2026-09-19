@@ -1183,6 +1183,12 @@ impl<'a> Walker<'a> {
             }
             if starts_like_ident && !self.known(expr_str) {
                 self.report_undefined_var(expr_str, span);
+            } else if starts_like_ident && self.index.cells.contains(expr_str) && !self.scope.contains(expr_str) && !self.index.slots.contains(expr_str) {
+                // `"{S}"` — a cell is not a value (`"{Other.ask(1)}"` is fine)
+                self.issues.push(InterpolationIssue {
+                    message: format!("`{{{expr_str}}}` in a string: `{expr_str}` is a cell, not a value — call one of its handlers (`{{{expr_str}.handler(…)}}`) or write `{{{{{expr_str}}}}}` for the literal text"),
+                    span, warning: false, habit: false, kind: "function_as_value",
+                });
             } else if starts_like_ident {
                 self.check_segment_expr(&Expr::Ident(expr_str.to_string()), &mut HashSet::new(), span);
             }
@@ -1263,7 +1269,7 @@ impl<'a> Walker<'a> {
                 if !bound.contains(name) && !self.known(name) {
                     self.report_undefined_var(name, span);
                 } else if !bound.contains(name) && !self.scope.contains(name) && !self.index.slots.contains(name) && !self.index.variants.contains(name)
-                    && (self.index.handler_map.contains_key(name) || super::names::builtin_names().contains(name.as_str()) || self.index.cells.contains(name))
+                    && (self.index.handler_map.contains_key(name) || super::names::builtin_names().contains(name.as_str()))
                     && !matches!(name.as_str(), "true" | "false")
                 {
                     // `"{len}"`, `"{helper}"`, `"{S}"`: passed check, raised

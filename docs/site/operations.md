@@ -145,7 +145,12 @@ is down are logged NOT delivered — they are not queued. This
 is the experimental corner of Soma; single-process is the supported shape.
 Delivery is fire-and-forget: an event emitted while no peer is connected (or
 to a peer that dropped) is NOT delivered — the sender logs `bus: event '…'
-NOT delivered`, and the handler still commits. To move value between
+NOT delivered` (naming each `[peers]` peer whose link is down, even while
+other links are up), and the handler still commits. `emit` goes to EVERY
+connected link — the `[peers]` you list and the processes linked to you;
+there is no addressing: each receiver keeps only the events in its
+`[bus] accept` list and drops (and logs) the rest, so keep event names
+distinct per receiver and expect refusals in the logs of the others. To move value between
 processes, keep an outbox slot on the sender (the transfer, with an id),
 have the receiver deduplicate by id and emit an acknowledgement, and let an
 `every` tick re-send what is unacknowledged. The bus port has no

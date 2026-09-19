@@ -4391,3 +4391,56 @@ cell A {
     let (out, _) = soma_in(&d, &["verify", "m.cell"]);
     assert!(!out.contains("function value"), "{out}");
 }
+
+#[test]
+fn cycle71_vote_and_horde_edges_in_proofs_and_timeouts() {
+    let d = dir("cycle71");
+    // a size bound past a vote whose target writes the slot is not proven
+    std::fs::write(d.join("i.cell"), r#"
+cell App {
+    memory { m: Map<String, Int>
+             invariant m.size <= 2 }
+    on seed(k: String) { require len(m) < 2 else Full
+        m.set(k, 1) }
+    on _swap2(k: String) { m.delete(k)
+        require len(m) < 2 else Full
+        m.set(k + "x", 1)
+        return 1 }
+    on upd(k: String) {
+        if m.get(k) == () { return 0 } else {
+            let v = vote(App._swap2, k, 1)
+            m.set(k, 2)
+        }
+        return 1
+    }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "i.cell"]);
+    assert!(!out.contains("writer 'upd' proven"), "{out}");
+    // recursion through vote(), a horde chain through on_done: not proven to terminate
+    std::fs::write(d.join("t.cell"), r#"
+cell App {
+    state s { initial: a  a -> b }
+    on r(n: Int) { if n <= 0 { return 0 }
+        return vote(App.r, n, 1) }
+    on h(n: Int) { let x = horde(App.q, [n], map("on_done", "_d"))
+        return 0 }
+    on q(n: Int) [task] { return n }
+    on _d(id: String) { let x = h(1) }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "t.cell"]);
+    assert!(out.contains("recursion r → r") && out.contains("h → _d → h"), "{out}");
+    // vote() latency counts k voters; the rate-limit wait is inside the timeout
+    std::fs::write(d.join("l.cell"), "cell agent App {\n cost { latency: 5s }\n on _slp(x: Int) { sleep(1000)\n return x }\n on h(x: Int) { let v = vote(App._slp, 1, 6)\n return v.count }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "l.cell"]);
+    assert!(code != 0 && out.contains("computed 6000 ms"), "{out}");
+    std::fs::write(d.join("r.cell"), "cell agent App {\n on h() { let a = think(\"q\", map(\"max_tokens\", 10, \"timeout\", 500))\n let b = think(\"r\", map(\"max_tokens\", 10, \"timeout\", 500))\n return a + b }\n}\n").unwrap();
+    let t0 = std::time::Instant::now();
+    let o = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "r.cell", "h"]).env("SOMA_LLM_MOCK", "echo").env("SOMA_LLM_RPM", "1").current_dir(&d).output().unwrap();
+    assert!(t0.elapsed() < std::time::Duration::from_secs(5) && String::from_utf8_lossy(&o.stderr).contains("timed out"), "{}", String::from_utf8_lossy(&o.stderr));
+    // "{Other.ask(1)}" is fine, "{S}" is not
+    std::fs::write(d.join("s.cell"), "cell Other { on ask(n: Int) { return n } }\ncell S { on main() { print(\"{Other.ask(1)}\") } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "s.cell"]);
+    assert!(code == 0, "{out}");
+}

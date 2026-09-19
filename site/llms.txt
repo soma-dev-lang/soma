@@ -635,8 +635,12 @@ cell agent Researcher {
 // usd:) is PROVEN when every think() has a literal max_tokens and runs a
 // known number of times — with tools, × the rounds (`max_rounds`, else 10).
 // `latency` counts WAITING: each think()'s `timeout` (a total, retries
-// included) × its rounds, http timeouts and literal sleep()s; approve(),
-// file/stdin reads and computed sleeps make it advisory; CPU time is not in it.
+// included — the wait for a rate limit and a mock's latency too) × its
+// rounds, http timeouts, literal sleep()s, vote() × k; approve(), file/stdin
+// reads and computed sleeps make it advisory; CPU time is not in it. `usd`
+// is the REPLY tokens × the price the table knows for the cell's model
+// (prompts are not counted; a model the table does not know makes it
+// advisory) — an estimate of the provider's bill, not the bill.
 // The model may call only the face's `tool`s (never a private or other
 // handler), with typed arguments, within their capabilities (URL patterns with
 // `*`: "https://api.x.com/*"; a tool with no capability is unrestricted; a

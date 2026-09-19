@@ -5,6 +5,7 @@ use super::super::{Value, RuntimeError, map_from_pairs};
 use crate::interpreter::soma_int::SomaInt;
 
 /// Resolved LLM configuration
+#[derive(Clone)]
 pub struct LlmConfig {
     pub api_url: String,
     pub api_key: String,
@@ -330,10 +331,12 @@ pub mod limiter {
         (env("SOMA_LLM_RPM").unwrap_or(cfg_rpm) as f64, env("SOMA_LLM_TPM").unwrap_or(cfg_tpm) as f64)
     }
 
-    /// Wait until one request of ~`tokens` tokens fits both limits.
-    pub fn acquire(cfg_rpm: u64, cfg_tpm: u64, tokens: u64) {
+    /// Wait until one request of ~`tokens` tokens fits both limits — or
+    /// until `deadline` (the think()'s timeout: the wait is part of it, the
+    /// proven latency bound counted only the timeout): false then.
+    pub fn acquire(cfg_rpm: u64, cfg_tpm: u64, tokens: u64, deadline: Instant) -> bool {
         let (rpm, tpm) = limits(cfg_rpm, cfg_tpm);
-        if rpm <= 0.0 && tpm <= 0.0 { return; }
+        if rpm <= 0.0 && tpm <= 0.0 { return true; }
         loop {
             let wait = {
                 let mut g = W.lock().unwrap_or_else(|e| e.into_inner());
@@ -367,7 +370,14 @@ pub mod limiter {
                     }
                 }
             };
-            match wait { None => return, Some(d) => std::thread::sleep(d.min(Duration::from_secs(5))) }
+            match wait {
+                None => return true,
+                Some(d) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() || d > left { std::thread::sleep(left); return false; }
+                    std::thread::sleep(d.min(Duration::from_secs(5)))
+                }
+            }
         }
     }
 

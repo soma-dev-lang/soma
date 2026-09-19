@@ -2287,6 +2287,19 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>, tools: &[Stri
                 _ => for (c, hs) in cell_handlers { for h in hs { out.push((Some(c.clone()), h.clone())); } },
             }
         }
+        // `vote(Cell.h, input, k)` runs its target k times, right here
+        // (a size bound was "proven" past a vote whose target wrote the slot)
+        if name == "vote" && args.len() == 3 {
+            match &args[0].node {
+                Expr::FieldAccess { target, field } => if let Expr::Ident(c) = &target.node { out.push((Some(c.clone()), field.clone())); },
+                Expr::Ident(h) => out.push((None, h.clone())),
+                Expr::Literal(Literal::String(t)) => match t.split_once('.') {
+                    Some((c, h)) => out.push((Some(c.to_string()), h.to_string())),
+                    None => out.push((None, t.clone())),
+                },
+                _ => for (c, hs) in cell_handlers { for h in hs { out.push((Some(c.clone()), h.clone())); } },
+            }
+        }
         // a literal handler: that handler of the named cell — or of ANY
         // cell defining it when the cell is computed (`delegate(c, "helper",
         // x)` with `c = "App" + ""` was not followed)

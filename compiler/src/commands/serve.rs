@@ -959,8 +959,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         };
                         let first = connect();
                         match &first {
-                            Ok(_) => eprintln!("peer: {} linked", peer_name),
-                            Err(e) => eprintln!("peer: {} failed: {} — retrying in the background", peer_name, e),
+                            Ok(_) => { eprintln!("peer: {} linked", peer_name); crate::interpreter::set_peer_up(&peer_name, true); }
+                            Err(e) => { eprintln!("peer: {} failed: {} — retrying in the background", peer_name, e); crate::interpreter::set_peer_up(&peer_name, false); }
                         }
                         // a link that drops (the peer restarted, or was cut
                         // off for reading too slowly) is re-established; a
@@ -977,6 +977,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                         std::thread::sleep(std::time::Duration::from_millis(500));
                                     }
                                     eprintln!("peer: {} link lost — reconnecting", peer_name);
+                                    crate::interpreter::set_peer_up(&peer_name, false);
                                     alive = None;
                                     // a peer that accepts and drops at once is not a
                                     // healthy link: back off (it reconnected every 1.3 s)
@@ -984,7 +985,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 }
                                 std::thread::sleep(std::time::Duration::from_secs(backoff));
                                 match connect() {
-                                    Ok(a) => { eprintln!("peer: {} linked again", peer_name); alive = a; }
+                                    Ok(a) => { eprintln!("peer: {} linked again", peer_name); crate::interpreter::set_peer_up(&peer_name, true); alive = a; }
                                     Err(_) => { backoff = (backoff * 2).min(30); }
                                 }
                             }
