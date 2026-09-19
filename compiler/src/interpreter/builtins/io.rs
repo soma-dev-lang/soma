@@ -161,6 +161,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             Some(h) => h.into_iter().map(|(t, _)| t.trim().to_string()).collect(),
                             None => return Some(Ok(Value::List(vec![]))),
                         };
+                        // `sku,qty,qty`: the second `qty` overwrote the first in
+                        // every row, silently — name the duplicate instead
+                        if let Some(dup) = headers.iter().enumerate().find(|(i, h)| !h.is_empty() && headers[..*i].contains(h)).map(|(_, h)| h.clone()) {
+                            return Some(Err(RuntimeError::Domain { kind: "csv".to_string(), message: format!("csv: {}: the header names column '{}' twice — a row is a map, so one would overwrite the other; rename one", path, dup) }));
+                        }
                         let mut rows = Vec::new();
                         for rec in records {
                             if rec.len() == 1 && rec[0].0.trim().is_empty() && !rec[0].1 { continue; }
@@ -243,7 +248,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                         })
                                         .unwrap_or_default()
                                 }).collect();
-                                output.push_str(&vals.join(","));
+                                let line = vals.join(",");
+                                // a row of only empty cells is `""`, not a blank
+                                // line read_csv would skip (the row was lost)
+                                output.push_str(if line.is_empty() && !headers.is_empty() { "\"\"" } else { &line });
                                 output.push('\n');
                             }
                         }

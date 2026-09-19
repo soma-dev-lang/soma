@@ -652,6 +652,7 @@ impl<'a> Checker<'a> {
                             "double" | "float64" | "f64" | "number" | "decimal" => Some("Float"),
                             "array" | "vec" => Some("List"),
                             "dict" | "object" | "hashmap" => Some("Map"),
+                            "json" | "value" | "anything" | "dynamic" => Some("Any"),
                             _ => None,
                         };
                         let near = alias.map(|a| a.to_string()).or_else(|| { let base: Vec<String> = BASE.iter().map(|b| b.to_string()).collect(); names::suggest(&n, base.iter()).map(|x| x.to_string()) });

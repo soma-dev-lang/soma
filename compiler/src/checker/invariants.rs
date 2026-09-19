@@ -654,7 +654,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                     _ if std::ptr::eq(**one, &UNKNOWN_EXPR) => format!("`{n}` is bound by a loop or a pattern — its values (and their fields) are not bounded; `require` a bound on the value you write"),
                                     _ => format!("`{n}` = {} — not bounded", render_expr(one)),
                                 },
-                                _ => format!("`{n}` is reassigned {} times (a loop accumulator?) — bind it once, or read the slot", bound.len()),
+                                _ => format!("`{n}` gets {} values (its binding and its later assignments — a loop accumulator?) — bind it once, or read the slot", bound.len()),
                             }
                         }
                     }).collect();

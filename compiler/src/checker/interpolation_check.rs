@@ -392,7 +392,22 @@ impl<'a> Walker<'a> {
                     w.loop_depth -= 1;
                 });
             }
-            Statement::Emit { args, .. } => {
+            Statement::Emit { signal_name, args } => {
+                // every listener runs with these arguments: one taking a
+                // different count raised at run time (`emit ev(1)` for
+                // `on ev(a, b)`) and rolled the emitter back
+                for ((cell, h), (lo, n)) in self.index.arity.iter() {
+                    if h == signal_name && (args.len() < *lo || args.len() > *n) {
+                        self.issues.push(InterpolationIssue {
+                            message: format!("`emit {signal_name}(…)` passes {} argument(s), but the listener {cell}.{signal_name} takes {}", args.len(), n),
+                            span: stmt.span,
+                            warning: false,
+                            habit: false,
+                            kind: "arity",
+                        });
+                        break;
+                    }
+                }
                 for a in args {
                     self.walk_expr(a);
                 }

@@ -5245,7 +5245,9 @@ pub(crate) fn check_param_type(param: &Param, val: Value) -> Result<Value, Strin
         // record (`()`) and callbacks pass; `List` accepts an absent list.
         ("Map", Value::Variant { .. } | Value::Unit | Value::Lambda { .. } | Value::LambdaBlock { .. })
         | ("List", Value::Unit) => Ok(val),
-        ("Int", Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.0e15 => Ok(Value::Int(SomaInt::from_i64(*f as i64))),
+        // a Float is not an Int, whatever its value (a computed 1.0 was taken
+        // while `[1.0]` for List<Int>, an Int slot and a literal were refused);
+        // HTTP / CLI text already converts integral numbers at the boundary
         ("Float", Value::Int(i)) => Ok(Value::Float(i.to_f64())),
         ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => Err(format!(
             "parameter '{}' expects {}, got {} {}", param.name, ty, got, shown()

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `emit` arity mismatches are check errors; a computed Float is refused by
+  an Int parameter; CSV rows of empty cells survive a round trip and
+  duplicate CSV headers are refused.
 - Parameter types are checked all the way down (HTTP, bus, tools, calls);
   a Float past 2^53 is not coerced into an Int parameter; `[native]`
   handlers and mocks are held to the face's return type.

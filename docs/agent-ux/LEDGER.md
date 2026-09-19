@@ -1080,3 +1080,18 @@ nineteen 409; 15 adversarial cost programs all refused.
 
 ### Open
 - [ ] Map key types are text (`Map<Int, …>` keys read back as Strings); Int → Float is not coerced inside nested values; think_json can return a Map with `_type` (is_a true); tool schemas advertise variant parameters as strings.
+
+### Cycle 44 — realistic port (warehouse management) + second pass on type enforcement
+
+WMS port 8.5/10: 50 concurrent allocations against 310 units → exactly 31
+winners, stock exact; 10 temporal properties proven. The attack agent's
+report was largely written against an older binary (most of its "HIGH"s
+reproduce with 2.5.1, not with the frozen ux44 build — re-checked one by
+one); what it found that was real is fixed below.
+
+### Fixed
+- [x] `emit ev(1)` to a listener taking two parameters passed check (raised at run time and rolled the emitter back) — an arity check error; `Json`-style type names map to `Any` in the unknown-type hint.
+- [x] Port: a computed Float `2.0` entered an Int parameter (a literal, a List<Int> element and an Int slot refused it) — refused; `write_csv` of a row whose cells are all `()` wrote a blank line read_csv skips (the row was lost) — `""`; a duplicate CSV header silently dropped a column — kind `csv`; "reassigned 2 times" counted the let.
+
+### Open
+- [ ] Int → Float is not coerced inside nested values; huge Floats print all their digits (no exponent); `()` enters a `List` / `Map` parameter (documented optional containers); `write_csv` does not guard against formula injection; a per-key capacity read from another slot cannot be proven.

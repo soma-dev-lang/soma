@@ -671,7 +671,7 @@ cell A {
 cell test T {
   rules {
     assert_fails add("ten") matching "parameter 'n' expects Int, got String"
-    assert add(2.0) == 3
+    assert_fails add(2.0) matching "parameter 'n' expects Int, got Float"
   }
 }
 "#).unwrap();
@@ -2779,4 +2779,27 @@ fn cycle43_findings() {
     std::fs::write(d.join("k.cell"), "cell K {\n  on main() {\n    let variants = 1\n    variants = 2\n    return variants\n  }\n}\n").unwrap();
     let (out, code) = soma_in(&d, &["check", "k.cell"]);
     assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn cycle44_findings() {
+    let d = dir("cycle44");
+    // an emit whose listener takes a different number of arguments
+    std::fs::write(d.join("e.cell"), "cell T {\n  on h() { emit ev(1) }\n  on ev(a: Int, b: Int) { return 1 }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "e.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("but the listener T.ev takes 2"), "{out}");
+    // a computed Float is not an Int parameter
+    std::fs::write(d.join("f.cell"), "cell F {\n  on ix(n: Int) { return n }\n  on go() { let f = 2.0  return ix(f) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "f.cell", "go"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("expects Int, got Float"), "{out}");
+    // CSV: a row of only empty cells survives; a duplicate header is refused
+    std::fs::write(d.join("c.cell"), "cell C {\n  on rt() {\n    write_csv(\"o.csv\", [map(\"a\", 1), map(\"a\", ()), map(\"a\", 3)])\n    return len(read_csv(\"o.csv\"))\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "c.cell", "rt"]);
+    assert!(out.trim_end().ends_with('3'), "{out}");
+    std::fs::write(d.join("dup.csv"), "sku,qty,qty\nA,1,2\n").unwrap();
+    std::fs::write(d.join("r.cell"), "cell R { on f() { let r = try { read_csv(\"dup.csv\") }  return r.kind } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "r.cell", "f"]);
+    assert!(out.contains("csv"), "{out}");
 }
