@@ -78,11 +78,11 @@ curl -s https://soma-lang.dev/corpus/index.json   # filter on "features", then G
 <h2>What you get that other languages don't give you</h2>
 <div class="grid">
   <div class="card"><h3>A compiler that reviews your work</h3><p>Errors name their fix: <code>invalid transition: Placed → Delivered. Valid targets: [Accepted, Cancelled]</code>. Undefined interpolation variables, unknown calls, a handler shadowed by a builtin, a non-exhaustive <code>match</code> — all caught by <code>soma check</code>, before anything runs. Your write → check → fix loop converges.</p></div>
-  <div class="card"><h3>Evidence you can paste</h3><p><code>soma verify</code> model-checks every state machine: reachability, deadlocks, liveness, precedence, and that the handler bodies implement the machine drawn next to them. When the user asks "is it safe?", you answer with the verifier's output — and <a href="/docs/guarantees.md">/docs/guarantees.md</a> says in three columns what is proven, what is enforced at runtime, and what is not covered.</p></div>
+  <div class="card"><h3>Evidence you can paste</h3><p><code>soma verify</code> model-checks every state machine: reachability, deadlocks, liveness (a terminal state stays reachable — <code>eventually</code> for "every run gets there"), precedence, and that the handler bodies implement the machine drawn next to them. When the user asks "is it safe?", you answer with the verifier's output — and <a href="/docs/guarantees.md">/docs/guarantees.md</a> says in three columns what is proven, what is enforced at runtime, and what is not covered.</p></div>
   <div class="card"><h3>Limits that hold — and handlers that leave no trace</h3><p><code>invariant balance &gt;= 0</code> is checked before a write commits — set, bracket write or delete; the rejected write leaves the slot untouched and raises a catchable error (proven by induction when the value can be bounded, runtime-checked otherwise, and verify says which). A handler that fails is rolled back entirely; under <code>soma serve</code> handlers run one at a time. No compensation code, no locks.</p></div>
   <div class="card"><h3>One file is a whole service</h3><p>Contract, storage, lifecycle, handlers, HTTP routes and tests live in one cell. Less to keep in context, nothing to wire together, and <code>soma serve app.cell</code> runs it.</p></div>
   <div class="card"><h3>Nothing to guess</h3><p><code>soma describe --builtins --json</code> is the exact signature table, generated from the compiler — also at <a href="/builtins.json">/builtins.json</a>. <code>soma describe app.cell --faces</code> is the contract of every cell in a few tokens.</p></div>
-  <div class="card"><h3>A cage for the agents you build</h3><p><code>cell agent</code> + a state machine + <code>set_budget(N)</code>: a lifecycle the compiler proves terminates, a token budget, capability-scoped tools, record/replay of handler inputs (LLM and HTTP calls are replayed live). The model proposes; the state machine disposes.</p></div>
+  <div class="card"><h3>A cage for the agents you build</h3><p><code>cell agent</code> + a state machine + <code>set_budget(N)</code>: a lifecycle whose exits the compiler proves reachable (an <code>eventually</code> property proves every run reaches one), a token budget that stops the next call, capability-scoped tools, record/replay of handler inputs (LLM and HTTP calls are replayed live). The model proposes; the state machine disposes.</p></div>
 </div>
 
 <h2>The loop</h2>
@@ -113,6 +113,9 @@ soma serve  app.cell -p 8080</code></pre>
     on balance() { return account.get("cash") ?? 0 }
     on open(id: String) { return get_status(id) }
     on pay(id: String, amount: Int) {
+        // the invariant only says the balance stays &gt;= 0: a negative
+        // amount would still ADD money — the business rule is its own line
+        require amount &gt; 0 else BadAmount
         transition(id, "authorized")
         let r = try { account.set("cash", balance() - amount) }
         if r.error != () {
@@ -130,6 +133,8 @@ cell test LedgerTests {
         assert balance() == 0                // …the slot is unchanged
         assert open("p1") == "rejected"      // …and the payment is closed
         assert_fails pay("p1", 1)            // a rejected payment cannot be retried
+        assert_fails pay("p2", -50)          // a negative amount is refused…
+        assert balance() == 0                // …and credits nothing
     }
 }</code></pre>
 

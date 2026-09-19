@@ -79,9 +79,9 @@ li{margin-bottom:.4rem}
 
 <div class="abstract">
 <strong>Abstract</strong>
-We present Soma, a language where the unit of computation &mdash; the cell &mdash; is also the unit of distribution. A cell declares its state (memory), its lifecycle (state machines), its contracts (face), and its distribution requirements (scale). The same source code runs on a single machine or across a cluster of thousands of nodes, with no modification. A built-in model checker verifies temporal properties, consistency guarantees, and CAP trade-offs at compile time, before deployment.
+We present Soma, a language where the unit of computation &mdash; the cell &mdash; is also the unit of distribution. A cell declares its state (memory), its lifecycle (state machines), its contracts (face), and its distribution requirements (scale). The same source code runs on a single machine or, in an experimental cluster mode, across several nodes, with no modification. A built-in model checker proves temporal properties of the declared state machines at compile time; for distribution it checks that the <em>declarations</em> are coherent (consistency level, quorum arithmetic, CAP mode). It does not prove that the runtime delivers them: the current prototype replicates by broadcast and is eventually consistent, even under <code>consistency: strong</code> (&sect;5.4).
 
-We introduce three ideas: (1) distribution semantics as compile-time-checked properties on memory slots, analogous to type checking; (2) a fractal execution model where the same mechanism &mdash; cell, signal, handler &mdash; operates at every scale from function call to inter-datacenter replication; and (3) a single runtime flag (<code>--join</code>) that transitions a standalone process into a cluster node, with automatic data replication via the existing signal bus.
+We introduce three ideas: (1) distribution semantics as compile-time-checked properties on memory slots, analogous to type checking; (2) a fractal execution model where the same mechanism &mdash; cell, signal, handler &mdash; operates at every scale from function call to inter-datacenter replication; and (3) a single runtime flag (<code>--join</code>) that transitions a standalone process into a cluster node, with data replicated by broadcast on the existing signal bus (eventually consistent in the current prototype).
 </div>
 
 <!-- ════════════════════════ 1. INTRODUCTION ════════════════════════ -->
@@ -146,7 +146,7 @@ We introduce three ideas: (1) distribution semantics as compile-time-checked pro
 <li><strong>Shard validity</strong>: the named slot exists in the cell's memory</li>
 <li><strong>Consistency coherence</strong>: no <code>[ephemeral]</code> + <code>strong</code>, no <code>[local]</code> + <code>shard</code></li>
 <li><strong>CAP analysis</strong>: <code>strong</code> + <code>tolerance > 0</code> implies CP mode (reduced availability under partition)</li>
-<li><strong>Quorum</strong>: for strong consistency with N replicas, quorum = &lceil;N/2&rceil; + 1, maximum tolerable failures = N &minus; quorum</li>
+<li><strong>Quorum</strong>: for strong consistency with N replicas, quorum = &lfloor;N/2&rfloor; + 1 (a strict majority: 2 of 3, 3 of 5, 26 of 50), maximum tolerable failures = N &minus; quorum</li>
 <li><strong>Locality</strong>: non-sharded <code>[ephemeral, local]</code> slots are confirmed as node-local fast paths</li>
 </ul>
 
@@ -186,7 +186,7 @@ eventually = [<span class="str">"settled"</span>, <span class="str">"failed"</sp
   <span class="ok">&check;</span> memory 'cache' is node-local &mdash; not distributed (fast path)
   <span class="ok">&check;</span> scheduler runs on leader node only</code></pre>
 
-<p>These are not runtime assertions &mdash; they are compile-time proofs about the system's behavior under distribution.</p>
+<p>These checks are compile-time proofs about the <em>declarations</em>: that the requested replication, quorum and consistency level are coherent with each other and with the memory properties. They are not proofs that the running cluster behaves that way &mdash; the prototype runtime replicates writes by broadcast and is eventually consistent, including for slots declared <code>strong</code> (see Limitations). Verifying the declarations is a precondition for a correct deployment, not a substitute for a consensus implementation.</p>
 
 <!-- ════════════════════════ 4. RUNTIME ════════════════════════ -->
 
@@ -295,7 +295,7 @@ Node 3: receives EVENT &rarr; applies set to local SQLite</code></pre>
 
 <p><strong>Orleans</strong> [Bykov et al., 2011] introduces virtual actors with automatic placement, but distribution properties are implicit in the runtime rather than declared and verified in the source.</p>
 
-<p>Soma is, to our knowledge, the first language where distribution requirements are (1) declared in the source code alongside business logic, (2) verified at compile time for consistency, CAP properties, and quorum arithmetic, and (3) executed by the same runtime that handles local computation, via the same signal mechanism.</p>
+<p>Soma is, to our knowledge, the first language where distribution requirements are (1) declared in the source code alongside business logic, (2) checked at compile time for coherence &mdash; consistency level, CAP mode and quorum arithmetic of the declarations, not yet their enforcement by the runtime &mdash; and (3) executed by the same runtime that handles local computation, via the same signal mechanism.</p>
 
 <!-- ════════════════════════ 7. CONCLUSION ════════════════════════ -->
 

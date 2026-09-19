@@ -12,8 +12,12 @@ not as an add-on, but as the reason the language exists:
 - **Memory carries invariants.** `invariant balance >= 0` is enforced before
   any write commits. An overdraft isn't a bug to catch; it's unrepresentable.
 - **LLMs run inside the cage.** A `cell agent`'s lifecycle is a state machine
-  the compiler proves terminates; `set_budget` hard-caps its token spend;
-  tool calls are capability-scoped. The model proposes — the language disposes.
+  whose terminal states the compiler proves reachable from every state (add an
+  `eventually` property to prove that every run reaches one); `set_budget` stops
+  further `think()` calls once the budget is spent (the provider round that
+  crosses it completes, up to its `max_tokens`; a prompt that alone overruns
+  what is left is refused before it is sent); tool calls are
+  capability-scoped. The model proposes — the language disposes.
 
 ```soma
 cell Ledger {
@@ -136,7 +140,7 @@ machine-readable surface: `llms.txt`, `llms-full.txt`, `builtins.json`,
 the corpus by `tools/build_site.py`, so the site cannot drift.
 
 **Soma running agents:** `cell agent` + `think()` + a state machine =
-a lifecycle with proven termination, hard token caps, capability-scoped
+a lifecycle whose exits are proven reachable, token budgets that stop the next call, capability-scoped
 tools, human approval gates, and deterministic replay (`--record` /
 `soma replay`) for audits.
 

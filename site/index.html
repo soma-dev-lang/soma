@@ -256,7 +256,7 @@ footer {
 <main>
 <header>
   <h1>Soma</h1>
-  <p class="lede">Soma is a small language for services whose correctness is a lifecycle and a few hard limits — approvals, quotas, escrow, agent workflows. One file holds the data, the state machine, the handlers, the tests and the HTTP routes; <code>soma verify</code> proves the lifecycle and the invariants it can, and says which ones it only checks at runtime. Handlers are atomic and serialized: a request that fails leaves nothing behind.</p>
+  <p class="lede">Soma is a small language for services whose correctness is a lifecycle and a few hard limits — approvals, quotas, escrow, agent workflows. One file holds the data, the state machine, the handlers, the tests and the HTTP routes; <code>soma verify</code> proves the lifecycle and the invariants it can, and says which ones it only checks at runtime. Handlers are atomic and serialized: a request that fails leaves no slot write and no transition behind — effects outside the program (an HTTP call, a file, an LLM call) are not rolled back.</p>
   <p>Built for programs written by AI agents: every error names its fix, the whole language fits in one context window (<a href="/llms.txt">llms.txt</a>), and the toolchain answers with evidence (<code>VERIFY OK</code>, proven bounds, exact counts) rather than promises. This page is factual: <a href="#status">implementation status</a> separates what is implemented from what is partial.</p>
   <div class="install">
     <code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
@@ -265,6 +265,42 @@ footer {
   <p><strong>Reading this as an AI agent?</strong> Go to <a href="/agents">/agents</a>, or fetch <a href="/llms-full.txt">/llms-full.txt</a> (the whole language, one request), <a href="/builtins.json">/builtins.json</a> (exact signatures) and <a href="/corpus/index.json">/corpus/index.json</a> (300+ programs passing check+test, verified where they have a state machine, filterable by feature). A project's <code>AGENTS.md</code> block is at <a href="/agent.md">/agent.md</a>.</p>
   <p class="note">Installer note: the shell installer executes code fetched from the project repository. Review <a href="https://github.com/soma-dev-lang/soma/blob/main/site/setup.sh">site/setup.sh</a> before running it in an environment you care about.</p>
 </header>
+
+<section id="demo">
+  <h2>One Rule, One Attempt To Break It</h2>
+  <p>A quota of 100 units per user. The rule is written once, next to the data; the handler states its own business preconditions.</p>
+<pre><code>cell Quota {
+    memory {
+        used: Map&lt;String, Int&gt; [persistent]
+        invariant used &gt;= 0 &amp;&amp; used &lt;= 100
+    }
+    on consume(user: String, n: Int) {
+        require n &gt; 0 else BadAmount
+        let before = used.get(user) ?? 0
+        require before + n &lt;= 100 else QuotaExceeded
+        used.set(user, before + n)
+        return 100 - (before + n)
+    }
+}</code></pre>
+  <p>What the verifier says, and what the program then does (real output of the 2.6 toolchain):</p>
+<pre><code>$ soma verify quota.cell
+  ✓ invariant used &gt;= 0 &amp;&amp; used &lt;= 100 — writer 'consume' proven by induction (writes before + n)
+VERIFY OK
+
+$ soma run quota.cell consume ana 60      →  40
+$ soma run quota.cell consume ana 60      →  error: require failed: QuotaExceeded
+$ soma run quota.cell consume ana -5      →  error: require failed: BadAmount
+$ soma run quota.cell consume ana 40      →  0</code></pre>
+  <p>Delete the <code>QuotaExceeded</code> line and the verdict changes: the bound is no longer <em>proven</em>, it is <em>checked at runtime</em> — and the write that would exceed it is refused, leaving the slot unchanged (<code>soma verify --strict</code> turns that ⚠ into a failure):</p>
+<pre><code>  ⚠ invariant used &gt;= 0 &amp;&amp; used &lt;= 100 — runtime-checked (computed values): consume → used [used &lt;= 100]
+    because `before + n` is only known to lie in [1, ∞) — narrow it: `require (before + n) &lt;= 100 else …`
+
+$ soma run q2.cell consume ana 60  →  error: memory invariant violated on 'used': … rejected write of 120; the slot is unchanged</code></pre>
+  <table>
+    <tr><th>Proven (every input)</th><th>Checked at runtime</th><th>Not covered</th></tr>
+    <tr><td>The bound, when every write is narrowed like above; the lifecycle of every declared state machine; declared token bounds.</td><td>Every invariant on every write; transitions and guards; typed parameters; token budgets.</td><td>Business rules you did not write (the <code>n &gt; 0</code> line is yours: without it a negative amount would <em>give back</em> quota and still satisfy the invariant); external effects; what an LLM answers. <a href="/docs/guarantees.md">Full table</a>.</td></tr>
+  </table>
+</section>
 
 
 <section id="language">
@@ -342,7 +378,7 @@ eventually = ["filled", "rejected"]</code></pre>
     </div>
     <div class="card">
       <h3><span class="tag partial">scoped</span>Formal claims</h3>
-      <p>What <code>soma verify</code> proves, it proves for every input: state-machine reachability, liveness and temporal properties; memory invariants by induction over every write (literal, clamped, <code>require</code>-narrowed or read-modify-write); termination of structurally recursive handlers; token cost bounds across sibling calls and scheduled blocks. What it cannot prove it reports as runtime-checked, and <code>--strict</code> turns that into a failure. Out of scope: arbitrary handler semantics, cross-cell properties, and what an LLM answers — those are tested, and validated at runtime. The exact table: <a href="/docs/guarantees.md">docs/guarantees.md</a>.</p>
+      <p>What <code>soma verify</code> proves, it proves for every input: state-machine reachability, liveness (a terminal state is always reachable; <code>eventually</code> proves every run reaches one) and temporal properties; memory invariants by induction over every write (literal, clamped, <code>require</code>-narrowed or read-modify-write); termination of structurally recursive handlers; token cost bounds across sibling calls and scheduled blocks. What it cannot prove it reports as runtime-checked, and <code>--strict</code> turns that into a failure. Out of scope: arbitrary handler semantics, cross-cell properties, and what an LLM answers — those are tested, and validated at runtime. The exact table: <a href="/docs/guarantees.md">docs/guarantees.md</a>.</p>
     </div>
   </div>
 </section>
