@@ -63,8 +63,20 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                     Section::After(e) => Some(OnSection { signal_name: format!("after {}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
                     _ => None,
                 }).collect();
+                // handlers of cells WITHOUT a machine take this machine's
+                // edges too when it is the program's only one (`N.force`
+                // calling transition() passed check, then raised
+                // undefined_variable in the guard)
+                let all_cells = super::names::collect_cells(program);
+                let machines = all_cells.iter().filter(|c| c.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
+                let foreign: Vec<&OnSection> = if machines == 1 {
+                    all_cells.iter().filter(|c| c.name != cell.name && matches!(c.kind, CellKind::Cell | CellKind::Agent)
+                        && !c.sections.iter().any(|s| matches!(s.node, Section::State(_))))
+                        .flat_map(|c| c.sections.iter().filter_map(|s| match &s.node { Section::OnSignal(on) => Some(on), _ => None }))
+                        .collect()
+                } else { Vec::new() };
                 let handlers_and_ticks: Vec<&OnSection> = cell.sections.iter().filter_map(|s| match &s.node { Section::OnSignal(on) => Some(on), _ => None })
-                    .chain(ticks.iter()).collect();
+                    .chain(ticks.iter()).chain(foreign.into_iter()).collect();
                 for on in handlers_and_ticks {
                     let mut takes = false;
                     for stmt in &on.body {

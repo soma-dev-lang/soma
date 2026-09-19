@@ -739,6 +739,16 @@ fn is_collection_iter(expr: &Expr) -> bool {
         | Expr::FieldAccess { .. }
         | Expr::MethodCall { .. }
         | Expr::FnCall { .. }  // e.g., keys(), values(), list()
+        // a `for` walks a SNAPSHOT of a finite value, whatever expression
+        // produced it (`for x in m["items"]` was "unbounded iterator")
+        | Expr::Index { .. }
+        | Expr::Pipe { .. }
+        | Expr::ListLiteral(_)
+        | Expr::IfExpr { .. }
+        | Expr::Match { .. }
+        | Expr::BinaryOp { .. }
+        | Expr::Try(_)
+        | Expr::TryPropagate(_)
     )
 }
 

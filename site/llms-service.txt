@@ -234,7 +234,10 @@ source, `file:line`, left/right, and the fields a value really has when
   TRANSITIONED — a record stored in a slot but never transitioned is "fresh"
   to it (test the slot for duplicates: `require m.get(id) == () else Dup`).
 - `transition()`'s first argument is an INSTANCE id (an order, a ticket), not
-  the machine's name; one cell has one machine, any number of instances.
+  the machine's name; one cell has one machine, any number of instances. A
+  cell without a machine may call transition() / get_status() when the
+  program has exactly one machine; that machine's guards then read the
+  CALLING handler's locals (a check error if it does not bind them).
 - A slot is a Map or a List (`n: Int` is a check error). Read a
   whole slot by its bare name (`history`, `counts`); write with
   `counts.set(k, v)` / `counts[k] = v` / `history.push(x)`; `history = …` is
@@ -337,7 +340,8 @@ source, `file:line`, left/right, and the fields a value really has when
   `zeros`…): past that it raises kind `range`. Map slot keys are text
   (`m.set(1, …)` and `m.set("1", …)` are one entry).
   `use helper` imports helper.cell beside the program, `use lib::m`
-  lib/m.cell; imported handlers are callable by name; an imported file's
+  lib/m.cell (a `use` inside an imported file resolves beside THAT file);
+  imported handlers are callable by name; an imported file's
   test cells run only under `soma test lib/m.cell`. `agg`, `sort_by`,
   `top`, `median`, `pstdev`; `stdev` / `variance` are SAMPLE (n − 1) like
   Python's statistics, `pstdev` / `pvariance` population. `|> map`, `|> filter`,
@@ -633,7 +637,8 @@ once). Same semantics as the interpreter: `7 / 2` is 3.5, a division by zero
 is an ordinary `try`-catchable error, an Int overflow promotes to BigInt, and
 an Int slot refuses a non-exact `/` instead of truncating. One difference:
 native code is statically typed: a quotient returned or stored as an Int
-is the exact Int (`return a / b` gives -7 for -7 / 1), but inside an
+is the exact Int (`return a / b` gives -7 for -7 / 1; an exact quotient past
+2^53 raises natively — use idiv(a, b) there), but inside an
 expression that needs its type — `to_string(a / b)` — it is a Float
 ("-7.0") — `soma check` warns; write idiv(a, b) for an integer quotient. A native local keeps the
 type of its `let` (assigning a String to a number local is a check error).

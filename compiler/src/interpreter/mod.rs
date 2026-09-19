@@ -1317,7 +1317,13 @@ impl Interpreter {
                     // i128 overflow — fall through to interpreted path for BigInt
                     eprintln!("[native] i128 overflow, falling back to interpreted BigInt");
                 }
-                Err(e) => return Err(RuntimeError::TypeError(e)),
+                // a native `soma:<kind>: …` refusal keeps its kind (a
+                // loop_bound overrun was kind "type" natively, "loop_bound"
+                // interpreted)
+                Err(e) => return Err(match e.split_once(": ") {
+                    Some((k, _)) if matches!(k, "loop_bound" | "range" | "index") => RuntimeError::Domain { kind: k.to_string(), message: e.clone() },
+                    _ => RuntimeError::TypeError(e),
+                }),
             }
         }
 

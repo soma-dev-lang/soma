@@ -2709,3 +2709,21 @@ fn cycle40_findings() {
     let (out, code) = soma_in(&d, &["check", "p.cell"]);
     assert_ne!(code, 0, "{out}");
 }
+
+#[test]
+fn cycle41_findings() {
+    let d = dir("cycle41");
+    // a guarded transition taken from a machine-less cell binds the guard's names
+    std::fs::write(d.join("g.cell"), "cell M {\n  state s {\n    initial: a\n    a -> done { guard { amount <= 100 } }\n  }\n}\ncell N {\n  on force(id: String) { transition(id, \"done\") }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("reads 'amount'"), "{out}");
+    // for over any finite value terminates
+    std::fs::write(d.join("l.cell"), "cell L {\n  on d(m: Map) {\n    let n = 0\n    for x in m[\"k\"] { n += 1 }\n    return n\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "l.cell"]);
+    assert_eq!(code, 0, "{out}");
+    // soma run decodes request's path like serve
+    std::fs::write(d.join("r.cell"), "cell R {\n  on request(method: String, path: String, body: String) { return path }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "r.cell", "request", "GET", "/w/%C3%A9", ""]);
+    assert!(out.contains("/w/é"), "{out}");
+}

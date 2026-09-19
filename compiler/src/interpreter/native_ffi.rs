@@ -368,7 +368,7 @@ pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super
     if native.sig.int_rational_return {
         if let Ok(super::Value::Float(v)) = &result {
             let inexact = take_div_inexact(native);
-            if !inexact && v.fract() == 0.0 && v.abs() < 9_007_199_254_740_992.0 {
+            if !inexact && v.fract() == 0.0 && v.abs() <= 9_007_199_254_740_992.0 {
                 return Ok(super::Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*v as i64)));
             }
         }

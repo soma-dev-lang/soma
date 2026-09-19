@@ -380,7 +380,18 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     // TCP bus listener: accepts incoming peer connections — only when the
     // program can use it (a cluster join, a `scale` section, or `emit`);
     // a plain service used to open an extra socket nobody asked for
-    let uses_emit = source.contains("emit ");
+    // on the whole program (an `emit` in an imported lib/ file was missed
+    // by a search of the main file's text)
+    let uses_emit = program.cells.iter().any(|c| c.node.sections.iter().any(|s| {
+        let body = match &s.node {
+            ast::Section::OnSignal(on) => &on.body,
+            ast::Section::Every(e) | ast::Section::After(e) => &e.body,
+            _ => return false,
+        };
+        let mut hit = false;
+        crate::checker::literals::for_each_stmt_deep(body, &mut |st| if matches!(st, ast::Statement::Emit { .. }) { hit = true; });
+        hit
+    }));
     // a receiver that only ACCEPTS events (`[bus] accept`) needs the port too
     let bus_wanted = is_cluster_mode || uses_emit || BUS_ACCEPT.get().map_or(false, |a| !a.is_empty());
     if bus_port > 0 && !bus_wanted {

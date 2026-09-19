@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `[native]` `bnot` is exact past 2^63; native `loop_bound` errors keep
+  their kind; `soma run … request` decodes the path like serve.
+- Guards of transitions taken from machine-less cells are checked;
+  `--strict` fails when `[verify] cells` names no cell of the file; `for`
+  over any finite value terminates; an `emit` in an imported file opens the
+  bus.
 - The equal-clause proof applies only to pure clauses (locals, arithmetic,
   `??`, `.get` of the written slot) with a plain key — other slots,
   nondeterministic or external reads between the require and the write

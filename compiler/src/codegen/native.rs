@@ -5967,8 +5967,11 @@ impl FnGenerator {
                 // as a bit-clearing mask. Convert to i64 first, then negate
                 // bits at i64 width. The caller is responsible for ensuring
                 // the operand fits i64.
+                // …but the interpreter's bnot is the unbounded `-a - 1`, and
+                // native must agree: `to_i64().unwrap_or(0)` gave -1 for
+                // every value past 2^63 (for i64 values the two coincide)
                 let a = self.gen_expr_rug(&args[0].node);
-                format!("Integer::from(!(({}).to_i64().unwrap_or(0)))", a)
+                format!("{{ let _a: Integer = {}; Integer::from(-_a - 1) }}", a)
             }
             "shl" if args.len() == 2 => {
                 // Wrap the base in Integer so the shift can produce a BigInt

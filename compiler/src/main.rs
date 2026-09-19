@@ -659,6 +659,10 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                 unknown_states.push(format!("soma.toml [verify] cells names '{c}', which has no `state {{ }}` — its properties apply to nothing"));
             } else if let Some(near) = checker::names::suggest(c, all_cell_names.iter()) {
                 unknown_states.push(format!("soma.toml [verify] cells names '{c}', which this file does not define (did you mean '{near}'?) — its properties were not checked"));
+            } else if strict && !targeted_present {
+                // --strict: properties that apply to NOTHING are no proof (a
+                // renamed cell silently disabled every property)
+                unknown_states.push(format!("soma.toml [verify] cells names '{c}', which this file does not define — none of its properties were checked"));
             } else if !json {
                 eprintln!("note: soma.toml [verify] cells names '{c}', which this file does not define — its properties are not checked here");
             }

@@ -1028,3 +1028,19 @@ double-counted, 4 retention size invariants proven, SSE atomic with rollback.
 
 ### Open
 - [ ] `let t = "alarm"  transition(id, t)` is a dynamic target; a lambda parameter read by a transition guard is refused; a literal List written into `Map<String, List<Int>>` with the wrong element type passes check; `[native]` cannot take a List or parse text; List-slot keys are Strings in invariants (`key != 0` cannot evaluate).
+
+### Cycle 41 — realistic port (e-learning, 6 files) + differential attack
+
+E-learning port 8.5/10: 50 parallel certificate requests → exactly one
+certificate; 20k-user leaderboard top-5 in 0.06 s. The differential attack
+ran ~27k interpreter-vs-native cases plus run / serve / test and
+verify-vs-runtime comparisons.
+
+### Fixed
+- [x] **Native `bnot` returned -1 for every Int past 2^63** (converted to i64, defaulting to 0) — the unbounded `-a - 1`, as interpreted.
+- [x] A native `loop_bound` overrun had kind `type` (interpreted: `loop_bound`); a native exact quotient of exactly 2^53 came back a Float — kinds and the Int are kept.
+- [x] `soma run … request GET /w/%C3%A9` passed the raw path — decoded as serve does.
+- [x] Port: a guarded transition taken from a machine-less cell (`N.force`) passed check and raised undefined_variable in the guard — the guard-binding rule covers those callers; `[verify] cells` naming no cell of the file passed --strict with every property unchecked — a failure under --strict; `for x in m["items"]` was an "unbounded iterator" (any finite value is); an `emit` only in an imported file left the bus closed ("no emit").
+
+### Open
+- [ ] A native `/` whose exact quotient is past 2^53 raises (documented; use idiv); face `-> List<String>` returning `[1, 2]` passes check; a raising property does not print its counter-example `n`.

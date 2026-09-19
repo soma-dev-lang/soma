@@ -448,8 +448,11 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
         let qi = params.iter().position(|p| p.name == "query");
         if let Some(pi) = pi {
             if let Some(interpreter::Value::String(full)) = args.get(pi).cloned() {
-                if let Some((path, qs)) = full.split_once('?') {
-                    args[pi] = interpreter::Value::String(path.to_string());
+                // path segments reach request percent-decoded, as under serve
+                // (`/w/%C3%A9` was "é" served and "%C3%A9" under soma run)
+                let raw_path = full.split('?').next().unwrap_or(&full).to_string();
+                args[pi] = interpreter::Value::String(crate::commands::serve::urlencoding_decode(&raw_path));
+                if let Some((_, qs)) = full.split_once('?') {
                     if let Some(qi) = qi {
                         let given_empty = match args.get(qi) { None => true, Some(interpreter::Value::Map(m)) => m.is_empty(), Some(interpreter::Value::String(t)) => t.is_empty() || t == "{}", _ => false };
                         if given_empty {
