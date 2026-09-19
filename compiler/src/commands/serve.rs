@@ -2040,7 +2040,9 @@ pub(crate) fn coerce_to_type(ty: &str, v: interpreter::Value) -> interpreter::Va
         ("Int", Value::String(s)) if s.parse::<i64>().is_ok() => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(s.parse().unwrap())),
         // Int is arbitrary precision: 99999999999999999999999 is an Int
         ("Int", Value::String(s)) if s.parse::<rug::Integer>().is_ok() => Value::Int(crate::interpreter::soma_int::SomaInt::from_rug(s.parse::<rug::Integer>().unwrap())),
-        ("Int", Value::Float(f)) if f.fract() == 0.0 => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
+        // exactly representable only (|f| < 2^53): `1e20` saturated to
+        // i64::MAX and was stored; past it the parameter check refuses
+        ("Int", Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.0e15 => Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(*f as i64)),
         ("Map" | "List", Value::String(s)) => {
             if s.trim().is_empty() {
                 return if ty == "Map" { Value::Map(Default::default()) } else { Value::List(vec![]) };

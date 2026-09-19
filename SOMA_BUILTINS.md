@@ -318,7 +318,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `hm_inc` | `hm_inc(m: HMap, k: Int) -> ()   [native] only` | m[k] += 1 (inserting 1). |
 | `hm_len` | `hm_len(m: HMap) -> Int   [native] only` | Number of keys. |
 | `hm_has` | `hm_has(m: HMap, k: Int) -> Bool   [native] only` | Whether k is present. |
-| `strbuf` | `strbuf() -> SBuf   [native] only` | Growable string builder (sb_push / sb_push_int / sb_push_char / sb_len / sb_finish). |
+| `strbuf` | `strbuf(capacity?: Int) -> SBuf   [native] only` | Growable string builder (sb_push / sb_push_int / sb_push_char / sb_len / sb_finish). |
 | `sb_push` | `sb_push(b: SBuf, s: String) -> ()   [native] only` | Append a string. |
 | `sb_push_int` | `sb_push_int(b: SBuf, n: Int) -> ()   [native] only` | Append an Int's decimal digits. |
 | `sb_push_char` | `sb_push_char(b: SBuf, c: Int) -> ()   [native] only` | Append one character by code point. |

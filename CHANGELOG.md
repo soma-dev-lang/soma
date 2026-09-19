@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Parameter types are checked all the way down (HTTP, bus, tools, calls);
+  a Float past 2^53 is not coerced into an Int parameter; `[native]`
+  handlers and mocks are held to the face's return type.
+- `from_json` refuses undeclared `_type`s; misspelled builtin types and
+  extra builtin arguments are check errors; `()` is refused where a nested
+  scalar is declared; `write_csv` keeps rows holding an empty String.
+- The equal-clause proof tolerates callees that cannot write the slot;
+  contextual keywords work as statement variables.
 - A handler parameter may not take a slot's name; face parameter types must
   match the handler's.
 - verify and the guard rule see every / after ticks of machine-less cells;

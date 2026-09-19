@@ -216,7 +216,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     // Map is its JSON text (["a", "b"] shifted the row)
                     let quote = |s: &str, text: bool| -> String {
                         let numeric = text && !s.is_empty() && (s.parse::<f64>().is_ok() || s.trim_start_matches('-').chars().all(|c| c.is_ascii_digit()));
-                        if numeric || s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
+                        // an empty String is `""`: a one-column row of it was a
+                        // blank line, which read_csv skips (24 rows in, 23 out)
+                        if numeric || (text && s.is_empty()) || s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r')
                             || s.starts_with(char::is_whitespace) || s.ends_with(char::is_whitespace) {
                             format!("\"{}\"", s.replace('"', "\"\""))
                         } else {

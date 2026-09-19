@@ -2753,3 +2753,30 @@ fn cycle42_findings() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("no handler named 'St'"), "{out}");
 }
+
+#[test]
+fn cycle43_findings() {
+    let d = dir("cycle43");
+    // parameter types are checked all the way down
+    std::fs::write(d.join("p.cell"), "cell P {\n  on p1(x: List<Map<String, Int>>) { return x }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "p.cell", "p1", r#"[{"a":"x"}]"#]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("expected Int, got String"), "{out}");
+    // 1e20 is not an Int
+    std::fs::write(d.join("i.cell"), "cell I {\n  on addi(k: String, v: Int) { return v }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "i.cell", "addi", "a", "1e20"]);
+    assert_ne!(code, 0, "{out}");
+    // misspelled types, extra builtin arguments
+    std::fs::write(d.join("t.cell"), "cell T {\n  memory { m: Map<String, Integer> [persistent] }\n  on f(n: Int) { return max(1, 2, n) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "t.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("unknown type `Integer`") && out.contains("max() takes at most 2"), "{out}");
+    // from_json of an undeclared _type is refused
+    std::fs::write(d.join("j.cell"), "cell J {\n  on f(s: String) { let r = try { from_json(s) }  return r.kind }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "j.cell", "f", r#"{"_type":"Nope","_variant":"X","a":1}"#]);
+    assert!(out.contains("type"), "{out}");
+    // `variants` as a statement's variable
+    std::fs::write(d.join("k.cell"), "cell K {\n  on main() {\n    let variants = 1\n    variants = 2\n    return variants\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "k.cell"]);
+    assert_eq!(code, 0, "{out}");
+}

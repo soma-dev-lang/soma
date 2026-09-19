@@ -1992,6 +1992,21 @@ impl Parser {
 
     fn parse_statement_inner(&mut self) -> Result<Spanned<Statement>, ParseError> {
         let start = self.peek_span();
+        // a contextual keyword used as a variable (`let variants = 1` is
+        // accepted) is a name at the start of a statement too: `variants = 2`,
+        // `variants[k] = v` were "expected statement, found Variants"
+        let contextual = match self.peek() {
+            Token::Variants => Some("variants"), Token::Requires => Some("requires"), Token::Connect => Some("connect"),
+            Token::Implies => Some("implies"), Token::Contradicts => Some("contradicts"), Token::After => Some("after"),
+            Token::Every => Some("every"),
+            _ => None,
+        };
+        if let Some(name) = contextual {
+            if matches!(self.peek_at(1), Token::Eq | Token::LBracket | Token::Dot | Token::PlusEq | Token::MinusEq | Token::StarEq | Token::SlashEq) {
+                let pos = self.pos;
+                self.tokens[pos].token = Token::Ident(name.to_string());
+            }
+        }
         match self.peek() {
             Token::Let => {
                 self.advance();

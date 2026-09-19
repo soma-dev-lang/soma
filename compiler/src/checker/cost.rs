@@ -235,7 +235,17 @@ impl<'a> CostWalk<'a> {
                             }).map_or(self.rounds, |r| r.min(self.rounds));
                             self.tokens += t.saturating_mul(rounds)
                         }
-                        None => self.unbounded_sites.push(format!("{}::think (no max_tokens)", handler_name)),
+                        None => {
+                            // a `max_tokens` key whose value is computed is not
+                            // "no max_tokens" (the message sent people looking)
+                            let has_key = args.iter().any(|a| matches!(&a.node, Expr::FnCall { name, args: kv } if name == "map"
+                                && kv.chunks(2).any(|c| matches!(&c[0].node, Expr::Literal(Literal::String(k)) if k == "max_tokens"))));
+                            self.unbounded_sites.push(if has_key {
+                                format!("{}::think (max_tokens is computed, not a literal)", handler_name)
+                            } else {
+                                format!("{}::think (no max_tokens)", handler_name)
+                            })
+                        }
                     }
                     self.latency_ms += timeout_ms.unwrap_or(30_000);
                 }

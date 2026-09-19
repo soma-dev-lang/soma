@@ -517,7 +517,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("hm_inc", "native", "hm_inc(m: HMap, k: Int) -> ()   [native] only", "m[k] += 1 (inserting 1)."),
     doc("hm_len", "native", "hm_len(m: HMap) -> Int   [native] only", "Number of keys."),
     doc("hm_has", "native", "hm_has(m: HMap, k: Int) -> Bool   [native] only", "Whether k is present."),
-    doc("strbuf", "native", "strbuf() -> SBuf   [native] only", "Growable string builder (sb_push / sb_push_int / sb_push_char / sb_len / sb_finish)."),
+    doc("strbuf", "native", "strbuf(capacity?: Int) -> SBuf   [native] only", "Growable string builder (sb_push / sb_push_int / sb_push_char / sb_len / sb_finish)."),
     doc("sb_push", "native", "sb_push(b: SBuf, s: String) -> ()   [native] only", "Append a string."),
     doc("sb_push_int", "native", "sb_push_int(b: SBuf, n: Int) -> ()   [native] only", "Append an Int's decimal digits."),
     doc("sb_push_char", "native", "sb_push_char(b: SBuf, c: Int) -> ()   [native] only", "Append one character by code point."),
@@ -585,4 +585,46 @@ mod tests {
                 "builtin '{}' has unlisted category '{}'", b.name, b.category);
         }
     }
+}
+
+/// The most arguments any documented form of `name` takes; None when a form
+/// is variadic (`args...`) or the builtin is unknown. `max(1, 2, 3)`
+/// silently answered 2 (the third argument was ignored).
+pub fn max_arity(name: &str) -> Option<usize> {
+    let sig = lookup(name)?.signature;
+    let mut best = 0usize;
+    let pat = format!("{}(", name);
+    let mut rest = sig;
+    let mut found = false;
+    while let Some(i) = rest.find(&pat) {
+        found = true;
+        let after = &rest[i + pat.len()..];
+        let mut depth = 0i32;
+        let mut end = None;
+        for (j, c) in after.char_indices() {
+            match c {
+                '(' | '<' | '[' | '{' => depth += 1,
+                ')' if depth == 0 => { end = Some(j); break; }
+                ')' | '>' | ']' | '}' => depth -= 1,
+                _ => {}
+            }
+        }
+        let inner = &after[..end?];
+        if inner.contains("...") || inner.contains('…') { return None; }
+        let mut n = 0usize;
+        let mut d = 0i32;
+        let mut cur = String::new();
+        for c in inner.chars() {
+            match c {
+                '<' | '(' | '[' | '{' => { d += 1; cur.push(c); }
+                '>' | ')' | ']' | '}' => { d -= 1; cur.push(c); }
+                ',' if d == 0 => { if !cur.trim().is_empty() { n += 1; } cur.clear(); }
+                _ => cur.push(c),
+            }
+        }
+        if !cur.trim().is_empty() { n += 1; }
+        best = best.max(n);
+        rest = &after[end? ..];
+    }
+    if found { Some(best) } else { None }
 }

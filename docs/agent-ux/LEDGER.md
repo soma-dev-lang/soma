@@ -1063,3 +1063,20 @@ undeclared edge, no skipped guard, every property matched hand analysis.
 
 ### Open
 - [ ] `except [done, nosuch]` passes check; get_status in a machine-less cell with two machines passes check; a dashboard with no verify results; ~2 KB held per transition until the handler ends (1M transitions → GBs); `memory: "30MB"` silently ignored.
+
+### Cycle 43 — realistic port (feature flags + experiments) + attack on the type system
+
+Feature-flag port 8/10: typed flag variants, sha256 buckets, a typed staged
+rollout with 3 temporal properties, 20 concurrent optimistic edits → one 200,
+nineteen 409; 15 adversarial cost programs all refused.
+
+### Fixed
+- [x] **Parameter types were checked one level deep** — `xs: List<Map<String, Int>>` took `[{"a": "x"}]` from HTTP, the bus, an LLM tool call and in-language calls — checked all the way down, as slots are (native parameters too).
+- [x] **`1e20` saturated to i64::MAX in an Int parameter** over HTTP and the CLI (and was stored) — only exactly-representable Floats convert.
+- [x] **`[native]` handlers skipped the face return type** (`-> Int` returned 3.5) — one check for both backends; mocks are held to it too.
+- [x] `from_json` with an undeclared `_type` built a variant a `match` took for the real type — refused.
+- [x] Misspelled builtin types (`Integer`, `Strng`) read as Any; builtins silently ignored extra arguments (`max(1, 2, 3)` = 2) — check errors; `()` nested where Int / Float / String / Bool is declared was accepted; `write_csv` dropped a row holding an empty String.
+- [x] Port: a pure helper call before the write defeated the equal-clause proof (a callee blocks it only when it can write the slot, transitively); the hint repeated a require already present — it now says what blocks the proof; `_coalesce()` leaked into messages; `variants = 2` did not parse after `let variants = 1`; a computed max_tokens said "no max_tokens".
+
+### Open
+- [ ] Map key types are text (`Map<Int, …>` keys read back as Strings); Int → Float is not coerced inside nested values; think_json can return a Map with `_type` (is_a true); tool schemas advertise variant parameters as strings.

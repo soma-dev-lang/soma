@@ -439,11 +439,38 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // emits to or dispatches (think tools) could write it either
                 {
                     let one_write = writes.iter().filter(|(h, sl, _, _, _, _)| h == handler && sl == slot).count() == 1;
-                    let calls_handlers = handlers.get(handler).map_or(true, |on| {
-                        let names: HashSet<&str> = all_handlers.iter().map(|(_, o)| o.signal_name.as_str()).collect();
-                        calls_of(&on.body, &cell_names, cell_tools.get(&cell.node.name).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers)
-                            .iter().any(|(_, n)| names.contains(n.as_str()))
-                    });
+                    // a callee blocks the rule only when it (transitively, via
+                    // calls, emits and think tools) can write THIS slot — a pure
+                    // helper call (`let x = _pure(id)`) defeated the proof
+                    let calls_handlers = {
+                        let me = cell.node.name.clone();
+                        let mut seen: HashSet<(String, String)> = HashSet::new();
+                        let mut stack: Vec<(String, String)> = Vec::new();
+                        let push_calls = |c: &str, on: &OnSection, stack: &mut Vec<(String, String)>| {
+                            for (target, name) in calls_of(&on.body, &cell_names, cell_tools.get(c).map(|v| v.as_slice()).unwrap_or(&[]), &cell_handlers) {
+                                match target {
+                                    None => {
+                                        if all_handlers.iter().any(|(cn, o)| cn == c && o.signal_name == name) { stack.push((c.to_string(), name)); }
+                                        else { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                    }
+                                    Some(t) if t == "*" => { for (cn, o) in &all_handlers { if o.signal_name == name { stack.push((cn.clone(), name.clone())); } } }
+                                    Some(t) => stack.push((t, name)),
+                                }
+                            }
+                        };
+                        if let Some(on) = handlers.get(handler) { push_calls(&me, on, &mut stack); }
+                        let mut hit = handlers.get(handler).is_none();
+                        while let Some((c, h)) = stack.pop() {
+                            if hit || !seen.insert((c.clone(), h.clone())) { continue; }
+                            if c == me && h == *handler { hit = true; break; }   // recursion back into the writer
+                            if c == me && writes.iter().any(|(wh, sl, _, _, _, _)| *wh == h && sl == slot) { hit = true; break; }
+                            match all_handlers.iter().find(|(cn, o)| *cn == c && o.signal_name == h) {
+                                Some((_, on)) => push_calls(&c, on, &mut stack),
+                                None => {}
+                            }
+                        }
+                        hit
+                    };
                     // outside any loop: a second pass writes again after the
                     // first changed what the clause reads (`value > old`)
                     let looped = wpath.iter().any(|step| step % 4 == 2 || *step == usize::MAX / 2);
@@ -607,6 +634,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             if !handler_writable(&open_txt.join(" && ")) {
                                 return format!("`{n}` is a parameter and the open clause reads the slot's size or key — no require in the handler can name those; it is checked at run time");
                             }
+                            if open_txt.iter().all(|t| ctx.vars.contains_key(&format!("__req__{}", t))) {
+                                return format!("`{n}` is a parameter; the matching `require {}` is there, but it proves the write only when it is the handler's one write to the slot, outside loops, with nothing between that could write the slot (put the require and the write in a handler of their own)", open_txt.join(" && "));
+                            }
                             format!("`{n}` is a parameter (narrow it: `require {} else …`)", open_txt.join(" && "))
                         } else {
                             let mut assigns: Vec<(&str, &Expr)> = Vec::new();
@@ -615,6 +645,8 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                             match bound.as_slice() {
                                 [] => format!("`{n}` has no known range"),
                                 [one] => match one {
+                                    // `??` is shown as written (it leaked the internal `_coalesce()`)
+                                    Expr::FnCall { name: f, .. } if f == "_coalesce" => format!("`{n}` = {} — not bounded (give both sides of `??` a bound)", render_expr(one)),
                                     Expr::FnCall { name: f, .. } if !handlers.contains_key(f) => format!("`{n}` = {}() — a builtin the prover does not bound", f),
                                     Expr::MethodCall { .. } | Expr::Index { .. } => format!("`{n}` reads a slot with no interval invariant"),
                                     // a loop / lambda / match binding: no single
@@ -640,7 +672,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 .filter(|(_, v)| **v != Proof::Holds)
                                 .map(|(c, _)| subst_render(c, slot, value_expr, wkey.as_deref())).collect();
                             let (l, r) = (if lo.is_finite() { "[" } else { "(" }, if hi.is_finite() { "]" } else { ")" });
-                            if handler_writable(&open_txt.join(" && ")) {
+                            if !open_txt.is_empty() && open_txt.iter().all(|t| ctx.vars.contains_key(&format!("__req__{}", t))) {
+                                why.push(format!("the matching `require {}` is there, but it proves the write only when it is the handler's one write to the slot, outside loops, with nothing between that could write the slot and a pure written value (put the require and the write in a handler of their own)", open_txt.join(" && ")));
+                            } else if handler_writable(&open_txt.join(" && ")) {
                                 why.push(format!("`{}` is only known to lie in {}{}, {}{} — narrow it: `require {} else …`",
                                     render_expr(value_expr), l, num(lo), num(hi), r, open_txt.join(" && ")));
                             } else {

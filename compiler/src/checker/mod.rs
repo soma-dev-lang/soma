@@ -611,6 +611,91 @@ impl<'a> Checker<'a> {
         }
         // on the desugared program: a transition in `"{…}"`, a UFCS
         // `id.transition("b")` or a `require` condition escaped the rule
+        // a misspelled builtin type (`x: Integer`, `List<Strng>`) was read as
+        // an unknown record type — Any — and every value passed
+        {
+            const BASE: &[&str] = &["Int", "Float", "String", "Bool", "List", "Map", "Any", "BigInt"];
+            let declared: std::collections::HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
+            fn names_in(t: &TypeExpr, out: &mut Vec<String>) {
+                match t {
+                    TypeExpr::Simple(n) => out.push(n.clone()),
+                    TypeExpr::Generic { name, args } => { out.push(name.clone()); for a in args { names_in(&a.node, out); } }
+                    _ => {}
+                }
+            }
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for cell in &program.cells {
+                let mut types: Vec<(&TypeExpr, Span)> = Vec::new();
+                for sec in &cell.node.sections {
+                    match &sec.node {
+                        Section::Memory(m) => for sl in &m.slots { types.push((&sl.node.ty.node, sl.span)); },
+                        Section::OnSignal(on) => for p in &on.params { types.push((&p.ty.node, sec.span)); },
+                        Section::Face(f) => for d in &f.declarations {
+                            if let FaceDecl::Signal(sig) = &d.node {
+                                for p in &sig.params { types.push((&p.ty.node, d.span)); }
+                                if let Some(r) = &sig.return_type { types.push((&r.node, d.span)); }
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+                for (t, span) in types {
+                    let mut ns = Vec::new();
+                    names_in(t, &mut ns);
+                    for n in ns {
+                        if BASE.contains(&n.as_str()) || declared.contains(&n) || !seen.insert(n.clone()) { continue; }
+                        let lower = n.to_lowercase();
+                        let alias = match lower.as_str() {
+                            "integer" | "int64" | "int32" | "i64" | "long" => Some("Int"),
+                            "str" | "text" => Some("String"),
+                            "boolean" => Some("Bool"),
+                            "double" | "float64" | "f64" | "number" | "decimal" => Some("Float"),
+                            "array" | "vec" => Some("List"),
+                            "dict" | "object" | "hashmap" => Some("Map"),
+                            _ => None,
+                        };
+                        let near = alias.map(|a| a.to_string()).or_else(|| { let base: Vec<String> = BASE.iter().map(|b| b.to_string()).collect(); names::suggest(&n, base.iter()).map(|x| x.to_string()) });
+                        if let Some(fix) = near {
+                            self.errors.push(CheckError::Static {
+                                kind: "unknown_type",
+                                message: format!("unknown type `{}` — did you mean `{}`? (an undeclared type name would accept any value)", n, fix),
+                                span,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        // a builtin called with more arguments than any of its forms takes
+        {
+            let handler_names: std::collections::HashSet<String> = program.cells.iter().flat_map(|c| c.node.sections.iter().filter_map(|s| match &s.node {
+                Section::OnSignal(on) => Some(on.signal_name.clone()), _ => None })).collect();
+            let mut reported: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for cell in &program.cells {
+                for sec in &cell.node.sections {
+                    let body = match &sec.node {
+                        Section::OnSignal(on) => &on.body,
+                        Section::Every(e) | Section::After(e) => &e.body,
+                        _ => continue,
+                    };
+                    let mut piped: std::collections::HashSet<*const Expr> = std::collections::HashSet::new();
+                    literals::for_each_expr(body, &mut |e| if let Expr::Pipe { right, .. } = e { piped.insert(&right.node as *const Expr); });
+                    let mut bad: Vec<String> = Vec::new();
+                    literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, args } = e {
+                        if handler_names.contains(name) { return; }
+                        let n = args.len() + if piped.contains(&(e as *const Expr)) { 1 } else { 0 };
+                        if let Some(max) = crate::interpreter::builtins::registry::max_arity(name) {
+                            if n > max && reported.insert(format!("{}:{}", name, n)) {
+                                bad.push(format!("{}() takes at most {} argument{} ({} given) — the extra ones were silently ignored", name, max, if max == 1 { "" } else { "s" }, n));
+                            }
+                        }
+                    });
+                    for m in bad {
+                        self.errors.push(CheckError::Static { kind: "builtin_arity", message: m, span: sec.span });
+                    }
+                }
+            }
+        }
         let exposed_for_guards = crate::checker::desugar::expose_for_analysis(program);
         for issue in guards::check_program(&exposed_for_guards) {
             self.errors.push(CheckError::GuardScope { message: issue.message, span: issue.span });

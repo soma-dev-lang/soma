@@ -1256,7 +1256,9 @@ impl Interpreter {
         if let Some(q) = self.handler_stubs.get_mut(&stub_key) {
             if let Some(answer) = q.pop_front() {
                 return match answer {
-                    Ok(v) => Ok(v),
+                    // a scripted answer is held to the face's return type as
+                    // the real handler is (`mock price "abc"` for `-> Int`)
+                    Ok(v) => self.check_face_return(cell_name, signal_name, v),
                     Err(msg) => {
                         // `mock h error "not_found: no such item"` raises kind
                         // not_found; a bare "down" is both kind and detail
@@ -1294,7 +1296,7 @@ impl Interpreter {
                     }
                     let mut checked = Vec::with_capacity(args.len());
                     for (p, a) in params.iter().zip(args.into_iter()) {
-                        match check_param_type(p, a) {
+                        match check_param_type(p, a).and_then(|v| self.check_sum_param(p, v)) {
                             Ok(v) => checked.push(v),
                             Err(m) => return Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("{}(): {}", signal_name, m) }),
                         }
@@ -1312,6 +1314,7 @@ impl Interpreter {
             let native = self.native_handlers.get(&native_key).unwrap();
             match native_ffi::call_native(native, &args) {
                 Ok(val) => {
+                    let val = self.check_face_return(cell_name, signal_name, val)?;
                     self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), &val);
                     return Ok(val);
                 }
@@ -1356,16 +1359,7 @@ impl Interpreter {
         // (`request` is the router: a route answers with whatever the
         // route returns — list, string, response map — so it is exempt)
         let result = match result {
-            Ok(val) if signal_name == "request" => Ok(val),
-            Ok(val) => match self.face_return_type(cell_name, signal_name) {
-                Some(ret) => check_return_type(signal_name, &ret, val).and_then(|v| match &ret.node {
-                    // `-> List<Int>` returning ["a"]: the elements too, as for parameters
-                    TypeExpr::Generic { .. } => self.value_fits(&ret.node, &v)
-                        .map(|_| v).map_err(|m| format!("{}(): the face declares `-> {}` but the handler returned {}", signal_name, crate::commands::describe::format_type(&ret.node), m)),
-                    _ => Ok(v),
-                }).map_err(RuntimeError::TypeError),
-                None => Ok(val),
-            },
+            Ok(val) => self.check_face_return(cell_name, signal_name, val),
             err => err,
         };
         match result {
@@ -4068,6 +4062,13 @@ impl Interpreter {
     /// Pay — `soma run app.cell f Cash` — is that variant). Anything else ran
     /// the body and failed later at a `match`, or not at all.
     fn check_sum_param(&self, param: &Param, val: Value) -> Result<Value, String> {
+        // a generic type is checked all the way down, as a slot is:
+        // `xs: List<Map<String, Int>>` took `[{"a": "x"}]` from HTTP, the
+        // bus and an LLM tool call (only the first level was checked)
+        if let TypeExpr::Generic { .. } = &param.ty.node {
+            return self.value_fits(&param.ty.node, &val).map(|_| val)
+                .map_err(|m| format!("parameter '{}' expects {}: {}", param.name, crate::commands::describe::format_type(&param.ty.node), m));
+        }
         let TypeExpr::Simple(t) = &param.ty.node else { return Ok(val) };
         let Some(variants) = self.type_variants.get(t) else { return Ok(val) };
         match &val {
@@ -4586,9 +4587,13 @@ impl Interpreter {
     fn decoded_variants_ok(&self, v: &Value) -> Result<(), String> {
         match v {
             Value::Variant { type_name, variant, fields } => {
-                if self.type_variants.contains_key(type_name.as_str()) {
-                    self.variant_ok(type_name, variant, fields)?;
+                // an UNDECLARED type is refused too: `{"_type": "Nope",
+                // "_variant": "Charged", "tx": 5}` matched the real Pay.Charged
+                // arm with a mistyped field
+                if !self.type_variants.contains_key(type_name.as_str()) {
+                    return Err(format!("no type `{}` is declared (a `_type` / `_variant` object names a declared sum type)", type_name));
                 }
+                self.variant_ok(type_name, variant, fields)?;
                 match fields {
                     VariantValue::Unit => Ok(()),
                     VariantValue::Tuple(vs) => vs.iter().try_for_each(|x| self.decoded_variants_ok(x)),
@@ -4811,6 +4816,10 @@ impl Interpreter {
                     return self.variant_ok(type_name, variant, fields);
                 }
                 let ok = match (t.as_str(), v) {
+                    // an element declared Int / Float / String / Bool is not ():
+                    // `ls.set("a", [1, ()])` into Map<String, List<Int>> passed
+                    // while `rows.push(())` was refused
+                    ("Int" | "Float" | "String" | "Bool", Value::Unit) => false,
                     ("Any", _) | (_, Value::Unit) => true,
                     ("Int", Value::Int(_)) | ("Float", Value::Float(_) | Value::Int(_)) | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) => true,
                     ("List", Value::List(_)) | ("Map", Value::Map(_) | Value::Variant { .. }) => true,
@@ -4822,6 +4831,21 @@ impl Interpreter {
                 if ok { Ok(()) } else { Err(format!("expected {}, got {} {}", t, value_type_name(v), { let s: String = format!("{}", v).chars().take(30).collect(); s })) }
             }
             _ => Ok(()),
+        }
+    }
+
+    /// The face's declared return type against a returned value (both
+    /// backends: a `[native]` `-> Int` returned 3.5 unchecked).
+    fn check_face_return(&self, cell_name: &str, signal_name: &str, val: Value) -> Result<Value, RuntimeError> {
+        if signal_name == "request" { return Ok(val); }
+        match self.face_return_type(cell_name, signal_name) {
+            Some(ret) => check_return_type(signal_name, &ret, val).and_then(|v| match &ret.node {
+                // `-> List<Int>` returning ["a"]: the elements too, as for parameters
+                TypeExpr::Generic { .. } => self.value_fits(&ret.node, &v)
+                    .map(|_| v).map_err(|m| format!("{}(): the face declares `-> {}` but the handler returned {}", signal_name, crate::commands::describe::format_type(&ret.node), m)),
+                _ => Ok(v),
+            }).map_err(RuntimeError::TypeError),
+            None => Ok(val),
         }
     }
 
