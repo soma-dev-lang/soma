@@ -59,6 +59,18 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     Section::After(e) => Some(OnSection { signal_name: format!("after@{}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
                     _ => None,
                 }).collect();
+                // the every / after ticks of machine-less cells move the
+                // program's only machine too (`every 1s { transition("t3",
+                // "bogus5") }` in a Sweeper cell passed verify, raised every tick)
+                let machine_count = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
+                let foreign_scheduled: Vec<(OnSection, Span)> = if machine_count == 1 {
+                    program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent) && !c.node.sections.iter().any(|s| matches!(s.node, Section::State(_))))
+                        .flat_map(|c| c.node.sections.iter().filter_map(move |s| match &s.node {
+                            Section::Every(e) => Some((OnSection { signal_name: format!("{}.every@{}ms", c.node.name, e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }, s.span)),
+                            Section::After(e) => Some((OnSection { signal_name: format!("{}.after@{}ms", c.node.name, e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }, s.span)),
+                            _ => None,
+                        })).collect()
+                } else { Vec::new() };
                 let mut handlers: Vec<(&OnSection, Span)> = cell.node.sections.iter()
                     .filter_map(|s| if let Section::OnSignal(ref on) = s.node { Some((on, s.span)) } else { None })
                     .collect();
@@ -83,6 +95,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                         handlers.push((&scheduled[idx], s.span));
                     }
                 }
+                for (on, sp) in &foreign_scheduled { handlers.push((on, *sp)); }
                 let findings = super::refinement::check_refinement(sm, &handlers);
 
                 // ── V1.4: think-isolation check ────────────────────────

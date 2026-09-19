@@ -1869,7 +1869,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                 if (s.starts_with('{') || s.starts_with('[')) && serde_json::from_str::<serde_json::Value>(s).is_ok() { s.clone() }
                                 else { serde_json::json!({ "result": s }).to_string() }
                             }
-                            other => format!("{{\"result\": {}}}", other),
+                            // valid JSON: NaN / inf → null, a lambda → its text
+                            other => format!("{{\"result\": {}}}", interpreter::builtins::string::to_json_string(other)),
                         }
                     };
                     (status, body_str, content_type, headers)
@@ -1882,7 +1883,8 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                             if (s.starts_with('{') || s.starts_with('[')) && serde_json::from_str::<serde_json::Value>(s).is_ok() { s.clone() }
                             else { serde_json::json!({ "result": s }).to_string() }
                         }
-                        other => format!("{{\"result\": {}}}", other),
+                        // valid JSON: NaN / inf → null, a lambda → its text
+                            other => format!("{{\"result\": {}}}", interpreter::builtins::string::to_json_string(other)),
                     };
                     (200u16, body, "application/json".to_string(), vec![])
                 };

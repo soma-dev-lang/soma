@@ -54,7 +54,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                             machine_type.map(|t| format!(" (its states are {} variants)", t)).unwrap_or_default()))));
                     }
                 }
-                let id = format!("{}", args[0]);
+                let id = match instance_id(&args[0], "transition") { Ok(i) => i, Err(e) => return Some(Err(e)) };
                 let target = format!("{}", args[1]);
                 Some(interp.do_transition_for(cell_name, &id, &target))
             } else {
@@ -63,7 +63,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         "get_status" => {
             if let Some(id) = args.first() {
-                let id_str = format!("{}", id);
+                let id_str = match instance_id(id, "get_status") { Ok(i) => i, Err(e) => return Some(Err(e)) };
                 Some(interp.do_get_status_for(cell_name, &id_str))
             } else {
                 Some(Err(RuntimeError::TypeError("get_status(id) requires 1 arg".to_string())))
@@ -71,7 +71,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         "has_state" => {
             if let Some(id) = args.first() {
-                let id_str = format!("{}", id);
+                let id_str = match instance_id(id, "has_state") { Ok(i) => i, Err(e) => return Some(Err(e)) };
                 Some(Ok(Value::Bool(interp.do_has_state_for(cell_name, &id_str))))
             } else {
                 Some(Err(RuntimeError::TypeError("has_state(id) requires 1 arg".to_string())))
@@ -79,7 +79,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         }
         "valid_transitions" => {
             if let Some(id) = args.first() {
-                let id_str = format!("{}", id);
+                let id_str = match instance_id(id, "valid_transitions") { Ok(i) => i, Err(e) => return Some(Err(e)) };
                 Some(Ok(interp.do_valid_transitions_for(cell_name, &id_str)))
             } else {
                 Some(Err(RuntimeError::TypeError("valid_transitions(id) requires 1 arg".to_string())))
@@ -855,4 +855,16 @@ fn with_tools_allowed<T>(interp: &mut Interpreter, allowed: Option<Vec<String>>,
     let out = f(interp);
     interp.think_tools_allowed = prev;
     out
+}
+
+/// An instance id is a String or an Int (an Int is its decimal text, so
+/// `42` and `"42"` are one instance). `()` — a missing record's `.id` — moved
+/// one shared instance "null" for every caller; a Float / List / Map id
+/// aliased by its printed text.
+fn instance_id(v: &Value, f: &str) -> Result<String, RuntimeError> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        Value::Int(i) => Ok(format!("{}", i)),
+        other => Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("type: {}(): an instance id is a String or an Int, got {} {}", f, crate::interpreter::value_type_name(other), other) }),
+    }
 }

@@ -414,7 +414,11 @@ fn unknown_handler_or_default(
     // with SEVERAL public handlers a bare word is a handler name, never data
     // (`soma run app.cell help` wiped "help" through the first handler)
     let several = handler_names.iter().filter(|h| !h.starts_with('_') && h.as_str() != "request").count() > 1;
-    if identifier_like && (by_arity.is_none() || rest_fits || near_miss || several) {
+    // …and so is any token that is not plainly data (a number or JSON):
+    // `Arch`, `pay-now`, `"st q"` ran another handler by arity and committed
+    let data_like = name.trim().parse::<f64>().is_ok() || name.trim_start().starts_with(['[', '{', '"']);
+    if (identifier_like && (by_arity.is_none() || rest_fits || near_miss || several))
+        || near_miss || (several && !data_like) {
         let public: Vec<&String> = handler_names.iter().filter(|h| !h.starts_with('_')).collect();
         let near = crate::checker::names::suggest(name, public.iter().copied())
             .map(|h| format!(" (did you mean '{}'?)", h))

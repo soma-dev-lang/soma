@@ -2727,3 +2727,29 @@ fn cycle41_findings() {
     let (out, _) = soma_in(&d, &["run", "r.cell", "request", "GET", "/w/%C3%A9", ""]);
     assert!(out.contains("/w/é"), "{out}");
 }
+
+#[test]
+fn cycle42_findings() {
+    let d = dir("cycle42");
+    // a parameter named like a slot; a face whose parameter types disagree
+    std::fs::write(d.join("p.cell"), "cell C {\n  memory { m: Map<String, Int> [persistent]  invariant m.size <= 2 }\n  on add(k: String, m: Map) { require len(m) < 2 else Full  m.set(k, 1) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "p.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("has the name of the memory slot"), "{out}");
+    std::fs::write(d.join("f.cell"), "cell F {\n  face { signal setup(capacity: Int, name: String) }\n  on setup(name: String, capacity: Int) { return 1 }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "f.cell"]);
+    assert_ne!(code, 0, "{out}");
+    // ticks of a machine-less cell are verified against the machine
+    std::fs::write(d.join("t.cell"), "cell App {\n  state s { initial: a  a -> done }\n  on go(id: String) { transition(id, \"done\") }\n}\ncell Sweeper {\n  every 1s { transition(\"t3\", \"bogus\") }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "t.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("\"bogus\" is not in state machine"), "{out}");
+    // an instance id of () is refused; a capitalised typo is not an argument
+    std::fs::write(d.join("i.cell"), "cell I {\n  state s { initial: a  a -> b }\n  on go(x: Int) { transition((), \"b\") }\n  on st(id: String) { return get_status(id) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "i.cell", "go", "1"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("an instance id is a String or an Int"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "i.cell", "St", "x"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("no handler named 'St'"), "{out}");
+}

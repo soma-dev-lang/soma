@@ -1509,6 +1509,23 @@ impl<'a> Checker<'a> {
                             actual: h.params.len(),
                             span: *span,
                         });
+                    } else {
+                        // …and each one, in order: `signal setup(capacity: Int,
+                        // name: String)` over `on setup(name, capacity)` was
+                        // published by describe and failed every caller
+                        for (i, (fp, hp)) in sig.params.iter().zip(h.params.iter()).enumerate() {
+                            let (ft, ht) = (crate::commands::describe::format_type(&fp.ty.node), crate::commands::describe::format_type(&hp.ty.node));
+                            // positional: the TYPE at each position must agree
+                            // (a face parameter's name is documentation)
+                            if ft != ht && ft != "Any" && ht != "Any" {
+                                self.errors.push(CheckError::Static {
+                                    kind: "face_mismatch",
+                                    message: format!("parameter {} of `{}`: the face declares `{}: {}` but the handler takes `{}: {}` — callers follow the face (describe publishes it); make them agree", i + 1, sig.name, fp.name, ft, hp.name, ht),
+                                    span: *span,
+                                });
+                                break;
+                            }
+                        }
                     }
                 }
             }

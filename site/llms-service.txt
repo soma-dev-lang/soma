@@ -233,12 +233,14 @@ source, `file:line`, left/right, and the fields a value really has when
   id nobody created is legal; `has_state(id)` is true only once the id has
   TRANSITIONED — a record stored in a slot but never transitioned is "fresh"
   to it (test the slot for duplicates: `require m.get(id) == () else Dup`).
-- `transition()`'s first argument is an INSTANCE id (an order, a ticket), not
+- `transition()`'s first argument is an INSTANCE id (an order, a ticket) — a
+  String or an Int (`42` and `"42"` are one instance; `()` is refused), not
   the machine's name; one cell has one machine, any number of instances. A
   cell without a machine may call transition() / get_status() when the
   program has exactly one machine; that machine's guards then read the
   CALLING handler's locals (a check error if it does not bind them).
-- A slot is a Map or a List (`n: Int` is a check error). Read a
+- A slot is a Map or a List (`n: Int` is a check error); a handler parameter
+  may not take a slot's name (reads and writes would mix the two). Read a
   whole slot by its bare name (`history`, `counts`); write with
   `counts.set(k, v)` / `counts[k] = v` / `history.push(x)`; `history = …` is
   an error. An invariant on a Map slot applies to every value written (`value`
@@ -839,7 +841,7 @@ A handler may return:
 An error the handler does not catch is answered by its kind, as
 `{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `guard_failed`,
 `forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
-409; `invariant`, `ensure` → 422; `json`, `type`, `division_by_zero` and your
+409; `invariant`, `ensure` → 422; `json`, `type`, `date` (parse_date / add_days on a bad date), `range`, `division_by_zero` and your
 own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
 `budget`, undefined names → 500 (the full table is in operations.md). Map a
 kind yourself only when you want a different status or body:

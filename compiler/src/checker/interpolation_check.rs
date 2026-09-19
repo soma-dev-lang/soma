@@ -145,6 +145,18 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                         w.blessed = true;
                     }
                     for p in &on.params {
+                        // a parameter named like a slot of this cell: `len(m)`
+                        // read the parameter while `m.set` wrote the slot (a
+                        // false size proof), `rows.push(x)` was dropped
+                        if cell_slots.contains(&p.name) {
+                            w.issues.push(InterpolationIssue {
+                                message: format!("parameter `{}` of `{}` has the name of the memory slot `{}` — reads and writes of `{}` in this handler would mix the two; rename the parameter (e.g. `new_{}`)", p.name, on.signal_name, p.name, p.name, p.name),
+                                span: section.span,
+                                warning: false,
+                                habit: false,
+                                kind: "param_shadows_slot",
+                            });
+                        }
                         w.scope.insert(p.name.clone());
                     }
                     w.walk_stmts(&on.body);

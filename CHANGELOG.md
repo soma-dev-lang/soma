@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A handler parameter may not take a slot's name; face parameter types must
+  match the handler's.
+- verify and the guard rule see every / after ticks of machine-less cells;
+  instance ids are Strings or Ints (`()` refused); a renamed machine is
+  reported under `soma run` too.
+- `soma run` treats any non-data token as a handler name when several
+  exist; NaN / lambdas in responses are valid JSON.
 - `[native]` `bnot` is exact past 2^63; native `loop_bound` errors keep
   their kind; `soma run … request` decodes the path like serve.
 - Guards of transitions taken from machine-less cells are checked;

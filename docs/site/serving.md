@@ -69,7 +69,7 @@ A handler may return:
 An error the handler does not catch is answered by its kind, as
 `{"error": "kind: detail", "kind": kind}`: `not_found` → 404; `guard_failed`,
 `forbidden`, `approval_required` → 403; `invalid_transition`, `conflict` →
-409; `invariant`, `ensure` → 422; `json`, `type`, `division_by_zero` and your
+409; `invariant`, `ensure` → 422; `json`, `type`, `date` (parse_date / add_days on a bad date), `range`, `division_by_zero` and your
 own `require … else Tag` / `fail("tag")` → 400; `stack_overflow`, `llm`,
 `budget`, undefined names → 500 (the full table is in operations.md). Map a
 kind yourself only when you want a different status or body:

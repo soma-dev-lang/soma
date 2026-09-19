@@ -1130,7 +1130,9 @@ impl Interpreter {
                     None => gone_cells.push(format!("'{}' ({} row(s))", t, rows)),
                 }
             }
-            if !orphan_machines.is_empty() && IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {
+            // (under soma run too: the cell is declared by THIS program, so a
+            // shared directory is no excuse — a terminal order became fresh)
+            if !orphan_machines.is_empty() {
                 out.push(format!("state machine instances no machine declares any more: {} — a renamed or removed machine; under a new name every instance starts over from the initial state (terminal ones included): rename it back", orphan_machines.join(", ")));
             }
             if !orphans.is_empty() && IN_SERVE.load(std::sync::atomic::Ordering::Relaxed) {

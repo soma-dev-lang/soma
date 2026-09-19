@@ -1044,3 +1044,22 @@ verify-vs-runtime comparisons.
 
 ### Open
 - [ ] A native `/` whose exact quotient is past 2^53 raises (documented; use idiv); face `-> List<String>` returning `[1, 2]` passes check; a raising property does not print its counter-example `n`.
+
+### Cycle 42 — realistic port (hotel channel manager) + attack on state machines
+
+Hotel port 8/10: 3 channels racing for the last room → one booking; 3
+`soma run` + 3 HTTP clients on one database → one winner; webhook retries
+through a transactional outbox. The state-machine attack found no HIGH: no
+undeclared edge, no skipped guard, every property matched hand analysis.
+
+### Fixed
+- [x] A handler parameter named like a slot (`on add(k, m: Map)` with slot `m`): `require len(m) < 2` read the parameter while `m.set` wrote the slot — a false size proof; a shadowing List parameter dropped `rows.push` — a check error.
+- [x] Face parameter TYPES were not compared with the handler's (`signal setup(capacity: Int, name: String)` over `on setup(name, capacity)`) — a check error (names stay documentation).
+- [x] every / after ticks of a machine-less cell were invisible to verify (an undeclared target raised every tick) and to the guard-binding rule.
+- [x] `soma run app.cell Arch` (typo of `arch`) ran another handler by arity and committed — any token that is not plainly data names a handler when there are several.
+- [x] Renaming a machine silently reset every instance under `soma run` (terminal orders fresh again) — warned as under serve.
+- [x] Instance ids were stringified: `transition((), …)` moved one shared instance "null" — an id is a String or an Int.
+- [x] `{"result": NaN}` / a lambda were sent as invalid JSON — encoded.
+
+### Open
+- [ ] `except [done, nosuch]` passes check; get_status in a machine-less cell with two machines passes check; a dashboard with no verify results; ~2 KB held per transition until the handler ends (1M transitions → GBs); `memory: "30MB"` silently ignored.
