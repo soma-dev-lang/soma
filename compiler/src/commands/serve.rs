@@ -1235,7 +1235,33 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         }
     }
 
+    // bound to loopback: the machine's own browser is the only client, so a
+    // request whose Host names another site (DNS rebinding) or a
+    // state-changing request from a foreign page (a form POST needs no
+    // preflight) is refused
+    let _ = crate::interpreter::builtins::http::OWN_PORTS.set(vec![port, port.wrapping_add(1), port.wrapping_add(2)]);
+    let http_loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
     for mut request in server.incoming_requests() {
+        if http_loopback {
+            let header = |n: &str| request.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(n)).map(|h| h.value.as_str().to_string());
+            let hostname = |v: &str| -> String {
+                let v = v.trim();
+                if v.starts_with('[') { v.split(']').next().map(|h| format!("{}]", h)).unwrap_or_default() } else { v.split(':').next().unwrap_or("").to_string() }
+            };
+            let local = |h: &str| matches!(h, "localhost" | "127.0.0.1" | "[::1]" | "");
+            let bad_host = header("host").map_or(false, |h| !local(&hostname(&h).to_ascii_lowercase()));
+            let writes = matches!(request.method().as_str().to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+            let bad_origin = writes && header("origin").map_or(false, |o| {
+                let auth = o.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
+                auth.contains('@') || !local(&hostname(auth).to_ascii_lowercase())
+            });
+            if bad_host || bad_origin {
+                let why = if bad_host { "the Host header names another site (a DNS-rebinding page?) — this server listens on loopback only" } else { "a page from another origin may not change state on a loopback server" };
+                let resp = tiny_http::Response::from_string(error_body(why, "forbidden")).with_status_code(403);
+                let _ = request.respond(resp);
+                continue;
+            }
+        }
         let program = program.clone();
         let storage_slots = storage_slots.clone();
         let handler_names = handler_names.clone();

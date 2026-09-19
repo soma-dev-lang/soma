@@ -137,6 +137,13 @@ fn split_url(u: &str) -> Option<(&str, &str, String)> {
 }
 
 fn url_matches_any(url: &str, caps: &[String]) -> bool {
+    // spaces in the QUERY are sent encoded (%20), as outside a tool: a
+    // multi-word `?q={topic}` was "capability denied" only inside the scope
+    let encoded: String;
+    let url = match url.split_once('?') {
+        Some((p, q)) if q.contains(' ') => { encoded = format!("{}?{}", p, q.replace(' ', "%20")); encoded.as_str() }
+        _ => url,
+    };
     let Some((scheme, authority, rest)) = split_url(url) else {
         return caps.iter().any(|c| c == "net:*" || c == "*");
     };

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- File builtins refuse `..` segments and writes over the program, its
+  configuration or storage; a loopback server refuses foreign Host headers
+  and cross-origin writes; an HTTP call to the server itself answers
+  `self_call`; tool capabilities match query spaces encoded.
+- get_status & co. from a machine-less cell with several machines, and
+  variant literals with wrong fields, are check errors; the secret recipe
+  fails closed; security notes in the serving docs.
 - `pow_mod` work is bounded (bits(exp) × bits(m) ≤ 2^30); `to_int` /
   `parse_int` refuse text past the 2^24-bit Int cap.
 - A bus event that reaches no peer is logged as NOT delivered; the docs

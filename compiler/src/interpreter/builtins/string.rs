@@ -156,7 +156,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         // secure_eq("null", tokens.get(unknown_user)) was true
         "sha256" | "hmac_sha256" | "secure_eq" if args.iter().any(|a| !matches!(a, Value::String(_))) => {
             let bad = args.iter().find(|a| !matches!(a, Value::String(_))).unwrap();
-            Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("{}() takes Strings, got {} {} — an absent value (`()`) is not a secret: check it first", name, crate::interpreter::value_type_name(bad), bad) }))
+            Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("{}() takes Strings, got {} {} — an absent value (`()`) or read_file's `{{error}}` Map (a missing file) is not a secret: require `type_of(t) == \"String\"` where it is loaded, and never interpolate it (`\"{{t}}\"` turns the error into guessable text)", name, crate::interpreter::value_type_name(bad), bad) }))
         }
         "sha256" if args.len() == 1 => {
             use sha2::Digest;

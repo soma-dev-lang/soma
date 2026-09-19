@@ -101,9 +101,16 @@ Make `_migrate` idempotent (check before writing) and back up
 
 Other environment variables are not readable from a program. A secret or a
 config value (an admin token) goes in a file read once in `on start()`:
-`let t = read_file("secrets/admin_token.txt")`. Relative `read_file` /
+`let t = read_file("secrets/admin_token.txt")` then
+`require type_of(t) == "String" && len(trim(t)) >= 16 else NoSecret` — on a
+missing file read_file returns an `{error}` Map, and a check such as
+`t != ()` or an interpolation (`"Bearer {t}"`) would turn that error text
+into a token anyone can guess (fail closed: the start-up then fails). Relative `read_file` /
 `write_file` paths resolve against the directory `soma` was started in, not
-the `.cell` file's — keep that file out of `static/`.
+the `.cell` file's — keep that file out of `static/`. File builtins refuse a
+path with a `..` segment, and a write that would replace a `.cell` source,
+`soma.toml`, `soma.lock` or `.soma_data` (kind `path`); a path built from
+client input still needs a fixed directory and a validated name.
 
 ## Between processes
 

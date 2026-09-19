@@ -73,7 +73,39 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
 /// the upstream body parsed when it is JSON), `timeout`, `refused` or
 /// `network`. The default timeout is 30 s (a hung upstream used to hang the
 /// caller forever — and under `soma serve` every other request with it).
+/// The ports `soma serve` listens on (HTTP, WebSocket, bus): a handler
+/// calling its own server waits for the handler lock it holds.
+pub static OWN_PORTS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+
+fn calls_own_server(url: &str) -> bool {
+    let Some(ports) = OWN_PORTS.get() else { return false };
+    let rest = url.split("://").nth(1).unwrap_or("");
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let auth = auth.rsplit('@').next().unwrap_or(auth);
+    let (host, port) = if auth.starts_with('[') {
+        let h = auth.split(']').next().unwrap_or("").trim_start_matches('[');
+        (h.to_string(), auth.split("]:").nth(1).and_then(|p| p.parse::<u16>().ok()))
+    } else {
+        let mut it = auth.splitn(2, ':');
+        (it.next().unwrap_or("").to_string(), it.next().and_then(|p| p.parse::<u16>().ok()))
+    };
+    let port = port.unwrap_or(if url.starts_with("https") { 443 } else { 80 });
+    let host = host.to_ascii_lowercase();
+    let loopback = host == "localhost" || host.starts_with("127.") || host == "::1" || host == "0.0.0.0";
+    loopback && ports.contains(&port)
+}
+
 fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexmap::IndexMap<String, Value>>) -> Result<Value, RuntimeError> {
+    // a request to this very server from inside a handler waits for the
+    // handler lock the caller holds — it timed out, freezing every client
+    if calls_own_server(url) {
+        return Ok(crate::interpreter::map_from_pairs(vec![
+            ("error".to_string(), Value::String(format!("self_call: {} is this server — a handler cannot call its own endpoints over HTTP (the handler lock is held); call the handler directly", url))),
+            ("kind".to_string(), Value::String("self_call".to_string())),
+            ("status".to_string(), Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(0))),
+            ("body".to_string(), Value::Unit),
+        ]));
+    }
     if let Some(m) = opts {
         for (k, v) in m.iter() {
             let ok = match (k.as_str(), v) {

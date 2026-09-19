@@ -1177,3 +1177,20 @@ regex, formatting, deep JSON, nested source and to_string bounded.
 
 ### Open
 - [ ] `sum_by` accepts padded / exponent numeric text ("1e3" turns an Int ledger into Floats); `Bronze == Red` (two sum types) is false while `5 == ""` raises; no way to pass headers to `soma run … request`.
+
+### Cycle 50 — realistic port (job board / ATS) + attack from an agent following the docs literally
+
+ATS port 8/10: 35 concurrent offers for one candidate → exactly one; an
+anonymised reviewer view enforced by a one-variant type; 14 temporal
+properties proven.
+
+### Fixed
+- [x] **The documented secret recipe failed open**: `read_file` of a missing secret returns `{error}`, and `"Bearer {t}"` turned that into guessable text that authenticated — the recipe now requires `type_of(t) == "String"` (fail closed) and secure_eq's hint says so instead of pointing to interpolation.
+- [x] **`read_file` / `write_file` on client input escaped their directory** (a `..` in a decoded path argument read the secret; a write replaced the program's own `.cell`) — `..` segments are refused, and writes to `.cell` / `soma.toml` / `soma.lock` / `.soma_data` (kind `path`).
+- [x] **A loopback server took cross-site writes** (a form POST from any page, DNS rebinding via Host) — on loopback, a foreign `Host` and a foreign `Origin` on POST/PUT/PATCH/DELETE are 403.
+- [x] A handler calling its own server over HTTP froze every client until the timeout (the lock is held) — `kind: "self_call"` at once.
+- [x] A tool capability refused a query with spaces (`?q=quantum computing`) that the same URL sent outside a tool — query spaces are matched encoded.
+- [x] Port: get_status / has_state / valid_transitions from a machine-less cell with several machines passed check; a variant literal with a missing / extra / literally mistyped field passed check — both check errors. Docs: security notes (SSRF, http result shapes, template escaping, open redirects, CSV formulas).
+
+### Open
+- [ ] `soma fix --native-idiv` rewrites Float divisions; `render` does not escape by default; `html()` loads htmx from unpkg without SRI; `.field` on a sum-type value passes check; request logs include query strings (personal data).

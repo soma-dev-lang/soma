@@ -1967,7 +1967,7 @@ cell App {
         use std::io::{Read, Write};
         let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(std::time::Duration::from_millis(1500))).unwrap();
-        s.write_all(b"GET /lit/b HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        s.write_all(b"GET /lit/b HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
         let _ = http(port, "POST", "/pub/a");
         let _ = http(port, "POST", "/pub/b");
@@ -2116,7 +2116,7 @@ cell R {
         use std::io::{Read, Write};
         let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(std::time::Duration::from_millis(1500))).unwrap();
-        s.write_all(b"GET /s HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        s.write_all(b"GET /s HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
         let _ = http(port, "POST", "/pub/legit%0Aevent%3A%20forged");
         let mut buf = [0u8; 4096];
@@ -2861,7 +2861,7 @@ fn cycle47_findings() {
     use std::io::{Read, Write};
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(3))).ok();
-    s.write_all(b"POST /bump/x HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000000000000\r\n\r\nabc").unwrap();
+    s.write_all(b"POST /bump/x HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000000000000000\r\n\r\nabc").unwrap();
     let mut buf = [0u8; 64];
     let n = s.read(&mut buf).unwrap_or(0);
     assert!(String::from_utf8_lossy(&buf[..n]).contains("413"));
@@ -2899,4 +2899,25 @@ fn cycle49_findings() {
     std::fs::write(d.join("i.cell"), "cell I {\n  on f(n: Int) { let s = pad_left(\"1\", n, \"9\")  let r = try { to_int(s) }  return r.kind }\n}\n").unwrap();
     let (out, _) = soma_in(&d, &["run", "i.cell", "f", "6000000"]);
     assert!(out.contains("range"), "{out}");
+}
+
+#[test]
+fn cycle50_findings() {
+    let d = dir("cycle50");
+    // get_status from a machine-less cell with several machines
+    std::fs::write(d.join("g.cell"), "cell A { state s { initial: a  a -> b } }\ncell B { state t { initial: x  x -> y } }\ncell F { on st(id: String) { return get_status(id) } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("calls get_status()"), "{out}");
+    // a variant literal with an unknown field
+    std::fs::write(d.join("v.cell"), "cell type View { variants { Anon { id: String, cv: String } } }\ncell R { on f() { return Anon { id: \"1\", cv: \"x\", email: \"a@b\" } } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "v.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("has no field `email`"), "{out}");
+    // file builtins refuse `..` and overwriting the program
+    std::fs::write(d.join("f.cell"), "cell F {\n  on r(n: String) { let x = try { read_file(\"uploads/\" + n) }  return x.kind }\n  on w(n: String) { let x = try { write_file(n, \"cell X {}\") }  return x.kind }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "f.cell", "r", "../../secret.txt"]);
+    assert!(out.contains("path"), "{out}");
+    let (out, _) = soma_in(&d, &["run", "f.cell", "w", "f.cell"]);
+    assert!(out.contains("path"), "{out}");
 }

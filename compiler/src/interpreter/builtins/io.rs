@@ -120,6 +120,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 )),
             ])))
         }
+        "read_file" | "write_file" | "read_csv" | "write_csv"
+            if matches!(args.first(), Some(Value::String(p)) if path_refused(p, name).is_some()) => {
+            let Some(Value::String(p)) = args.first() else { unreachable!() };
+            Some(Err(path_refused(p, name).unwrap()))
+        }
         "read_file" => {
             if let Some(Value::String(path)) = args.first() {
                 match std::fs::read_to_string(path) {
@@ -574,4 +579,23 @@ fn substitute_once(template: &str, pairs: &[Value]) -> String {
         }
     }
     result
+}
+
+/// File paths built from client input: a `..` segment walked out of the
+/// intended directory (`read_file("uploads/" + name)` with name
+/// `../../secrets/admin_token.txt` returned the secret), and a write could
+/// replace the program's own source (`write_file("uploads/" + "../f.cell", …)`
+/// ran on the next restart).
+fn path_refused(path: &str, builtin: &str) -> Option<RuntimeError> {
+    let parts: Vec<&str> = path.split(['/', '\\']).collect();
+    if parts.iter().any(|p| *p == "..") {
+        return Some(RuntimeError::Domain { kind: "path".to_string(), message: format!("path: {}(\"{}\") has a `..` segment — build paths from a fixed directory and a validated name", builtin, path) });
+    }
+    if builtin.starts_with("write") {
+        let file = parts.last().copied().unwrap_or("");
+        if file.ends_with(".cell") || file == "soma.toml" || file == "soma.lock" || parts.iter().any(|p| *p == ".soma_data") {
+            return Some(RuntimeError::Domain { kind: "path".to_string(), message: format!("path: {}(\"{}\") would overwrite the program, its configuration or its storage", builtin, path) });
+        }
+    }
+    None
 }

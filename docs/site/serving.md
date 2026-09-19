@@ -177,3 +177,25 @@ dashboard and the pre-handler 400s included, carries
 proxy in front to restrict). `--no-schedule` starts the HTTP side without the
 `every` / `after` threads (tests, debugging). Run it behind a reverse proxy
 and firewall the bus port.
+
+## Security notes for handlers
+
+- **Loopback servers** (the default bind) refuse a request whose `Host` names
+  another site (DNS rebinding) and a state-changing request whose `Origin`
+  is another site (a cross-site form POST) — 403. With `--host` the server is
+  public: authenticate every writing route.
+- **`http_*` with a client URL** reaches whatever the URL names (SSRF): allow
+  only known hosts. A call to this very server (its HTTP, WebSocket or bus
+  port) answers `kind: "self_call"` at once — a handler cannot call its own
+  endpoints (the handler lock is held); call the handler directly.
+- **`http_*` results**: a success returns the body itself (a Map, List or
+  String); a failure returns `{error, kind, status, body}`. Test
+  `type_of(r) == "Map" && r.status != ()` before reading `r.kind`.
+- **Templates**: `render` / `render_each` / `load` substitute values as they
+  are — wrap client text with `escape_html(…)`; `html()` does not escape
+  either.
+- **`redirect(url)`** sends whatever URL it is given: redirect only to paths
+  you build (`"/orders/{id}"`), never to a client-supplied URL.
+- **CSV exports** keep cells as written: a cell starting with `=`, `+`, `-`
+  or `@` is a formula to a spreadsheet — prefix client text with `'` when
+  the file is meant for one.

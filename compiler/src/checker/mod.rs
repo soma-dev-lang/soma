@@ -697,6 +697,65 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // a variant literal (`Anon { id: 5, email: … }`) with a missing,
+        // extra or literally mistyped field passed check and failed at run
+        // time — its declaration is known here
+        {
+            let mut shapes: std::collections::HashMap<String, Vec<(String, TypeExpr)>> = std::collections::HashMap::new();
+            for c in &program.cells {
+                if !matches!(c.node.kind, CellKind::Type) { continue; }
+                for sec in &c.node.sections {
+                    if let Section::Variants(vs) = &sec.node {
+                        for vd in &vs.variants {
+                            if let VariantFields::Struct(fs) = &vd.node.fields {
+                                shapes.insert(vd.node.name.clone(), fs.iter().map(|(n, t)| (n.clone(), t.node.clone())).collect());
+                            }
+                        }
+                    }
+                }
+            }
+            if !shapes.is_empty() {
+                for cell in &program.cells {
+                    for sec in &cell.node.sections {
+                        let body = match &sec.node {
+                            Section::OnSignal(on) => &on.body,
+                            Section::Every(e) | Section::After(e) => &e.body,
+                            _ => continue,
+                        };
+                        let mut bad: Vec<String> = Vec::new();
+                        literals::for_each_expr(body, &mut |e| if let Expr::Record { type_name, fields } = e {
+                            let Some(decl) = shapes.get(type_name) else { return };
+                            for (n, _) in decl {
+                                if !fields.iter().any(|(f, _)| f == n) { bad.push(format!("`{type_name} {{ … }}` is missing the field `{n}`")); }
+                            }
+                            for (f, v) in fields {
+                                match decl.iter().find(|(n, _)| n == f) {
+                                    None => bad.push(format!("`{type_name} {{ … }}` has no field `{f}` (the variant declares {})", decl.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "))),
+                                    Some((_, TypeExpr::Simple(t))) => {
+                                        let lit = match &v.node {
+                                            Expr::Literal(Literal::Int(_)) | Expr::Literal(Literal::BigInt(_)) => Some("Int"),
+                                            Expr::Literal(Literal::Float(_)) => Some("Float"),
+                                            Expr::Literal(Literal::String(_)) => Some("String"),
+                                            Expr::Literal(Literal::Bool(_)) => Some("Bool"),
+                                            _ => None,
+                                        };
+                                        if let Some(l) = lit {
+                                            let fits = l == t || (t == "Float" && l == "Int") || !matches!(t.as_str(), "Int" | "Float" | "String" | "Bool");
+                                            if !fits { bad.push(format!("`{type_name} {{ {f}: … }}` is a {l} literal but the variant declares `{f}: {t}`")); }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        });
+                        bad.dedup();
+                        for m in bad {
+                            self.errors.push(CheckError::Static { kind: "variant_shape", message: m, span: sec.span });
+                        }
+                    }
+                }
+            }
+        }
         let exposed_for_guards = crate::checker::desugar::expose_for_analysis(program);
         for issue in guards::check_program(&exposed_for_guards) {
             self.errors.push(CheckError::GuardScope { message: issue.message, span: issue.span });
@@ -1037,15 +1096,19 @@ impl<'a> Checker<'a> {
                         Section::Every(e) | Section::After(e) => &e.body,
                         _ => continue,
                     };
-                    let mut hit = false;
-                    literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, .. } = e { if name == "transition" { hit = true; } });
-                    if hit {
+                    // get_status / has_state / valid_transitions read the same
+                    // machine and failed the same way ("no state machine found")
+                    let mut hit: Option<String> = None;
+                    literals::for_each_expr(body, &mut |e| if let Expr::FnCall { name, .. } = e {
+                        if hit.is_none() && matches!(name.as_str(), "transition" | "get_status" | "has_state" | "valid_transitions") { hit = Some(name.clone()); }
+                    });
+                    if let Some(f) = hit {
                         self.errors.push(CheckError::Static {
                             kind: "transition_no_machine",
                             message: if any_machine {
-                                format!("cell {} calls transition() but has no state machine — a transition moves the machine of the CALLING cell: call a handler of the cell that owns the machine", cell.node.name)
+                                format!("cell {} calls {}() but has no state machine, and the program has {} — it reads the machine of the CALLING cell: call a handler of the cell that owns the machine", cell.node.name, f, if machines > 1 { "several" } else { "none" })
                             } else {
-                                format!("cell {} calls transition() but the program declares no state machine", cell.node.name)
+                                format!("cell {} calls {}() but the program declares no state machine", cell.node.name, f)
                             },
                             span: sec.span,
                         });
