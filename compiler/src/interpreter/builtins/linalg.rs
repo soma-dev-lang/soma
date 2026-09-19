@@ -1309,11 +1309,14 @@ fn impact_sqrt_impl(args: &[Value], opts: &Value) -> Result<Value, RuntimeError>
 /// Empirical q-quantile of a sample (0 ≤ q ≤ 1).
 fn quantile_impl(xs: &Value, q: &Value) -> Result<Value, RuntimeError> {
     let mut v = to_vector(xs)?;
-    let q = val_to_f64(q)?.clamp(0.0, 1.0);
+    // q outside [0, 1] was clamped silently (quantile(xs, 1.5) = max)
+    let q = val_to_f64(q)?;
+    if !(0.0..=1.0).contains(&q) {
+        return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: quantile q must be in [0, 1], got {}", q) });
+    }
     if v.is_empty() {
-        return Err(RuntimeError::TypeError(
-            "quantile: empty input".into(),
-        ));
+        // the same kind as median([]) / pstdev([])
+        return Err(RuntimeError::Domain { kind: "empty".to_string(), message: "empty: quantile of an empty list".to_string() });
     }
     v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = v.len();

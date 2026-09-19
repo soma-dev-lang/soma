@@ -629,6 +629,13 @@ fn _soma_guard<T: Default>(f: impl FnOnce() -> T) -> T {
             // depend on the backend
             let msg = if let Some(clean) = raw.strip_prefix("soma:") {
                 clean.to_string()
+            } else if raw.contains("with overflow") || raw.contains("BigInt overflow") || raw.contains("beyond 64 bits")
+                || raw.contains("i64 overflow") || raw.contains("`Option::unwrap()` on a `None`") {
+                // an Int that outgrew 64 bits inside a Float / Bool / index
+                // expression, where native code cannot promote it: a clear
+                // `range` error (it was kind `type` with Rust's panic text,
+                // and i64::MIN % -1 read as "modulo by zero")
+                format!("range: [native] an Int past 64 bits inside a Float, Bool or index expression ({}) — bind the Int part with `let` first (a let promotes to BigInt), or run the handler interpreted", raw)
             } else if raw.contains("remainder") {
                 "modulo by zero".to_string()
             } else if raw.contains("divide by zero") || raw.contains("division by zero") {
@@ -3943,6 +3950,11 @@ impl FnGenerator {
                 // so that mixed-type returns (e.g. `return 0` from a Float function) get coerced.
                 let ret_ty = self.fn_return_type;
                 let expr = self.gen_expr_direct(&value.node, ret_ty);
+                // a String parameter is a `&str` in the fast function:
+                // `return s` failed to compile (after a clean check)
+                if ret_ty == NativeType::String {
+                    return format!("{}return ({}).to_string();\n", ind, expr);
+                }
                 format!("{}return {};\n", ind, expr)
             }
             Statement::If { condition, then_body, else_body } => {
@@ -5256,6 +5268,10 @@ impl FnGenerator {
     fn gen_expr_rug_incomplete(&self, expr: &Expr) -> String {
         match expr {
             Expr::Literal(Literal::Int(n)) => format!("{}i64", n),
+            // `/` is the exact quotient or an error (gen_binop_rug), never
+            // rug's / i64's truncating division: `m = (lo + hi) / 2` after
+            // an overflow re-run returned the truncated midpoint
+            Expr::BinaryOp { op: BinOp::Div, .. } => self.gen_expr_rug(expr),
             Expr::BinaryOp { left, op, right } => {
                 let lt = self.infer_expr_type(&left.node);
                 let rt = self.infer_expr_type(&right.node);
@@ -5296,6 +5312,8 @@ impl FnGenerator {
             Expr::BinaryOp { left, op, right } => {
                 let l = self.gen_int_to_i64_rug(&left.node);
                 let r = self.gen_int_to_i64_rug(&right.node);
+                // an index `i / 2` is exact or an error, as everywhere
+                if matches!(op, BinOp::Div) { return format!("_soma_div_exact({}, {})", l, r); }
                 format!("({} {} {})", l, arith_op_str(*op), r)
             }
             _ => format!("{}.to_i64().unwrap()", self.gen_expr_rug(expr)),

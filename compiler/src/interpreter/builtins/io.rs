@@ -506,7 +506,10 @@ fn csv_opts(opts: Option<&Value>, builtin: &str) -> Result<(bool, char), Runtime
 fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<Value, RuntimeError> {
     let path = source;
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    let mut records = parse_csv(content, delim).into_iter();
+    let mut records = match parse_csv(content, delim) {
+        Ok(r) => r.into_iter(),
+        Err(rec) => return Err(RuntimeError::Domain { kind: "csv".to_string(), message: format!("csv: {}: record {} opens a quote that is never closed — the rest of the input would be one cell", path, rec) }),
+    };
     let headers: Vec<String> = match records.next() {
         Some(h) => h.into_iter().map(|(t, _)| t.trim().to_string()).collect(),
         None => return Ok(Value::List(vec![])),
@@ -549,7 +552,7 @@ fn csv_rows(content: &str, (raw, delim): (bool, char), source: &str) -> Result<V
     Ok(Value::List(rows))
 }
 
-fn parse_csv(text: &str, delim: char) -> Vec<Vec<(String, bool)>> {
+fn parse_csv(text: &str, delim: char) -> Result<Vec<Vec<(String, bool)>>, usize> {
     let mut records = Vec::new();
     let mut rec: Vec<(String, bool)> = Vec::new();
     let mut field = String::new();
@@ -580,11 +583,16 @@ fn parse_csv(text: &str, delim: char) -> Vec<Vec<(String, bool)>> {
             _ => field.push(c),
         }
     }
+    // an unclosed quote swallowed the rest of the file into one cell,
+    // silently (rows 3 and 4 became part of row 2's name)
+    if in_quotes {
+        return Err(records.len() + 1);
+    }
     if any || !field.is_empty() || !rec.is_empty() {
         rec.push((field, quoted));
         records.push(rec);
     }
-    records
+    Ok(records)
 }
 
 /// `{key}` placeholders filled from (key, value) pairs in ONE left-to-right

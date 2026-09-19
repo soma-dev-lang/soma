@@ -3176,3 +3176,75 @@ cell test R {
     let (out, _) = soma_in(&d, &["check", "f.cell"]);
     assert!(out.contains("d[\"cell\"]"), "{out}");
 }
+
+/// Cycle 57: a pure lambda's captured list is not cloned per element
+/// (`range(0, n) |> map(i => xs[i])` was quadratic); NaN sorts last in
+/// sort_by; an unclosed CSV quote is an error; quantile refuses q outside
+/// [0, 1] and an empty list is kind `empty`; blank CSV cells are missing
+/// values for sum_by / avg_by.
+#[test]
+fn cycle57_findings() {
+    let out = passes("cycle57", r#"
+cell T {
+    on big(n: Int) {
+        let xs = range(0, n)
+        let t = now_ms()
+        let ys = range(0, n) |> map(i => xs[i] * 2)
+        return now_ms() - t
+    }
+    on nan() { return sort_by(from_csv("v\n5\n4\nNaN\n3\n"), r => r.v) |> map(r => to_string(r.v)) }
+    on quote() { return from_csv("id,name\n1,\"bad\n2,ok\n") }
+    on q() { return quantile([1.0, 2.0], 1.5) }
+    on qe() { let r = try { quantile([], 0.5) }  return r.kind }
+    on blank() { return sum_by(from_csv("k,v\na,1\na,\n"), "v") }
+}
+cell test R {
+    rules {
+        assert big(40000) < 3000
+        assert nan() == ["3", "4", "5", "NaN"]
+        assert_fails quote()
+        assert_fails q()
+        assert qe() == "empty"
+        assert blank() == 1
+    }
+}
+"#);
+    let _ = out;
+}
+
+/// Cycle 57 (differential fuzzing): after an i64 overflow re-run in BigInt
+/// mode, an Int-typed `/` is exact or an error (it truncated); a native
+/// handler returning its String parameter compiles; an overflow inside a
+/// Float expression is kind `range`; an operator chain past the nesting
+/// limit is refused.
+#[test]
+fn cycle57_native_and_parser() {
+    let d = dir("cycle57_native");
+    std::fs::write(d.join("app.cell"), r#"
+cell Q {
+    on mid(lo: Int, hi: Int) [native] {
+        let m = lo
+        m = (lo + hi) / 2
+        return m
+    }
+    on echo(s: String) [native] { return s }
+    on fx(a: Int, x: Float) [native] { return x + (a + 1) }
+}
+cell test T {
+    rules {
+        assert_fails mid(4611686018427387904, 4611686018427387905)
+        assert mid(4611686018427387904, 4611686018427387906) == 4611686018427387905
+        assert echo("hi") == "hi"
+    }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (out, _) = soma_in(&d, &["run", "app.cell", "fx", "9223372036854775807", "1.5"]);
+    assert!(out.contains("range") || out.contains("past 64 bits"), "{out}");
+
+    let src = format!("cell A {{ on f() {{ return [1] {} }} }}\n", "|> reverse() ".repeat(5000));
+    std::fs::write(d.join("p.cell"), src).unwrap();
+    let (out, code) = soma_in(&d, &["check", "p.cell"]);
+    assert!(code != 0 && out.contains("operator chain"), "{out}");
+}

@@ -2541,6 +2541,19 @@ impl Parser {
 
     // ── Expressions ──────────────────────────────────────────────────
 
+    /// A chain `a |> f |> g …` / `a + b + c …` builds a tree as deep as it
+    /// is long without recursing here: 50 000 pipes made check and verify
+    /// run for minutes — the same limit as nesting.
+    fn chain_limit(&self, chain: usize) -> Result<(), ParseError> {
+        if self.depth + chain >= MAX_EXPR_DEPTH {
+            return Err(ParseError::FixIt {
+                message: format!("an operator chain longer than {} steps (with its nesting) — split it into `let` bindings", MAX_EXPR_DEPTH),
+                span: self.peek_span(),
+            });
+        }
+        Ok(())
+    }
+
     fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         if self.depth >= MAX_EXPR_DEPTH {
             return Err(ParseError::FixIt {
@@ -2559,7 +2572,10 @@ impl Parser {
     // and `a + b |> f()` stays `(a + b) |> f()`.
     fn parse_pipe(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut left = self.parse_additive()?;
+        let mut chain = 0usize;
         while self.check(&Token::Pipe) {
+            chain += 1;
+            self.chain_limit(chain)?;
             self.advance();
             let mut right = self.parse_additive()?;
             // `x |> h` is `x |> h()` (the runtime calls h(x)): as a bare
@@ -2590,7 +2606,10 @@ impl Parser {
 
     fn parse_logical_or(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut left = self.parse_logical_and()?;
+        let mut chain = 0usize;
         while self.check(&Token::OrOr) {
+            chain += 1;
+            self.chain_limit(chain)?;
             self.advance();
             let right = self.parse_logical_and()?;
             let span = left.span.merge(right.span);
@@ -2608,7 +2627,10 @@ impl Parser {
 
     fn parse_logical_and(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut left = self.parse_null_coalesce()?;
+        let mut chain = 0usize;
         while self.check(&Token::AndAnd) {
+            chain += 1;
+            self.chain_limit(chain)?;
             self.advance();
             let right = self.parse_null_coalesce()?;
             let span = left.span.merge(right.span);
@@ -2626,7 +2648,10 @@ impl Parser {
 
     fn parse_null_coalesce(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut left = self.parse_comparison()?;
+        let mut chain = 0usize;
         while self.check(&Token::NullCoal) {
+            chain += 1;
+            self.chain_limit(chain)?;
             self.advance();
             let right = self.parse_comparison()?;
             let span = left.span.merge(right.span);
@@ -2672,7 +2697,10 @@ impl Parser {
 
     fn parse_additive(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut left = self.parse_multiplicative()?;
+        let mut chain = 0usize;
         while matches!(self.peek(), Token::Plus | Token::Minus) {
+            chain += 1;
+            self.chain_limit(chain)?;
             // `"neg"  -1..1 -> "small"`: the `-1` starts the NEXT match arm
             // (a negative pattern), it is not a subtraction from this result
             if matches!(self.peek(), Token::Minus)
@@ -2703,7 +2731,10 @@ impl Parser {
 
     fn parse_multiplicative(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let mut left = self.parse_unary()?;
+        let mut chain = 0usize;
         while matches!(self.peek(), Token::Star | Token::Slash | Token::Percent) {
+            chain += 1;
+            self.chain_limit(chain)?;
             let op = match self.peek() {
                 Token::Star => BinOp::Mul,
                 Token::Slash => BinOp::Div,

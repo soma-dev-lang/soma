@@ -1311,3 +1311,26 @@ single-runner all held; no crash.
 
 ### Open
 - [ ] No per-connection WS identity or open/close hook; a counter cannot commit while the request raises (rate limiting of failing requests); native index errors carry Rust text and no line; termination warnings do not name the caller.
+
+### Cycle 57 — realistic port (pandas-style ETL / analytics on 200k rows) + attack (differential fuzzing: native vs interpreted, run vs test, verifier vs runtime, parser)
+
+ETL port 6/10: every aggregate matched pandas (per-day sums, medians,
+p95/p99, OLS, IQR fences); native kernel 12 ms vs 332 ms interpreted.
+Fuzzing: 13k native/interpreted comparisons, 2 600 run-vs-test
+expressions (0 divergences), 1 135 fully proven writers fuzzed at run time
+(0 unsound ✓), 5 700 mutated programs through check/verify/describe (0
+panics).
+
+### Fixed
+- [x] **Port: a pure lambda cloned every captured list/map on EACH call** — `range(0, n) |> map(i => xs[i])` was quadratic (2.8 s at 16 000; a 200k zip never finished); the environment is built once per map/filter/…: 5 ms at 16 000, 51 ms at 200 000.
+- [x] **Attack: native `/` truncated after the BigInt re-run** — the docs' own Gotcha 19 midpoint `m = (lo + hi) / 2` returned a truncated value on overflow; the in-place assign path and index expressions now use the exact quotient (or raise).
+- [x] Port: `sort_by` over a column holding NaN came back unsorted — NaN sorts after every number.
+- [x] Port: an unclosed CSV quote swallowed the rest of the file silently — kind `csv` error naming the record.
+- [x] Port: `quantile` clamped q outside [0, 1] — kind `range`; `quantile([])` is kind `empty` like median.
+- [x] Port: blank CSV cells made `sum_by` / `avg_by` raise while `agg` skipped them — a blank cell is a missing value; the error quotes a bad String value.
+- [x] Attack: `soma check` passed a native handler returning its String parameter, then rustc failed — it compiles.
+- [x] Attack: an Int overflow inside a native Float/Bool expression raised kind `type` with Rust panic text (and i64::MIN % -1 read as "modulo by zero") — kind `range` with the `let` workaround.
+- [x] Attack: a chain of 50 000 `|>` escaped the nesting limit and made check run for minutes — operator chains count toward the 400-level limit.
+
+### Open
+- [ ] Appending to a list inside a map (`b[k] = push(b[k] ?? [], i)`) is quadratic; memory ~8× pandas; no datetime/offset parsing; native `if` expressions and `round(x) + Int` refused; native Int overflow inside Float/Bool expressions raises instead of promoting; `soma fmt` does not exist.

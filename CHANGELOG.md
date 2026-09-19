@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Performance: a lambda's captured lists and maps are no longer copied
+  per element — `|> map` / `filter` / … over a captured list is linear
+  (was quadratic).
+- `[native]`: an Int `/` stays exact after the BigInt re-run (it truncated
+  the docs' midpoint example); a handler returning its String parameter
+  compiles; an Int overflow inside a Float/Bool expression is kind `range`.
+- `sort_by` puts NaN last; an unclosed CSV quote is an error; `quantile`
+  refuses q outside [0, 1]; blank CSV cells are missing values for
+  `sum_by` / `avg_by`; operator chains count toward the nesting limit.
 - `"s" |> map(f)` and `"s".map(f)` raise a type error; kinds
   `rate_limited` / `too_many_requests` answer 429.
 - WebSocket: a returned `response(…)` sends its body; error bodies hide

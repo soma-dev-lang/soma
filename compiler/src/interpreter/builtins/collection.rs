@@ -27,7 +27,15 @@ pub fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
                 Value::Float(f) => *f,
                 _ => 0.0,
             };
-            f(a).partial_cmp(&f(b)).unwrap_or(Ordering::Equal)
+            // NaN sorts after every number (Equal broke the sort's total
+            // order: sort_by over a column with a NaN came back unsorted)
+            let (x, y) = (f(a), f(b));
+            match (x.is_nan(), y.is_nan()) {
+                (true, true) => Ordering::Equal,
+                (true, false) => Ordering::Greater,
+                (false, true) => Ordering::Less,
+                _ => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            }
         }
         (Value::String(x), Value::String(y)) => x.cmp(y),
         (Value::List(x), Value::List(y)) => {

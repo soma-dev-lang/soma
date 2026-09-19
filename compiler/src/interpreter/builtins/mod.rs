@@ -238,6 +238,13 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         _ => return None,
     };
 
+    let mut prep = interp.prepare_lambda_env(lambda);
+    let mut call = |interp: &mut crate::interpreter::Interpreter, arg: Value| -> Result<Value, crate::interpreter::ExecError> {
+        match prep.as_mut() {
+            Some(env) => interp.apply_prepared(lambda, env, arg, cell_name),
+            None => interp.apply_lambda(lambda, arg, cell_name),
+        }
+    };
     match name {
         // sort_by(rows, r => r.total)            ascending by key
         // sort_by(rows, r => r.total, "desc")    descending
@@ -247,7 +254,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
             let desc = args.get(2).map(|v| format!("{}", v) == "desc").unwrap_or(false);
             let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(list.len());
             for item in list {
-                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                match call(interp, item.clone()) {
                     Ok(k) => keyed.push((k, item.clone())),
                     Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
@@ -261,7 +268,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         "map" => {
             let mut result = Vec::with_capacity(list.len());
             for item in list {
-                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                match call(interp, item.clone()) {
                     Ok(v) => result.push(v),
                     Err(e) => return Some(Err(crate::interpreter::lambda_error(e))),
                 }
@@ -271,7 +278,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         "filter" => {
             let mut result = Vec::new();
             for item in list {
-                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                match call(interp, item.clone()) {
                     Ok(v) => {
                         if match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } {
                             result.push(item.clone());
@@ -284,7 +291,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         }
         "find" => {
             for item in list {
-                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                match call(interp, item.clone()) {
                     Ok(v) => {
                         if match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } {
                             return Some(Ok(item.clone()));
@@ -297,7 +304,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         }
         "any" => {
             for item in list {
-                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                match call(interp, item.clone()) {
                     Ok(v) => {
                         if match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } {
                             return Some(Ok(Value::Bool(true)));
@@ -310,7 +317,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         }
         "all" => {
             for item in list {
-                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                match call(interp, item.clone()) {
                     Ok(v) => {
                         if !match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } {
                             return Some(Ok(Value::Bool(false)));
@@ -324,7 +331,7 @@ pub fn call_lambda_builtin(interp: &mut super::Interpreter, name: &str, args: &[
         "count" => {
             let mut n = 0i64;
             for item in list {
-                match interp.apply_lambda(lambda, item.clone(), cell_name) {
+                match call(interp, item.clone()) {
                     Ok(v) => {
                         if match pred_bool(name, &v) { Ok(b) => b, Err(e) => return Some(Err(e)) } { n += 1; }
                     }

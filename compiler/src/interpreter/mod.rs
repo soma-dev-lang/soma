@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 use indexmap::IndexMap;
 
 /// Fast environment map — uses FxHash (no crypto overhead) for variable lookups
-type Env = FxHashMap<String, Value>;
+pub(crate) type Env = FxHashMap<String, Value>;
 use crate::ast::*;
 use crate::runtime::storage::{StorageBackend, StoredValue};
 pub use crate::interpreter::soma_int::SomaInt;
@@ -4243,6 +4243,33 @@ impl Interpreter {
             return Err(ExecError::Runtime(RuntimeError::StackOverflow));
         }
         let r = self.apply_lambda_inner(lambda, arg, cell_name);
+        self.current_depth -= 1;
+        r
+    }
+
+    /// The environment of a pure-expression lambda, built ONCE for a whole
+    /// `map` / `filter` / … over a list: rebuilding it per element cloned
+    /// every captured list and map (`range(0, n) |> map(i => xs[i])` was
+    /// quadratic — 2.8 s for 16 000 items). None for a lambda with
+    /// statements (its lets must start fresh each call).
+    pub(crate) fn prepare_lambda_env(&self, lambda: &Value) -> Option<Env> {
+        let Value::Lambda { body, env: closed_env, .. } = lambda else { return None };
+        let mut has_stmt = false;
+        crate::checker::literals::for_each_stmt_in_expr(&body.node, &mut |_| has_stmt = true);
+        if has_stmt { return None; }
+        Some(closed_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+    }
+
+    /// apply_lambda with an environment from prepare_lambda_env
+    pub(crate) fn apply_prepared(&mut self, lambda: &Value, env: &mut Env, arg: Value, cell_name: &str) -> Result<Value, ExecError> {
+        let Value::Lambda { param, body, .. } = lambda else { return self.apply_lambda(lambda, arg, cell_name) };
+        self.current_depth += 1;
+        if self.current_depth > self.max_depth {
+            self.current_depth -= 1;
+            return Err(ExecError::Runtime(RuntimeError::StackOverflow));
+        }
+        env.insert(param.clone(), arg);
+        let r = self.eval_expr(&body.node, env, cell_name, "");
         self.current_depth -= 1;
         r
     }

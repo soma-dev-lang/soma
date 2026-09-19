@@ -152,7 +152,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     if let Some(bad) = non_numeric(items, &field) {
-                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("sum_by(): field '{}' holds {} {} — not a number (sum_by counts numbers and numeric text only; a missing field counts 0)", field, crate::interpreter::value_type_name(&bad), bad) }));
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("sum_by(): field '{}' holds {} {} — not a number (sum_by counts numbers and numeric text only; a missing field counts 0)", field, crate::interpreter::value_type_name(&bad), crate::interpreter::builtins::string::to_json_string(&bad)) }));
                     }
                     let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
                     Some(Ok(num_value(num_sum(&xs))))
@@ -166,7 +166,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     if let Some(bad) = non_numeric(items, &field) {
-                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("avg_by(): field '{}' holds {} {} — not a number (avg_by counts numbers and numeric text only)", field, crate::interpreter::value_type_name(&bad), bad) }));
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("avg_by(): field '{}' holds {} {} — not a number (avg_by counts numbers and numeric text only)", field, crate::interpreter::value_type_name(&bad), crate::interpreter::builtins::string::to_json_string(&bad)) }));
                     }
                     let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
                     Some(Ok(num_avg(&xs)))
@@ -351,7 +351,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
 /// counts as its number; an absent field or `()` is skipped).
 fn non_numeric(items: &[Value], field: &str) -> Option<Value> {
     items.iter().find_map(|it| match it {
-        Value::Map(m) => m.get(field).filter(|v| !matches!(v, Value::Unit) && num_of(v).is_none()).cloned(),
+        // a blank CSV cell ("") is a missing value, as agg() treats it
+        Value::Map(m) => m.get(field).filter(|v| !matches!(v, Value::Unit) && !matches!(v, Value::String(s) if s.trim().is_empty()) && num_of(v).is_none()).cloned(),
         _ => None,
     })
 }
