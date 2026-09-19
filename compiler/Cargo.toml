@@ -1,6 +1,6 @@
 [package]
 name = "soma"
-version = "2.6.0"
+version = "2.6.1"
 license = "MIT"
 repository = "https://github.com/soma-dev-lang/soma"
 edition = "2021"

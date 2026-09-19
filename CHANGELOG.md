@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2.6.1 — 2026-09-19
 
+- Site and README: the stated guarantees now match the documented ones —
+  distribution checks prove the declarations' coherence (the prototype
+  replicates eventually), rollback covers slot writes and transitions (not
+  external effects), `set_budget` stops the next call, default liveness
+  means an exit stays reachable (`eventually` for every run), the paper's
+  quorum is ⌊N/2⌋ + 1; the /agents payment example requires `amount > 0`;
+  a homepage demo shows proven / runtime-checked / not covered.
 - `soma run --fresh` resets exactly this program's tables (a cell `A`
   reset another program's `A_b`); an unreadable soma.toml fails closed;
   `soma run` without a handler prefers `main` / `run` and never runs a
