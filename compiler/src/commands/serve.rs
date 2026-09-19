@@ -118,15 +118,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     };
     {
         let mut ev: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // an emit inside `try { }` / a block lambda / a match arm makes its
+        // listener an event too (it was left a public, forgeable endpoint)
         fn emits(stmts: &[ast::Spanned<ast::Statement>], out: &mut std::collections::HashSet<String>) {
-            for st in stmts {
-                match &st.node {
-                    ast::Statement::Emit { signal_name, .. } => { out.insert(signal_name.clone()); }
-                    ast::Statement::If { then_body, else_body, .. } => { emits(then_body, out); emits(else_body, out); }
-                    ast::Statement::For { body, .. } | ast::Statement::While { body, .. } => emits(body, out),
-                    _ => {}
-                }
-            }
+            crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| {
+                if let ast::Statement::Emit { signal_name, .. } = st { out.insert(signal_name.clone()); }
+            });
         }
         for c in &program.cells {
             for sec in &c.node.sections {
@@ -2040,7 +2037,7 @@ fn coerce_query_value(decoded: &str) -> interpreter::Value {
     }
 }
 
-fn urlencoding_decode(s: &str) -> String {
+pub(crate) fn urlencoding_decode(s: &str) -> String {
     let mut bytes = Vec::with_capacity(s.len());
     let raw = s.as_bytes();
     let mut i = 0;
@@ -2148,16 +2145,18 @@ fn mutating_handlers(cell: &ast::CellDef, foreign: &std::collections::HashSet<St
             }
             _ => {}
         });
+        // every statement, inside block lambdas / try / if-expressions /
+        // match arms too (`xs |> map(v => { hits["l"] = v  1 })` wrote on GET)
         fn stmts_write(stmts: &[ast::Spanned<Statement>], slots: &HashSet<String>) -> bool {
-            stmts.iter().any(|st| match &st.node {
-                Statement::MethodCall { target, method, .. } => (slots.contains(target) && WRITES.contains(&method.as_str()))
-                    || target.chars().next().map_or(false, |c| c.is_uppercase()),
-                Statement::IndexSet { name, .. } => slots.contains(name),
-                Statement::Emit { .. } => true,
-                Statement::If { then_body, else_body, .. } => stmts_write(then_body, slots) || stmts_write(else_body, slots),
-                Statement::For { body, .. } | Statement::While { body, .. } => stmts_write(body, slots),
-                _ => false,
-            })
+            let mut hit = false;
+            crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+                Statement::MethodCall { target, method, .. } => if (slots.contains(target) && WRITES.contains(&method.as_str()))
+                    || target.chars().next().map_or(false, |c| c.is_uppercase()) { hit = true; },
+                Statement::IndexSet { name, .. } | Statement::Assign { name, .. } => if slots.contains(name) || slots.contains(name.split('.').next().unwrap_or("")) { hit = true; },
+                Statement::Emit { .. } => hit = true,
+                _ => {}
+            });
+            hit
         }
         if writes || stmts_write(&on.body, &slots) { direct.insert(on.signal_name.clone()); }
         calls.insert(on.signal_name.clone(), callees);

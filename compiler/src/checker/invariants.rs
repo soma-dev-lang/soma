@@ -108,6 +108,24 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                 for f in &fns {
                     if crate::checker::names::EFFECT_BUILTINS.contains(&f.as_str()) || crate::checker::names::IO_BUILTINS.contains(&f.as_str()) { effects.push(f.clone()); }
                 }
+                // a statement in a block of the invariant writes / emits
+                // (`all(q => { other["inv"] = 7  true })` ran on every write)
+                let mut stmt_effect: Option<String> = None;
+                crate::checker::literals::for_each_stmt_in_expr(&inv.node, &mut |st| if stmt_effect.is_none() {
+                    match st {
+                        Statement::IndexSet { name, .. } => stmt_effect = Some(format!("writes `{}[…]`", name)),
+                        Statement::Assign { name, .. } if name.contains('.') => stmt_effect = Some(format!("assigns `{}`", name)),
+                        Statement::Emit { signal_name, .. } => stmt_effect = Some(format!("emits `{}`", signal_name)),
+                        Statement::MethodCall { target, method, .. } => stmt_effect = Some(format!("calls {}.{}()", target, method)),
+                        _ => {}
+                    }
+                });
+                if let Some(w) = stmt_effect {
+                    issues.push(InvariantIssue {
+                        message: format!("memory invariant {w} — an invariant is a pure condition checked on every write: no writes, emits or calls, even inside a block lambda"),
+                        span: inv.span,
+                    });
+                }
                 for f in effects {
                     issues.push(InvariantIssue {
                         message: format!("memory invariant calls {f}() — an invariant is a condition checked on every write: it may not call think(), transition(), I/O or the network (it would run unseen by the cost, termination and refinement proofs)"),
@@ -524,6 +542,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 [one] => match one {
                                     Expr::FnCall { name: f, .. } if !handlers.contains_key(f) => format!("`{n}` = {}() — a builtin the prover does not bound", f),
                                     Expr::MethodCall { .. } | Expr::Index { .. } => format!("`{n}` reads a slot with no interval invariant"),
+                                    // a loop / lambda / match binding: no single
+                                    // expression (it rendered as "`e` = ()")
+                                    _ if std::ptr::eq(**one, &UNKNOWN_EXPR) => format!("`{n}` is bound by a loop or a pattern — its values (and their fields) are not bounded; `require` a bound on the value you write"),
                                     _ => format!("`{n}` = {} — not bounded", render_expr(one)),
                                 },
                                 _ => format!("`{n}` is reassigned {} times (a loop accumulator?) — bind it once, or read the slot", bound.len()),
@@ -539,7 +560,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let built = matches!(value_expr, Expr::FnCall { name, .. } if name == "map" || name == "with");
                     if why.is_empty() && !built {
                         if let Some((lo, hi)) = bounds(ctx.range_of(value_expr)) {
-                            let num = |x: f64| if x == f64::INFINITY { "∞".to_string() } else if x == f64::NEG_INFINITY { "-∞".to_string() } else { format!("{}", x) };
+                            let num = |x: f64| if x == f64::INFINITY { "∞".to_string() } else if x == f64::NEG_INFINITY { "-∞".to_string() } else if x == 0.0 { "0".to_string() } else { format!("{}", x) };
                             let open_txt: Vec<String> = parts.iter().zip(&verdicts)
                                 .filter(|(_, v)| **v != Proof::Holds)
                                 .map(|(c, _)| subst_render(c, slot, value_expr)).collect();
@@ -1946,18 +1967,13 @@ fn calls_of(stmts: &[Spanned<Statement>], cells: &HashSet<String>) -> Vec<(Optio
         }
         _ => {}
     });
-    fn stmts_walk(stmts: &[Spanned<Statement>], cells: &HashSet<String>, out: &mut Vec<(Option<String>, String)>) {
-        for st in stmts {
-            match &st.node {
-                Statement::MethodCall { target, method, .. } if cells.contains(target) => out.push((Some(target.clone()), method.clone())),
-                Statement::Emit { signal_name, .. } => out.push((Some("*".to_string()), signal_name.clone())),
-                Statement::If { then_body, else_body, .. } => { stmts_walk(then_body, cells, out); stmts_walk(else_body, cells, out); }
-                Statement::For { body, .. } | Statement::While { body, .. } => stmts_walk(body, cells, out),
-                _ => {}
-            }
-        }
-    }
-    stmts_walk(stmts, cells, &mut out);
+    // inside `try { }` / block lambdas / match arms too: `try { emit more(..) }`
+    // grew the slot past a "proven" size bound
+    crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+        Statement::MethodCall { target, method, .. } if cells.contains(target) => out.push((Some(target.clone()), method.clone())),
+        Statement::Emit { signal_name, .. } => out.push((Some("*".to_string()), signal_name.clone())),
+        _ => {}
+    });
     out
 }
 

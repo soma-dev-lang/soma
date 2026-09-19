@@ -440,6 +440,31 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
         None
     });
     let Some(params) = params else { return args };
+    // `soma run app.cell request GET "/a?x=1" ""` — split the query off the
+    // path as `soma serve` does (the route got "/a?x=1" and an empty query)
+    let mut args = args;
+    if signal_name == "request" {
+        let pi = params.iter().position(|p| p.name == "path");
+        let qi = params.iter().position(|p| p.name == "query");
+        if let Some(pi) = pi {
+            if let Some(interpreter::Value::String(full)) = args.get(pi).cloned() {
+                if let Some((path, qs)) = full.split_once('?') {
+                    args[pi] = interpreter::Value::String(path.to_string());
+                    if let Some(qi) = qi {
+                        let given_empty = match args.get(qi) { None => true, Some(interpreter::Value::Map(m)) => m.is_empty(), Some(interpreter::Value::String(t)) => t.is_empty() || t == "{}", _ => false };
+                        if given_empty {
+                            let pairs: Vec<(String, interpreter::Value)> = qs.split('&').filter(|p| !p.is_empty()).map(|p| {
+                                let (k, v) = p.split_once('=').unwrap_or((p, ""));
+                                (crate::commands::serve::urlencoding_decode(&k.replace('+', " ")), interpreter::Value::String(crate::commands::serve::urlencoding_decode(&v.replace('+', " "))))
+                            }).collect();
+                            while args.len() <= qi { args.push(interpreter::Value::Map(Default::default())); }
+                            args[qi] = interpreter::map_from_pairs(pairs);
+                        }
+                    }
+                }
+            }
+        }
+    }
     args.into_iter().enumerate().map(|(i, arg)| {
         let Some(param) = params.get(i) else { return arg };
         // `request`'s headers map: lower-case names, as `soma serve` gives them
@@ -491,6 +516,7 @@ fn coerce_cli_args(cell: &ast::CellDef, signal_name: &str, args: Vec<interpreter
                     _ => fail(&format!("JSON that is not a {}: '{}'", ty, s)),
                 }
             }
+            ("Map", interpreter::Value::Map(_)) | ("List", interpreter::Value::List(_)) => arg,
             ("Map" | "List", other) => fail(&format!("'{}'", other)),
             _ => arg,
         }

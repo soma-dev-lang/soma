@@ -19,6 +19,8 @@ pub enum LexError {
     UnterminatedComment { pos: usize },
     #[error("invalid number")]
     InvalidNumber { pos: usize },
+    #[error("unknown duration unit '{suffix}' — the units are ms, s, min, h, d, years (`90min`, not `90m`)")]
+    UnknownUnit { pos: usize, suffix: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -707,7 +709,11 @@ impl<'a> Lexer<'a> {
                         span: Span::new(start, self.pos),
                     });
                 } else {
-                    // `12abc` is neither a number nor a duration
+                    // `12abc` is neither a number nor a duration; `90m` /
+                    // `2sec` look like one — name the units
+                    if matches!(suffix.as_str(), "m" | "sec" | "secs" | "second" | "seconds" | "mins" | "minute" | "minutes" | "hr" | "hrs" | "hour" | "hours" | "day" | "days" | "w" | "week" | "weeks") {
+                        return Err(LexError::UnknownUnit { pos: start, suffix });
+                    }
                     return Err(LexError::InvalidNumber { pos: start });
                 }
             }

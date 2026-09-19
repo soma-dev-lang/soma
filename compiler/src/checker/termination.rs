@@ -315,16 +315,14 @@ fn call_graph(program: &Program) -> HashMap<String, Vec<String>> {
         }
         // `Other.o1(n)` as a statement, and `emit ev(…)` (every `on ev` runs;
         // a handler's own event does not re-enter it)
+        // inside `try { }` / block lambdas / match arms too (ping and pong
+        // emitting each other in `try` verified "✓ terminates")
         fn stmt_edges(stmts: &[Spanned<Statement>], cells: &HashSet<&str>, out: &mut Vec<String>) {
-            for st in stmts {
-                match &st.node {
-                    Statement::MethodCall { target, method, .. } if cells.contains(target.as_str()) => out.push(method.clone()),
-                    Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
-                    Statement::If { then_body, else_body, .. } => { stmt_edges(then_body, cells, out); stmt_edges(else_body, cells, out); }
-                    Statement::For { body, .. } | Statement::While { body, .. } => stmt_edges(body, cells, out),
-                    _ => {}
-                }
-            }
+            crate::checker::literals::for_each_stmt_deep(stmts, &mut |st| match st {
+                Statement::MethodCall { target, method, .. } if cells.contains(target.as_str()) => out.push(method.clone()),
+                Statement::Emit { signal_name, .. } => out.push(signal_name.clone()),
+                _ => {}
+            });
         }
         let mut extra = Vec::new();
         stmt_edges(&on.body, &cells, &mut extra);

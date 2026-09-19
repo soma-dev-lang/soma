@@ -1227,7 +1227,13 @@ impl Interpreter {
         signal_name: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
-        self.atomically(|me| me.call_signal_inner(cell_name, signal_name, args))
+        // a call that RETURNED leaves the position at the caller: an error
+        // later in the caller's expression was reported inside the callee
+        // (`assert request(…).x` "raised at line 3", the handler's line)
+        let caller_span = self.last_span;
+        let r = self.atomically(|me| me.call_signal_inner(cell_name, signal_name, args));
+        if r.is_ok() { self.last_span = caller_span; }
+        r
     }
 
     fn call_signal_inner(

@@ -146,6 +146,8 @@ struct Walker<'a> {
     try_depth: usize,
     /// > 0 inside a `for` / `while` body (`break` is legal there)
     loop_depth: usize,
+    /// inside a block lambda: `return` there raises at run time
+    lambda_depth: usize,
     /// a handler a test cell expects to fail (`assert_fails h(…)`)
     blessed: bool,
     /// the memory slots of the cell being walked (a `let` of another
@@ -157,7 +159,7 @@ struct Walker<'a> {
 
 impl<'a> Walker<'a> {
     fn new(index: &'a ProgramIndex) -> Self {
-        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, blessed: false, cell_slots: HashSet::new(), in_test: false }
+        Self { index, scope: HashSet::new(), block_lets: HashSet::new(), issues: Vec::new(), try_depth: 0, loop_depth: 0, lambda_depth: 0, blessed: false, cell_slots: HashSet::new(), in_test: false }
     }
 
     fn known(&self, name: &str) -> bool {
@@ -266,6 +268,15 @@ impl<'a> Walker<'a> {
                 self.scope.insert(name.clone());
             }
             Statement::Return { value } | Statement::Ensure { condition: value } => {
+                if self.lambda_depth > 0 && matches!(stmt.node, Statement::Return { .. }) {
+                    self.issues.push(InterpolationIssue {
+                        message: "`return` inside a block lambda — a lambda is an expression: its value is its LAST expression (`x => { let y = x * 2  y + 1 }`); it cannot leave the handler".to_string(),
+                        span: stmt.span,
+                        warning: false,
+                        habit: false,
+                        kind: "return_in_lambda",
+                    });
+                }
                 self.walk_expr(value);
             }
             Statement::ExprStmt { expr } => self.walk_expr(expr),
@@ -638,8 +649,10 @@ impl<'a> Walker<'a> {
                 self.scoped(&[param], |w| {
                     // a lambda body is not inside the enclosing loop
                     let outer = std::mem::replace(&mut w.loop_depth, 0);
+                    w.lambda_depth += 1;
                     w.walk_stmts(stmts);
                     w.walk_expr(result);
+                    w.lambda_depth -= 1;
                     w.loop_depth = outer;
                 });
             }

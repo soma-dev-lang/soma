@@ -2588,3 +2588,30 @@ fn cycle35_findings() {
     assert_ne!(code, 0, "{out}");
     assert!(out.contains("calls read_file()"), "{out}");
 }
+
+#[test]
+fn cycle36_findings() {
+    let d = dir("cycle36");
+    // statements inside expression blocks: termination sees the emit in try
+    std::fs::write(d.join("t.cell"), "cell App {\n  on ping(m: Map) { let r = try { emit pong(m) } return 1 }\n  on pong(m: Map) { let r = try { emit ping(m) } return 1 }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "t.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("mutual recursion"), "{out}");
+    // a guard writing a slot inside a block lambda
+    std::fs::write(d.join("g.cell"), "cell App {\n  memory { hits: Map<String, Int> [persistent] }\n  state st {\n    initial: a\n    a -> b { guard { [1] |> all(q => { hits[\"g\"] = 9  true }) } }\n  }\n  on go(id: String) { transition(id, \"b\") }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "g.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("writes `hits[…]`"), "{out}");
+    // `return` inside a block lambda; a bare `return`
+    std::fs::write(d.join("r.cell"), "cell R {\n  on f(n: Int) { let ys = [1, 2, 3] |> map(v => { if v == 2 { return 99 }  v })  return ys }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "r.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("`return` inside a block lambda"), "{out}");
+    std::fs::write(d.join("b.cell"), "cell B {\n  on f(n: Int) {\n    if n <= 0 { return }\n    return n\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "b.cell", "f", "0"]);
+    assert_eq!(code, 0, "{out}");
+    // soma run splits the query off request's path, as serve does
+    std::fs::write(d.join("q.cell"), "cell Q {\n  on request(method: String, path: String, body: String, query: Map) { return map(\"path\", path, \"x\", query.x ?? \"none\") }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "q.cell", "request", "GET", "/a?x=1", ""]);
+    assert!(out.contains("\"/a\"") && out.contains("\"x\": \"1\""), "{out}");
+}

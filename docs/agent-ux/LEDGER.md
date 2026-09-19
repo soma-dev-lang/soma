@@ -951,3 +951,16 @@ retry → dead-letter live, verify --strict green with 4 temporal properties.
 
 ### Open
 - [ ] `"k" |> c.set(99)` passes check, fails at run time; `--fresh` beside a running `soma run` deletes its committed data; no scheduler failover after the tick owner dies; replay re-runs http_post / write_file; a renamed machine is only warned about under serve; a cross-process emit ping-pong livelocks silently.
+
+### Cycle 36 — realistic port (restaurant bookings + kitchen, 4 files) + attack
+
+Restaurant port 8/10: 20 orders racing for the last beef → one 201, stock 0;
+10 bookings for one slot → 3 table combinations, no double occupancy.
+
+### Fixed
+- [x] **Statements inside expression blocks were invisible** — block lambdas, `try { }`, if-expression branches, match-arm bodies: `slot[k] = v` / `slot.k = v` / `emit` there let a GET write (200), left a listener a public forgeable endpoint (`try { emit grant(..) }` → POST /grant gave eve 1 000 000 credits), verified ping/pong emit recursion as terminating, let guards and invariants write and emit, and "proved" a size bound an emitted listener broke. One deep statement walker (`for_each_stmt_deep`) now feeds GET→405, the listener set, the termination call graph, the size prover's callees and guard / invariant purity.
+- [x] `return` inside a block lambda passed check and always raised — a check error; a bare `return` is `return ()`.
+- [x] Port: `soma run app.cell request GET "/a?x=1" ""` passed the query inside the path — split as serve does; a test error after a call returned pointed at the callee's line; `every 90m` said "invalid number" — names the units; a loop-bound value was reported as "`e` = ()"; intervals printed `-0`.
+
+### Open
+- [ ] Termination false positives: `if !(n > 0) { return 0 }` as a base case, a base case inside `try`; `m.a.b = 1` on a local map fails at run time with a `with` message; `1..10` in a match pattern is inclusive while `in 0..100` in a property is not; a face `-> Int` returning a computed String passes check.

@@ -2003,7 +2003,13 @@ impl Parser {
             }
             Token::Return => {
                 self.advance();
-                let value = self.parse_expr()?;
+                // a bare `return` before `}` returns () (it was "expected
+                // expression, found '}'")
+                let value = if self.check(&Token::RBrace) {
+                    Spanned::new(Expr::Literal(Literal::Unit), self.prev_span())
+                } else {
+                    self.parse_expr()?
+                };
                 Ok(Spanned::new(Statement::Return { value }, start.merge(self.prev_span())))
             }
             Token::Ensure => {

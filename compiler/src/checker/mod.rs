@@ -799,6 +799,18 @@ impl<'a> Checker<'a> {
                                 _ => {}
                             }
                         });
+                        // a statement in a block of the guard (`all(q => { hits["g"] = 9  true })`)
+                        if bad.is_none() {
+                            literals::for_each_stmt_in_expr(&g.node, &mut |st| if bad.is_none() {
+                                match st {
+                                    Statement::IndexSet { name, .. } => bad = Some(format!("writes `{}[…]`", name)),
+                                    Statement::Assign { name, .. } if name.contains('.') => bad = Some(format!("assigns `{}`", name)),
+                                    Statement::Emit { signal_name, .. } => bad = Some(format!("emits `{}`", signal_name)),
+                                    Statement::MethodCall { target, method, .. } => bad = Some(format!("calls {}.{}()", target, method)),
+                                    _ => {}
+                                }
+                            });
+                        }
                         if let Some(what) = bad {
                             self.errors.push(CheckError::Static {
                                 kind: "guard_effect",

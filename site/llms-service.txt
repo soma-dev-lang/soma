@@ -349,7 +349,8 @@ source, `file:line`, left/right, and the fields a value really has when
 ## Scheduled work
 
 ```soma
-every 30s { expire_due() }      // under soma serve: runs at start-up, then every 30 s (5s, 1min, 500ms)
+every 30s { expire_due() }      // under soma serve: runs at start-up, then every 30 s (units: ms s min h d — 500ms, 90min, 24h, 1d);
+                                // a daily job at a time of day: `every 1h` + a "last run" slot compared with today()
 after 10s { warm_cache() }      // once, 10 s after start-up
 ```
 A tick is a handler invocation: atomic, serialized with requests (and with

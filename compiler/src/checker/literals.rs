@@ -259,3 +259,74 @@ pub fn for_each_in_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Expr)) {
         _ => {}
     }
 }
+
+/// Every STATEMENT of a body, including those inside expression blocks —
+/// block lambdas, `try { }`, if-expression branches and match-arm bodies.
+/// Statement-level effects (`slot[k] = v`, `emit`, `Cell.h(…)`) written
+/// there were invisible to walkers that recursed through If / For / While
+/// only (a GET that wrote, a forgeable listener, a false termination).
+pub fn for_each_stmt_deep<'a>(stmts: &'a [Spanned<Statement>], f: &mut dyn FnMut(&'a Statement)) {
+    fn blocks_in<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Statement)) {
+        let ex = |x: &'a Spanned<Expr>, f: &mut dyn FnMut(&'a Statement)| blocks_in(&x.node, f);
+        match e {
+            Expr::FnCall { args, .. } => { for a in args { ex(a, f); } }
+            Expr::MethodCall { target, args, .. } => { ex(target, f); for a in args { ex(a, f); } }
+            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => { ex(left, f); ex(right, f); }
+            Expr::Not(i) | Expr::Try(i) | Expr::TryPropagate(i) => ex(i, f),
+            Expr::FieldAccess { target, .. } => ex(target, f),
+            Expr::Index { target, index } => { ex(target, f); ex(index, f); }
+            Expr::ListLiteral(items) => { for it in items { ex(it, f); } }
+            Expr::Record { fields, .. } => { for (_, v) in fields { ex(v, f); } }
+            Expr::Lambda { body, .. } => ex(body, f),
+            Expr::LambdaBlock { stmts, result, .. } => { for_each_stmt_deep(stmts, f); ex(result, f); }
+            Expr::Match { subject, arms } => {
+                ex(subject, f);
+                for arm in arms {
+                    if let Some(g) = &arm.guard { ex(g, f); }
+                    for_each_stmt_deep(&arm.body, f);
+                    ex(&arm.result, f);
+                }
+            }
+            Expr::IfExpr { condition, then_body, then_result, else_body, else_result, .. } => {
+                ex(condition, f);
+                for_each_stmt_deep(then_body, f); ex(then_result, f);
+                for_each_stmt_deep(else_body, f); ex(else_result, f);
+            }
+            _ => {}
+        }
+    }
+    for st in stmts {
+        f(&st.node);
+        match &st.node {
+            Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value }
+            | Statement::Ensure { condition: value } => blocks_in(&value.node, f),
+            Statement::ExprStmt { expr } => blocks_in(&expr.node, f),
+            Statement::IndexSet { index, value, .. } => { blocks_in(&index.node, f); blocks_in(&value.node, f); }
+            Statement::If { condition, then_body, else_body } => { blocks_in(&condition.node, f); for_each_stmt_deep(then_body, f); for_each_stmt_deep(else_body, f); }
+            Statement::For { iter, body, .. } => { blocks_in(&iter.node, f); for_each_stmt_deep(body, f); }
+            Statement::While { condition, body, .. } => { blocks_in(&condition.node, f); for_each_stmt_deep(body, f); }
+            Statement::Emit { args, .. } | Statement::MethodCall { args, .. } => { for a in args { blocks_in(&a.node, f); } }
+            _ => {}
+        }
+    }
+}
+
+/// The statements inside the expression blocks of `e` (a guard, an
+/// invariant): a condition holding `{ slot[k] = v  true }` wrote state.
+pub fn for_each_stmt_in_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a Statement)) {
+    // for_each_in_expr reaches every nested block expression; visiting each
+    // block's statements deeply may visit an inner block twice — harmless
+    // for a purity check
+    let mut blocks: Vec<&'a Expr> = Vec::new();
+    for_each_in_expr(e, &mut |x| {
+        if matches!(x, Expr::LambdaBlock { .. } | Expr::IfExpr { .. } | Expr::Match { .. }) { blocks.push(x); }
+    });
+    for b in blocks {
+        match b {
+            Expr::LambdaBlock { stmts, .. } => for_each_stmt_deep(stmts, f),
+            Expr::IfExpr { then_body, else_body, .. } => { for_each_stmt_deep(then_body, f); for_each_stmt_deep(else_body, f); }
+            Expr::Match { arms, .. } => { for a in arms { for_each_stmt_deep(&a.body, f); } }
+            _ => {}
+        }
+    }
+}

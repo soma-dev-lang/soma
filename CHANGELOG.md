@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Statements inside block lambdas, `try { }`, if-expressions and match arms
+  (`slot[k] = v`, `emit`) are seen by GET→405, the listener set, the
+  termination graph, the size prover and guard / invariant purity.
+- `return` inside a block lambda is a check error; a bare `return` returns
+  `()`; `soma run … request GET "/a?x=1"` splits the query; `every 90m`
+  names the duration units.
 - `x |> h` with a bare handler name is a call for every analysis
   (termination, cost, route ownership, GET→405, model-driven recursion).
 - `subscribe()` dispatches only events the program emits or `[bus] accept`
