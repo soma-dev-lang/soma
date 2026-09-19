@@ -1013,3 +1013,18 @@ Wiki port 7.5/10: 20 concurrent PUTs on one version → one 200, nineteen
 
 ### Open
 - [ ] `soma install` never checks soma.lock hashes nor refreshes path dependencies; `use x` silently prefers an installed package over a local x.cell; replay re-runs real side effects; `fix --native-idiv` can turn a Float `/` into idiv; WebSocket connections have no id / disconnect hook.
+
+### Cycle 40 — realistic port (IoT telemetry) + attack on last cycle's equal-clause rule
+
+Telemetry port 8.5/10: HMAC-signed ingest with nonce replay protection,
+~28 000 readings/s over 16 threads, 1.12M readings with none lost or
+double-counted, 4 retention size invariants proven, SSE atomic with rollback.
+
+### Fixed
+- [x] **The cycle-39 equal-clause rule proved writes the runtime refused**: a `.set` / `.push` on another slot between the require and the write (`c.get("x")` changed), nondeterministic builtins read twice (`next_id`, `random`, `now_ms`, `think`), external state (`read_file` / `recall` / `get_status`), a computed key (`to_string(next_id())`). The rule now applies only when the clause and the written value are pure — literals, locals, arithmetic, comparisons, `??` and `.get` of the WRITTEN slot — and the key is a plain name or literal.
+- [x] A second slot named inside an interpolation, a lambda or a match arm escaped the "one invariant, one slot" check (and a lambda hiding the slot made the invariant guard every slot at run time) — slots are counted deep, by the checker and the runtime alike.
+- [x] Verify hints suggested `require v + size <= 3` / `require key != 0 …` (check errors) — no hint names size / key / value.
+- [x] Port: an undefined function inside a `property … ensures` passed check.
+
+### Open
+- [ ] `let t = "alarm"  transition(id, t)` is a dynamic target; a lambda parameter read by a transition guard is refused; a literal List written into `Map<String, List<Int>>` with the wrong element type passes check; `[native]` cannot take a List or parse text; List-slot keys are Strings in invariants (`key != 0` cannot evaluate).

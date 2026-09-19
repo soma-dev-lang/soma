@@ -52,10 +52,13 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                 // An invariant is evaluated per write, with only the slot
                 // being written in scope. Naming two slots can never
                 // evaluate — every write to either would be rejected.
+                // (counted deep: a slot named inside `"{b}"`, a lambda or a
+                // match arm is read at run time too)
+                let deep = deep_idents(&inv.node);
                 let mut named: Vec<&str> = slot_names
                     .iter()
                     .copied()
-                    .filter(|s| idents.contains(*s))
+                    .filter(|s| deep.contains(*s))
                     .collect();
                 if named.len() > 1 {
                     named.sort();
@@ -182,8 +185,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             let slot_names: Vec<String> =
                 mem.slots.iter().map(|s| s.node.name.clone()).collect();
             for inv in &mem.invariants {
-                let mut refs = HashSet::new();
-                collect_idents(&inv.node, &mut refs);
+                let refs = deep_idents(&inv.node);
                 let named: Vec<String> = slot_names
                     .iter()
                     .filter(|n| refs.contains(*n))
@@ -445,9 +447,34 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     // outside any loop: a second pass writes again after the
                     // first changed what the clause reads (`value > old`)
                     let looped = wpath.iter().any(|step| step % 4 == 2 || *step == usize::MAX / 2);
-                    if one_write && !calls_handlers && !looped {
+                    // the clause and the written value are PURE over locals and
+                    // THIS slot's `.get`: no other call (next_id / random /
+                    // now / think / read_file / recall / get_status / len of
+                    // another slot were read twice, differently), no other
+                    // slot (`c.set(…)` between changed `c.get(…)`), and a key
+                    // that is a plain name or literal
+                    fn pure_here(e: &Expr, slot: &str) -> bool {
+                        match e {
+                            Expr::Literal(_) | Expr::Ident(_) => true,
+                            Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } => pure_here(&left.node, slot) && pure_here(&right.node, slot),
+                            Expr::Not(i) => pure_here(&i.node, slot),
+                            Expr::FnCall { name, args } if name == "_coalesce" => args.iter().all(|a| pure_here(&a.node, slot)),
+                            Expr::MethodCall { target, method, args } => method == "get"
+                                && matches!(&target.node, Expr::Ident(t) if t == slot)
+                                && args.iter().all(|a| pure_here(&a.node, slot)),
+                            _ => false,
+                        }
+                    }
+                    let key_plain = wkey.as_deref().map_or(true, |k| {
+                        let k = k.trim();
+                        (k.starts_with('"') && k.ends_with('"') && !k.contains('{'))
+                            || (!k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '_') && !k.starts_with(|c: char| c.is_ascii_digit()))
+                            || k.parse::<i64>().is_ok()
+                    });
+                    let pure = pure_here(value_expr, slot) && key_plain;
+                    if one_write && !calls_handlers && !looped && pure {
                         for (c, v) in parts.iter().zip(verdicts.iter_mut()) {
-                            if *v != Proof::Holds && ctx.vars.contains_key(&format!("__req__{}", subst_render(c, slot, value_expr, wkey.as_deref()))) {
+                            if *v != Proof::Holds && pure_here(c, slot) && ctx.vars.contains_key(&format!("__req__{}", subst_render(c, slot, value_expr, wkey.as_deref()))) {
                                 *v = Proof::Holds;
                             }
                         }
@@ -577,6 +604,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 // a field of a built map: a require over it proves nothing
                                 return format!("`{n}` is a parameter and the invariant reads a field of a Map value — record-field invariants are checked at run time");
                             }
+                            if !handler_writable(&open_txt.join(" && ")) {
+                                return format!("`{n}` is a parameter and the open clause reads the slot's size or key — no require in the handler can name those; it is checked at run time");
+                            }
                             format!("`{n}` is a parameter (narrow it: `require {} else …`)", open_txt.join(" && "))
                         } else {
                             let mut assigns: Vec<(&str, &Expr)> = Vec::new();
@@ -610,8 +640,13 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                                 .filter(|(_, v)| **v != Proof::Holds)
                                 .map(|(c, _)| subst_render(c, slot, value_expr, wkey.as_deref())).collect();
                             let (l, r) = (if lo.is_finite() { "[" } else { "(" }, if hi.is_finite() { "]" } else { ")" });
-                            why.push(format!("`{}` is only known to lie in {}{}, {}{} — narrow it: `require {} else …`",
-                                render_expr(value_expr), l, num(lo), num(hi), r, open_txt.join(" && ")));
+                            if handler_writable(&open_txt.join(" && ")) {
+                                why.push(format!("`{}` is only known to lie in {}{}, {}{} — narrow it: `require {} else …`",
+                                    render_expr(value_expr), l, num(lo), num(hi), r, open_txt.join(" && ")));
+                            } else {
+                                why.push(format!("`{}` is only known to lie in {}{}, {}{} (the open clause reads the slot's size or key — checked at run time)",
+                                    render_expr(value_expr), l, num(lo), num(hi), r));
+                            }
                         }
                     }
                     if may_be_unit(value_expr) {
@@ -2153,4 +2188,23 @@ fn nan_free_float(e: &Expr, slot: &str) -> bool {
             (lit(&left.node) && nan_free_float(&right.node, slot)) || (lit(&right.node) && nan_free_float(&left.node, slot)),
         _ => false,
     }
+}
+
+/// Every identifier an expression can read at run time: through string
+/// interpolation, lambda bodies and match arms too.
+pub(crate) fn deep_idents(e: &Expr) -> HashSet<String> {
+    let mut out = HashSet::new();
+    crate::checker::desugar::for_each_deep(e, &mut |x| match x {
+        Expr::Ident(n) => { out.insert(n.clone()); }
+        Expr::MethodCall { target, .. } => { if let Expr::Ident(n) = &target.node { out.insert(n.clone()); } }
+        _ => {}
+    });
+    out
+}
+
+/// A suggested `require` must be writable in a handler: `size` / `key` /
+/// `value` exist only inside an invariant (the hint `require v + size <= 3`
+/// was itself a check error).
+fn handler_writable(txt: &str) -> bool {
+    !txt.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| matches!(w, "size" | "key" | "value"))
 }

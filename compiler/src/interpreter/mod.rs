@@ -851,8 +851,9 @@ impl Interpreter {
                     let slot_names: Vec<&str> =
                         mem.slots.iter().map(|s| s.node.name.as_str()).collect();
                     for inv in &mem.invariants {
-                        let mut refs: std::collections::HashSet<String> = Default::default();
-                        collect_expr_idents(&inv.node, &mut refs);
+                        // deep, as the checker counts them: a slot named in a
+                        // lambda (`all([0], y => a >= 0)`) guards `a` only
+                        let refs = crate::checker::invariants::deep_idents(&inv.node);
                         let named: Vec<&str> = slot_names.iter()
                             .filter(|n| refs.contains(**n))
                             .copied()

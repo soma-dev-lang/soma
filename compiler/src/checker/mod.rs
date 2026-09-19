@@ -716,6 +716,9 @@ impl<'a> Checker<'a> {
                     for rule in &rules.rules {
                         let e = match &rule.node {
                             Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => e,
+                            // a property's `ensures` body too (an undefined
+                            // function there surfaced only at `soma test`)
+                            Rule::Property { body, .. } => body,
                             Rule::Let { value, .. } => value,
                             _ => continue,
                         };
@@ -982,6 +985,9 @@ impl<'a> Checker<'a> {
                         if let Rule::Let { name, .. } = &rule.node { lets.insert(name.clone()); }
                         let e = match &rule.node {
                             Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => e,
+                            // a property's `ensures` body too (an undefined
+                            // function there surfaced only at `soma test`)
+                            Rule::Property { body, .. } => body,
                             Rule::Let { value, .. } => value,
                             _ => continue,
                         };
@@ -1021,6 +1027,7 @@ impl<'a> Checker<'a> {
                         for rule in &rules.rules {
                             let e = match &rule.node {
                                 Rule::Assert(e) | Rule::AssertFails(e) | Rule::AssertFailsMatching(e, _) => e,
+                                Rule::Property { body, .. } => body,
                                 Rule::Let { value, .. } => value,
                                 _ => continue,
                             };

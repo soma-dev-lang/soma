@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The equal-clause proof applies only to pure clauses (locals, arithmetic,
+  `??`, `.get` of the written slot) with a plain key — other slots,
+  nondeterministic or external reads between the require and the write
+  made it prove refused writes.
+- Invariant slot references are counted deep (interpolation, lambdas,
+  match arms) by the checker and the runtime; verify hints never name
+  size / key / value; undefined functions in properties are check errors.
 - `mock Cell.handler` stubs that cell's handler only; mocks naming nothing,
   test helpers shadowing program handlers or builtins, and test cells with no
   assertion are errors; mocks reach `[native]` sibling calls.

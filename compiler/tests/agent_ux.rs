@@ -2688,3 +2688,24 @@ fn cycle39_findings() {
     let (out, code) = soma_in(&d, &["test", "e.cell"]);
     assert_ne!(code, 0, "{out}");
 }
+
+#[test]
+fn cycle40_findings() {
+    let d = dir("cycle40");
+    // the equal-clause rule: pure over locals and THIS slot only
+    std::fs::write(d.join("h.cell"), "cell App {\n  memory {\n    c: Map<String, Int> [persistent]\n    m: Map<String, Int> [persistent]\n    invariant m % 2 == 0\n  }\n  on w(k: String) {\n    require (c.get(\"x\") ?? 0) % 2 == 0 else Odd\n    c.set(\"x\", 3)\n    m.set(k, c.get(\"x\") ?? 0)\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "h.cell"]);
+    assert!(!out.contains("writer 'w' proven"), "{out}");
+    std::fs::write(d.join("n.cell"), "cell App {\n  memory {\n    s: Map<String, Int> [persistent]\n    invariant s >= (s.get(key) ?? 0)\n  }\n  on w(v: Int) {\n    require v >= (s.get(to_string(next_id())) ?? 0) else Low\n    s.set(to_string(next_id()), v)\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "n.cell"]);
+    assert!(!out.contains("writer 'w' proven"), "{out}");
+    // a second slot named inside an interpolation or a lambda is a second slot
+    std::fs::write(d.join("x.cell"), "cell App {\n  memory {\n    a: Map<String, Int> [persistent]\n    b: Map<String, String> [persistent]\n    invariant a + len(\"{b}\") <= 10\n  }\n  on wa(v: Int) { a.set(\"x\", v) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "x.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("references several slots"), "{out}");
+    // an undefined function in a property body is a check error
+    std::fs::write(d.join("p.cell"), "cell A { on f(n: Int) { return n } }\ncell test T { rules { property \"p\" forall n: Int in 0..5 ensures nosuch(n) >= 0 } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "p.cell"]);
+    assert_ne!(code, 0, "{out}");
+}
