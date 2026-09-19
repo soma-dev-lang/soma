@@ -1194,3 +1194,19 @@ properties proven.
 
 ### Open
 - [ ] `soma fix --native-idiv` rewrites Float divisions; `render` does not escape by default; `html()` loads htmx from unpkg without SRI; `.field` on a sum-type value passes check; request logs include query strings (personal data).
+
+### Cycle 51 — realistic port (delivery marketplace, 3 roles) + attack on last cycle's HTTP/file defenses
+
+Marketplace port 8/10: 20 parallel orders on a 5-use promo → exactly 5;
+12 parallel courier accepts → one; per-order SSE streams isolated; an
+adversarial fake model could not reach private handlers or other users'
+orders through tools.
+
+### Fixed
+- [x] **The cycle-50 write guard was case-sensitive on case-insensitive file systems**: `APP.CELL` overwrote the running program and `.SOMA_DATA/soma.db` the live database — compared case-insensitively.
+- [x] **`self_call` missed other spellings of this machine** (`2130706433`, `0x7f000001`, `0177.0.0.1`, `[0:0:…:1]`): the handler dialled itself and froze the server 30 s — the host is resolved as the request would resolve it.
+- [x] An opaque `Origin: null` (sandboxed iframe, data: page) or `file://` passed the loopback cross-site write check — refused.
+- [x] Port: a provider reporting 20 tokens for a 15 000-character reply passed max_tokens and the proven cost bound — the reply is measured too (~4 characters per token) and the difference is charged.
+
+### Open
+- [ ] Absolute paths are not confined (only `..` segments and the program's own files are refused); an SSE subscription is authorized once, at subscribe time; no idiom for binding a tool to the calling user.

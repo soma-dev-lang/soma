@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The file write guard is case-insensitive; `self_call` recognises every
+  spelling of this machine; `Origin: null` / `file://` writes are refused
+  on loopback servers.
+- LLM replies are measured as well as counted: an under-reported reply
+  cannot pass max_tokens or the proven cost bound.
 - File builtins refuse `..` segments and writes over the program, its
   configuration or storage; a loopback server refuses foreign Host headers
   and cross-origin writes; an HTTP call to the server itself answers

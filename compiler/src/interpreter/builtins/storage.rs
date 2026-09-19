@@ -564,7 +564,17 @@ fn agent_think(
         // the cost proof counts each reply at its max_tokens: a provider that
         // ignores the cap (10 000 tokens for max_tokens 60) is refused — the
         // tokens are charged, the reply is not used
-        let out = raw_json["usage"]["completion_tokens"].as_i64().or_else(|| raw_json["usage"]["output_tokens"].as_i64()).unwrap_or(0);
+        // the provider's COUNT is not trusted alone: a reply of 15 000
+        // characters reported as 20 tokens passed the cap and the "proven"
+        // cost bound — the reply is measured too (~4 characters per token,
+        // as the mocks count)
+        let reported = raw_json["usage"]["completion_tokens"].as_i64().or_else(|| raw_json["usage"]["output_tokens"].as_i64()).unwrap_or(0);
+        let reply_chars = resp.content.chars().count() + resp.tool_calls.iter().map(|t| t.arguments_json.len() + t.name.len()).sum::<usize>();
+        let measured = ((reply_chars as i64) + 3) / 4;
+        let out = reported.max(measured);
+        // an under-reported reply is charged at its measured size too
+        // (set_budget / tokens_used relied on the provider's count)
+        if measured > reported { interp.agent_tokens_used += measured - reported; }
         let cap = max_tokens.unwrap_or(2048) as i64;
         if out > cap {
             return Err(RuntimeError::Domain { kind: "llm".to_string(), message: format!("llm: the provider returned {} reply tokens for max_tokens {} — it ignored the cap the cost bound relies on", out, cap) });

@@ -2921,3 +2921,16 @@ fn cycle50_findings() {
     let (out, _) = soma_in(&d, &["run", "f.cell", "w", "f.cell"]);
     assert!(out.contains("path"), "{out}");
 }
+
+#[test]
+fn cycle51_findings() {
+    let d = dir("cycle51");
+    // the write guard is case-insensitive (macOS / Windows file systems)
+    std::fs::write(d.join("f.cell"), "cell F {\n  on w(n: String) { let x = try { write_file(n, \"PWNED\") }  return x.kind }\n}\n").unwrap();
+    for name in ["F.CELL", "SOMA.TOML", ".SOMA_DATA/soma.db"] {
+        let (out, _) = soma_in(&d, &["run", "f.cell", "w", name]);
+        assert!(out.contains("path"), "{name}: {out}");
+    }
+    let src = std::fs::read_to_string(d.join("f.cell")).unwrap();
+    assert!(src.starts_with("cell F"), "the program was overwritten");
+}

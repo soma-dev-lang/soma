@@ -592,8 +592,11 @@ fn path_refused(path: &str, builtin: &str) -> Option<RuntimeError> {
         return Some(RuntimeError::Domain { kind: "path".to_string(), message: format!("path: {}(\"{}\") has a `..` segment — build paths from a fixed directory and a validated name", builtin, path) });
     }
     if builtin.starts_with("write") {
-        let file = parts.last().copied().unwrap_or("");
-        if file.ends_with(".cell") || file == "soma.toml" || file == "soma.lock" || parts.iter().any(|p| *p == ".soma_data") {
+        // compared case-insensitively: macOS / Windows file systems are
+        // (`APP.CELL` overwrote app.cell, `.SOMA_DATA/soma.db` the live db)
+        let lower: Vec<String> = parts.iter().map(|p| p.to_ascii_lowercase()).collect();
+        let file = lower.last().map(|s| s.as_str()).unwrap_or("");
+        if file.ends_with(".cell") || file == "soma.toml" || file == "soma.lock" || lower.iter().any(|p| p == ".soma_data") {
             return Some(RuntimeError::Domain { kind: "path".to_string(), message: format!("path: {}(\"{}\") would overwrite the program, its configuration or its storage", builtin, path) });
         }
     }

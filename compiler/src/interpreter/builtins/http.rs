@@ -90,9 +90,13 @@ fn calls_own_server(url: &str) -> bool {
         (it.next().unwrap_or("").to_string(), it.next().and_then(|p| p.parse::<u16>().ok()))
     };
     let port = port.unwrap_or(if url.starts_with("https") { 443 } else { 80 });
+    if !ports.contains(&port) { return false; }
     let host = host.to_ascii_lowercase();
-    let loopback = host == "localhost" || host.starts_with("127.") || host == "::1" || host == "0.0.0.0";
-    loopback && ports.contains(&port)
+    if host == "localhost" || host.starts_with("127.") || host == "::1" || host == "0.0.0.0" { return true; }
+    // any other spelling of this machine (2130706433, 0x7f000001, 0177.0.0.1,
+    // [0:0:…:1], a DNS name for 127.0.0.1): resolve it as the request would
+    use std::net::ToSocketAddrs;
+    (host.as_str(), port).to_socket_addrs().map_or(false, |mut addrs| addrs.any(|a| a.ip().is_loopback() || a.ip().is_unspecified()))
 }
 
 fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexmap::IndexMap<String, Value>>) -> Result<Value, RuntimeError> {

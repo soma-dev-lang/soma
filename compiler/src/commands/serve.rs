@@ -1252,6 +1252,10 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
             let bad_host = header("host").map_or(false, |h| !local(&hostname(&h).to_ascii_lowercase()));
             let writes = matches!(request.method().as_str().to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
             let bad_origin = writes && header("origin").map_or(false, |o| {
+                // an opaque origin (`null`: a sandboxed iframe, a data: page)
+                // or file:// is not this machine's web app
+                let o_l = o.trim().to_ascii_lowercase();
+                if o_l == "null" || o_l.starts_with("file:") { return true; }
                 let auth = o.split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("");
                 auth.contains('@') || !local(&hostname(auth).to_ascii_lowercase())
             });
