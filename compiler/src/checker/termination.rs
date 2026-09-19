@@ -138,8 +138,13 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
                 for sec in &cell.sections {
                     if let Section::Memory(m) = &sec.node { for sl in &m.slots { safe.insert(sl.node.name.clone()); } }
                 }
-                // (a parameter shadowing a slot may be a function value)
-                for p in &on.params { safe.remove(&p.name); }
+                // (a parameter shadowing a slot may be a function value —
+                // unless its declared type is data: `month: String`)
+                for p in &on.params {
+                    let data = matches!(&p.ty.node, crate::ast::TypeExpr::Simple(t) if matches!(t.as_str(), "String" | "Int" | "Float" | "Bool" | "Map" | "List"))
+                        || matches!(&p.ty.node, crate::ast::TypeExpr::Generic { name, .. } if name == "Map" || name == "List");
+                    if data { safe.insert(p.name.clone()); } else { safe.remove(&p.name); }
+                }
                 let risky = |n: &str| !handler_names.contains(n) && !builtins.contains(n) && !safe.contains(n) && !n.starts_with(|c: char| c.is_uppercase());
                 const HIGHER: &[&str] = &["map", "filter", "find", "reduce", "any", "all", "count", "sort_by", "each", "flat_map", "fold", "group_by", "min_by", "max_by"];
                 let mut hit: Option<String> = None;
@@ -148,7 +153,9 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
                         if hit.is_some() { return; }
                         if let Expr::FnCall { name, args } = y {
                             if risky(name) { *hit = Some(name.clone()); return; }
-                            if HIGHER.contains(&name.as_str()) {
+                            // `map("k", v)` builds a Map: no function argument
+                            let constructor = name == "map" && matches!(args.first().map(|a| &a.node), Some(Expr::Literal(_)));
+                            if HIGHER.contains(&name.as_str()) && !constructor {
                                 for a in args {
                                     if let Expr::Ident(v) = &a.node { if risky(v) { *hit = Some(v.clone()); return; } }
                                 }
@@ -169,7 +176,7 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
                 });
                 if hit.is_none() {
                     crate::checker::literals::for_each_expr(&on.body, &mut |e| if let Expr::FnCall { name, .. } = e {
-                        if hit.is_none() && on.params.iter().any(|p| &p.name == name) { hit = Some(name.clone()); }
+                        if hit.is_none() && on.params.iter().any(|p| &p.name == name) && !safe.contains(name) { hit = Some(name.clone()); }
                     });
                 }
                 if let Some(f) = hit {

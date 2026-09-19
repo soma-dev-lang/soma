@@ -71,6 +71,9 @@ pub struct Spec {
 /// before calling the model, and settles the real count after. A call that
 /// does not fit is refused (kind `budget`) and the horde stops starting
 /// tasks: spent + reserved never passes the limit.
+/// The limit of a horde that counts without a ceiling.
+const UNLIMITED: i64 = i64::MAX / 4;
+
 #[derive(Debug)]
 pub struct Budget {
     pub limit: i64,
@@ -94,11 +97,10 @@ impl Budget {
     /// The budget a horde runs under: its own (chained to its parent's),
     /// else its parent's, else none.
     pub fn for_horde(own: Option<i64>, spent: i64, parent: Option<Arc<Budget>>) -> Option<Arc<Budget>> {
-        match (own, parent) {
-            (Some(b), p) => Some(Arc::new(Budget::with_parent(b, spent, p))),
-            (None, Some(p)) => Some(p),
-            (None, None) => None,
-        }
+        // without a ceiling of its own a horde still COUNTS what every think
+        // of it spends (callbacks, votes, nested hordes: status showed 20
+        // while callbacks had spent 620), under its parent's ceiling if any
+        Some(Arc::new(Budget::with_parent(own.unwrap_or(UNLIMITED), spent, parent)))
     }
     fn is_exhausted(&self) -> bool {
         self.exhausted.load(std::sync::atomic::Ordering::SeqCst) || self.parent.as_ref().map_or(false, |p| p.is_exhausted())
@@ -126,7 +128,7 @@ impl Budget {
                 self.exhausted.store(true, std::sync::atomic::Ordering::SeqCst);
                 self.settled.notify_all();
                 return Err(RuntimeError::TypeError(format!(
-                    "token budget exhausted: horde budget_tokens {} — {} spent, {} reserved by calls in flight, this call needs up to {}",
+                    "token budget exhausted: ceiling {} (a horde's budget_tokens, or what set_budget left for vote()) — {} spent, {} reserved by calls in flight, this call needs up to {}",
                     self.limit, g.0, g.1, want)));
             }
             if g.0 + g.1 + want <= self.limit { break; }
@@ -474,7 +476,7 @@ impl Interpreter {
         self.horde_budget = Budget::for_horde(spec.budget_tokens, 0, spec.parent_budget.clone());
         let convs = std::mem::take(&mut self.agent_conversations);
         let conv = std::mem::take(&mut self.agent_conversation);
-        let (used, cap) = (self.agent_tokens_used, self.agent_token_budget);
+        let (used, cap, zero) = (self.agent_tokens_used, self.agent_token_budget, self.agent_budget_zero);
         let exhausted = |me: &Interpreter| me.horde_budget.as_ref().map_or(false, |b| b.is_exhausted());
         for (idx, input) in inputs.into_iter().enumerate() {
             if exhausted(self) || self.horde_is_cancelled(&spec) { break; }
@@ -499,6 +501,7 @@ impl Interpreter {
         self.agent_conversation = conv;
         self.agent_tokens_used = used;
         self.agent_token_budget = cap;
+        self.agent_budget_zero = zero;
         self.horde_budget = saved_budget;
         self.horde_current = saved_current;
         self.horde_depth = saved_depth;
@@ -887,6 +890,7 @@ fn worker(id: &str) {
 fn run_one(interp: &mut Interpreter, spec: &Spec, idx: usize, input: &Value, attempt: u32) -> Outcome {
     interp.agent_tokens_used = 0;
     interp.agent_token_budget = 0;
+                        interp.agent_budget_zero = false;
     interp.current_depth = 0;
     // each task starts a fresh model context: a worker's interpreter runs
     // many tasks, and one input's conversation must not reach the next
@@ -1070,27 +1074,47 @@ impl Interpreter {
         }
         let k = k as usize;
         let concurrent = FACTORY.get().is_some() && !super::IN_TEST.load(std::sync::atomic::Ordering::Relaxed) && self.task_unit.is_some();
+        if concurrent && self.agent_budget_zero {
+            return Err(RuntimeError::TypeError("token budget exhausted: set_budget(0) — no more model calls in this invocation".to_string()));
+        }
         let results: Vec<Result<Value, RuntimeError>> = if concurrent {
-            let budget = self.horde_budget.clone();
+            // the caller's set_budget holds for its voters too: what is left
+            // becomes a shared ceiling they reserve against (25 voters spent
+            // 1 550 tokens under set_budget(50), uncounted)
+            let left = if self.agent_token_budget > 0 { Some((self.agent_token_budget - self.agent_tokens_used).max(0)) } else { None };
+            let budget = match left {
+                Some(0) => return Err(RuntimeError::TypeError(format!("token budget exhausted: used {}/{}", self.agent_tokens_used, self.agent_token_budget))),
+                Some(l) => Budget::for_horde(Some(l), 0, self.horde_budget.clone()),
+                None => self.horde_budget.clone(),
+            };
+            let spent_total = Arc::new(std::sync::atomic::AtomicI64::new(0));
+            let traces = Arc::new(Mutex::new(Vec::<Value>::new()));
+            let (spent2, traces2) = (spent_total.clone(), traces.clone());
             let (tc2, h2, input2) = (tc.clone(), h.clone(), input.clone());
-            self.outside_unit(move || {
+            let results = self.outside_unit(move || {
                 let (tx, rx) = std::sync::mpsc::channel();
                 for j in 0..k {
-                    let (tx, tc, h, input, budget) = (tx.clone(), tc2.clone(), h2.clone(), input2.clone(), budget.clone());
+                    let (tx, tc, h, input, budget, spent, traces) = (tx.clone(), tc2.clone(), h2.clone(), input2.clone(), budget.clone(), spent2.clone(), traces2.clone());
                     super::spawn_handler_thread(move || {
                         let Some(factory) = FACTORY.get() else { return };
                         let mut w = factory();
                         w.horde_budget = budget;
                         let task = w.handler_is_task(&tc, &h);
                         let r = if task { w.run_task(|me| me.call_signal_inner(&tc, &h, vec![input.clone()])) } else { w.atomically(|me| me.call_signal_inner(&tc, &h, vec![input.clone()])) };
+                        spent.fetch_add(w.agent_tokens_used, std::sync::atomic::Ordering::SeqCst);
+                        traces.lock().unwrap_or_else(|e| e.into_inner()).extend(std::mem::take(&mut w.agent_trace));
                         let _ = tx.send((j, r));
                     });
                 }
                 drop(tx);
                 let mut out: Vec<(usize, Result<Value, RuntimeError>)> = rx.iter().collect();
                 out.sort_by_key(|(j, _)| *j);
-                out.into_iter().map(|(_, r)| r).collect()
-            })
+                out.into_iter().map(|(_, r)| r).collect::<Vec<_>>()
+            });
+            // the voters' spend is the caller's (tokens_used, trace)
+            self.agent_tokens_used += spent_total.load(std::sync::atomic::Ordering::SeqCst);
+            self.agent_trace.extend(std::mem::take(&mut *traces.lock().unwrap_or_else(|e| e.into_inner())));
+            results
         } else {
             let convs = std::mem::take(&mut self.agent_conversations);
             let conv = std::mem::take(&mut self.agent_conversation);

@@ -403,7 +403,13 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                                 match k.as_str() {
                                     "concurrency" => if lit_int(1, 1000) == Some(false) { err("horde(): concurrency must be an Int in 1..1000".to_string(), false, "horde_option"); },
                                     "max_attempts" => if lit_int(1, 10) == Some(false) { err("horde(): max_attempts must be an Int in 1..10".to_string(), false, "horde_option"); },
-                                    "budget_tokens" => if lit_int(1, i64::MAX) == Some(false) { err("horde(): budget_tokens must be a positive Int".to_string(), false, "horde_option"); },
+                                    "budget_tokens" => match lit_int(1, i64::MAX) {
+                                        Some(false) => err("horde(): budget_tokens must be a positive Int".to_string(), false, "horde_option"),
+                                        // a computed ceiling: capped at run time, never proven —
+                                        // and from a request parameter, a client sets it
+                                        None => err("horde(): budget_tokens is computed — the ceiling holds at run time but its bound is not proven (and a value from a request lets a client set it): write a literal, or clamp it (`min(n, 100000)`)".to_string(), true, "horde_budget_computed"),
+                                        _ => {}
+                                    },
                                     "seed" => if matches!(val, Some(Expr::Literal(l)) if !matches!(l, Literal::Int(_))) { err("horde(): seed must be an Int".to_string(), false, "horde_option"); },
                                     "instance" => if matches!(val, Some(Expr::Literal(l)) if !matches!(l, Literal::String(_))) { err("horde(): instance names an input field: a String".to_string(), false, "horde_option"); },
                                     "snapshot" => {}
@@ -1177,6 +1183,8 @@ impl<'a> Walker<'a> {
             }
             if starts_like_ident && !self.known(expr_str) {
                 self.report_undefined_var(expr_str, span);
+            } else if starts_like_ident {
+                self.check_segment_expr(&Expr::Ident(expr_str.to_string()), &mut HashSet::new(), span);
             }
             return true;
         }
@@ -1254,6 +1262,16 @@ impl<'a> Walker<'a> {
                 }
                 if !bound.contains(name) && !self.known(name) {
                     self.report_undefined_var(name, span);
+                } else if !bound.contains(name) && !self.scope.contains(name) && !self.index.slots.contains(name) && !self.index.variants.contains(name)
+                    && (self.index.handler_map.contains_key(name) || super::names::builtin_names().contains(name.as_str()) || self.index.cells.contains(name))
+                    && !matches!(name.as_str(), "true" | "false")
+                {
+                    // `"{len}"`, `"{helper}"`, `"{S}"`: passed check, raised
+                    // "undefined variable" at run time
+                    self.issues.push(InterpolationIssue {
+                        message: format!("`{{{name}}}` in a string: `{name}` is a function or a cell, not a value — call it (`{{{name}(…)}}`) or write `{{{{{name}}}}}` for the literal text"),
+                        span, warning: false, habit: false, kind: "function_as_value",
+                    });
                 }
             }
             Expr::FnCall { name, args } => {
@@ -1558,6 +1576,10 @@ fn direct_boundary(e: &Expr) -> bool {
 impl Boundary {
     fn expr(&self, cell: &str, e: &Expr) -> bool {
         direct_boundary(e) || match e {
+            Expr::FnCall { name, args } if name == "delegate" => match (args.first().map(|a| &a.node), args.get(1).map(|a| &a.node)) {
+                (Some(Expr::Literal(Literal::String(c))), Some(Expr::Literal(Literal::String(h)))) => self.handlers.contains(&(c.clone(), h.clone())),
+                _ => false,
+            },
             Expr::FnCall { name, .. } => self.handlers.contains(&(cell.to_string(), name.clone())) || (!name.contains('.') && self.handlers.iter().any(|(_, h)| h == name) && !matches!(name.as_str(), "horde")),
             Expr::MethodCall { target, method, .. } => matches!(&target.node, Expr::Ident(c) if self.handlers.contains(&(c.clone(), method.clone()))),
             _ => false,
@@ -1623,20 +1645,38 @@ fn task_lints(label: &str, body: &[Spanned<Statement>], cell: &str, cell_slots: 
     if native {
         issues.push(InterpolationIssue { message: format!("handler {} is both [task] and [native] — a native handler cannot call think(); drop one", label), span, warning: false, habit: false, kind: "task_native" });
     }
-    // a stale read: read before a step boundary, written after
-    if let Some(i) = body.iter().position(|st| has_think(std::slice::from_ref(st))) {
+    // a stale read: read before a step boundary, written at or after it —
+    // unless read again after it (the fresh value is what is written)
+    let reads_of = |stmts: &[Spanned<Statement>], with_helpers: bool| -> Vec<String> {
         let mut read: Vec<String> = Vec::new();
-        super::literals::for_each_expr(&body[..=i], &mut |e| match e {
+        let mut scan = |stmts: &[Spanned<Statement>], read: &mut Vec<String>| super::literals::for_each_expr(stmts, &mut |e| match e {
             Expr::MethodCall { target, method, .. } if matches!(method.as_str(), "get" | "has" | "len" | "size" | "keys" | "values") => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
             Expr::FieldAccess { target, field } if matches!(field.as_str(), "len" | "size" | "count") => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
             Expr::Index { target, .. } => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
-            Expr::Ident(t) if cell_slots.contains(t) => read.push(t.clone()),
             Expr::FnCall { name, args } if matches!(name.as_str(), "len" | "keys" | "values") => { if let Some(Expr::Ident(t)) = args.first().map(|a| &a.node) { if cell_slots.contains(t) { read.push(t.clone()); } } }
             _ => {}
         });
-        // reads in the boundary statement itself happen before its wait
-        let written = slot_writes(&body[i + 1..]);
-        let mut stale: Vec<String> = read.into_iter().filter(|r| written.contains(r)).collect();
+        scan(stmts, &mut read);
+        if with_helpers {
+            // …and in this cell's helpers it calls (`let b = _get(k)`, `_chk()`)
+            let mut helpers: Vec<&Vec<Spanned<Statement>>> = Vec::new();
+            super::literals::for_each_expr(stmts, &mut |e| if let Expr::FnCall { name, .. } = e { if let Some(b) = boundary.bodies.get(&(cell.to_string(), name.clone())) { helpers.push(b); } });
+            for b in helpers { scan(b, &mut read); }
+        }
+        read
+    };
+    let writes_of = |stmts: &[Spanned<Statement>]| -> Vec<String> {
+        let mut w = slot_writes(stmts);
+        let mut helpers: Vec<&Vec<Spanned<Statement>>> = Vec::new();
+        super::literals::for_each_expr(stmts, &mut |e| if let Expr::FnCall { name, .. } = e { if let Some(b) = boundary.bodies.get(&(cell.to_string(), name.clone())) { helpers.push(b); } });
+        for b in helpers { w.extend(slot_writes(b)); }
+        w
+    };
+    if let Some(i) = body.iter().position(|st| has_think(std::slice::from_ref(st))) {
+        let read = reads_of(&body[..=i], true);
+        let written = writes_of(&body[i..]);
+        let reread = reads_of(&body[i + 1..], false);
+        let mut stale: Vec<String> = read.into_iter().filter(|r| written.contains(r) && !reread.contains(r)).collect();
         stale.sort(); stale.dedup();
         for sl in stale {
             issues.push(InterpolationIssue {
@@ -1660,7 +1700,11 @@ fn task_lints(label: &str, body: &[Spanned<Statement>], cell: &str, cell_slots: 
         super::literals::for_each_in_expr(&inner.node, &mut |x| if let Expr::FnCall { name, .. } = x {
             if let Some(b) = boundary.bodies.get(&(cell.to_string(), name.clone())) { if !slot_writes(b).is_empty() { helper_writes = true; } }
         });
-        if boundary.in_expr(cell, &inner.node) && (!slot_writes(&stmts).is_empty() || helper_writes) {
+        // a transition() or an emit commits with the step too
+        let mut effects = false;
+        super::literals::for_each_in_expr(&inner.node, &mut |x| if matches!(x, Expr::FnCall { name, .. } if name == "transition") { effects = true; });
+        super::literals::for_each_stmt_in_expr(&inner.node, &mut |st| if matches!(st, Statement::Emit { .. }) { effects = true; });
+        if boundary.in_expr(cell, &inner.node) && (!slot_writes(&stmts).is_empty() || helper_writes || effects) {
             issues.push(InterpolationIssue {
                 message: format!("[task] {}: this try writes a slot and reaches a think() / vote() — the writes made before it commit there and are NOT undone if the try fails; write after it", label),
                 span, warning: true, habit: true, kind: "task_try_write",

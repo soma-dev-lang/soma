@@ -189,7 +189,16 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         // ── Agent: set_budget(max_tokens) ──────────────────────────
         "set_budget" => {
             if let Some(Value::Int(si)) = args.first() {
-                let n = si.to_i64().unwrap_or(0).max(0);
+                let n = si.to_i64().unwrap_or(i64::MAX);
+                if n < 0 {
+                    return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("set_budget({}): a budget is a number of tokens, 0 or more (0: no more model calls)", n) }));
+                }
+                // 0 is NO tokens (a computed `quota - spent` reaching 0 used to
+                // mean "no limit")
+                if n == 0 {
+                    interp.agent_budget_zero = true;
+                    return Some(Ok(Value::Unit));
+                }
                 // …and from any handler another handler called: a library
                 // agent's set_budget(100000) lifted the caller's 10
                 if interp.tool_depth > 0 || (interp.current_depth > 1 && interp.agent_token_budget > 0) {
@@ -197,8 +206,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     // set_budget): it may only LOWER what is left — it replaced
                     // the caller's 300 with 8000 and reset tokens_used, so the
                     // model bought itself 19 provider calls
-                    // (0 is "no limit": it cannot lift the caller's)
-                    if n == 0 { return Some(Ok(Value::Unit)); }
+
                     let used = interp.agent_tokens_used;
                     let left = if interp.agent_token_budget > 0 { (interp.agent_token_budget - used).max(0) } else { n };
                     interp.agent_token_budget = used + n.min(left);
@@ -206,6 +214,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 }
                 interp.agent_token_budget = n;
                 interp.agent_tokens_used = 0;
+                interp.agent_budget_zero = false;
                 Some(Ok(Value::Unit))
             } else {
                 Some(Err(RuntimeError::TypeError("set_budget(max_tokens: Int)".to_string())))
@@ -215,7 +224,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
             Some(Ok(Value::Int(SomaInt::from_i64(interp.agent_tokens_used))))
         }
         "tokens_remaining" => {
-            if interp.agent_token_budget > 0 {
+            if interp.agent_budget_zero {
+                Some(Ok(Value::Int(SomaInt::from_i64(0))))
+            } else if interp.agent_token_budget > 0 {
                 Some(Ok(Value::Int(SomaInt::from_i64((interp.agent_token_budget - interp.agent_tokens_used).max(0)))))
             } else {
                 Some(Ok(Value::Int(SomaInt::from_i64(-1)))) // unlimited
@@ -435,6 +446,9 @@ fn agent_think(
     use super::llm;
 
     // Budget check
+    if interp.agent_budget_zero {
+        return Err(RuntimeError::TypeError("token budget exhausted: set_budget(0) — no more model calls in this invocation".to_string()));
+    }
     if interp.agent_token_budget > 0 && interp.agent_tokens_used >= interp.agent_token_budget {
         return Err(RuntimeError::TypeError(format!(
             "token budget exhausted: used {}/{}", interp.agent_tokens_used, interp.agent_token_budget

@@ -1374,6 +1374,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                         // count start fresh (the interpreter is reused, and one
                         // exhausted budget failed every later tick)
                         interp.agent_token_budget = 0;
+                        interp.agent_budget_zero = false;
                         interp.agent_tokens_used = 0;
                         // Pick up ws_out if it was set after init
                         if interp.ws_out.is_none() {

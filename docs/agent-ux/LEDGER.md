@@ -1638,3 +1638,24 @@ tick failover; SSE isolation.
 
 ### Open
 - [ ] horde_status tokens exclude callbacks without a budget; a budget-refused `apply` counts failed; `soma run` sees `running: 0` for a horde a server runs; owner-only access can be bypassed by a lambda passed to the owner's handler; the reserved word `agent` as a field name.
+
+### Cycle 70 — invoicing/ledger port (8/10) + attack (strings, JSON/HTTP, budgets, lints)
+
+Port: 2 400 payment requests (800 keys × 3, shuffled, 64 threads) applied
+exactly once, trial balance 0; kill -9 mid-batch then replay → exact to the
+cent; two servers on one data dir → exactly once; messy CSV (BOM, CRLF,
+embedded newlines, 26-digit amounts) handled.
+
+### Fixed
+- [x] **Attack: vote() in a [task] ignored set_budget** under serve/run (25 voters, 1 550 tokens under a cap of 50, uncounted; soma test enforced it) — voters reserve against what is left; spend and trace go to the caller.
+- [x] **Attack: set_budget(0) / negative removed the cap** — 0 is zero tokens, negative is refused (kind range).
+- [x] **Attack: a remote JSON with _type/_variant became a forged variant** through http_get — kept as text.
+- [x] Attack: `"{true}"`, `"{pi}"`, `"{helper}"`, `"{S}"` passed check and failed at run time — true/false interpolate, function/cell names are check errors.
+- [x] Attack: lint false negatives (read in `if`, helpers, transition/emit in try, delegate) and false positives (re-read after think; bare slot name as the target of `.set`).
+- [x] Attack: horde tokens left out callbacks/votes — every horde counts under an (unlimited) budget.
+- [x] Attack: computed budget_tokens from a request — warning.
+- [x] Attack: Int kept in Float fields — coerced.
+- [x] **Port: `map("x", month)` inside a lambda was "calls the function value"** (verify --strict failed) — the Map constructor form and data-typed parameters are not function values.
+
+### Open
+- [ ] Literal-vs-interpolation of `{3}` / `{-1}` / `{1 + 1}` and [native] refusing `"{3}"`; to_json(inf) is null; HTTP Int coercion accepts `1_000`; the prover cannot prove the documented `value >= seq.get(key) ?? 0` monotone counter; a duplicate cell name reports only one file; one long import freezes the service (documented).

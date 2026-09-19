@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- Budgets: `set_budget(0)` means no more model calls (it meant "no
+  limit": a computed `quota - spent` reaching 0 lifted the cap); a negative
+  budget is refused; `vote()`'s concurrent voters reserve against what
+  `set_budget` left and their tokens and trace count for the caller (25
+  voters spent 1 550 tokens under `set_budget(50)`, uncounted); a horde
+  without `budget_tokens` counts every think of it (callbacks, votes, nested
+  hordes) in `horde_status.tokens`; check warns on a computed `budget_tokens`.
+- `http_get` / `http_post` never turn a remote JSON with `_type` /
+  `_variant` into one of your records (a reflected `Admin` matched the Admin
+  arm): such a body stays text.
+- `"{len}"`, `"{helper}"`, `"{Cell}"` are check errors (a function or cell
+  is not a value); `"{true}"` / `"{false}"` interpolate.
+- `[task]` lints: a read in an `if` around the think, through a helper, or a
+  write through a helper is stale; a value re-read after the think is not;
+  `transition()` / `emit` before a think in a `try` count as writes; a
+  literal `delegate` to a thinking handler is a think.
+- Termination: `map("k", v)` in a lambda is not a function call, and a
+  parameter typed as data is not a function value (`verify --strict` failed
+  on CSV-row building).
+- An Int given for a `Float` field or parameter becomes a Float.
+
 - Soundness: a `[task]` tick (`every … [task]`) and `vote()` end a step —
   the prover keeps no fact across them (a "proven" `members.size <= 3` was
   broken at run time); the stale-read, try-write and no-think lints follow

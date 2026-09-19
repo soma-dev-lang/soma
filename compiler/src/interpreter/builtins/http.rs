@@ -159,7 +159,20 @@ fn http_call(method: &str, url: &str, body: Option<String>, opts: Option<&indexm
     let parse = |text: String| -> Value {
         let t = text.trim_start();
         if t.starts_with('{') || t.starts_with('[') {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) { return serde_json_to_value(&v); }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+                // another server's JSON never becomes one of OUR records: a
+                // reflected `{"_type": "Role", "_variant": "Admin"}` matched
+                // the Admin arm — with reserved keys the body stays text
+                fn reserved(v: &serde_json::Value) -> bool {
+                    match v {
+                        serde_json::Value::Object(o) => o.keys().any(|k| matches!(k.as_str(), "_type" | "_variant" | "_values")) || o.values().any(reserved),
+                        serde_json::Value::Array(a) => a.iter().any(reserved),
+                        _ => false,
+                    }
+                }
+                if reserved(&v) { return Value::String(text); }
+                return serde_json_to_value(&v);
+            }
         }
         Value::String(text)
     };

@@ -4342,3 +4342,52 @@ cell A {
     let out = Command::new(env!("CARGO_BIN_EXE_soma")).args(["run", "b.cell", "main"]).env("SOMA_LLM_MOCK", "echo").current_dir(&d).output().unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).contains("budget"), "{}", String::from_utf8_lossy(&out.stdout));
 }
+
+#[test]
+fn cycle70_budgets_votes_interpolation_lints_termination() {
+    let d = dir("cycle70");
+    // set_budget(0) is zero tokens; a negative budget is refused
+    std::fs::write(d.join("b.cell"), "cell A {\n on z() { set_budget(0)\n let t = try { think(\"hello\", map(\"max_tokens\", 50)) }\n return map(\"kind\", t.kind, \"rem\", tokens_remaining()) }\n on n() { return (try { set_budget(-5) }).kind }\n}\n").unwrap();
+    let run = |args: &[&str]| { let o = Command::new(env!("CARGO_BIN_EXE_soma")).args(args).env("SOMA_LLM_MOCK", "echo").current_dir(&d).output().unwrap(); String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr) };
+    let out = run(&["run", "b.cell", "z"]);
+    assert!(out.contains("\"kind\": \"budget\"") && out.contains("\"rem\": 0"), "{out}");
+    assert!(run(&["run", "b.cell", "n"]).contains("range"));
+    // interpolating a function / cell name is a check error; {true} works
+    std::fs::write(d.join("i.cell"), "cell S { on helper() { return 1 }\n on main() { print(\"{len} {helper}\") } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "i.cell"]);
+    assert!(code != 0 && out.contains("`len` is a function or a cell, not a value"), "{out}");
+    std::fs::write(d.join("t.cell"), "cell S { on main() { print(\"{true}/{false}\") } }\n").unwrap();
+    assert!(run(&["run", "t.cell", "main"]).contains("true/false"));
+    // lints: a read in an `if` around the think is stale; a re-read after is fresh; transition in a try
+    std::fs::write(d.join("l.cell"), r#"
+cell A {
+    memory { seats: Map<String, Int> [persistent] }
+    state s { initial: a  a -> b }
+    on book3(k: String) [task] {
+        if len(seats) < 3 {
+            let r = think(k, map("max_tokens", 10))
+            seats.set(k, 1)
+        }
+    }
+    on ok3(k: String) [task] {
+        let b = seats.get(k) ?? 0
+        let r = think("x", map("max_tokens", 10))
+        let b2 = seats.get(k) ?? 0
+        seats.set(k, b2 + 1)
+    }
+    on t5(k: String) [task] {
+        let r = try {
+            transition(k, "b")
+            think("x", map("max_tokens", 10))
+        }
+        return r.kind
+    }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["check", "l.cell"]);
+    assert!(out.contains("`book3` reads 'seats'") && !out.contains("`ok3` reads") && out.contains("`t5`: this try"), "{out}");
+    // map("k", v) in a lambda is not a function call (verify --strict passes)
+    std::fs::write(d.join("m.cell"), "cell P {\n on f5(month: String) { return [1] |> map(r => map(\"x\", month)) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["verify", "m.cell"]);
+    assert!(!out.contains("function value"), "{out}");
+}

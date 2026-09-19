@@ -754,6 +754,8 @@ pub struct Interpreter {
     pub(crate) agent_tokens_used: i64,
     /// Token budget: max tokens allowed (0 = unlimited)
     pub(crate) agent_token_budget: i64,
+    /// set_budget(0): no more model calls (0 in agent_token_budget means none set)
+    pub(crate) agent_budget_zero: bool,
     /// one multi-turn LLM context per agent cell
     pub(crate) agent_conversations: std::collections::HashMap<String, Vec<serde_json::Value>>,
     /// provider rounds allowed for the current think() (max_rounds, ≤ 10)
@@ -1018,6 +1020,7 @@ impl Interpreter {
             invariants,
             agent_tokens_used: 0,
             agent_token_budget: 0,
+            agent_budget_zero: false,
             think_rounds: 10,
             agent_conversation: Vec::new(),
             agent_conversations: std::collections::HashMap::new(),
@@ -3859,6 +3862,8 @@ impl Interpreter {
         // Fast path: simple variable name
         if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
             if let Some(val) = env.get(expr_str) { return InterpResult::Value(val.clone()); }
+            // `"{true}"` passed check and raised "undefined variable: true"
+            match expr_str { "true" => return InterpResult::Value(Value::Bool(true)), "false" => return InterpResult::Value(Value::Bool(false)), _ => {} }
             // a memory slot, a variant, a state name: as in code (`"{counts}"`
             // raised "undefined variable" after a clean check)
             return match self.eval_expr(&Expr::Ident(expr_str.to_string()), env, cell_name, signal_name) {
@@ -4355,6 +4360,9 @@ impl Interpreter {
     /// out: a client cannot pick one.
     fn coerce_records(&self, ty: &TypeExpr, v: Value) -> Result<Value, String> {
         match (ty, v) {
+            // an Int where a Float is declared is that Float (`score = 3`
+            // on `score: Float` kept an Int; `p.x + p.y` of JSON 1 and 2 gave Int 3)
+            (TypeExpr::Simple(t), Value::Int(i)) if t == "Float" => Ok(Value::Float(i.to_f64())),
             (TypeExpr::Generic { name, args }, Value::List(xs)) if name == "List" => {
                 let Some(t) = args.first() else { return Ok(Value::List(xs)) };
                 let mut out = Vec::with_capacity(xs.len());
