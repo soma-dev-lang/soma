@@ -257,7 +257,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let result: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
                     Some(Ok(Value::String(result)))
                 } else {
-                    Some(Ok(Value::Unit))
+                    // `substring("hello", 1.5, 3)` / `substring(12345, 1, 3)`
+                    // answered () where nth / pad_left raise
+                    Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "type: substring(s: String, start: Int, end: Int), got {}, {}, {}",
+                        crate::interpreter::value_type_name(&args[0]), crate::interpreter::value_type_name(&args[1]), crate::interpreter::value_type_name(&args[2])) }))
                 }
             } else {
                 Some(Err(RuntimeError::TypeError("substring(string, start, end)".to_string())))

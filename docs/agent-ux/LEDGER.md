@@ -1147,3 +1147,18 @@ types, arity checks, smuggling defenses) found them sound.
 
 ### Open
 - [ ] `Map` / `List` parameters and returns accept `()` (the documented "absent record" leniency), not only a trailing optional Map; `-> List<Int>` returning `["a"]` is caught at run time, not by check; a GET route calling think() spends tokens from any web page (CORS *).
+
+### Cycle 48 — realistic port (online exams + proctoring) + attack on "work ∝ an attacker's number"
+
+Exam port 8/10: 50 answers fired around deadline+grace split cleanly at the
+cut-off; 30 parallel idempotent posts → one fresh, 29 replays; 12 temporal
+properties proven. The attack confirmed every size-taking builtin capped,
+deep JSON and recursion refused cleanly — except arithmetic.
+
+### Fixed
+- [x] **An Int's size had no cap**: `x = x * x` in a verified-terminating loop over a client number grew to 640M bits (3.4 GB) from a 22-byte request and held the handler lock for seconds — a product, `shl` and `product()` past 2^24 bits are refused (kind `range`) before they are built, in the interpreter and in `[native]` code (square_mut / in-place products checked).
+- [x] `matmul` did n³ work from an n that passed the per-dimension check (minutes under the lock) — at most 10^9 multiply-adds.
+- [x] Port: `substring` with a Float index / an Int subject returned `()`; `range(0, 3.7)` truncated silently — kind `type`; date builtins taking an Int (Unix seconds) documented.
+
+### Open
+- [ ] `top` / `slice` still truncate a Float count; `contains("abc", 5)` is false while `index_of` raises; a WebSocket client has no identity for per-session auth; no String-returning CSV builtin.

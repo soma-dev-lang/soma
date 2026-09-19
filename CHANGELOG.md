@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- An Int holds at most 2^24 bits: products, `shl` and `product()` past it
+  raise kind `range` before they are built (interpreter and native);
+  `matmul` is capped at 10^9 multiply-adds.
+- `substring` and `range` refuse wrongly typed arguments (kind `type`).
 - A huge declared Content-Length no longer aborts `soma serve` (tiny_http
   vendored with a chunked drain; bodies past 256 MB are refused 413).
 - A scripted `mock think` reply longer than max_tokens raises kind `llm`.

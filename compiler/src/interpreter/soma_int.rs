@@ -110,6 +110,27 @@ impl SomaInt {
         }
     }
 
+    /// Bits an exact Int may hold (~2 MB). A product past it is refused
+    /// BEFORE it is computed: `x = x * x` in a loop over a client number
+    /// grew to 640M bits (3.4 GB) from a 22-byte request.
+    pub const MAX_BITS: u64 = 1 << 24;
+
+    fn bits(&self) -> u64 {
+        match &self.0 {
+            SomaIntInner::Small(a) => 64 - a.unsigned_abs().leading_zeros() as u64,
+            SomaIntInner::Big(b) => b.significant_bits() as u64,
+        }
+    }
+
+    /// `mul` with the size cap: Err(message) when the product could exceed
+    /// MAX_BITS (its size is at most the sum of the operands' sizes).
+    pub fn checked_big_mul(self, other: SomaInt) -> Result<SomaInt, String> {
+        if self.bits() + other.bits() > Self::MAX_BITS {
+            return Err(format!("range: an Int product of {} + {} bits is past the limit of {} bits", self.bits(), other.bits(), Self::MAX_BITS));
+        }
+        Ok(self.mul(other))
+    }
+
     pub fn div(self, other: SomaInt) -> SomaInt {
         match (&self.0, &other.0) {
             (SomaIntInner::Small(a), SomaIntInner::Small(b)) => {

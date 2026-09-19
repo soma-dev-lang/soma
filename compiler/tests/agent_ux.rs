@@ -2872,3 +2872,17 @@ fn cycle47_findings() {
     let _ = child.wait();
     assert!(alive, "serve died on a huge Content-Length");
 }
+
+#[test]
+fn cycle48_findings() {
+    let d = dir("cycle48");
+    // an Int product past 2^24 bits is refused before it is built
+    std::fs::write(d.join("g.cell"), "cell G {\n  on grow(k: Int) {\n    let x = shl(1, 10000000)\n    for [loop_bound(200)] i in range(0, k) { x = x * x }\n    return bit_len(x)\n  }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["run", "g.cell", "grow", "8"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("past the limit of 16777216 bits"), "{out}");
+    // substring / range with the wrong argument types raise
+    std::fs::write(d.join("s.cell"), "cell S {\n  on f() {\n    let a = try { substring(\"hello\", 1.5, 3) }\n    let b = try { range(0, 3.7) }\n    return [a.kind, b.kind]\n  }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "s.cell", "f"]);
+    assert!(out.contains(r#"["type", "type"]"#), "{out}");
+}

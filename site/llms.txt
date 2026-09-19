@@ -327,7 +327,8 @@ source, `file:line`, left/right, and the fields a value really has when
   postcondition is false — the whole handler is rolled back.
 - Dates: `parse_date("2026-03-01")` → map(year, month, day, weekday, epoch_day),
   `add_days`, `add_months`, `days_between`, `months_between`, `days_in_month`,
-  `format_date(ts)`; ISO strings compare with `<`. Dates are UTC and there
+  `format_date(ts)` (a date argument may also be an Int Unix time in seconds,
+  as now() returns — validate client input as a String); ISO strings compare with `<`. Dates are UTC and there
   are no time zones or time-of-day builtins: keep a fixed offset per place
   (`let local_min = floor_div(now_ms(), 60000) + offset_min` — now() is seconds) and parse "HH:MM"
   yourself (`split(t, ":")`); `every` / `after` run in any cell, `request` or not.
@@ -339,8 +340,10 @@ source, `file:line`, left/right, and the fields a value really has when
   Strings; `read_csv(path, map("raw", true))` keeps all text (exact money).
   `write_csv` quotes what a reader would change (a String "12" stays a String;
   a List cell is its JSON text). One builtin call builds at most 100,000,000
-  characters / elements / matrix cells (`pad_left`, `format` widths, `range`,
-  `zeros`…): past that it raises kind `range`. Map slot keys are text
+  characters / matrix cells (`pad_left`, `format` widths, `zeros`…) and a List
+  of at most 10,000,000 (`range`); an Int holds at most 2^24 bits (a product,
+  shl or product() past it is refused before it is built); matmul does at most
+  10^9 multiply-adds — past any of these it raises kind `range`. Map slot keys are text
   (`m.set(1, …)` and `m.set("1", …)` are one entry).
   `use helper` imports helper.cell beside the program, `use lib::m`
   lib/m.cell (a `use` inside an imported file resolves beside THAT file);

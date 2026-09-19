@@ -1643,7 +1643,7 @@ impl Interpreter {
                                     let result = match op {
                                         BinOp::Add => current.add(rhs_si),
                                         BinOp::Sub => current.sub(rhs_si),
-                                        BinOp::Mul => current.mul(rhs_si),
+                                        BinOp::Mul => current.checked_big_mul(rhs_si).map_err(|m| ExecError::Runtime(RuntimeError::Domain { kind: "range".to_string(), message: m }))?,
                                         // exact division only — non-exact promotes to Float via the generic path
                                         BinOp::Div if rhs_si.to_i64() != Some(0)
                                             && current.clone().modulo(rhs_si.clone()).to_i64() == Some(0) => current.div(rhs_si),
@@ -4243,7 +4243,7 @@ impl Interpreter {
             (Value::Int(a), Value::Int(b)) => match op {
                 BinOp::Add => Ok(Value::Int(a.clone().add(b.clone()))),
                 BinOp::Sub => Ok(Value::Int(a.clone().sub(b.clone()))),
-                BinOp::Mul => Ok(Value::Int(a.clone().mul(b.clone()))),
+                BinOp::Mul => a.clone().checked_big_mul(b.clone()).map(Value::Int).map_err(|m| RuntimeError::Domain { kind: "range".to_string(), message: m }),
                 BinOp::Div => int_div_value(a, b),
                 BinOp::Mod => {
                     if b.to_i64() == Some(0) {

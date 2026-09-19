@@ -1506,6 +1506,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if args.len() != 2 { return Some(Err(te("matmul(a, b)"))); }
             let a = match to_matrix(&args[0]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
             let b = match to_matrix(&args[1]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
+            // n·m·p multiply-adds: an n that passes the per-dimension cell
+            // check still made matmul(zeros(4000, 4000), …) run for minutes
+            // holding the handler lock
+            let work = (a.len() as u128) * (a.first().map_or(0, |r| r.len()) as u128) * (b.first().map_or(0, |r| r.len()) as u128);
+            if work > 1_000_000_000 {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: matmul of {}×{} by {}×{} is {} multiply-adds, past the limit of 1000000000", a.len(), a.first().map_or(0, |r| r.len()), b.len(), b.first().map_or(0, |r| r.len()), work) }));
+            }
             Some(matmul(&a, &b).map(|m| matrix_to_value(&m)))
         }
         "det" => {

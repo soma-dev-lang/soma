@@ -755,6 +755,14 @@ fn guard_exported_handlers(src: &str) -> String {
 /// BigInt flavors of the Int / Int helpers (see PANIC_GUARD_SUPPORT).
 const BIG_DIV_SUPPORT: &str = r#"
 #[allow(dead_code)]
+#[allow(dead_code)]
+fn _soma_bits_cap(x: Integer) -> Integer {
+    if x.significant_bits() > (1u32 << 24) {
+        panic!("soma:range: an Int of {} bits is past the limit of {} bits", x.significant_bits(), 1u32 << 24);
+    }
+    x
+}
+
 fn _soma_div_exact_big(a: Integer, b: Integer) -> Integer {
     if b == 0 {
         panic!("division by zero");
@@ -5184,6 +5192,11 @@ impl FnGenerator {
         // For "small * Integer" we want: small as i64 * &big = Integer
         let l = self.gen_expr_rug_operand(left);
         let r = self.gen_expr_rug_operand(right);
+        // a product is capped as interpreted (x = x * x over a client
+        // number grew to gigabytes)
+        if matches!(op, BinOp::Mul) {
+            return format!("_soma_bits_cap(Integer::from({} {} {}))", l, op_str, r);
+        }
         format!("Integer::from({} {} {})", l, op_str, r)
     }
 
@@ -5344,6 +5357,23 @@ impl FnGenerator {
     ///   6. Self-ref: RHS reads `name` somewhere       → temp + swap (avoid borrow)
     ///   7. General:                                   → `name.assign(incomplete)`
     fn gen_assign_rug(
+        &self,
+        name: &str,
+        value: &Expr,
+        ind: &str,
+        rest: &[Spanned<Statement>],
+    ) -> String {
+        let code = self.gen_assign_rug_uncapped(name, value, ind, rest);
+        // a product assigned in place (`x = x * x` → square_mut, `x = x * y`
+        // → assign) is held to the Int size cap as interpreted
+        let mut has_mul = false;
+        crate::checker::literals::for_each_in_expr(value, &mut |e| if matches!(e, Expr::BinaryOp { op: BinOp::Mul, .. }) { has_mul = true; });
+        if has_mul {
+            format!("{}{}if {}.significant_bits() > (1u32 << 24) {{ panic!(\"soma:range: an Int of {{}} bits is past the limit of {{}} bits\", {}.significant_bits(), 1u32 << 24) }}\n", code, ind, name, name)
+        } else { code }
+    }
+
+    fn gen_assign_rug_uncapped(
         &self,
         name: &str,
         value: &Expr,

@@ -392,6 +392,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Value::Float(n) => *n as i64,
                 _ => 0,
             };
+            // a count is an Int: `range(0, 3.7)` truncated silently where
+            // nth(xs, 1.0) raises
+            if let Some(bad) = args.iter().take(3).find(|a| !matches!(a, Value::Int(_))) {
+                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                    "type: range(start: Int, end: Int, step?: Int), got {} {}", crate::interpreter::value_type_name(bad), bad) }));
+            }
             if args.len() >= 2 {
                 let start = as_i64(&args[0]);
                 let end = as_i64(&args[1]);

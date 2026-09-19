@@ -352,7 +352,13 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             if b < 0 || b > 1 << 24 {
                 return Some(Err(RuntimeError::TypeError(format!("shl(): shift count {} out of range", b))));
             }
-            Some(Ok(Value::Int(SomaInt::from_rug(big_of(&args[0]) << (b as u32)))))
+            // the RESULT is capped too: shl(x, 2^24) of an already large x
+            // in a loop grew without bound
+            let a = big_of(&args[0]);
+            if a.significant_bits() as u64 + b as u64 > SomaInt::MAX_BITS {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: shl() would build an Int of {} bits, past the limit of {}", a.significant_bits() as u64 + b as u64, SomaInt::MAX_BITS) }));
+            }
+            Some(Ok(Value::Int(SomaInt::from_rug(a << (b as u32)))))
         }
         "shr" if args.len() >= 2 => {
             let b = val_to_i64(&args[1]);
@@ -590,7 +596,9 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             }
             "product" => {
                 let mut acc = SomaInt::from_i64(1);
-                for x in ints { acc = acc.mul(x); }
+                for x in ints {
+                    acc = acc.checked_big_mul(x).map_err(|m| RuntimeError::Domain { kind: "range".to_string(), message: m })?;
+                }
                 Ok(Value::Int(acc))
             }
             "avg" => {
