@@ -1334,3 +1334,23 @@ panics).
 
 ### Open
 - [ ] Appending to a list inside a map (`b[k] = push(b[k] ?? [], i)`) is quadratic; memory ~8× pandas; no datetime/offset parsing; native `if` expressions and `round(x) + Int` refused; native Int overflow inside Float/Bool expressions raises instead of promoting; `soma fmt` does not exist.
+
+### Cycle 58 — realistic port (multi-tenant feature flags + A/B experiments, 5 files) + attack (imports/packages, storage durability, client-reachable perf cliffs, cross-file soundness)
+
+Flags port 8/10: z-test, HMAC webhooks and stable bucketing matched Python;
+3 000 parallel events exact, 100 parallel duplicates accepted once; every
+cross-tenant attempt refused. Attack: 300 concurrent debits exact; two
+servers on one `.soma_data` consistent; disk-full left the db intact;
+200k-deep JSON refused cleanly; native string-literal injection escaped;
+imported machines and invariants verified.
+
+### Fixed
+- [x] **Attack: soma.lock's hash was never checked** — a package edited in `.soma_env` after install ran silently, and `soma install` reused it as "cached"; the lock records a sha256 of the files, a mismatch is refused at import and reinstalled by `soma install`.
+- [x] **Attack: an imported cell defining `request` took HTTP routing** (its public handlers became endpoints, the app's own unreachable) with no word from check — a check warning names it (also for `ws`).
+- [x] **Port: a call to PORT+2 was refused as `self_call` while the bus "stays closed"** — only ports this process listens on count.
+- [x] Port: a failed guard sent its source (`role == "owner"`) to API clients — the client sees "guard failed for transition A → B"; the log keeps the rule.
+- [x] Port: a 304 / 204 carried `Content-Type: application/json` — bodyless responses carry none.
+- [x] Port: a `"` inside `{…}` in a call argument gave "expected ')', found number" — the unescaped-quote hint.
+
+### Open
+- [ ] A counter cannot commit while the request raises (rate limiting / brute-force counters of failing requests — second report); the "monotone versions" invariant is not proven for `+1`; list patterns in `match` give no hint; `parse_int` has no radix; `use "/abs/path"` resolves outside the project.

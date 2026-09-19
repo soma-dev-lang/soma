@@ -42,8 +42,17 @@ fn resolve_package(
     if let Some(locked) = lock.get(name) {
         let cached_path = cache_dir.join(name);
         if cached_path.exists() {
-            eprintln!("  {} {} (cached)", name, locked.version);
-            return Ok(cached_path);
+            // the cache is reused only if it is what was locked
+            match &locked.content_sha256 {
+                Some(want) if *want != content_sha256(&cached_path, &locked.files) => {
+                    eprintln!("  {} {}: the cached copy differs from soma.lock — reinstalling", name, locked.version);
+                    let _ = std::fs::remove_dir_all(&cached_path);
+                }
+                _ => {
+                    eprintln!("  {} {} (cached)", name, locked.version);
+                    return Ok(cached_path);
+                }
+            }
         }
     }
 
@@ -93,6 +102,7 @@ fn resolve_local(
         version: "local".to_string(),
         source: format!("path:{}", local_path),
         hash,
+        content_sha256: Some(content_sha256(&dest, &files)),
         files,
     });
 
@@ -178,6 +188,7 @@ fn resolve_git_with(
         version: version.to_string(),
         source: source.clone(),
         hash,
+        content_sha256: Some(content_sha256(&dest, &files)),
         files,
     });
 
@@ -281,6 +292,21 @@ fn find_cell_files(dir: &Path) -> Vec<String> {
         }
     }
     files
+}
+
+/// sha256 over the package's files (name and bytes, in order)
+pub fn content_sha256(dir: &Path, files: &[String]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for file in files {
+        h.update(file.as_bytes());
+        h.update([0u8]);
+        match std::fs::read(dir.join(file)) {
+            Ok(bytes) => { h.update((bytes.len() as u64).to_le_bytes()); h.update(&bytes); }
+            Err(_) => h.update(b"<missing>"),
+        }
+    }
+    h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Hash all files for content addressing

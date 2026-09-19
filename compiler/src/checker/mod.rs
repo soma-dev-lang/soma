@@ -792,6 +792,26 @@ impl<'a> Checker<'a> {
         {
             let routers: Vec<&Spanned<CellDef>> = program.cells.iter().filter(|c| matches!(c.node.kind, CellKind::Cell | CellKind::Agent)
                 && c.node.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == "request"))).collect();
+            // the router (or `ws`) of an IMPORTED file: a dependency took the
+            // HTTP surface — its public handlers became endpoints and the
+            // program's own ones unreachable, with no word from check
+            let base = crate::interpreter::IMPORT_SPAN_BASE;
+            let main_has_router = routers.iter().any(|c| c.span.start < base);
+            for c in program.cells.iter().filter(|c| c.span.start >= base && matches!(c.node.kind, CellKind::Cell | CellKind::Agent)) {
+                for sec in &c.node.sections {
+                    if let Section::OnSignal(on) = &sec.node {
+                        if (on.signal_name == "request" && !main_has_router) || on.signal_name == "ws" {
+                            self.warnings.push(CheckWarning::DispatchShadow {
+                                message: format!("imported cell `{}` defines `{}` — under soma serve it owns {} (its public handlers become endpoints); if that is not intended, define `{}` in your own cell or drop the import",
+                                    c.node.name, on.signal_name,
+                                    if on.signal_name == "ws" { "the WebSocket port" } else { "HTTP routing, and your own cells' handlers are no longer routed" },
+                                    on.signal_name),
+                                span: sec.span,
+                            });
+                        }
+                    }
+                }
+            }
             if routers.len() > 1 {
                 self.warnings.push(CheckWarning::DispatchShadow {
                     message: format!("cells {} each define `request` — soma serve routes only the first ({}); merge the routes into one cell",

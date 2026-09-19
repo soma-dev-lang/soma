@@ -18,6 +18,11 @@ pub struct LockedPackage {
     pub hash: String,
     /// Files included in this package
     pub files: Vec<String>,
+    /// sha256 of the package's files as installed: checked when the package
+    /// is imported and when `soma install` reuses the cache (a tampered
+    /// `.soma_env` copy ran silently — the old hash was never compared)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_sha256: Option<String>,
 }
 
 impl LockFile {

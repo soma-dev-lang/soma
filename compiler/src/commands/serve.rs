@@ -1096,7 +1096,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                                     Err(e) => {
                                         // the same shape as an HTTP error: {"error", "kind"}
                                         eprintln!("ws: message → error ({}) {}", e.kind(), e);
-                                        let err_msg = error_body(&hide_private_names(&format!("{}", e)), &e.kind());
+                                        let err_msg = error_body(&client_error_text(&e), &e.kind());
                                         if let Ok(mut ws_w) = ws_write.lock() {
                                             let _ = ws_w.send(tungstenite::Message::Text(err_msg));
                                         }
@@ -1266,7 +1266,12 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     // request whose Host names another site (DNS rebinding) or a
     // state-changing request from a foreign page (a form POST needs no
     // preflight) is refused
-    let _ = crate::interpreter::builtins::http::OWN_PORTS.set(vec![port, port.wrapping_add(1), port.wrapping_add(2)]);
+    // only the ports this process listens on: PORT+2 while the bus
+    // "stays closed" refused a webhook to an unrelated server there
+    let mut own = vec![port];
+    if has_ws_handler { own.push(port.wrapping_add(1)); }
+    if bus_port > 0 && bus_wanted { own.push(port.wrapping_add(2)); }
+    let _ = crate::interpreter::builtins::http::OWN_PORTS.set(own);
     let http_loopback = matches!(host, "127.0.0.1" | "localhost" | "::1");
     for mut request in server.incoming_requests() {
         if http_loopback {
@@ -2034,15 +2039,17 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let verbose_body = if verbose { Some(body_str.clone()) } else { None };
                 // 204 / 304 carry no body (HTTP): `response(204, x)` sent one
                 let body_str = if status_code == 204 || status_code == 304 { String::new() } else { body_str };
-                let mut resp = tiny_http::Response::from_string(body_str)
-                    .with_status_code(tiny_http::StatusCode(status_code))
-                    .with_header(
-                        tiny_http::Header::from_bytes(
-                            &b"Content-Type"[..], content_type.as_bytes()
-                        ).unwrap()
-                    );
+                let bodyless = status_code == 204 || status_code == 304;
+                // no body, no Content-Type (a 304 said application/json)
+                let mut resp = if bodyless {
+                    tiny_http::Response::new(tiny_http::StatusCode(status_code), vec![], std::io::Cursor::new(Vec::new()), Some(0), None)
+                } else {
+                    tiny_http::Response::from_string(body_str)
+                        .with_status_code(tiny_http::StatusCode(status_code))
+                        .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], content_type.as_bytes()).unwrap())
+                };
                 // a JSON answer echoing client text is never sniffed as HTML
-                if content_type.contains("json") {
+                if content_type.contains("json") && !bodyless {
                     resp.add_header(tiny_http::Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..]).unwrap());
                 }
                 for (key, val) in &extra_headers {
@@ -2078,7 +2085,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 if status == 500 && matches!(e, interpreter::RuntimeError::RequireFailed(ref m) if !m.starts_with("memory invariant")) {
                     status = 400;
                 }
-                let body = error_body(&hide_private_names(&format!("{}", e)), &kind);
+                let body = error_body(&client_error_text(&e), &kind);
                 let mut resp = tiny_http::Response::from_string(body)
                     .with_status_code(status)
                     .with_header(
@@ -2154,6 +2161,17 @@ fn cors<R: std::io::Read>(mut r: tiny_http::Response<R>) -> tiny_http::Response<
 /// A client's error body does not name the program's private handlers
 /// (`_book(): parameter 'time' expects String` → `parameter 'time' …`);
 /// the server log keeps the full text.
+/// The text of a handler error as a CLIENT sees it: no private handler
+/// names, and a failed guard without its source (`role == "owner"` told
+/// every API client the rule); the server log keeps everything.
+fn client_error_text(e: &interpreter::RuntimeError) -> String {
+    let text = hide_private_names(&format!("{}", e));
+    if e.kind() == "guard_failed" {
+        if let Some(i) = text.find(": `") { return text[..i].to_string(); }
+    }
+    text
+}
+
 fn hide_private_names(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     let mut rest = message;

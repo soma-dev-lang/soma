@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- soma.lock records a sha256 of each package's files: a package modified
+  after install is refused at import, and `soma install` restores it.
+- Check warns when an imported cell defines `request` or `ws` (it would
+  own HTTP routing / the WebSocket port).
+- `self_call` counts only ports this process listens on; a failed guard's
+  source is not sent to clients; 204 / 304 carry no Content-Type; a quote
+  inside `{…}` in a call argument gets the escaping hint.
 - Performance: a lambda's captured lists and maps are no longer copied
   per element — `|> map` / `filter` / … over a captured list is linear
   (was quadratic).

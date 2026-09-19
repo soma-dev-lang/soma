@@ -3248,3 +3248,36 @@ cell test T {
     let (out, code) = soma_in(&d, &["check", "p.cell"]);
     assert!(code != 0 && out.contains("operator chain"), "{out}");
 }
+
+/// Cycle 58: an installed package that differs from soma.lock is refused at
+/// import; an imported cell defining `request` is a check warning; a guard
+/// failure does not send its source to the client.
+#[test]
+fn cycle58_findings() {
+    let root = dir("cycle58");
+    let pkg = root.join("pkgsrc");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("mathx.cell"), "cell MathX { on triple(n: Int) { return n * 3 } }\n").unwrap();
+    let app = root.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("soma.toml"), "[package]\nname = \"app\"\n\n[dependencies]\nmathx = { path = \"../pkgsrc\" }\n").unwrap();
+    std::fs::write(app.join("app.cell"), "use mathx\ncell App { on go(n: Int) { return MathX.triple(n) } }\n").unwrap();
+    let (out, code) = soma_in(&app, &["install"]);
+    assert_eq!(code, 0, "{out}");
+    let (out, _) = soma_in(&app, &["run", "app.cell", "go", "5"]);
+    assert!(out.contains("15"), "{out}");
+    let installed = app.join(".soma_env/packages/mathx/mathx.cell");
+    std::fs::write(&installed, "cell MathX { on triple(n: Int) { return 999 } }\n").unwrap();
+    let (out, code) = soma_in(&app, &["run", "app.cell", "go", "5"]);
+    assert!(code != 0 && out.contains("differs from soma.lock"), "a tampered package is refused: {out}");
+    let _ = soma_in(&app, &["install"]);
+    let (out, _) = soma_in(&app, &["run", "app.cell", "go", "5"]);
+    assert!(out.contains("15"), "install restores it: {out}");
+
+    let t = root.join("router");
+    std::fs::create_dir_all(t.join("lib")).unwrap();
+    std::fs::write(t.join("lib/helper.cell"), "cell Helper { on request(method: String, path: String, body: String) { return \"lib\" } }\n").unwrap();
+    std::fs::write(t.join("app.cell"), "use lib::helper\ncell App { on record(k: String) { return k } }\n").unwrap();
+    let (out, _) = soma_in(&t, &["check", "app.cell"]);
+    assert!(out.contains("imported cell `Helper` defines `request`"), "{out}");
+}

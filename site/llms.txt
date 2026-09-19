@@ -626,7 +626,10 @@ cell agent Researcher {
 matrix = "^0.2"                  # semver; registry at soma-lang.dev/repo
 local = { path = "../pkg" }      # or git = "...", subdir = "packages/x"
 ```
-`soma install` → .soma_env/packages/, commit-pinned in soma.lock.
+`soma install` → .soma_env/packages/, commit-pinned in soma.lock with a
+sha256 of the files: a package modified after install is refused at import
+(`soma install` restores it); an imported cell that defines `request` or
+`ws` is a check warning (it would own HTTP routing / the WebSocket port).
 `use matrix` imports it. A package's API = its face; its proofs (cell test)
 re-run on YOUR toolchain: `soma test .soma_env/packages/matrix/matrix.cell`.
 

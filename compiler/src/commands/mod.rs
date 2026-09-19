@@ -194,6 +194,8 @@ fn foreign_syntax_hint(message: &str, source: &str, offset: usize) -> Option<Str
         "Soma has no `{k: v}` literal — a map is `map(\"k\", v)` (empty: `map()`), a record is `Name { k: v }`"
     } else if at.starts_with("=>") && has("match") || (message.contains("'=>'") && has("->") == false && has("match")) {
         "match arms use `->`; `=>` is for lambdas"
+    } else if quote_inside_interpolation(t) && message.contains("expected") {
+        "an unescaped `\"` inside `{…}` ends the string: escape it (`\"{pad_left(s, 4, \\\"0\\\")}\"`) or bind the value first (`let v = …`, then `\"{v}\"`)"
     } else if has("**") {
         "no `**` operator — `pow(a, b)` is the Float power, `ipow(a, b)` the exact Int power"
     } else if has("===") || has("!==") {
@@ -340,8 +342,25 @@ fn resolve_pkg_path(base_dir: &Path, pkg_name: &str) -> PathBuf {
         PathBuf::from(".soma_env/packages").join(pkg_name),
         base_dir.join("packages").join(pkg_name),
     ];
-    for c in &candidates {
-        if c.exists() { return c.clone(); }
+    for (i, c) in candidates.iter().enumerate() {
+        if c.exists() {
+            // an installed package must be what soma.lock pinned (a
+            // tampered .soma_env copy ran; the lock's hash was decorative)
+            if i < 2 {
+                let lock_path = base_dir.join("soma.lock");
+                if let Ok(lock) = crate::pkg::lock::LockFile::load(&lock_path) {
+                    if let Some(want) = lock.get(pkg_name).and_then(|l| l.content_sha256.clone().map(|h| (h, l.files.clone()))) {
+                        let got = crate::pkg::resolver::content_sha256(c, &want.1);
+                        if got != want.0 {
+                            eprintln!("error: package '{}' in {} differs from soma.lock (sha256 {}… recorded, {}… on disk) — it was modified after `soma install`; run `soma install` to restore it, or re-lock on purpose",
+                                pkg_name, c.display(), &want.0[..12.min(want.0.len())], &got[..12]);
+                            fatal_exit();
+                        }
+                    }
+                }
+            }
+            return c.clone();
+        }
     }
     // `use helper` with helper.cell beside the program: a local file
     let sibling = base_dir.join(format!("{}.cell", pkg_name));
@@ -536,4 +555,26 @@ fn register_cell_from_ast(registry: &mut Registry, cell: &ast::CellDef) -> Resul
         }
         _ => Ok(()),
     }
+}
+
+/// A `{` opened inside a string literal with a `"` before its `}`:
+/// `"id-{pad_left(x, 4, "0")}"` — the inner quote ends the string.
+fn quote_inside_interpolation(line: &str) -> bool {
+    let b: Vec<char> = line.chars().collect();
+    let mut in_str = false;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            if c == '\\' { i += 2; continue; }
+            if c == '"' { in_str = false; }
+            else if c == '{' {
+                if let Some(close) = b[i..].iter().position(|&x| x == '}') {
+                    if b[i..i + close].contains(&'"') { return true; }
+                }
+            }
+        } else if c == '"' { in_str = true; }
+        i += 1;
+    }
+    false
 }
