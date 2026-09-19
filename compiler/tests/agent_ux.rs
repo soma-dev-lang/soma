@@ -2886,3 +2886,17 @@ fn cycle48_findings() {
     let (out, _) = soma_in(&d, &["run", "s.cell", "f"]);
     assert!(out.contains(r#"["type", "type"]"#), "{out}");
 }
+
+#[test]
+fn cycle49_findings() {
+    let d = dir("cycle49");
+    // pow_mod work is bounded; a long digit string is not an Int past the cap
+    std::fs::write(d.join("p.cell"), "cell P {\n  on pm(k: Int) { let r = try { pow_mod(3, shl(1, k) - 1, shl(1, k) - 1) }  return r.kind }\n  on ok() { return pow_mod(3, shl(1, 1023) - 1, shl(1, 1024) - 1) % 1000 }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "p.cell", "pm", "100000"]);
+    assert!(out.contains("range"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "p.cell", "ok"]);
+    assert_eq!(code, 0, "{out}");
+    std::fs::write(d.join("i.cell"), "cell I {\n  on f(n: Int) { let s = pad_left(\"1\", n, \"9\")  let r = try { to_int(s) }  return r.kind }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "i.cell", "f", "6000000"]);
+    assert!(out.contains("range"), "{out}");
+}

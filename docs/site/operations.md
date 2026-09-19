@@ -117,6 +117,13 @@ registers a node for `scale` sharding; it does not by itself forward `emit`.
 A peer that is down when the process starts is logged as
 `peer: … failed` and not retried — start the receiving process first. This
 is the experimental corner of Soma; single-process is the supported shape.
+Delivery is fire-and-forget: an event emitted while no peer is connected (or
+to a peer that dropped) is NOT delivered — the sender logs `bus: event '…'
+NOT delivered`, and the handler still commits. To move value between
+processes, keep an outbox slot on the sender (the transfer, with an id),
+have the receiver deduplicate by id and emit an acknowledgement, and let an
+`every` tick re-send what is unacknowledged. The bus port has no
+authentication: any local process can send an accepted event — firewall it.
 
 ## Persistence
 

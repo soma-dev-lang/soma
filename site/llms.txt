@@ -342,8 +342,9 @@ source, `file:line`, left/right, and the fields a value really has when
   a List cell is its JSON text). One builtin call builds at most 100,000,000
   characters / matrix cells (`pad_left`, `format` widths, `zeros`…) and a List
   of at most 10,000,000 (`range`); an Int holds at most 2^24 bits (a product,
-  shl or product() past it is refused before it is built); matmul does at most
-  10^9 multiply-adds — past any of these it raises kind `range`. Map slot keys are text
+  shl, product(), parse_int / to_int of text past it is refused before it is
+  built); matmul does at most 10^9 multiply-adds, pow_mod bits(exp) × bits(m)
+  ≤ 2^30 — past any of these it raises kind `range`. Map slot keys are text
   (`m.set(1, …)` and `m.set("1", …)` are one entry).
   `use helper` imports helper.cell beside the program, `use lib::m`
   lib/m.cell (a `use` inside an imported file resolves beside THAT file);

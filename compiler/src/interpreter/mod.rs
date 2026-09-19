@@ -579,13 +579,24 @@ pub fn new_event_bus() -> EventBus {
 /// reading, or hung without closing) is DROPPED, as a WebSocket client is:
 /// an unbounded queue grew the emitter to gigabytes.
 pub fn send_to_peers(senders: &mut Vec<std::sync::mpsc::SyncSender<String>>, line: &str) {
+    // [peers] are configured but none is connected (a peer down): the event
+    // is not delivered — say so (points were debited here, never credited
+    // there, and the log showed only `POST /transfer → 200`)
+    if senders.is_empty() && crate::commands::HAS_PEERS.load(std::sync::atomic::Ordering::Relaxed) {
+        let name = line.split_whitespace().nth(1).unwrap_or("?");
+        eprintln!("bus: event '{}' NOT delivered — no peer is connected (fire-and-forget: reconcile, or retry from an outbox)", name);
+        return;
+    }
     senders.retain(|s| match s.try_send(line.to_string()) {
         Ok(()) => true,
         Err(std::sync::mpsc::TrySendError::Full(_)) => {
             eprintln!("bus: a peer stopped reading ({} events queued) — disconnected", BUS_QUEUE);
             false
         }
-        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+            eprintln!("bus: event '{}' NOT delivered to a peer that disconnected", line.split_whitespace().nth(1).unwrap_or("?"));
+            false
+        }
     });
 }
 

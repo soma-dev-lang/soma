@@ -232,6 +232,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     let t = t.as_str();
                     let digits = t.strip_prefix('-').or_else(|| t.strip_prefix('+')).unwrap_or(t);
                     if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                        // the Int size cap holds for parsed text too (~5.05M digits)
+                        if digits.len() > 5_050_446 {
+                            return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: parse_int of {} digits is past the Int limit of {} bits", digits.len(), SomaInt::MAX_BITS) }));
+                        }
                         Value::Int(SomaInt::from_decimal_str(t.strip_prefix('+').unwrap_or(t)))
                     } else {
                         Value::Unit
@@ -448,6 +452,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let (b, e, m) = (g(0), g(1), g(2));
             if m == 0 { return Some(Err(RuntimeError::TypeError("pow_mod: modulus is zero".to_string()))); }
             if e < 0 { return Some(Err(RuntimeError::TypeError("pow_mod: negative exponent (a modular inverse is not computed)".to_string()))); }
+            // bits(exp) squarings of bits(m)-sized numbers: both large froze
+            // the service (a 5-byte body, 8 s; at the size cap, never ending)
+            let work = e.significant_bits() as u64 * m.significant_bits() as u64;
+            if work > 1 << 30 {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: pow_mod with a {}-bit exponent and a {}-bit modulus is past the work limit (bits(exp) × bits(m) ≤ 2^30)", e.significant_bits(), m.significant_bits()) }));
+            }
             let m_abs = rug::Integer::from(m.abs_ref());
             match b.pow_mod(&e, &m_abs) {
                 Ok(r) => Some(Ok(Value::Int(SomaInt::from_rug(r)))),

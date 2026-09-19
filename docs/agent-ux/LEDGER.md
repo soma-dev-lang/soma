@@ -1162,3 +1162,18 @@ deep JSON and recursion refused cleanly — except arithmetic.
 
 ### Open
 - [ ] `top` / `slice` still truncate a Float count; `contains("abc", 5)` is false while `index_of` raises; a WebSocket client has no identity for per-session auth; no String-returning CSV builtin.
+
+### Cycle 49 — realistic port (loyalty points, two peered instances) + amplification hunt, continued
+
+Loyalty port 8/10: 60 concurrent redemptions on a stock of 30 → exactly 30;
+40 against a balance fitting 2 → exactly 2; idempotent replays debited once;
+velocity fraud limits exact under concurrency. The attack confirmed parsing,
+regex, formatting, deep JSON, nested source and to_string bounded.
+
+### Fixed
+- [x] **`pow_mod` with a large exponent AND a large modulus did unbounded work** — a 5-byte body froze the whole service 8 s (at the size cap, never ending) — at most bits(exp) × bits(m) = 2^30.
+- [x] `to_int` / `parse_int` of a long digit string built Ints past the 2^24-bit cap (66M bits) — refused, kind `range`.
+- [x] Port: a bus event emitted while the peer was down vanished with no trace on the sender (points debited here, never credited there) — `bus: event '…' NOT delivered` is logged (no peer connected, or a peer that dropped); the docs give the outbox + ack pattern and say the bus port is unauthenticated; `sum_by`'s error claimed a value "was skipped silently" while raising.
+
+### Open
+- [ ] `sum_by` accepts padded / exponent numeric text ("1e3" turns an Int ledger into Floats); `Bronze == Red` (two sum types) is false while `5 == ""` raises; no way to pass headers to `soma run … request`.

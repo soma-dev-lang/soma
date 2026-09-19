@@ -152,7 +152,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     if let Some(bad) = non_numeric(items, &field) {
-                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("sum_by(): field '{}' holds {} {} — not a number (it was skipped silently)", field, crate::interpreter::value_type_name(&bad), bad) }));
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("sum_by(): field '{}' holds {} {} — not a number (sum_by counts numbers and numeric text only; a missing field counts 0)", field, crate::interpreter::value_type_name(&bad), bad) }));
                     }
                     let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
                     Some(Ok(num_value(num_sum(&xs))))
@@ -166,7 +166,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let Value::List(items) = &args[0] {
                     let field = format!("{}", args[1]);
                     if let Some(bad) = non_numeric(items, &field) {
-                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("avg_by(): field '{}' holds {} {} — not a number (it was skipped silently)", field, crate::interpreter::value_type_name(&bad), bad) }));
+                        return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("avg_by(): field '{}' holds {} {} — not a number (avg_by counts numbers and numeric text only)", field, crate::interpreter::value_type_name(&bad), bad) }));
                     }
                     let xs: Vec<Num> = items.iter().filter_map(|it| field_num(it, &field)).collect();
                     Some(Ok(num_avg(&xs)))

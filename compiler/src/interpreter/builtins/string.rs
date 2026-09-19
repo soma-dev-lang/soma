@@ -296,6 +296,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             args.first().map(|arg| match arg {
                 Value::Int(si) => Ok(Value::Int(si.clone())),
                 Value::Float(n) => float_to_int(*n),
+                // the Int size cap holds for parsed text too (~5.05M digits)
+                Value::String(s) if s.trim().trim_start_matches(['-', '+']).len() > 5_050_446 =>
+                    Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range: to_int of {} characters is past the Int limit of {} bits", s.len(), SomaInt::MAX_BITS) }),
                 Value::String(s) => {
                     if let Ok(n) = s.parse::<i64>() {
                         Ok(Value::Int(SomaInt::from_i64(n)))

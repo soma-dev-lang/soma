@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `pow_mod` work is bounded (bits(exp) × bits(m) ≤ 2^30); `to_int` /
+  `parse_int` refuse text past the 2^24-bit Int cap.
+- A bus event that reaches no peer is logged as NOT delivered; the docs
+  give an outbox + acknowledgement pattern for transfers between processes.
 - An Int holds at most 2^24 bits: products, `shl` and `product()` past it
   raise kind `range` before they are built (interpreter and native);
   `matmul` is capped at 10^9 multiply-adds.
