@@ -2979,6 +2979,13 @@ impl Interpreter {
                                 "cannot read field '{}' of String {} — it is not a map or a record (from_json(s) parses JSON text)", field, short_value(&target_val))))),
                         }
                     }
+                    // a variant with named fields reads them by name, like a
+                    // record (`l.qty` on `Line { sku, qty }`)
+                    Value::Variant { fields: VariantValue::Struct(ref fs), ref variant, .. } => match fs.get(field.as_str()) {
+                        Some(v) => Ok(v.clone()),
+                        None => Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                            "variant {} has no field '{}' (fields: {})", variant, field, fs.keys().cloned().collect::<Vec<_>>().join(", "))))),
+                    },
                     _ => Err(ExecError::Runtime(RuntimeError::TypeError(
                         format!("cannot read field '{}' of {} {} — it is not a map or a record", field, value_type_name(&target_val), short_value(&target_val)),
                     )))
@@ -4227,7 +4234,67 @@ impl Interpreter {
     /// `on f(p: Pay)`: p is a Pay variant (a String naming a unit variant of
     /// Pay — `soma run app.cell f Cash` — is that variant). Anything else ran
     /// the body and failed later at a `match`, or not at all.
+    /// A plain Map (JSON from a client, a CSV row, a tool call) given where
+    /// a RECORD type is declared — a `cell type` with exactly one variant
+    /// that has named fields — becomes that record, field by field; the
+    /// error names the missing, extra or mistyped field. (There was no way
+    /// to turn input into `Line`; a line without `qty` was stored and every
+    /// tick after failed.) Several variants still need the variant spelled
+    /// out: a client cannot pick one.
+    fn coerce_records(&self, ty: &TypeExpr, v: Value) -> Result<Value, String> {
+        match (ty, v) {
+            (TypeExpr::Generic { name, args }, Value::List(xs)) if name == "List" => {
+                let Some(t) = args.first() else { return Ok(Value::List(xs)) };
+                let mut out = Vec::with_capacity(xs.len());
+                for (i, x) in xs.into_iter().enumerate() { out.push(self.coerce_records(&t.node, x).map_err(|m| format!("element {}: {}", i, m))?); }
+                Ok(Value::List(out))
+            }
+            (TypeExpr::Generic { name, args }, Value::Map(m)) if name == "Map" => {
+                let Some(t) = args.last() else { return Ok(Value::Map(m)) };
+                let mut out = IndexMap::new();
+                for (k, x) in m.into_iter() { let c = self.coerce_records(&t.node, x).map_err(|e| format!("key {:?}: {}", k, e))?; out.insert(k, c); }
+                Ok(Value::Map(out))
+            }
+            // JSON text for a record parameter (`soma run app.cell one '{"sku":…}'`)
+            (TypeExpr::Simple(t), Value::String(txt)) if self.type_variants.get(t).map_or(false, |vs| vs.len() == 1) && txt.trim_start().starts_with('{') => {
+                match serde_json::from_str::<serde_json::Value>(&txt) {
+                    Ok(j) if builtins::string::json_has_inf(&j) => Err("a number beyond the Float range".to_string()),
+                    Ok(j @ serde_json::Value::Object(_)) => {
+                        let v = builtins::serde_json_to_value(&j);
+                        if matches!(&v, Value::Map(m) if m.contains_key("_type") || m.contains_key("_variant")) {
+                            return Err("the JSON may not carry _type / _variant".to_string());
+                        }
+                        self.coerce_records(ty, v)
+                    }
+                    _ => Ok(Value::String(txt)),
+                }
+            }
+            (TypeExpr::Simple(t), Value::Map(m)) if self.type_variants.get(t).map_or(false, |vs| vs.len() == 1) => {
+                let variant = self.type_variants[t][0].clone();
+                let Some(crate::ast::VariantFields::Struct(fields)) = self.variant_fields.get(&(t.clone(), variant.clone())).cloned() else {
+                    return Ok(Value::Map(m));
+                };
+                if let Some(extra) = m.keys().find(|k| !fields.iter().any(|(f, _)| f == *k)) {
+                    return Err(format!("{} has no field '{}' (fields: {})", t, extra, fields.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>().join(", ")));
+                }
+                let mut out = IndexMap::new();
+                for (f, fty) in &fields {
+                    let Some(x) = m.get(f).cloned() else {
+                        return Err(format!("{}: field '{}' is missing", t, f));
+                    };
+                    let x = self.coerce_records(&fty.node, x).map_err(|e| format!("{}: field '{}': {}", t, f, e))?;
+                    self.value_fits(&fty.node, &x).map_err(|e| format!("{}: field '{}': {}", t, f, e))?;
+                    out.insert(f.clone(), x);
+                }
+                Ok(Value::Variant { type_name: t.clone(), variant, fields: VariantValue::Struct(out) })
+            }
+            (_, v) => Ok(v),
+        }
+    }
+
     fn check_sum_param(&self, param: &Param, val: Value) -> Result<Value, String> {
+        let val = self.coerce_records(&param.ty.node, val)
+            .map_err(|m| format!("parameter '{}' expects {}: {}", param.name, crate::commands::describe::format_type(&param.ty.node), m))?;
         // a generic type is checked all the way down, as a slot is:
         // `xs: List<Map<String, Int>>` took `[{"a": "x"}]` from HTTP, the
         // bus and an LLM tool call (only the first level was checked)

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Scheduler: a second `soma serve` takes over the every/after blocks when
+  the owner stops; the lock is per program; each tick's token budget starts
+  fresh.
+- Records: a JSON object / Map given for a one-variant `cell type` becomes
+  that record (errors name the field); variant fields read as `v.field`;
+  deleting from an `[immutable]` slot is a check warning.
 - Your handler named `subscribe`, `link`, `ws_connect` or `ws_send` wins
   over the network builtin at its arity; `cell test` helpers are held to
   the declaring cell's invariants and `[immutable]`.

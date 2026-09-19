@@ -209,6 +209,38 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                             super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| if matches!(x, Statement::Return { .. }) { returned = true; });
                         }
                     }
+                    // a delete / an element overwrite on an `[immutable]` slot can
+                    // only fail (it passed check and was refused at run time)
+                    {
+                        let immutable: Vec<String> = cell.sections.iter().filter_map(|sec| match &sec.node {
+                            Section::Memory(m) => Some(m.slots.iter().filter(|sl| sl.node.properties.iter().any(|p| p.node.name() == "immutable")).map(|sl| sl.node.name.clone()).collect::<Vec<_>>()),
+                            _ => None,
+                        }).flatten().collect();
+                        if !immutable.is_empty() {
+                            let mut hits: Vec<(String, &str)> = Vec::new();
+                            super::literals::for_each_stmt_deep(&on.body, &mut |st| {
+                                if let Statement::MethodCall { target, method, .. } = st {
+                                    if immutable.contains(target) && matches!(method.as_str(), "delete" | "remove") { hits.push((target.clone(), "delete")); }
+                                }
+                            });
+                            super::literals::for_each_expr(&on.body, &mut |e| {
+                                if let Expr::MethodCall { target, method, .. } = e {
+                                    if let Expr::Ident(t) = &target.node {
+                                        if immutable.contains(t) && matches!(method.as_str(), "delete" | "remove") { hits.push((t.clone(), "delete")); }
+                                    }
+                                }
+                            });
+                            hits.dedup();
+                            for (slot, what) in hits {
+                                {
+                                    issues.push(InterpolationIssue {
+                                        message: format!("`{}.{}` in handler `{}`: '{}' is [immutable], so this can only fail at run time (an entry never changes once written)", slot, what, on.signal_name, slot),
+                                        span: section.span, warning: true, habit: true, kind: "immutable_write",
+                                    });
+                                }
+                            }
+                        }
+                    }
                     for m in count_field_defaults(&on.body) {
                         issues.push(InterpolationIssue { message: m, span: section.span, warning: true, habit: true, kind: "count_field_default" });
                     }

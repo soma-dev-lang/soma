@@ -1501,3 +1501,19 @@ kind; routing hid every call form but one.
 
 ### Open
 - [ ] Two programs in one directory can alias tables by name (`K.m_x` vs `K_m.x`) and bypass [immutable] — one directory per program; quick_check misses index/table mismatches (integrity_check would catch them, at a cost); handlers called only from init / ticks / ws are still public endpoints unless `_private`.
+
+### Cycle 66 — realistic port (warehouse robotics orchestration) + attack (scheduler and time)
+
+Warehouse port 8.5/10: 40 concurrent completions exact; 20 parallel
+completions of one task → one 200; faults re-planned; state intact after
+kill -9. Scheduler attack: no overlap, serialized with requests and other
+processes, raising ticks rolled back, leap years / month ends right.
+
+### Fixed
+- [x] **Attack: tick ownership never moved** — when the serve that owned the every/after blocks stopped (a rolling restart), the second one served on with no tick anywhere; it now takes over within ~2 s. The lock is per program: a second program in the same directory runs its own ticks. An `after` block is not re-run by the server that takes over.
+- [x] **Attack: a tick's token budget and `tokens_used()` carried over to the next tick** (one exhausted budget failed every later tick) — each tick starts fresh, like a request.
+- [x] **Port: no way to turn JSON into a typed record** — a Map given for a one-variant `cell type` (HTTP, tools, CLI JSON) becomes the record field by field; missing / extra / mistyped fields are named; a variant's named fields read as `v.field`.
+- [x] Port: deleting from an `[immutable]` slot passed check and always failed — a check warning.
+
+### Open
+- [ ] Out-of-range `mock now` silently uses the real clock; `days_in_month` accepts wrong types; `every 1` / `1year` units undocumented; no "until" temporal property.

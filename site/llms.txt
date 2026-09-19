@@ -141,6 +141,13 @@ match r {
 // to_json(Charged { tx: "t1" }) == '{"_type":"Pay","_variant":"Charged","tx":"t1"}'
 // (a tuple variant carries "_values"); from_json brings the variant back; HTTP
 // answers a returned variant the same way. Slots store variants as variants.
+// A variant with named fields reads them by name too: `c.tx`.
+// RECORD type = a `cell type` with ONE variant with named fields:
+//   cell type Line { variants { Line { sku: String, qty: Int } } }
+//   on add(lines: List<Line>) { … }   // a JSON object / Map becomes a Line
+// — from HTTP, a tool call or the CLI — field by field; a missing, extra or
+// mistyped field is a `type` error naming it (400). Several variants: the
+// client cannot pick one (`_type`/`_variant` are refused).
 ```
 
 ## Coming from Python / TypeScript

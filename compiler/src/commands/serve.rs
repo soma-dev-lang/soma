@@ -1253,19 +1253,46 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
     let has_timers = program.cells.iter().any(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::Every(_) | ast::Section::After(_))));
     if !no_schedule && has_timers {
         let dir = crate::runtime::storage::data_dir();
+        // one lock per PROGRAM (the cells that own ticks): another program
+        // in the same directory never ran its own ticks
+        let tag = {
+            use std::hash::{Hash, Hasher};
+            let mut names: Vec<String> = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, ast::Section::Every(_) | ast::Section::After(_)))).map(|c| c.node.name.clone()).collect();
+            names.sort();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            names.hash(&mut h);
+            format!("{:016x}", h.finish())
+        };
+        let lock_path = dir.join(format!("scheduler-{}.lock", tag));
         if dir.is_dir() {
-            match rusqlite::Connection::open(dir.join("scheduler.lock")) {
+            match rusqlite::Connection::open(&lock_path) {
                 Ok(conn) => {
                     let _ = conn.busy_timeout(std::time::Duration::from_millis(0));
                     if conn.execute_batch("BEGIN EXCLUSIVE").is_ok() {
                         Box::leak(Box::new(conn));
+                        SCHED_OWNER.store(true, std::sync::atomic::Ordering::SeqCst);
                     } else {
-                        eprintln!("scheduler: another soma serve on {} runs the every/after blocks — not started here (each tick would run twice)", dir.display());
-                        no_schedule = true;
+                        // the owner may stop (a rolling restart): take over then,
+                        // instead of serving on with no tick anywhere
+                        eprintln!("scheduler: another soma serve on {} runs these every/after blocks — this one takes over if it stops", dir.display());
+                        std::thread::spawn(move || loop {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            if let Ok(c) = rusqlite::Connection::open(&lock_path) {
+                                let _ = c.busy_timeout(std::time::Duration::from_millis(0));
+                                if c.execute_batch("BEGIN EXCLUSIVE").is_ok() {
+                                    Box::leak(Box::new(c));
+                                    SCHED_OWNER.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    eprintln!("scheduler: took over the every/after blocks (the other server stopped)");
+                                    break;
+                                }
+                            }
+                        });
                     }
                 }
-                Err(_) => {}
+                Err(_) => { SCHED_OWNER.store(true, std::sync::atomic::Ordering::SeqCst); }
             }
+        } else {
+            SCHED_OWNER.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
     for cell_spanned in &program.cells {
@@ -1308,10 +1335,19 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     // the server was down, not one interval later
                     let mut first = true;
                     loop {
+                        // not this server's turn yet (another one owns the ticks)
+                        while !SCHED_OWNER.load(std::sync::atomic::Ordering::SeqCst) {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
                         if !first { std::thread::sleep(std::time::Duration::from_millis(interval)); }
                         first = false;
                         // Reset depth counter for each tick
                         interp.current_depth = 0;
+                        // a tick is a handler invocation: its token budget and
+                        // count start fresh (the interpreter is reused, and one
+                        // exhausted budget failed every later tick)
+                        interp.agent_token_budget = 0;
+                        interp.agent_tokens_used = 0;
                         // Pick up ws_out if it was set after init
                         if interp.ws_out.is_none() {
                             if let Ok(ws_guard) = ws.lock() {
@@ -1343,6 +1379,11 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let natives = natives.clone();
                 crate::interpreter::spawn_handler_thread(move || {
                     std::thread::sleep(std::time::Duration::from_millis(delay));
+                    // one-shot: the server that owned the ticks ran it
+                    if !SCHED_OWNER.load(std::sync::atomic::Ordering::SeqCst) {
+                        eprintln!("[after:{}] not run here — another soma serve owns the every/after blocks", cname);
+                        return;
+                    }
                     let mut interp = interpreter::Interpreter::new(&prog);
                     interp.native_handlers = (*natives).clone();
                     interp.set_storage_raw(&slots);
@@ -2456,6 +2497,8 @@ fn lifecycle_hook(names: &[String]) -> Option<&'static str> {
 /// Handlers that are the target of an `emit` somewhere in the program: event
 /// listeners, not endpoints (`POST /moved` forged the event)
 use crate::interpreter::{EVENT_LISTENERS, BUS_ACCEPT};
+/// this process runs the every/after blocks (it holds the scheduler lock)
+static SCHED_OWNER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// true when this process has a declared peer network ([peers] or cluster)
 static BUS_PEERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 

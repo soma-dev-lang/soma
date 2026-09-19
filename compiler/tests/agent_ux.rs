@@ -3680,3 +3680,31 @@ fn cycle65_attack() {
     let (out, _) = soma_in(&e, &["check", "en.cell"]);
     assert!(out.contains("before this `ensure`"), "{out}");
 }
+
+/// Cycle 66: a JSON object given for a one-variant record type becomes the
+/// record (errors name the field); variant fields read by name; deleting
+/// from an [immutable] slot is a check warning.
+#[test]
+fn cycle66_findings() {
+    passes("cycle66", r#"
+cell type Line { variants { Line { sku: String, qty: Int } } }
+cell App {
+    on total(lines: List<Line>) { return sum(lines |> map(l => l.qty)) }
+    on sku(l: Line) { return l.sku }
+    on bad() { return total([map("sku", "a")]) }
+    on extra() { return sku(map("sku", "a", "qty", 1, "evil", 2)) }
+}
+cell test T {
+    rules {
+        assert total([map("sku", "a", "qty", 1), map("sku", "b", "qty", 2)]) == 3
+        assert sku(map("sku", "z", "qty", 3)) == "z"
+        assert_fails bad() matching "qty"
+        assert_fails extra() matching "evil"
+    }
+}
+"#);
+    let d = dir("cycle66_imm");
+    std::fs::write(d.join("i.cell"), "cell A { memory { log: List<String> [persistent, immutable] }  on del(i: Int) { log.delete(i)  return 1 } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "i.cell"]);
+    assert!(out.contains("[immutable]"), "{out}");
+}
