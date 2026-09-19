@@ -3877,13 +3877,24 @@ impl Interpreter {
             }
         }
 
-        // Writer thread
+        // Writer thread. Once the reader saw the peer go away, the next
+        // event is reported NOT delivered and the writer stops (its channel
+        // closes, so later emits are reported by send_to_peers): a write to
+        // a socket the peer closed still "succeeded" into the kernel
+        // buffer, and every event after a peer restart vanished silently
+        let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let alive_w = alive.clone();
         let mut write_stream = stream;
         spawn_handler_thread(move || {
             use std::io::Write;
+            let not_delivered = |line: &str| eprintln!("bus: event '{}' NOT delivered to a peer that disconnected", line.split_whitespace().nth(1).unwrap_or("?"));
             for line in rx {
-                if write_stream.write_all(line.as_bytes()).is_err() { break; }
-                if write_stream.flush().is_err() { break; }
+                if !alive_w.load(std::sync::atomic::Ordering::SeqCst)
+                    || write_stream.write_all(line.as_bytes()).is_err()
+                    || write_stream.flush().is_err() {
+                    not_delivered(&line);
+                    break;
+                }
             }
         });
 
@@ -3953,6 +3964,7 @@ impl Interpreter {
                     }
                 }
             }
+            alive.store(false, std::sync::atomic::Ordering::SeqCst);
             eprintln!("connect: peer disconnected");
         });
 
@@ -6297,6 +6309,31 @@ pub(crate) fn int_div_value(a: &SomaInt, b: &SomaInt) -> Result<Value, RuntimeEr
 pub const BUS_MAX_LINE: u64 = 16 * 1024 * 1024;
 
 /// `lines()` with a length cap, for the bus sockets.
+/// Values one JSON text from a client or a peer may hold: a 15 MB line of
+/// `[0,0,0,…]` (7.5 M elements) became ~2.4 GB of parsed values before any
+/// check ran — the byte cap alone does not bound the parsed size.
+pub const JSON_MAX_VALUES: usize = 1_000_000;
+
+/// True when `text` holds more than JSON_MAX_VALUES values (a count of the
+/// `,` `[` `{` outside strings — cheap, before any parse)
+pub fn json_too_many_values(text: &str) -> bool {
+    let mut n = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    for b in text.bytes() {
+        if in_str {
+            if esc { esc = false } else if b == b'\\' { esc = true } else if b == b'"' { in_str = false }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b',' | b'[' | b'{' => { n += 1; if n > JSON_MAX_VALUES { return true; } }
+            _ => {}
+        }
+    }
+    false
+}
+
 pub fn bus_lines<R: std::io::BufRead>(mut r: R) -> impl Iterator<Item = std::io::Result<String>> {
     std::iter::from_fn(move || {
         use std::io::{BufRead, Read};
@@ -6309,7 +6346,14 @@ pub fn bus_lines<R: std::io::BufRead>(mut r: R) -> impl Iterator<Item = std::io:
             }
             Ok(_) => {
                 if buf.last() == Some(&b'\n') { buf.pop(); if buf.last() == Some(&b'\r') { buf.pop(); } }
-                Some(String::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+                match String::from_utf8(buf) {
+                    Ok(line) if json_too_many_values(&line) => {
+                        eprintln!("bus: an event with more than {} JSON values — connection closed", JSON_MAX_VALUES);
+                        Some(Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "bus event too large")))
+                    }
+                    Ok(line) => Some(Ok(line)),
+                    Err(e) => Some(Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e))),
+                }
             }
             Err(e) => Some(Err(e)),
         }

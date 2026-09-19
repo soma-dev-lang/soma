@@ -373,7 +373,20 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
     for line in interp.audit_stored_data() {
         eprintln!("warning: stored data: {}", line);
     }
-    match interp.call_signal(&cell_name, &signal_name, actual_args) {
+    let result = interp.call_signal(&cell_name, &signal_name, actual_args);
+    // `soma run` has no bus: an emit meant for [peers] committed its
+    // writes and reached nobody, without a word (an admin fix skipped the
+    // notification service)
+    if result.is_ok() && super::HAS_PEERS.load(std::sync::atomic::Ordering::Relaxed) {
+        let mut names: Vec<String> = interp.take_emitted_signals().into_iter().map(|(n, _)| n).collect();
+        names.sort();
+        names.dedup();
+        if !names.is_empty() {
+            eprintln!("warning: emit {} NOT delivered to [peers] — `soma run` opens no bus (the writes are committed; send the event from the served program, or reconcile)",
+                names.iter().map(|n| format!("'{}'", n)).collect::<Vec<_>>().join(", "));
+        }
+    }
+    match result {
         // the handler's value is the command's output; `()` prints nothing
         // (a `main` that only prints used to end with a stray `null`)
         Ok(interpreter::Value::Unit) => {}

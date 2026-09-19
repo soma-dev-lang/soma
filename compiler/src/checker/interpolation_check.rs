@@ -41,6 +41,30 @@ pub struct InterpolationIssue {
     pub kind: &'static str,
 }
 
+/// `b.size ?? "M"`: on a Map, `.size` / `.len` / `.count` is the entry
+/// count and `.keys` / `.values` the lists — never `()` — so the default
+/// never applies and a JSON field named `size` is unreachable this way
+/// (a clothing size read as 2, the number of fields)
+fn count_field_defaults(body: &[Spanned<Statement>]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    super::literals::for_each_stmt_deep(body, &mut |st| {
+        super::termination::walk_stmt(st, &mut |e| {
+            if let Expr::FnCall { name, args } = e {
+                if name != "_coalesce" || args.len() != 2 { return; }
+                if let Expr::FieldAccess { target, field } = &args[0].node {
+                    if matches!(field.as_str(), "size" | "len" | "count" | "keys" | "values") {
+                        let t = render_expr(&target.node);
+                        let m = format!("`{t}.{field} ?? …`: on a Map `.{field}` is the {} (never `()`), so the default never applies — to read a field named `{field}`, write `{t}.get(\"{field}\") ?? …`",
+                            if matches!(field.as_str(), "keys" | "values") { format!("list of its {field}") } else { "number of entries".to_string() });
+                        if !out.contains(&m) { out.push(m); }
+                    }
+                }
+            }
+        });
+    });
+    out
+}
+
 pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
     let index = ProgramIndex::build(program);
     let mut issues = Vec::new();
@@ -161,6 +185,9 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
                     }
                     w.walk_stmts(&on.body);
                     issues.extend(w.issues);
+                    for m in count_field_defaults(&on.body) {
+                        issues.push(InterpolationIssue { message: m, span: section.span, warning: true, habit: true, kind: "count_field_default" });
+                    }
                 }
                 Section::Every(ev) | Section::After(ev) => {
                     let mut w = Walker::new(&index);

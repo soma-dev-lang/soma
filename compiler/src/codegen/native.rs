@@ -633,6 +633,13 @@ fn _soma_guard<T: Default>(f: impl FnOnce() -> T) -> T {
                 "modulo by zero".to_string()
             } else if raw.contains("divide by zero") || raw.contains("division by zero") {
                 "division by zero".to_string()
+            } else if let Some(at) = raw.find("but the index is ") {
+                // a negative index wrapped to a huge usize: show it as written
+                // (`the index is 18446744073709551615` for -1)
+                let tail = &raw[at + 17..];
+                let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let shown = digits.parse::<u64>().map(|n| (n as i64).to_string()).unwrap_or(digits.clone());
+                format!("[native] {}but the index is {}{}", &raw[..at], shown, &tail[digits.len()..])
             } else {
                 format!("[native] {}", raw)
             };

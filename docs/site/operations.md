@@ -123,6 +123,11 @@ the events it accepts from other processes: `[bus] accept = ["paid"]` (an
 event this program emits itself is accepted too; anything else — any
 other handler — is refused). The event reaches every cell with `on paid`. `--join host:bus-port`
 registers a node for `scale` sharding; it does not by itself forward `emit`.
+An event sent while the peer is down is logged `bus: event '…' NOT
+delivered` (also after a linked peer disconnects); `soma run` opens no bus,
+so an `emit` meant for `[peers]` is reported not delivered there too. A JSON
+request body or bus event with more than 1 000 000 values is refused (413 /
+connection closed) before it is parsed.
 A peer that is down when the process starts is logged as
 `peer: … failed` and not retried — start the receiving process first. This
 is the experimental corner of Soma; single-process is the supported shape.

@@ -163,7 +163,8 @@ bus) is opened only when soma.toml lists `[peers]` or events in `[bus]
 accept`, a cell declares `scale`, or `--join` is given (an `emit` alone
 stays in this process: no port) — the start-up log says `bus:
 listening` or `bus: not started`. The bus speaks one line per event,
-`EVENT <name> <json>\n` (a line past 16 MB closes the connection); a
+`EVENT <name> <json>\n` (a line past 16 MB, or holding more than a
+million JSON values, closes the connection); a
 receiver runs only the events its program emits itself (with `[peers]` or a cluster) or lists in
 `[bus] accept = ["reading"]` in soma.toml, and never `request`, `ws`,
 `start`/`init` or a `_private` handler. An `emit` goes to every connected

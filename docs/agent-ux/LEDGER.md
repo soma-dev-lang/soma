@@ -1231,3 +1231,21 @@ on deep or huge inputs.
 
 ### Open
 - [ ] Absolute paths are still not confined; the prover cannot bound strings (`"bk{n}" != ""`); route patterns take one variable; no time zones.
+
+### Cycle 53 — realistic port (multi-warehouse inventory, two processes over the bus) + attack (bus, test/serve divergence, verifier, exposure)
+
+Inventory port 8/10: 30 parallel reservations of the last unit → exactly
+one; a duplicate webhook delivered 5× concurrently applied once; atomic CSV
+import. Attack: every bus filter (private/lifecycle names, `_type`,
+unlisted events, malformed lines) held; no unsound ✓ in guards, `except`,
+tool cost bounds or List-slot invariants; no crash.
+
+### Fixed
+- [x] **Attack: parse amplification** — a valid 15 MB bus line or JSON body of `[0,0,…]` became ~2.4 GB of parsed values before any check; more than 1 000 000 JSON values is refused before parsing (413 / bus connection closed).
+- [x] **Port: events emitted after a linked peer went down vanished silently** (the write "succeeded" into the kernel buffer) — the next event is logged NOT delivered and the dead link is dropped.
+- [x] Port: `soma run` of a handler emitting to `[peers]` committed and sent nothing, silently — a warning names the undelivered events.
+- [x] Port: `b.size ?? "M"` read the entry count (never `()`) — a check warning points to `b.get("size")`.
+- [x] Port: a negative `[native]` buffer index was shown as 18446744073709551615 — shown as -1.
+
+### Open
+- [ ] A missing field interpolates as `null`; no CSV-from-string parser; a restarted one-way peer is not re-linked; `write_csv(path, [])` writes no header; serve prints "listening" before the bus port binds.

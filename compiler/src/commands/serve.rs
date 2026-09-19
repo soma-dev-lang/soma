@@ -1418,6 +1418,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
         // not declare, stored and matched later); `_status` at the top would
         // make an echoed body an HTTP response
         let mut reserved_hit: Option<&'static str> = None;
+        if (body_raw.starts_with('{') || body_raw.starts_with('[')) && interpreter::json_too_many_values(&body_raw) {
+            let msg = format!("the request body holds more than {} JSON values", interpreter::JSON_MAX_VALUES);
+            let resp = tiny_http::Response::from_string(error_body(&msg, "json"))
+                .with_status_code(413)
+                .with_header(tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
+            eprintln!("{} {} → 413 0ms {}", method, log_safe(&url), msg);
+            let _ = request.respond(cors(resp));
+            return;
+        }
         let body_value = if body_raw.starts_with('{') || body_raw.starts_with('[') {
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body_raw) {
                 reserved_hit = reserved_json_key(&parsed, true);

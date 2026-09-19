@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A JSON request body or bus event with more than 1 000 000 values is
+  refused before parsing (a 15 MB line became 2.4 GB in memory).
+- Events sent after a linked peer disconnected are logged NOT delivered;
+  `soma run` warns when an `emit` meant for `[peers]` goes nowhere.
+- Check warns on `m.size ?? default` (`.size` is the entry count, never
+  `()`); a negative `[native]` buffer index is reported as written.
 - Every path-taking builtin (`load`, `include`, `load_template`,
   `read_files`, `par_read_files`, `word_count`) refuses a `..` segment:
   `load("templates/" + name)` could serve any file.

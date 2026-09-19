@@ -3007,3 +3007,44 @@ cell E {
     assert!(h2.contains(" 403 "), "two Host headers are refused: {h2}");
     assert!(ok.contains(" 200 "), "a plain local request passes: {ok}");
 }
+
+/// Cycle 53: `soma run` says an emit meant for [peers] was not delivered;
+/// `m.size ?? d` is a check warning; a JSON body with more than a million
+/// values is refused 413 before it is parsed (15 MB became 2.4 GB).
+#[test]
+fn cycle53_findings() {
+    let d = dir("cycle53");
+    std::fs::write(d.join("soma.toml"), "[peers]\nb = \"127.0.0.1:1\"\n").unwrap();
+    std::fs::write(d.join("a.cell"), "cell A { memory { s: Map<String, Int> [persistent] }\n  on go(k: String) { s.set(k, 1)  emit ping(map(\"p\", k))  return \"ok\" }\n  on ping(e: Map) { return () } }\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "--fresh", "a.cell", "go", "x"]);
+    assert!(out.contains("NOT delivered"), "an emit under soma run with [peers] is reported: {out}");
+
+    let l = dir("cycle53_lint");
+    std::fs::write(l.join("s.cell"), "cell S { on main() { let b = from_json(\"{\\\"qty\\\": 2}\")  let size = b.size ?? \"M\"  return size } }\n").unwrap();
+    let (out, _) = soma_in(&l, &["check", "s.cell"]);
+    assert!(out.contains("b.get(\"size\")"), "`.size ?? …` is flagged: {out}");
+
+    let s = dir("cycle53_serve");
+    std::fs::write(s.join("app.cell"), "cell R { on request(method: String, path: String, body: String) { return \"ok\" } }\n").unwrap();
+    let port = 19750 + (std::process::id() % 40) as u16;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["serve", "app.cell", "-p", &port.to_string()])
+        .current_dir(&s).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("soma serve");
+    let mut up = false;
+    for _ in 0..80 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { up = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let mut resp = String::new();
+    if up {
+        let body = format!("[{}0]", "0,".repeat(1_100_000));
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(std::time::Duration::from_secs(30))).unwrap();
+        let _ = write!(c, "POST /x HTTP/1.0\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
+        let _ = c.read_to_string(&mut resp);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(up, "server did not start");
+    assert!(resp.contains(" 413 "), "a body over a million JSON values is refused: {}", &resp[..resp.len().min(200)]);
+}
