@@ -59,7 +59,8 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
         "range" | "random" | "days_in_month" => true,
         "chr" | "sleep" => position == 0,
         "substring" | "slice" => position == 1 || position == 2,
-        "pad_left" | "pad_right" | "repeat" | "take" | "drop" | "with" | "nth" | "str_at" | "left" | "right" => position == 1,
+        "with" => position == 1 && matches!(args.first(), Some(Value::List(_))),
+        "pad_left" | "pad_right" | "repeat" | "take" | "drop" | "nth" | "str_at" | "left" | "right" => position == 1,
         _ => false,
     };
     if args.iter().enumerate().any(|(n, a)| count_argument(n) && matches!(a, Value::Int(i) if i.to_i64().is_none())) {

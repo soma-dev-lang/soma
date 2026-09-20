@@ -213,6 +213,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "with" => {
+            if args.len() % 2 == 0 {
+                return Some(Err(RuntimeError::TypeError("with expects a collection followed by complete key-value pairs".to_string())));
+            }
             match args.first() {
                 // a record: its declared fields only (types checked where it lands)
                 Some(Value::Variant { type_name, variant, fields: crate::interpreter::VariantValue::Struct(fs) }) => {

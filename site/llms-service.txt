@@ -30,6 +30,13 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
+Soma 2.8.6 corrects duplicate/skipped argument evaluation, self-append bindings,
+piped map updates, ignored builtin mocks and inconsistent pipe dispatch.
+Calls and pipes share local-lambda and cell-handler resolution. Constructors
+coerce declared Float and nested record fields and reject incompatible shapes.
+Twenty-four new integration regressions cover these fixes. Compatibility and
+examples: https://soma-lang.dev/CHANGELOG.md.
+
 Soma 2.8.5 fixes typed input and storage boundaries: implicit Int-to-Float
 promotion rejects overflow, typed maps check underscore keys and variant
 payloads, and declared sum/record returns validate their values. Persistent

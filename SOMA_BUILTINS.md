@@ -131,7 +131,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `flatten` | `flatten(list: List) -> List` | Flatten one level of nested lists. |
 | `zip` | `zip(a: List, b: List) -> List<{left, right}>` | Pair elements positionally; stops at the shorter list. |
 | `enumerate` | `enumerate(list: List) -> List<{index, value}>` | Attach a 0-based index to each element. |
-| `with` | `with(m: Map, key, value, ...) -> Map \| with(list: List, i: Int, value) -> List` | Copy of the map with key-value pairs inserted, or copy of the list with element i replaced. |
+| `with` | `with(m: Map, key, value, ...) -> Map \| with(list: List, i: Int, value) -> List` | Copy of the map with every key-value pair inserted, or copy of the list with element i replaced. An incomplete pair raises kind type; large Int map keys are stringified, while list indices must fit signed 64 bits. |
 | `without` | `without(m: Map, keys...) -> Map` | Return a copy of the map with the given keys removed. |
 | `merge` | `merge(a: Map, b: Map) -> Map` | Copy of `a` with all entries of `b` inserted (b wins on conflict). |
 | `join` | `join(list: List, sep: String) -> String \| join(left: List, right: List, key) -> List` | Join list elements into a string — or, with two lists, an inner data join on `key`. |

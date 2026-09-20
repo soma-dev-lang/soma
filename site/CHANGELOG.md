@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 2.8.6 — 2026-09-20
+
+### Evaluation order, call resolution and constructors
+
+- Arithmetic assignments evaluate their right operand once. Non-exact division,
+  remainder and mixed Float arithmetic no longer run a callback twice; logical
+  assignments retain left-operand validation and short-circuit behavior.
+- List self-appends keep the original list readable while evaluating arguments.
+  Refused appends preserve the local binding. Arguments that reassign a local
+  retain the ordinary call's left-to-right snapshot semantics. The legacy
+  `xs = list(xs, item)` / `append` self-append idioms remain supported.
+- In-place piped map updates evaluate and apply every pair. A later argument's
+  failure is propagated, and record/list fallbacks do not reevaluate arguments.
+  `with` rejects incomplete key-value pairs. Map keys represented by large Ints
+  are accepted; machine-index bounds apply to lists.
+- Optimized reads, appends, map updates and range loops respect handlers, local
+  callables and scripted builtin mocks. `nth` does not retry an invalid index
+  expression or read a replacement list created while evaluating that index.
+- Calls and pipes share dispatch: pipes invoke local lambdas and the calling
+  cell's own handler. Ordinary higher-order calls accept block lambdas.
+  Record updates honor builtin mocks before validating the real update.
+- Struct and tuple variant constructors recursively coerce declared fields,
+  including Int-to-Float promotion and nested record maps, and reject Float
+  overflow. A declared tuple/unit variant cannot masquerade as an untyped
+  record through a named-field constructor.
+- Add 24 integration regressions, all reproduced on 2.8.5, covering side-effect
+  counts, value preservation, dispatch, mocks and constructor boundaries.
+
+**Compatibility:** declared Float fields in newly constructed variants now hold
+Floats, including ordinary Int rounding; overflowing promotion raises `type`.
+Incomplete `with` pairs and incorrectly shaped variant constructors now fail.
+Programs that relied on duplicate or skipped effects, ignored mocks or the wrong
+handler being selected observe the corrected evaluation and call semantics.
+
 ## 2.8.5 — 2026-09-20
 
 ### Typed inputs and persistent values

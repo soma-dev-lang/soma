@@ -1789,69 +1789,67 @@ impl Interpreter {
                 if !env.contains_key(name) && self.slot_kind(cell_name, name).is_some() {
                     return Err(ExecError::Runtime(RuntimeError::TypeError(slot_assign_message(name, self.slot_kind(cell_name, name)))));
                 }
-                // Optimization: items = list(items, x) → in-place append (avoids O(n²) clone)
-                if let Expr::FnCall { name: fn_name, args: fn_args } = &value.node {
-                    if (fn_name == "list" || fn_name == "push" || fn_name == "append") && fn_args.len() >= 2 {
-                        if let Expr::Ident(ref first_arg_name) = fn_args[0].node {
-                            if first_arg_name == name {
-                                // Take the list from env, append in place, put back
-                                let mut existing = env.remove(name).unwrap_or(Value::List(vec![]));
-                                if let Value::List(ref mut vec) = existing {
-                                    for arg in &fn_args[1..] {
-                                        let val = self.eval_expr(&arg.node, env, cell_name, signal_name)?;
-                                        vec.push(val);
-                                    }
-                                    env.insert(name.clone(), existing);
-                                    return Ok(Value::Unit);
-                                }
-                                env.insert(name.clone(), existing);
-                            }
+                // Preserve the documented self-append idiom without removing
+                // the list while its arguments can still read it.
+                if let Expr::FnCall { name: fn_name, args } = &value.node {
+                    if matches!(fn_name.as_str(), "list" | "push" | "append") && args.len() >= 2
+                        && self.builtin_fast_path(fn_name, args.len(), env, cell_name)
+                        && matches!(&args[0].node, Expr::Ident(n) if n == name)
+                        && matches!(env.get(name), Some(Value::List(_)))
+                    {
+                        let snapshot = args[1..].iter().any(|a| expr_may_assign(&a.node)).then(|| env[name].clone());
+                        let tail = args[1..].iter().map(|a| self.eval_expr(&a.node, env, cell_name, signal_name)).collect::<Result<Vec<_>, _>>()?;
+                        if !self.builtin_fast_path(fn_name, args.len(), env, cell_name) {
+                            let mut values = vec![snapshot.unwrap_or_else(|| env[name].clone())];
+                            values.extend(tail);
+                            let val = self.eval_named_call(fn_name, values, env, cell_name, signal_name)?;
+                            env.insert(name.clone(), val);
+                        } else {
+                            let mut base = snapshot.unwrap_or_else(|| env.remove(name).unwrap());
+                            if let Value::List(xs) = &mut base { xs.extend(tail); }
+                            env.insert(name.clone(), base);
                         }
+                        return Ok(Value::Unit);
                     }
                 }
-                // Fast path: x = x + LITERAL or x = x - LITERAL (compound assignment on ints)
+                // Reuse already evaluated arithmetic operands. Logical operators
+                // retain eval_expr's left-type check and short-circuit semantics.
                 if let Expr::BinaryOp { left, op, right } = &value.node {
-                    if let Expr::Ident(ref lhs_name) = left.node {
-                        if lhs_name == name {
-                            // x = x OP rhs → in-place update
-                            if let Some(Value::Int(current)) = env.get(name) {
-                                let current = current.clone();
-                                let rhs_val = self.eval_expr(&right.node, env, cell_name, signal_name)?;
-                                if let Value::Int(rhs_si) = rhs_val {
-                                    let result = match op {
-                                        BinOp::Add => current.add(rhs_si),
-                                        BinOp::Sub => current.sub(rhs_si),
-                                        BinOp::Mul => current.checked_big_mul(rhs_si).map_err(|m| ExecError::Runtime(RuntimeError::Domain { kind: "range".to_string(), message: m }))?,
-                                        // exact division only — non-exact promotes to Float via the generic path
-                                        BinOp::Div if rhs_si.to_i64() != Some(0)
-                                            && current.clone().modulo(rhs_si.clone()).to_i64() == Some(0) => current.div(rhs_si),
-                                        _ => {
-                                            let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
-                                            env.insert(name.clone(), val);
-                                            return Ok(Value::Unit);
-                                        }
-                                    };
-                                    env.insert(name.clone(), Value::Int(result));
-                                    return Ok(Value::Unit);
-                                }
-                            }
+                    if !matches!(op, BinOp::And | BinOp::Or)
+                        && matches!(&left.node, Expr::Ident(n) if n == name)
+                    {
+                        if let Some(Value::Int(current)) = env.get(name) {
+                            let lhs = Value::Int(current.clone());
+                            let rhs = self.eval_expr(&right.node, env, cell_name, signal_name)?;
+                            let val = self.eval_binop(&lhs, *op, &rhs).map_err(ExecError::Runtime)?;
+                            env.insert(name.clone(), val);
+                            return Ok(Value::Unit);
                         }
                     }
                 }
-                // Fast path: m = m |> with(k, v) → in-place map insert
+                // All pairs are evaluated before an in-place map update commits.
                 if let Expr::Pipe { left, right } = &value.node {
-                    if let Expr::Ident(ref pipe_name) = left.node {
-                        if pipe_name == name {
-                            if let Expr::FnCall { name: fn_name, args } = &right.node {
-                                if fn_name == "with" && args.len() >= 2 {
-                                    let key = self.eval_expr(&args[0].node, env, cell_name, signal_name)?;
-                                    let val = self.eval_expr(&args[1].node, env, cell_name, signal_name)?;
-                                    let key_str = format!("{}", key);
-                                    if let Some(Value::Map(ref mut entries)) = env.get_mut(name) {
-                                        entries.insert(key_str, val);
-                                        return Ok(Value::Unit);
+                    if matches!(&left.node, Expr::Ident(n) if n == name) {
+                        if let Expr::FnCall { name: fn_name, args } = &right.node {
+                            if fn_name == "with" && args.len() % 2 == 0
+                                && self.builtin_fast_path(fn_name, args.len() + 1, env, cell_name)
+                                && matches!(env.get(name), Some(Value::Map(_)))
+                            {
+                                let snapshot = args.iter().any(|a| expr_may_assign(&a.node)).then(|| env[name].clone());
+                                let values = args.iter().map(|a| self.eval_expr(&a.node, env, cell_name, signal_name)).collect::<Result<Vec<_>, _>>()?;
+                                if !self.builtin_fast_path(fn_name, args.len() + 1, env, cell_name) {
+                                    let mut all = vec![snapshot.unwrap_or_else(|| env[name].clone())];
+                                    all.extend(values);
+                                    let val = self.eval_named_call(fn_name, all, env, cell_name, signal_name)?;
+                                    env.insert(name.clone(), val);
+                                } else {
+                                    let mut base = snapshot.unwrap_or_else(|| env.remove(name).unwrap());
+                                    if let Value::Map(m) = &mut base {
+                                        for pair in values.chunks_exact(2) { m.insert(format!("{}", pair[0]), pair[1].clone()); }
                                     }
+                                    env.insert(name.clone(), base);
                                 }
+                                return Ok(Value::Unit);
                             }
                         }
                     }
@@ -1933,7 +1931,8 @@ impl Interpreter {
                 // and closures, and evaluate each argument exactly once.
                 if let Expr::FnCall { name: fn_name, args: fn_args } = &iter.node {
                     if fn_name == "range" && (2..=3).contains(&fn_args.len())
-                        && !env.contains_key(fn_name) && !self.user_handler_takes(fn_name, fn_args.len())
+                        && self.builtin_fast_path(fn_name, fn_args.len(), env, cell_name)
+                        && !fn_args.iter().any(|a| expr_may_assign(&a.node))
                     {
                         let values = fn_args.iter().map(|a| self.eval_expr(&a.node, env, cell_name, signal_name)).collect::<Result<Vec<_>, _>>()?;
                         let (start, end, step, count) = builtins::collection::range_spec(&values).map_err(ExecError::Runtime)?;
@@ -2317,7 +2316,7 @@ impl Interpreter {
                 // `len(rows)` / `nth(rows, i)` on a local: read in place —
                 // evaluating `rows` copied the whole list per call (a
                 // `while i < len(rows)` loop over 20k rows took 39 s)
-                if matches!(name.as_str(), "len" | "nth") && !self.user_handler_takes(name, args.len()) {
+                if matches!(name.as_str(), "len" | "nth") && self.builtin_fast_path(name, args.len(), env, cell_name) {
                     if let Some(Expr::Ident(local)) = args.first().map(|a| &a.node) {
                         if name == "len" && args.len() == 1 {
                             match env.get(local) {
@@ -2335,7 +2334,7 @@ impl Interpreter {
                                 },
                             }
                         }
-                        if name == "nth" && args.len() == 2 && matches!(env.get(local), Some(Value::List(_))) {
+                        if name == "nth" && args.len() == 2 && !expr_may_assign(&args[1].node) && matches!(env.get(local), Some(Value::List(_))) {
                             let idx = self.eval_expr(&args[1].node, env, cell_name, signal_name)?;
                             if let (Some(Value::List(xs)), Value::Int(i)) = (env.get(local), &idx) {
                                 // like the builtin: negative from the end, () out of range
@@ -2346,6 +2345,7 @@ impl Interpreter {
                                 let k = if raw < 0 { raw + xs.len() as i64 } else { raw };
                                 return Ok(if k >= 0 && (k as usize) < xs.len() { xs[k as usize].clone() } else { Value::Unit });
                             }
+                            return Err(ExecError::Runtime(RuntimeError::TypeError("nth(list, i): index must be an Int".to_string())));
                         }
                     }
                 }
@@ -2367,202 +2367,7 @@ impl Interpreter {
                     arg_vals.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                 }
 
-                // Tuple-variant constructor: `Up(3)`, `Move(x, y)`.
-                if let Some((vtype, shape)) = self.variant_registry.get(name).cloned() {
-                    if let VariantShape::Tuple(arity) = shape {
-                        if arg_vals.len() != arity {
-                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                                "variant '{}' takes {} argument{}, got {}",
-                                name,
-                                arity,
-                                if arity == 1 { "" } else { "s" },
-                                arg_vals.len()
-                            ))));
-                        }
-                        let fields = VariantValue::Tuple(arg_vals);
-                        if let Err(m) = self.variant_ok(&vtype, name, &fields) {
-                            return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: m }));
-                        }
-                        return Ok(Value::Variant {
-                            type_name: vtype,
-                            variant: name.clone(),
-                            fields,
-                        });
-                    }
-                }
-
-                // YOUR handler of that name and arity wins over these network
-                // builtins too (`on subscribe(a, b, c)` ran the WebSocket
-                // subscribe; `link(user_text)` opened a socket)
-                let user_net = matches!(name.as_str(), "ws_connect" | "ws_send" | "link" | "subscribe")
-                    && self.user_handler_takes(name, arg_vals.len());
-                // raw sockets are outside a capability-scoped tool
-                if !user_net && matches!(name.as_str(), "ws_connect" | "connect" | "subscribe") {
-                    if let Some(caps) = self.current_tool_caps.as_ref() {
-                        if !caps.iter().any(|c| c == "*") {
-                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!("capability denied: {}() is outside this tool's capabilities {:?}", name, caps))));
-                        }
-                    }
-                }
-                // WebSocket builtins — need &mut self
-                if !user_net && name == "ws_connect" {
-                    if let Some(Value::String(url)) = arg_vals.first() {
-                        return self.do_ws_connect(url, cell_name)
-                            .map_err(ExecError::Runtime);
-                    }
-                    return Err(ExecError::Runtime(RuntimeError::TypeError("ws_connect(url)".to_string())));
-                }
-                if !user_net && name == "ws_send" {
-                    if let Some(ref out) = self.ws_out {
-                        let msg = match arg_vals.first() {
-                            Some(Value::String(s)) => s.clone(),
-                            Some(v) => format!("{}", v),
-                            None => "{}".to_string(),
-                        };
-                        if let Ok(sender) = out.lock() {
-                            let _ = sender.send(msg);
-                        }
-                        return Ok(Value::Unit);
-                    }
-                    return Err(ExecError::Runtime(RuntimeError::TypeError("ws_send: not connected".to_string())));
-                }
-                // connect(host:port) — open a TCP signal bus link
-                if !user_net && name == "link" {
-                    if let Some(Value::String(addr)) = arg_vals.first() {
-                        return self.do_connect(addr, cell_name)
-                            .map_err(ExecError::Runtime);
-                    }
-                    return Err(ExecError::Runtime(RuntimeError::TypeError("connect(\"host:port\")".to_string())));
-                }
-                if !user_net && name == "subscribe" {
-                    if let Some(Value::String(url)) = arg_vals.first() {
-                        return self.do_subscribe(url, cell_name)
-                            .map_err(ExecError::Runtime);
-                    }
-                    return Err(ExecError::Runtime(RuntimeError::TypeError("subscribe(url)".to_string())));
-                }
-
-                // First-class lambdas: a local variable bound to a lambda is callable
-                if let Some(lam @ (Value::Lambda { .. } | Value::LambdaBlock { .. })) = env.get(name) {
-                    let lam = lam.clone();
-                    if arg_vals.len() != 1 {
-                        return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                            "lambda '{}' takes exactly 1 argument, got {}", name, arg_vals.len()
-                        ))));
-                    }
-                    return self.apply_lambda(&lam, arg_vals.into_iter().next().unwrap(), cell_name);
-                }
-                // Resolution: a handler of the program taking this many
-                // arguments shadows a builtin of the same name. `on list()`
-                // can still call the builtin list(1, 2) — 2 ≠ 0 arguments.
-                // …but only the CALLING cell's own handler: a library's
-                // `on escape_html(s) { return s }` replaced the builtin for
-                // the whole importing program (XSS), and `on clamp(x, lo, hi)`
-                // made a proven invariant false
-                let user_wins = self.user_handler_takes(name, arg_vals.len())
-                    && (!crate::checker::names::builtin_names().contains(name.as_str()) || self.cell_defines_handler(cell_name, name));
-                // Check lambda builtins first (map, filter, find, etc.) — need &mut self
-                if !user_wins && arg_vals.iter().any(|v| matches!(v, Value::Lambda { .. })) {
-                    if let Some(val) = builtins::call_lambda_builtin(self, name, &arg_vals, cell_name) {
-                        return val.map_err(ExecError::Runtime);
-                    }
-                }
-                if name == "transition" {
-                    self.transition_env = Some(env.clone());
-                }
-                let builtin_result = if user_wins { None } else { self.call_builtin(name, &arg_vals, cell_name) };
-                if let Some(val) = builtin_result {
-                    val.map_err(ExecError::Runtime)
-                }
-                // Then check for recursive call to current signal — use cached handler
-                else if name == signal_name {
-                    // Fast path: use cached handler to avoid HashMap lookup + key allocation
-                    let cached = self.current_handler.as_ref().and_then(|(ch_cell, ch_sig, ch_params, ch_body)| {
-                        if ch_cell == cell_name && ch_sig == signal_name {
-                            Some((Arc::clone(ch_params), Arc::clone(ch_body)))
-                        } else {
-                            None
-                        }
-                    });
-                    if let Some((params, body)) = cached {
-                        self.call_signal_resolved(cell_name, signal_name, arg_vals, &params, &body)
-                            .map_err(ExecError::Runtime)
-                    } else {
-                        self.call_signal(cell_name, signal_name, arg_vals)
-                            .map_err(ExecError::Runtime)
-                    }
-                }
-                // Is it a call to another cell's signal?
-                else {
-                    // Try to find a cell with a matching on-handler: the
-                    // CALLING cell's own handler first, then declaration
-                    // order (a HashMap walk ran another cell's same-named
-                    // handler for a bare call inside a cell that defines it)
-                    let defines = |cn: &str| self.cells.get(cn).map_or(false, |c| c.sections.iter().any(|s| {
-                        matches!(&s.node, Section::OnSignal(on) if on.signal_name == *name)
-                    }));
-                    // a rule of a test cell: that test cell's own helper (a
-                    // same-named helper of another test cell ran instead)
-                    let test_cell = if cell_name.is_empty() { self.current_test_cell.clone().filter(|t| defines(t)) } else { None };
-                    let found_cell = if defines(cell_name) {
-                        Some(cell_name.to_string())
-                    } else if let Some(t) = test_cell {
-                        Some(t)
-                    } else {
-                        let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn)).collect();
-                        all.sort_by_key(|c| self.cell_order.iter().position(|o| o == *c).unwrap_or(usize::MAX));
-                        all.first().map(|c| (*c).clone())
-                    };
-
-                    if let Some(target_cell) = found_cell {
-                        self.call_signal(&target_cell, name, arg_vals)
-                            .map_err(ExecError::Runtime)
-                    } else {
-                        // A builtin that refused the call (wrong argument
-                        // count or kinds) is not "undefined": show its signature.
-                        if let Some(b) = builtins::registry::BUILTINS.iter()
-                            .find(|b| b.name == name && b.category != "reserved")
-                        {
-                            let kinds: Vec<&str> = arg_vals.iter().map(value_type_name).collect();
-                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                                "{} — called with {} argument{} ({})",
-                                b.signature, arg_vals.len(), if arg_vals.len() == 1 { "" } else { "s" },
-                                if kinds.is_empty() { "none".to_string() } else { kinds.join(", ") }
-                            ))));
-                        }
-                        // Collect known names for "did you mean?" suggestion.
-                        // Builtins come from the registry (single source of
-                        // truth) so the suggester can never advertise a name
-                        // that is not actually callable.
-                        let mut all_names: Vec<String> = self.handler_cache.keys()
-                            .map(|(_, sig)| sig.clone())
-                            .collect();
-                        for b in builtins::registry::BUILTINS.iter().filter(|b| b.category != "reserved") {
-                            all_names.push(b.name.to_string());
-                        }
-
-                        let suggestion = all_names.iter()
-                            .filter(|n| n.as_str() != name)
-                            .filter(|n| levenshtein(n, name) <= 3)
-                            .min_by_key(|n| levenshtein(n, name))
-                            .cloned()
-                            .or_else(|| {
-                                // Fallback: prefix match (e.g. "length" starts with "len")
-                                all_names.iter()
-                                    .find(|n| n.as_str() != name
-                                        && (name.starts_with(n.as_str()) || n.starts_with(name)))
-                                    .cloned()
-                            });
-
-                        if let Some(did_you_mean) = suggestion {
-                            Err(ExecError::Runtime(RuntimeError::UndefinedFn(
-                                format!("{} (did you mean '{}'?)", name, did_you_mean)
-                            )))
-                        } else {
-                            Err(ExecError::Runtime(RuntimeError::UndefinedFn(name.clone())))
-                        }
-                    }
-                }
+                self.eval_named_call(name, arg_vals, env, cell_name, signal_name)
             }
 
             Expr::Not(inner) => {
@@ -2602,7 +2407,8 @@ impl Interpreter {
                         }
                         // the declared field types: `Charged { tx: 1 }` for
                         // `tx: String` was built and handed around
-                        let fields = VariantValue::Struct(entries);
+                        let fields = self.coerce_variant_fields(&vtype, type_name, VariantValue::Struct(entries))
+                            .map_err(|m| ExecError::Runtime(RuntimeError::TypeError(m)))?;
                         if let Err(m) = self.variant_ok(&vtype, type_name, &fields) {
                             return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: m }));
                         }
@@ -2612,6 +2418,7 @@ impl Interpreter {
                             fields,
                         });
                     }
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!("variant '{}' does not have named fields", type_name))));
                 }
                 // Fall through to record literal.
                 let mut entries = IndexMap::new();
@@ -2823,40 +2630,16 @@ impl Interpreter {
                         for arg in args {
                             all_args.push(self.eval_expr(&arg.node, env, cell_name, signal_name)?);
                         }
-                        let user_wins = self.user_handler_takes(name, all_args.len());
-                        // `"hello" |> map(f)` is the higher-order map, never the
-                        // Map constructor `map("hello", f)` ({"hello": <lambda>})
-                        if !user_wins && name == "map" && all_args.len() == 2
+                        if !self.handler_shadows_builtin(name, all_args.len(), cell_name)
+                            && !env.contains_key(name) && name == "map" && all_args.len() == 2
                             && matches!(all_args[0], Value::String(_))
                             && matches!(all_args[1], Value::Lambda { .. } | Value::LambdaBlock { .. }) {
-                            let t: String = format!("{}", all_args[0]).chars().take(30).collect();
-                            return Err(ExecError::Runtime(RuntimeError::TypeError(format!("map(list, f) needs a List, got String {}", t))));
+                            return Err(ExecError::Runtime(RuntimeError::TypeError("map(list, f) needs a List, got String".to_string())));
                         }
-                        // Check lambda builtins first (map, filter, etc.)
-                        if !user_wins && all_args.iter().any(|v| matches!(v, Value::Lambda { .. } | Value::LambdaBlock { .. })) {
-                            if let Some(val) = builtins::call_lambda_builtin(self, name, &all_args, cell_name) {
-                                return val.map_err(ExecError::Runtime);
-                            }
-                        }
-                        // A matching user handler first, then builtin, then signal
-                        let builtin_result = if user_wins { None } else { self.call_builtin(name, &all_args, cell_name) };
-                        if let Some(val) = builtin_result {
-                            val.map_err(ExecError::Runtime)
-                        } else {
-                            self.find_and_call_with_args(name, all_args)
-                                .map_err(ExecError::Runtime)
-                        }
+                        self.eval_named_call(name, all_args, env, cell_name, signal_name)
                     }
                     Expr::Ident(name) => {
-                        // Bare function: expr |> fn → fn(expr)
-                        let all_args = vec![left_val];
-                        let builtin_result = if self.user_handler_takes(name, 1) { None } else { self.call_builtin(name, &all_args, cell_name) };
-                        if let Some(val) = builtin_result {
-                            val.map_err(ExecError::Runtime)
-                        } else {
-                            self.find_and_call_with_args(name, all_args)
-                                .map_err(ExecError::Runtime)
-                        }
+                        self.eval_named_call(name, vec![left_val], env, cell_name, signal_name)
                     }
                     Expr::FieldAccess { target, field } => {
                         // expr |> obj.method → method call with pipe value
@@ -4208,6 +3991,31 @@ impl Interpreter {
     /// to turn input into `Line`; a line without `qty` was stored and every
     /// tick after failed.) Several variants still need the variant spelled
     /// out: a client cannot pick one.
+    fn coerce_variant_fields(&self, type_name: &str, variant: &str, fields: VariantValue) -> Result<VariantValue, String> {
+        match (self.variant_fields.get(&(type_name.to_string(), variant.to_string())), fields) {
+            (Some(VariantFields::Struct(types)), VariantValue::Struct(mut fields)) => {
+                for (name, ty) in types {
+                    if let Some(value) = fields.get_mut(name) {
+                        *value = self.coerce_records(&ty.node, value.clone())
+                            .map_err(|e| format!("{}.{}: {}", variant, name, e))?;
+                    }
+                }
+                Ok(VariantValue::Struct(fields))
+            }
+            (Some(VariantFields::Tuple(types)), VariantValue::Tuple(fields)) => {
+                let mut out = Vec::with_capacity(fields.len());
+                for (i, value) in fields.into_iter().enumerate() {
+                    out.push(match types.get(i) {
+                        Some(ty) => self.coerce_records(&ty.node, value).map_err(|e| format!("{} field {}: {}", variant, i, e))?,
+                        None => value,
+                    });
+                }
+                Ok(VariantValue::Tuple(out))
+            }
+            (_, fields) => Ok(fields),
+        }
+    }
+
     fn coerce_records(&self, ty: &TypeExpr, v: Value) -> Result<Value, String> {
         match (ty, v) {
             // an Int where a Float is declared is that Float (`score = 3`
@@ -4897,6 +4705,218 @@ impl Interpreter {
         self.cells.get(cell_name).map_or(false, |c| c.sections.iter().any(|s| matches!(&s.node, Section::OnSignal(on) if on.signal_name == name)))
     }
 
+    /// Dispatch already evaluated arguments once, for calls and pipes alike.
+    fn eval_named_call(&mut self, name: &String, arg_vals: Vec<Value>, env: &mut Env, cell_name: &str, signal_name: &str) -> Result<Value, ExecError> {
+        // Tuple-variant constructor: `Up(3)`, `Move(x, y)`.
+        if let Some((vtype, shape)) = self.variant_registry.get(name).cloned() {
+            if let VariantShape::Tuple(arity) = shape {
+                if arg_vals.len() != arity {
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                        "variant '{}' takes {} argument{}, got {}",
+                        name,
+                        arity,
+                        if arity == 1 { "" } else { "s" },
+                        arg_vals.len()
+                    ))));
+                }
+                let fields = self.coerce_variant_fields(&vtype, name, VariantValue::Tuple(arg_vals))
+                    .map_err(|m| ExecError::Runtime(RuntimeError::TypeError(m)))?;
+                if let Err(m) = self.variant_ok(&vtype, name, &fields) {
+                    return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: m }));
+                }
+                return Ok(Value::Variant {
+                    type_name: vtype,
+                    variant: name.clone(),
+                    fields,
+                });
+            }
+        }
+
+        // YOUR handler of that name and arity wins over these network
+        // builtins too (`on subscribe(a, b, c)` ran the WebSocket
+        // subscribe; `link(user_text)` opened a socket)
+        let user_net = matches!(name.as_str(), "ws_connect" | "ws_send" | "link" | "subscribe")
+            && self.user_handler_takes(name, arg_vals.len());
+        // raw sockets are outside a capability-scoped tool
+        if !user_net && matches!(name.as_str(), "ws_connect" | "connect" | "subscribe") {
+            if let Some(caps) = self.current_tool_caps.as_ref() {
+                if !caps.iter().any(|c| c == "*") {
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!("capability denied: {}() is outside this tool's capabilities {:?}", name, caps))));
+                }
+            }
+        }
+        // WebSocket builtins — need &mut self
+        if !user_net && name == "ws_connect" {
+            if let Some(Value::String(url)) = arg_vals.first() {
+                return self.do_ws_connect(url, cell_name)
+                    .map_err(ExecError::Runtime);
+            }
+            return Err(ExecError::Runtime(RuntimeError::TypeError("ws_connect(url)".to_string())));
+        }
+        if !user_net && name == "ws_send" {
+            if let Some(ref out) = self.ws_out {
+                let msg = match arg_vals.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(v) => format!("{}", v),
+                    None => "{}".to_string(),
+                };
+                if let Ok(sender) = out.lock() {
+                    let _ = sender.send(msg);
+                }
+                return Ok(Value::Unit);
+            }
+            return Err(ExecError::Runtime(RuntimeError::TypeError("ws_send: not connected".to_string())));
+        }
+        // connect(host:port) — open a TCP signal bus link
+        if !user_net && name == "link" {
+            if let Some(Value::String(addr)) = arg_vals.first() {
+                return self.do_connect(addr, cell_name)
+                    .map_err(ExecError::Runtime);
+            }
+            return Err(ExecError::Runtime(RuntimeError::TypeError("connect(\"host:port\")".to_string())));
+        }
+        if !user_net && name == "subscribe" {
+            if let Some(Value::String(url)) = arg_vals.first() {
+                return self.do_subscribe(url, cell_name)
+                    .map_err(ExecError::Runtime);
+            }
+            return Err(ExecError::Runtime(RuntimeError::TypeError("subscribe(url)".to_string())));
+        }
+
+        // First-class lambdas: a local variable bound to a lambda is callable
+        if let Some(lam @ (Value::Lambda { .. } | Value::LambdaBlock { .. })) = env.get(name) {
+            let lam = lam.clone();
+            if arg_vals.len() != 1 {
+                return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                    "lambda '{}' takes exactly 1 argument, got {}", name, arg_vals.len()
+                ))));
+            }
+            return self.apply_lambda(&lam, arg_vals.into_iter().next().unwrap(), cell_name);
+        }
+        // Resolution: a handler of the program taking this many
+        // arguments shadows a builtin of the same name. `on list()`
+        // can still call the builtin list(1, 2) — 2 ≠ 0 arguments.
+        // …but only the CALLING cell's own handler: a library's
+        // `on escape_html(s) { return s }` replaced the builtin for
+        // the whole importing program (XSS), and `on clamp(x, lo, hi)`
+        // made a proven invariant false
+        let user_wins = self.handler_shadows_builtin(name, arg_vals.len(), cell_name);
+        // Check lambda builtins first (map, filter, find, etc.) — need &mut self
+        if !user_wins && arg_vals.iter().any(|v| matches!(v, Value::Lambda { .. } | Value::LambdaBlock { .. })) {
+            if let Some(val) = builtins::call_lambda_builtin(self, name, &arg_vals, cell_name) {
+                return val.map_err(ExecError::Runtime);
+            }
+        }
+        if name == "transition" {
+            self.transition_env = Some(env.clone());
+        }
+        let builtin_result = if user_wins { None } else { self.call_builtin(name, &arg_vals, cell_name) };
+        if let Some(val) = builtin_result {
+            val.map_err(ExecError::Runtime)
+        }
+        // Then check for recursive call to current signal — use cached handler
+        else if name == signal_name {
+            // Fast path: use cached handler to avoid HashMap lookup + key allocation
+            let cached = self.current_handler.as_ref().and_then(|(ch_cell, ch_sig, ch_params, ch_body)| {
+                if ch_cell == cell_name && ch_sig == signal_name {
+                    Some((Arc::clone(ch_params), Arc::clone(ch_body)))
+                } else {
+                    None
+                }
+            });
+            if let Some((params, body)) = cached {
+                self.call_signal_resolved(cell_name, signal_name, arg_vals, &params, &body)
+                    .map_err(ExecError::Runtime)
+            } else {
+                self.call_signal(cell_name, signal_name, arg_vals)
+                    .map_err(ExecError::Runtime)
+            }
+        }
+        // Is it a call to another cell's signal?
+        else {
+            // Try to find a cell with a matching on-handler: the
+            // CALLING cell's own handler first, then declaration
+            // order (a HashMap walk ran another cell's same-named
+            // handler for a bare call inside a cell that defines it)
+            let defines = |cn: &str| self.cells.get(cn).map_or(false, |c| c.sections.iter().any(|s| {
+                matches!(&s.node, Section::OnSignal(on) if on.signal_name == *name)
+            }));
+            // a rule of a test cell: that test cell's own helper (a
+            // same-named helper of another test cell ran instead)
+            let test_cell = if cell_name.is_empty() { self.current_test_cell.clone().filter(|t| defines(t)) } else { None };
+            let found_cell = if defines(cell_name) {
+                Some(cell_name.to_string())
+            } else if let Some(t) = test_cell {
+                Some(t)
+            } else {
+                let mut all: Vec<&String> = self.cells.keys().filter(|cn| defines(cn)).collect();
+                all.sort_by_key(|c| self.cell_order.iter().position(|o| o == *c).unwrap_or(usize::MAX));
+                all.first().map(|c| (*c).clone())
+            };
+
+            if let Some(target_cell) = found_cell {
+                self.call_signal(&target_cell, name, arg_vals)
+                    .map_err(ExecError::Runtime)
+            } else {
+                // A builtin that refused the call (wrong argument
+                // count or kinds) is not "undefined": show its signature.
+                if let Some(b) = builtins::registry::BUILTINS.iter()
+                    .find(|b| b.name == name && b.category != "reserved")
+                {
+                    let kinds: Vec<&str> = arg_vals.iter().map(value_type_name).collect();
+                    return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                        "{} — called with {} argument{} ({})",
+                        b.signature, arg_vals.len(), if arg_vals.len() == 1 { "" } else { "s" },
+                        if kinds.is_empty() { "none".to_string() } else { kinds.join(", ") }
+                    ))));
+                }
+                // Collect known names for "did you mean?" suggestion.
+                // Builtins come from the registry (single source of
+                // truth) so the suggester can never advertise a name
+                // that is not actually callable.
+                let mut all_names: Vec<String> = self.handler_cache.keys()
+                    .map(|(_, sig)| sig.clone())
+                    .collect();
+                for b in builtins::registry::BUILTINS.iter().filter(|b| b.category != "reserved") {
+                    all_names.push(b.name.to_string());
+                }
+
+                let suggestion = all_names.iter()
+                    .filter(|n| n.as_str() != name)
+                    .filter(|n| levenshtein(n, name) <= 3)
+                    .min_by_key(|n| levenshtein(n, name))
+                    .cloned()
+                    .or_else(|| {
+                        // Fallback: prefix match (e.g. "length" starts with "len")
+                        all_names.iter()
+                            .find(|n| n.as_str() != name
+                                && (name.starts_with(n.as_str()) || n.starts_with(name)))
+                            .cloned()
+                    });
+
+                if let Some(did_you_mean) = suggestion {
+                    Err(ExecError::Runtime(RuntimeError::UndefinedFn(
+                        format!("{} (did you mean '{}'?)", name, did_you_mean)
+                    )))
+                } else {
+                    Err(ExecError::Runtime(RuntimeError::UndefinedFn(name.clone())))
+                }
+            }
+        }
+    }
+
+    fn handler_shadows_builtin(&self, name: &str, argc: usize, cell_name: &str) -> bool {
+        self.user_handler_takes(name, argc)
+            && (!crate::checker::names::builtin_names().contains(name) || self.cell_defines_handler(cell_name, name))
+    }
+
+    /// Optimizations may bypass only the unmodified builtin dispatcher.
+    fn builtin_fast_path(&self, name: &str, argc: usize, env: &Env, cell_name: &str) -> bool {
+        !env.contains_key(name) && !self.variant_registry.contains_key(name)
+            && !self.handler_shadows_builtin(name, argc, cell_name)
+            && !self.handler_stubs.get(name).is_some_and(|q| !q.is_empty())
+    }
+
     fn user_handler_takes(&self, name: &str, argc: usize) -> bool {
         self.handler_arities.get(name).is_some_and(|a| a.contains(&argc))
     }
@@ -4905,26 +4925,6 @@ impl Interpreter {
     /// in `cell builtin` definitions. This is the thin kernel — everything
     /// above is Soma. Delegates to sub-modules in builtins/.
     pub fn call_builtin(&mut self, name: &str, args: &[Value], cell_name: &str) -> Option<Result<Value, RuntimeError>> {
-        // `with(record, "field", v)` (also `xs[0].qty = v`): the declared
-        // field type holds, as for `l.qty = v`
-        if name == "with" && args.len() >= 3 && !self.user_handler_takes(name, args.len()) {
-            if let Value::Variant { type_name, variant, fields: VariantValue::Struct(_) } = &args[0] {
-                if let Some(crate::ast::VariantFields::Struct(fields)) = self.variant_fields.get(&(type_name.clone(), variant.clone())).cloned() {
-                    let mut coerced = args.to_vec();
-                    let mut i = 1;
-                    while i + 1 < coerced.len() {
-                        let key = format!("{}", coerced[i]);
-                        if let Some((_, t)) = fields.iter().find(|(f, _)| *f == key) {
-                            let v = match self.coerce_records(&t.node, coerced[i + 1].clone()) { Ok(v) => v, Err(e) => return Some(Err(RuntimeError::TypeError(format!("{}.{}: {}", variant, key, e)))) };
-                            if let Err(e) = self.value_fits(&t.node, &v) { return Some(Err(RuntimeError::TypeError(format!("{}.{}: {}", variant, key, e)))); }
-                            coerced[i + 1] = v;
-                        }
-                        i += 2;
-                    }
-                    return builtins::call_builtin(self, name, &coerced, cell_name);
-                }
-            }
-        }
         // `mock http_post map(...)` in a test cell scripts a builtin like a
         // handler (it used to be accepted and ignored — the test then made
         // a real network call)
@@ -4952,6 +4952,26 @@ impl Interpreter {
                         }
                     }
                 });
+            }
+        }
+        // `with(record, "field", v)` (also `xs[0].qty = v`): the declared
+        // field type holds, as for `l.qty = v`
+        if name == "with" && args.len() >= 3 && !self.handler_shadows_builtin(name, args.len(), cell_name) {
+            if let Value::Variant { type_name, variant, fields: VariantValue::Struct(_) } = &args[0] {
+                if let Some(crate::ast::VariantFields::Struct(fields)) = self.variant_fields.get(&(type_name.clone(), variant.clone())).cloned() {
+                    let mut coerced = args.to_vec();
+                    let mut i = 1;
+                    while i + 1 < coerced.len() {
+                        let key = format!("{}", coerced[i]);
+                        if let Some((_, t)) = fields.iter().find(|(f, _)| *f == key) {
+                            let v = match self.coerce_records(&t.node, coerced[i + 1].clone()) { Ok(v) => v, Err(e) => return Some(Err(RuntimeError::TypeError(format!("{}.{}: {}", variant, key, e)))) };
+                            if let Err(e) = self.value_fits(&t.node, &v) { return Some(Err(RuntimeError::TypeError(format!("{}.{}: {}", variant, key, e)))); }
+                            coerced[i + 1] = v;
+                        }
+                        i += 2;
+                    }
+                    return builtins::call_builtin(self, name, &coerced, cell_name);
+                }
             }
         }
         if self.test_auto_mock && name.starts_with("http_") && !self.net_noted {
@@ -6618,6 +6638,22 @@ mod tests {
         "#;
         let result = run(source, "T", "run", vec![]).unwrap();
         assert_eq!(result.to_string(), "done");
+    }
+}
+
+/// If/match expression bodies can assign caller locals. Called handlers and
+/// lambdas have their own environments; inspect their argument expressions only.
+fn expr_may_assign(expr: &Expr) -> bool {
+    match expr {
+        Expr::IfExpr { .. } | Expr::Match { .. } => true,
+        Expr::FieldAccess { target, .. } => expr_may_assign(&target.node),
+        Expr::Index { target, index } => expr_may_assign(&target.node) || expr_may_assign(&index.node),
+        Expr::MethodCall { target, args, .. } => expr_may_assign(&target.node) || args.iter().any(|a| expr_may_assign(&a.node)),
+        Expr::FnCall { args, .. } | Expr::ListLiteral(args) => args.iter().any(|a| expr_may_assign(&a.node)),
+        Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => expr_may_assign(&left.node) || expr_may_assign(&right.node),
+        Expr::Not(x) | Expr::Try(x) | Expr::TryPropagate(x) => expr_may_assign(&x.node),
+        Expr::Record { fields, .. } => fields.iter().any(|(_, x)| expr_may_assign(&x.node)),
+        Expr::Literal(_) | Expr::Ident(_) | Expr::Lambda { .. } | Expr::LambdaBlock { .. } => false,
     }
 }
 

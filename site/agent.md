@@ -57,6 +57,18 @@ with the `features` you need before writing a new cell).
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
 
+## Execution corrections in Soma 2.8.6 (2026-09-20)
+
+Arithmetic assignments and optimized collection operations evaluate arguments
+once, in order. Self-appends keep the source list readable; piped map updates
+apply every pair and propagate later failures. `with` requires complete pairs.
+Calls and pipes share local-lambda and cell-handler resolution. Optimized
+operations honor builtin mocks, and block lambdas work in ordinary collection
+calls. Struct/tuple constructors recursively coerce declared fields: Float fields
+hold Floats, with out-of-range Ints rejected. Named-field syntax cannot construct
+a tuple/unit variant. Twenty-four regression tests cover these corrections.
+Details: https://soma-lang.dev/CHANGELOG.md.
+
 ## Input and storage corrections in Soma 2.8.5 (2026-09-20)
 
 Implicit Int-to-Float promotion rejects values outside Float range. Typed maps
@@ -94,7 +106,7 @@ actuation. Eventual cluster replication does not establish distributed safety.
 
 ## Cluster corrections in Soma 2.8.2 (2026-09-20)
 
-Use [Soma 2.8.5](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.5), which includes these corrections.
+Use [Soma 2.8.6](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.6), which includes these corrections.
 `scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
 Updates preserve types and are published after commit. Reconnect and periodic
 state exchange carry per-key logical versions and deletion markers. Use a

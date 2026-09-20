@@ -232,7 +232,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("enumerate", "collection", "enumerate(list: List) -> List<{index, value}>",
         "Attach a 0-based index to each element."),
     doc("with", "collection", "with(m: Map, key, value, ...) -> Map | with(list: List, i: Int, value) -> List",
-        "Copy of the map with key-value pairs inserted, or copy of the list with element i replaced."),
+        "Copy of the map with every key-value pair inserted, or copy of the list with element i replaced. An incomplete pair raises kind type; large Int map keys are stringified, while list indices must fit signed 64 bits."),
     doc("without", "collection", "without(m: Map, keys...) -> Map",
         "Return a copy of the map with the given keys removed."),
     doc("merge", "collection", "merge(a: Map, b: Map) -> Map",
