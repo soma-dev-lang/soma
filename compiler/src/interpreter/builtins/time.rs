@@ -19,17 +19,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::Int(SomaInt::from_i64(ts))))
         }
         "sleep" => {
-            if let Some(ms) = args.first().map(|a| val_to_i64(a)) {
-                // sleep(-1) became u64::MAX ms: the handler (and the global
-                // handler lock) never came back
-                if ms < 0 || ms > 86_400_000 {
-                    return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("sleep({}): the duration is 0 to 86400000 ms (one day)", ms) }));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(ms as u64));
-                Some(Ok(Value::Unit))
-            } else {
-                Some(Ok(Value::Unit))
-            }
+            let [Value::Int(ms)] = args else {
+                return Some(Err(RuntimeError::TypeError("sleep(ms: Int) requires one Int duration".to_string())));
+            };
+            let Some(ms) = ms.to_i64().filter(|ms| (0..=86_400_000).contains(ms)) else {
+                return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: "sleep(): the duration is 0 to 86400000 ms (one day)".to_string() }));
+            };
+            std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+            Some(Ok(Value::Unit))
         }
         "today" => {
             Some(Ok(Value::String(format_unix_date(
@@ -60,7 +57,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(date_arg(&args[0], "add_days").and_then(|(y, m, d)| {
                 // a date outside 0000-01-01..9999-12-31 is not a date parse_date
                 // reads back (an i64 day count wrapped to year -25252734927764529)
-                let days = days_from_civil(y, m, d).checked_add(n).filter(|x| x.abs() < 4_000_000);
+                let days = days_from_civil(y, m, d).checked_add(n).filter(|x| x.unsigned_abs() < 4_000_000);
                 let (y2, m2, d2) = match days { Some(x) => civil_from_days(x), None => (-1, 1, 1) };
                 if !(0..=9999).contains(&y2) {
                     return Err(RuntimeError::Domain { kind: "date".to_string(), message: format!("date: add_days goes outside years 0000–9999 ({} days)", n) });
@@ -172,7 +169,7 @@ pub fn parse_iso_date(s: &str) -> Option<(i64, i64, i64)> {
 /// truncated (add_days(d, 2^64 + 1) answered d itself).
 fn date_count(v: &Value, what: &str, is: &str) -> Result<i64, RuntimeError> {
     match v {
-        Value::Int(si) => si.to_i64().filter(|n| n.abs() < 1_000_000_000_000_000).ok_or_else(|| out_of_years(what)),
+        Value::Int(si) => si.to_i64().filter(|n| n.unsigned_abs() < 1_000_000_000_000_000).ok_or_else(|| out_of_years(what)),
         other => Err(RuntimeError::TypeError(format!("{}: expected an Int ({}), got {} {}", what, is, crate::interpreter::value_type_name(other), other))),
     }
 }
@@ -195,5 +192,17 @@ fn date_arg(v: &Value, what: &str) -> Result<(i64, i64, i64), RuntimeError> {
             Ok((y, m, d))
         }
         other => Err(RuntimeError::TypeError(format!("{}: expected a \"YYYY-MM-DD\" String, got {}", what, other))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimum_integer_date_count_is_a_domain_error_without_overflow() {
+        // abs(i64::MIN) panics with overflow checks and remains negative without them.
+        let value = Value::Int(SomaInt::from_i64(i64::MIN));
+        assert!(matches!(date_count(&value, "add_days", "days"), Err(RuntimeError::Domain { kind, .. }) if kind == "date"));
     }
 }

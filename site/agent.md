@@ -57,6 +57,19 @@ with the `features` you need before writing a new cell).
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
 
+## Input and storage corrections in Soma 2.8.5 (2026-09-20)
+
+Implicit Int-to-Float promotion rejects values outside Float range. Typed maps
+check all keys, including names beginning with `_`, and record/variant payloads.
+Declared sum/record returns validate the variant and its fields. Memory writes
+reject functions hidden inside variants and values exceeding 100 levels in the
+storage encoding; record and escaped-map wrappers count toward this limit.
+Local-list `nth` uses the same signed-64-bit index limit as the ordinary builtin.
+`sleep` requires an Int duration (0 through 86400000 ms); other types raise `type`.
+Eighteen integration regressions reproduce these defects on the previous release;
+an additional unit test covers the minimum signed date count. Details:
+https://soma-lang.dev/CHANGELOG.md.
+
 ## Numeric corrections in Soma 2.8.4 (2026-09-20)
 
 Use the current release when handling wide numeric ranges. `avg`, `avg_by`
@@ -81,7 +94,7 @@ actuation. Eventual cluster replication does not establish distributed safety.
 
 ## Cluster corrections in Soma 2.8.2 (2026-09-20)
 
-Use [Soma 2.8.4](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.4), which includes these corrections.
+Use [Soma 2.8.5](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.5), which includes these corrections.
 `scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
 Updates preserve types and are published after commit. Reconnect and periodic
 state exchange carry per-key logical versions and deletion markers. Use a

@@ -375,7 +375,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("format_date", "time", "format_date(ts: Int) -> String",
         "Format a Unix-seconds timestamp as \"YYYY-MM-DD\" (UTC)."),
     doc("sleep", "time", "sleep(ms: Int) -> ()",
-        "Block the current handler for `ms` milliseconds (0 to 86400000; anything else raises kind range). Under serve it holds the handler lock the whole time."),
+        "Block the current handler for `ms` milliseconds. Requires one Int (other types raise kind type); values outside 0 to 86400000 raise kind range. Under serve it holds the handler lock the whole time."),
 
     // ── state machines ──────────────────────────────────────────────
     doc("next_id", "state", "next_id() -> Int",

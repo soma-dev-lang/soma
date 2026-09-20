@@ -240,7 +240,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `now_ms` ✗ | `now_ms() -> Int` | Current Unix timestamp in milliseconds. |
 | `today` ✗ | `today() -> String` | Today's date as "YYYY-MM-DD" (UTC). |
 | `format_date` | `format_date(ts: Int) -> String` | Format a Unix-seconds timestamp as "YYYY-MM-DD" (UTC). |
-| `sleep` | `sleep(ms: Int) -> ()` | Block the current handler for `ms` milliseconds (0 to 86400000; anything else raises kind range). Under serve it holds the handler lock the whole time. |
+| `sleep` | `sleep(ms: Int) -> ()` | Block the current handler for `ms` milliseconds. Requires one Int (other types raise kind type); values outside 0 to 86400000 raise kind range. Under serve it holds the handler lock the whole time. |
 
 ## state
 

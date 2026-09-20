@@ -2339,7 +2339,10 @@ impl Interpreter {
                             let idx = self.eval_expr(&args[1].node, env, cell_name, signal_name)?;
                             if let (Some(Value::List(xs)), Value::Int(i)) = (env.get(local), &idx) {
                                 // like the builtin: negative from the end, () out of range
-                                let raw = i.to_i64().unwrap_or(i64::MAX);
+                                let raw = i.to_i64().ok_or_else(|| ExecError::Runtime(RuntimeError::Domain {
+                                    kind: "range".to_string(),
+                                    message: "nth(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)".to_string(),
+                                }))?;
                                 let k = if raw < 0 { raw + xs.len() as i64 } else { raw };
                                 return Ok(if k >= 0 && (k as usize) < xs.len() { xs[k as usize].clone() } else { Value::Unit });
                             }
@@ -4209,7 +4212,7 @@ impl Interpreter {
         match (ty, v) {
             // an Int where a Float is declared is that Float (`score = 3`
             // on `score: Float` kept an Int; `p.x + p.y` of JSON 1 and 2 gave Int 3)
-            (TypeExpr::Simple(t), Value::Int(i)) if t == "Float" => Ok(Value::Float(i.to_f64())),
+            (TypeExpr::Simple(t), Value::Int(i)) if t == "Float" => promote_int_to_float(&i),
             (TypeExpr::Generic { name, args }, Value::List(xs)) if name == "List" => {
                 let Some(t) = args.first() else { return Ok(Value::List(xs)) };
                 let mut out = Vec::with_capacity(xs.len());
@@ -5233,11 +5236,15 @@ impl Interpreter {
                 other => Err(format!("expected a List, got {}", value_type_name(other))),
             },
             TypeExpr::Generic { name, args } if name == "Map" => match v {
-                Value::Map(m) => {
-                    if let Some(t) = args.last() { for (k, x) in m.iter() { if k.starts_with('_') { continue; } self.value_fits(&t.node, x).map_err(|e| format!("key {:?}: {}", k, e))?; } }
+                Value::Map(m) | Value::Variant { fields: VariantValue::Struct(m), .. } => {
+                    if let Some(t) = args.last() { for (k, x) in m.iter() { self.value_fits(&t.node, x).map_err(|e| format!("key {:?}: {}", k, e))?; } }
                     Ok(())
                 }
-                Value::Variant { .. } | Value::Unit => Ok(()),
+                Value::Variant { fields: VariantValue::Tuple(xs), .. } => {
+                    if let Some(t) = args.last() { for (i, x) in xs.iter().enumerate() { self.value_fits(&t.node, x).map_err(|e| format!("field {}: {}", i, e))?; } }
+                    Ok(())
+                }
+                Value::Variant { fields: VariantValue::Unit, .. } | Value::Unit => Ok(()),
                 other => Err(format!("expected a Map, got {}", value_type_name(other))),
             },
             TypeExpr::Simple(t) => {
@@ -5273,6 +5280,8 @@ impl Interpreter {
                 // `-> List<Int>` returning ["a"]: the elements too, as for parameters
                 TypeExpr::Generic { .. } => self.value_fits(&ret.node, &v)
                     .map(|_| v).map_err(|m| format!("{}(): the face declares `-> {}` but the handler returned {}", signal_name, crate::commands::describe::format_type(&ret.node), m)),
+                TypeExpr::Simple(t) if self.type_variants.contains_key(t) => self.value_fits(&ret.node, &v)
+                    .map(|_| v).map_err(|m| format!("{}(): the face declares `-> {}` but the handler returned {}", signal_name, t, m)),
                 _ => Ok(v),
             }).map_err(RuntimeError::TypeError),
             None => Ok(val),
@@ -5347,44 +5356,47 @@ impl Interpreter {
 
     /// A write into a slot must match its declared value type (a String in a
     /// `Map<String, Int>` used to be stored silently). Same rules as a
-    /// parameter: Int fits Float, a whole Float fits Int, `Map` also takes a
+    /// parameter: Int fits Float when representable, `Map` also takes a
     /// record/variant, unknown type names are not checked.
     /// Returns the value to store: an Int written to a `Float` slot is
     /// stored as a Float; everything else must already be of the type (a
     /// whole Float is NOT an Int — `1.0` in `Map<String, Int>` is refused;
     /// a declared sum type takes only its variants).
     fn check_slot_value_type(&self, cell_name: &str, slot_name: &str, val: &Value) -> Result<Value, ExecError> {
-        // a function has no stored form: it was saved as the text "<lambda>"
-        fn has_fn(v: &Value) -> bool {
-            match v {
-                Value::Lambda { param, .. } => param != HTTP_MARK,
-                Value::LambdaBlock { .. } => true,
-                Value::List(xs) => xs.iter().any(has_fn),
-                Value::Map(m) => m.values().any(has_fn),
-                _ => false,
-            }
-        }
-        if has_fn(val) {
-            return Err(ExecError::Runtime(RuntimeError::Domain {
-                kind: "type".to_string(),
-                message: format!("slot '{}': a function (lambda) cannot be stored — store the data it works on", slot_name),
-            }));
-        }
-        // (map keys starting with `__` are escaped by the storage encoding)
-        // stored values are JSON: past ~126 levels they came back as a String
-        fn depth(v: &Value) -> usize {
-            match v {
-                Value::List(xs) => 1 + xs.iter().map(depth).max().unwrap_or(0),
-                Value::Map(m) => 1 + m.values().map(depth).max().unwrap_or(0),
+        // Match the persisted encoding's depth, including escaped map and
+        // variant wrappers. Reject functions even inside variant payloads.
+        // Stop descending at the limit rather than traversing arbitrary depth.
+        fn storable(v: &Value, depth: usize) -> Result<(), &'static str> {
+            let layers = match v {
+                Value::Lambda { param, .. } if param != HTTP_MARK => return Err("a function (lambda) cannot be stored — store the data it works on"),
+                Value::LambdaBlock { .. } => return Err("a function (lambda) cannot be stored — store the data it works on"),
+                Value::List(_) => 1,
+                Value::Map(m) => if m.keys().any(|k| k.starts_with("__")) { 2 } else { 1 },
+                Value::Variant { fields: VariantValue::Struct(_), .. } => 3,
+                Value::Variant { fields: VariantValue::Tuple(_), .. } => 2,
+                Value::Variant { fields: VariantValue::Unit, .. } => 1,
+                Value::Int(i) if i.to_i64().is_none() => 1,
+                Value::Float(f) if !f.is_finite() => 1,
                 _ => 0,
+            };
+            let depth = depth + layers;
+            if depth > 100 {
+                return Err("a value whose storage encoding is nested deeper than 100 levels cannot be stored — flatten it");
             }
+            match v {
+                Value::List(xs) | Value::Variant { fields: VariantValue::Tuple(xs), .. } => {
+                    for x in xs { storable(x, depth)?; }
+                }
+                Value::Map(m) | Value::Variant { fields: VariantValue::Struct(m), .. } => {
+                    for x in m.values() { storable(x, depth)?; }
+                }
+                _ => {}
+            }
+            Ok(())
         }
-        if depth(val) > 100 {
-            return Err(ExecError::Runtime(RuntimeError::Domain {
-                kind: "type".to_string(),
-                message: format!("slot '{}': a value nested deeper than 100 levels cannot be stored — flatten it", slot_name),
-            }));
-        }
+        storable(val, 0).map_err(|m| ExecError::Runtime(RuntimeError::Domain {
+            kind: "type".to_string(), message: format!("slot '{}': {}", slot_name, m),
+        }))?;
         // the NESTED declared types too (`Map<String, List<Int>>` took ["x"])
         if let Some(inner) = self.slot_inner_type(cell_name, slot_name) {
             if let Err(m) = self.value_fits(&inner, val) {
@@ -5399,7 +5411,7 @@ impl Interpreter {
             ("Any", _) | ("Int", Value::Int(_)) | ("Float", Value::Float(_))
             | ("String", Value::String(_)) | ("Bool", Value::Bool(_)) | ("List", Value::List(_))
             | ("Map", Value::Map(_) | Value::Variant { .. }) => true,
-            ("Float", Value::Int(i)) => return Ok(Value::Float(i.to_f64())),
+            ("Float", Value::Int(i)) => return promote_int_to_float(i).map_err(|m| ExecError::Runtime(RuntimeError::TypeError(format!("slot '{}': {}", slot_name, m)))),
             ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => false,
             // the variant must be one the type declares: from_json of a
             // client string could build `Pay.Refund` for a Pay without it
@@ -5655,9 +5667,16 @@ pub(crate) fn value_to_stored(val: &Value) -> StoredValue {
     }
 }
 
+/// Implicit Float promotion must not turn a finite integer into infinity.
+fn promote_int_to_float(i: &SomaInt) -> Result<Value, String> {
+    let f = i.to_f64();
+    if f.is_finite() { Ok(Value::Float(f)) }
+    else { Err("this Int is past the Float range (~1.8e308)".to_string()) }
+}
+
 /// Declared parameter type vs. the value actually passed. Ints are
-/// accepted for Float (promoted); an integral Float for Int; `Any`,
-/// sum types and cell refs accept anything.
+/// accepted for Float when representable (promoted); a Float is not an Int.
+/// Sum types are validated by check_sum_param after this primitive check.
 pub(crate) fn check_param_type(param: &Param, val: Value) -> Result<Value, String> {
     // the ELEMENT type of `List<Int>` / `Map<String, Int>` too (["x", "y"]
     // entered `g(xs: List<Int>)` and failed deep in the body)
@@ -5671,7 +5690,7 @@ pub(crate) fn check_param_type(param: &Param, val: Value) -> Result<Value, Strin
         if let Some(t) = elem {
             let bad = match (name.as_str(), &val) {
                 ("List", Value::List(xs)) => xs.iter().find(|x| !fits(t, x)).cloned(),
-                ("Map", Value::Map(m)) => m.iter().filter(|(k, _)| !k.starts_with('_')).map(|(_, v)| v).find(|x| !fits(t, x)).cloned(),
+                ("Map", Value::Map(m)) => m.values().find(|x| !fits(t, x)).cloned(),
                 _ => None,
             };
             if let Some(b) = bad {
@@ -5702,7 +5721,7 @@ pub(crate) fn check_param_type(param: &Param, val: Value) -> Result<Value, Strin
         // a Float is not an Int, whatever its value (a computed 1.0 was taken
         // while `[1.0]` for List<Int>, an Int slot and a literal were refused);
         // HTTP / CLI text already converts integral numbers at the boundary
-        ("Float", Value::Int(i)) => Ok(Value::Float(i.to_f64())),
+        ("Float", Value::Int(i)) => promote_int_to_float(i).map_err(|m| format!("parameter '{}': {}", param.name, m)),
         ("Int" | "Float" | "String" | "Bool" | "Map" | "List", _) => Err(format!(
             "parameter '{}' expects {}, got {} {}", param.name, ty, got, shown()
         )),

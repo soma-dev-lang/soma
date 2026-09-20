@@ -30,6 +30,14 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
+Soma 2.8.5 fixes typed input and storage boundaries: implicit Int-to-Float
+promotion rejects overflow, typed maps check underscore keys and variant
+payloads, and declared sum/record returns validate their values. Persistent
+writes reject functions hidden in variants and excessive encoded nesting.
+Local nth index limits are consistent; sleep requires an Int. Eighteen new
+integration regressions plus a date-count unit test cover these corrections.
+See https://soma-lang.dev/CHANGELOG.md.
+
 Soma 2.8.4 corrects finite means that overflowed, large or tiny standard
 deviations, mixed Int/Float medians and clamps. Means round after averaging;
 medians preserve the selected Int and propagate NaN. Clamp rejects nonnumeric

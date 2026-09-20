@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 2.8.5 — 2026-09-20
+
+### Typed inputs and persistent values
+
+- Implicit Int-to-Float conversions in parameters, record input/updates and
+  Float slots reject integers beyond Float range instead of producing infinity.
+  Nested parameter collections and JSON record inputs use the same check.
+- Typed maps validate every key, including `_speed`, `__private` and `_type`,
+  and inspect record/tuple-variant payloads. These checks apply to parameters,
+  declared returns, record fields and memory writes.
+- Declared sum/record return types validate the actual variant and its payload.
+  Returning another type now fails at the face boundary and rolls back writes.
+- Memory writes inspect variant payloads for functions and count the depth of
+  the actual storage encoding, including record and escaped-map wrappers.
+  Values that would become unreadable on reload are refused before commit.
+- The local-list optimization of `nth` rejects indices beyond signed 64 bits,
+  matching the ordinary builtin. In-range missing indices still return `()`.
+- `sleep` requires one Int argument: fractional durations, strings, booleans,
+  null and NaN no longer silently turn into a delay. Out-of-range Int durations
+  retain error kind `range`; invalid argument types raise `type`.
+- Date-count range checks handle the minimum signed integer without overflowing
+  when Rust overflow checks are enabled.
+- Add 18 integration regressions, each reproduced on 2.8.4, plus a date-count
+  unit regression. Persistence tests restart the process to verify round trips
+  and preservation of the previous value after a refused write.
+
+**Compatibility:** programs relying on the invalid values above now receive
+catchable errors. The storage depth limit is 100 encoded container levels;
+record and escaped-map wrappers count toward it. Existing Float NaN/infinity
+values and ordinary representable Int-to-Float rounding retain their semantics.
+
 ## 2.8.4 — 2026-09-20
 
 ### Numeric boundaries
