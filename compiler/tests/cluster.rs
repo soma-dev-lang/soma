@@ -49,14 +49,17 @@ cell Other {
 "#;
 
 fn port() -> u16 {
-    // Stay outside the OS ephemeral range and reserve disjoint triples across
-    // parallel tests. Sequential ephemeral ports overlapped other nodes' buses.
-    static NEXT: std::sync::OnceLock<std::sync::atomic::AtomicU16> = std::sync::OnceLock::new();
-    let next = NEXT.get_or_init(|| {
-        std::sync::atomic::AtomicU16::new(22000 + (std::process::id() % 1500) as u16 * 8)
-    });
-    loop {
-        let p = next.fetch_add(8, std::sync::atomic::Ordering::SeqCst);
+    // Choose disjoint triples below the default Linux/macOS ephemeral ranges.
+    // The old 22000 + (pid % 1500) * 8 could reach 33992 and overlap Linux
+    // outgoing connections. Bound both the pool and the number of probes.
+    const BASE: u16 = 12000;
+    const COUNT: usize = 2000;
+    static NEXT: std::sync::OnceLock<std::sync::atomic::AtomicUsize> = std::sync::OnceLock::new();
+    let next = NEXT
+        .get_or_init(|| std::sync::atomic::AtomicUsize::new(std::process::id() as usize % COUNT));
+    for _ in 0..COUNT {
+        let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % COUNT;
+        let p = BASE + index as u16 * 8;
         let listeners: Result<Vec<_>, _> = (0..3)
             .map(|i| TcpListener::bind(("127.0.0.1", p + i)))
             .collect();
@@ -64,6 +67,7 @@ fn port() -> u16 {
             return p;
         }
     }
+    panic!("no free HTTP/bus port triple in the cluster test pool");
 }
 struct Node {
     child: Option<Child>,
@@ -430,7 +434,9 @@ impl CuttableBus {
             atomic::{AtomicBool, Ordering},
             Arc, Mutex,
         };
-        let listener = TcpListener::bind(("127.0.0.1", port())).unwrap();
+        // Keep the socket the OS allocates: probing and then rebinding leaves
+        // a race with other listeners or outgoing connections on Linux CI.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
         let enabled = Arc::new(AtomicBool::new(true));

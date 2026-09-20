@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fix a Linux CI race in the cluster partition test: retain the proxy's OS-
+  allocated listener instead of probing and rebinding, and keep the node port
+  pool bounded below default ephemeral ranges. This changes the test harness;
+  the Soma 2.8.3 compiler, runtime and embedded documentation are unchanged.
+
 ## 2.8.3 — 2026-09-20
 
 ### Robotics robustness campaign
