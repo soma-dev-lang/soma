@@ -177,12 +177,13 @@ solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 | [SOMA_BUILTINS.md](SOMA_BUILTINS.md) | every builtin — generated from the compiler, can't drift |
 | [AGENT_GOTCHAS.md](AGENT_GOTCHAS.md) | verified wrong→right pairs |
 | [SOMA_SPEC.md](SOMA_SPEC.md) | machine-readable spec |
+| [docs/robotics/ROBUSTNESS.md](docs/robotics/ROBUSTNESS.md) | 100 robotics robustness scenarios, reproduction and limits |
 | [wiki/](wiki/) | concepts, verification theory, design notes |
 | [site/llms.txt](site/llms.txt) | the whole language in one file, for LLM context |
 
 ## Honest status
 
-Soma is an experimental language (release: `soma 2.8.2`; see
+Soma is an experimental language (release: `soma 2.8.3`; see
 [the changelog](CHANGELOG.md) for fixes and compatibility notes). The verifier
 proves state-machine and invariant properties per cell; cross-cell
 composition is statically *linted*, not yet proven. The interpreter is

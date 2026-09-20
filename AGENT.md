@@ -59,9 +59,20 @@ with the `features` you need before writing a new cell).
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
 
+## Robotics robustness in Soma 2.8.3 (2026-09-20)
+
+100 additional regression scenarios cover numeric boundaries, invalid sensor
+values, mission transitions, storage invariants, rollback, native execution,
+persistence across processes and replay. Run the suite in the language repository:
+`cargo test --release --locked --manifest-path compiler/Cargo.toml --test robotics_robustness`.
+The complete matrix and limits are at https://soma-lang.dev/docs/robotics.md
+and offline with `soma docs robotics`. These are language tests, not hardware
+qualification or hard real-time guarantees. Local rollback cannot undo physical
+actuation. Eventual cluster replication does not establish distributed safety.
+
 ## Cluster corrections in Soma 2.8.2 (2026-09-20)
 
-Use [Soma 2.8.2](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.2).
+Use [Soma 2.8.3](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.3), which includes these corrections.
 `scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
 Updates preserve types and are published after commit. Reconnect and periodic
 state exchange carry per-key logical versions and deletion markers. Use a

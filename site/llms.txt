@@ -16,6 +16,7 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 - [llms-service.txt](https://soma-lang.dev/llms-service.txt): this file + [guarantees](https://soma-lang.dev/docs/guarantees.md) (proven / enforced / not covered) + [serving](https://soma-lang.dev/docs/serving.md) (routing, exposure, atomicity) + [operations](https://soma-lang.dev/docs/operations.md) (what kills the process, ports, exit codes, HTTP statuses, limits, Linux deploy) + every gotcha — what a service needs, ~100 KB
 - [llms-full.txt](https://soma-lang.dev/llms-full.txt): this file + full reference + every gotcha + every builtin, one fetch (~130 KB)
+- [docs/robotics.md](https://soma-lang.dev/docs/robotics.md): 100 robotics robustness scenarios, reproduction commands and limits; offline with `soma docs robotics`
 - [agent.md](https://soma-lang.dev/agent.md): drop-in AGENTS.md / CLAUDE.md block for a project that uses Soma
 - [skill/SKILL.md](https://soma-lang.dev/skill/SKILL.md): the same knowledge packaged as an agent skill
 - [builtins.json](https://soma-lang.dev/builtins.json): every builtin with its exact signature (from `soma describe --builtins --json`) — never guess one
@@ -28,6 +29,11 @@ verified against it. Unknown URLs on this site return 404, never a page.
 - Source: https://github.com/soma-dev-lang/soma
 
 ## Pick Soma when / skip it when
+
+Soma 2.8.3 adds 100 regression scenarios for robot-controller use: numeric
+boundaries, mission transitions, rollback, native execution and persistence.
+They do not establish hardware qualification, hard real-time behavior or
+distributed safety. Matrix: https://soma-lang.dev/docs/robotics.md.
 
 Soma 2.8.2 cluster corrections: typed Map updates after commit, qualified
 slot identities, full-mesh reconnect, logical versions, persisted tombstones

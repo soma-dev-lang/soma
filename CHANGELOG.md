@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 2.8.3 — 2026-09-20
+
+### Robotics robustness campaign
+
+- Add 100 independently named integration scenarios for numeric boundaries,
+  invalid sensor data, mission transitions, storage invariants, rollback,
+  collection and JSON boundaries, verifier refusals, native execution,
+  persistence across processes and error record/replay.
+- Preserve expected refusal diagnostics, check both successful and rejected
+  operations, and compare native results with interpreted arithmetic.
+- Publish the complete matrix, reproduction commands and coverage limits at
+  `docs/robotics/ROBUSTNESS.md`, `/docs/robotics.md` and `soma docs robotics`.
+  Synchronize the website and embedded agent guidance.
+- This release adds regression coverage and documentation. The campaign found
+  no additional runtime defect. It does not qualify physical robot hardware,
+  hard real-time behavior or a lunar system; cluster consistency stays eventual.
+
 ## 2.8.2 — 2026-09-20
 
 ### Cluster correctness and recovery
