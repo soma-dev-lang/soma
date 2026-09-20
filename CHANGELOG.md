@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Rules between slots (2.8.0) hold on `delete` too — dropping the other
+  side's entry took it to () and the state stayed violated, while verify
+  printed a ✓ claiming a delete cannot break such a rule; `other.size` is
+  that slot's entry count (both names used to collapse to one, making the
+  rule vacuous); `other.get(key)` is refused at check (it is the value
+  BEFORE the write, so it guarded nothing).
+- `soma verify` prints such a rule as a `·` note — enforced at run time by
+  design — so `verify --strict` passes, and it no longer suggests a
+  `require` that cannot evaluate; check warns about the write order the
+  `?? 0` default imposes.
+- The cross-cell notes follow same-cell helpers and emits (a helper used to
+  hide the gap) and skip calls that change or read nothing.
+- A file with no state machine beside a soma.toml that declares [verify]
+  properties is a note, not a failure.
+- `refusal()`'s documented shape: an HTTP response envelope (read `_body`).
+
 ## 2.8.0 — 2026-09-20
 
 - Invariants BETWEEN slots of a cell: `invariant (reserved ?? 0) <= (stock

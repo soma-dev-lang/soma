@@ -224,7 +224,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `ws_send` | `ws_send(msg) -> ()` | Send a message on the current WebSocket connection; errors if not connected. |
 | `link` | `link(addr: "host:port") -> ()` | Open a TCP signal-bus link to a peer node. |
 | `subscribe` | `subscribe(url: String) -> ()` | Subscribe to a remote event stream; an {"event", "data"} message runs on event(data) only for an event this program emits or soma.toml [bus] accept lists (else refused); other text runs on ws(msg). |
-| `refusal` | `refusal(kind: String, detail?: String) -> Map` | The body and HTTP status a RAISED error of that kind would produce ({error, kind, detail}, e.g. `conflict` → 409, `not_found` → 404, your own tag → 400). Return it when the handler must refuse AND keep what it wrote (an audit entry): raising rolls the writes back, returning does not. |
+| `refusal` | `refusal(kind: String, detail?: String) -> Map` | An HTTP response — status from the kind (`conflict` → 409, `not_found` → 404, `unauthorized` → 401, your own tag → 400) and body {error, kind, detail}, exactly what RAISING that error would answer. Return it when the handler must refuse AND keep what it wrote (an audit row): raising rolls the writes back, returning does not. It is a response envelope like response(): read the fields through `_body` (`r._body.kind`), and return it as the handler's value. |
 
 ## time
 

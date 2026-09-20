@@ -77,7 +77,14 @@ cell App {
         // — checked on every write to EITHER slot; the written slot is its new
         // value, the other is read AT THE SAME KEY (a key it lacks reads as
         // (): default both sides with `?? 0`). verify reports it
-        // runtime-checked: a rule between slots is not proven by induction.
+        // runtime-checked: a rule between slots is not proven by induction —
+        // by design, so verify prints it as a `·` note and `--strict` passes.
+        // A delete is a write here too (dropping the other side's entry takes
+        // it to ()). `?? 0` means the absent side reads 0: write the
+        // right-hand slot FIRST (or seed both in one handler), else the first
+        // write to the other is refused. `other.size` is that slot's entry
+        // count; `other.get(key)` is refused (it is the value BEFORE the
+        // write, so it would not guard that slot).
         // Between two CELLS nothing is proven (verify is per cell): it lists
         // `note: cross-cell: …` for each handler that transitions its machine
         // while acting on another cell's — enforce those with a `require`.

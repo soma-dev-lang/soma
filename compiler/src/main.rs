@@ -750,8 +750,14 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             }
         }
     }
+    // …unless the FILE simply has no machine: a helper or migration cell
+    // beside a project soma.toml is not a failed proof (it used to exit 1)
     if declares_props && all_temporal.is_empty() && targeted_present {
-        unknown_states.push("[verify] declares properties but no state machine received them (no `state { }` in the targeted cells — check `cells = [...]`)".to_string());
+        if machine_cells.is_empty() {
+            eprintln!("note: the soma.toml beside this file declares [verify] properties; this file has no `state {{ }}`, so none applies to it");
+        } else {
+            unknown_states.push("[verify] declares properties but no state machine received them (no `state { }` in the targeted cells — check `cells = [...]`)".to_string());
+        }
     }
     unknown_states.sort();
     unknown_states.dedup();
@@ -774,6 +780,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
             let checks: Vec<serde_json::Value> = r.checks.iter().map(|c| {
                 match c {
                     checker::verify::VerifyCheck::Pass(msg) => serde_json::json!({"status": "pass", "message": msg}),
+                    checker::verify::VerifyCheck::Note(msg) => serde_json::json!({"status": "note", "message": msg}),
                     checker::verify::VerifyCheck::Warning(msg) => serde_json::json!({"status": "warning", "message": msg}),
                     checker::verify::VerifyCheck::Fail(msg, trace) => {
                         let mut v = serde_json::json!({"status": "fail", "message": msg});

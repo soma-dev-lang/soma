@@ -1719,3 +1719,21 @@ hordes, ticks and 200 concurrent [task] withdrawals.
 
 ### Open
 - [ ] `[verify]` is one global table (no per-machine sections); dates are UTC-only with no time-of-day; `clamp` as a proof hint needs the `ensure` pairing idiom documented.
+
+### Cycle 74 — ticketing port (7.5/10) + attack on the 2.8.0 features
+
+Port: 1 139 lines → 93 proven properties; 300 concurrent bookings on 12
+seats → exactly 6 accepted; kill -9 mid-load → 453 client-200s, 453 held,
+audit intact; 60 transfer/refund races → 0 double-wins; 3.2k writes/s.
+
+### Fixed (three soundness holes in the feature released the day before)
+- [x] **`delete` bypassed a rule between slots** and verify printed a ✓ ("a value invariant cannot break on a delete" — true for one slot, false between two): deletes are checked, the prover reports them runtime-checked.
+- [x] **`other.size` collapsed both slot names into one binding** — the rule was silently vacuous; each slot keeps its own entry count, and the error text shows the rule as written.
+- [x] **`other.get(key)` guarded nothing** on writes to that slot (it is the value before the write) — refused at check with the working form.
+- [x] **`--strict` was unreachable with the feature**, and the ⚠ suggested a `require` that raises (`house` is the whole Map in a handler) — such a rule is now a `·` note, by design, with no suggestion; the ticketing port passes `--strict`.
+- [x] Port: the `?? 0` write-order trap (writing the left slot first refuses every first write) — a check warning.
+- [x] Attack: cross-cell notes missed a helper or emit indirection and fired on pure calls.
+- [x] Port: a machine-less file beside a project soma.toml failed verify; `refusal()`'s documented shape was wrong.
+
+### Open
+- [ ] Atomic idempotency and an out-of-lock model call are still exclusive (a `[task]` cannot carry a `require` across a think): the documented split is scorer + plain capture; an `every` tick has no time limit (101 s sweep seen); one `[verify]` scope per directory.

@@ -987,12 +987,16 @@ impl Interpreter {
                             .collect();
                         let targets: &[&str] = if named.is_empty() { &slot_names } else { &named };
                         // `links.size <= N` → the generic `size`, scoped above to `links`
-                        let owned: Vec<String> = slot_names.iter().map(|s| s.to_string()).collect();
-                        let inv_expr = crate::checker::invariants::normalize_invariant(&inv.node, &owned);
                         for t in targets {
+                            // normalized for THIS target: `t.size` is the
+                            // written slot's size, another slot's `.size`
+                            // keeps its name (it is that slot's entry count,
+                            // bound at check time — it used to be stripped to
+                            // the same `size` and the rule was vacuous)
+                            let inv_expr = crate::checker::invariants::normalize_invariant(&inv.node, &[t.to_string()]);
                             let key = format!("{}.{}", cell.node.name, t);
                             invariants.entry(key).or_default().push(inv_expr.clone());
-                            invariants.entry((*t).to_string()).or_default().push(inv_expr.clone());
+                            invariants.entry((*t).to_string()).or_default().push(inv_expr);
                         }
                     }
                 }
@@ -3427,6 +3431,9 @@ impl Interpreter {
                     // only a `size` clause can flip on a delete — as for a Map slot,
                     // and as verify says (every value invariant refused the
                     // delete here while verify proved the writer safe)
+                    if self.slot_invariants_cross(cell_name, slot_name) {
+                        self.check_invariants(cell_name, slot_name, &idx.to_string(), &Value::Unit, xs.len() as i64 - 1, "delete_cross")?;
+                    }
                     if self.slot_invariants_use_size(cell_name, slot_name) {
                         self.check_invariants(cell_name, slot_name, &idx.to_string(), &old, xs.len() as i64 - 1, "delete")?;
                     }
@@ -3550,6 +3557,11 @@ impl Interpreter {
                 // slot value is bound to the entry being removed (it already
                 // satisfied the invariant when written, so only size/key
                 // clauses can flip). Deleting a missing key is a no-op.
+                // a rule between slots: the deleted side reads as () after
+                if self.slot_invariants_cross(cell_name, slot_name) && backend.get(&key_str).is_some() {
+                    let size_after = backend.len() as i64 - 1;
+                    self.check_invariants(cell_name, slot_name, &key_str, &Value::Unit, size_after, "delete_cross")?;
+                }
                 if !self.slot_has_invariants(cell_name, slot_name) || !self.slot_invariants_use_size(cell_name, slot_name) {
                     // (a delete can only flip a `size` clause)
                 } else if let Some(stored) = backend.get(&key_str) {
@@ -4502,6 +4514,21 @@ impl Interpreter {
         names.contains("key") || names.contains("_key")
     }
 
+    /// Does a rule BETWEEN slots guard this one? Then a delete matters too:
+    /// dropping an entry takes the other side to () (a "value invariant
+    /// cannot break on a delete" only holds for a single-slot rule).
+    fn slot_invariants_cross(&self, cell_name: &str, slot_name: &str) -> bool {
+        let owner = self.slot_owner(cell_name, slot_name);
+        let cell = owner.as_str();
+        let invs = self.invariants.get(&format!("{}.{}", cell, slot_name)).or_else(|| if cell.is_empty() { self.invariants.get(slot_name) } else { None });
+        let Some(invs) = invs else { return false };
+        invs.iter().any(|inv| {
+            let mut names: HashSet<String> = HashSet::new();
+            free_names_expr(inv, &mut names);
+            names.iter().any(|n| n != slot_name && self.slot_kind(cell, n).is_some())
+        })
+    }
+
     fn slot_has_invariants(&self, cell_name: &str, slot_name: &str) -> bool {
         let owner = self.slot_owner(cell_name, slot_name);
         let cell_name = owner.as_str();
@@ -4526,6 +4553,16 @@ impl Interpreter {
             Some(v) if !v.is_empty() => v.clone(),
             _ => return Ok(()),
         };
+        // a delete only matters to a rule BETWEEN slots (the entry it drops
+        // takes that side to ()): evaluate those, not the slot's own rules
+        let invs: Vec<Expr> = if op == "delete_cross" {
+            invs.into_iter().filter(|inv| {
+                let mut names: HashSet<String> = HashSet::new();
+                free_names_expr(inv, &mut names);
+                names.iter().any(|n| n != slot_name && self.slot_kind(cell_name, n).is_some())
+            }).collect()
+        } else { invs };
+        if invs.is_empty() { return Ok(()); }
         for inv in &invs {
             // the start-up audit has no "value before the write": an
             // invariant reading `slot.get(key)` (write-once, monotone) is a
@@ -4556,20 +4593,21 @@ impl Interpreter {
             // a rule BETWEEN slots (`invariant reserved <= stock`): the other
             // slots of the cell read at the same key (a Map / List slot), or
             // whole (anything else) — the written slot is its new value
-            {
+            let inv = {
                 let others: Vec<String> = crate::checker::invariants::deep_idents(inv).into_iter()
                     .filter(|n| n != slot_name && self.slot_kind(cell_name, n).is_some())
                     .collect();
-                for other in others {
-                    let kind = self.slot_kind(cell_name, &other);
-                    let v = match kind {
-                        Some("Map") | Some("List") => self.call_storage_method(cell_name, &other, "get", &[env.get("key").cloned().unwrap_or(Value::Unit)])
-                            .unwrap_or(Value::Unit),
-                        _ => self.call_storage_method(cell_name, &other, "get", &[env.get("key").cloned().unwrap_or(Value::Unit)]).unwrap_or(Value::Unit),
-                    };
-                    env.insert(other, v);
+                for other in &others {
+                    let v = self.call_storage_method(cell_name, other, "get", &[env.get("key").cloned().unwrap_or(Value::Unit)])
+                        .unwrap_or(Value::Unit);
+                    env.insert(other.clone(), v);
+                    // `other.size` / `len(other)`: that slot's entry count
+                    let n = self.call_storage_method(cell_name, other, "len", &[]).unwrap_or(Value::Int(SomaInt::from_i64(0)));
+                    env.insert(format!("__count__{}", other), n);
                 }
-            }
+                count_of_other_slots(inv, &others)
+            };
+            let inv = &inv;
             // legacy bindings (pre-V1.8 invariants)
             env.insert("_slot_len".to_string(), Value::Int(SomaInt::from_i64(size_after)));
             env.insert("_slot_name".to_string(), Value::String(slot_name.to_string()));
@@ -4579,7 +4617,7 @@ impl Interpreter {
                 Ok(_) => {
                     return Err(ExecError::Runtime(RuntimeError::RequireFailed(format!(
                         "memory invariant violated on '{}': {} — rejected {} of {} (key \"{}\"); the slot is unchanged",
-                        slot_name, crate::ast::render_expr(inv), op, val, key_str
+                        slot_name, show_invariant(inv, slot_name), if op == "delete_cross" { "delete" } else { op }, val, key_str
                     ))));
                 }
                 Err(e) => {
@@ -6981,4 +7019,55 @@ pub(crate) fn interp_segment_end(s: &str, open: usize) -> Option<usize> {
         }
     }
     Some(first)
+}
+
+
+/// In a rule between slots, `other.size` (or `len(other)`) is that slot's
+/// entry count — bound as `__count__other` (a bare `other` stays the value
+/// at the written key).
+fn count_of_other_slots(e: &Expr, others: &[String]) -> Expr {
+    let is_count = |f: &str| matches!(f, "size" | "len" | "count" | "length");
+    let named = |x: &Expr| match x { Expr::Ident(n) if others.iter().any(|o| o == n) => Some(n.clone()), _ => None };
+    let sub = |x: &Spanned<Expr>| Box::new(Spanned::new(count_of_other_slots(&x.node, others), x.span));
+    match e {
+        Expr::FieldAccess { target, field } if is_count(field) => match named(&target.node) {
+            Some(o) => Expr::Ident(format!("__count__{}", o)),
+            None => Expr::FieldAccess { target: sub(target), field: field.clone() },
+        },
+        Expr::MethodCall { target, method, args } if args.is_empty() && is_count(method) => match named(&target.node) {
+            Some(o) => Expr::Ident(format!("__count__{}", o)),
+            None => Expr::MethodCall { target: sub(target), method: method.clone(), args: args.clone() },
+        },
+        Expr::FnCall { name, args } if is_count(name) && args.len() == 1 => match named(&args[0].node) {
+            Some(o) => Expr::Ident(format!("__count__{}", o)),
+            None => Expr::FnCall { name: name.clone(), args: args.iter().map(|a| Spanned::new(count_of_other_slots(&a.node, others), a.span)).collect() },
+        },
+        Expr::BinaryOp { left, op, right } => Expr::BinaryOp { left: sub(left), op: *op, right: sub(right) },
+        Expr::CmpOp { left, op, right } => Expr::CmpOp { left: sub(left), op: *op, right: sub(right) },
+        Expr::Not(i) => Expr::Not(sub(i)),
+        Expr::FnCall { name, args } => Expr::FnCall { name: name.clone(), args: args.iter().map(|a| Spanned::new(count_of_other_slots(&a.node, others), a.span)).collect() },
+        other => other.clone(),
+    }
+}
+
+
+/// The invariant as the author wrote it: `__count__stock` reads `stock.size`
+/// and the bare `size` is the written slot's.
+fn show_invariant(inv: &Expr, slot: &str) -> String {
+    let text = crate::ast::render_expr(inv);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find("__count__") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + "__count__".len()..];
+        let end = after.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(after.len());
+        out.push_str(&format!("{}.size", &after[..end]));
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    // the bare `size` binding is the written slot's own count
+    out.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .filter(|w| *w == "size")
+        .count();
+    out.replace(" size ", &format!(" {}.size ", slot)).replace("(size ", &format!("({}.size ", slot))
 }

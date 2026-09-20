@@ -4560,9 +4560,9 @@ cell Stock {
     assert!(code != 0 && out.contains("memory invariant violated on 'stock'"), "{out}");
     let (out, _) = soma_in(&d, &["run", "s.cell", "state", "x"]);
     assert!(out.contains("\"s\": 5") && out.contains("\"r\": 3"), "{out}");
-    // verify says it is runtime-checked, never proven
+    // verify says it is enforced at run time, never proven
     let (out, _) = soma_in(&d, &["verify", "s.cell"]);
-    assert!(out.contains("runtime-checked") && !out.contains("proven by induction"), "{out}");
+    assert!(out.contains("a rule BETWEEN slots") && !out.contains("— writer"), "{out}");
     // the bare form is refused with the fix in the message
     std::fs::write(d.join("b.cell"), "cell S {\n memory {\n  a: Map<String, Int> [persistent]\n  b: Map<String, Int> [persistent]\n  invariant b <= a\n }\n on w(k: String, n: Int) { b.set(k, n) }\n}\n").unwrap();
     let (out, code) = soma_in(&d, &["check", "b.cell"]);
@@ -4619,4 +4619,117 @@ cell Visits {
     std::fs::write(d.join("f.cell"), "cell S {\n face { signal put(qty: Int, stock: String) -> Int }\n on put(qty: Int, whatever: String) { return qty }\n}\n").unwrap();
     let (out, _) = soma_in(&d, &["check", "f.cell"]);
     assert!(out.contains("the face calls it `stock`, the handler `whatever`"), "{out}");
+}
+
+#[test]
+fn cycle74_between_slot_rules_hold_on_delete_and_size() {
+    let d = dir("cycle74");
+    std::fs::write(d.join("w.cell"), r#"
+cell W {
+    memory {
+        stock: Map<String, Int> [persistent]
+        reserved: Map<String, Int> [persistent]
+        invariant (reserved ?? 0) <= (stock ?? 0)
+    }
+    on seed() { stock.set("a", 5)
+        reserved.set("a", 3)
+        return "ok" }
+    on del() { stock.delete("a")
+        return "ok" }
+    on delr() { reserved.delete("a")
+        return "ok" }
+    on show() { return map("stock", stock, "reserved", reserved) }
+}
+"#).unwrap();
+    assert_eq!(soma_in(&d, &["run", "w.cell", "seed"]).1, 0);
+    // deleting the right-hand entry takes it to 0: refused, slot unchanged
+    let (out, code) = soma_in(&d, &["run", "w.cell", "del"]);
+    assert!(code != 0 && out.contains("memory invariant violated on 'stock'"), "{out}");
+    // …while deleting the left-hand one is fine
+    assert_eq!(soma_in(&d, &["run", "w.cell", "delr"]).1, 0);
+    let (out, _) = soma_in(&d, &["run", "w.cell", "show"]);
+    assert!(out.contains("\"stock\": {\"a\": 5}") && out.contains("\"reserved\": {}"), "{out}");
+    // verify no longer claims a delete cannot break such a rule
+    let (out, _) = soma_in(&d, &["verify", "w.cell"]);
+    assert!(!out.contains("only deletes from"), "{out}");
+
+    // `other.size` in a rule between slots is that slot's entry count
+    std::fs::write(d.join("z.cell"), r#"
+cell Z {
+    memory {
+        stock: Map<String, Int> [persistent]
+        reserved: Map<String, Int> [persistent]
+        invariant (reserved.size ?? 0) <= (stock.size ?? 0)
+    }
+    on addstock(k: String) { stock.set(k, 1) }
+    on addres(k: String) { reserved.set(k, 1) }
+    on delstock(k: String) { stock.delete(k) }
+}
+"#).unwrap();
+    assert_eq!(soma_in(&d, &["run", "z.cell", "addstock", "a"]).1, 0);
+    assert_eq!(soma_in(&d, &["run", "z.cell", "addres", "a"]).1, 0);
+    let (out, code) = soma_in(&d, &["run", "z.cell", "addres", "b"]);
+    assert!(code != 0 && out.contains("(reserved.size ?? 0) <= (stock.size ?? 0)"), "{out}");
+    let (out, code) = soma_in(&d, &["run", "z.cell", "delstock", "a"]);
+    assert!(code != 0, "{out}");
+
+    // `stock.get(key)` in such a rule is the value BEFORE the write: refused
+    std::fs::write(d.join("k.cell"), "cell K {\n memory {\n  stock: Map<String, Int> [persistent]\n  reserved: Map<String, Int> [persistent]\n  invariant (reserved ?? 0) <= (stock.get(key) ?? 0)\n }\n on s(k: String, n: Int) { stock.set(k, n) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "k.cell"]);
+    assert!(code != 0 && out.contains("value BEFORE the write"), "{out}");
+
+    // cross-cell notes: through a helper (found) and not for a pure call
+    std::fs::write(d.join("x.cell"), r#"
+cell Sub {
+    state life { initial: active  active -> withdrawn }
+    on withdraw(id: String) { transition(id, "withdrawn")
+        return map("ok", true) }
+}
+cell Util {
+    state dummy { initial: a  a -> b }
+    on double(n: Int) { return n * 2 }
+    on go(id: String) { transition(id, "b") }
+}
+cell Enroll {
+    state en { initial: pending  pending -> enrolled }
+    on via_helper(id: String) { _w(id)
+        transition(id, "enrolled")
+        return "ok" }
+    on _w(id: String) { Sub.withdraw(id) }
+    on pure(id: String) { let x = Util.double(3)
+        transition(id, "enrolled")
+        return x }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["verify", "x.cell"]);
+    assert!(out.contains("cross-cell: `Enroll.via_helper`"), "a helper does not hide it: {out}");
+    assert!(!out.contains("`Enroll.pure`"), "a pure call is no cross-cell rule: {out}");
+}
+
+#[test]
+fn cycle74_between_slot_rules_pass_strict_and_warn_on_order() {
+    let d = dir("cycle74_b");
+    std::fs::write(d.join("w.cell"), r#"
+cell W {
+    memory {
+        stock: Map<String, Int> [persistent]
+        reserved: Map<String, Int> [persistent]
+        invariant (reserved ?? 0) <= (stock ?? 0)
+    }
+    on add(k: String, n: Int) { stock.set(k, n) }
+    on hold(k: String, n: Int) { reserved.set(k, n) }
+}
+"#).unwrap();
+    // a rule between slots is a note, not a ⚠: --strict passes
+    let (out, code) = soma_in(&d, &["verify", "--strict", "w.cell"]);
+    assert!(code == 0 && out.contains("a rule BETWEEN slots") && out.contains("VERIFY OK"), "{out}");
+    assert!(!out.contains("narrow it"), "no bogus require suggestion: {out}");
+    // …and check warns about the write order the `?? 0` default imposes
+    let (out, _) = soma_in(&d, &["check", "w.cell"]);
+    assert!(out.contains("write the right-hand slot first"), "{out}");
+    // a machine-less file beside a soma.toml with [verify] properties is not a failure
+    std::fs::write(d.join("soma.toml"), "[verify]\neventually = [\"done\"]\n").unwrap();
+    std::fs::write(d.join("h.cell"), "cell Helper { on util(n: Int) { return n + 1 } }\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "h.cell"]);
+    assert!(code == 0 && out.contains("VERIFY OK"), "{out}");
 }

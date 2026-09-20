@@ -73,6 +73,18 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                     // () — the bare form would fail on the first write
                     let keyed = named.iter().any(|n| mem.slots.iter().any(|sl| sl.node.name == **n
                         && matches!(&sl.node.ty.node, crate::ast::TypeExpr::Generic { name, .. } if name == "Map" || name == "List")));
+                    // `stock.get(key)` in a rule between slots is the value
+                    // BEFORE the write: on a write to `stock` it tests the old
+                    // one, so that slot is not guarded at all
+                    for n in &named {
+                        if text.contains(&format!("{}.get(", n)) || text.contains(&format!("{}[key]", n)) {
+                            issues.push(InvariantIssue {
+                                message: format!("memory invariant between slots reads `{}.get(key)` — that is the value BEFORE the write, so a write to '{}' compares the OLD value and is not guarded: name the slot bare (`({} ?? 0)`), which is its new value on its own writes and its value at the same key on the others'", n, n, n),
+                                span: inv.span,
+                            });
+                            break;
+                        }
+                    }
                     if keyed && !text.contains("??") {
                         issues.push(InvariantIssue {
                             message: format!(
@@ -345,6 +357,19 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     let list_slot = cell.node.sections.iter().any(|sec| matches!(&sec.node, Section::Memory(m)
                         if m.slots.iter().any(|sl| sl.node.name == *slot && matches!(&sl.node.ty.node, TypeExpr::Simple(t) | TypeExpr::Generic { name: t, .. } if t == "List"))));
                     let keyed = names.contains("key") || names.contains("_key");
+                    // a rule BETWEEN slots CAN break on a delete: the entry
+                    // it drops takes that side to () (a "proven" ✓ let a
+                    // delete leave 3 reserved against 0 in stock)
+                    let cross = {
+                        let all: Vec<String> = cell.node.sections.iter().filter_map(|sec| match &sec.node {
+                            Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()), _ => None })
+                            .flatten().collect();
+                        all.iter().any(|n| n != slot && names.contains(n.as_str()))
+                    };
+                    if cross {
+                        runtime_checked.push(format!("{handler} → {slot} (a rule between slots: this delete takes the other side to () — checked at run time)"));
+                        continue;
+                    }
                     if list_slot && keyed {
                         runtime_checked.push(format!("{handler} → {slot} (a List delete shifts the later elements to new indexes; `key` changes without a write — checked at run time)"));
                         continue;
@@ -878,10 +903,34 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 }
             }
             if !runtime_checked.is_empty() {
-                result.checks.push(VerifyCheck::Warning(format!(
-                    "invariant {inv_text} — runtime-checked (computed values): {}",
-                    runtime_checked.join(", ")
-                )));
+                // a rule BETWEEN slots is enforced on every write to either
+                // slot and never proven by induction — by design, so it is a
+                // note, not a ⚠ that `--strict` fails on (and no `require`
+                // suggestion: in a handler the slot name is the whole Map,
+                // so the suggested line could not even evaluate)
+                let cross = {
+                    let all: Vec<String> = cell.node.sections.iter().filter_map(|sec| match &sec.node {
+                        Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()), _ => None })
+                        .flatten().collect();
+                    let mut names: HashSet<String> = HashSet::new();
+                    collect_idents(inv, &mut names);
+                    all.iter().filter(|n| names.contains(n.as_str())).count() > 1
+                };
+                if cross {
+                    let mut writers: Vec<String> = runtime_checked.iter()
+                        .map(|t| t.split(" because ").next().unwrap_or(t).split(" (").next().unwrap_or(t).trim().to_string())
+                        .collect();
+                    writers.sort(); writers.dedup();
+                    result.checks.push(VerifyCheck::Note(format!(
+                        "invariant {inv_text} — a rule BETWEEN slots: enforced on every write to either ({}) and on deletes, never proven by induction (by design; `--strict` passes)",
+                        writers.join(", ")
+                    )));
+                } else {
+                    result.checks.push(VerifyCheck::Warning(format!(
+                        "invariant {inv_text} — runtime-checked (computed values): {}",
+                        runtime_checked.join(", ")
+                    )));
+                }
             }
         }
 
@@ -2119,6 +2168,23 @@ pub fn lint_program(program: &Program) -> Vec<InvariantIssue> {
             let Section::Memory(mem) = &section.node else { continue };
             let slots: Vec<String> = mem.slots.iter().map(|s| s.node.name.clone()).collect();
             for inv in &mem.invariants {
+                // a rule BETWEEN slots: the absent side reads as 0, so the
+                // first write to the left at a key the right slot does not
+                // have yet is refused (an event whose `house` was written
+                // before `sellable` never opened)
+                {
+                    let names = deep_idents(&inv.node);
+                    let mut both: Vec<&String> = slots.iter().filter(|n| names.contains(n.as_str())).collect();
+                    both.sort();
+                    let text = crate::ast::render_expr(&inv.node);
+                    if both.len() > 1 && text.contains("??") {
+                        out.push(InvariantIssue {
+                            message: format!("invariant between slots ({}) — at a key the other slot has no entry for, `?? 0` makes that side 0: write the right-hand slot first (or seed both in one handler), or the first write to the other is refused",
+                                both.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),
+                            span: inv.span,
+                        });
+                    }
+                }
                 // an invariant naming no slot guards EVERY slot of the memory
                 // (`invariant get_status(key) != "paid"` refused every write
                 // to an unrelated counter) — say so when there are several

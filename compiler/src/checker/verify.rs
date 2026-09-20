@@ -17,6 +17,9 @@ pub struct VerifyResult {
 #[derive(Debug)]
 pub enum VerifyCheck {
     Pass(String),
+    /// Enforced at run time BY DESIGN (a rule between slots): not a proof,
+    /// not a downgrade either — `--strict` does not fail on it.
+    Note(String),
     Warning(String),
     Fail(String, Option<Vec<String>>), // message, optional trace
 }
@@ -927,6 +930,9 @@ pub fn format_results(results: &[VerifyResult]) -> String {
                 VerifyCheck::Pass(msg) => {
                     output.push_str(&format!("  {} {}\n", paint("32", "✓"), msg));
                 }
+                VerifyCheck::Note(msg) => {
+                    output.push_str(&format!("  {} {}\n", paint("36", "·"), msg));
+                }
                 VerifyCheck::Warning(msg) => {
                     output.push_str(&format!("  {} {}\n", paint("33", "⚠"), msg));
                 }
@@ -954,37 +960,95 @@ pub fn format_results(results: &[VerifyResult]) -> String {
 /// rule between the two machines is outside what verify proves (it is
 /// per-cell). Listed by name so the gap is concrete, not a footnote.
 pub fn cross_cell_notes(program: &Program) -> Vec<String> {
-    // only cells that HAVE a machine: calling a plain audit cell is not a
-    // rule between two lifecycles
-    let cells: std::collections::HashSet<String> = program.cells.iter()
+    // the cells whose handlers CHANGE something (a transition or a slot
+    // write): calling a pure helper of a cell that happens to have a
+    // machine is not a rule between lifecycles
+    let mut changes: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for c in &program.cells {
+        let slots: std::collections::HashSet<String> = c.node.sections.iter().filter_map(|s| match &s.node {
+            Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()), _ => None }).flatten().collect();
+        for sec in &c.node.sections {
+            let Section::OnSignal(on) = &sec.node else { continue };
+            // a handler that TOUCHES its cell's lifecycle or data: it
+            // transitions, writes a slot, or reads either (a pure `double(n)`
+            // does none of that, and calling it is no cross-cell rule)
+            let mut acts = false;
+            crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
+                Expr::FnCall { name, .. } if matches!(name.as_str(), "transition" | "get_status" | "has_state" | "valid_transitions") => acts = true,
+                Expr::MethodCall { target, .. } => if let Expr::Ident(t) = &target.node { if slots.contains(t) { acts = true; } },
+                Expr::Index { target, .. } => if let Expr::Ident(t) = &target.node { if slots.contains(t) { acts = true; } },
+                Expr::Ident(t) if slots.contains(t) => acts = true,
+                _ => {}
+            });
+            crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+                Statement::MethodCall { target, method, .. } if slots.contains(target) && matches!(method.as_str(), "set" | "push" | "delete" | "remove" | "put") => acts = true,
+                Statement::IndexSet { name, .. } if slots.contains(name) => acts = true,
+                _ => {}
+            });
+            if acts { changes.insert((c.node.name.clone(), on.signal_name.clone())); }
+        }
+    }
+    let bodies: std::collections::HashMap<(String, String), &Vec<Spanned<Statement>>> = program.cells.iter()
+        .flat_map(|c| c.node.sections.iter().filter_map(move |s| match &s.node {
+            Section::OnSignal(on) => Some(((c.node.name.clone(), on.signal_name.clone()), &on.body)), _ => None }))
+        .collect();
+    let machines: std::collections::HashSet<String> = program.cells.iter()
         .filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_))))
         .map(|c| c.node.name.clone()).collect();
-    let mut out = Vec::new();
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, crate::ast::CellKind::Cell | crate::ast::CellKind::Agent) { continue; }
-        let has_machine = cell.node.sections.iter().any(|s| matches!(s.node, Section::State(_)));
-        for sec in &cell.node.sections {
-            let Section::OnSignal(on) = &sec.node else { continue };
-            let (mut transitions, mut others) = (false, Vec::new());
-            crate::checker::literals::for_each_expr(&on.body, &mut |e| match e {
+    // what a handler reaches, through its own cell's helpers and emits
+    fn reached(start: (String, String), bodies: &std::collections::HashMap<(String, String), &Vec<Spanned<Statement>>>,
+               cells: &std::collections::HashSet<String>) -> (bool, Vec<(String, String)>) {
+        let (mut transitions, mut others): (bool, Vec<(String, String)>) = (false, Vec::new());
+        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        let mut stack = vec![start.clone()];
+        while let Some(key) = stack.pop() {
+            if !seen.insert(key.clone()) { continue; }
+            let Some(body) = bodies.get(&key) else { continue };
+            let me = key.0.clone();
+            crate::checker::literals::for_each_expr(body, &mut |e| match e {
                 Expr::FnCall { name, args } => {
-                    if name == "transition" { transitions = true; }
+                    if name == "transition" && me == start.0 { transitions = true; }
                     if name == "delegate" {
-                        if let Some(Expr::Literal(crate::ast::Literal::String(c))) = args.first().map(|a| &a.node) {
-                            if cells.contains(c) && *c != cell.node.name { others.push(c.clone()); }
+                        if let (Some(Expr::Literal(crate::ast::Literal::String(c))), Some(Expr::Literal(crate::ast::Literal::String(h)))) =
+                            (args.first().map(|a| &a.node), args.get(1).map(|a| &a.node)) {
+                            if *c != start.0 && cells.contains(c) { others.push((c.clone(), h.clone())); } else if *c == me { stack.push((c.clone(), h.clone())); }
                         }
                     }
+                    // a helper of the same cell: follow it
+                    if bodies.contains_key(&(me.clone(), name.clone())) { stack.push((me.clone(), name.clone())); }
                 }
-                Expr::MethodCall { target, .. } => if let Expr::Ident(c) = &target.node {
-                    if cells.contains(c) && *c != cell.node.name { others.push(c.clone()); }
+                Expr::MethodCall { target, method, .. } => if let Expr::Ident(c) = &target.node {
+                    if *c != start.0 && cells.contains(c) { others.push((c.clone(), method.clone())); }
+                    else if *c == me { stack.push((c.clone(), method.clone())); }
                 },
                 _ => {}
             });
-            crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| if let Statement::MethodCall { target, .. } = st {
-                if cells.contains(target) && *target != cell.node.name { others.push(target.clone()); }
+            crate::checker::literals::for_each_stmt_deep(body, &mut |st| match st {
+                Statement::MethodCall { target, method, .. } => {
+                    if *target != start.0 && cells.contains(target) { others.push((target.clone(), method.clone())); }
+                    else if *target == me { stack.push((target.clone(), method.clone())); }
+                }
+                // an emit runs every listener of the program
+                Statement::Emit { signal_name, .. } => for (c, h) in bodies.keys() {
+                    if h == signal_name { stack.push((c.clone(), h.clone())); if *c != start.0 && cells.contains(c) { others.push((c.clone(), h.clone())); } }
+                },
+                _ => {}
             });
+        }
+        others.sort(); others.dedup();
+        (transitions, others)
+    }
+    let mut out = Vec::new();
+    for cell in &program.cells {
+        if !matches!(cell.node.kind, crate::ast::CellKind::Cell | crate::ast::CellKind::Agent) { continue; }
+        if !machines.contains(&cell.node.name) { continue; }
+        for sec in &cell.node.sections {
+            let Section::OnSignal(on) = &sec.node else { continue };
+            let (transitions, others) = reached((cell.node.name.clone(), on.signal_name.clone()), &bodies, &machines);
+            // …and only cells whose called handlers CHANGE something
+            let mut others: Vec<String> = others.into_iter().filter(|k| changes.contains(k)).map(|(c, _)| c).collect();
             others.sort(); others.dedup();
-            if has_machine && transitions && !others.is_empty() {
+            if transitions && !others.is_empty() {
                 out.push(format!("cross-cell: `{}.{}` transitions its own machine and acts on {} — a rule BETWEEN the two cells' machines (\"not while the subject is withdrawn\") is not verified: state it as a `require` reading the other cell",
                     cell.node.name, on.signal_name, others.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", ")));
             }
