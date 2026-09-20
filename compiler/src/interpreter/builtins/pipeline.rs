@@ -24,9 +24,18 @@ fn num_f(n: &Num) -> f64 { match n { Num::I(i) => SomaInt::from_rug(i.clone()).t
 fn num_value(n: Num) -> Value { match n { Num::I(i) => Value::Int(SomaInt::from_rug(i)), Num::F(f) => Value::Float(f) } }
 
 fn num_cmp(a: &Num, b: &Num) -> std::cmp::Ordering {
+    num_partial_cmp(a, b).unwrap_or_else(|| {
+        let nan = |n: &Num| matches!(n, Num::F(f) if f.is_nan());
+        nan(a).cmp(&nan(b))
+    })
+}
+
+fn num_partial_cmp(a: &Num, b: &Num) -> Option<std::cmp::Ordering> {
     match (a, b) {
-        (Num::I(x), Num::I(y)) => x.cmp(y),
-        _ => num_f(a).partial_cmp(&num_f(b)).unwrap_or(std::cmp::Ordering::Equal),
+        (Num::I(x), Num::I(y)) => Some(x.cmp(y)),
+        (Num::I(x), Num::F(y)) => x.partial_cmp(y),
+        (Num::F(x), Num::I(y)) => y.partial_cmp(x).map(std::cmp::Ordering::reverse),
+        (Num::F(x), Num::F(y)) => x.partial_cmp(y),
     }
 }
 
@@ -47,7 +56,7 @@ fn num_avg(xs: &[Num]) -> Value {
         Num::I(t) => {
             let n = rug::Integer::from(xs.len());
             let (q, r) = t.clone().div_rem(n.clone());
-            if r == 0 { Value::Int(SomaInt::from_rug(q)) } else { Value::Float(num_f(&Num::I(t)) / xs.len() as f64) }
+            if r == 0 { Value::Int(SomaInt::from_rug(q)) } else { Value::Float(crate::interpreter::rational_to_f64(rug::Rational::from((t, n)))) }
         }
         Num::F(f) => Value::Float(f / xs.len() as f64),
     }
@@ -81,7 +90,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                     // numbers compare exactly (BigInt included); other values as text
                     match (num_of(val), num_of(threshold)) {
                         (Some(a), Some(b)) if !matches!(val, Value::String(_)) => {
-                            let o = num_cmp(&a, &b);
+                            let Some(o) = num_partial_cmp(&a, &b) else { return op == "!="; };
                             match op.as_str() {
                                 ">" => o.is_gt(), ">=" => o.is_ge(), "<" => o.is_lt(), "<=" => o.is_le(),
                                 "==" | "=" => o.is_eq(), "!=" => !o.is_eq(), _ => false,
@@ -136,30 +145,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("sort_by expects (list, field)".to_string())))
             }
         }
-        "top" => {
-            if args.len() >= 2 {
-                if let Value::List(items) = &args[0] {
-                    let n = val_to_i64(&args[1]) as usize;
-                    Some(Ok(Value::List(items.iter().take(n).cloned().collect())))
-                } else {
-                    Some(Ok(args[0].clone()))
+        "top" | "bottom" => {
+            Some((|| {
+                let [Value::List(items), Value::Int(count)] = args else {
+                    return Err(RuntimeError::TypeError(format!("{} expects (rows: List, n: Int)", name)));
+                };
+                if count.cmp(&SomaInt::from_i64(0)) < 0 {
+                    return Err(RuntimeError::Domain { kind: "range".into(), message: format!("{}(): n must be nonnegative", name) });
                 }
-            } else {
-                Some(Err(RuntimeError::TypeError("top expects (list, n)".to_string())))
-            }
-        }
-        "bottom" => {
-            if args.len() >= 2 {
-                if let Value::List(items) = &args[0] {
-                    let n = val_to_i64(&args[1]) as usize;
-                    let start = if n >= items.len() { 0 } else { items.len() - n };
-                    Some(Ok(Value::List(items[start..].to_vec())))
-                } else {
-                    Some(Ok(args[0].clone()))
-                }
-            } else {
-                Some(Err(RuntimeError::TypeError("bottom expects (list, n)".to_string())))
-            }
+                let n = count.to_rug().to_usize().unwrap_or(usize::MAX).min(items.len());
+                Ok(Value::List(if name == "top" { items[..n].to_vec() } else { items[items.len() - n..].to_vec() }))
+            })())
         }
         "sum_by" => {
             if args.len() >= 2 {
@@ -251,7 +247,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let mut result: Vec<Value> = Vec::new();
                 for item in items {
                     let v = if let Value::Map(e) = item { e.get(&field).cloned().unwrap_or(Value::Unit) } else { item.clone() };
-                    if seen.insert(format!("{}", v)) {
+                    if distinct_key(&v).map_or(true, |key| seen.insert(key)) {
                         result.push(item.clone());
                     }
                 }
@@ -272,14 +268,14 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         let v = if let Value::Map(e) = item {
                             e.get(&field).cloned().unwrap_or(Value::Unit)
                         } else { item.clone() };
-                        if seen.insert(distinct_key(&v)) {
+                        if distinct_key(&v).map_or(true, |key| seen.insert(key)) {
                             result.push(v);
                         }
                     }
                     Some(Ok(Value::List(result)))
                 } else {
                     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-                    let result: Vec<Value> = items.iter().filter(|item| seen.insert(distinct_key(item))).cloned().collect();
+                    let result: Vec<Value> = items.iter().filter(|item| distinct_key(item).map_or(true, |key| seen.insert(key))).cloned().collect();
                     Some(Ok(Value::List(result)))
                 }
             } else { Some(Ok(Value::List(vec![]))) }
@@ -373,13 +369,39 @@ fn non_numeric(items: &[Value], field: &str) -> Option<Value> {
     })
 }
 
-fn distinct_key(v: &Value) -> String {
-    // the same equality `==` and contains() use: 1 and 1.0 are one value
-    // (they were kept as two), NaN is its own (it equals nothing)
-    match v {
-        Value::Int(i) => match i.to_f64() { f if f.fract() == 0.0 => format!("num\u{1f}{}", f), _ => format!("num\u{1f}{}", i) },
-        Value::Float(f) if f.is_nan() => format!("nan\u{1f}{:p}", v as *const Value),
-        Value::Float(f) if f.fract() == 0.0 && f.is_finite() => format!("num\u{1f}{}", f),
-        _ => format!("{}\u{1f}{}", crate::interpreter::value_type_name(v), crate::interpreter::builtins::string::to_json_string(v)),
+fn distinct_key(v: &Value) -> Option<String> {
+    // Structural keys preserve exact numbers and ignore map insertion order.
+    // A value containing NaN is unequal even to itself: never deduplicate it.
+    fn key(v: &Value) -> Option<serde_json::Value> {
+        use serde_json::json;
+        Some(match v {
+            Value::Int(i) => json!(["number", i.to_string()]),
+            Value::Float(f) if f.is_nan() => return None,
+            Value::Float(f) if f.is_finite() && f.fract() == 0.0 => json!(["number", rug::Integer::from_f64(*f)?.to_string()]),
+            Value::Float(f) => json!(["float", f.to_string()]),
+            Value::String(s) => json!(["string", s]),
+            Value::Bool(b) => json!(["bool", b]),
+            Value::Unit => json!(["unit"]),
+            Value::List(xs) => json!(["list", xs.iter().map(key).collect::<Option<Vec<_>>>()?]),
+            Value::Map(m) => {
+                let mut pairs = m.iter().collect::<Vec<_>>();
+                pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                let entries = pairs.into_iter().map(|(k, v)| Some(json!([k, key(v)?]))).collect::<Option<Vec<_>>>()?;
+                json!(["map", entries])
+            }
+            Value::Variant { type_name, variant, fields } => {
+                use crate::interpreter::VariantValue;
+                let payload = match fields {
+                    VariantValue::Unit => json!(["unit"]),
+                    VariantValue::Tuple(xs) => json!(["tuple", xs.iter().map(key).collect::<Option<Vec<_>>>()?]),
+                    VariantValue::Struct(m) => key(&Value::Map(m.clone()))?,
+                };
+                json!(["variant", type_name, variant, payload])
+            }
+            // Preserve values with no structural key rather than dropping a
+            // distinct value because its display text happened to collide.
+            _ => return None,
+        })
     }
+    key(v).map(|k| k.to_string())
 }

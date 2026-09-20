@@ -1399,11 +1399,24 @@ impl Interpreter {
         // later in the caller's expression was reported inside the callee
         // (`assert request(…).x` "raised at line 3", the handler's line)
         let caller_span = self.last_span;
+        // Record the outcome after the transaction, including native errors,
+        // parameter failures and failed commits. Nested calls replay as part
+        // of their caller and must not create separate entries.
+        let is_recorded = self.current_depth == 0 && self.record_handlers.contains(&(cell_name.to_string(), signal_name.to_string()));
+        let recorded_args = if is_recorded { Some(args.clone()) } else { None };
+        if is_recorded { self.record_nondet_called.clear(); }
         let r = if self.journal.is_none() && self.task_unit.is_none() && self.handler_is_task(cell_name, signal_name) {
             self.run_task(|me| me.call_signal_inner(cell_name, signal_name, args))
         } else {
             self.atomically(|me| me.call_signal_inner(cell_name, signal_name, args))
         };
+        match &r {
+            Ok(val) => self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), val, None),
+            Err(e) => {
+                let marker = map_from_pairs(vec![("__error__".to_string(), Value::String(e.kind()))]);
+                self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), &marker, Some(e.kind()));
+            }
+        }
         if r.is_ok() { self.last_span = caller_span; }
         r
     }
@@ -1436,15 +1449,6 @@ impl Interpreter {
                 };
             }
         }
-        // V1: [record] mode — set up nondet tracking before invoking the handler.
-        // only the TOP-LEVEL invocation: a nested call is re-executed by its
-        // caller during replay (recording it too ran it twice — "1 diverged")
-        let is_recorded = self.current_depth == 0 && self.record_handlers.contains(&(cell_name.to_string(), signal_name.to_string()));
-        let recorded_args = if is_recorded { Some(args.clone()) } else { None };
-        if is_recorded {
-            self.record_nondet_called.clear();
-        }
-
         // Check for [native] FFI handler first — fast path
         let native_key = (cell_name.to_string(), signal_name.to_string());
         // the declared parameter types, as for an interpreted handler: the
@@ -1480,7 +1484,6 @@ impl Interpreter {
             match native_ffi::call_native(native, &args) {
                 Ok(val) => {
                     let val = self.check_face_return(cell_name, signal_name, val)?;
-                    self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), &val);
                     return Ok(val);
                 }
                 Err(e) if e.contains("overflow_rerun") => {
@@ -1527,15 +1530,6 @@ impl Interpreter {
             Ok(val) => self.check_face_return(cell_name, signal_name, val),
             err => err,
         };
-        match result {
-            Ok(ref val) => self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), val),
-            // a call that raised is logged too (`{"__error__": kind}`): replay
-            // then sees a call that used to fail and now succeeds
-            Err(ref e) => {
-                let marker = map_from_pairs(vec![("__error__".to_string(), Value::String(e.kind()))]);
-                self.maybe_record(is_recorded, cell_name, signal_name, recorded_args.as_ref(), &marker);
-            }
-        }
         result
     }
 
@@ -1558,6 +1552,7 @@ impl Interpreter {
         signal_name: &str,
         args: Option<&Vec<Value>>,
         result: &Value,
+        error_kind: Option<String>,
     ) {
         if !is_recorded || self.replay_mode { return; }
         let Some(path) = self.record_log_path.clone() else { return; };
@@ -1571,6 +1566,7 @@ impl Interpreter {
             handler: signal_name.to_string(),
             args: args.clone(),
             result: result.clone(),
+            error_kind,
             nondet: std::mem::take(&mut self.record_nondet_called),
             src: self.source_text.as_deref().map(record_log::source_fingerprint),
         };
@@ -1909,9 +1905,9 @@ impl Interpreter {
                 // `[loop_bound(N)]` is part of a cost / termination proof:
                 // more iterations than declared is an error, not a silent
                 // overrun (a "proven" 100-token bound spent 300)
-                let over = |n: usize| -> Result<(), ExecError> {
+                let over = |n: u128| -> Result<(), ExecError> {
                     match bound {
-                        Some(b) if n as u64 > b => Err(ExecError::Runtime(RuntimeError::Domain {
+                        Some(b) if n > b as u128 => Err(ExecError::Runtime(RuntimeError::Domain {
                             kind: "loop_bound".to_string(),
                             message: format!("for [loop_bound({})] would run {} times — the declared bound is part of the cost/termination proof: raise it or bound the data", b, n),
                         })),
@@ -1927,37 +1923,35 @@ impl Interpreter {
                         None => { env.remove(var); }
                     }
                 };
-                // Fast path: for i in range(start, end) — no allocation
+                // Builtin ranges do not allocate a list. Respect user handlers
+                // and closures, and evaluate each argument exactly once.
                 if let Expr::FnCall { name: fn_name, args: fn_args } = &iter.node {
-                    // Only the 2-arg ascending form uses the fast path; a
-                    // 3-arg range(start, end, step) falls through to the
-                    // general path so the step (incl. negative) is honored.
-                    if fn_name == "range" && fn_args.len() == 2 {
-                        let start_val = self.eval_expr(&fn_args[0].node, env, cell_name, signal_name)?;
-                        let end_val = self.eval_expr(&fn_args[1].node, env, cell_name, signal_name)?;
-                        if let (Some(start), Some(end)) = (start_val.as_int().ok(), end_val.as_int().ok()) {
-                            over(if end > start { (end - start) as usize } else { 0 })?;
-                            let mut last = Value::Unit;
-                            let mut i = start;
-                            let needs_scope = body_has_let(body);
-                            while i < end {
-                                env.insert(var.clone(), Value::Int(SomaInt::from_i64(i)));
-                                let result = if needs_scope {
-                                    self.exec_body_scoped(body, env, cell_name, signal_name)
-                                } else {
-                                    self.exec_body(body, env, cell_name, signal_name)
-                                };
-                                match result {
-                                    Ok(val) => last = val,
-                                    Err(ExecError::Break) => break,
-                                    Err(ExecError::Continue) => { i += 1; continue; }
-                                    Err(e) => { restore(env); return Err(e); }
-                                }
-                                i += 1;
+                    if fn_name == "range" && (2..=3).contains(&fn_args.len())
+                        && !env.contains_key(fn_name) && !self.user_handler_takes(fn_name, fn_args.len())
+                    {
+                        let values = fn_args.iter().map(|a| self.eval_expr(&a.node, env, cell_name, signal_name)).collect::<Result<Vec<_>, _>>()?;
+                        let (start, end, step, count) = builtins::collection::range_spec(&values).map_err(ExecError::Runtime)?;
+                        over(count)?;
+                        let mut last = Value::Unit;
+                        let mut i = start;
+                        let needs_scope = body_has_let(body);
+                        while if step > 0 { i < end } else { i > end } {
+                            env.insert(var.clone(), Value::Int(SomaInt::from_i64(i)));
+                            let result = if needs_scope {
+                                self.exec_body_scoped(body, env, cell_name, signal_name)
+                            } else {
+                                self.exec_body(body, env, cell_name, signal_name)
+                            };
+                            match result {
+                                Ok(val) => last = val,
+                                Err(ExecError::Break) => break,
+                                Err(ExecError::Continue) => {},
+                                Err(e) => { restore(env); return Err(e); }
                             }
-                            restore(env);
-                            return Ok(last);
+                            match i.checked_add(step) { Some(next) => i = next, None => break }
                         }
+                        restore(env);
+                        return Ok(last);
                     }
                 }
 
@@ -1991,7 +1985,7 @@ impl Interpreter {
                     other => return Err(ExecError::Runtime(RuntimeError::Domain { kind: "type".to_string(), message: format!(
                         "for {} in …: {} {} is not a List, Map or String — for a count write `for i in range(0, n)`", var, value_type_name(&other), { let t: String = format!("{}", other).chars().take(30).collect(); t }) })),
                 };
-                over(items.len())?;
+                over(items.len() as u128)?;
 
                 let mut last = Value::Unit;
                 for item in items {
@@ -2032,211 +2026,62 @@ impl Interpreter {
                 Ok(last)
             }
             Statement::While { condition, body, .. } => {
-                // Ultra-fast path: while i < N { ... i += K ... }
-                // Detect: condition is i < literal, body is all Assign with += on ints
-                // Run entirely with Rust locals, zero HashMap access per iteration
+                // Prepare the entire integer-register loop before executing it.
+                // Falling back halfway through an iteration replays assignments;
+                // a missing RHS register must never silently become zero.
                 if let Expr::CmpOp { left, op: CmpOp::Lt, right } = &condition.node {
-                    if let (Expr::Ident(ref counter_name), Expr::Literal(Literal::Int(limit))) = (&left.node, &right.node) {
-                        let limit = *limit;
-                        let cn = counter_name.clone();
-
-                        // Check if body is purely int-assignable (all stmts are x += expr on ints)
-                        // If so, we can run the entire loop with a local variable snapshot
-                        let needs_scope = body_has_let(body);
-
-                        // Snapshot approach: pull all referenced int vars into a local vec,
-                        // run the loop, push them back. Eliminates HashMap per-iteration.
-                        // Collect all variable names referenced in the body
-                        let mut var_names: Vec<String> = vec![cn.clone()];
-                        for stmt in body.iter() {
-                            if let Statement::Assign { name, .. } = &stmt.node {
-                                if !var_names.contains(name) {
-                                    var_names.push(name.clone());
-                                }
-                            }
-                        }
-
-                        // Check if ALL referenced vars are small ints and body is only int assigns
-                        let all_ints = var_names.iter().all(|n| {
-                            match env.get(n) {
-                                Some(Value::Int(si)) => si.is_small(),
-                                None => true,
-                                _ => false,
-                            }
-                        });
-
-                        if all_ints && !needs_scope && var_names.len() <= 8 {
-                            // Pull vars into local Rust Vec
-                            let mut locals: Vec<i64> = var_names.iter().map(|n| {
-                                match env.get(n) { Some(Value::Int(si)) => si.to_i64().unwrap_or(0), _ => 0 }
+                    if let (Expr::Ident(counter), Expr::Literal(Literal::Int(limit))) = (&left.node, &right.node) {
+                        enum Operand { Literal(i64), Local(usize) }
+                        let mut names = vec![counter.clone()];
+                        let mut slot = |name: &String| {
+                            if let Some(i) = names.iter().position(|n| n == name) { i }
+                            else { names.push(name.clone()); names.len() - 1 }
+                        };
+                        let prepared: Option<Vec<_>> = body.iter().map(|stmt| {
+                            let Statement::Assign { name, value } = &stmt.node else { return None };
+                            let Expr::BinaryOp { left, op, right } = &value.node else { return None };
+                            if !matches!(&left.node, Expr::Ident(n) if n == name)
+                                || !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) { return None; }
+                            let target = slot(name);
+                            let rhs = match &right.node {
+                                Expr::Literal(Literal::Int(n)) => Operand::Literal(*n),
+                                Expr::Ident(n) => Operand::Local(slot(n)),
+                                _ => return None,
+                            };
+                            Some((target, *op, rhs))
+                        }).collect();
+                        if let Some(ops) = prepared {
+                            let registers: Option<Vec<_>> = names.iter().map(|name| match env.get(name) {
+                                Some(Value::Int(n)) => Some(n.clone()),
+                                _ => None,
                             }).collect();
-
-                            // Run the loop with direct array access
-                            'fast_while: loop {
-                                if locals[0] >= limit { break; }
-
-                                // Execute each statement with local vars
-                                for stmt in body.iter() {
-                                    if let Statement::Assign { name, value } = &stmt.node {
-                                        if let Expr::BinaryOp { left: lhs, op, right: rhs } = &value.node {
-                                            if let Expr::Ident(ref lhs_name) = lhs.node {
-                                                if lhs_name == name {
-                                                    let lhs_idx = var_names.iter().position(|n| n == name);
-                                                    if let Some(idx) = lhs_idx {
-                                                        let rhs_val = match &rhs.node {
-                                                            Expr::Literal(Literal::Int(n)) => *n,
-                                                            Expr::Ident(ref rn) => {
-                                                                var_names.iter().position(|n| n == rn)
-                                                                    .map(|ri| locals[ri]).unwrap_or(0)
-                                                            }
-                                                            _ => { break 'fast_while; } // can't handle, fall through
-                                                        };
-                                                        let checked = match op {
-                                                            BinOp::Add => locals[idx].checked_add(rhs_val),
-                                                            BinOp::Sub => locals[idx].checked_sub(rhs_val),
-                                                            BinOp::Mul => locals[idx].checked_mul(rhs_val),
-                                                            _ => None,
-                                                        };
-                                                        match checked {
-                                                            Some(v) => locals[idx] = v,
-                                                            None => {
-                                                                // Overflow — promote to SomaInt register loop
-                                                                let mut vals: Vec<Value> = locals.iter()
-                                                                    .map(|v| Value::Int(SomaInt::from_i64(*v))).collect();
-                                                                // Apply this operation with SomaInt
-                                                                let lhs_si = SomaInt::from_i64(locals[idx]);
-                                                                let rhs_si = SomaInt::from_i64(rhs_val);
-                                                                let result_si = match op {
-                                                                    BinOp::Add => lhs_si.add(rhs_si),
-                                                                    BinOp::Sub => lhs_si.sub(rhs_si),
-                                                                    BinOp::Mul => lhs_si.mul(rhs_si),
-                                                                    _ => { break 'fast_while; }
-                                                                };
-                                                                vals[idx] = Value::Int(result_si);
-                                                                // Continue with Value-based register loop
-                                                                // Push to env and use the standard fast path
-                                                                for (ii, n) in var_names.iter().enumerate() {
-                                                                    env.insert(n.clone(), vals[ii].clone());
-                                                                }
-                                                                break 'fast_while;
-                                                            }
-                                                        }
-                                                        continue;
-                                                    }
-                                                }
-                                            }
+                            if let Some(mut values) = registers {
+                                let limit = SomaInt::from_i64(*limit);
+                                let result: Result<(), RuntimeError> = (|| {
+                                    while values[0].cmp(&limit) < 0 {
+                                        for (target, op, rhs) in &ops {
+                                            let rhs = match rhs {
+                                                Operand::Literal(n) => SomaInt::from_i64(*n),
+                                                Operand::Local(i) => values[*i].clone(),
+                                            };
+                                            let lhs = values[*target].clone();
+                                            values[*target] = match op {
+                                                BinOp::Add => lhs.add(rhs),
+                                                BinOp::Sub => lhs.sub(rhs),
+                                                BinOp::Mul => lhs.checked_big_mul(rhs).map_err(|message| RuntimeError::Domain { kind: "range".into(), message })?,
+                                                _ => unreachable!(),
+                                            };
                                         }
                                     }
-                                    // Non-optimizable statement — fall back to general path
-                                    // Push locals back to env first
-                                    for (i, n) in var_names.iter().enumerate() {
-                                        env.insert(n.clone(), Value::Int(SomaInt::from_i64(locals[i])));
-                                    }
-                                    // Run remaining body via general path
-                                    break 'fast_while;
+                                    Ok(())
+                                })();
+                                for (name, value) in names.into_iter().zip(values) {
+                                    env.insert(name, Value::Int(value));
                                 }
-                            }
-
-                            // Push final values back to env
-                            for (i, n) in var_names.iter().enumerate() {
-                                env.insert(n.clone(), Value::Int(SomaInt::from_i64(locals[i])));
-                            }
-                            // Check if loop completed (counter >= limit)
-                            if locals[0] >= limit {
-                                return Ok(Value::Unit);
-                            }
-
-                            // Overflowed to BigInt — run Value-based register loop (no HashMap per iteration)
-                            let mut vals: Vec<Value> = var_names.iter()
-                                .map(|n| env.get(n).cloned().unwrap_or(Value::Int(SomaInt::from_i64(0))))
-                                .collect();
-
-                            'bigint_loop: loop {
-                                // Check counter < limit
-                                let counter_done = match &vals[0] {
-                                    Value::Int(si) => si.cmp(&SomaInt::from_i64(limit)) >= 0,
-                                    _ => true,
-                                };
-                                if counter_done { break; }
-
-                                for stmt in body.iter() {
-                                    if let Statement::Assign { name, value: val_expr } = &stmt.node {
-                                        if let Expr::BinaryOp { left: lhs, op, right: rhs } = &val_expr.node {
-                                            if let Expr::Ident(ref lhs_name) = lhs.node {
-                                                if lhs_name == name {
-                                                    let idx = var_names.iter().position(|n| n == name);
-                                                    if let Some(idx) = idx {
-                                                        // Resolve RHS from registers
-                                                        let rhs_val = match &rhs.node {
-                                                            Expr::Literal(Literal::Int(n)) => Value::Int(SomaInt::from_i64(*n)),
-                                                            Expr::Ident(ref rn) => {
-                                                                var_names.iter().position(|n| n == rn)
-                                                                    .map(|ri| vals[ri].clone())
-                                                                    .unwrap_or(Value::Int(SomaInt::from_i64(0)))
-                                                            }
-                                                            Expr::BinaryOp { left: inner_l, op: inner_op, right: inner_r } => {
-                                                                // Handle i * i, i * i * i etc
-                                                                let l = match &inner_l.node {
-                                                                    Expr::Ident(ref n) => var_names.iter().position(|vn| vn == n).map(|i| vals[i].clone()).unwrap_or(Value::Int(SomaInt::from_i64(0))),
-                                                                    Expr::Literal(Literal::Int(n)) => Value::Int(SomaInt::from_i64(*n)),
-                                                                    _ => { break 'bigint_loop; }
-                                                                };
-                                                                let r = match &inner_r.node {
-                                                                    Expr::Ident(ref n) => var_names.iter().position(|vn| vn == n).map(|i| vals[i].clone()).unwrap_or(Value::Int(SomaInt::from_i64(0))),
-                                                                    Expr::Literal(Literal::Int(n)) => Value::Int(SomaInt::from_i64(*n)),
-                                                                    _ => { break 'bigint_loop; }
-                                                                };
-                                                                self.eval_binop_val(&l, inner_op.clone(), &r)
-                                                            }
-                                                            _ => { break 'bigint_loop; }
-                                                        };
-                                                        vals[idx] = self.eval_binop_val(&vals[idx], op.clone(), &rhs_val);
-                                                        continue;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // Can't optimize this stmt — push back and fall through
-                                    for (ii, n) in var_names.iter().enumerate() {
-                                        env.insert(n.clone(), vals[ii].clone());
-                                    }
-                                    break 'bigint_loop;
-                                }
-                            }
-
-                            // Push final values back
-                            for (i, n) in var_names.iter().enumerate() {
-                                env.insert(n.clone(), vals[i].clone());
-                            }
-                            // Check if done
-                            let counter_done = match &vals[0] {
-                                Value::Int(si) => si.cmp(&SomaInt::from_i64(limit)) >= 0,
-                                _ => true,
-                            };
-                            if counter_done {
+                                result.map_err(ExecError::Runtime)?;
                                 return Ok(Value::Unit);
                             }
                         }
-
-                        // Standard fast path: direct int comparison, skip eval_expr on condition
-                        loop {
-                            if let Some(Value::Int(si)) = env.get(&cn) {
-                                if si.cmp(&SomaInt::from_i64(limit)) >= 0 { break; }
-                            } else { break; }
-                            let result = if needs_scope {
-                                self.exec_body_scoped(body, env, cell_name, signal_name)
-                            } else {
-                                self.exec_body(body, env, cell_name, signal_name)
-                            };
-                            match result {
-                                Ok(_) => {}
-                                Err(ExecError::Break) => break,
-                                Err(ExecError::Continue) => {}
-                                Err(e) => return Err(e),
-                            }
-                        }
-                        return Ok(Value::Unit);
                     }
                 }
                 // General path
@@ -4722,18 +4567,12 @@ impl Interpreter {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => x == y,
             (Value::Float(x), Value::Float(y)) => x == y,
-            (Value::Int(x), Value::Float(y)) => x.to_f64() == *y,
-            (Value::Float(x), Value::Int(y)) => *x == y.to_f64(),
+            (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => numeric_cmp(a, b) == Some(std::cmp::Ordering::Equal),
             (Value::String(x), Value::String(y)) => x == y,
             (Value::Bool(x), Value::Bool(y)) => x == y,
             (Value::Unit, Value::Unit) => true,
             _ => false,
         }
-    }
-
-    /// Convenience wrapper that returns Value (panics on error — for register loop only)
-    fn eval_binop_val(&self, l: &Value, op: BinOp, r: &Value) -> Value {
-        self.eval_binop(l, op, r).unwrap_or(Value::Unit)
     }
 
     fn eval_binop(&self, l: &Value, op: BinOp, r: &Value) -> Result<Value, RuntimeError> {
@@ -4851,6 +4690,9 @@ impl Interpreter {
                     CmpOp::Ne => c != 0,
                 };
                 Ok(Value::Bool(result))
+            }
+            (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => {
+                Ok(Value::Bool(compare_order(numeric_cmp(l, r), op)))
             }
             (Value::Float(_), _) | (_, Value::Float(_)) => {
                 let a = l.as_float()?;
@@ -5762,14 +5604,36 @@ impl Interpreter {
     }
 }
 
-/// Structural equality: numbers by value (1 == 1.0), lists element-wise,
-/// maps by key set (insertion order is irrelevant), variants by tag and
-/// payload. Values of different kinds are unequal.
+/// Compare numbers without rounding an Int through f64. NaN is unordered.
+pub(crate) fn numeric_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Some(x.cmp(y).cmp(&0)),
+        (Value::Int(x), Value::Float(y)) => x.to_rug().partial_cmp(y),
+        (Value::Float(x), Value::Int(y)) => y.to_rug().partial_cmp(x).map(std::cmp::Ordering::reverse),
+        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
+        _ => None,
+    }
+}
+
+pub(crate) fn compare_order(order: Option<std::cmp::Ordering>, op: CmpOp) -> bool {
+    use std::cmp::Ordering::*;
+    match op {
+        CmpOp::Eq => order == Some(Equal),
+        CmpOp::Ne => order != Some(Equal),
+        CmpOp::Lt => order == Some(Less),
+        CmpOp::Gt => order == Some(Greater),
+        CmpOp::Le => matches!(order, Some(Less | Equal)),
+        CmpOp::Ge => matches!(order, Some(Greater | Equal)),
+    }
+}
+
+/// Structural equality: numbers by value, lists element-wise, maps by key
+/// set, variants by tag and payload. Different kinds are unequal.
 pub(crate) fn deep_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y) == 0,
         (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Int(x), Value::Float(y)) | (Value::Float(y), Value::Int(x)) => x.to_f64() == *y,
+        (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => numeric_cmp(a, b) == Some(std::cmp::Ordering::Equal),
         (Value::String(x), Value::String(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Unit, Value::Unit) => true,
@@ -6913,14 +6777,39 @@ pub(crate) fn int_div_value(a: &SomaInt, b: &SomaInt) -> Result<Value, RuntimeEr
         // exact, so it takes the Int path (which promotes to big)
         match ai.checked_rem(bi) {
             Some(0) | None => Ok(Value::Int(a.clone().div(b.clone()))),
-            Some(_) => Ok(Value::Float(ai as f64 / bi as f64)),
+            Some(_) if ai.unsigned_abs() <= (1u64 << 53) && bi.unsigned_abs() <= (1u64 << 53) => Ok(Value::Float(ai as f64 / bi as f64)),
+            Some(_) => Ok(Value::Float(rational_to_f64(rug::Rational::from((a.to_rug(), b.to_rug()))))),
         }
     } else if a.clone().modulo(b.clone()).to_i64() == Some(0) {
         // exact big division stays an Int — same rule as small ints
         Ok(Value::Int(a.clone().div(b.clone())))
     } else {
-        Ok(Value::Float(a.to_f64() / b.to_f64()))
+        Ok(Value::Float(rational_to_f64(rug::Rational::from((a.to_rug(), b.to_rug())))))
     }
+}
+
+/// Round an exact ratio once, to nearest/even, including subnormals.
+/// GMP's Rational::to_f64 truncates; converting numerator/denominator
+/// separately loses precision and can produce inf/inf for a finite ratio.
+pub(crate) fn rational_to_f64(value: rug::Rational) -> f64 {
+    let negative = value < 0;
+    let magnitude = value.abs();
+    let lower = magnitude.to_f64();
+    if !lower.is_finite() { return if negative { -lower } else { lower }; }
+    let upper = f64::from_bits(lower.to_bits() + 1);
+    let mut midpoint = rug::Rational::from_f64(lower).unwrap();
+    if upper.is_infinite() {
+        midpoint += rug::Integer::from(1) << 970u32;
+    } else {
+        midpoint += rug::Rational::from_f64(upper).unwrap();
+        midpoint /= 2;
+    }
+    let rounded = match magnitude.cmp(&midpoint) {
+        std::cmp::Ordering::Less => lower,
+        std::cmp::Ordering::Greater => upper,
+        std::cmp::Ordering::Equal => if lower.to_bits() & 1 == 0 { lower } else { upper },
+    };
+    if negative { -rounded } else { rounded }
 }
 
 /// The longest line the signal bus reads (a peer that sent 300 MB with no

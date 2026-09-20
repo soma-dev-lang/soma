@@ -2,6 +2,79 @@
 
 ## Unreleased
 
+## 2.8.1 — 2026-09-20
+
+### Continued language audit — 2026-09-20
+
+- Integer `while` optimization validates the whole body before running.
+  Read-only operands are retained, BigInt promotion never drops or repeats
+  an assignment, and errors propagate. Other loop bodies use normal
+  execution, including Float counters, division, return and break.
+- Int division rounds the exact ratio once, including subnormal Floats.
+  Huge finite quotients no longer become NaN through `inf / inf`.
+  Integer means and pipeline averages share the corrected conversion.
+- Variance and standard deviation retain the differences between nearby
+  large numbers, including mixed Int/Float inputs. Finite equal large
+  Floats have zero variance; their median no longer overflows.
+- `index_of` uses structural equality without an approximate numeric
+  fallback. `substring` clamps negative end indexes to zero.
+- `chr` rejects invalid Unicode code points instead of wrapping modulo
+  2^32. Math, integer-bit, random and byte-index builtins reject wrong
+  operand types instead of silently coercing them to zero or truncating.
+- Huge shift counts cannot become zero. Right shifts preserve sign fill;
+  bit mutations enforce the Int size limit. Padding a BigInt value is
+  permitted; the size check applies to the width argument.
+- Native right shifts accept arbitrary-size nonnegative counts. Random
+  intervals spanning the signed 64-bit range do not overflow. `bit_next`
+  handles indexes 63 and above for small locals as well as BigInt operands.
+- Generated native temporaries no longer shadow operands in shifts,
+  bit operations, min/max and modular powers. Loop-bound counters have
+  fresh names that avoid user variables, including nested loops.
+- The deprecated `--jit` flag now really is ignored, matching its warning.
+  It preserves normal arithmetic, structural equality, errors, qualified
+  dispatch and recording. The old bytecode backend remains experimental;
+  the CLI compatibility tests do not claim bytecode equivalence.
+
+### Language audit — 2026-09-20
+
+- Cost proofs cannot wrap large range lengths, loop annotations or sums
+  into zero/negative costs. Saturated token/latency bounds are unprovable;
+  USD estimates use a wide intermediate. A user-defined `range` is not
+  assumed to have the builtin's iteration count, including horde inputs.
+- Invalid or overflowing `mock now` / `mock now_ms` values fail the test
+  instead of silently restoring the real clock. `days_in_month` rejects
+  non-Int arguments; `min` / `max` reject nonnumeric scalar arguments.
+- Mixed Int/Float comparisons preserve the integer exactly beyond 2^53 in
+  the interpreter, VM and native backend. Sorting, numeric pipelines and
+  vector/matrix masks use the same ordering; `filter_by` no longer treats
+  NaN as equal to every number. Structural equality and deduplication preserve distinct big Ints.
+- `distinct` and `distinct_by` compare nested values structurally, ignoring
+  Map insertion order and keeping values containing NaN distinct.
+- `range` rejects a zero step, counts the final partial stride against the
+  allocation limit, and streams stepped loops. Loop bounds cannot overflow;
+  a user-defined `range` is dispatched normally and arguments run once.
+- `slice` rejects fractional indexes instead of truncating them.
+- `top` / `bottom` reject negative or non-Int counts and non-List inputs;
+  a positive BigInt count returns the whole list instead of an empty one.
+- HTTP queries retain encoded plus signs and bare keys (`?flag` becomes
+  `flag: ""`), for both explicit request handlers and automatic routes.
+- `soma fix --json` includes syntax repairs in its list and count; text
+  output no longer claims nothing was fixed after changing the file.
+- Record/replay v2 separates raised errors from returned user data. A map
+  containing `__error__` can no longer masquerade as a recorded exception.
+  Legacy v1 logs remain readable with their original ambiguous convention.
+- Native failures are recorded too, and the log captures the outcome after
+  the transaction commits or rolls back. Replay refuses malformed v2 or
+  unknown-version logs and refuses failed native compilation.
+- `soma env` excludes internal Git checkouts from installed packages.
+- The core CLI runner finds its fixtures relative to the repository,
+  reports missing fixtures as failures, and exits nonzero on failed tests.
+  Its division/vector expectations match current semantics. GitHub Actions
+  now runs the Rust suite, the CLI fixtures and the published corpus on
+  pushes and pull requests.
+- The agent guide, embedded docs and generated website are synchronized
+  with the release; build provenance is published.
+
 - Check catches two silent foot-guns a port lost data to: a `refusal()`
   whose result is thrown away (a refusal does not roll the caller back, so
   the caller carried on as if the call had succeeded), and a

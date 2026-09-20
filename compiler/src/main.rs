@@ -929,7 +929,7 @@ fn cells_in_db(file: &std::path::Path, db: &std::path::Path) -> (Vec<String>, Ve
     // the EXACT tables this program owns (a name prefix took cell `A_b`'s
     // tables for cell `A`'s and reset another program's data)
     let mut names: Vec<String> = Vec::new();
-    let mut add_file = |p: &std::path::Path, names: &mut Vec<String>| {
+    let add_file = |p: &std::path::Path, names: &mut Vec<String>| {
         if let Ok(src) = std::fs::read_to_string(p) {
             let program = commands::parse(commands::lex(&src));
             for c in &program.cells {

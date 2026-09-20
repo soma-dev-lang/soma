@@ -251,12 +251,12 @@ impl VM {
                 }),
 
                 // Comparison
-                x if x == Op::Eq as u8 => self.cmp_op(|a, b| a == b),
-                x if x == Op::Ne as u8 => self.cmp_op(|a, b| a != b),
-                x if x == Op::Lt as u8 => self.cmp_op(|a, b| a < b),
-                x if x == Op::Gt as u8 => self.cmp_op(|a, b| a > b),
-                x if x == Op::Le as u8 => self.cmp_op(|a, b| a <= b),
-                x if x == Op::Ge as u8 => self.cmp_op(|a, b| a >= b),
+                x if x == Op::Eq as u8 => self.cmp_op(crate::ast::CmpOp::Eq),
+                x if x == Op::Ne as u8 => self.cmp_op(crate::ast::CmpOp::Ne),
+                x if x == Op::Lt as u8 => self.cmp_op(crate::ast::CmpOp::Lt),
+                x if x == Op::Gt as u8 => self.cmp_op(crate::ast::CmpOp::Gt),
+                x if x == Op::Le as u8 => self.cmp_op(crate::ast::CmpOp::Le),
+                x if x == Op::Ge as u8 => self.cmp_op(crate::ast::CmpOp::Ge),
 
                 x if x == Op::Not as u8 => {
                     let val = self.stack.pop().unwrap_or(Value::Unit);
@@ -464,23 +464,13 @@ impl VM {
         self.stack.push(f(a, b));
     }
 
-    fn cmp_op<F: Fn(i64, i64) -> bool>(&mut self, f: F) {
+    fn cmp_op(&mut self, op: crate::ast::CmpOp) {
         let b = self.stack.pop().unwrap_or(Value::Unit);
         let a = self.stack.pop().unwrap_or(Value::Unit);
+        let f = |x: i64, y: i64| crate::interpreter::compare_order(Some(x.cmp(&y)), op);
         let result = match (&a, &b) {
-            (Value::Int(a), Value::Int(b)) => { let c = a.cmp(b) as i64; f(c, 0) },
-            (Value::Float(a), Value::Float(b)) => {
-                let ord = a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
-                f(ord as i64, 0)
-            }
-            (Value::Int(a), Value::Float(b)) => {
-                let ord = a.to_f64().partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
-                f(ord as i64, 0)
-            }
-            (Value::Float(a), Value::Int(b)) => {
-                let ord = a.partial_cmp(&b.to_f64()).unwrap_or(std::cmp::Ordering::Equal);
-                f(ord as i64, 0)
-            }
+            (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) =>
+                crate::interpreter::compare_order(crate::interpreter::numeric_cmp(&a, &b), op),
             (Value::Unit, Value::Unit) => f(0, 0),
             (Value::Unit, _) => f(0, 1), // Unit != anything
             (_, Value::Unit) => f(1, 0),

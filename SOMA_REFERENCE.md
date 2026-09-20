@@ -76,6 +76,12 @@ cell AppName {
 | Record | `User { name: "Alice", age: 30 }` | typed map with `_type` field |
 | Any | `on log(x: Any)` | a parameter or slot value of any kind (check it with `type_of(x)`); every parameter needs a type — `x: Any` when it can be anything |
 
+Mixed Int/Float comparisons preserve the exact integer value: an Int beyond
+2^53 is not rounded to Float before comparison. NaN is unordered (`<`, `>`,
+`<=`, `>=` and `==` are false; `!=` is true). Sorting places NaN after finite
+numbers in ascending order. Structural equality applies inside lists/maps;
+`distinct` and `distinct_by` use it and retain values containing NaN.
+
 ## Variables
 
 ```soma
@@ -206,7 +212,7 @@ let two = with(items, 1, 88)        // functional: copy with element 1 replaced
 let rev = reverse(items)
 let r = range(0, 10)                // [0..9]
 let down = range(9, -1, -1)         // [9,8,..,0] — step may be negative
-let evens = range(0, 10, 2)         // [0,2,4,6,8]
+let evens = range(0, 10, 2)         // [0,2,4,6,8]; a zero step raises kind range
 let sorted = sort(items)            // ascending
 let sorted = sort(items, "desc")    // descending
 let n = len(items)

@@ -1284,7 +1284,7 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
 
     // Spawn scheduler threads for `every` sections
     // In cluster mode, only the leader runs `every` blocks
-    let mut no_schedule = NO_SCHEDULE.load(std::sync::atomic::Ordering::Relaxed);
+    let no_schedule = NO_SCHEDULE.load(std::sync::atomic::Ordering::Relaxed);
     if no_schedule { eprintln!("scheduler: disabled (--no-schedule) — every/after blocks do not run"); }
     // ONE scheduler per data directory: a second `soma serve` on the same
     // .soma_data ran every tick (and every `after`) a second time. The lock
@@ -1927,16 +1927,15 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                     let mut opts_map: Vec<(String, interpreter::Value)> = Vec::new();
                     let mut by_name: Vec<(usize, interpreter::Value)> = Vec::new();
                     let mut positional: Vec<interpreter::Value> = Vec::new();
-                    for pair in query_string.split('&') {
-                        if let Some((k, v)) = pair.split_once('=') {
-                            let decoded = urlencoding_decode(v).replace('+', " ");
-                            let key = urlencoding_decode(k);
-                            match param_names.iter().position(|p| *p == key) {
-                                Some(i) if i >= args.len() => by_name.push((i, coerce_query_value(&decoded))),
-                                Some(_) => {}
-                                None if opts_idx.is_some() => opts_map.push((key, coerce_query_value(&decoded))),
-                                None => positional.push(coerce_query_value(&decoded)),
-                            }
+                    for pair in query_string.split('&').filter(|pair| !pair.is_empty()) {
+                        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+                        let decoded = urlencoding_decode(v);
+                        let key = urlencoding_decode(k);
+                        match param_names.iter().position(|p| *p == key) {
+                            Some(i) if i >= args.len() => by_name.push((i, coerce_query_value(&decoded))),
+                            Some(_) => {}
+                            None if opts_idx.is_some() => opts_map.push((key, coerce_query_value(&decoded))),
+                            None => positional.push(coerce_query_value(&decoded)),
                         }
                     }
                     if let Some(oi) = opts_idx {
@@ -1994,13 +1993,13 @@ pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Opt
                 let query_map: Vec<(String, interpreter::Value)> = if req_query.is_empty() {
                     vec![]
                 } else {
-                    req_query.split('&')
-                        .filter_map(|pair| {
-                            let (k, v) = pair.split_once('=')?;
-                            Some((
+                    req_query.split('&').filter(|pair| !pair.is_empty())
+                        .map(|pair| {
+                            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+                            (
                                 urlencoding_decode(k),
-                                interpreter::Value::String(urlencoding_decode(v).replace('+', " ")),
-                            ))
+                                interpreter::Value::String(urlencoding_decode(v)),
+                            )
                         })
                         .collect()
                 };

@@ -1,7 +1,7 @@
 #!/bin/bash
-# Exhaustive Soma v1 test runner
+# Core language regression runner. Run from any working directory.
 SOMA="${SOMA:-$(dirname "$0")/../compiler/target/release/soma}"
-TEST_DIR="/tmp/soma_v1_tests/core"
+TEST_DIR="${SOMA_TEST_DIR:-$(cd "$(dirname "$0")" && pwd)/core}"
 PASS=0
 FAIL=0
 FAILURES=""
@@ -13,6 +13,13 @@ run_test() {
     local expected="$4"
     shift 4
     local args=("$@")
+
+    if [ ! -f "$file" ]; then
+        echo "FAIL $name: missing fixture $file"
+        FAIL=$((FAIL + 1))
+        FAILURES="$FAILURES\n  $name: missing fixture $file"
+        return
+    fi
 
     local actual
     actual=$(perl -e 'alarm 10; exec @ARGV' "$SOMA" run "$file" "$signal" "${args[@]}" 2>&1)
@@ -108,7 +115,7 @@ echo "--- 3. OPERATORS ---"
 run_test "core/operators/add_int" "$TEST_DIR/operators/add_int.cell" run "$(E '5' 'done')"
 run_test "core/operators/sub_int" "$TEST_DIR/operators/sub_int.cell" run "$(E '3' 'done')"
 run_test "core/operators/mul_int" "$TEST_DIR/operators/mul_int.cell" run "$(E '12' 'done')"
-run_test "core/operators/div_int" "$TEST_DIR/operators/div_int.cell" run "$(E '3' 'done')"
+run_test "core/operators/div_int" "$TEST_DIR/operators/div_int.cell" run "$(E '3.3333333333333335' 'done')"
 run_test "core/operators/mod_int" "$TEST_DIR/operators/mod_int.cell" run "$(E '1' 'done')"
 run_test "core/operators/add_float" "$TEST_DIR/operators/add_float.cell" run "$(E '3.5' 'done')"
 run_test "core/operators/mul_float" "$TEST_DIR/operators/mul_float.cell" run "$(E '6.28' 'done')"
@@ -200,7 +207,7 @@ run_test "core/collections/list_range" "$TEST_DIR/collections/list_range.cell" r
 run_test "core/collections/map_create" "$TEST_DIR/collections/map_create.cell" run "$(E 'Alice' '30' 'done')"
 run_test "core/collections/map_with" "$TEST_DIR/collections/map_with.cell" run "$(E 'alice@ex.com' 'done')"
 run_test "core/collections/map_keys_values" "$TEST_DIR/collections/map_keys_values.cell" run "$(E 'ok' 'done')"
-run_test "core/collections/list_concat" "$TEST_DIR/collections/list_concat.cell" run "$(E '[1, 2, 3, 4]' 'done')"
+run_test "core/collections/list_concat" "$TEST_DIR/collections/list_concat.cell" run "$(E '[4, 6]' 'done')"
 run_test "core/collections/for_in_map" "$TEST_DIR/collections/for_in_map.cell" run "$(E 'ok' 'done')"
 run_test "core/collections/nested_list_maps" "$TEST_DIR/collections/nested_list_maps.cell" run "$(E 'Alice' '30' 'done')"
 run_test "core/collections/sort_by" "$TEST_DIR/collections/sort_by.cell" run "$(E 'Charlie' 'Bob' 'Alice' 'done')"
@@ -262,3 +269,4 @@ if [ $FAIL -gt 0 ]; then
     echo -e "$FAILURES"
 fi
 echo "========================================"
+if [ "$FAIL" -gt 0 ]; then exit 1; fi

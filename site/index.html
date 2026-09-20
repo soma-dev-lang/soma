@@ -227,8 +227,8 @@ footer {
   "operatingSystem": "macOS, Linux",
   "description": "Experimental cell-based programming language with state-machine checks, memory properties, agent-oriented tooling, and a Rust implementation.",
   "url": "https://soma-lang.dev",
-  "downloadUrl": "https://github.com/soma-dev-lang/soma",
-  "softwareVersion": "2.8.0",
+  "downloadUrl": "https://github.com/soma-dev-lang/soma/releases/tag/v2.8.1",
+  "softwareVersion": "2.8.1",
   "license": "https://github.com/soma-dev-lang/soma/blob/main/LICENSE",
   "codeRepository": "https://github.com/soma-dev-lang/soma",
   "programmingLanguage": "Rust",
@@ -240,7 +240,7 @@ footer {
 <nav>
   <div class="brand">soma</div>
   <div class="links">
-    <a href="#status">Status</a>
+    <a href="#status">Implementation</a>
     <a href="#language">Language</a>
     <a href="#verification">Verification</a>
     <a href="#agents">Agents</a>
@@ -262,6 +262,7 @@ footer {
     <code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
     <button type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
   </div>
+  <p><strong>Latest release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.1">Soma 2.8.1</a></strong> — fixes for numeric precision, loop execution, cost proofs and native code. Linux and macOS binaries include SHA-256 checksums. <a href="/CHANGELOG.md">Read the release notes.</a></p>
   <p><strong>Reading this as an AI agent?</strong> Go to <a href="/agents">/agents</a>, or fetch <a href="/llms-full.txt">/llms-full.txt</a> (the whole language, one request), <a href="/builtins.json">/builtins.json</a> (exact signatures) and <a href="/corpus/index.json">/corpus/index.json</a> (300+ programs passing check+test, verified where they have a state machine, filterable by feature). A project's <code>AGENTS.md</code> block is at <a href="/agent.md">/agent.md</a>.</p>
   <p class="note">Installer note: the shell installer executes code fetched from the project repository. Review <a href="https://github.com/soma-dev-lang/soma/blob/main/site/setup.sh">site/setup.sh</a> before running it in an environment you care about.</p>
 </header>

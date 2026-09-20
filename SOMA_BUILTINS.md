@@ -32,12 +32,12 @@ The `native` section is usable inside `[native]` handlers only.
 | `format` | `format(fmt: String, args...) -> String` | printf subset: %d %s %f %.2f %8.2f %e %.3e %3d %-8s %05d %% — %e is C-style scientific (6.022000e+23); widths, precision (rounded half away from zero on the decimal text), left-align with '-', zero-pad with '0'. |
 | `fields` | `fields(s: String) -> List<String>` | Split on any run of whitespace, no empty pieces (Go's strings.Fields; split(s, " ") keeps empties). |
 | `index_of` | `index_of(s: String, sub: String) -> Int  \|  index_of(xs: List, x) -> Int` | Character index of the first occurrence of `sub` in a String, or the position of the first element equal to `x` in a List; -1 if absent. |
-| `substring` | `substring(s: String, start: Int, end: Int) -> String` | Character-based slice [start, end) — end is exclusive and clamped. |
+| `substring` | `substring(s: String, start: Int, end: Int) -> String` | Character-based slice [start, end) — both indexes are clamped to 0..len(s), end exclusive. A negative end gives an empty string; use slice() for indexes relative to the end. |
 | `escape_html` | `escape_html(s: String) -> String` | Escape &, <, >, double and single quotes for safe HTML embedding. |
 | `str_len` | `str_len(s: String) -> Int` | Byte length of a string (cf. len(), which counts characters). |
 | `str_at` | `str_at(s: String, i: Int) -> Int` | Byte value at index `i`; errors if out of range. |
 | `str_eq` | `str_eq(a: String, b: String) -> Bool` | Exact string equality (fast path for [native] code). |
-| `chr` | `chr(n: Int) -> String` | The character with code point n: chr(65) == "A". |
+| `chr` | `chr(n: Int) -> String` | The character with code point n: chr(65) == "A". Raises kind range outside 0..0x10FFFF or for surrogate code points. |
 | `ord` | `ord(s: String) -> Int` | Code point of the first character: ord("A") == 65. |
 | `regex_count` | `regex_count(text: String, pattern: String) -> Int` | Number of non-overlapping matches (Rust regex syntax). Same in [native] (pattern must be a literal there). |
 | `regex_match` | `regex_match(text: String, pattern: String) -> Int` | 1 when the pattern matches anywhere in text, else 0. |
@@ -104,12 +104,12 @@ The `native` section is usable inside `[native]` handlers only.
 | `bxor` | `bxor(a: Int, b: Int) -> Int` | Bitwise XOR. |
 | `bnot` | `bnot(a: Int) -> Int` | Bitwise NOT. |
 | `shl` | `shl(a: Int, n: Int) -> Int` | Exact left shift (a * 2^n), arbitrary precision like every Int op. For a 64-bit wrapping shift (xorshift), mask: band(shl(x, 13), M) with M = shl(1, 64) - 1 bound once (a literal beyond 64 bits is not allowed in [native]); values past 2^63 run [native] code in BigInt mode — prefer 32-bit xorshift masks for speed. |
-| `shr` | `shr(a: Int, n: Int) -> Int` | Arithmetic shift right by n bits (wrapping). |
+| `shr` | `shr(a: Int, n: Int) -> Int` | Arithmetic shift right by a nonnegative Int count; arbitrarily large counts give 0 (nonnegative a) or -1 (negative a). |
 | `bit_test` | `bit_test(a: Int, i: Int) -> Int` | 1 if bit i of a is set, else 0. |
 | `bit_set` | `bit_set(a: Int, i: Int) -> Int` | a with bit i set. |
 | `bit_clr` | `bit_clr(a: Int, i: Int) -> Int` | a with bit i cleared. |
 | `bit_next` | `bit_next(a: Int, i: Int) -> Int` | Index of the lowest set bit at or above i, or -1 if none. |
-| `bit_len` | `bit_len(a: Int) -> Int` | Number of significant bits (estimated for BigInt). |
+| `bit_len` | `bit_len(a: Int) -> Int` | Exact number of significant bits in the magnitude, including BigInt. |
 | `median` | `median(xs: List) -> Int \| Float` | Middle value of the sorted list (mean of the two middles for even n, exact Int when it is one) — statistics.median. |
 | `pstdev` | `pstdev(xs: List) -> Float` | Population standard deviation (divide by n) — statistics.pstdev. |
 | `stddev` | `stddev(xs: List) -> Float` | Same as pstdev (population). |
@@ -121,12 +121,12 @@ The `native` section is usable inside `[native]` handlers only.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `list` | `list(items...) -> List` | Build a list; list(existing_list, more...) appends to a copy. |
+| `list` | `list(items...) -> List` | Build a list of the arguments; list(list(1, 2), 3) is [[1, 2], 3]. Use push(xs, x) to append. |
 | `map` | `map(key, value, ...) -> Map \| list \|> map(x => expr) -> List` | Build a map from key-value pairs (even arg count), or — with a lambda — transform each list element. |
 | `push` | `push(list: List, items...) -> List` | Return a new list with the items appended (the original is unchanged). |
 | `nth` | `nth(list: List, i: Int) -> Any` | Element at index i, or () when out of bounds. |
 | `reverse` | `reverse(list: List) -> List` | Return the list in reverse order. |
-| `range` | `range(start: Int, end: Int, step?: Int) -> List<Int>` | Integers from start toward end (exclusive); optional step may be negative to count down. |
+| `range` | `range(start: Int, end: Int, step?: Int) -> List<Int>` | Integers from start toward end (exclusive); bounds and step are 64-bit Ints. A negative step counts down; zero raises kind range. Direct for-loops do not materialize the list, including stepped ranges. |
 | `sort` | `sort(list: List, order?: "desc") -> List` | Sort scalars ascending (or "desc"); errors on incomparable element types. |
 | `flatten` | `flatten(list: List) -> List` | Flatten one level of nested lists. |
 | `zip` | `zip(a: List, b: List) -> List<{left, right}>` | Pair elements positionally; stops at the shorter list. |
@@ -146,8 +146,8 @@ The `native` section is usable inside `[native]` handlers only.
 |---|---|---|
 | `filter_by` | `filter_by(rows: List<Map>, field, op: ">"\|">="\|"<"\|"<="\|"=="\|"!=", value) -> List<Map>` | Keep rows whose `field` compares true against `value` (op defaults to == with 3 args). |
 | `sort_by` | `sort_by(rows: List<Map>, field, order?: "desc") -> List<Map> \| sort_by(list, x => key, order?: "desc") -> List` | Stable sort by a field (numbers by value, strings lexicographically) or by a key function; a list key sorts on several keys: sort_by(rows, r => [0 - r.total, r.name]). |
-| `top` | `top(rows: List, n: Int) -> List` | First n elements. |
-| `bottom` | `bottom(rows: List, n: Int) -> List` | Last n elements. |
+| `top` | `top(rows: List, n: Int) -> List` | First n elements, capped at the list length. n must be a nonnegative Int; negative raises kind range, wrong types raise kind type. |
+| `bottom` | `bottom(rows: List, n: Int) -> List` | Last n elements, capped at the list length. n must be a nonnegative Int; negative raises kind range, wrong types raise kind type. |
 | `sum_by` | `sum_by(rows: List<Map>, field) -> Int \| Float` | Sum of a field across rows: exact Int when every value is an Int, else a Float; a numeric String ("5") counts as its number. |
 | `avg_by` | `avg_by(rows: List<Map>, field) -> Int\|Float` | Mean of a field; Int when whole, () on an empty list. |
 | `min_by` | `min_by(rows: List<Map>, field) -> Map` | Row with the smallest integer value of `field`, or (). |

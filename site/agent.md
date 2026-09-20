@@ -14,7 +14,7 @@ carries the rest.
 
 ```
 soma check  app.cell     # static gates: contracts, undefined names, dispatch
-soma verify app.cell     # PROVES state machines and memory invariants
+soma verify app.cell     # proves supported properties; reports runtime checks
 soma test   app.cell     # runs `cell test` assertions
 ```
 
@@ -34,15 +34,18 @@ soma docs agent                      # the language summary, offline
 ```
 Online: https://soma-lang.dev/llms-full.txt (everything, one fetch),
 https://soma-lang.dev/gotchas.json (mistakes with their diagnostics),
-https://soma-lang.dev/corpus/index.json (300+ verified programs — fetch one
+https://soma-lang.dev/corpus/index.json (verified programs — fetch one
 with the `features` you need before writing a new cell).
 
 ## The rules models get wrong
 
 - `match` arms use `->`; lambdas use `=>`. Return types go on the `signal`
   in `face`, never on `on`.
-- No semicolons. No nested `"..."` inside `{...}` interpolation — bind a
-  `let` first.
+- No semicolons. Interpolation supports expressions and quoted arguments:
+  `"{split(text, \":\")[0]}"`. Double braces produce literal braces.
+- Lists: `[1, 2]` or `list(1, 2)`. `if` is an expression when it has an
+  `else`: `let x = if ok { 1 } else { 0 }`. `return` exits the handler,
+  including from a loop.
 - `7 / 2` is `3.5`; `idiv(7, 2)` is `3`.
 - `transition(id, "state")` returns `{id, from, to}`; read the state with
   `get_status(id)`. Wrap a transition that may be illegal in `try { }`.
@@ -53,6 +56,36 @@ with the `features` you need before writing a new cell).
   calls `transition()`.
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
+
+## Corrections included in Soma 2.8.1 (2026-09-20)
+
+These fixes are included in [Soma 2.8.1](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.1).
+Check `soma --version`; use the installer below to upgrade. The full release
+notes are at https://soma-lang.dev/CHANGELOG.md.
+
+- Mixed Int/Float comparisons retain the integer's exact value, including
+  beyond 2^53. Sorting, filtering and structural equality follow that rule.
+  NaN is unordered and never equal; `filter_by` follows those semantics.
+- `range(a, b, 0)` raises kind `range`. `top`/`bottom` require a List and a
+  nonnegative Int count. A `for` over a user-defined `range` calls that handler.
+- HTTP queries preserve `%2B` as `+`; a bare `?flag` becomes `flag: ""`.
+- `soma fix --json` counts syntax repairs. New replay logs distinguish
+  raised errors from returned maps containing `__error__`, and record native
+  failures after the transaction finishes.
+- Cost proofs reject overflowing loop bounds and do not infer builtin
+  range lengths from a user-defined `range`. Use `loop_bound(N)` when a
+  collection's size is unknown to the checker.
+- Invalid or overflowing `mock now` / `mock now_ms` fails a test; it never
+  falls back to the real clock. `days_in_month` requires Int arguments.
+- Integer `while` optimization preserves outer operands, BigInt promotion
+  and errors. Division rounds the exact ratio; nearby large numbers retain
+  their differences in variance/stddev. `index_of` uses exact equality.
+- `chr` accepts only valid Unicode scalar Ints. `substring` clamps both
+  indexes to the string's character bounds; a negative end gives `""`.
+  Bit counts cannot wrap to zero; numeric builtins enforce operand types.
+- `--jit` is a deprecated compatibility no-op. Use `[native]` for numeric
+  compilation; generated temporary names cannot replace user operands in
+  bit operations or loop-bound counters.
 
 ## Install
 

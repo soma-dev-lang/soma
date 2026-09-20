@@ -1692,8 +1692,8 @@ fn constraint_comparisons(c: &Constraint) -> Vec<(&Expr, CmpOp, &Expr)> {
     }
 }
 
-/// An expression that cannot produce a fraction: no Float literal, no `/`,
-/// no float-producing builtin. Used to tighten strict bounds on integers.
+// An expression that cannot produce a fraction: no Float literal, no `/`,
+// no float-producing builtin. Used to tighten strict bounds on integers.
 thread_local! {
     /// slots of the cell being verified: name → its values are Ints
     static SLOT_INT: std::cell::RefCell<HashMap<String, bool>> = std::cell::RefCell::new(HashMap::new());

@@ -115,7 +115,7 @@ impl SomaInt {
     /// grew to 640M bits (3.4 GB) from a 22-byte request.
     pub const MAX_BITS: u64 = 1 << 24;
 
-    fn bits(&self) -> u64 {
+    pub(crate) fn bits(&self) -> u64 {
         match &self.0 {
             SomaIntInner::Small(a) => 64 - a.unsigned_abs().leading_zeros() as u64,
             SomaIntInner::Big(b) => b.significant_bits() as u64,

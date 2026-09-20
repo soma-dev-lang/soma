@@ -205,39 +205,31 @@ pub fn try_matrix_binop(l: &Value, op: BinOp, r: &Value) -> Option<Result<Value,
 /// Comparison masks: `A > 2` → a 0/1 matrix, `v > 2` → a 0/1 vector
 /// (numpy-style boolean masks, as floats — feed them to where_mask).
 pub fn try_tensor_cmpop(l: &Value, op: crate::ast::CmpOp, r: &Value) -> Option<Result<Value, RuntimeError>> {
-    use crate::ast::CmpOp;
-    let cmp = move |x: f64, k: f64| -> f64 {
-        let b = match op {
-            CmpOp::Lt => x < k,
-            CmpOp::Gt => x > k,
-            CmpOp::Le => x <= k,
-            CmpOp::Ge => x >= k,
-            CmpOp::Eq => x == k,
-            CmpOp::Ne => x != k,
-        };
-        if b { 1.0 } else { 0.0 }
+    let mask = |xs: &[Value]| -> Value {
+        Value::List(xs.iter().map(|x| {
+            let yes = crate::interpreter::compare_order(crate::interpreter::numeric_cmp(x, r), op);
+            Value::Float(if yes { 1.0 } else { 0.0 })
+        }).collect())
     };
-    if is_matrix(l) && is_scalar(r) {
-        let k = arg_f64(r);
-        return Some(mat_map(l, |x| cmp(x, k)));
-    }
-    if is_vector(l) && is_scalar(r) {
-        // Ints compare exactly ([2^53 + 1] > 2^53 was [0.0])
-        if let (Value::List(xs), Value::Int(k)) = (l, r) {
-            if xs.iter().all(|x| matches!(x, Value::Int(_))) {
-                return Some(Ok(Value::List(xs.iter().map(|x| {
-                    let Value::Int(a) = x else { unreachable!() };
-                    let o = a.to_rug().cmp(&k.to_rug());
-                    let b = match op {
-                        CmpOp::Lt => o.is_lt(), CmpOp::Gt => o.is_gt(), CmpOp::Le => o.is_le(),
-                        CmpOp::Ge => o.is_ge(), CmpOp::Eq => o.is_eq(), CmpOp::Ne => o.is_ne(),
-                    };
-                    Value::Float(if b { 1.0 } else { 0.0 })
-                }).collect())));
+    if is_scalar(r) {
+        if is_matrix(l) {
+            let Value::List(rows) = l else { unreachable!() };
+            let mut width = None;
+            let mut result = Vec::with_capacity(rows.len());
+            for row in rows {
+                let Value::List(xs) = row else { unreachable!() };
+                if xs.is_empty() { return Some(Err(te("linalg: matrix has 0 columns"))); }
+                if width.is_some_and(|n| n != xs.len()) { return Some(Err(te("linalg: ragged matrix"))); }
+                width = Some(xs.len());
+                if !xs.iter().all(is_scalar) { return Some(Err(te("linalg: expected numeric matrix elements"))); }
+                result.push(mask(xs));
             }
+            return Some(Ok(Value::List(result)));
         }
-        let k = arg_f64(r);
-        return Some(vec_map(l, |x| cmp(x, k)));
+        if is_vector(l) {
+            let Value::List(xs) = l else { unreachable!() };
+            return Some(Ok(mask(xs)));
+        }
     }
     None
 }
@@ -2344,8 +2336,8 @@ mod tests {
         // Rank-1 matrix u vᵀ with u, v unit vectors and σ = 5.
         let m = 30;
         let n = 20;
-        let u: Vec<f64> = (0..m).map(|i| (i as f64 + 1.0)).collect();
-        let v: Vec<f64> = (0..n).map(|j| (j as f64 + 1.0)).collect();
+        let u: Vec<f64> = (0..m).map(|i| i as f64 + 1.0).collect();
+        let v: Vec<f64> = (0..n).map(|j| j as f64 + 1.0).collect();
         let u_norm = (u.iter().map(|x| x * x).sum::<f64>()).sqrt();
         let v_norm = (v.iter().map(|x| x * x).sum::<f64>()).sqrt();
         let u_unit: Vec<f64> = u.iter().map(|x| x / u_norm).collect();

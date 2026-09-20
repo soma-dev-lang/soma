@@ -94,6 +94,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             })))
         }
         "days_in_month" if args.len() == 2 => {
+            if args.iter().any(|a| !matches!(a, Value::Int(_))) {
+                return Some(Err(RuntimeError::TypeError("days_in_month(year: Int, month: Int) requires Int arguments".into())));
+            }
             let m = val_to_i64(&args[1]);
             if !(1..=12).contains(&m) {
                 return Some(Err(RuntimeError::Domain { kind: "date".to_string(), message: format!("date: days_in_month: month {} is not 1..12", m) }));

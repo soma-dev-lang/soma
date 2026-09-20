@@ -1741,7 +1741,7 @@ fn task_lints(label: &str, body: &[Spanned<Statement>], cell: &str, cell_slots: 
     // unless read again after it (the fresh value is what is written)
     let reads_of = |stmts: &[Spanned<Statement>], with_helpers: bool| -> Vec<String> {
         let mut read: Vec<String> = Vec::new();
-        let mut scan = |stmts: &[Spanned<Statement>], read: &mut Vec<String>| super::literals::for_each_expr(stmts, &mut |e| match e {
+        let scan = |stmts: &[Spanned<Statement>], read: &mut Vec<String>| super::literals::for_each_expr(stmts, &mut |e| match e {
             Expr::MethodCall { target, method, .. } if matches!(method.as_str(), "get" | "has" | "len" | "size" | "keys" | "values") => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
             Expr::FieldAccess { target, field } if matches!(field.as_str(), "len" | "size" | "count") => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }
             Expr::Index { target, .. } => { if let Expr::Ident(t) = &target.node { if cell_slots.contains(t) { read.push(t.clone()); } } }

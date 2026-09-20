@@ -106,9 +106,9 @@ pub fn cmd_run(path: &PathBuf, args: &[String], use_jit: bool, signal_flag: Opti
 
     if has_interior || has_runtime {
         run_with_runtime(program, &arg_values);
-    } else if use_jit {
-        run_with_vm(program, arg_values, registry, &source, signal_flag.map(|s| s.rsplit('.').next().unwrap_or(s)));
     } else {
+        // The deprecated flag is a compatibility no-op, as the warning
+        // promises. The experimental VM cannot preserve language semantics.
         run_single_cell(program, arg_values, registry, signal_flag, record_all, path, &source);
     }
 }

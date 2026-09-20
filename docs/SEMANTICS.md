@@ -388,47 +388,23 @@ The adversary model under which each property holds is in
 
 ---
 
-## 2. Backend equivalence: `interpreter ≡ bytecode ≡ [native]`
+## 2. Execution backends and equivalence
 
-Soma has three execution backends:
+Normal execution uses the interpreter (`compiler/src/interpreter`) and
+explicit `[native]` handlers compiled to Rust cdylibs
+(`compiler/src/codegen/native.rs`). Native handlers must preserve the
+interpreter's results and errors; this is tested, not formally proved.
 
-  1. **Interpreter** — tree-walking over the AST (`compiler/src/interpreter`)
-  2. **Bytecode VM** — stack machine over a custom IR (`compiler/src/vm`),
-     invoked via the deprecated `--jit` flag, **feature-incomplete**
-  3. **`[native]`** — Rust source → `cdylib` per cell (`compiler/src/codegen/native.rs`)
+The experimental bytecode VM (`compiler/src/vm`) remains feature-incomplete.
+The deprecated `--jit` flag is now a compatibility no-op, as its warning
+states. It no longer selects a backend that truncated `7 / 2`, lost
+structural equality, swallowed errors or bypassed recording.
 
-**Conjecture (Backend equivalence).** *For every well-typed Soma program
-`P` in the intersection of features supported by both the interpreter
-and the bytecode VM, every signal `Sig`, every input `v̅`, and every
-backend `B ∈ {interp, vm}`:*
-
-    run_B(P, Sig, v̅) = run_interp(P, Sig, v̅)
-
-That is: the two interpreted backends are observationally equivalent on
-terminating programs in the intersection corpus. Without this property,
-the speedup of any backend would be meaningless — it could be the wrong
-answer faster.
-
-**Status in V1.** This is a *conjecture* with an **executable witness**.
-
-  - **Differential testing harness.** `compiler/tests/equivalence.rs`
-    runs a curated corpus of programs through both backends and asserts
-    bit-equal output, every call to `cargo test --test equivalence`. The
-    corpus exercises the integer correctness contract (§1.2) — including
-    `25!` overflow → BigInt promotion, which is the most likely source
-    of divergence — plus arithmetic, control flow, recursion, lists, maps,
-    string ops, and multi-arg dispatch.
-    As of 2026-04-10: **16/16 cases pass**.
-  - **Documented gaps.** The intersection corpus deliberately excludes
-    features the VM does not yet implement (string interpolation, pipes
-    with lambdas, complex pattern matching, `delegate`, `transition`,
-    LLM builtins). The list is at the bottom of `equivalence.rs` and
-    must grow monotonically with the VM's capability.
-
-A formal proof — showing that the bytecode compiler is a simulation of
-the small-step semantics in §1, and that the native codegen preserves
-the same observation function — remains V1.4 work. Until then, the
-empirical witness is what stands between Soma and a backend miscompile.
+`compiler/tests/equivalence.rs` checks expected outputs with and without
+that flag. It is a CLI compatibility test, not evidence of bytecode VM
+equivalence. Native regressions live in `native_guard.rs`, `regressions.rs`
+and the other integration suites. A formal proof of native equivalence
+remains open.
 
 ---
 

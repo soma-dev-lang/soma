@@ -8,8 +8,8 @@
 //!
 //! File format (one JSON object per line):
 //! ```text
-//! {"v":1,"ts":1738000000,"cell":"trader","handler":"tick",
-//!  "args":[{"price":187.42}],"result":412,"nondet":["now_ms"]}
+//! {"v":2,"ts":1738000000,"cell":"trader","handler":"tick",
+//!  "args":[{"price":187.42}],"result":412,"error_kind":null,"nondet":["now_ms"]}
 //! ```
 
 use super::{Value, soma_int::SomaInt};
@@ -37,6 +37,8 @@ pub struct RecordEntry {
     pub handler: String,
     pub args: Vec<Value>,
     pub result: Value,
+    /// Separate from user data: a returned {"__error__": ...} is a value.
+    pub error_kind: Option<String>,
     pub nondet: Vec<String>,
     /// Fingerprint of the source the entry was recorded from (absent in
     /// logs written before this field existed). Lets `soma replay` tell
@@ -62,12 +64,13 @@ impl RecordEntry {
             .map(|s| serde_json::Value::String(s.clone()))
             .collect();
         let mut obj = serde_json::json!({
-            "v": 1,
+            "v": 2,
             "ts": self.ts_ms,
             "cell": self.cell,
             "handler": self.handler,
             "args": args_json,
             "result": result_json,
+            "error_kind": self.error_kind,
             "nondet": nondet_json,
         });
         if let Some(src) = &self.src {
@@ -78,18 +81,28 @@ impl RecordEntry {
 
     pub fn from_json_line(line: &str) -> Option<Self> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        let version = match v.get("v") { None => 1, Some(n) => n.as_u64()? };
+        if !matches!(version, 1 | 2) { return None; }
+        if version == 2 && !matches!(v.get("error_kind"), Some(serde_json::Value::Null | serde_json::Value::String(_))) { return None; }
         let cell = v.get("cell")?.as_str()?.to_string();
         let handler = v.get("handler")?.as_str()?.to_string();
         let ts_ms = v.get("ts").and_then(|x| x.as_i64()).unwrap_or(0);
         let args: Vec<Value> = v.get("args")?.as_array()?
             .iter().map(json_to_value).collect();
         let result = json_to_value(v.get("result").unwrap_or(&serde_json::Value::Null));
+        // Legacy v1 errors used a reserved result map. Only legacy logs
+        // retain that ambiguity; v2 always carries an explicit outcome.
+        let error_kind = if version < 2 {
+            v.get("result").and_then(|r| r.get("__error__")).and_then(|k| k.as_str()).map(String::from)
+        } else {
+            v.get("error_kind").and_then(|k| k.as_str()).map(String::from)
+        };
         let nondet: Vec<String> = v.get("nondet")
             .and_then(|x| x.as_array())
             .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
             .unwrap_or_default();
         let src = v.get("src").and_then(|x| x.as_str()).map(String::from);
-        Some(Self { ts_ms, cell, handler, args, result, nondet, src })
+        Some(Self { ts_ms, cell, handler, args, result, error_kind, nondet, src })
     }
 }
 

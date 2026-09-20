@@ -245,11 +245,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 } else if let Value::List(xs) = &args[0] {
                     // position of the first element equal to x (-1 if absent)
                     // — on a list it answered -1 for everything
-                    let pos = xs.iter().position(|v| crate::interpreter::deep_equal(v, &args[1]) || match (v, &args[1]) {
-                        (Value::Int(a), Value::Float(b)) => a.to_f64() == *b,
-                        (Value::Float(a), Value::Int(b)) => *a == b.to_f64(),
-                        _ => false,
-                    });
+                    let pos = xs.iter().position(|v| crate::interpreter::deep_equal(v, &args[1]));
                     Some(Ok(Value::Int(SomaInt::from_i64(pos.map_or(-1, |p| p as i64)))))
                 } else {
                     Some(Err(RuntimeError::TypeError(format!("index_of(s: String, sub: String) or index_of(xs: List, x) — got {} as the first argument", crate::interpreter::value_type_name(&args[0])))))
@@ -263,7 +259,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 if let (Value::String(s), Value::Int(start_si), Value::Int(end_si)) = (&args[0], &args[1], &args[2]) {
                     let start = start_si.to_i64().unwrap_or(0).max(0) as usize;
                     let char_count = s.chars().count();
-                    let end = end_si.to_i64().unwrap_or(0).min(char_count as i64) as usize;
+                    let end = end_si.to_i64().unwrap_or(0).clamp(0, char_count as i64) as usize;
                     let result: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
                     Some(Ok(Value::String(result)))
                 } else {

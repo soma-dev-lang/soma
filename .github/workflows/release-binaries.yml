@@ -52,7 +52,7 @@ jobs:
       - name: smoke test
         working-directory: compiler
         run: |
-          ./target/release/soma --version
+          test "$(./target/release/soma --version)" = "soma ${TAG#v}"
           ./target/release/soma init /tmp/demo >/dev/null
           ./target/release/soma check /tmp/demo/app.cell
           ./target/release/soma verify --strict /tmp/demo/app.cell

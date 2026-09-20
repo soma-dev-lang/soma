@@ -98,6 +98,9 @@ impl SomaEnv {
             for entry in entries.flatten() {
                 if entry.path().is_dir() {
                     if let Some(name) = entry.file_name().to_str() {
+                        // Resolver checkouts are inputs to installation, not
+                        // installed packages (nor a second source of cells).
+                        if name.starts_with("_git_") && entry.path().join(".git").exists() { continue; }
                         packages.push(name.to_string());
                     }
                 }

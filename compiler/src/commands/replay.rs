@@ -95,23 +95,26 @@ pub fn cmd_replay(
 
     // Compile [native] handlers (so [native] cells can replay too)
     let parallel_config = crate::codegen::native::ParallelConfig::default();
-    if let Ok(natives) = interpreter::native_ffi::compile_and_load_natives_with_config(&program, &parallel_config) {
-        interp.native_handlers = natives;
-    }
+    interp.native_handlers = interpreter::native_ffi::compile_and_load_natives_with_config(&program, &parallel_config)
+        .unwrap_or_else(|e| {
+            eprintln!("error: cannot replay: native compilation failed: {}", e);
+            process::exit(1);
+        });
 
     let mut diverged = 0usize;
     let mut ok = 0usize;
     for (i, entry) in entries.iter().enumerate() {
         match interp.call_signal(&entry.cell, &entry.handler, entry.args.clone()) {
             Ok(live) => {
-                if values_equivalent(&live, &entry.result) {
+                if entry.error_kind.is_none() && values_equivalent(&live, &entry.result) {
                     println!("  #{:<4}  {}.{}({})  ok", i + 1, entry.cell, entry.handler, fmt_args(&entry.args));
                     ok += 1;
                 } else {
                     println!();
                     println!("  divergence at entry #{}: {}.{}", i + 1, entry.cell, entry.handler);
                     println!("      args:     {}", fmt_args(&entry.args));
-                    println!("      recorded: {}", entry.result);
+                    if let Some(kind) = &entry.error_kind { println!("      recorded: raised {}", kind); }
+                    else { println!("      recorded: {}", entry.result); }
                     println!("      replayed: {}", live);
                     let source_changed = entry
                         .src
@@ -137,7 +140,7 @@ pub fn cmd_replay(
                 }
             }
             // the recorded call raised the same kind: as recorded
-            Err(e) if matches!(&entry.result, interpreter::Value::Map(m) if m.get("__error__").map_or(false, |k| format!("{}", k) == e.kind())) => {
+            Err(e) if entry.error_kind.as_deref() == Some(e.kind().as_str()) => {
                 println!("  #{:<4}  {}.{}({})  ok (raised {} as recorded)", i + 1, entry.cell, entry.handler, fmt_args(&entry.args), e.kind());
                 ok += 1;
             }

@@ -209,6 +209,7 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
 }
 
 pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
+    let mut fixes: Vec<AppliedFix> = Vec::new();
     // 0. Syntax fix-its first: nothing else runs on a file that does not parse
     {
         let mut src = read_source(path);
@@ -221,6 +222,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
             if !json {
                 for d in &done { println!("  \u{2713} {}", d); }
             }
+            fixes.extend(done.into_iter().map(|description| AppliedFix { description }));
         }
     }
     // 1. Run checker to find errors
@@ -229,12 +231,13 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     if errors.is_empty() {
         if json {
             println!("{}", serde_json::json!({
-                "fixes": [],
-                "fix_count": 0,
+                "fixes": fixes.iter().map(|f| serde_json::json!({"description": f.description})).collect::<Vec<_>>(),
+                "fix_count": fixes.len(),
                 "passed": true,
             }));
         } else {
-            println!("  \u{2713} All checks passed — nothing to fix.");
+            if fixes.is_empty() { println!("  \u{2713} All checks passed — nothing to fix."); }
+            else { println!("  \u{2713} {} fix(es) applied. All checks passed.", fixes.len()); }
         }
         return;
     }
@@ -242,7 +245,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
     // 2. Parse program for AST info (face declarations, etc.)
     let program = parse_program(path);
     let mut source = read_source(path);
-    let mut fixes: Vec<AppliedFix> = Vec::new();
+    let syntax_fix_count = fixes.len();
 
     // Process errors in reverse span order so earlier fixes don't shift later offsets.
     // Collect fixable actions first, then apply.
@@ -429,7 +432,7 @@ pub fn cmd_fix(path: &PathBuf, json: bool, registry: &mut Registry) {
 
     // 5. Print what was fixed
     if !json {
-        for fix in &fixes {
+        for fix in &fixes[syntax_fix_count..] {
             println!("  \u{2713} {}", fix.description);
         }
         println!("  \u{2713} {} fix(es) applied, re-checking...", fixes.len());

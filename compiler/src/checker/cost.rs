@@ -71,6 +71,12 @@ struct CostWalk<'a> {
 }
 
 impl<'a> CostWalk<'a> {
+    fn range_len(&self, expr: &Expr) -> Option<i64> {
+        if matches!(expr, Expr::FnCall { name, .. } if name == "range" && self.handlers.contains_key(name)) {
+            return None;
+        }
+        literal_range_len(expr)
+    }
     fn new(handlers: &'a std::collections::HashMap<String, &'a [Spanned<Statement>]>) -> Self {
         Self { tokens: 0, latency_ms: 0, unbounded_sites: Vec::new(), latency_sites: Vec::new(), handlers, stack: Vec::new(), rounds: 1, rounds_of: None, horde_notes: Default::default() }
     }
@@ -154,7 +160,7 @@ impl<'a> CostWalk<'a> {
         let mut per_sites: Vec<String> = Vec::new();
         // on_error runs once per failed task (at most every task)
         for key in [target.clone(), lit_str("on_result"), lit_str("apply"), lit_str("on_error")].into_iter().flatten() {
-            if let Some(w) = walk(self, &key) { per_tokens += w.tokens; per_sites.extend(w.unbounded_sites); }
+            if let Some(w) = walk(self, &key) { per_tokens = per_tokens.saturating_add(w.tokens); per_sites.extend(w.unbounded_sites); }
         }
         let (done_tokens, done_sites) = lit_str("on_done").and_then(|k| walk(self, &k)).map_or((0, Vec::new()), |w| (w.tokens, w.unbounded_sites));
         self.unbounded_sites.extend(done_sites);
@@ -168,11 +174,16 @@ impl<'a> CostWalk<'a> {
             self.unbounded_sites.extend(per_sites);
             return;
         }
-        match args.get(1).and_then(|a| literal_range_len(&a.node)) {
+        match args.get(1).and_then(|a| self.range_len(&a.node)) {
             Some(n) => {
                 let t = per_tokens.saturating_mul(n).saturating_mul(attempts);
                 self.tokens = self.tokens.saturating_add(t);
-                self.horde_notes.borrow_mut().push((true, format!("{label} ≤ {} reply tokens — {} input(s) × {} per task × {} attempt(s){} (prompts are not counted: `budget_tokens` caps them too)", t.saturating_add(done_tokens), n, per_tokens, attempts, if done_tokens > 0 { " + on_done" } else { "" })));
+                if t.saturating_add(done_tokens) == i64::MAX {
+                    self.unbounded_sites.push(format!("{label}: computed cost overflows i64"));
+                    self.horde_notes.borrow_mut().push((false, format!("{label}: computed cost overflows i64 — give it a literal `budget_tokens`")));
+                } else {
+                    self.horde_notes.borrow_mut().push((true, format!("{label} ≤ {} reply tokens — {} input(s) × {} per task × {} attempt(s){} (prompts are not counted: `budget_tokens` caps them too)", t.saturating_add(done_tokens), n, per_tokens, attempts, if done_tokens > 0 { " + on_done" } else { "" })));
+                }
             }
             None => {
                 self.unbounded_sites.push(format!("{}::horde over inputs of unknown size (give it a literal `budget_tokens`)", handler_name));
@@ -221,8 +232,8 @@ impl<'a> CostWalk<'a> {
                     taken.visit_seq(if else_body.is_empty() { then_body } else { else_body }, handler_name);
                     let mut rest = self.child();
                     rest.visit_seq(&stmts[i + 1..], handler_name);
-                    self.tokens += taken.tokens.max(rest.tokens);
-                    self.latency_ms += taken.latency_ms.max(rest.latency_ms);
+                    self.tokens = self.tokens.saturating_add(taken.tokens.max(rest.tokens));
+                    self.latency_ms = self.latency_ms.saturating_add(taken.latency_ms.max(rest.latency_ms));
                     self.unbounded_sites.extend(taken.unbounded_sites);
                     self.unbounded_sites.extend(rest.unbounded_sites);
                     self.latency_sites.extend(taken.latency_sites);
@@ -251,8 +262,8 @@ impl<'a> CostWalk<'a> {
                 let mut e = self.child();
                 e.visit_seq(else_body, handler_name);
                 self.absorb_branch(&mut worst, e);
-                self.tokens += worst.tokens;
-                self.latency_ms += worst.latency_ms;
+                self.tokens = self.tokens.saturating_add(worst.tokens);
+                self.latency_ms = self.latency_ms.saturating_add(worst.latency_ms);
             }
             Statement::While { condition, body, bound, .. } => {
                 // the condition runs once per iteration, plus the last test
@@ -260,7 +271,7 @@ impl<'a> CostWalk<'a> {
                 // spent 50)
                 let mut cond = self.child();
                 cond.visit_expr(&condition.node, handler_name);
-                let mult = bound.unwrap_or(1) as i64;
+                let mult = i64::try_from(bound.unwrap_or(1)).unwrap_or(i64::MAX);
                 let mut inner = self.child();
                 inner.visit_seq(body, handler_name);
                 // an unbounded while only matters when its body (or its
@@ -270,13 +281,13 @@ impl<'a> CostWalk<'a> {
                     let t = inner.spends_tokens() || cond.spends_tokens();
                     self.unbounded(format!("{}::while-loop", handler_name), t);
                 }
-                self.tokens += cond.tokens.saturating_mul(mult + 1);
-                self.latency_ms += cond.latency_ms.saturating_mul(mult + 1);
+                self.tokens = self.tokens.saturating_add(cond.tokens.saturating_mul(mult.saturating_add(1)));
+                self.latency_ms = self.latency_ms.saturating_add(cond.latency_ms.saturating_mul(mult.saturating_add(1)));
                 self.unbounded_sites.extend(cond.unbounded_sites);
                 self.latency_sites.extend(cond.latency_sites);
-                self.tokens += inner.tokens.saturating_mul(mult);
+                self.tokens = self.tokens.saturating_add(inner.tokens.saturating_mul(mult));
                 // Latency in a loop is sequential — multiply.
-                self.latency_ms += inner.latency_ms.saturating_mul(mult);
+                self.latency_ms = self.latency_ms.saturating_add(inner.latency_ms.saturating_mul(mult));
                 self.unbounded_sites.extend(inner.unbounded_sites);
                 self.latency_sites.extend(inner.latency_sites);
             }
@@ -289,7 +300,7 @@ impl<'a> CostWalk<'a> {
                 // body that spends makes the whole bound advisory, not proven.
                 // a literal list / range longer than the declared bound: the
                 // real count (the loop raises at run time anyway)
-                let known = match (bound.map(|b| b as i64), literal_range_len(&iter.node)) {
+                let known = match (bound.map(|b| i64::try_from(b).unwrap_or(i64::MAX)), self.range_len(&iter.node)) {
                     (Some(b), Some(l)) => Some(b.max(l)),
                     (b, l) => b.or(l),
                 };
@@ -304,8 +315,8 @@ impl<'a> CostWalk<'a> {
                 // while) — ×100 "computed 150000 tokens > declared" was an
                 // invented figure reported as a proven excess
                 let mult = known.unwrap_or(1);
-                self.tokens += inner.tokens.saturating_mul(mult);
-                self.latency_ms += inner.latency_ms.saturating_mul(mult);
+                self.tokens = self.tokens.saturating_add(inner.tokens.saturating_mul(mult));
+                self.latency_ms = self.latency_ms.saturating_add(inner.latency_ms.saturating_mul(mult));
                 self.unbounded_sites.extend(inner.unbounded_sites);
                 self.latency_sites.extend(inner.latency_sites);
             }
@@ -332,8 +343,8 @@ impl<'a> CostWalk<'a> {
                     callee.stack.push(key.clone());
                         if let Some(r) = self.rounds_of.and_then(|m| m.get(key.as_str())) { callee.rounds = *r; }
                     callee.visit_seq(body, &key);
-                    self.tokens += callee.tokens;
-                    self.latency_ms += callee.latency_ms;
+                    self.tokens = self.tokens.saturating_add(callee.tokens);
+                    self.latency_ms = self.latency_ms.saturating_add(callee.latency_ms);
                     self.unbounded_sites.extend(callee.unbounded_sites);
                     self.latency_sites.extend(callee.latency_sites);
                 }
@@ -394,7 +405,7 @@ impl<'a> CostWalk<'a> {
                                     .and_then(|c| match c.get(1).map(|v| &v.node) { Some(Expr::Literal(Literal::Int(n))) => Some((*n).clamp(1, 10)), _ => None }),
                                 _ => None,
                             }).map_or(self.rounds, |r| r.min(self.rounds));
-                            self.tokens += t.saturating_mul(rounds)
+                            self.tokens = self.tokens.saturating_add(t.saturating_mul(rounds))
                         }
                         None => {
                             // a `max_tokens` key whose value is computed is not
@@ -414,9 +425,9 @@ impl<'a> CostWalk<'a> {
                     // timeout — 60 s by default, and configurable
                     // (SOMA_LLM_TIMEOUT_MS / [agent]): it was counted as 30 s
                     match timeout_ms {
-                        Some(t) => self.latency_ms += t.saturating_mul(rounds),
+                        Some(t) => self.latency_ms = self.latency_ms.saturating_add(t.saturating_mul(rounds)),
                         None => {
-                            self.latency_ms += 60_000i64.saturating_mul(rounds);
+                            self.latency_ms = self.latency_ms.saturating_add(60_000i64.saturating_mul(rounds));
                             self.latency_sites.push(format!("{}::think without a literal timeout (the provider timeout is configurable)", handler_name));
                         }
                     }
@@ -442,7 +453,7 @@ impl<'a> CostWalk<'a> {
                 if matches!(name.as_str(), "http_get" | "http_post" | "http_put" | "http_delete") {
                     let timeout = args.get(1).and_then(|a| extract_timeout_ms(&a.node));
                     // the runtime default is 30 s (10 s was counted)
-                    self.latency_ms += timeout.unwrap_or(30_000);
+                    self.latency_ms = self.latency_ms.saturating_add(timeout.unwrap_or(30_000));
                 }
                 for a in args { self.visit_expr(&a.node, handler_name); }
                 // `delegate("Cell", "handler", …)` with literal names runs
@@ -463,8 +474,8 @@ impl<'a> CostWalk<'a> {
                         callee.stack.push(name.clone());
                         if let Some(r) = self.rounds_of.and_then(|m| m.get(name.as_str())) { callee.rounds = *r; }
                         callee.visit_seq(body, name);
-                        self.tokens += callee.tokens;
-                        self.latency_ms += callee.latency_ms;
+                        self.tokens = self.tokens.saturating_add(callee.tokens);
+                        self.latency_ms = self.latency_ms.saturating_add(callee.latency_ms);
                         self.unbounded_sites.extend(callee.unbounded_sites);
                         self.latency_sites.extend(callee.latency_sites);
                     }
@@ -491,8 +502,8 @@ impl<'a> CostWalk<'a> {
                             callee.stack.push(key.clone());
                         if let Some(r) = self.rounds_of.and_then(|m| m.get(key.as_str())) { callee.rounds = *r; }
                             callee.visit_seq(body, &key);
-                            self.tokens += callee.tokens;
-                            self.latency_ms += callee.latency_ms;
+                            self.tokens = self.tokens.saturating_add(callee.tokens);
+                            self.latency_ms = self.latency_ms.saturating_add(callee.latency_ms);
                             self.unbounded_sites.extend(callee.unbounded_sites);
                             self.latency_sites.extend(callee.latency_sites);
                         }
@@ -518,8 +529,8 @@ impl<'a> CostWalk<'a> {
                         "{}::lambda body spends (runs once per element)", handler_name
                     ), t);
                 }
-                self.tokens += inner.tokens;
-                self.latency_ms += inner.latency_ms;
+                self.tokens = self.tokens.saturating_add(inner.tokens);
+                self.latency_ms = self.latency_ms.saturating_add(inner.latency_ms);
                 self.unbounded_sites.extend(inner.unbounded_sites);
                 self.latency_sites.extend(inner.latency_sites);
             }
@@ -536,8 +547,8 @@ impl<'a> CostWalk<'a> {
                     w.visit_expr(&arm.result.node, handler_name);
                     self.absorb_branch(&mut worst, w);
                 }
-                self.tokens += worst.tokens;
-                self.latency_ms += worst.latency_ms;
+                self.tokens = self.tokens.saturating_add(worst.tokens);
+                self.latency_ms = self.latency_ms.saturating_add(worst.latency_ms);
             }
             Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
                 self.visit_expr(&condition.node, handler_name);
@@ -550,8 +561,8 @@ impl<'a> CostWalk<'a> {
                 e.visit_seq(else_body, handler_name);
                 e.visit_expr(&else_result.node, handler_name);
                 self.absorb_branch(&mut worst, e);
-                self.tokens += worst.tokens;
-                self.latency_ms += worst.latency_ms;
+                self.tokens = self.tokens.saturating_add(worst.tokens);
+                self.latency_ms = self.latency_ms.saturating_add(worst.latency_ms);
             }
             Expr::Record { fields, .. } => {
                 for (_, v) in fields { self.visit_expr(&v.node, handler_name); }
@@ -717,7 +728,8 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         manifest.and_then(|m| m.models.get(n)).map(|cfg| cfg.resolve_model())
     }).unwrap_or_else(|| "gpt-4o-mini".to_string());
     let usd_per_1k = usd_milli_per_1k_tokens(&model_name);
-    let peak_usd_milli = (peak_tokens * usd_per_1k + 999) / 1000;
+    let peak_usd_wide = (peak_tokens as i128 * usd_per_1k as i128 + 999) / 1000;
+    let peak_usd_milli = peak_usd_wide.min(i64::MAX as i128) as i64;
 
     let mut findings = Vec::new();
 
@@ -725,6 +737,9 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
     // bound: it "proved" tokens ≤ i64::MAX
     if peak_tokens == i64::MAX {
         advisory_sites.push("the computed peak overflows i64 (a loop_bound too large)".to_string());
+    }
+    if peak_latency_ms == i64::MAX {
+        latency_advisory.push("the computed latency overflows i64 (a loop_bound too large)".to_string());
     }
     // With an unbounded site the computed peaks are LOWER bounds: they
     // can still prove a budget is exceeded, never that it holds.
@@ -778,6 +793,10 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
                 axis: "usd",
                 reason: format!("no price table entry for model '{}'", model_name),
             });
+        } else if peak_usd_wide > i64::MAX as i128 {
+            findings.push(CostFinding::Advisory {
+                axis: "usd", reason: "the computed USD cost overflows i64".into(),
+            });
         } else if peak_usd_milli > declared {
             findings.push(CostFinding::Exceeded {
                 axis: "usd", declared, computed: peak_usd_milli, unit: "milli-USD", where_: format!("peak in {}.{}", cell.name, peak_tokens_in),
@@ -804,14 +823,14 @@ fn literal_range_len(iter: &Expr) -> Option<i64> {
     };
     match args.len() {
         1 => lit(&args[0]).map(|n| n.max(0)),
-        2 => Some((lit(&args[1])? - lit(&args[0])?).max(0)),
+        2 => Some((lit(&args[1])? as i128 - lit(&args[0])? as i128).clamp(0, i64::MAX as i128) as i64),
         // range(a, b, step): ⌈(b - a) / step⌉ elements when it moves toward b
         3 => {
-            let (a, b, st) = (lit(&args[0])?, lit(&args[1])?, lit(&args[2])?);
+            let (a, b, st) = (lit(&args[0])? as i128, lit(&args[1])? as i128, lit(&args[2])? as i128);
             if st == 0 { return None; }
             let span = b - a;
             if span == 0 || (span > 0) != (st > 0) { return Some(0); }
-            Some((span.abs() + st.abs() - 1) / st.abs())
+            Some(((span.abs() + st.abs() - 1) / st.abs()).min(i64::MAX as i128) as i64)
         }
         _ => None,
     }

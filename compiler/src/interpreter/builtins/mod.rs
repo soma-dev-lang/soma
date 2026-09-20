@@ -55,10 +55,14 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
     // counts, indexes, widths and code points are 64-bit: a BigInt there was
     // read as 0 (range(2^70, 2^70 + 3) == [], substring(s, 1, 2^70) == "",
     // random(2^70) == 0) — say so instead
-    if matches!(name, "range" | "random" | "chr" | "substring" | "slice" | "pad_left" | "pad_right" | "repeat" | "take" | "drop" | "with" | "nth" | "days_in_month" | "sleep" | "str_at" | "left" | "right")
-        // with(xs, i, v): only the index is a count — the stored value may be big
-        && args.iter().enumerate().any(|(n, a)| !(name == "with" && n != 1) && matches!(a, Value::Int(i) if i.to_i64().is_none()))
-    {
+    let count_argument = |position: usize| match name {
+        "range" | "random" | "days_in_month" => true,
+        "chr" | "sleep" => position == 0,
+        "substring" | "slice" => position == 1 || position == 2,
+        "pad_left" | "pad_right" | "repeat" | "take" | "drop" | "with" | "nth" | "str_at" | "left" | "right" => position == 1,
+        _ => false,
+    };
+    if args.iter().enumerate().any(|(n, a)| count_argument(n) && matches!(a, Value::Int(i) if i.to_i64().is_none())) {
         return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("{}(): an Int argument past 64 bits (a count, index or width is at most 2^63 - 1)", name) }));
     }
     // Try each category in order. A panic inside a builtin (a capacity

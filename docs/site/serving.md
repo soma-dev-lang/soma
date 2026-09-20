@@ -46,6 +46,10 @@ are lower-case (`headers.authorization`); a repeated header is one entry,
 its values joined with ", " (a repeated QUERY key keeps its last value). `OPTIONS`
 requests are answered 204 with permissive CORS headers before any handler. A trailing `Map` parameter may be left out by a
 caller (it is `map()`), so a test still calls `request("GET", "/x", "")`.
+Query keys without `=` are present with an empty String (`?flag` gives
+`query.flag == ""`). In query keys and values, `+` means a space and `%2B`
+means a literal plus sign. Decoding happens once; empty separators are ignored.
+
 The declared type of `body` decides its shape:
 
 - `body: String` — the raw request text; `from_json(body)` parses a JSON body

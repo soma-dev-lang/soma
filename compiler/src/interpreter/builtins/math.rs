@@ -15,6 +15,17 @@ use super::val_to_i64;
 use crate::interpreter::soma_int::SomaInt;
 
 pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError>> {
+    // Never turn invalid operands into zero through the permissive legacy
+    // conversion helpers. These builtins have numeric/Int contracts.
+    let int_only = matches!(name, "band" | "bor" | "bxor" | "bnot" | "shl" | "shr"
+        | "bit_test" | "bit_set" | "bit_clr" | "bit_next" | "bit_len"
+        | "gcd" | "sqrt_int" | "pow_mod" | "chr" | "random");
+    let numeric = matches!(name, "round" | "floor" | "ceil" | "sqrt" | "log" | "ln" | "exp" | "log10");
+    if let Some(bad) = args.iter().find(|v| (int_only && !matches!(v, Value::Int(_)))
+        || (numeric && !matches!(v, Value::Int(_) | Value::Float(_)))) {
+        return Some(Err(RuntimeError::TypeError(format!("{}(): expected {}, got {} {}",
+            name, if int_only { "Int arguments" } else { "numbers" }, super::super::value_type_name(bad), bad))));
+    }
     match name {
         "abs" => {
             args.first().map(|arg| match arg {
@@ -151,9 +162,12 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             })
         }
         "chr" if args.len() == 1 => {
-            let n = val_to_i64(&args[0]);
-            Some(char::from_u32(n as u32).map(|c| Value::String(c.to_string()))
-                .ok_or_else(|| RuntimeError::TypeError(format!("chr({}): not a Unicode scalar value", n))))
+            let scalar = match &args[0] {
+                Value::Int(n) => n.to_i64().and_then(|n| u32::try_from(n).ok()).and_then(char::from_u32),
+                _ => None,
+            };
+            Some(scalar.map(|c| Value::String(c.to_string()))
+                .ok_or_else(|| RuntimeError::Domain { kind: "range".into(), message: format!("chr({}): not a Unicode scalar value", args[0]) }))
         }
         "ord" if args.len() == 1 => {
             let Value::String(t) = &args[0] else { return Some(Err(RuntimeError::TypeError("ord(s: String) — the first character's code point".to_string()))) };
@@ -247,6 +261,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         }
         "max" if args.len() == 1 && matches!(args.first(), Some(Value::List(_))) => {
             Some(numeric_reduce(args, "max"))
+        }
+        "min" | "max" if args.iter().any(|a| !matches!(a, Value::Int(_) | Value::Float(_))) => {
+            Some(Err(RuntimeError::TypeError(format!("{} expects numbers, or one List of numbers", name))))
         }
         "min" => {
             if args.len() >= 2 {
@@ -412,7 +429,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 let min = val_to_i64(&args[0]);
                 let max = val_to_i64(&args[1]);
                 if max <= min { return Some(Ok(Value::Int(SomaInt::from_i64(min)))); }
-                Some(Ok(Value::Int(SomaInt::from_i64(min + below((max - min) as u64) as i64))))
+                let width = (max as i128 - min as i128) as u64;
+                Some(Ok(Value::Int(SomaInt::from_i64((min as i128 + below(width) as i128) as i64))))
             }
         }
         // Bit operations on Int — arbitrary precision, like Python: a bit
@@ -428,7 +446,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::Int(SomaInt::from_rug(!big_of(&args[0])))))
         }
         "shl" if args.len() >= 2 => {
-            let b = val_to_i64(&args[1]);
+            let Some(b) = (match &args[1] { Value::Int(n) => n.to_i64(), _ => None }) else {
+                return Some(Err(RuntimeError::Domain { kind: "range".into(), message: format!("shl(): shift count {} out of range", args[1]) }));
+            };
             if b < 0 || b > 1 << 24 {
                 return Some(Err(RuntimeError::TypeError(format!("shl(): shift count {} out of range", b))));
             }
@@ -441,32 +461,38 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::Int(SomaInt::from_rug(a << (b as u32)))))
         }
         "shr" if args.len() >= 2 => {
-            let b = val_to_i64(&args[1]);
-            if b < 0 {
-                return Some(Err(RuntimeError::TypeError(format!("shr(): shift count {} out of range", b))));
+            let count = big_of(&args[1]);
+            if count < 0 {
+                return Some(Err(RuntimeError::TypeError(format!("shr(): shift count {} out of range", count))));
             }
             // shifted past every bit: the sign fill (0 or -1), like native
-            if b > 1 << 24 {
+            if count > 1 << 24 {
                 let a = big_of(&args[0]);
                 return Some(Ok(Value::Int(SomaInt::from_i64(if a < 0 { -1 } else { 0 }))));
             }
-            Some(Ok(Value::Int(SomaInt::from_rug(big_of(&args[0]) >> (b as u32)))))
+            Some(Ok(Value::Int(SomaInt::from_rug(big_of(&args[0]) >> count.to_u32().unwrap()))))
         }
         // bit operations on the arbitrary-precision Int, like the native
         // backend (bit_set(1, 64) wrapped to bit 0 through an i64 shift)
         "bit_test" | "bit_set" | "bit_clr" | "bit_next" if args.len() >= 2 => {
-            let b = val_to_i64(&args[1]);
+            let Some(b) = (match &args[1] { Value::Int(n) => n.to_i64(), _ => None }) else {
+                return Some(Err(RuntimeError::Domain { kind: "range".into(), message: format!("{}(): bit index {} out of range", name, args[1]) }));
+            };
             if b < 0 || b > 1 << 24 {
                 return Some(Err(RuntimeError::TypeError(format!("{}(): bit index {} out of range", name, b))));
             }
             let mut a = big_of(&args[0]);
             let i = b as u32;
-            Some(Ok(Value::Int(match name {
+            let result = match name {
                 "bit_test" => SomaInt::from_i64(if a.get_bit(i) { 1 } else { 0 }),
                 "bit_set" => { a.set_bit(i, true); SomaInt::from_rug(a) }
                 "bit_clr" => { a.set_bit(i, false); SomaInt::from_rug(a) }
                 _ => SomaInt::from_i64(a.find_one(i).map_or(-1, |x| x as i64)),
-            })))
+            };
+            if result.bits() > SomaInt::MAX_BITS {
+                return Some(Err(RuntimeError::Domain { kind: "range".into(), message: format!("{}(): result is past the Int size limit", name) }));
+            }
+            Some(Ok(Value::Int(result)))
         }
         "bit_len" if args.len() >= 1 => {
             // exact, BigInt included (it estimated from the decimal length:
@@ -503,6 +529,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "str_at" if args.len() >= 2 => {
+            if !matches!(&args[1], Value::Int(_)) {
+                return Some(Err(RuntimeError::TypeError("str_at expects (String, Int)".into())));
+            }
             match &args[0] {
                 Value::String(s) => {
                     // kind `index` and the index as written, like [native]
@@ -591,7 +620,6 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
         Value::Int(si) => si.to_f64(),
         _ => 0.0,
     }).collect();
-    let n = nums.len() as f64;
     let as_value = |x: f64| -> Value {
         if all_int && x.fract() == 0.0 && x.abs() < 9.0e15 { Value::Int(SomaInt::from_i64(x as i64)) } else { Value::Float(x) }
     };
@@ -611,7 +639,10 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
         "median" => {
             nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let m = nums.len() / 2;
-            let med = if nums.len() % 2 == 1 { nums[m] } else { (nums[m - 1] + nums[m]) / 2.0 };
+            let med = if nums.len() % 2 == 1 { nums[m] } else if nums[m - 1].is_finite() && nums[m].is_finite() {
+                let sum = rug::Rational::from_f64(nums[m - 1]).unwrap() + rug::Rational::from_f64(nums[m]).unwrap();
+                crate::interpreter::rational_to_f64(sum / 2)
+            } else { (nums[m - 1] + nums[m]) / 2.0 };
             Ok(as_value(med))
         }
         _ => {
@@ -621,9 +652,41 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             if sample && nums.len() < 2 {
                 return Err(RuntimeError::Domain { kind: "empty".to_string(), message: format!("{}() needs at least two values (sample statistics); use p{} for the population form", op, op) });
             }
-            let mean = nums.iter().sum::<f64>() / n;
-            let denom = if sample { n - 1.0 } else { n };
-            let var = nums.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / denom;
+            if all_int {
+                // Center in Int space before any Float conversion: adjacent
+                // values past 2^53 (or 1e308) must retain their differences.
+                let first = big_of(&items[0]);
+                let mut sum = rug::Integer::new();
+                let mut squares = rug::Integer::new();
+                for item in &items {
+                    let delta = big_of(item) - &first;
+                    sum += &delta;
+                    squares += rug::Integer::from(&delta * &delta);
+                }
+                let count = rug::Integer::from(items.len());
+                let numerator = squares * &count - rug::Integer::from(&sum * &sum);
+                let denominator = if sample { rug::Integer::from(&count - 1) * &count } else { rug::Integer::from(&count * &count) };
+                let var = crate::interpreter::rational_to_f64(rug::Rational::from((numerator, denominator)));
+                return Ok(Value::Float(if matches!(op, "variance" | "pvariance") { var } else { var.sqrt() }));
+            }
+            let exact = |v: &Value| match v {
+                Value::Int(i) => Some(rug::Rational::from(i.to_rug())),
+                Value::Float(f) => rug::Rational::from_f64(*f),
+                _ => None,
+            };
+            let Some(first) = exact(&items[0]) else { return Ok(Value::Float(f64::NAN)); };
+            let mut sum = rug::Rational::new();
+            let mut squares = rug::Rational::new();
+            for item in &items {
+                let Some(value) = exact(item) else { return Ok(Value::Float(f64::NAN)); };
+                let delta = value - &first;
+                sum += &delta;
+                squares += rug::Rational::from(&delta * &delta);
+            }
+            let count = items.len();
+            let numerator = squares * count - rug::Rational::from(&sum * &sum);
+            let denominator = rug::Integer::from(count) * if sample { count - 1 } else { count };
+            let var = crate::interpreter::rational_to_f64(numerator / denominator);
             match op {
                 "variance" | "pvariance" => Ok(Value::Float(var)),
                 _ => Ok(Value::Float(var.sqrt())),
@@ -693,11 +756,7 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
                 // same rule as `/`: avg([1, 2]) is 1.5, an exact average
                 // stays an Int (it used to truncate to 1)
                 let count = SomaInt::from_i64(n);
-                if acc.clone().modulo(count.clone()).to_i64() == Some(0) {
-                    Ok(Value::Int(acc.div(count)))
-                } else {
-                    Ok(Value::Float(acc.to_f64() / n as f64))
-                }
+                crate::interpreter::int_div_value(&acc, &count)
             }
             "min" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) <= 0 { a } else { b }).unwrap())),
             "max" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) >= 0 { a } else { b }).unwrap())),

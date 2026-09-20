@@ -1773,3 +1773,71 @@ duplicate scans → 1 accepted, 399 refused, 800 audit rows kept;
 
 ### Open
 - [ ] SSE has no `id:` / replay; `verify --strict` refuses computed transition targets (by design, but a table-driven machine must be expanded); test rules cannot call transition/get_status with several machines.
+
+
+### Maintenance audit — 2026-09-20 (repository tests and targeted reproductions)
+
+Baseline: 395 Rust tests, 118 legacy CLI fixtures (2 stale expectations),
+321 published corpus programs. The existing Rust suite and corpus were green;
+new reproductions exposed failures beyond that coverage.
+
+### Fixed
+- [x] Mixed Int/Float comparisons lost precision beyond 2^53 in operators, sorting, pipelines, the VM and native code; masks now compare the original numbers too.
+- [x] NaN compared equal to arbitrary numbers in `filter_by` and VM comparisons.
+- [x] Deduplication rounded big Ints, used map insertion order, confused typed values in `distinct_by`, and reused the same NaN key for field projections. Keys now follow structural equality.
+- [x] Zero range steps silently returned an empty list; stepped materialization undercounted the last element; loop counts overflowed; the loop fast path bypassed user `range` handlers. Shared validation and streaming stepped loops.
+- [x] `top`/`bottom` accepted negative, fractional or textual counts; a BigInt count became zero. `slice` truncated Float indexes. `min`/`max` accepted nonnumeric scalars.
+- [x] Cost proofs wrapped range lengths, large loop annotations and accumulated costs into false small bounds; builtin range lengths were assigned to a user-defined range. Saturation is unprovable, and unknown collections require an explicit loop bound.
+- [x] HTTP query decoding changed `%2B` into a space and dropped bare query keys.
+- [x] Syntax repairs were missing from `soma fix --json`'s count and results.
+- [x] Replay confused a returned `__error__` map with an exception; native failures were not recorded; failed native compilation could replay interpreted. The v2 outcome is explicit and recorded after the transaction. Legacy v1 remains readable.
+- [x] Invalid mock clocks silently enabled the real clock; date argument types were coerced to zero.
+- [x] `soma env` included the resolver's internal Git checkout as an installed package.
+- [x] The CLI runner depended on /tmp fixtures and returned success on failed tests. Portable fixture lookup, corrected expectations and failure exit status.
+- [x] A push/PR workflow runs Rust tests, CLI fixtures and the site's corpus build.
+- [x] Canonical agent guide synchronized to AGENT.md, embedded in the binary and published on Cloudflare; version.json identifies the source commit and dirty source build. These changes are explicitly Unreleased, not an installer release.
+
+Validation: 406 Rust tests, 118 CLI fixtures, 321 published corpus programs
+(none withheld), and 875 additional numeric comparisons against exact
+Python results passed. The release build emitted no Rust warnings.
+
+Regressions: `compiler/tests/regressions.rs`. This audit does not establish
+that the language has no remaining bugs. Architectural limits such as
+per-cell verification, incomplete VM features, cross-process delivery and
+sharing a data directory between distinct programs remain documented limits.
+
+### Continued maintenance audit — 2026-09-20
+
+- [x] Integer `while` optimization substituted zero for read-only variables,
+  lost an assignment on overflow, replayed partial iterations and swallowed
+  arithmetic errors. The whole optimized body is prepared before execution;
+  all operands are bound, promotions stay in the same iteration and errors
+  propagate. Other bodies, including Float counters, use normal execution.
+- [x] `index_of` rounded unequal Int/Float values into matches. It now uses
+  the same structural equality as membership and operators.
+- [x] `substring` cast negative ends to huge unsigned indexes; `chr` wrapped
+  invalid code points modulo 2^32. Both now enforce their documented bounds.
+- [x] Numeric, bit, random and byte-index operations silently accepted wrong
+  types. Huge bit counts became zero; a mutation could exceed the Int limit.
+  Count validation no longer rejects a BigInt used as padding content.
+- [x] Huge Int ratios became NaN through inf/inf. Exact ratios now round once
+  to nearest/even, including subnormals; Int means use the same conversion.
+- [x] Variance erased differences between nearby large Ints/Floats; equal
+  large Floats produced infinite variance and median. Exact central moments
+  and a bounded midpoint fix the reproduced cases.
+- [x] Native wide random intervals overflowed; large right shifts failed;
+  `bit_next` overflowed at/above bit 63 for small locals in the BigInt path.
+- [x] Native temporary names shadowed operands in shifts, min/max, masks and
+  modular powers. Loop-bound counters could shadow a user parameter and
+  prevent compilation. Operands bind together and counters get fresh names.
+- [x] `--jit` claimed to be ignored but selected a backend that changed
+  division/equality, swallowed errors and bypassed normal dispatch/recording.
+  It is now a compatibility no-op; the harness and semantics document no
+  longer present CLI compatibility as proof of bytecode equivalence.
+
+Validation: 414 Rust tests and 118 CLI fixtures passed. The additional
+differential campaign passed 1,295 numerical assertions, 150 generated
+loops and 1,947 native bit/number-theory assertions against Python integers
+and exact fractions. The published corpus contains 321 passing programs.
+The guide and changelog remain labelled Unreleased; Cloudflare was updated
+after the validated batch. No installer release was published by this audit.

@@ -126,7 +126,7 @@ messages contain their own fix (`invalid transition: Placed → Delivered.
 Valid targets: [Accepted, Cancelled]`); `soma describe --builtins --json`
 and `--faces` give exact signatures so nothing is guessed. Start with
 [`AGENT_GOTCHAS.md`](AGENT_GOTCHAS.md) — 20 verified wrong→right pairs —
-and [`examples/corpus/`](examples/corpus/): **316 complete programs, every
+and [`examples/corpus/`](examples/corpus/): **hundreds of complete programs, every
 one passing `check` and `test`**, generated as LLM training data.
 
 Everything an agent needs is one command or one fetch away:
@@ -182,13 +182,14 @@ solve, lstsq, broadcasting helpers) in pure Soma — 43 self-proofs included.
 
 ## Honest status
 
-Soma is an experimental language (binary: `soma 2.4.0`). The verifier
+Soma is an experimental language (release: `soma 2.8.1`; see
+[the changelog](CHANGELOG.md) for fixes and compatibility notes). The verifier
 proves state-machine and invariant properties per cell; cross-cell
 composition is statically *linted*, not yet proven. The interpreter is
 an AST walker (use `[native]` for hot paths). One known semantic
 asymmetry: `+` on non-numeric lists concatenates, on numeric vectors it
 adds elementwise — `concat(a, b)` is always explicit concatenation.
-The test suite is ~260 Rust tests plus 600+ verified `.cell` programs;
+The test suite includes hundreds of Rust tests and verified `.cell` programs;
 `soma verify` failures are CI-grade errors, not warnings.
 
 ## License

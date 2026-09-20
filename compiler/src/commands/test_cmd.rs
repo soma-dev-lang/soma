@@ -265,8 +265,21 @@ pub fn cmd_test(path: &PathBuf, json: bool, registry: &mut Registry) {
                             // and `mock now_ms 1700000000250` are the same instant
                             let scale = if name == "now_ms" { 1.0 } else { 1000.0 };
                             match eval_test_expr(&mut interp, &reply.node, &test_env) {
-                                Ok(interpreter::Value::Int(t)) => interp.frozen_now = t.to_i64().and_then(|v| v.checked_mul(scale as i64)),
-                                Ok(interpreter::Value::Float(f)) => interp.frozen_now = Some((f * scale).round() as i64),
+                                Ok(v @ (interpreter::Value::Int(_) | interpreter::Value::Float(_))) => {
+                                    let millis = match &v {
+                                        interpreter::Value::Int(t) => t.to_i64().and_then(|n| n.checked_mul(scale as i64)),
+                                        interpreter::Value::Float(f) => {
+                                            let n = (f * scale).round();
+                                            if n.is_finite() && n >= i64::MIN as f64 && n < 9223372036854775808.0 { Some(n as i64) } else { None }
+                                        }
+                                        _ => unreachable!(),
+                                    };
+                                    if let Some(ms) = millis { interp.frozen_now = Some(ms); }
+                                    else {
+                                        total += 1; failed += 1;
+                                        say!(out_lines, json, "  ✗ {}:{}  mock {} … — ERROR: clock out of range for signed 64-bit milliseconds: {}", file_name, line_of(rule.span), name, v);
+                                    }
+                                }
                                 Ok(other) => {
                                     total += 1; failed += 1;
                                     say!(out_lines, json, "  ✗ {}:{}  mock {} … — ERROR: mock now takes unix seconds (mock now_ms: milliseconds), got {}", file_name, line_of(rule.span), name, other);

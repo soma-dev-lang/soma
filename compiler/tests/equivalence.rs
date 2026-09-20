@@ -1,31 +1,8 @@
-//! Backend-equivalence harness — `interpreter ≡ bytecode VM` on the
-//! intersection corpus.
+//! Compatibility corpus for the deprecated `--jit` CLI flag.
 //!
-//! The README and `docs/SEMANTICS.md` §2 claim *backend equivalence*
-//! between the interpreter and the bytecode VM. As of v2.2 the bytecode
-//! VM is feature-incomplete (the `--jit` flag itself prints
-//! "does not support all features yet"). This harness defines the
-//! intersection of features both backends *do* implement and asserts
-//! bit-equal output for a curated corpus exercising it.
-//!
-//! Failure modes this catches:
-//!   - Either backend miscomputing arithmetic, control flow, or BigInt
-//!   - The two backends disagreeing on the same input
-//!   - A regression where the VM was previously correct on a program
-//!     and now isn't
-//!
-//! What's NOT in scope:
-//!   - Features the VM does not yet implement (string interpolation,
-//!     pipes with map/filter, complex pattern matching, …). These are
-//!     listed at the bottom of this file as `KNOWN_GAPS`.
-//!   - The `[native]` codegen — that's a separate harness because it
-//!     emits Rust source via cdylib, not interpretation.
-//!
-//! This harness is the executable witness for the equivalence
-//! conjecture in `docs/SEMANTICS.md` §2. As long as it's green, the
-//! conjecture holds on the intersection corpus.
-//!
-//!   cargo test --test equivalence
+//! The flag must leave normal interpreter/native execution unchanged.
+//! Each invocation is checked against an expected result, not just its peer.
+//! This is not evidence of equivalence with the experimental bytecode VM.
 
 use std::io::Write;
 use std::process::Command;
@@ -33,15 +10,12 @@ use std::process::Command;
 /// One equivalence test case.
 struct Case {
     name: &'static str,
-    /// Soma source. The handler must use explicit `return` so the VM,
-    /// which doesn't yet support implicit-return-of-last-expression,
-    /// produces the same output as the interpreter.
+    /// Soma source to execute with and without the deprecated flag.
     source: &'static str,
     /// CLI args to pass after the file path. Use `--signal name` to
     /// pick a non-default handler.
     args: &'static [&'static str],
-    /// Trimmed expected stdout from BOTH backends. Lets us catch
-    /// regressions in either backend, not just disagreements.
+    /// Expected stdout for each invocation.
     expected: &'static str,
 }
 
@@ -204,13 +178,13 @@ fn run_case(case: &Case) -> Result<(String, String), String> {
     }
     let val_i = last_value(&out_i);
 
-    // ── Bytecode VM ─────────────────────────────────────────────
+    // ── Deprecated flag ─────────────────────────────────────────────
     let mut vm_args = vec!["run", "--jit", path_str.as_str()];
     vm_args.extend_from_slice(case.args);
     let (out_v, err_v, code_v) = soma_run(&vm_args);
     if code_v != 0 {
         return Err(format!(
-            "VM exited {}: stdout=`{}` stderr=`{}`",
+            "--jit exited {}: stdout=`{}` stderr=`{}`",
             code_v,
             out_v.trim(),
             err_v.trim()
@@ -222,7 +196,7 @@ fn run_case(case: &Case) -> Result<(String, String), String> {
 }
 
 #[test]
-fn equivalence_intersection_corpus() {
+fn deprecated_jit_compatibility_corpus() {
     let mut failed = Vec::new();
 
     for case in CASES {
@@ -235,14 +209,14 @@ fn equivalence_intersection_corpus() {
                     ));
                 } else if vm != case.expected {
                     failed.push(format!(
-                        "{}: VM returned `{}`, expected `{}` (interpreter agreed)",
+                        "{}: --jit returned `{}`, expected `{}` (interpreter agreed)",
                         case.name, vm, case.expected
                     ));
                 } else if interp != vm {
                     // Defensive: should be unreachable since both equal `expected`,
                     // but document the divergence form for future readers.
                     failed.push(format!(
-                        "{}: backends disagree — interpreter `{}`, VM `{}`",
+                        "{}: invocations disagree — interpreter `{}`, --jit `{}`",
                         case.name, interp, vm
                     ));
                 } else {
@@ -262,30 +236,3 @@ fn equivalence_intersection_corpus() {
         );
     }
 }
-
-// ── Known gaps in the bytecode VM ──────────────────────────────────
-//
-// Features that exist in the interpreter but the VM does not yet
-// implement, intentionally excluded from the corpus above. These are
-// the gaps the equivalence claim is honestly scoped around.
-//
-// 1. **String interpolation** — `"hello {name}"`. The VM's note line
-//    explicitly disclaims it.
-// 2. **Implicit return of last expression** — the VM returns Unit if
-//    a handler ends in an expression statement without `return`.
-//    Every case above uses explicit `return`.
-// 3. **Pipes with lambdas** — `xs |> filter(x => x > 0)`. Untested
-//    in the VM and likely incomplete.
-// 4. **Pattern matching with map destructure** — used heavily by
-//    `on request(method, path, body) { match req { {method: "GET"...} } }`.
-//    Untested.
-// 5. **`delegate("Cell", "signal", args)`** — cross-cell calls in the
-//    VM are unverified by this harness.
-// 6. **`transition(id, "state")` and the state machine plumbing**
-//    rely on storage backends that the VM may not wire up the same
-//    way as the interpreter — out of scope.
-// 7. **`think()` and other LLM builtins** — not in the intersection.
-//
-// When any of these gaps closes (i.e. the VM grows to support a
-// feature), add a case here that exercises it. The harness must grow
-// monotonically with the VM's capability.

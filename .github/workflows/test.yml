@@ -1,0 +1,29 @@
+name: language tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential m4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compiler and runtime regressions
+        working-directory: compiler
+        run: cargo test --release --locked --no-fail-fast
+      - name: Published corpus and documentation examples
+        env:
+          SOMA: compiler/target/release/soma
+        run: python3 tools/build_site.py
+      - name: Core CLI fixtures
+        run: bash tests/run_all.sh

@@ -341,6 +341,10 @@ def main():
     today = datetime.date.today().isoformat()
     print(f"soma {version} ({SOMA})")
 
+    # Keep the historical repository entry point on the canonical short guide.
+    with open(os.path.join(ROOT, "AGENT.md"), "w", encoding="utf-8") as f:
+        f.write("<!-- Generated from site/agent.md by tools/build_site.py. -->\n\n" + read("site", "agent.md"))
+
     # docs, raw markdown
     docs = {
         "docs/reference.md": "SOMA_REFERENCE.md",
@@ -414,6 +418,9 @@ def main():
         json.dumps(
             {
                 "soma_version": version,
+                "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, text=True).strip()),
+                "agent_md_sha256": hashlib.sha256(read("site", "agent.md").encode("utf-8")).hexdigest(),
                 "generated": today,
                 "license": "MIT",
                 # `soma docs agent | shasum -a 256` on the matching binary

@@ -22,19 +22,14 @@ pub fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
         (Value::Int(x), Value::Int(y)) => x.cmp(y).cmp(&0),
         (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
-            let f = |v: &Value| match v {
-                Value::Int(i) => i.to_f64(),
-                Value::Float(f) => *f,
-                _ => 0.0,
-            };
             // NaN sorts after every number (Equal broke the sort's total
             // order: sort_by over a column with a NaN came back unsorted)
-            let (x, y) = (f(a), f(b));
-            match (x.is_nan(), y.is_nan()) {
+            let nan = |v: &Value| matches!(v, Value::Float(f) if f.is_nan());
+            match (nan(a), nan(b)) {
                 (true, true) => Ordering::Equal,
                 (true, false) => Ordering::Greater,
                 (false, true) => Ordering::Less,
-                _ => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+                _ => crate::interpreter::numeric_cmp(a, b).unwrap_or(Ordering::Equal),
             }
         }
         (Value::String(x), Value::String(y)) => x.cmp(y),
@@ -49,6 +44,28 @@ pub fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         }
         _ => rank(a).cmp(&rank(b)),
     }
+}
+
+/// Validate both materialized ranges and the interpreter's allocation-free loop.
+pub(crate) fn range_spec(args: &[Value]) -> Result<(i64, i64, i64, u128), RuntimeError> {
+    if !(2..=3).contains(&args.len()) {
+        return Err(RuntimeError::TypeError("range expects (start, end) or (start, end, step)".into()));
+    }
+    let integer = |v: &Value| match v {
+        Value::Int(n) => n.to_i64().ok_or_else(|| RuntimeError::Domain {
+            kind: "range".into(), message: "range(): bounds and step must fit in 64 bits".into(),
+        }),
+        _ => Err(RuntimeError::TypeError(format!("range(start: Int, end: Int, step?: Int), got {} {}", crate::interpreter::value_type_name(v), v))),
+    };
+    let (start, end) = (integer(&args[0])?, integer(&args[1])?);
+    let step = args.get(2).map(integer).transpose()?.unwrap_or(1);
+    if step == 0 {
+        return Err(RuntimeError::Domain { kind: "range".into(), message: "range(): step must not be zero".into() });
+    }
+    let distance = if step > 0 { end as i128 - start as i128 } else { start as i128 - end as i128 };
+    let stride = (step as i128).abs();
+    let count = if distance <= 0 { 0 } else { ((distance + stride - 1) / stride) as u128 };
+    Ok((start, end, step, count))
 }
 
 /// Resolve a possibly negative index against `len` (-1 = last), clamped.
@@ -96,7 +113,6 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "slice" if matches!(args.first(), Some(Value::List(_) | Value::String(_))) && (args.len() == 2 || args.len() == 3) => {
             let idx = |v: &Value| match v {
                 Value::Int(i) => i.to_i64(),
-                Value::Float(f) => Some(*f as i64),
                 _ => None,
             };
             let Some(start) = idx(&args[1]) else {
@@ -418,27 +434,10 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "range" => {
-            let as_i64 = |v: &Value| match v {
-                Value::Int(si) => si.to_i64().unwrap_or(0),
-                Value::Float(n) => *n as i64,
-                _ => 0,
-            };
-            // a count is an Int: `range(0, 3.7)` truncated silently where
-            // nth(xs, 1.0) raises
-            if let Some(bad) = args.iter().take(3).find(|a| !matches!(a, Value::Int(_))) {
-                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
-                    "type: range(start: Int, end: Int, step?: Int), got {} {}", crate::interpreter::value_type_name(bad), bad) }));
-            }
-            if args.len() >= 2 {
-                let start = as_i64(&args[0]);
-                let end = as_i64(&args[1]);
-                // Optional third arg is the step. A negative step counts
-                // DOWN from start (exclusive of end), so `range(12, -1, -1)`
-                // yields 12,11,…,0 without a reverse().
-                let step = args.get(2).map(as_i64).unwrap_or(1);
-                let count = if step == 0 { 0 } else { ((end as i128 - start as i128) / step as i128).max(0) };
-                if count > crate::interpreter::MAX_LIST_LEN as i128 {
-                    return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range({}, {}): {} elements is past the limit of {} for a List — loop with `for i in range(a, b)` (not materialized) or a while loop", start, end, count, crate::interpreter::MAX_LIST_LEN) }));
+            Some((|| {
+                let (start, end, step, count) = range_spec(args)?;
+                if count > crate::interpreter::MAX_LIST_LEN as u128 {
+                    return Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("range({}, {}): {} elements is past the limit of {} for a List — loop with `for i in range(a, b)` (not materialized) or a while loop", start, end, count, crate::interpreter::MAX_LIST_LEN) });
                 }
                 let mut result = Vec::new();
                 if step > 0 {
@@ -449,11 +448,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 } else if step < 0 {
                     let mut i = start;
                     while i > end { result.push(Value::Int(SomaInt::from_i64(i))); match i.checked_add(step) { Some(n) => i = n, None => break } }
-                } // step == 0 → empty (avoid an infinite loop)
-                Some(Ok(Value::List(result)))
-            } else {
-                Some(Err(RuntimeError::TypeError("range expects (start, end) or (start, end, step)".to_string())))
-            }
+                }
+                Ok(Value::List(result))
+            })())
         }
         "sort" => {
             if let Some(Value::List(items)) = args.first() {
@@ -466,9 +463,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         // mixed Int/Float compare numerically; NaN gets a total
                         // order (sorts after all finite values) instead of
                         // silently corrupting the sort
-                        (Value::Float(x), Value::Float(y)) => x.total_cmp(y),
-                        (Value::Int(x), Value::Float(y)) => x.to_f64().total_cmp(y),
-                        (Value::Float(x), Value::Int(y)) => x.total_cmp(&y.to_f64()),
+                        (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => compare_values(a, b),
                         (Value::String(x), Value::String(y)) => x.cmp(y),
                         (Value::Bool(x), Value::Bool(y)) => x.cmp(y),
                         _ => {
