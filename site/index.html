@@ -350,7 +350,7 @@ $ soma run q2.cell consume ana 60  →  error: memory invariant violated on 'use
   <table>
     <tr><th>Command</th><th>What it checks</th><th>Known scope</th></tr>
     <tr><td><code>soma check</code></td><td>Face contracts, property contradictions, scale coherence, structural promises, and memory-budget obligations.</td><td>Return types and arbitrary runtime data invariants are not fully statically verified.</td></tr>
-    <tr><td><code>soma verify</code></td><td>Explicit-state checks over declared state machines, temporal properties from <code>soma.toml</code>, distribution consistency checks, and transition refinement.</td><td>It explores the state graph, not all possible data values or guard arithmetic.</td></tr>
+    <tr><td><code>soma verify</code></td><td>State graphs and temporal properties, transition refinement, supported memory invariants, handler termination and declared cost bounds.</td><td>Proofs are per cell and limited to the supported analysis. Other checks are reported as runtime-checked or unproved; <code>--strict</code> rejects warnings. Cluster behavior is not proven.</td></tr>
     <tr><td><code>soma lint</code></td><td>Anti-patterns such as redundant <code>to_json</code>/<code>from_json</code> around storage and other common issues.</td><td>Lint output is advisory.</td></tr>
     <tr><td><code>soma fix</code></td><td>Simple source rewrites, including missing handlers and some property issues.</td><td>It is intentionally narrow; review generated changes.</td></tr>
   </table>
@@ -368,18 +368,22 @@ eventually = ["filled", "rejected"]</code></pre>
 
 <section id="status">
   <h2>Implementation Status</h2>
+  <p>Current release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.6">Soma 2.8.6</a>. <a href="https://github.com/soma-dev-lang/soma/actions/runs/35507978811">Release validation</a>: 575 Rust tests, 118 CLI checks, 321 corpus programs and 1,280 independent numeric comparisons passed.</p>
   <div class="status-grid">
     <div class="card">
-      <h3><span class="tag implemented">implemented</span>Language core</h3>
-      <p>Cells, handlers, memory slots, state machines, pattern matching, collections, pipes, tests, and a CLI are implemented.</p>
+      <h3><span class="tag implemented">implemented</span> Language core</h3>
+      <p>Typed cells and handlers, persistent memory, runtime invariants, state machines, pattern matching, collections, pipes, tests and a CLI.</p>
+      <p>Recent audits corrected numeric boundaries, input and storage validation, argument evaluation, collection updates, call resolution and typed constructors. <a href="/CHANGELOG.md">Corrections and regression tests</a>.</p>
     </div>
     <div class="card">
-      <h3><span class="tag partial">partial</span>Distributed runtime</h3>
-      <p>Soma 2.8.2 replicates typed Map entries after local commit, reconnects peers, and resynchronizes data and deletion markers. Per-key logical versions resolve concurrent writes deterministically. Three-process tests cover seed loss and restart. Reads remain local and may be stale; there is no consensus, physical sharding or exactly-once delivery. <a href="/docs/cluster.md">Cluster guarantees and setup</a>.</p>
+      <h3><span class="tag partial">experimental</span> Eventual cluster replication</h3>
+      <p>Typed Map entries replicate after local commit. Reconnect and resynchronization carry data and deletion markers; per-key logical versions resolve conflicts deterministically. Process tests cover concurrent writes, partitions, seed loss and restart.</p>
+      <p>Reads are local and may be stale; concurrent updates can overwrite each other. Consensus, physical sharding and exactly-once delivery are not implemented. <code>strong</code> and <code>causal</code> declarations are rejected. <a href="/docs/cluster.md">Cluster setup and limits</a>.</p>
     </div>
     <div class="card">
-      <h3><span class="tag partial">scoped</span>Formal claims</h3>
-      <p><code>soma verify</code> checks each cell’s state graph, supported memory invariants, termination and cost bounds. A proof covers the inputs represented by its analysis; graph liveness does not ensure that someone calls a handler. Unproved checks are reported, and <code>--strict</code> rejects warnings. Cluster convergence, partition behavior, arbitrary handler semantics, cross-cell rules and LLM answers are outside these proofs. Strong and causal cluster declarations are rejected because their protocols are not implemented. <a href="/docs/guarantees.md">Exact guarantees and limits</a>.</p>
+      <h3><span class="tag partial">scoped</span> Static verification</h3>
+      <p><code>soma verify</code> proves properties of each cell’s state graph, supported memory invariants, termination and cost bounds. Unproved checks are reported; <code>--strict</code> rejects warnings.</p>
+      <p>Proofs cover the inputs represented by the analysis. Graph liveness does not ensure handler invocation. Cluster behavior, arbitrary handler semantics, cross-cell rules and LLM answers remain outside these proofs. <a href="/docs/guarantees.md">Exact guarantees and limits</a>.</p>
     </div>
   </div>
 </section>

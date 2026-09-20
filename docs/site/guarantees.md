@@ -53,7 +53,7 @@ sit in `authorized` until someone acts.
 | Token budget | `set_budget(N)` stops `think()` when the budget is spent; a `set_budget` inside a model's tool call can only lower it. |
 | Exhaustive `match` | a missing sum-type arm is a `soma check` error, not a runtime surprise. |
 
-## Cluster scope (Soma 2.8.2)
+## Cluster scope (available since Soma 2.8.2)
 
 `scale.shard` selects mutable Map slots for **eventual full replication**.
 Typed updates are sent only after the local handler commits; incoming

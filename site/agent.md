@@ -10,6 +10,27 @@ carries the rest.
 (`face`), storage with invariants (`memory`), a model-checked lifecycle
 (`state`), handlers (`on`), HTTP routes and tests.
 
+## Implementation scope — Soma 2.8.6
+
+The language core is implemented; recent audits cover numeric boundaries,
+typed inputs and storage, evaluation order, collections, dispatch and constructors.
+Release validation passed 575 Rust tests, 118 CLI checks, 321 corpus programs
+and 1,280 independent numeric comparisons. Evidence and current status:
+https://soma-lang.dev/status.
+
+Cluster replication is experimental and eventual: typed Map entries replicate
+after commit, reconnect and state exchange repair missed updates, and per-key
+logical versions resolve conflicts. Reads may be stale and concurrent updates
+can overwrite each other. Consensus, physical sharding and exactly-once delivery
+are not implemented; `strong` and `causal` declarations are rejected.
+
+Static proofs are per cell and cover the inputs represented by the supported
+analysis: state graphs, memory invariants, termination and cost bounds. Graph
+liveness does not ensure handler invocation. Cluster behavior, arbitrary handler
+semantics, cross-cell rules and LLM answers are outside these proofs. Unproved
+checks are reported; `soma verify --strict` rejects warnings. Exact scope:
+https://soma-lang.dev/docs/guarantees.md.
+
 ## The loop — run it after every edit, in this order
 
 ```
