@@ -2,10 +2,34 @@
 
 ## Unreleased
 
-- Fix a Linux CI race in the cluster partition test: retain the proxy's OS-
-  allocated listener instead of probing and rebinding, and keep the node port
-  pool bounded below default ephemeral ranges. This changes the test harness;
-  the Soma 2.8.3 compiler, runtime and embedded documentation are unchanged.
+## 2.8.4 — 2026-09-20
+
+### Numeric boundaries
+
+- `avg`, `avg_by` and grouped averages divide the exact finite sum before
+  converting to Float. `avg([1e308, 1e308])` is `1e308`, not infinity;
+  cancelling huge Ints around a Float no longer produces a spurious NaN.
+  Actual NaN and infinity inputs retain their nonfinite meaning.
+- `pstdev`, `stddev` and `stdev` take the square root before converting
+  the variance to Float. A finite deviation no longer becomes infinity or
+  zero because its square is outside Float range. Exact midpoint checks
+  handle subnormal values and ties to even.
+- Mixed Int/Float medians compare the original values and preserve the
+  selected Int. Even medians use the corrected mean. NaN consistently makes
+  the median indeterminate, independent of input order.
+- `clamp` rejects nonnumeric arguments and NaN bounds, compares Int/Float
+  operands exactly and returns the selected operand intact. Rounding a large
+  bound can no longer place the result outside the requested interval.
+- Add nine regression tests that all failed before the fixes. CI also checks
+  320 deterministic vectors (1,280 results) against independent Python
+  Fraction/Decimal references: `SOMA=compiler/target/release/soma python3 tools/check_numeric_oracle.py`.
+- Include the Linux cluster test port-reservation fix: retain the proxy's
+  allocated listener and bound the node port pool below ephemeral ranges.
+
+**Compatibility:** means can change their last bits because finite values are
+averaged before rounding. A mixed median or clamp can now return an exact Int
+instead of converting it to Float. `sum` and `product` keep their documented
+Float arithmetic. The cluster protocol and eventual consistency are unchanged.
 
 ## 2.8.3 — 2026-09-20
 

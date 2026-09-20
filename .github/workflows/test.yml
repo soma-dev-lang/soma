@@ -21,6 +21,10 @@ jobs:
       - name: Compiler and runtime regressions
         working-directory: compiler
         run: cargo test --release --locked --no-fail-fast
+      - name: Independent numeric reference
+        env:
+          SOMA: compiler/target/release/soma
+        run: python3 tools/check_numeric_oracle.py
       - name: Published corpus and documentation examples
         env:
           SOMA: compiler/target/release/soma

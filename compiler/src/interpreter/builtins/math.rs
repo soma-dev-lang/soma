@@ -20,7 +20,7 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
     let int_only = matches!(name, "band" | "bor" | "bxor" | "bnot" | "shl" | "shr"
         | "bit_test" | "bit_set" | "bit_clr" | "bit_next" | "bit_len"
         | "gcd" | "sqrt_int" | "pow_mod" | "chr" | "random");
-    let numeric = matches!(name, "round" | "floor" | "ceil" | "sqrt" | "log" | "ln" | "exp" | "log10");
+    let numeric = matches!(name, "round" | "floor" | "ceil" | "sqrt" | "log" | "ln" | "exp" | "log10" | "clamp");
     if let Some(bad) = args.iter().find(|v| (int_only && !matches!(v, Value::Int(_)))
         || (numeric && !matches!(v, Value::Int(_) | Value::Float(_)))) {
         return Some(Err(RuntimeError::TypeError(format!("{}(): expected {}, got {} {}",
@@ -372,33 +372,28 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "clamp" => {
-            if args.len() >= 3 {
-                match (&args[0], &args[1], &args[2]) {
-                    (Value::Float(_), _, _) | (_, Value::Float(_), _) | (_, _, Value::Float(_)) => {
-                        let v = match &args[0] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
-                        let lo = match &args[1] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
-                        let hi = match &args[2] { Value::Float(n) => *n, Value::Int(si) => si.to_f64(), _ => 0.0 };
-                        if lo > hi {
-                            return Some(Err(RuntimeError::TypeError(format!("clamp: min ({}) must be <= max ({})", lo, hi))));
-                        }
-                        // NaN is not "below lo": it stays NaN (it silently became lo)
-                        Some(Ok(Value::Float(if v.is_nan() { f64::NAN } else { v.max(lo).min(hi) })))
-                    }
-                    (Value::Int(v), Value::Int(lo), Value::Int(hi)) => {
-                        // BigInt-exact (clamp(2^70, 10, 20) was 10: the value
-                        // became 0 past i64)
-                        let (v, lo, hi) = (v.to_rug(), lo.to_rug(), hi.to_rug());
-                        if lo > hi {
-                            return Some(Err(RuntimeError::TypeError(format!("clamp: min ({}) must be <= max ({})", lo, hi))));
-                        }
-                        let r = if v < lo { lo } else if v > hi { hi } else { v };
-                        Some(Ok(Value::Int(SomaInt::from_rug(r))))
-                    }
-                    _ => Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: "clamp(value, min, max) takes numbers".to_string() })),
-                }
-            } else {
-                Some(Err(RuntimeError::TypeError("clamp expects (value, min, max)".to_string())))
+            if args.len() < 3 {
+                return Some(Err(RuntimeError::TypeError("clamp expects (value, min, max)".to_string())));
             }
+            let (value, lo, hi) = (&args[0], &args[1], &args[2]);
+            match crate::interpreter::numeric_cmp(lo, hi) {
+                None => return Some(Err(RuntimeError::Domain {
+                    kind: "range".into(), message: "clamp: bounds must not be NaN".into(),
+                })),
+                Some(std::cmp::Ordering::Greater) => return Some(Err(RuntimeError::TypeError(
+                    format!("clamp: min ({}) must be <= max ({})", lo, hi)
+                ))),
+                _ => {}
+            }
+            // Compare before conversion and return the selected operand intact.
+            // Rounding a BigInt bound through Float could put the result OUTSIDE
+            // the requested interval. An unordered value (NaN) stays NaN.
+            let selected = if crate::interpreter::numeric_cmp(value, lo) == Some(std::cmp::Ordering::Less) {
+                lo
+            } else if crate::interpreter::numeric_cmp(value, hi) == Some(std::cmp::Ordering::Greater) {
+                hi
+            } else { value };
+            Some(Ok(selected.clone()))
         }
         // random() → float 0.0..1.0
         // random(max) → int 0..max (exclusive)
@@ -615,14 +610,6 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
         return Err(RuntimeError::Domain { kind: "empty".to_string(), message: format!("empty: {}() of no values", op) });
     }
     let all_int = items.iter().all(|v| matches!(v, Value::Int(_)));
-    let mut nums: Vec<f64> = items.iter().map(|v| match v {
-        Value::Float(f) => *f,
-        Value::Int(si) => si.to_f64(),
-        _ => 0.0,
-    }).collect();
-    let as_value = |x: f64| -> Value {
-        if all_int && x.fract() == 0.0 && x.abs() < 9.0e15 { Value::Int(SomaInt::from_i64(x as i64)) } else { Value::Float(x) }
-    };
     match op {
         "median" if all_int => {
             // exact: sort the Ints themselves, the middle pair by the `/` rule
@@ -637,19 +624,24 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             }
         }
         "median" => {
-            nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let m = nums.len() / 2;
-            let med = if nums.len() % 2 == 1 { nums[m] } else if nums[m - 1].is_finite() && nums[m].is_finite() {
-                let sum = rug::Rational::from_f64(nums[m - 1]).unwrap() + rug::Rational::from_f64(nums[m]).unwrap();
-                crate::interpreter::rational_to_f64(sum / 2)
-            } else { (nums[m - 1] + nums[m]) / 2.0 };
-            Ok(as_value(med))
+            // NaN makes the statistic indeterminate, independent of input order.
+            if items.iter().any(|v| matches!(v, Value::Float(f) if f.is_nan())) {
+                return Ok(Value::Float(f64::NAN));
+            }
+            let mut sorted = items;
+            sorted.sort_by(super::collection::compare_values);
+            let middle = sorted.len() / 2;
+            if sorted.len() % 2 == 1 {
+                Ok(sorted[middle].clone())
+            } else {
+                Ok(numeric_mean(&sorted[middle - 1..=middle]))
+            }
         }
         _ => {
             // Python's statistics: stdev / variance are SAMPLE (n - 1),
             // pstdev / pvariance population (n); stddev stays population
             let sample = matches!(op, "stdev" | "variance");
-            if sample && nums.len() < 2 {
+            if sample && items.len() < 2 {
                 return Err(RuntimeError::Domain { kind: "empty".to_string(), message: format!("{}() needs at least two values (sample statistics); use p{} for the population form", op, op) });
             }
             if all_int {
@@ -666,19 +658,13 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
                 let count = rug::Integer::from(items.len());
                 let numerator = squares * &count - rug::Integer::from(&sum * &sum);
                 let denominator = if sample { rug::Integer::from(&count - 1) * &count } else { rug::Integer::from(&count * &count) };
-                let var = crate::interpreter::rational_to_f64(rug::Rational::from((numerator, denominator)));
-                return Ok(Value::Float(if matches!(op, "variance" | "pvariance") { var } else { var.sqrt() }));
+                return Ok(variance_value(rug::Rational::from((numerator, denominator)), op));
             }
-            let exact = |v: &Value| match v {
-                Value::Int(i) => Some(rug::Rational::from(i.to_rug())),
-                Value::Float(f) => rug::Rational::from_f64(*f),
-                _ => None,
-            };
-            let Some(first) = exact(&items[0]) else { return Ok(Value::Float(f64::NAN)); };
+            let Some(first) = exact_number(&items[0]) else { return Ok(Value::Float(f64::NAN)); };
             let mut sum = rug::Rational::new();
             let mut squares = rug::Rational::new();
             for item in &items {
-                let Some(value) = exact(item) else { return Ok(Value::Float(f64::NAN)); };
+                let Some(value) = exact_number(item) else { return Ok(Value::Float(f64::NAN)); };
                 let delta = value - &first;
                 sum += &delta;
                 squares += rug::Rational::from(&delta * &delta);
@@ -686,16 +672,93 @@ fn stats_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             let count = items.len();
             let numerator = squares * count - rug::Rational::from(&sum * &sum);
             let denominator = rug::Integer::from(count) * if sample { count - 1 } else { count };
-            let var = crate::interpreter::rational_to_f64(numerator / denominator);
-            match op {
-                "variance" | "pvariance" => Ok(Value::Float(var)),
-                _ => Ok(Value::Float(var.sqrt())),
-            }
+            Ok(variance_value(numerator / denominator, op))
         }
     }
 }
 
-/// element is a Float.
+/// The exact value of a finite numeric operand, without rounding BigInts.
+fn exact_number(value: &Value) -> Option<rug::Rational> {
+    match value {
+        Value::Int(i) => Some(rug::Rational::from(i.to_rug())),
+        Value::Float(f) => rug::Rational::from_f64(*f),
+        _ => None,
+    }
+}
+
+/// Shared by avg, even medians and pipeline means. Callers validate numeric
+/// operands first. Divide the exact sum before converting to Float, otherwise
+/// [1e308, 1e308] overflows despite having a representable mean.
+pub(super) fn numeric_mean(items: &[Value]) -> Value {
+    if items.is_empty() { return Value::Unit; }
+    let mut sum = rug::Rational::new();
+    let mut any_float = false;
+    let (mut positive_inf, mut negative_inf) = (false, false);
+    for item in items {
+        any_float |= matches!(item, Value::Float(_));
+        match item {
+            Value::Float(f) if f.is_nan() => return Value::Float(f64::NAN),
+            Value::Float(f) if f.is_infinite() => {
+                if f.is_sign_positive() { positive_inf = true; } else { negative_inf = true; }
+            }
+            _ => sum += exact_number(item).expect("numeric mean operands were validated"),
+        }
+    }
+    if positive_inf || negative_inf {
+        return Value::Float(match (positive_inf, negative_inf) {
+            (true, true) => f64::NAN,
+            (true, false) => f64::INFINITY,
+            _ => f64::NEG_INFINITY,
+        });
+    }
+    sum /= items.len();
+    if !any_float && sum.denom() == &rug::Integer::from(1) {
+        Value::Int(SomaInt::from_rug(sum.numer().clone()))
+    } else {
+        Value::Float(crate::interpreter::rational_to_f64(sum))
+    }
+}
+
+fn variance_value(variance: rug::Rational, op: &str) -> Value {
+    Value::Float(if matches!(op, "variance" | "pvariance") {
+        crate::interpreter::rational_to_f64(variance)
+    } else {
+        rational_sqrt_to_f64(variance)
+    })
+}
+
+/// Round sqrt(value) to binary64 without first overflowing/underflowing its
+/// square. Directed MPFR rounding gives a lower estimate; exact squared
+/// midpoints select the nearest Float, including subnormals and ties-to-even.
+fn rational_sqrt_to_f64(value: rug::Rational) -> f64 {
+    if value <= 0 { return if value == 0 { 0.0 } else { f64::NAN }; }
+    let (mut estimate, _) = rug::Float::with_val_round(128, &value, rug::float::Round::Down);
+    estimate.sqrt_round(rug::float::Round::Down);
+    let mut lower = estimate.to_f64_round(rug::float::Round::Down);
+    let square = |x: f64| {
+        let r = rug::Rational::from_f64(x).expect("finite square endpoint");
+        rug::Rational::from(&r * &r)
+    };
+    let upper = loop {
+        let next = f64::from_bits(lower.to_bits() + 1);
+        if next.is_infinite() || square(next) > value { break next; }
+        lower = next;
+    };
+    let mut midpoint = rug::Rational::from_f64(lower).expect("finite lower endpoint");
+    if upper.is_infinite() {
+        midpoint += rug::Integer::from(1) << 970u32;
+    } else {
+        midpoint += rug::Rational::from_f64(upper).unwrap();
+        midpoint /= 2;
+    }
+    match value.cmp(&rug::Rational::from(&midpoint * &midpoint)) {
+        std::cmp::Ordering::Less => lower,
+        std::cmp::Ordering::Greater => upper,
+        std::cmp::Ordering::Equal => if lower.to_bits() & 1 == 0 { lower } else { upper },
+    }
+}
+
+/// Int-exact reductions; sum/product retain their documented Float arithmetic.
 fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
     // accept either a single List arg or variadic numbers
     let items: Vec<Value> = match args.first() {
@@ -715,8 +778,8 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
             "{}() needs numbers, found {} {}", op, super::super::value_type_name(bad), bad
         )));
     }
+    if op == "avg" { return Ok(numeric_mean(&items)); }
     let any_float = items.iter().any(|v| matches!(v, Value::Float(_)));
-    let n = items.len() as i64;
     if any_float {
         let nums: Vec<f64> = items.iter().map(|v| match v {
             Value::Float(f) => *f,
@@ -726,7 +789,6 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
         let r = match op {
             "sum" => nums.iter().sum(),
             "product" => nums.iter().product(),
-            "avg" => nums.iter().sum::<f64>() / n as f64,
             "min" => nums.iter().cloned().fold(f64::INFINITY, f64::min),
             "max" => nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             _ => 0.0,
@@ -749,14 +811,6 @@ fn numeric_reduce(args: &[Value], op: &str) -> Result<Value, RuntimeError> {
                     acc = acc.checked_big_mul(x).map_err(|m| RuntimeError::Domain { kind: "range".to_string(), message: m })?;
                 }
                 Ok(Value::Int(acc))
-            }
-            "avg" => {
-                let mut acc = SomaInt::from_i64(0);
-                for x in ints.iter() { acc = acc.add(x.clone()); }
-                // same rule as `/`: avg([1, 2]) is 1.5, an exact average
-                // stays an Int (it used to truncate to 1)
-                let count = SomaInt::from_i64(n);
-                crate::interpreter::int_div_value(&acc, &count)
             }
             "min" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) <= 0 { a } else { b }).unwrap())),
             "max" => Ok(Value::Int(ints.into_iter().reduce(|a, b| if a.cmp(&b) >= 0 { a } else { b }).unwrap())),

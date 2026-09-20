@@ -57,6 +57,17 @@ with the `features` you need before writing a new cell).
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
 
+## Numeric corrections in Soma 2.8.4 (2026-09-20)
+
+Use the current release when handling wide numeric ranges. `avg`, `avg_by`
+and grouped means average finite operands before Float rounding. Representable
+standard deviations are preserved even when their variance is outside Float
+range. Mixed medians keep the exact middle value; any NaN makes the median NaN.
+`clamp` rejects nonnumeric operands and NaN bounds, compares numbers exactly,
+and returns the selected operand with its type. A mixed median or clamp may
+therefore return an Int. Nine regression tests and 320 independent reference
+vectors cover these corrections; details: https://soma-lang.dev/CHANGELOG.md.
+
 ## Robotics robustness in Soma 2.8.3 (2026-09-20)
 
 100 additional regression scenarios cover numeric boundaries, invalid sensor
@@ -70,7 +81,7 @@ actuation. Eventual cluster replication does not establish distributed safety.
 
 ## Cluster corrections in Soma 2.8.2 (2026-09-20)
 
-Use [Soma 2.8.3](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.3), which includes these corrections.
+Use [Soma 2.8.4](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.4), which includes these corrections.
 `scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
 Updates preserve types and are published after commit. Reconnect and periodic
 state exchange carry per-key logical versions and deletion markers. Use a

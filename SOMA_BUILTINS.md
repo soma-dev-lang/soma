@@ -90,11 +90,11 @@ The `native` section is usable inside `[native]` handlers only.
 | `max` | `max(a, b) -> Int\|Float \| max(list: List) -> Int\|Float` | Larger of two numbers, or the maximum of a list (Float if any element is). An empty list gives () (no maximum exists). |
 | `sum` | `sum(list: List) -> Int\|Float` | Sum of a list of numbers (Int-exact unless any element is a Float); 0 when empty. Floats are added left to right without compensation (NumPy's pairwise / Python's fsum can differ in the last bits). |
 | `product` | `product(list: List) -> Int\|Float` | Product of a list of numbers; 1 when empty. |
-| `avg` | `avg(list: List) -> Int\|Float` | Mean of a list of numbers, by the rule of `/`: avg([1, 2]) = 1.5, an exact mean of Ints stays an Int; () when empty. |
+| `avg` | `avg(list: List) -> Int\|Float` | Mean of a list of numbers: finite operands are averaged exactly before Float rounding, avoiding intermediate overflow and cancellation. An exact mean of Ints stays an Int; () when empty. |
 | `parse_int` | `parse_int(s: String, base: Int?) -> Int \| ()` | Strict integer parse: () unless the WHOLE string is an integer ("1.5", "12abc", "" → ()). parse_int("ff", 16) = 255 (base 2..36, no 0x prefix). to_int() is lenient and truncates. |
 | `parse_float` | `parse_float(s: String) -> Float \| ()` | Strict float parse: () unless the whole string is a finite number. |
 | `idiv` | `idiv(a: Int, b: Int) -> Int` | Integer division truncating toward zero; errors on division by zero. |
-| `clamp` | `clamp(v, lo, hi) -> Int\|Float` | Constrain v to [lo, hi]; errors if lo > hi. |
+| `clamp` | `clamp(v, lo, hi) -> Int\|Float` | Constrain numeric v to [lo, hi] using exact Int/Float comparisons; return the selected operand with its type. Reject nonnumeric operands, reversed bounds and NaN bounds; a NaN value stays NaN. |
 | `random` ✗ | `random() -> Float \| random(max: Int) -> Int \| random(min: Int, max: Int) -> Int` | Time-seeded PRNG: float in [0,1), or int in [0,max) / [min,max). There is no seed: for reproducible runs write your own generator (an LCG over Ints), and for secrets use random_token(). |
 | `gcd` | `gcd(a: Int, b: Int) -> Int` | Greatest common divisor (Euclid, absolute values). |
 | `sqrt_int` | `sqrt_int(n: Int) -> Int` | Integer square root; errors on negative input. |
@@ -110,10 +110,10 @@ The `native` section is usable inside `[native]` handlers only.
 | `bit_clr` | `bit_clr(a: Int, i: Int) -> Int` | a with bit i cleared. |
 | `bit_next` | `bit_next(a: Int, i: Int) -> Int` | Index of the lowest set bit at or above i, or -1 if none. |
 | `bit_len` | `bit_len(a: Int) -> Int` | Exact number of significant bits in the magnitude, including BigInt. |
-| `median` | `median(xs: List) -> Int \| Float` | Middle value of the sorted list (mean of the two middles for even n, exact Int when it is one) — statistics.median. |
-| `pstdev` | `pstdev(xs: List) -> Float` | Population standard deviation (divide by n) — statistics.pstdev. |
+| `median` | `median(xs: List) -> Int \| Float` | Order Int/Float values exactly and preserve the middle value (mean of the two middles for even n). An Int middle stays exact; any NaN input makes the result NaN. |
+| `pstdev` | `pstdev(xs: List) -> Float` | Population standard deviation (divide by n). Preserve finite and subnormal deviations even when their variance is outside Float range. |
 | `stddev` | `stddev(xs: List) -> Float` | Same as pstdev (population). |
-| `stdev` | `stdev(xs: List) -> Float` | SAMPLE standard deviation (divide by n - 1) — statistics.stdev / pandas .std(); needs two values. |
+| `stdev` | `stdev(xs: List) -> Float` | SAMPLE standard deviation (divide by n - 1); needs two values. Preserve finite and subnormal deviations even when their variance is outside Float range. |
 | `variance` | `variance(xs: List) -> Float` | SAMPLE variance (divide by n - 1) — statistics.variance; pvariance is the population form. |
 | `pvariance` | `pvariance(xs: List) -> Float` | Population variance (divide by n) — statistics.pvariance. |
 

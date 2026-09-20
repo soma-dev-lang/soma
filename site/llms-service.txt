@@ -30,6 +30,13 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
+Soma 2.8.4 corrects finite means that overflowed, large or tiny standard
+deviations, mixed Int/Float medians and clamps. Means round after averaging;
+medians preserve the selected Int and propagate NaN. Clamp rejects nonnumeric
+operands and NaN bounds, compares exactly, and preserves the selected operand's
+type. Nine regressions plus 320 independent numeric reference vectors cover
+these fixes. See https://soma-lang.dev/CHANGELOG.md.
+
 Soma 2.8.3 adds 100 regression scenarios for robot-controller use: numeric
 boundaries, mission transitions, rollback, native execution and persistence.
 They do not establish hardware qualification, hard real-time behavior or

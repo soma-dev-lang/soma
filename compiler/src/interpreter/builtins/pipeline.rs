@@ -51,15 +51,8 @@ fn num_sum(xs: &[Num]) -> Num {
 
 /// the mean: an Int when it is exact, else a Float (like 7 / 2 = 3.5)
 fn num_avg(xs: &[Num]) -> Value {
-    if xs.is_empty() { return Value::Unit; }
-    match num_sum(xs) {
-        Num::I(t) => {
-            let n = rug::Integer::from(xs.len());
-            let (q, r) = t.clone().div_rem(n.clone());
-            if r == 0 { Value::Int(SomaInt::from_rug(q)) } else { Value::Float(crate::interpreter::rational_to_f64(rug::Rational::from((t, n)))) }
-        }
-        Num::F(f) => Value::Float(f / xs.len() as f64),
-    }
+    let values: Vec<Value> = xs.iter().cloned().map(num_value).collect();
+    super::math::numeric_mean(&values)
 }
 
 fn field_num(item: &Value, field: &str) -> Option<Num> {
