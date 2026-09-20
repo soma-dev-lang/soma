@@ -30,6 +30,16 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
+Soma 2.8.7 fixes `if` expression scope, lambda capture inside interpolations
+and error details, and collection evaluation when interpolations assign locals.
+Static analyses now see calls containing quoted colons: recursion, invariant
+writes and token costs cannot disappear from the proof. `recall()` stays within
+its cell and preserves JSON-shaped Strings; `remember()` rejects functions and
+excessive encoded nesting before writing. Twenty-four integration regressions
+reproduce the defects on 2.8.6; a unit test covers legacy memory migration.
+Compatibility: parse remembered JSON text explicitly with `from_json()`; keep
+branch locals inside their branch. Details: https://soma-lang.dev/CHANGELOG.md.
+
 Soma 2.8.6 corrects duplicate/skipped argument evaluation, self-append bindings,
 piped map updates, ignored builtin mocks and inconsistent pipe dispatch.
 Calls and pipes share local-lambda and cell-handler resolution. Constructors
@@ -1058,7 +1068,7 @@ eventually consistent, with local reads and no fenced scheduler. Use the
 # Experimental cluster runtime
 
 The replication protocol described here is available since Soma 2.8.2 and is
-included in the current [Soma 2.8.6 release](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.6).
+included in the current [Soma 2.8.7 release](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.7).
 
 ## What is implemented
 

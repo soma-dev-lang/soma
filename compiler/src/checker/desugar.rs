@@ -254,11 +254,10 @@ pub(crate) fn segments(s: &str) -> Vec<String> {
         if b[pos] == b'{' {
             if let Some(end) = crate::interpreter::interp_segment_end(s, pos) {
                 let seg = &s[pos + 1..pos + 1 + end];
-                let quantifier = seg.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ');
                 // a segment that does not parse is literal text and the
                 // runtime rescans from the next byte: `"{ { wipe() } }"`
                 // ran wipe() while every analysis skipped the whole thing
-                if !(seg.is_empty() || seg.contains(':') || seg.contains(';') || quantifier) && parse_segment(seg).is_some() {
+                if !crate::interpreter::interp_segment_is_literal(seg) && parse_segment(seg).is_some() {
                     out.push(seg.to_string());
                     pos = pos + 1 + end + 1;
                     continue;

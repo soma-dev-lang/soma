@@ -91,6 +91,9 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 // a horde task running as an agent instance: its own keys
                 let key = match &interp.horde_instance { Some(i) => format!("{}/{}", i, args[0]), None => format!("{}", args[0]) };
                 let val = &args[1];
+                if let Err(message) = super::super::validate_storable(val) {
+                    return Some(Err(RuntimeError::TypeError(format!("remember(): {}", message))));
+                }
 
                 // the cell's own agent memory (it used to be written into
                 // whichever user slot a HashMap walk found first — past its
@@ -112,13 +115,18 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 // opened here too: a recall in a new process (or another
                 // serve thread) found no table and answered null
                 if let Some(v) = agent_memory(interp, cell_name).get(key) {
-                    return Some(Ok(super::super::auto_deserialize(super::super::stored_to_value(v))));
+                    return Some(Ok(super::super::stored_to_value(v)));
                 }
-                // legacy: values an older version wrote into a user slot
-                for (name, backend) in interp.storage.iter() {
-                    // never a user slot's own entry that happens to share the key
-                    let hit = if name.ends_with("__agent_memory") { backend.get(key) } else { backend.get(&format!("__mem_{}", key)) };
-                    if let Some(val) = hit {
+                // Migrate legacy entries only from this cell's declared slots.
+                // A global fallback leaked another cell's agent memory on a miss.
+                let own_slots: Vec<String> = interp.cells.get(cell_name).map(|cell| {
+                    cell.sections.iter().filter_map(|s| match &s.node {
+                        crate::ast::Section::Memory(memory) => Some(&memory.slots),
+                        _ => None,
+                    }).flatten().map(|slot| format!("{}.{}", cell_name, slot.node.name)).collect()
+                }).unwrap_or_default();
+                for name in own_slots {
+                    if let Some(val) = interp.storage.get(&name).and_then(|backend| backend.get(&format!("__mem_{}", key))) {
                         return Some(Ok(super::super::auto_deserialize(super::super::stored_to_value(val))));
                     }
                 }
@@ -1088,5 +1096,36 @@ fn instance_id(v: &Value, f: &str) -> Result<String, RuntimeError> {
         Value::String(s) => Ok(s.clone()),
         Value::Int(i) => Ok(format!("{}", i)),
         other => Err(RuntimeError::Domain { kind: "type".to_string(), message: format!("type: {}(): an instance id is a String or an Int, got {} {}", f, crate::interpreter::value_type_name(other), other) }),
+    }
+}
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use crate::runtime::storage::{MemoryBackend, StorageBackend, StoredValue};
+    use std::sync::Arc;
+
+    #[test]
+    fn legacy_agent_memory_is_read_only_from_the_cells_declared_slots() {
+        let tokens = crate::lexer::Lexer::new(
+            "cell A { memory { old: Map<String,Any> } } cell B { memory { old: Map<String,Any> } }"
+        ).tokenize().unwrap();
+        let program = crate::parser::Parser::new(tokens).parse_program().unwrap();
+        let mut interp = Interpreter::new(&program);
+        let a: Arc<dyn StorageBackend> = Arc::new(MemoryBackend::new());
+        a.set("__mem_secret", StoredValue::String("{\"value\":42}".to_string()));
+        let b: Arc<dyn StorageBackend> = Arc::new(MemoryBackend::new());
+        interp.storage.insert("A.old".to_string(), a);
+        interp.storage.insert("B.old".to_string(), b);
+        // Preinstall ordinary in-memory tables so this test is independent of
+        // the process-global persistence configuration used by other tests.
+        for cell in ["A", "B"] {
+            interp.storage.insert(format!("{}.__agent_memory", cell), Arc::new(MemoryBackend::new()));
+        }
+        let key = [Value::String("secret".to_string())];
+        let other = call_builtin(&mut interp, "recall", &key, "B").unwrap().unwrap();
+        assert!(matches!(other, Value::Unit), "{other}");
+        let own = call_builtin(&mut interp, "recall", &key, "A").unwrap().unwrap();
+        assert!(matches!(own, Value::Map(ref m) if m.get("value").and_then(|v| v.as_int().ok()) == Some(42)), "{own}");
     }
 }

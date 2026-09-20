@@ -391,9 +391,9 @@ pub static BUILTINS: &[BuiltinDoc] = &[
 
     // ── memory ──────────────────────────────────────────────────────
     doc("remember", "memory", "remember(key, value) -> ()",
-        "Persist a value in the cell's agent memory slot."),
+        "Persist typed data in this cell's agent memory; rejects functions and storage encodings deeper than 100 levels."),
     doc("recall", "memory", "recall(key: String) -> Any",
-        "The value this cell remember()ed under the key, or ()."),
+        "The value this cell remember()ed under the key, or (); preserves JSON-shaped Strings and never reads another cell's memory."),
     doc("append", "memory", "slot.append(value) -> ()",
         "Memory-slot method: append a value to a list-backed slot (alias: slot.push)."),
 

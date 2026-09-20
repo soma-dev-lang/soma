@@ -1171,10 +1171,14 @@ impl<'a> Walker<'a> {
             }
             Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
                 self.walk_expr(condition);
-                self.walk_stmts(then_body);
-                self.walk_expr(then_result);
-                self.walk_stmts(else_body);
-                self.walk_expr(else_result);
+                self.scoped(&[], |w| {
+                    w.walk_stmts(then_body);
+                    w.walk_expr(then_result);
+                });
+                self.scoped(&[], |w| {
+                    w.walk_stmts(else_body);
+                    w.walk_expr(else_result);
+                });
             }
         }
     }
@@ -1213,18 +1217,7 @@ impl<'a> Walker<'a> {
                     let expr_str = &s[pos + 1..pos + 1 + end];
                     // Skipped as CSS/HTML — runtime advances one byte
                     // and rescans, so nested segments are still found.
-                    // mirror of the runtime rule: a colon outside quotes with
-                    // no call or index is literal text (CSS, `{n:>5}`)
-                    let css_like = {
-                        let (mut in_str, mut colon, mut prev) = (false, false, '\0');
-                        for c in expr_str.chars() {
-                            if c == '"' && prev != '\\' { in_str = !in_str; }
-                            if !in_str && c == ':' { colon = true; }
-                            prev = c;
-                        }
-                        colon && !expr_str.contains('(') && !expr_str.contains('[')
-                    };
-                    if expr_str.is_empty() || css_like || expr_str.contains(';') {
+                    if crate::interpreter::interp_segment_is_literal(expr_str) {
                         pos += 1;
                         continue;
                     }

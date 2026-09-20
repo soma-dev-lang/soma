@@ -10,11 +10,11 @@ carries the rest.
 (`face`), storage with invariants (`memory`), a model-checked lifecycle
 (`state`), handlers (`on`), HTTP routes and tests.
 
-## Implementation scope — Soma 2.8.6
+## Implementation scope — Soma 2.8.7
 
 The language core is implemented; recent audits cover numeric boundaries,
 typed inputs and storage, evaluation order, collections, dispatch and constructors.
-Release validation passed 575 Rust tests, 118 CLI checks, 321 corpus programs
+Release validation passed 600 Rust tests, 118 CLI checks, 321 corpus programs
 and 1,280 independent numeric comparisons. Evidence and current status:
 https://soma-lang.dev/status.
 
@@ -78,6 +78,18 @@ with the `features` you need before writing a new cell).
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
 
+## Scope and memory corrections in Soma 2.8.7 (2026-09-20)
+
+Soma 2.8.7 fixes `if` expression scope, lambda capture inside interpolations
+and error details, and collection evaluation when interpolations assign locals.
+Static analyses now see calls containing quoted colons: recursion, invariant
+writes and token costs cannot disappear from the proof. `recall()` stays within
+its cell and preserves JSON-shaped Strings; `remember()` rejects functions and
+excessive encoded nesting before writing. Twenty-four integration regressions
+reproduce the defects on 2.8.6; a unit test covers legacy memory migration.
+Compatibility: parse remembered JSON text explicitly with `from_json()`; keep
+branch locals inside their branch. Details: https://soma-lang.dev/CHANGELOG.md.
+
 ## Execution corrections in Soma 2.8.6 (2026-09-20)
 
 Arithmetic assignments and optimized collection operations evaluate arguments
@@ -127,7 +139,7 @@ actuation. Eventual cluster replication does not establish distributed safety.
 
 ## Cluster corrections in Soma 2.8.2 (2026-09-20)
 
-Use [Soma 2.8.6](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.6), which includes these corrections.
+Use [Soma 2.8.7](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.7), which includes these corrections.
 `scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
 Updates preserve types and are published after commit. Reconnect and periodic
 state exchange carry per-key logical versions and deletion markers. Use a

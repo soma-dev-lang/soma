@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 2.8.7 — 2026-09-20
+
+### Lexical scopes, interpolation analysis and agent memory
+
+- `if` expression branches scope their `let` bindings, including when returning
+  a closure or raising a caught error. Assignments to existing outer variables
+  retain their effects. `soma check` rejects branch locals used in the other
+  branch or after the expression.
+- Lambda capture walks full interpolation expressions and `require` error
+  details. Arithmetic operands, indexes and quoted delimiters no longer lose
+  captured names. Collection lambdas get a fresh environment when interpolation
+  executes assignments; optimized list reads/appends and map updates preserve
+  their original arguments across those assignments.
+- Runtime interpolation and static analyses share segment classification.
+  Quoted colons no longer hide recursive calls, memory writes or `think()` from
+  termination, invariant and token-cost checks. Such programs must now satisfy
+  the same proof obligations as ordinary calls.
+- `recall()` reads only the current cell's agent memory. Legacy migration reads
+  only that cell's declared storage slots; a missing key cannot reveal another
+  cell's value. Current agent-memory reads preserve stored types, including
+  Strings that happen to contain JSON.
+- `remember()` uses the storage payload validator before writing: functions
+  (including nested variant payloads) and encodings deeper than 100 levels are
+  rejected without overwriting the previous value.
+- Add 24 integration regressions reproduced on 2.8.6 and a unit test for legacy
+  memory isolation and migration, including a real process restart.
+
+**Compatibility:** branch-local variables no longer escape `if` expressions.
+Code that relied on `recall()` parsing a stored String must call `from_json()`
+explicitly. Hidden interpolation effects can now make `check` or `verify --strict`
+fail; fix the declared bound or the program rather than suppressing the check.
+
 ## 2.8.6 — 2026-09-20
 
 ### Evaluation order, call resolution and constructors

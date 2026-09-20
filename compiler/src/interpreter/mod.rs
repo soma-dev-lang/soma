@@ -1671,40 +1671,7 @@ impl Interpreter {
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
-        // Fast path: if the body contains no `let` bindings, no scoping is needed
-        if !body_has_let(body) {
-            return self.exec_body(body, env, cell_name, signal_name);
-        }
-        // Collect which names will be `let`-bound in this block and save their
-        // original values (if any) for restoration. This is O(k) where k = number
-        // of let bindings in the block, NOT O(n) where n = total env size.
-        let mut shadowed: Vec<(String, Option<Value>)> = Vec::new();
-        let mut new_keys: Vec<String> = Vec::new();
-        for stmt in body {
-            if let Statement::Let { name, .. } = &stmt.node {
-                if let Some(existing) = env.get(name) {
-                    shadowed.push((name.clone(), Some(existing.clone())));
-                } else {
-                    new_keys.push(name.clone());
-                }
-            }
-        }
-
-        let result = self.exec_body(body, env, cell_name, signal_name);
-
-        // Remove new bindings that should not leak out of this scope
-        for key in &new_keys {
-            env.remove(key);
-        }
-        // Restore shadowed variables to their original values
-        for (name, original) in shadowed {
-            if let Some(val) = original {
-                env.insert(name, val);
-            } else {
-                env.remove(&name);
-            }
-        }
-        result
+        with_lexical_scope(body, env, |env| self.exec_body(body, env, cell_name, signal_name))
     }
 
     fn exec_stmt(
@@ -2525,19 +2492,17 @@ impl Interpreter {
 
             Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
                 let cond_val = self.eval_expr(&condition.node, env, cell_name, signal_name)?;
-                if cond_truth(&cond_val)? {
-                    for stmt in then_body {
-                        self.last_span = Some(stmt.span);
-                        self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
-                    }
-                    self.eval_expr(&then_result.node, env, cell_name, signal_name)
+                let (body, result) = if cond_truth(&cond_val)? {
+                    (then_body, then_result)
                 } else {
-                    for stmt in else_body {
-                        self.last_span = Some(stmt.span);
-                        self.exec_stmt(&stmt.node, env, cell_name, signal_name)?;
-                    }
-                    self.eval_expr(&else_result.node, env, cell_name, signal_name)
-                }
+                    (else_body, else_result)
+                };
+                // Evaluate the result while branch locals still exist, then
+                // restore shadowed names on success, failure or control flow.
+                with_lexical_scope(body, env, |env| {
+                    self.exec_body(body, env, cell_name, signal_name)?;
+                    self.eval_expr(&result.node, env, cell_name, signal_name)
+                })
             }
 
             Expr::Match { subject, arms } => {
@@ -3434,25 +3399,8 @@ impl Interpreter {
                 if let Some(end) = interp_segment_end(s, pos) {
                     let expr_str = &s[pos + 1..pos + 1 + end];
 
-                    // Skip empty or HTML-like content (class names, CSS)
-                    // `{4}` / `{2,3}` — a regex quantifier, not a value: literal
-                    // text (it raised "undefined variable: 4")
-                    let quantifier = expr_str.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ');
-                    // a `:` used to mean "literal" (CSS, `{n:>5}`) — it also
-                    // silenced `{split(t, ":")[0]}` and `{"http://x"}`: only a
-                    // colon OUTSIDE quotes, with no call or index, is CSS-ish
-                    let css_like = |t: &str| {
-                        let mut in_str = false;
-                        let mut colon = false;
-                        let mut prev = '\0';
-                        for c in t.chars() {
-                            if c == '"' && prev != '\\' { in_str = !in_str; }
-                            if !in_str && c == ':' { colon = true; }
-                            prev = c;
-                        }
-                        colon && !t.contains('(') && !t.contains('[')
-                    };
-                    if expr_str.is_empty() || css_like(expr_str) || expr_str.contains(';') || quantifier {
+                    // The analyses and closure capture use this same rule.
+                    if interp_segment_is_literal(expr_str) {
                         result.push('{');
                         literal_open += 1;
                         pos += 1;
@@ -4260,9 +4208,9 @@ impl Interpreter {
     /// statements (its lets must start fresh each call).
     pub(crate) fn prepare_lambda_env(&self, lambda: &Value) -> Option<Env> {
         let Value::Lambda { body, env: closed_env, .. } = lambda else { return None };
-        let mut has_stmt = false;
-        crate::checker::literals::for_each_stmt_in_expr(&body.node, &mut |_| has_stmt = true);
-        if has_stmt { return None; }
+        // Interpolation can execute assignments too; its captured environment
+        // must start fresh for every item just like an ordinary block lambda.
+        if expr_may_assign(&body.node) { return None; }
         Some(closed_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     }
 
@@ -5383,38 +5331,7 @@ impl Interpreter {
     /// whole Float is NOT an Int — `1.0` in `Map<String, Int>` is refused;
     /// a declared sum type takes only its variants).
     fn check_slot_value_type(&self, cell_name: &str, slot_name: &str, val: &Value) -> Result<Value, ExecError> {
-        // Match the persisted encoding's depth, including escaped map and
-        // variant wrappers. Reject functions even inside variant payloads.
-        // Stop descending at the limit rather than traversing arbitrary depth.
-        fn storable(v: &Value, depth: usize) -> Result<(), &'static str> {
-            let layers = match v {
-                Value::Lambda { param, .. } if param != HTTP_MARK => return Err("a function (lambda) cannot be stored — store the data it works on"),
-                Value::LambdaBlock { .. } => return Err("a function (lambda) cannot be stored — store the data it works on"),
-                Value::List(_) => 1,
-                Value::Map(m) => if m.keys().any(|k| k.starts_with("__")) { 2 } else { 1 },
-                Value::Variant { fields: VariantValue::Struct(_), .. } => 3,
-                Value::Variant { fields: VariantValue::Tuple(_), .. } => 2,
-                Value::Variant { fields: VariantValue::Unit, .. } => 1,
-                Value::Int(i) if i.to_i64().is_none() => 1,
-                Value::Float(f) if !f.is_finite() => 1,
-                _ => 0,
-            };
-            let depth = depth + layers;
-            if depth > 100 {
-                return Err("a value whose storage encoding is nested deeper than 100 levels cannot be stored — flatten it");
-            }
-            match v {
-                Value::List(xs) | Value::Variant { fields: VariantValue::Tuple(xs), .. } => {
-                    for x in xs { storable(x, depth)?; }
-                }
-                Value::Map(m) | Value::Variant { fields: VariantValue::Struct(m), .. } => {
-                    for x in m.values() { storable(x, depth)?; }
-                }
-                _ => {}
-            }
-            Ok(())
-        }
-        storable(val, 0).map_err(|m| ExecError::Runtime(RuntimeError::Domain {
+        validate_storable(val).map_err(|m| ExecError::Runtime(RuntimeError::Domain {
             kind: "type".to_string(), message: format!("slot '{}': {}", slot_name, m),
         }))?;
         // the NESTED declared types too (`Map<String, List<Int>>` took ["x"])
@@ -5642,6 +5559,40 @@ fn value_eq(a: &Value, b: &Value) -> bool {
     // payloads compare structurally — a Map or List inside a variant used
     // to make `==` false while both sides printed identically
     deep_equal(a, b)
+}
+
+/// Validate values before any persistent or in-memory storage conversion.
+/// Count the actual encoded layers, including variants and escaped maps.
+pub(crate) fn validate_storable(val: &Value) -> Result<(), &'static str> {
+    fn storable(v: &Value, depth: usize) -> Result<(), &'static str> {
+        let layers = match v {
+            Value::Lambda { param, .. } if param != HTTP_MARK => return Err("a function (lambda) cannot be stored — store the data it works on"),
+            Value::LambdaBlock { .. } => return Err("a function (lambda) cannot be stored — store the data it works on"),
+            Value::List(_) => 1,
+            Value::Map(m) => if m.keys().any(|k| k.starts_with("__")) { 2 } else { 1 },
+            Value::Variant { fields: VariantValue::Struct(_), .. } => 3,
+            Value::Variant { fields: VariantValue::Tuple(_), .. } => 2,
+            Value::Variant { fields: VariantValue::Unit, .. } => 1,
+            Value::Int(i) if i.to_i64().is_none() => 1,
+            Value::Float(f) if !f.is_finite() => 1,
+            _ => 0,
+        };
+        let depth = depth + layers;
+        if depth > 100 {
+            return Err("a value whose storage encoding is nested deeper than 100 levels cannot be stored — flatten it");
+        }
+        match v {
+            Value::List(xs) | Value::Variant { fields: VariantValue::Tuple(xs), .. } => {
+                for x in xs { storable(x, depth)?; }
+            }
+            Value::Map(m) | Value::Variant { fields: VariantValue::Struct(m), .. } => {
+                for x in m.values() { storable(x, depth)?; }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    storable(val, 0)
 }
 
 /// Convert a runtime Value to a StoredValue
@@ -6641,11 +6592,53 @@ mod tests {
     }
 }
 
+/// Run a lexical block without cloning unrelated locals. Assignments persist;
+/// `let` bindings are restored even when evaluation raises or returns early.
+fn with_lexical_scope<T>(body: &[Spanned<Statement>], env: &mut Env, f: impl FnOnce(&mut Env) -> T) -> T {
+    if !body_has_let(body) { return f(env); }
+    let saved: Vec<(String, Option<Value>)> = body.iter().filter_map(|stmt| {
+        if let Statement::Let { name, .. } = &stmt.node {
+            Some((name.clone(), env.get(name).cloned()))
+        } else { None }
+    }).collect();
+    let outcome = f(env);
+    for (name, old) in saved {
+        match old {
+            Some(value) => { env.insert(name, value); }
+            None => { env.remove(&name); }
+        }
+    }
+    outcome
+}
+
+/// CSS/format text, regex counts and semicolon-containing segments stay literal.
+/// Quoted colons in real expressions must not hide calls from static analyses.
+pub(crate) fn interp_segment_is_literal(segment: &str) -> bool {
+    let (mut quoted, mut escaped, mut colon) = (false, false, false);
+    for ch in segment.chars() {
+        if escaped { escaped = false; continue; }
+        if quoted && ch == '\\' { escaped = true; continue; }
+        if ch == '"' { quoted = !quoted; }
+        if !quoted && ch == ':' { colon = true; }
+    }
+    segment.is_empty() || segment.contains(';')
+        || segment.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ')
+        || (colon && !segment.contains('(') && !segment.contains('['))
+}
+
 /// If/match expression bodies can assign caller locals. Called handlers and
 /// lambdas have their own environments; inspect their argument expressions only.
 fn expr_may_assign(expr: &Expr) -> bool {
     match expr {
-        Expr::IfExpr { .. } | Expr::Match { .. } => true,
+        Expr::IfExpr { condition, then_body, then_result, else_body, else_result } => {
+            !then_body.is_empty() || !else_body.is_empty()
+                || expr_may_assign(&condition.node) || expr_may_assign(&then_result.node) || expr_may_assign(&else_result.node)
+        }
+        Expr::Match { subject, arms } => expr_may_assign(&subject.node) || arms.iter().any(|arm| {
+            !arm.body.is_empty() || arm.guard.as_ref().map_or(false, |g| expr_may_assign(&g.node)) || expr_may_assign(&arm.result.node)
+        }),
+        Expr::Literal(Literal::String(s)) => crate::checker::desugar::segments(s).iter()
+            .filter_map(|seg| crate::checker::desugar::parse_segment(seg)).any(|e| expr_may_assign(&e)),
         Expr::FieldAccess { target, .. } => expr_may_assign(&target.node),
         Expr::Index { target, index } => expr_may_assign(&target.node) || expr_may_assign(&index.node),
         Expr::MethodCall { target, args, .. } => expr_may_assign(&target.node) || args.iter().any(|a| expr_may_assign(&a.node)),
@@ -6663,12 +6656,10 @@ fn expr_may_assign(expr: &Expr) -> bool {
 pub(crate) fn free_names_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
         Expr::Literal(Literal::String(s)) => {
-            // "{total} of {r.units}": the word after each `{`
-            let mut rest = s.as_str();
-            while let Some(i) = rest.find('{') {
-                rest = &rest[i + 1..];
-                let word: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-                if !word.is_empty() { out.insert(word); }
+            for seg in crate::checker::desugar::segments(s) {
+                if let Some(expr) = crate::checker::desugar::parse_segment(&seg) {
+                    free_names_expr(&expr, out);
+                }
             }
         }
         Expr::Literal(_) => {}
@@ -6710,7 +6701,10 @@ pub(crate) fn free_names_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<S
             Statement::For { var, iter, body, .. } => { out.insert(var.clone()); free_names_expr(&iter.node, out); free_names_stmts(body, out); }
             Statement::While { condition, body, .. } => { free_names_expr(&condition.node, out); free_names_stmts(body, out); }
             Statement::Emit { args, .. } => { for a in args { free_names_expr(&a.node, out); } }
-            Statement::Require { constraint, .. } => free_names_constraint(&constraint.node, out),
+            Statement::Require { constraint, else_signal } => {
+                free_names_constraint(&constraint.node, out);
+                free_names_expr(&Expr::Literal(Literal::String(else_signal.clone())), out);
+            }
             Statement::MethodCall { target, args, .. } => { out.insert(target.clone()); for a in args { free_names_expr(&a.node, out); } }
             Statement::IndexSet { name, index, value } => { out.insert(name.clone()); free_names_expr(&index.node, out); free_names_expr(&value.node, out); }
             Statement::Break | Statement::Continue => {}

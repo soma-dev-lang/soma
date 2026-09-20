@@ -256,8 +256,8 @@ The `native` section is usable inside `[native]` handlers only.
 
 | Builtin | Signature | Description |
 |---|---|---|
-| `remember` | `remember(key, value) -> ()` | Persist a value in the cell's agent memory slot. |
-| `recall` | `recall(key: String) -> Any` | The value this cell remember()ed under the key, or (). |
+| `remember` | `remember(key, value) -> ()` | Persist typed data in this cell's agent memory; rejects functions and storage encodings deeper than 100 levels. |
+| `recall` | `recall(key: String) -> Any` | The value this cell remember()ed under the key, or (); preserves JSON-shaped Strings and never reads another cell's memory. |
 | `append` | `slot.append(value) -> ()` | Memory-slot method: append a value to a list-backed slot (alias: slot.push). |
 
 ## agent
