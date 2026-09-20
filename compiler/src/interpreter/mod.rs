@@ -75,6 +75,9 @@ pub enum RuntimeError {
     /// a caller can branch on (`r.kind == "not_found"`).
     #[error("{message}")]
     Domain { kind: String, message: String },
+    /// A transaction boundary failed: execution cannot safely continue in `try`.
+    #[error("storage: {0}")]
+    StorageTransaction(String),
     #[error("stack overflow (recursion depth exceeded)")]
     StackOverflow,
 }
@@ -100,6 +103,7 @@ impl RuntimeError {
             RuntimeError::UndefinedFn(_) => "undefined_function".to_string(),
             RuntimeError::NoHandler(..) => "no_handler".to_string(),
             RuntimeError::StackOverflow => "stack_overflow".to_string(),
+            RuntimeError::StorageTransaction(_) => "storage".to_string(),
             RuntimeError::Domain { kind, .. } => kind.clone(),
             RuntimeError::RequireFailed(msg) => {
                 if msg.starts_with("invalid transition") {
@@ -760,6 +764,7 @@ pub struct Interpreter {
     pub(crate) tool_depth: u32,
     /// the open step of a top-level `[task]` handler (think() ends it)
     pub(crate) task_unit: Option<Unit>,
+    transaction_failure: Option<String>,
     /// incremented at each unit: a `try` savepoint from an earlier step
     pub(crate) journal_gen: u64,
     /// set by do_connect: false once that peer link is gone
@@ -1040,6 +1045,7 @@ impl Interpreter {
             think_tools_allowed: None,
             tool_depth: 0,
             task_unit: None,
+            transaction_failure: None,
             journal_gen: 0,
             last_link_alive: None,
             current_test_cell: None,
@@ -1131,7 +1137,10 @@ impl Interpreter {
         }
         // a tick is a handler invocation: serialized with requests AND
         // rolled back when it raises (its writes used to stay committed)
-        let outcome = self.atomically(|s| s.exec_body(body, env, cell_name, "_every"));
+        let outcome = self.atomically(|s| match s.exec_body(body, env, cell_name, "_every") {
+            Ok(v) | Err(ExecError::Return(v)) => Ok(v),
+            Err(e) => Err(e),
+        });
         match outcome {
             Ok(val) => Ok(val),
             Err(ExecError::Return(val)) => Ok(val),
@@ -1681,6 +1690,7 @@ impl Interpreter {
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
+        self.check_transaction()?;
         match stmt {
             Statement::Let { name, value } => {
                 self.last_span = Some(value.span);
@@ -2190,6 +2200,7 @@ impl Interpreter {
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
+        self.check_transaction()?;
         match expr {
             Expr::Literal(lit) => {
                 let val = self.eval_literal(lit);
@@ -2402,15 +2413,17 @@ impl Interpreter {
                 // savepoint: what a failing `try` block wrote is undone
                 let savepoint = self.journal.as_ref().map(|j| (self.journal_gen, j.len()));
                 let outcome = self.eval_expr(&inner.node, env, cell_name, signal_name);
+                self.check_transaction()?;
                 // a `[task]` step committed inside the try (a think()): what it
                 // committed stays; everything of the current step is undone
                 if let (Err(ExecError::Runtime(_)), Some((gen, mark))) = (&outcome, savepoint) {
                     self.rollback_savepoint(if gen == self.journal_gen { mark } else { 0 });
                 }
+                self.check_storage_write().map_err(|e| ExecError::Runtime(self.fail_transaction(e.to_string())))?;
                 // runaway recursion is not caught: a `try` around a
                 // self-applying lambda re-ran it at every level (100% CPU,
                 // 940 MB, the server's lock held) — it fails the handler
-                if matches!(outcome, Err(ExecError::Runtime(RuntimeError::StackOverflow))) {
+                if matches!(outcome, Err(ExecError::Runtime(RuntimeError::StackOverflow | RuntimeError::StorageTransaction(_)))) {
                     return outcome;
                 }
                 match outcome {
@@ -2918,12 +2931,7 @@ impl Interpreter {
         args: &[Value],
     ) -> Result<Value, ExecError> {
         let r = self.call_storage_method_inner(cell_name, slot_name, method, args);
-        if let Some(e) = crate::runtime::storage::take_write_error() {
-            return Err(ExecError::Runtime(RuntimeError::Domain {
-                kind: "storage".to_string(),
-                message: format!("storage: the database refused a write to '{}' ({}) — nothing was stored (a read-only .soma_data, a full disk?)", slot_name, e),
-            }));
-        }
+        self.check_storage_write()?;
         r
     }
 
@@ -3120,6 +3128,7 @@ impl Interpreter {
                     j.push(UndoOp::Restore { backend: backend.clone(), key: key_str.clone(), prev: backend.get(&key_str) });
                 }
                 backend.set(&key_str, value_to_stored(val));
+                self.check_storage_write()?;
 
                 // In cluster mode: broadcast to peers via EVENT bus
                 if is_sharded {
@@ -3162,6 +3171,7 @@ impl Interpreter {
                     }
                 }
                 let removed = backend.delete(&key_str);
+                self.check_storage_write()?;
 
                 // Broadcast delete to cluster
                 if is_sharded {
@@ -3190,10 +3200,11 @@ impl Interpreter {
                     let new_index = backend.list_len().to_string();
                     self.check_invariants(cell_name, slot_name, &new_index, val, size_after, "write")?;
                 }
+                backend.append(value_to_stored(val));
+                self.check_storage_write()?;
                 if let Some(j) = self.journal.as_mut() {
                     j.push(UndoOp::Unappend { backend: backend.clone() });
                 }
-                backend.append(value_to_stored(val));
                 Ok(Value::Unit)
             }
             "len" | "size" | "count" => {
@@ -3320,6 +3331,7 @@ impl Interpreter {
                 j.push(UndoOp::Restore { backend: meta.clone(), key: update.key.clone(), prev: meta.get(&update.key) });
             }
             match value { Some(v) => backend.set(&update.key, v), None => { backend.delete(&update.key); } }
+            me.check_storage_write()?;
             meta.set(&update.key, StoredValue::String(serde_json::to_string(&update).unwrap()));
             cluster.observe(&update.version);
             Ok(())
@@ -4504,6 +4516,10 @@ impl Interpreter {
     }
 
     pub(crate) fn rollback_to(&mut self, mark: usize) {
+        if let Err(e) = self.check_storage_write() {
+            self.fail_transaction(format!("cannot restore savepoint: {e}"));
+            return;
+        }
         let Some(journal) = self.journal.as_mut() else { return };
         while journal.len() > mark {
             match journal.pop() {
@@ -4525,57 +4541,122 @@ impl Interpreter {
         }
     }
 
-    /// Open one atomic unit: the process-wide handler lock, a SQLite
-    /// transaction (or the cross-process file lock), a fresh journal.
-    fn unit_begin(&mut self) -> Unit {
-        let serial = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Across PROCESSES too: two `soma run` on one .soma_data used to
-        // lose updates (3000 + 3000 = 3082). With persistent slots the
-        // handler IS a SQLite transaction on soma.db (`BEGIN IMMEDIATE`
-        // serializes processes; a kill mid-handler leaves nothing — the
-        // per-statement commits used to survive it); without them, a lock
-        // on a file of its own.
-        let txn = crate::runtime::storage::shared_connection().filter(|c| {
-            let c = c.lock().unwrap_or_else(|e| e.into_inner());
-            c.execute_batch("BEGIN IMMEDIATE").is_ok()
-        });
-        let cross = if txn.is_none() { Some(CrossProcessLock::acquire()) } else { None };
-        self.journal = Some(Vec::new());
-        self.journal_gen = self.journal_gen.wrapping_add(1);
-        Unit { _serial: serial, txn, _cross: cross }
+    fn fail_transaction(&mut self, message: String) -> RuntimeError {
+        self.transaction_failure = Some(message.clone());
+        RuntimeError::StorageTransaction(message)
     }
 
-    /// Close the unit: commit (or roll back — the caller already undid the
-    /// journal), then let clients and other processes hear about it.
-    fn unit_end(&mut self, unit: Unit, ok: bool) {
-        // how many writes / transitions the invocation committed (a
-        // scheduler tick logs it — ticks were invisible in the serve log)
-        self.last_commit_writes = if ok { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Cluster(_) | UndoOp::Horde(_))).count()) } else { 0 };
-        let mut peer_lines: Vec<String> = Vec::new();
-        let mut cluster_updates = Vec::new();
-        let mut hordes: Vec<horde::Commit> = Vec::new();
-        let pushes: Vec<BusEvent> = if ok {
-            self.journal.take().unwrap_or_default().into_iter().filter_map(|u| match u {
-                UndoOp::Push(e) => Some(e),
-                UndoOp::PeerSend(l) => { peer_lines.push(l); None }
-                UndoOp::Cluster(u) => { cluster_updates.push(u); None }
-                UndoOp::Horde(c) => { hordes.push(c); None }
-                _ => None,
-            }).collect()
-        } else { Vec::new() };
-        self.journal = None;
-        if let Some(c) = &unit.txn {
-            let c = c.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = c.execute_batch(if ok { "COMMIT" } else { "ROLLBACK" });
+    fn check_transaction(&self) -> Result<(), RuntimeError> {
+        match &self.transaction_failure {
+            Some(message) => Err(RuntimeError::StorageTransaction(message.clone())),
+            None => Ok(()),
         }
-        // committed: now the clients (and the other processes) may hear about it
-        for e in pushes { self.send_bus_now(e); }
-        // …and the hordes it started may run (the lock is still held: the
-        // workers wait for it like any request)
-        for c in hordes {
-            match c {
-                horde::Commit::Sync { spec, inputs } => self.deferred_hordes.push((spec, inputs)),
-                c => horde::apply_commit(c),
+    }
+
+    /// Consume backend failures at the operation that caused them, with a
+    /// final check at commit for internal writes (replication, for example).
+    pub(crate) fn check_storage_write(&mut self) -> Result<(), RuntimeError> {
+        let pending = crate::runtime::storage::take_write_error();
+        let lost_transaction = self.journal.is_some() && crate::runtime::storage::shared_connection()
+            .is_some_and(|c| c.lock().unwrap_or_else(|e| e.into_inner()).is_autocommit());
+        if lost_transaction {
+            return Err(self.fail_transaction(format!("the database ended the transaction unexpectedly{}",
+                pending.map(|e| format!(": {e}")).unwrap_or_default())));
+        }
+        if let Some(e) = pending {
+            return Err(RuntimeError::Domain { kind: "storage".into(),
+                message: format!("storage: the database refused a write ({e})") });
+        }
+        self.check_transaction()
+    }
+
+    /// Open auxiliary tables before BEGIN. Creating them lazily inside a
+    /// handler both missed the first transaction and cached tables that a
+    /// later rollback could remove.
+    fn prepare_persistent_auxiliary_storage(&mut self) -> Result<(), RuntimeError> {
+        if PERSIST_MACHINES.load(std::sync::atomic::Ordering::Relaxed)
+            || self.storage.values().any(|b| b.backend_name() == "sqlite") {
+            for cell in self.cells.keys() {
+                for name in ["_counters", "_agent_memory"] {
+                    let key = format!("{cell}._{name}");
+                    if !self.storage.contains_key(&key) {
+                        let backend = crate::runtime::storage::SqliteBackend::try_new(cell, name)
+                            .map_err(|e| RuntimeError::StorageTransaction(format!("cannot prepare storage: {e}")))?;
+                        self.storage.insert(key, Arc::new(backend));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A refused BEGIN never falls back to running without a transaction.
+    fn unit_begin(&mut self) -> Result<Unit, RuntimeError> {
+        let serial = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.last_commit_writes = 0;
+        self.prepare_persistent_auxiliary_storage()?;
+        let txn = crate::runtime::storage::shared_connection();
+        if let Some(c) = &txn {
+            c.lock().unwrap_or_else(|e| e.into_inner()).execute_batch("BEGIN IMMEDIATE")
+                .map_err(|e| RuntimeError::StorageTransaction(format!("cannot begin transaction: {e}")))?;
+        }
+        let cross = if txn.is_none() { Some(CrossProcessLock::acquire()?) } else { None };
+        if txn.is_some() { crate::runtime::storage::transaction_started(); }
+        self.journal = Some(Vec::new());
+        self.journal_gen = self.journal_gen.wrapping_add(1);
+        Ok(Unit { _serial: serial, txn, _cross: cross })
+    }
+
+    /// Commit before releasing journaled notifications. On failure SQLite
+    /// restores its own data; only non-SQLite backends need journal undo.
+    fn unit_end(&mut self, unit: Unit, ok: bool) -> Result<(), RuntimeError> {
+        let mut failure = self.check_storage_write().err();
+        if ok && failure.is_none() {
+            if let Some(c) = &unit.txn {
+                if let Err(e) = c.lock().unwrap_or_else(|e| e.into_inner()).execute_batch("COMMIT") {
+                    failure = Some(RuntimeError::StorageTransaction(format!("cannot commit transaction: {e}")));
+                }
+            }
+        }
+        let committed = ok && failure.is_none();
+        if !committed {
+            if let Some(c) = &unit.txn {
+                let c = c.lock().unwrap_or_else(|e| e.into_inner());
+                if !c.is_autocommit() {
+                    if let Err(e) = c.execute_batch("ROLLBACK") {
+                        failure = Some(RuntimeError::StorageTransaction(format!("cannot roll back transaction: {e}")));
+                    }
+                }
+            }
+        }
+        crate::runtime::storage::transaction_ended();
+        let journal = self.journal.take().unwrap_or_default();
+        self.last_commit_writes = if committed { journal.iter().filter(|u| !matches!(u,
+            UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Cluster(_) | UndoOp::Horde(_))).count() } else { 0 };
+        if !committed {
+            for op in journal.into_iter().rev() {
+                let sqlite = match &op {
+                    UndoOp::Restore { backend, .. } | UndoOp::Counter { backend, .. }
+                    | UndoOp::Unappend { backend } | UndoOp::RestoreList { backend, .. } => backend.backend_name() == "sqlite",
+                    _ => false,
+                };
+                if !sqlite { undo(op); }
+            }
+            if let Some(e) = crate::runtime::storage::take_write_error() {
+                failure = Some(RuntimeError::StorageTransaction(format!("cannot restore storage: {e}")));
+            }
+            return match failure { Some(e) => Err(e), None => Ok(()) };
+        }
+        let mut peer_lines = Vec::new();
+        let mut cluster_updates = Vec::new();
+        for op in journal {
+            match op {
+                UndoOp::Push(e) => self.send_bus_now(e),
+                UndoOp::PeerSend(line) => peer_lines.push(line),
+                UndoOp::Cluster(update) => cluster_updates.push(update),
+                UndoOp::Horde(horde::Commit::Sync { spec, inputs }) => self.deferred_hordes.push((spec, inputs)),
+                UndoOp::Horde(commit) => horde::apply_commit(commit),
+                _ => {},
             }
         }
         if let Some(cluster) = &self.cluster {
@@ -4590,52 +4671,50 @@ impl Interpreter {
             }
         }
         drop(unit);
+        Ok(())
     }
 
-    /// Run `f` as ONE atomic unit: serialized against every other top-level
-    /// invocation in the process, and rolled back entirely if it fails.
-    /// Nested use (a handler calling a handler) joins the running unit.
-    pub fn atomically<T, E>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E> {
-        if self.journal.is_some() {
-            return f(self);
-        }
-        let unit = self.unit_begin();
+    /// Nested handlers join the running atomic unit.
+    pub fn atomically<T, E: From<RuntimeError>>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, E>) -> Result<T, E> {
+        if self.current_depth == 0 && self.journal.is_none() { self.transaction_failure = None; }
+        self.check_transaction()?;
+        if self.journal.is_some() { return f(self); }
+        let unit = self.unit_begin()?;
         let result = f(self);
-        if result.is_err() {
-            self.rollback_to(0);
-        }
-        self.unit_end(unit, result.is_ok());
+        let end = self.unit_end(unit, result.is_ok());
         self.run_deferred_hordes();
+        end?;
         result
     }
 
-    /// A `[task]` handler invoked at the top level runs as a sequence of
-    /// atomic STEPS: each `think()` (the wait for a model) ends the current
-    /// step — its writes commit — and runs outside the lock, so other
-    /// requests and tasks proceed; the next step starts after. A failure
-    /// rolls back the current step only.
+    /// A task commits each step before waiting outside the handler lock.
     fn run_task<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T, RuntimeError>) -> Result<T, RuntimeError> {
-        let unit = self.unit_begin();
-        self.task_unit = Some(unit);
+        if self.current_depth == 0 { self.transaction_failure = None; }
+        self.check_transaction()?;
+        self.task_unit = Some(self.unit_begin()?);
         let result = f(self);
-        if result.is_err() { self.rollback_to(0); }
-        if let Some(u) = self.task_unit.take() { self.unit_end(u, result.is_ok()); }
+        let end = if let Some(u) = self.task_unit.take() { self.unit_end(u, result.is_ok()) } else { self.check_transaction() };
         self.run_deferred_hordes();
+        end?;
         result
     }
 
-    /// Run `f` (a wait: a model call, a mocked latency) outside the handler
-    /// lock when this is a `[task]` step boundary; inside it otherwise.
-    pub(crate) fn outside_unit<T>(&mut self, f: impl FnOnce() -> T) -> T {
+    /// A failed boundary aborts the task, even if a tool tries to catch it.
+    pub(crate) fn outside_unit<T>(&mut self, f: impl FnOnce() -> T) -> Result<T, RuntimeError> {
+        self.check_transaction()?;
         match self.task_unit.take() {
             Some(unit) => {
-                self.unit_end(unit, true);
+                if let Err(e) = self.unit_end(unit, true) {
+                    return Err(self.fail_transaction(e.to_string()));
+                }
                 let r = f();
-                let unit = self.unit_begin();
-                self.task_unit = Some(unit);
-                r
+                match self.unit_begin() {
+                    Ok(unit) => self.task_unit = Some(unit),
+                    Err(e) => return Err(self.fail_transaction(e.to_string())),
+                }
+                Ok(r)
             }
-            None => f(),
+            None => Ok(f()),
         }
     }
 
@@ -5078,6 +5157,8 @@ impl Interpreter {
             j.push(UndoOp::Restore { backend: status_backend, key: id.to_string(), prev: prev_status });
         }
 
+        self.check_storage_write()?;
+
         // V1.6: structured trace entry — TraceStep::Transition variant.
         self.agent_trace.push(
             crate::interpreter::builtins::llm::trace_transition(id, &current, target)
@@ -5385,8 +5466,8 @@ impl Interpreter {
     }
 
     /// The backend that holds `next_id()`'s counter for a cell: its first
-    /// declared memory slot (stable across threads and restarts). Falls
-    /// back to the lexically smallest storage key for slot-less programs.
+    /// declared Map slot, then its own state-machine backend. Migration
+    /// must never read a different cell's legacy counter.
     pub(crate) fn next_id_backend(&self, cell_name: &str) -> Option<Arc<dyn StorageBackend>> {
         // only a Map slot can hold a keyed counter (a List backend has no keys)
         if let Some(cell) = self.cells.get(cell_name) {
@@ -5399,22 +5480,16 @@ impl Interpreter {
                         if let Some(b) = self.storage.get(&format!("{}.{}", cell_name, slot.node.name)) {
                             return Some(b.clone());
                         }
-                        if let Some(b) = self.storage.get(&slot.node.name) {
-                            return Some(b.clone());
-                        }
                     }
                 }
             }
         }
-        // then the cell's state-machine status backend (keyed, persistent)
-        if let Some((_, b)) = self.find_state_machine_for(cell_name) {
-            return Some(b.clone());
+        if self.state_machines.keys().any(|(owner, _)| owner == cell_name) {
+            if let Some((_, backend)) = self.find_state_machine_for(cell_name) {
+                return Some(backend.clone());
+            }
         }
-        let mut keys: Vec<&String> = self.storage.keys()
-            .filter(|k| !k.starts_with("__") && self.slot_kind(cell_name, k.rsplit('.').next().unwrap_or(k)) != Some("List"))
-            .collect();
-        keys.sort();
-        keys.first().and_then(|k| self.storage.get(*k).cloned())
+        None
     }
 
     /// `Cell.handler(args)` — explicit cross-cell call.
@@ -5750,22 +5825,17 @@ pub(crate) struct Unit {
 struct CrossProcessLock(Option<rusqlite::Connection>);
 
 impl CrossProcessLock {
-    fn acquire() -> Self {
-        if IN_TEST.load(std::sync::atomic::Ordering::Relaxed) { return CrossProcessLock(None); }
+    fn acquire() -> Result<Self, RuntimeError> {
+        if IN_TEST.load(std::sync::atomic::Ordering::Relaxed) { return Ok(CrossProcessLock(None)); }
         let dir = crate::runtime::storage::data_dir();
         if !dir.is_dir() {
-            return CrossProcessLock(None);
+            return Ok(CrossProcessLock(None));
         }
-        let conn = match rusqlite::Connection::open(dir.join("lock.db")) {
-            Ok(c) => c,
-            Err(_) => return CrossProcessLock(None),
-        };
-        let _ = conn.busy_timeout(std::time::Duration::from_secs(120));
-        let _ = conn.execute_batch("CREATE TABLE IF NOT EXISTS lock (k INTEGER PRIMARY KEY)");
-        match conn.execute_batch("BEGIN IMMEDIATE") {
-            Ok(()) => CrossProcessLock(Some(conn)),
-            Err(_) => CrossProcessLock(None),
-        }
+        let err = |e| RuntimeError::StorageTransaction(format!("cannot acquire storage lock: {e}"));
+        let conn = rusqlite::Connection::open(dir.join("lock.db")).map_err(err)?;
+        conn.busy_timeout(std::time::Duration::from_secs(120)).map_err(err)?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS lock (k INTEGER PRIMARY KEY); BEGIN IMMEDIATE").map_err(err)?;
+        Ok(CrossProcessLock(Some(conn)))
     }
 }
 
@@ -5874,6 +5944,10 @@ pub(crate) enum ExecError {
     Break,
     Continue,
     Runtime(RuntimeError),
+}
+
+impl From<RuntimeError> for ExecError {
+    fn from(error: RuntimeError) -> Self { Self::Runtime(error) }
 }
 
 #[cfg(test)]
@@ -6963,3 +7037,6 @@ fn show_invariant(inv: &Expr, slot: &str) -> String {
         .count();
     out.replace(" size ", &format!(" {}.size ", slot)).replace("(size ", &format!("({}.size ", slot))
 }
+
+#[cfg(test)]
+mod transaction_tests;

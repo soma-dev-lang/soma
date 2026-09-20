@@ -354,6 +354,27 @@ impl StorageBackend for FileBackend {
 pub struct SqliteBackend {
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
     table: String,
+    list_layout: std::sync::Mutex<Option<ListLayout>>,
+}
+
+struct ListLayout {
+    version: i64,
+    changes: i64,
+    epoch: u64,
+    first: Option<i64>,
+    contiguous: bool,
+}
+
+// total_changes includes rolled-back writes. A transaction boundary must
+// also invalidate a layout observed before those writes were rolled back.
+static LIST_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TRANSACTION_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn transaction_started() {
+    TRANSACTION_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn transaction_ended() {
+    TRANSACTION_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    LIST_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// ONE connection per process for `soma.db`, shared by every slot: a
@@ -389,21 +410,81 @@ pub fn shared_connection() -> Option<Arc<std::sync::Mutex<rusqlite::Connection>>
 }
 
 impl SqliteBackend {
+    // SQLite may refuse a lock upgrade without invoking busy_timeout,
+    // notably while fresh processes switch the same database to WAL.
+    // These initialization statements are idempotent and may be retried.
+    fn initialize(conn: &rusqlite::Connection, sql: &str) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            match conn.execute_batch(sql) {
+                Ok(()) => return Ok(()),
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+                        && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    }
+
+    // A statement may end the whole transaction (SQLITE_FULL, I/O errors,
+    // RAISE(ROLLBACK)). Refuse every subsequent write until its caller has
+    // unwound the unit; otherwise it would silently run in autocommit mode.
+    fn may_write(conn: &rusqlite::Connection) -> bool {
+        if TRANSACTION_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) && conn.is_autocommit() {
+            note_write_error("write", &"the database already rolled back the transaction");
+            false
+        } else { true }
+    }
+
+    /// Keep one backend operation atomic even when SQLite's FAIL conflict
+    /// policy leaves earlier changes from the statement in place. The
+    /// enclosing handler still owns the final commit.
+    fn write<T>(&self, what: &str, f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>) -> Option<T> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        if !Self::may_write(&conn) { return None; }
+        let result = conn.execute_batch("SAVEPOINT soma_storage_write")
+            .and_then(|_| f(&conn))
+            .and_then(|value| conn.execute_batch("RELEASE soma_storage_write").map(|_| value));
+        match result {
+            Ok(value) => Some(value),
+            Err(e) => {
+                note_write_error(what, &e);
+                if !conn.is_autocommit() {
+                    if conn.execute_batch("ROLLBACK TO soma_storage_write; RELEASE soma_storage_write").is_err() {
+                        // If the local rollback fails, continuing the handler
+                        // is unsafe. Its boundary check detects the full abort.
+                        let _ = conn.execute_batch("ROLLBACK");
+                    }
+                }
+                LIST_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
     pub fn new(cell_name: &str, slot_name: &str) -> Self {
-        let _ = std::fs::create_dir_all(data_dir());
+        Self::try_new(cell_name, slot_name)
+            .unwrap_or_else(|e| db_fatal(&data_dir().join("soma.db"), &e))
+    }
+
+    pub fn try_new(cell_name: &str, slot_name: &str) -> Result<Self, String> {
+        std::fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
         let db_path = data_dir().join("soma.db");
-        let shared = SHARED_CONN.get_or_init(|| {
-            let c = rusqlite::Connection::open(&db_path).unwrap_or_else(|e| db_fatal(&db_path, &e.to_string()));
-            let _ = c.busy_timeout(std::time::Duration::from_secs(120));
-            c.execute_batch("PRAGMA journal_mode=WAL;").ok();
-            Arc::new(std::sync::Mutex::new(c))
-        }).clone();
+        if SHARED_CONN.get().is_none() {
+            let c = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
+            c.busy_timeout(std::time::Duration::from_secs(120)).map_err(|e| e.to_string())?;
+            Self::initialize(&c, "PRAGMA journal_mode=WAL;")?;
+            let _ = SHARED_CONN.set(Arc::new(std::sync::Mutex::new(c)));
+        }
+        let shared = SHARED_CONN.get().unwrap().clone();
         let conn = shared.lock().unwrap_or_else(|e| e.into_inner());
 
         let table = format!("{}_{}", cell_name, slot_name);
 
         // Create the KV table if it doesn't exist
-        conn.execute_batch(&format!(
+        Self::initialize(&conn, &format!(
             "CREATE TABLE IF NOT EXISTS \"{table}\" (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
@@ -414,13 +495,14 @@ impl SqliteBackend {
                 value TEXT NOT NULL,
                 type TEXT NOT NULL DEFAULT 'string'
             );"
-        )).unwrap_or_else(|e| db_fatal(&db_path, &e.to_string()));
+        ))?;
 
         drop(conn);
-        Self {
+        Ok(Self {
             conn: shared,
             table,
-        }
+            list_layout: std::sync::Mutex::new(None),
+        })
     }
 
     fn store_typed(value: &StoredValue) -> (String, &'static str) {
@@ -487,41 +569,31 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn set(&self, key: &str, value: StoredValue) {
-        let conn = self.conn.lock().unwrap();
         let (val_str, type_tag) = Self::store_typed(&value);
-        if let Err(e) = conn.execute(
+        self.write("write", |conn| conn.execute(
             &format!("INSERT OR REPLACE INTO \"{}\" (key, value, type) VALUES (?1, ?2, ?3)", self.table),
             rusqlite::params![key, val_str, type_tag],
-        ) { note_write_error("write", &e); }
+        ));
     }
 
     fn delete(&self, key: &str) -> bool {
-        let conn = self.conn.lock().unwrap();
-        let changes = match conn.execute(
-            &format!("DELETE FROM \"{}\" WHERE key = ?1", self.table),
-            rusqlite::params![key],
-        ) { Ok(n) => n, Err(e) => { note_write_error("delete", &e); 0 } };
-        changes > 0
+        self.write("delete", |conn| conn.execute(
+            &format!("DELETE FROM \"{}\" WHERE key = ?1", self.table), rusqlite::params![key],
+        )).is_some_and(|n| n > 0)
     }
 
     fn append(&self, value: StoredValue) {
-        let conn = self.conn.lock().unwrap();
         let (val_str, type_tag) = Self::store_typed(&value);
-        if let Err(e) = conn.execute(
+        self.write("append", |conn| conn.execute(
             &format!("INSERT INTO \"{}_log\" (value, type) VALUES (?1, ?2)", self.table),
             rusqlite::params![val_str, type_tag],
-        ) { note_write_error("append", &e); }
+        ));
     }
 
     fn unappend(&self) {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            &format!(
-                "DELETE FROM \"{0}_log\" WHERE rowid = (SELECT MAX(rowid) FROM \"{0}_log\")",
-                self.table
-            ),
-            [],
-        ).ok();
+        self.write("remove last list item", |conn| conn.execute(
+            &format!("DELETE FROM \"{0}_log\" WHERE id = (SELECT MAX(id) FROM \"{0}_log\")", self.table), [],
+        ));
     }
 
     fn list_len(&self) -> usize {
@@ -533,37 +605,53 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn list_get(&self, i: usize) -> Option<StoredValue> {
-        // `rows[i]` is one indexed lookup: the log's ids are contiguous
-        // (append adds one, unappend drops the last, replace_list rewrites
-        // them), so the i-th row is `MIN(id) + i` — COUNT(*) + OFFSET made
-        // every read a scan (40 000 reads took 2.8 s, 100 000 took 17 s)
+        // Use the primary key only after verifying the entire log has no
+        // gaps. A missing earlier row shifts every later list position,
+        // even when MIN(id) + i happens to exist.
         let conn = self.conn.lock().unwrap();
-        let row = |id: i64| conn.query_row(
-            &format!("SELECT value, type FROM \"{}_log\" WHERE id = ?1", self.table),
-            rusqlite::params![id],
-            |r| { let v: String = r.get(0)?; let t: String = r.get(1)?; Ok(Self::load_typed(&v, &t)) },
-        ).ok();
-        let min_id: Option<i64> = conn.query_row(&format!("SELECT MIN(id) FROM \"{}_log\"", self.table), [], |r| r.get(0)).ok().flatten();
-        let Some(min) = min_id else {
+        let version = conn.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0)).ok()?;
+        let changes = conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0)).ok()?;
+        let epoch = LIST_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
+        let mut layout = self.list_layout.lock().unwrap();
+        if !layout.as_ref().is_some_and(|l| (l.version, l.changes, l.epoch) == (version, changes, epoch)) {
+            let (first, last, count): (Option<i64>, Option<i64>, i64) = conn.query_row(
+                &format!("SELECT MIN(id), MAX(id), COUNT(*) FROM \"{}_log\"", self.table), [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).ok()?;
+            let contiguous = first.zip(last).is_some_and(|(a,b)| i128::from(b) - i128::from(a) + 1 == i128::from(count));
+            *layout = Some(ListLayout { version, changes, epoch, first, contiguous });
+        }
+        let l = layout.as_ref().unwrap();
+        let Some(min) = l.first else {
+            drop(layout);
             drop(conn);
             // no log rows: a list kept under the key/value table
             return self.list().into_iter().nth(i);
         };
-        if let Some(v) = row(min + i as i64) { return Some(v); }
-        // a gap (an older database): fall back to the ordered scan
+        let index = i64::try_from(i).ok()?;
+        let (query, position) = if l.contiguous {
+            (format!("SELECT value, type FROM \"{}_log\" WHERE id = ?1", self.table), min.checked_add(index)?)
+        } else {
+            (format!("SELECT value, type FROM \"{}_log\" ORDER BY id LIMIT 1 OFFSET ?1", self.table), index)
+        };
         conn.query_row(
-            &format!("SELECT value, type FROM \"{}_log\" ORDER BY id LIMIT 1 OFFSET ?1", self.table),
-            rusqlite::params![i as i64],
+            &query, rusqlite::params![position],
             |row| { let v: String = row.get(0)?; let t: String = row.get(1)?; Ok(Self::load_typed(&v, &t)) },
         ).ok()
     }
 
     fn replace_list(&self, items: Vec<StoredValue>) {
-        {
-            let conn = self.conn.lock().unwrap();
-            conn.execute(&format!("DELETE FROM \"{}_log\"", self.table), []).ok();
-        }
-        for it in items { self.append(it); }
+        self.write("replace list", |conn| {
+            conn.execute(&format!("DELETE FROM \"{}_log\"", self.table), [])?;
+            for item in items {
+                let (value, tag) = Self::store_typed(&item);
+                conn.execute(
+                    &format!("INSERT INTO \"{}_log\" (value, type) VALUES (?1, ?2)", self.table),
+                    rusqlite::params![value, tag],
+                )?;
+            }
+            Ok(())
+        });
     }
 
     fn list(&self) -> Vec<StoredValue> {

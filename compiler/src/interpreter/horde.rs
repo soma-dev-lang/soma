@@ -1110,7 +1110,7 @@ impl Interpreter {
                 let mut out: Vec<(usize, Result<Value, RuntimeError>)> = rx.iter().collect();
                 out.sort_by_key(|(j, _)| *j);
                 out.into_iter().map(|(_, r)| r).collect::<Vec<_>>()
-            });
+            })?;
             // the voters' spend is the caller's (tokens_used, trace)
             self.agent_tokens_used += spent_total.load(std::sync::atomic::Ordering::SeqCst);
             self.agent_trace.extend(std::mem::take(&mut *traces.lock().unwrap_or_else(|e| e.into_inner())));

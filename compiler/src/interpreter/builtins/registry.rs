@@ -379,7 +379,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
 
     // ── state machines ──────────────────────────────────────────────
     doc("next_id", "state", "next_id() -> Int",
-        "Monotonic per-cell counter, in its own table (persistent under run/serve; per test cell in tests); journaled — a refused request burns no id; the ids drawn inside a `try` that fails are kept (they may have escaped into a local), so ids are unique, not always dense."),
+        "Monotonic per-cell counter, in its own table (persistent under run/serve; per test cell in tests); journaled — a refused request burns no id; the ids drawn inside a `try` that fails are kept (they may have escaped into a local), so ids are unique, not always dense. Exhaustion at 2^63 - 1 raises range; a malformed or negative stored counter raises storage. Legacy migration is confined to the current cell."),
     doc("transition", "state", "transition(id, target_state: String) -> {id, from, to}",
         "Move instance `id` to `target_state` (read the new state with get_status(id)); raises kind \"invalid_transition\" with the valid targets, or \"guard_failed\". Rolled back if the handler later fails."),
     doc("get_status", "state", "get_status(id) -> String",

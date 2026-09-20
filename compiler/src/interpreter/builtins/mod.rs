@@ -75,6 +75,7 @@ pub fn call_builtin(interp: &mut super::Interpreter, name: &str, args: &[Value],
         let interp: &mut super::Interpreter = interp.0;
         call_categories(interp, name, args, cell_name)
     });
+    if let Err(e) = interp.check_storage_write() { return Some(Err(e)); }
     match outcome {
         Ok(r) => r,
         Err(p) => {

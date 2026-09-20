@@ -18,37 +18,37 @@ fn soma(args: &[&str]) -> (String, String, i32) {
 
 #[test]
 fn test_fact_5() {
-    let (out, _, code) = soma(&["run", "../examples/fact.cell", "5"]);
-    assert_eq!(code, 0);
+    let (out, err, code) = soma(&["run", "../examples/fact.cell", "5"]);
+    assert_eq!(code, 0, "{out}{err}");
     assert_eq!(out.trim(), "120");
 }
 
 #[test]
 fn test_fact_20() {
-    let (out, _, code) = soma(&["run", "../examples/fact.cell", "20"]);
-    assert_eq!(code, 0);
+    let (out, err, code) = soma(&["run", "../examples/fact.cell", "20"]);
+    assert_eq!(code, 0, "{out}{err}");
     assert_eq!(out.trim(), "2432902008176640000");
 }
 
 #[test]
 fn test_fact_auto_promotes_bigint() {
     // 30! overflows i64 but auto-promotes to BigInt
-    let (out, _, code) = soma(&["run", "../examples/fact.cell", "30"]);
-    assert_eq!(code, 0);
+    let (out, err, code) = soma(&["run", "../examples/fact.cell", "30"]);
+    assert_eq!(code, 0, "{out}{err}");
     assert_eq!(out.trim(), "265252859812191058636308480000000");
 }
 
 #[test]
 fn test_fact_bigint() {
-    let (out, _, code) = soma(&["run", "../examples/fact_big.cell", "30"]);
-    assert_eq!(code, 0);
+    let (out, err, code) = soma(&["run", "../examples/fact_big.cell", "30"]);
+    assert_eq!(code, 0, "{out}{err}");
     assert_eq!(out.trim(), "265252859812191058636308480000000");
 }
 
 #[test]
 fn test_fact_bigint_100() {
-    let (out, _, code) = soma(&["run", "../examples/fact_big.cell", "100"]);
-    assert_eq!(code, 0);
+    let (out, err, code) = soma(&["run", "../examples/fact_big.cell", "100"]);
+    assert_eq!(code, 0, "{out}{err}");
     assert!(out.trim().starts_with("933262154439441"));
     assert!(out.trim().len() > 100); // 100! has 158 digits
 }

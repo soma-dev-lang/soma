@@ -1,7 +1,7 @@
 # Experimental cluster runtime
 
 The replication protocol described here is available since Soma 2.8.2 and is
-included in the current [Soma 2.8.7 release](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.7).
+included in the current [Soma 2.8.8 release](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.8).
 
 ## What is implemented
 

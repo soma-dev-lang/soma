@@ -21,14 +21,18 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                 interp.storage.insert(slot_key.clone(), backend);
             }
             let backend = interp.storage.get(&slot_key).cloned().unwrap();
-            let as_int = |v: Option<crate::runtime::storage::StoredValue>| v.and_then(|v| match v {
-                crate::runtime::storage::StoredValue::Int(n) => Some(n),
-                _ => None,
-            });
-            let current = as_int(backend.get(counter_key)).unwrap_or_else(|| {
-                interp.next_id_backend(cell_name).and_then(|legacy| as_int(legacy.get("__next_id"))).unwrap_or(0)
-            });
-            let next = current + 1;
+            let value = backend.get(counter_key).or_else(||
+                interp.next_id_backend(cell_name).and_then(|legacy| legacy.get("__next_id")));
+            let current = match value {
+                None => 0,
+                Some(crate::runtime::storage::StoredValue::Int(n)) if n >= 0 => n,
+                Some(_) => return Some(Err(RuntimeError::Domain { kind: "storage".into(),
+                    message: "storage: next_id() counter is invalid; expected a non-negative 64-bit Int".into() })),
+            };
+            let Some(next) = current.checked_add(1) else {
+                return Some(Err(RuntimeError::Domain { kind: "range".into(),
+                    message: "range: next_id() exhausted its 64-bit counter".into() }));
+            };
             if let Some(j) = interp.journal.as_mut() {
                 j.push(crate::interpreter::UndoOp::Counter {
                     backend: backend.clone(),
@@ -508,7 +512,7 @@ fn agent_think(
     // a scripted failure happens AFTER the step boundary, as a provider
     // error would (the test rolled back what production had committed)
     if let Some(Err(msg)) = scripted.clone() {
-        interp.outside_unit(|| ());
+        interp.outside_unit(|| ())?;
         interp.agent_trace.push(super::llm::trace_think(0, prompt, 0, 0, "error"));
         return Err(RuntimeError::TypeError(format!("think() failed: {} (scripted by `mock think error`)", msg)));
     }
@@ -548,7 +552,7 @@ fn agent_think(
                 std::thread::sleep(std::time::Duration::from_millis(ms.min(600_000)))
             }
             Ok(r)
-        })?;
+        })??;
         let response = match (&scripted, mock.as_str()) {
             // a scripted reply longer than max_tokens (~4 characters per
             // token) is what a real provider refuses (kind llm): the test
@@ -724,7 +728,7 @@ fn agent_think(
             cfg.timeout_ms = deadline.saturating_duration_since(std::time::Instant::now()).as_millis().max(1) as u64;
             // a failed call gives its reservation back (Reservation's Drop)
             Ok((llm::send_with_retry(&cfg, &body)?, r))
-        })?;
+        })??;
         let mut resp = llm::parse_response(&config, &raw_json);
         // a provider that omits `usage` (or reports a negative count) spent
         // tokens all the same: estimate ~4 characters per token, as the mock

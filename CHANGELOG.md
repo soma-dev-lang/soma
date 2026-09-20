@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+## 2.8.8 — 2026-09-20
+
+### SQLite failures, transaction boundaries and persistent lists
+
+- A refused SQLite `BEGIN` stops execution. A failed `COMMIT` returns an error,
+  rolls back SQLite and in-memory slot writes, and withholds queued events,
+  replication and horde starts. Internal writes are checked before commit too.
+- Task steps must commit before invoking external work and must acquire a new
+  transaction before resuming Soma. A failed boundary aborts the invocation;
+  `try` cannot continue execution after SQLite has ended the transaction.
+  Already committed task steps retain their effects.
+- Auxiliary counter and agent-memory tables open before the transaction,
+  including in programs without declared persistent slots. A first-use write
+  is transactional, and rollback cannot remove a cached auxiliary table.
+- `remember()`, `next_id()` and state transitions propagate database write
+  refusals. SQLite backend operations use savepoints, including when a SQL
+  `FAIL` leaves partial statement effects. A database-initiated rollback cannot
+  be followed by writes accidentally committed outside the handler transaction.
+- List replacements stop on a refused delete or insert. A refused append inside
+  `try` no longer removes the previously committed last item. Indexed reads
+  handle gaps left by earlier undo operations or legacy data. Contiguous logs
+  retain primary-key lookup; the layout cache tracks writes, external commits
+  and transaction rollback.
+- `next_id()` refuses exhaustion at 2^63 - 1 with `range`, and rejects negative
+  or malformed counters with `storage`. Legacy migration only reads the
+  calling cell's Map or state-machine backend.
+- A normal `return` from a scheduled tick commits its successful writes.
+- Concurrent processes retry SQLite initialization lock upgrades within the
+  existing 120-second storage timeout; startup contention no longer produces
+  an immediate refusal while enabling WAL or creating tables.
+- Add 19 integration tests and 10 isolated unit tests. Sixteen integration
+  regressions and five transaction unit regressions were reproduced on 2.8.7;
+  remaining cases cover migration and cache/transaction boundaries.
+
+**Compatibility:** database refusals previously reported as success now fail.
+Recoverable write errors have kind `storage`; a lost transaction or failed task
+boundary aborts the invocation instead of returning a catchable `try` result.
+`next_id()` remains a per-cell signed 64-bit counter, and its range is finite.
+These local transaction corrections do not add distributed consensus or make
+external HTTP/file/model effects transactional.
+
 ## 2.8.7 — 2026-09-20
 
 ### Lexical scopes, interpolation analysis and agent memory
