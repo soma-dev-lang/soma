@@ -87,11 +87,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                                 "==" | "=" => o.is_eq(), "!=" => !o.is_eq(), _ => false,
                             }
                         }
-                        _ => match op.as_str() {
-                            "==" | "=" => format!("{}", val) == format!("{}", threshold),
-                            "!=" => format!("{}", val) != format!("{}", threshold),
-                            _ => false,
-                        },
+                        // text compares lexicographically, like `<` on Strings
+                        // (an ISO date range answered [] silently)
+                        _ => {
+                            let (a, b) = (format!("{}", val), format!("{}", threshold));
+                            match op.as_str() {
+                                "==" | "=" => a == b,
+                                "!=" => a != b,
+                                ">" => a > b, ">=" => a >= b, "<" => a < b, "<=" => a <= b,
+                                _ => false,
+                            }
+                        }
                     }
                 }).cloned().collect();
                 Some(Ok(Value::List(result)))
@@ -368,5 +374,12 @@ fn non_numeric(items: &[Value], field: &str) -> Option<Value> {
 }
 
 fn distinct_key(v: &Value) -> String {
-    format!("{}\u{1f}{}", crate::interpreter::value_type_name(v), crate::interpreter::builtins::string::to_json_string(v))
+    // the same equality `==` and contains() use: 1 and 1.0 are one value
+    // (they were kept as two), NaN is its own (it equals nothing)
+    match v {
+        Value::Int(i) => match i.to_f64() { f if f.fract() == 0.0 => format!("num\u{1f}{}", f), _ => format!("num\u{1f}{}", i) },
+        Value::Float(f) if f.is_nan() => format!("nan\u{1f}{:p}", v as *const Value),
+        Value::Float(f) if f.fract() == 0.0 && f.is_finite() => format!("num\u{1f}{}", f),
+        _ => format!("{}\u{1f}{}", crate::interpreter::value_type_name(v), crate::interpreter::builtins::string::to_json_string(v)),
+    }
 }

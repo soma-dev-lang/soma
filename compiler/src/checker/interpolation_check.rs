@@ -1138,7 +1138,18 @@ impl<'a> Walker<'a> {
                     let expr_str = &s[pos + 1..pos + 1 + end];
                     // Skipped as CSS/HTML — runtime advances one byte
                     // and rescans, so nested segments are still found.
-                    if expr_str.is_empty() || expr_str.contains(':') || expr_str.contains(';') {
+                    // mirror of the runtime rule: a colon outside quotes with
+                    // no call or index is literal text (CSS, `{n:>5}`)
+                    let css_like = {
+                        let (mut in_str, mut colon, mut prev) = (false, false, '\0');
+                        for c in expr_str.chars() {
+                            if c == '"' && prev != '\\' { in_str = !in_str; }
+                            if !in_str && c == ':' { colon = true; }
+                            prev = c;
+                        }
+                        colon && !expr_str.contains('(') && !expr_str.contains('[')
+                    };
+                    if expr_str.is_empty() || css_like || expr_str.contains(';') {
                         pos += 1;
                         continue;
                     }

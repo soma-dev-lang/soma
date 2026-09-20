@@ -4733,3 +4733,43 @@ cell W {
     let (out, code) = soma_in(&d, &["verify", "h.cell"]);
     assert!(code == 0 && out.contains("VERIFY OK"), "{out}");
 }
+
+#[test]
+fn cycle75_interpolation_filter_cost_and_termination() {
+    let d = dir("cycle75");
+    // a `:` inside {…} no longer disables interpolation
+    std::fs::write(d.join("c.cell"), r#"
+cell C {
+    on main() {
+        let t = "12:30"
+        print("hour={split(t, \":\")[0]} url={\"http://x\"}")
+        print("body {{ color: red }} .x {margin: 0}")
+        let n = 3
+        print("{n:>5} and {n}")
+    }
+}
+"#).unwrap();
+    let (out, code) = soma_in(&d, &["run", "c.cell", "main"]);
+    assert!(code == 0 && out.contains("hour=12 url=http://x"), "{out}");
+    assert!(out.contains("body { color: red } .x {margin: 0}") && out.contains("{n:>5} and 3"), "{out}");
+    // filter_by compares Strings lexicographically
+    std::fs::write(d.join("f.cell"), "cell F {\n on go() { let rows = [map(\"d\", \"2026-01-05\"), map(\"d\", \"2025-06-01\")]\n return filter_by(rows, \"d\", \">=\", \"2026-01-01\") }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "f.cell", "go"]);
+    assert!(out.contains("2026-01-05") && !out.contains("2025-06-01"), "{out}");
+    // an early return makes the branches exclusive for the cost bound
+    std::fs::write(d.join("k.cell"), "cell K {\n cost { tokens: 100 }\n on go(n: Int) { if n > 3 { return think(\"a\", map(\"max_tokens\", 100)) }\n return think(\"b\", map(\"max_tokens\", 100)) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "k.cell"]);
+    assert!(code == 0 && out.contains("peak 100"), "{out}");
+    // `b.size <= a.size` between slots is accepted (nothing is read at a key)
+    std::fs::write(d.join("s.cell"), "cell S {\n memory {\n  a: Map<String, Int> [persistent]\n  b: Map<String, Int> [persistent]\n  invariant b.size <= a.size\n }\n on wa(k: String) { a.set(k, 1) }\n on wb(k: String) { b.set(k, 1) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["check", "s.cell"]);
+    assert!(code == 0, "{out}");
+    // termination through a local binding and through halving
+    std::fs::write(d.join("t.cell"), "cell T {\n on c(n: Int) { if n <= 0 { return 0 }\n let m = n - 1\n return c(m) }\n on h(n: Int) { if n <= 0 { return 0 }\n return h(idiv(n, 2)) }\n}\n").unwrap();
+    let (out, code) = soma_in(&d, &["verify", "--strict", "t.cell"]);
+    assert!(code == 0 && !out.contains("decreasing argument"), "{out}");
+    // distinct uses the equality of == ; clamp keeps NaN
+    std::fs::write(d.join("d.cell"), "cell D {\n on main() { print(distinct([1, 1.0, 2]))\n print(clamp(0.0 / 0.0, 0.0, 10.0)) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["run", "d.cell", "main"]);
+    assert!(out.contains("[1, 2]") && out.contains("NaN"), "{out}");
+}

@@ -29,7 +29,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `hmac_sha256` | `hmac_sha256(key: String, message: String) -> String` | HMAC-SHA-256 as hex: sign a session cookie or a webhook payload with a server secret. |
 | `random_token` ✗ | `random_token(bytes?: Int) -> String` | Cryptographically secure random bytes from the OS, as hex (default 32 bytes = 64 characters): session tokens, API keys, salts. random() is NOT for secrets. |
 | `secure_eq` | `secure_eq(a: String, b: String) -> Bool` | Constant-time equality for secrets (tokens, signatures): `==` returns early and leaks a prefix by timing. |
-| `format` | `format(fmt: String, args...) -> String` | printf subset: %d %s %f %.2f %8.2f %e %.3e %3d %-8s %05d %% — %e is C-style scientific (6.022e+23); widths, precision (rounded half away from zero on the decimal text), left-align with '-', zero-pad with '0'. |
+| `format` | `format(fmt: String, args...) -> String` | printf subset: %d %s %f %.2f %8.2f %e %.3e %3d %-8s %05d %% — %e is C-style scientific (6.022000e+23); widths, precision (rounded half away from zero on the decimal text), left-align with '-', zero-pad with '0'. |
 | `fields` | `fields(s: String) -> List<String>` | Split on any run of whitespace, no empty pieces (Go's strings.Fields; split(s, " ") keeps empties). |
 | `index_of` | `index_of(s: String, sub: String) -> Int  \|  index_of(xs: List, x) -> Int` | Character index of the first occurrence of `sub` in a String, or the position of the first element equal to `x` in a List; -1 if absent. |
 | `substring` | `substring(s: String, start: Int, end: Int) -> String` | Character-based slice [start, end) — end is exclusive and clamped. |
@@ -86,8 +86,8 @@ The `native` section is usable inside `[native]` handlers only.
 | `log10` | `log10(x: Int\|Float) -> Float` | Base-10 logarithm. |
 | `pow` | `pow(base: Int\|Float, exp: Int\|Float) -> Float` | base raised to exp (always a Float; `ipow` for an exact Int power). |
 | `ipow` | `ipow(base: Int, exp: Int) -> Int` | Exact Int power (exp ≥ 0; kind range past the Int size limit). `to_int(pow(3, 40))` is off by 33, `ipow(3, 40)` is exact. |
-| `min` | `min(a, b) -> Int\|Float \| min(list: List) -> Int\|Float` | Smaller of two numbers, or the minimum of a list (Float if any element is). |
-| `max` | `max(a, b) -> Int\|Float \| max(list: List) -> Int\|Float` | Larger of two numbers, or the maximum of a list (Float if any element is). |
+| `min` | `min(a, b) -> Int\|Float \| min(list: List) -> Int\|Float` | Smaller of two numbers, or the minimum of a list (Float if any element is). An empty list gives () (no minimum exists). |
+| `max` | `max(a, b) -> Int\|Float \| max(list: List) -> Int\|Float` | Larger of two numbers, or the maximum of a list (Float if any element is). An empty list gives () (no maximum exists). |
 | `sum` | `sum(list: List) -> Int\|Float` | Sum of a list of numbers (Int-exact unless any element is a Float); 0 when empty. Floats are added left to right without compensation (NumPy's pairwise / Python's fsum can differ in the last bits). |
 | `product` | `product(list: List) -> Int\|Float` | Product of a list of numbers; 1 when empty. |
 | `avg` | `avg(list: List) -> Int\|Float` | Mean of a list of numbers, by the rule of `/`: avg([1, 2]) = 1.5, an exact mean of Ints stays an Int; () when empty. |

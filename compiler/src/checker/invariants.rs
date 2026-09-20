@@ -71,7 +71,22 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                     let text = crate::ast::render_expr(&inv.node);
                     // a Map / List slot read at a key it has no entry for is
                     // () — the bare form would fail on the first write
-                    let keyed = named.iter().any(|n| mem.slots.iter().any(|sl| sl.node.name == **n
+                    // only a BARE reference to a keyed slot reads at the key
+                    // (`b.size <= a.size` counts entries: nothing to default)
+                    let counted: HashSet<String> = {
+                        let mut c: HashSet<String> = HashSet::new();
+                        crate::checker::literals::for_each_in_expr(&inv.node, &mut |e| match e {
+                            Expr::FieldAccess { target, field } if matches!(field.as_str(), "size" | "len" | "count" | "length") =>
+                                if let Expr::Ident(n) = &target.node { c.insert(n.clone()); },
+                            Expr::MethodCall { target, method, args } if args.is_empty() && matches!(method.as_str(), "size" | "len" | "count") =>
+                                if let Expr::Ident(n) = &target.node { c.insert(n.clone()); },
+                            Expr::FnCall { name, args } if matches!(name.as_str(), "len" | "size") && args.len() == 1 =>
+                                if let Expr::Ident(n) = &args[0].node { c.insert(n.clone()); },
+                            _ => {}
+                        });
+                        c
+                    };
+                    let keyed = named.iter().any(|n| !counted.contains(*n) && mem.slots.iter().any(|sl| sl.node.name == **n
                         && matches!(&sl.node.ty.node, crate::ast::TypeExpr::Generic { name, .. } if name == "Map" || name == "List")));
                     // `stock.get(key)` in a rule between slots is the value
                     // BEFORE the write: on a write to `stock` it tests the old

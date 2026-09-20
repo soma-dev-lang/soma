@@ -108,6 +108,7 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
         }
         if let Section::OnSignal(ref on) = section.node {
             let mut reasons = Vec::new();
+            CURRENT_BODY.with(|b| *b.borrow_mut() = on.body.clone());
             for stmt in &on.body {
                 check_stmt_termination(&stmt.node, &on.signal_name, &on.params, &mut reasons);
             }
@@ -198,7 +199,7 @@ fn check_cell_termination_raw(cell: &CellDef, program: &Program) -> Vec<Terminat
                     walk_stmt(&stmt.node, &mut |e| {
                         if let Expr::FnCall { name, args } = e {
                             if name == &on.signal_name && args.iter().enumerate().any(|(i, a)|
-                                on.params.get(i).map_or(false, |p| is_decreasing_arg(&a.node, &p.name) && !rebinds(&on.body, &p.name)))
+                                on.params.get(i).map_or(false, |p| (is_decreasing_arg(&a.node, &p.name) || decreasing_through_local(&on.body, &a.node, &p.name)) && !rebinds(&on.body, &p.name)))
                             { measured = true; }
                         }
                     });
@@ -637,6 +638,11 @@ fn check_stmt_termination(
     }
 }
 
+thread_local! {
+    /// The body of the handler being judged, for the local-binding rule.
+    static CURRENT_BODY: std::cell::RefCell<Vec<Spanned<Statement>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn check_expr_termination(
     expr: &Expr,
     handler_name: &str,
@@ -656,6 +662,8 @@ fn check_expr_termination(
                 let is_structural = args.iter().enumerate().any(|(i, arg)| {
                     if i < params.len() {
                         is_decreasing_arg(&arg.node, &params[i].name)
+                            // `let m = n - 1  … c(m)` decreases too
+                            || CURRENT_BODY.with(|b| decreasing_through_local(&b.borrow(), &arg.node, &params[i].name))
                     } else {
                         false
                     }
@@ -788,18 +796,34 @@ fn is_collection_iter(expr: &Expr) -> bool {
 /// Check if an argument is provably smaller than a parameter.
 /// Recognizes patterns like: `param - 1`, `param - literal`.
 fn is_decreasing_arg(arg: &Expr, param_name: &str) -> bool {
-    if let Expr::BinaryOp { left, op, right } = arg {
-        if matches!(op, BinOp::Sub) {
-            if let Expr::Ident(name) = &left.node {
-                if name == param_name {
-                    if let Expr::Literal(Literal::Int(n)) = &right.node {
-                        return *n > 0;
-                    }
-                }
-            }
-        }
+    match arg {
+        Expr::BinaryOp { left, op, right } if matches!(op, BinOp::Sub) =>
+            matches!((&left.node, &right.node), (Expr::Ident(n), Expr::Literal(Literal::Int(k))) if n == param_name && *k > 0),
+        // halving terminates too: `c(idiv(n, 2))`, `floor_div`, `n / 2`
+        Expr::FnCall { name, args } if matches!(name.as_str(), "idiv" | "floor_div" | "div" | "shr") && args.len() == 2 =>
+            matches!((&args[0].node, &args[1].node), (Expr::Ident(n), Expr::Literal(Literal::Int(k)))
+                if n == param_name && ((name == "shr" && *k >= 1) || *k > 1)),
+        Expr::BinaryOp { left, op, right } if matches!(op, BinOp::Div) =>
+            matches!((&left.node, &right.node), (Expr::Ident(n), Expr::Literal(Literal::Int(k))) if n == param_name && *k > 1),
+        _ => false,
     }
-    false
+}
+
+/// `let m = n - 1  … c(m)`: the argument is a local bound, once and before
+/// the call, to an expression that decreases the parameter.
+fn decreasing_through_local(body: &[Spanned<Statement>], arg: &Expr, param_name: &str) -> bool {
+    let Expr::Ident(local) = arg else { return false };
+    if local == param_name { return false; }
+    let mut bound: Vec<&Expr> = Vec::new();
+    crate::checker::literals::for_each_stmt_deep(body, &mut |st| if let Statement::Let { name, value } = st {
+        if name == local { bound.push(&value.node); }
+    });
+    // …and it is never re-assigned to something else
+    let mut assigned = false;
+    crate::checker::literals::for_each_stmt_deep(body, &mut |st| if let Statement::Assign { name, .. } = st {
+        if name == local { assigned = true; }
+    });
+    !assigned && bound.len() == 1 && is_decreasing_arg(bound[0], param_name)
 }
 
 /// Does the body stop the descent with a lower bound on `param` before any

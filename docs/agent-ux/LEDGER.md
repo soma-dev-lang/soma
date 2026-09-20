@@ -1737,3 +1737,20 @@ audit intact; 60 transfer/refund races → 0 double-wins; 3.2k writes/s.
 
 ### Open
 - [ ] Atomic idempotency and an out-of-lock model call are still exclusive (a `[task]` cannot carry a `require` across a think): the documented split is scorer + plain capture; an `every` tick has no time limit (101 s sweep seen); one `[verify]` scope per directory.
+
+### Cycle 75 — builtins and lints attack
+
+The number tower, unicode, dates, CSV and JSON held (BigInt overflow, sign
+conventions, month-end clamping, RFC-4180 round trips). Two behaviour bugs
+and three false positives that refused correct programs.
+
+### Fixed
+- [x] **A `:` inside `{…}` silently turned off interpolation** and printed the source (`{split(t, ":")[0]}`, a URL, `%H:%M`), and check stopped reporting undefined variables there — only a colon outside quotes with no call or index is literal now.
+- [x] **`filter_by` with `<`/`>=` on Strings returned `[]`** — an ISO date range silently matched nothing.
+- [x] Cost summed exclusive branches when the first ended with `return` (200 > 100 refused a correct bound).
+- [x] `invariant b.size <= a.size` between slots was refused with a message about a per-key read that did not exist.
+- [x] Termination lost the decreasing argument through a local (`let m = n - 1`) and through halving (`idiv(n, 2)`), so `--strict` failed.
+- [x] `distinct` used a different equality from `==`; `clamp(NaN)` returned `lo`; `%e` and empty `min`/`max` documented.
+
+### Open
+- [ ] `range(0, 5, 0)` and `top(xs, -1)` are silent no-ops/identities.

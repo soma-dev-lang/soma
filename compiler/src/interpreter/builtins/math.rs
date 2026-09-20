@@ -364,7 +364,8 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                         if lo > hi {
                             return Some(Err(RuntimeError::TypeError(format!("clamp: min ({}) must be <= max ({})", lo, hi))));
                         }
-                        Some(Ok(Value::Float(v.max(lo).min(hi))))
+                        // NaN is not "below lo": it stays NaN (it silently became lo)
+                        Some(Ok(Value::Float(if v.is_nan() { f64::NAN } else { v.max(lo).min(hi) })))
                     }
                     (Value::Int(v), Value::Int(lo), Value::Int(hi)) => {
                         // BigInt-exact (clamp(2^70, 10, 20) was 10: the value

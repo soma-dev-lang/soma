@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Interpolation: a `:` inside `{…}` no longer disables it — only a colon
+  OUTSIDE quotes with no call or index is literal (CSS, `{n:>5}`).
+  `"{split(t, \":\")[0]}"` and `"{\"http://x\"}"` used to print their own
+  source, and check saw no undefined variable in them.
+- `filter_by(rows, field, ">=", "2026-01-01")` compares Strings
+  lexicographically (a date range answered `[]` silently).
+- Cost: `if c { return think(…) }` followed by another think is ONE path,
+  not two (a correct `cost { tokens: 100 }` was refused at 200).
+- `invariant b.size <= a.size` between slots is accepted (nothing is read at
+  a key); termination follows a local binding (`let m = n - 1  c(m)`) and
+  halving (`c(idiv(n, 2))`).
+- `distinct` uses the equality of `==` (1 and 1.0 were kept as two, NaN
+  collapsed); `clamp(NaN, lo, hi)` stays NaN; docs: `%e`, empty `min`/`max`.
+
 - Rules between slots (2.8.0) hold on `delete` too — dropping the other
   side's entry took it to () and the state stayed violated, while verify
   printed a ✓ claiming a delete cannot break such a rule; `other.size` is

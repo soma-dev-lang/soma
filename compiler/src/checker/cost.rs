@@ -204,6 +204,36 @@ impl<'a> CostWalk<'a> {
         if spends_tokens { self.unbounded_sites.push(site); } else { self.latency_sites.push(site); }
     }
 
+    /// A sequence of statements: `if c { … return … }` makes the rest an
+    /// ALTERNATIVE path, not a continuation (two branches of one think were
+    /// summed and a correct `cost { tokens: 100 }` was refused at 200).
+    fn visit_seq(&mut self, stmts: &[Spanned<Statement>], handler_name: &str) {
+        fn returns(stmts: &[Spanned<Statement>]) -> bool {
+            matches!(stmts.last().map(|s| &s.node), Some(Statement::Return { .. }))
+                || matches!(stmts.last().map(|s| &s.node), Some(Statement::If { then_body, else_body, .. }) if returns(then_body) && returns(else_body))
+        }
+        for (i, st) in stmts.iter().enumerate() {
+            if let Statement::If { condition, then_body, else_body } = &st.node {
+                let exclusive = (returns(then_body) && else_body.is_empty()) || (returns(else_body) && then_body.is_empty());
+                if exclusive && i + 1 < stmts.len() {
+                    self.visit_expr(&condition.node, handler_name);
+                    let mut taken = self.child();
+                    taken.visit_seq(if else_body.is_empty() { then_body } else { else_body }, handler_name);
+                    let mut rest = self.child();
+                    rest.visit_seq(&stmts[i + 1..], handler_name);
+                    self.tokens += taken.tokens.max(rest.tokens);
+                    self.latency_ms += taken.latency_ms.max(rest.latency_ms);
+                    self.unbounded_sites.extend(taken.unbounded_sites);
+                    self.unbounded_sites.extend(rest.unbounded_sites);
+                    self.latency_sites.extend(taken.latency_sites);
+                    self.latency_sites.extend(rest.latency_sites);
+                    return;
+                }
+            }
+            self.visit_stmt(&st.node, handler_name);
+        }
+    }
+
     fn visit_stmt(&mut self, stmt: &Statement, handler_name: &str) {
         match stmt {
             Statement::Let { value, .. }
@@ -216,10 +246,10 @@ impl<'a> CostWalk<'a> {
                 // one branch runs: the peak is the max of the two
                 let mut worst = self.child();
                 let mut t = self.child();
-                for s in then_body { t.visit_stmt(&s.node, handler_name); }
+                t.visit_seq(then_body, handler_name);
                 self.absorb_branch(&mut worst, t);
                 let mut e = self.child();
-                for s in else_body { e.visit_stmt(&s.node, handler_name); }
+                e.visit_seq(else_body, handler_name);
                 self.absorb_branch(&mut worst, e);
                 self.tokens += worst.tokens;
                 self.latency_ms += worst.latency_ms;
@@ -232,7 +262,7 @@ impl<'a> CostWalk<'a> {
                 cond.visit_expr(&condition.node, handler_name);
                 let mult = bound.unwrap_or(1) as i64;
                 let mut inner = self.child();
-                for s in body { inner.visit_stmt(&s.node, handler_name); }
+                inner.visit_seq(body, handler_name);
                 // an unbounded while only matters when its body (or its
                 // condition) spends (a counting loop made every cost bound
                 // "advisory")
@@ -253,7 +283,7 @@ impl<'a> CostWalk<'a> {
             Statement::For { iter, body, bound, .. } => {
                 self.visit_expr(&iter.node, handler_name);
                 let mut inner = self.child();
-                for s in body { inner.visit_stmt(&s.node, handler_name); }
+                inner.visit_seq(body, handler_name);
                 // Iteration count: [loop_bound(N)], else a literal range.
                 // Anything else (a list, a computed range) is unknown: a
                 // body that spends makes the whole bound advisory, not proven.
@@ -301,7 +331,7 @@ impl<'a> CostWalk<'a> {
                     let mut callee = self.child();
                     callee.stack.push(key.clone());
                         if let Some(r) = self.rounds_of.and_then(|m| m.get(key.as_str())) { callee.rounds = *r; }
-                    for s in body { callee.visit_stmt(&s.node, &key); }
+                    callee.visit_seq(body, &key);
                     self.tokens += callee.tokens;
                     self.latency_ms += callee.latency_ms;
                     self.unbounded_sites.extend(callee.unbounded_sites);
@@ -432,7 +462,7 @@ impl<'a> CostWalk<'a> {
                         let mut callee = self.child();
                         callee.stack.push(name.clone());
                         if let Some(r) = self.rounds_of.and_then(|m| m.get(name.as_str())) { callee.rounds = *r; }
-                        for s in body { callee.visit_stmt(&s.node, name); }
+                        callee.visit_seq(body, name);
                         self.tokens += callee.tokens;
                         self.latency_ms += callee.latency_ms;
                         self.unbounded_sites.extend(callee.unbounded_sites);
@@ -460,7 +490,7 @@ impl<'a> CostWalk<'a> {
                             let mut callee = self.child();
                             callee.stack.push(key.clone());
                         if let Some(r) = self.rounds_of.and_then(|m| m.get(key.as_str())) { callee.rounds = *r; }
-                            for s in body { callee.visit_stmt(&s.node, &key); }
+                            callee.visit_seq(body, &key);
                             self.tokens += callee.tokens;
                             self.latency_ms += callee.latency_ms;
                             self.unbounded_sites.extend(callee.unbounded_sites);
@@ -513,11 +543,11 @@ impl<'a> CostWalk<'a> {
                 self.visit_expr(&condition.node, handler_name);
                 let mut worst = self.child();
                 let mut t = self.child();
-                for s in then_body { t.visit_stmt(&s.node, handler_name); }
+                t.visit_seq(then_body, handler_name);
                 t.visit_expr(&then_result.node, handler_name);
                 self.absorb_branch(&mut worst, t);
                 let mut e = self.child();
-                for s in else_body { e.visit_stmt(&s.node, handler_name); }
+                e.visit_seq(else_body, handler_name);
                 e.visit_expr(&else_result.node, handler_name);
                 self.absorb_branch(&mut worst, e);
                 self.tokens += worst.tokens;
@@ -674,9 +704,7 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
                 }
             }
             walk.stack.push(hname.clone());
-            for s in body {
-                walk.visit_stmt(&s.node, &hname);
-            }
+            walk.visit_seq(body, &hname);
             if walk.tokens > peak_tokens { peak_tokens = walk.tokens; peak_tokens_in = hname.clone(); }
             if walk.latency_ms > peak_latency_ms { peak_latency_ms = walk.latency_ms; peak_latency_in = hname.clone(); }
             advisory_sites.extend(walk.unbounded_sites);

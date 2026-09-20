@@ -3873,7 +3873,21 @@ impl Interpreter {
                     // `{4}` / `{2,3}` — a regex quantifier, not a value: literal
                     // text (it raised "undefined variable: 4")
                     let quantifier = expr_str.chars().all(|c| c.is_ascii_digit() || c == ',' || c == ' ');
-                    if expr_str.is_empty() || expr_str.contains(':') || expr_str.contains(';') || quantifier {
+                    // a `:` used to mean "literal" (CSS, `{n:>5}`) — it also
+                    // silenced `{split(t, ":")[0]}` and `{"http://x"}`: only a
+                    // colon OUTSIDE quotes, with no call or index, is CSS-ish
+                    let css_like = |t: &str| {
+                        let mut in_str = false;
+                        let mut colon = false;
+                        let mut prev = '\0';
+                        for c in t.chars() {
+                            if c == '"' && prev != '\\' { in_str = !in_str; }
+                            if !in_str && c == ':' { colon = true; }
+                            prev = c;
+                        }
+                        colon && !t.contains('(') && !t.contains('[')
+                    };
+                    if expr_str.is_empty() || css_like(expr_str) || expr_str.contains(';') || quantifier {
                         result.push('{');
                         literal_open += 1;
                         pos += 1;
