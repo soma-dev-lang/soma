@@ -1,73 +1,58 @@
-// Mock Storage Provider Sidecar
-// Simulates an external provider (like DynamoDB) over HTTP.
-//
+// In-memory HTTP storage protocol demo for `soma test-provider`.
 //   soma serve tools/mock_provider.cell --port 9999
-//
-// The Soma runtime calls this instead of SQLite when
-// soma-provider.toml has: native = "http://localhost:9999"
-//
-// Endpoints:
-//   POST /get     { "table": "T_data", "key": "k" }
-//   POST /set     { "table": "T_data", "key": "k", "value": "v" }
-//   POST /delete  { "table": "T_data", "key": "k" }
-//   POST /keys    { "table": "T_data" }
-//   POST /len     { "table": "T_data" }
+// A provider manifest can use native = "http://localhost:9999".
+// Every POST supplies {"cell":"T", "field":"data", ...}.
+// Values are typed envelopes, preserved unchanged. No durability, remote
+// transactions, authentication or cross-process isolation is provided.
 
 cell MockProvider {
     memory {
-        store: Map<String, String> [ephemeral, local]
+        store: Map<String, Any> [ephemeral, local]
+        logs: Map<String, List<Any>> [ephemeral, local]
     }
 
     on request(method: String, path: String, body: String) {
+        if method != "POST" { return response(405, map("error", "POST required")) }
         let data = from_json(body)
-        let table = data.table ?? "default"
+        require type_of(data["cell"]) == "String" && type_of(data.field) == "String" else InvalidScope
+        // A JSON pair keeps names containing punctuation unambiguous.
+        let prefix = to_json([data["cell"], data.field]) + ":"
         let key = data.key ?? ""
+        let full_key = prefix + key
 
-        // Namespace keys by table
-        let full_key = "{table}:{key}"
-
-        if path == "/get" {
-            let val = store.get(full_key)
-            if val == () {
-                return map("value", ())
-            }
-            return map("value", val)
-        }
-
+        if path == "/get" { return map("value", store.get(full_key)) }
         if path == "/set" {
-            let val = data.value ?? ""
-            store.set(full_key, val)
+            store.set(full_key, data.value)
             return map("ok", true)
         }
+        if path == "/delete" { return map("deleted", store.delete(full_key)) }
+        if path == "/has" { return map("exists", store.has(full_key)) }
 
-        if path == "/delete" {
-            store.delete(full_key)
+        if path == "/append" {
+            logs.set(prefix, push(logs.get(prefix) ?? [], data.value))
             return map("ok", true)
         }
+        if path == "/unappend" {
+            let items = logs.get(prefix) ?? []
+            if len(items) > 0 { logs.set(prefix, slice(items, 0, len(items) - 1)) }
+            return map("ok", true)
+        }
+        if path == "/list" { return map("items", logs.get(prefix) ?? []) }
 
-        if path == "/keys" {
-            let all = store.keys()
-            let prefix = "{table}:"
-            let result = list()
-            for k in all {
-                if starts_with(k, prefix) {
-                    let short = substring(k, len(prefix), len(k))
-                    result = list(result, short)
+        let names = []
+        let vals = []
+        for k in store.keys() {
+            if starts_with(k, prefix) {
+                let short = substring(k, len(prefix), len(k))
+                if !starts_with(short, "__") {
+                    names = push(names, short)
+                    vals = push(vals, store.get(k))
                 }
             }
-            return map("keys", result)
         }
-
-        if path == "/len" {
-            let all = store.keys()
-            let prefix = "{table}:"
-            let count = 0
-            for k in all {
-                if starts_with(k, prefix) { count = count + 1 }
-            }
-            return map("len", count)
-        }
-
+        if path == "/keys" { return map("keys", names) }
+        if path == "/values" { return map("values", vals) }
+        if path == "/len" { return map("len", len(names) + len(logs.get(prefix) ?? [])) }
         return response(404, map("error", "unknown endpoint"))
     }
 }

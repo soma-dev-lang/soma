@@ -109,8 +109,23 @@ pub trait StorageBackend: Send + Sync {
     /// Replace the whole append log (`rows[i] = v`, `rows.delete(i)` on a
     /// List slot). Default: pop everything, append the new items.
     fn replace_list(&self, items: Vec<StoredValue>) {
-        while !self.list().is_empty() { self.unappend(); }
-        for it in items { self.append(it); }
+        let mut remaining = self.list().len();
+        if has_storage_error() { return; }
+        while remaining > 0 {
+            self.unappend();
+            if has_storage_error() { return; }
+            let next = self.list().len();
+            if has_storage_error() { return; }
+            if next >= remaining {
+                note_write_error("replace list", &"the backend did not remove an item");
+                return;
+            }
+            remaining = next;
+        }
+        for item in items {
+            self.append(item);
+            if has_storage_error() { return; }
+        }
     }
     fn list(&self) -> Vec<StoredValue>;
     /// Length / one element of the list, without materializing it
@@ -165,7 +180,20 @@ impl StorageBackend for MemoryBackend {
     }
 
     fn append(&self, value: StoredValue) {
-        self.log.write().unwrap_or_else(|e| e.into_inner()).push(value);
+        let mut log = self.log.write().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.map.write().unwrap_or_else(|e| e.into_inner());
+        if log.is_empty() {
+            let mut keys: Vec<_> = map.keys().filter(|k| !k.starts_with("__")).cloned().collect();
+            keys.sort();
+            for key in keys { log.push(map.remove(&key).unwrap()); }
+        } else { map.retain(|k, _| k.starts_with("__")); }
+        log.push(value);
+    }
+
+    fn replace_list(&self, items: Vec<StoredValue>) {
+        let mut log = self.log.write().unwrap_or_else(|e| e.into_inner());
+        self.map.write().unwrap_or_else(|e| e.into_inner()).retain(|k, _| k.starts_with("__"));
+        *log = items;
     }
 
     fn unappend(&self) {
@@ -207,9 +235,9 @@ impl StorageBackend for MemoryBackend {
     }
 
     fn len(&self) -> usize {
-        self.map.read().unwrap_or_else(|e| e.into_inner()).keys()
-            .filter(|k| !k.starts_with("__")).count()
-            + self.log.read().unwrap_or_else(|e| e.into_inner()).len()
+        let log = self.log.read().unwrap_or_else(|e| e.into_inner());
+        let map = self.map.read().unwrap_or_else(|e| e.into_inner());
+        map.keys().filter(|k| !k.starts_with("__")).count() + log.len()
     }
 
     fn backend_name(&self) -> &str {
@@ -217,137 +245,7 @@ impl StorageBackend for MemoryBackend {
     }
 }
 
-/// Persistent storage — uses a simple JSON file for now.
-/// In production this would be SQLite, Postgres, etc.
-pub struct FileBackend {
-    path: String,
-    map: RwLock<HashMap<String, StoredValue>>,
-    log: RwLock<Vec<StoredValue>>,
-}
-
-impl FileBackend {
-    pub fn new(cell_name: &str, slot_name: &str) -> Self {
-        let path = data_dir().join(format!("{}_{}.json", cell_name, slot_name)).to_string_lossy().to_string();
-
-        // Load existing data if present, preserving types
-        let (map, log) = if let Ok(data) = std::fs::read_to_string(&path) {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
-                let map = parsed.get("map")
-                    .and_then(|m| m.as_object())
-                    .map(|obj| {
-                        obj.iter()
-                            .map(|(k, v)| (k.clone(), json_to_stored(v)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let log = parsed.get("log")
-                    .and_then(|l| l.as_array())
-                    .map(|arr| arr.iter().map(json_to_stored).collect())
-                    .unwrap_or_default();
-                (map, log)
-            } else {
-                (HashMap::new(), Vec::new())
-            }
-        } else {
-            (HashMap::new(), Vec::new())
-        };
-
-        Self {
-            path,
-            map: RwLock::new(map),
-            log: RwLock::new(log),
-        }
-    }
-
-    fn persist(&self) {
-        let _ = std::fs::create_dir_all(data_dir());
-
-        let map: HashMap<String, serde_json::Value> = self.map.read().unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), stored_to_json(v)))
-            .collect();
-        let log: Vec<serde_json::Value> = self.log.read().unwrap()
-            .iter()
-            .map(stored_to_json)
-            .collect();
-
-        let data = serde_json::json!({
-            "map": map,
-            "log": log,
-        });
-
-        // Atomic write: write to temp file then rename to avoid TOCTOU races
-        let tmp_path = format!("{}.tmp", self.path);
-        if std::fs::write(&tmp_path, serde_json::to_string_pretty(&data).unwrap()).is_ok() {
-            let _ = std::fs::rename(&tmp_path, &self.path);
-        }
-    }
-}
-
-impl StorageBackend for FileBackend {
-    fn get(&self, key: &str) -> Option<StoredValue> {
-        self.map.read().unwrap().get(key).cloned()
-    }
-
-    fn set(&self, key: &str, value: StoredValue) {
-        self.map.write().unwrap().insert(key.to_string(), value);
-        self.persist();
-    }
-
-    fn delete(&self, key: &str) -> bool {
-        let removed = self.map.write().unwrap().remove(key).is_some();
-        if removed { self.persist(); }
-        removed
-    }
-
-    fn append(&self, value: StoredValue) {
-        self.log.write().unwrap().push(value);
-        self.persist();
-    }
-
-    fn unappend(&self) {
-        self.log.write().unwrap().pop();
-        self.persist();
-    }
-
-    fn list(&self) -> Vec<StoredValue> {
-        let log = self.log.read().unwrap();
-        if !log.is_empty() {
-            return log.clone();
-        }
-        self.map.read().unwrap().iter()
-            .filter(|(k, _)| !k.starts_with("__"))
-            .map(|(_, v)| v.clone())
-            .collect()
-    }
-
-    fn keys(&self) -> Vec<String> {
-        self.map.read().unwrap().keys()
-            .filter(|k| !k.starts_with("__"))
-            .cloned().collect()
-    }
-
-    fn values(&self) -> Vec<StoredValue> {
-        self.map.read().unwrap().iter()
-            .filter(|(k, _)| !k.starts_with("__"))
-            .map(|(_, v)| v.clone())
-            .collect()
-    }
-
-    fn has(&self, key: &str) -> bool {
-        self.map.read().unwrap().contains_key(key)
-    }
-
-    fn len(&self) -> usize {
-        self.map.read().unwrap().keys()
-            .filter(|k| !k.starts_with("__")).count()
-            + self.log.read().unwrap().len()
-    }
-
-    fn backend_name(&self) -> &str {
-        "file"
-    }
-}
+pub use super::file_storage::FileBackend;
 
 /// SQLite storage — real ACID database. Used for [persistent, consistent].
 /// Zero config: creates a .soma.db file automatically.
@@ -410,6 +308,19 @@ pub fn shared_connection() -> Option<Arc<std::sync::Mutex<rusqlite::Connection>>
 }
 
 impl SqliteBackend {
+    fn read<T>(&self, what: &str, f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T>) -> Option<T> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        match f(&conn) {
+            Ok(value) => Some(value),
+            Err(e) => { note_read_error(&format!("{} {what}", self.table), &e); None }
+        }
+    }
+    fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredValue> {
+        let value: String = row.get(0)?;
+        let tag: String = row.get(1)?;
+        Ok(Self::load_typed(&value, &tag))
+    }
+
     // SQLite may refuse a lock upgrade without invoking busy_timeout,
     // notably while fresh processes switch the same database to WAL.
     // These initialization statements are idempotent and may be retried.
@@ -432,6 +343,7 @@ impl SqliteBackend {
     // RAISE(ROLLBACK)). Refuse every subsequent write until its caller has
     // unwound the unit; otherwise it would silently run in autocommit mode.
     fn may_write(conn: &rusqlite::Connection) -> bool {
+        if has_storage_error() { return false; }
         if TRANSACTION_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) && conn.is_autocommit() {
             note_write_error("write", &"the database already rolled back the transaction");
             false
@@ -540,32 +452,39 @@ impl SqliteBackend {
     }
 }
 
-/// The last write the database refused (a read-only .soma_data, a full
-/// disk): the handler that caused it raises instead of answering 200 while
-/// the write silently did nothing.
-static WRITE_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-
-pub fn note_write_error(what: &str, e: &dyn std::fmt::Display) {
-    let mut g = WRITE_ERROR.lock().unwrap_or_else(|e| e.into_inner());
-    if g.is_none() { *g = Some(format!("{}: {}", what, e)); }
+/// Keep absence distinct from a backend failure until the interpreter can
+/// raise it. A read failure cannot supply a trustworthy undo value.
+#[derive(Debug)]
+pub struct StorageFailure {
+    pub read: bool,
+    pub detail: String,
 }
-
-/// Takes the pending write error, if any (checked after each slot write).
-pub fn take_write_error() -> Option<String> {
-    WRITE_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take()
+impl std::fmt::Display for StorageFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.detail.fmt(f) }
+}
+static WRITE_ERROR: std::sync::Mutex<Option<StorageFailure>> = std::sync::Mutex::new(None);
+static HAS_ERROR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn note_error(read: bool, what: &str, e: &dyn std::fmt::Display) {
+    let mut g = WRITE_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_none() { *g = Some(StorageFailure { read, detail: format!("{what}: {e}") }); HAS_ERROR.store(true, std::sync::atomic::Ordering::Release); }
+}
+pub fn note_write_error(what: &str, e: &dyn std::fmt::Display) { note_error(false, what, e); }
+pub fn note_read_error(what: &str, e: &dyn std::fmt::Display) { note_error(true, what, e); }
+pub fn has_storage_error() -> bool { HAS_ERROR.load(std::sync::atomic::Ordering::Acquire) }
+pub fn take_write_error() -> Option<StorageFailure> {
+    let mut error = WRITE_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+    let value = error.take();
+    HAS_ERROR.store(false, std::sync::atomic::Ordering::Release);
+    value
 }
 
 impl StorageBackend for SqliteBackend {
     fn get(&self, key: &str) -> Option<StoredValue> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT value, type FROM \"{}\" WHERE key = ?1", self.table
-        )).ok()?;
-        stmt.query_row(rusqlite::params![key], |row| {
-            let val: String = row.get(0)?;
-            let typ: String = row.get(1)?;
-            Ok(Self::load_typed(&val, &typ))
-        }).ok()
+        self.read("get", |conn| {
+            let mut stmt = conn.prepare(&format!("SELECT value, type FROM \"{}\" WHERE key = ?1", self.table))?;
+            use rusqlite::OptionalExtension;
+            stmt.query_row(rusqlite::params![key], Self::read_row).optional()
+        }).flatten()
     }
 
     fn set(&self, key: &str, value: StoredValue) {
@@ -584,10 +503,14 @@ impl StorageBackend for SqliteBackend {
 
     fn append(&self, value: StoredValue) {
         let (val_str, type_tag) = Self::store_typed(&value);
-        self.write("append", |conn| conn.execute(
-            &format!("INSERT INTO \"{}_log\" (value, type) VALUES (?1, ?2)", self.table),
-            rusqlite::params![val_str, type_tag],
-        ));
+        self.write("append", |conn| {
+            let empty: bool = conn.query_row(&format!("SELECT NOT EXISTS (SELECT 1 FROM \"{}_log\")", self.table), [], |r| r.get(0))?;
+            if empty {
+                conn.execute(&format!("INSERT INTO \"{0}_log\" (value, type) SELECT value, type FROM \"{0}\" WHERE substr(key,1,2) != '__' ORDER BY key", self.table), [])?;
+            }
+            conn.execute(&format!("DELETE FROM \"{}\" WHERE substr(key,1,2) != '__'", self.table), [])?;
+            conn.execute(&format!("INSERT INTO \"{}_log\" (value, type) VALUES (?1, ?2)", self.table), rusqlite::params![val_str, type_tag])
+        });
     }
 
     fn unappend(&self) {
@@ -597,11 +520,9 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn list_len(&self) -> usize {
-        let n: i64 = {
-            let conn = self.conn.lock().unwrap();
-            conn.query_row(&format!("SELECT COUNT(*) FROM \"{}_log\"", self.table), [], |r| r.get(0)).unwrap_or(0)
-        };
-        if n > 0 { n as usize } else { self.list().len() }
+        let count: Option<i64> = self.read("list length", |conn| conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}_log\"", self.table), [], |r| r.get(0)));
+        match count { Some(0) => self.list().len(), Some(n) => n as usize, None => 0 }
     }
 
     fn list_get(&self, i: usize) -> Option<StoredValue> {
@@ -609,15 +530,15 @@ impl StorageBackend for SqliteBackend {
         // gaps. A missing earlier row shifts every later list position,
         // even when MIN(id) + i happens to exist.
         let conn = self.conn.lock().unwrap();
-        let version = conn.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0)).ok()?;
-        let changes = conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0)).ok()?;
+        let version = conn.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0)).map_err(|e| note_read_error("list index", &e)).ok()?;
+        let changes = conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0)).map_err(|e| note_read_error("list index", &e)).ok()?;
         let epoch = LIST_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
         let mut layout = self.list_layout.lock().unwrap();
         if !layout.as_ref().is_some_and(|l| (l.version, l.changes, l.epoch) == (version, changes, epoch)) {
             let (first, last, count): (Option<i64>, Option<i64>, i64) = conn.query_row(
                 &format!("SELECT MIN(id), MAX(id), COUNT(*) FROM \"{}_log\"", self.table), [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            ).ok()?;
+            ).map_err(|e| note_read_error("list index", &e)).ok()?;
             let contiguous = first.zip(last).is_some_and(|(a,b)| i128::from(b) - i128::from(a) + 1 == i128::from(count));
             *layout = Some(ListLayout { version, changes, epoch, first, contiguous });
         }
@@ -628,21 +549,21 @@ impl StorageBackend for SqliteBackend {
             // no log rows: a list kept under the key/value table
             return self.list().into_iter().nth(i);
         };
-        let index = i64::try_from(i).ok()?;
+        let index = i64::try_from(i).map_err(|e| note_read_error("list index", &e)).ok()?;
         let (query, position) = if l.contiguous {
             (format!("SELECT value, type FROM \"{}_log\" WHERE id = ?1", self.table), min.checked_add(index)?)
         } else {
             (format!("SELECT value, type FROM \"{}_log\" ORDER BY id LIMIT 1 OFFSET ?1", self.table), index)
         };
-        conn.query_row(
-            &query, rusqlite::params![position],
-            |row| { let v: String = row.get(0)?; let t: String = row.get(1)?; Ok(Self::load_typed(&v, &t)) },
-        ).ok()
+        use rusqlite::OptionalExtension;
+        conn.query_row(&query, rusqlite::params![position], Self::read_row)
+            .optional().map_err(|e| note_read_error("list index", &e)).ok().flatten()
     }
 
     fn replace_list(&self, items: Vec<StoredValue>) {
         self.write("replace list", |conn| {
             conn.execute(&format!("DELETE FROM \"{}_log\"", self.table), [])?;
+            conn.execute(&format!("DELETE FROM \"{}\" WHERE substr(key,1,2) != '__'", self.table), [])?;
             for item in items {
                 let (value, tag) = Self::store_typed(&item);
                 conn.execute(
@@ -655,72 +576,44 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn list(&self) -> Vec<StoredValue> {
-        let conn = self.conn.lock().unwrap();
-        // First try the log table
-        let mut stmt = conn.prepare(&format!(
-            "SELECT value, type FROM \"{}_log\" ORDER BY id", self.table
-        )).unwrap();
-        let log_items: Vec<StoredValue> = stmt.query_map([], |row| {
-            let val: String = row.get(0)?;
-            let typ: String = row.get(1)?;
-            Ok(Self::load_typed(&val, &typ))
-        }).unwrap().filter_map(|r| r.ok()).collect();
-        if !log_items.is_empty() {
-            return log_items;
-        }
-        // Fall back to KV table values when log is empty (data was added via set())
-        let mut stmt = conn.prepare(&format!(
-            "SELECT value, type FROM \"{}\" WHERE substr(key, 1, 2) != '__' ORDER BY key", self.table
-        )).unwrap();
-        stmt.query_map([], |row| {
-            let val: String = row.get(0)?;
-            let typ: String = row.get(1)?;
-            Ok(Self::load_typed(&val, &typ))
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        self.read("list", |conn| {
+            let mut stmt = conn.prepare(&format!("SELECT value, type FROM \"{}_log\" ORDER BY id", self.table))?;
+            let rows = stmt.query_map([], Self::read_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            if !rows.is_empty() { return Ok(rows); }
+            let mut stmt = conn.prepare(&format!("SELECT value, type FROM \"{}\" WHERE substr(key,1,2) != '__' ORDER BY key", self.table))?;
+            let rows = stmt.query_map([], Self::read_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).unwrap_or_default()
     }
 
     fn keys(&self) -> Vec<String> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT key FROM \"{}\" ORDER BY key", self.table
-        )).unwrap();
-        stmt.query_map([], |row| {
-            let key: String = row.get(0)?;
-            Ok(key)
-        }).unwrap()
-            .filter_map(|r| r.ok())
-            .filter(|k| !k.starts_with("__"))
-            .collect()
+        self.read("keys", |conn| {
+            let mut stmt = conn.prepare(&format!("SELECT key FROM \"{}\" ORDER BY key", self.table))?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows.into_iter().filter(|k| !k.starts_with("__")).collect())
+        }).unwrap_or_default()
     }
 
     fn values(&self) -> Vec<StoredValue> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT value, type FROM \"{}\" WHERE key NOT LIKE '\\_\\_%' ESCAPE '\\' ORDER BY key", self.table
-        )).unwrap();
-        stmt.query_map([], |row| {
-            let val: String = row.get(0)?;
-            let typ: String = row.get(1)?;
-            Ok(Self::load_typed(&val, &typ))
-        }).unwrap().filter_map(|r| r.ok()).collect()
+        self.read("values", |conn| {
+            let mut stmt = conn.prepare(&format!("SELECT value, type FROM \"{}\" WHERE substr(key,1,2) != '__' ORDER BY key", self.table))?;
+            let rows = stmt.query_map([], Self::read_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).unwrap_or_default()
     }
 
     fn has(&self, key: &str) -> bool {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT 1 FROM \"{}\" WHERE key = ?1", self.table
-        )).unwrap();
-        stmt.exists(rusqlite::params![key]).unwrap_or(false)
+        self.read("has", |conn| {
+            let mut stmt = conn.prepare(&format!("SELECT 1 FROM \"{}\" WHERE key = ?1", self.table))?;
+            stmt.exists(rusqlite::params![key])
+        }).unwrap_or(false)
     }
 
     fn len(&self) -> usize {
-        let conn = self.conn.lock().unwrap();
-        let count: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM \"{}\" WHERE key NOT LIKE '\\_\\_%' ESCAPE '\\'", self.table),
-            [],
-            |row| row.get(0),
-        ).unwrap_or(0);
-        count as usize
+        self.read("length", |conn| conn.query_row(
+            &format!("SELECT COUNT(*) FROM \"{}\" WHERE substr(key,1,2) != '__'", self.table), [],
+            |r| r.get::<_, i64>(0),
+        )).unwrap_or(0) as usize
     }
 
     fn backend_name(&self) -> &str {

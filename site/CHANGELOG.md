@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## 2.8.9 — 2026-09-20
+
+### Storage reads, legacy lists and provider failures
+
+- SQLite read failures are distinct from missing keys and empty collections.
+  Unreadable rows and refused queries propagate errors instead of disappearing,
+  returning fabricated defaults or panicking. Bare and indexed slot reads stop
+  the invocation and roll back earlier local writes. An unreadable previous
+  value cannot become a compensating delete in the undo journal.
+- Appending to a legacy list preserves its keyed values in their existing sorted
+  order. Replacing or deleting its last item cannot resurrect the old values.
+  Memory and JSON backends replace legacy lists directly; the generic provider
+  fallback detects a non-progressing removal instead of looping indefinitely.
+- The JSON file backend refuses malformed files, invalid map/log shapes and
+  unreadable paths. Mutations publish a uniquely named temporary file before
+  changing the in-memory state; a refused write or rename preserves the old
+  state. Keys and values have matching deterministic order.
+- The HTTP storage adapter checks status codes, acknowledgements, typed values
+  and collection shapes. Failures are reported instead of becoming success,
+  absence, false or zero. Responses are bounded to 16 MiB and requests time out
+  after 30 seconds. Typed non-finite Floats preserve NaN and both infinities;
+  legacy integer replies outside signed 64-bit range retain their precision.
+- `soma test-provider` fails when its CRUD sequence reports a storage error.
+  Both provider demos preserve typed envelopes and isolate cell/slot names;
+  their list removal and collection endpoints follow the adapter protocol.
+- Add 21 isolated backend unit tests, 13 CLI storage regressions and two provider
+  demo integration checks (including three Python HTTP scenarios). Thirty new
+  storage regressions were reproduced on 2.8.8; both old demos also fail the new
+  protocol checks.
+
+**Compatibility:** a storage read failure aborts the invocation, including
+inside `try`, because its value cannot safely drive further writes or rollback.
+Write refusals still report kind `storage` when the transaction remains usable.
+The legacy JSON backend supports per-file replacement, not SQLite multi-slot
+transactions or cross-process isolation. HTTP providers have no transaction or
+exactly-once protocol: a transport failure can leave a remote write's outcome
+unknown. These adapter fixes do not add HTTP provider wiring to `run`/`serve`.
+Cluster replication remains experimental and eventual.
+
 ## 2.8.8 — 2026-09-20
 
 ### SQLite failures, transaction boundaries and persistent lists

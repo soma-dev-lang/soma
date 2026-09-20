@@ -1690,6 +1690,7 @@ impl Interpreter {
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
+        if crate::runtime::storage::has_storage_error() { self.check_storage_write()?; }
         self.check_transaction()?;
         match stmt {
             Statement::Let { name, value } => {
@@ -2200,6 +2201,7 @@ impl Interpreter {
         cell_name: &str,
         signal_name: &str,
     ) -> Result<Value, ExecError> {
+        if crate::runtime::storage::has_storage_error() { self.check_storage_write()?; }
         self.check_transaction()?;
         match expr {
             Expr::Literal(lit) => {
@@ -2221,6 +2223,7 @@ impl Interpreter {
                 if let Some(v) = env.get(name) {
                     Ok(v.clone())
                 } else if let Some(v) = self.materialize_slot(cell_name, name) {
+                    self.check_storage_write()?;
                     // a memory slot read by its bare name: its whole content
                     // (List → items, Map → entries). Writes go through
                     // slot.push / slot.set — never through assignment.
@@ -2744,8 +2747,12 @@ impl Interpreter {
                         if self.slot_kind(cell_name, slot_name) == Some("List") {
                             let backend = self.storage.get(&format!("{}.{}", cell_name, slot_name)).or_else(|| if cell_name.is_empty() || self.is_test_cell(cell_name) { self.storage.get(slot_name.as_str()) } else { None }).cloned();
                             if let Some(b) = backend {
-                                let i = list_position(&key, b.list_len(), "list").map_err(ExecError::Runtime)?;
-                                return Ok(b.list_get(i).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).unwrap_or(Value::Unit));
+                                let len = b.list_len();
+                                self.check_storage_write()?;
+                                let i = list_position(&key, len, "list").map_err(ExecError::Runtime)?;
+                                let value = b.list_get(i).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).unwrap_or(Value::Unit);
+                                self.check_storage_write()?;
+                                return Ok(value);
                             }
                         }
                         return self.call_storage_method(cell_name, slot_name, "get", &[key]);
@@ -3124,8 +3131,10 @@ impl Interpreter {
                 }
 
                 // Write locally (journaled: a failing handler is rolled back)
+                let prev = backend.get(&key_str);
+                self.check_storage_write()?;
                 if let Some(j) = self.journal.as_mut() {
-                    j.push(UndoOp::Restore { backend: backend.clone(), key: key_str.clone(), prev: backend.get(&key_str) });
+                    j.push(UndoOp::Restore { backend: backend.clone(), key: key_str.clone(), prev });
                 }
                 backend.set(&key_str, value_to_stored(val));
                 self.check_storage_write()?;
@@ -4564,6 +4573,7 @@ impl Interpreter {
                 pending.map(|e| format!(": {e}")).unwrap_or_default())));
         }
         if let Some(e) = pending {
+            if e.read { return Err(self.fail_transaction(format!("storage read failed ({e})"))); }
             return Err(RuntimeError::Domain { kind: "storage".into(),
                 message: format!("storage: the database refused a write ({e})") });
         }
@@ -4594,6 +4604,7 @@ impl Interpreter {
     fn unit_begin(&mut self) -> Result<Unit, RuntimeError> {
         let serial = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         self.last_commit_writes = 0;
+        self.check_storage_write()?;
         self.prepare_persistent_auxiliary_storage()?;
         let txn = crate::runtime::storage::shared_connection();
         if let Some(c) = &txn {
@@ -7040,3 +7051,6 @@ fn show_invariant(inv: &Expr, slot: &str) -> String {
 
 #[cfg(test)]
 mod transaction_tests;
+
+#[cfg(test)]
+mod backend_tests;

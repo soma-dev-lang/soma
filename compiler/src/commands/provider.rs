@@ -96,7 +96,9 @@ pub fn cmd_test_provider(name: &str) {
                 backend.delete("test_key");
                 let after = backend.get("test_key");
 
-                let ok = got.is_some() && keys.contains(&"test_key".to_string()) && after.is_none();
+                let storage_error = runtime::storage::take_write_error();
+                if let Some(error) = &storage_error { eprintln!("  storage: {error}"); }
+                let ok = storage_error.is_none() && got.is_some() && keys.contains(&"test_key".to_string()) && after.is_none();
                 if ok {
                     println!("  ✓ [{}] → {} — CRUD passed", label, backend.backend_name());
                     pass += 1;

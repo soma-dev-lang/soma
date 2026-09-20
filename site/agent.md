@@ -10,12 +10,12 @@ carries the rest.
 (`face`), storage with invariants (`memory`), a model-checked lifecycle
 (`state`), handlers (`on`), HTTP routes and tests.
 
-## Implementation scope — Soma 2.8.8
+## Implementation scope — Soma 2.8.9
 
 The language core is implemented; recent audits cover numeric boundaries,
 typed inputs and storage, evaluation order, collections, dispatch, constructors,
-SQLite failures and transaction boundaries.
-Release validation passed 629 Rust tests, 118 CLI checks, 321 corpus programs
+SQLite failures, transaction boundaries, legacy lists and storage providers.
+Release validation passed 665 Rust tests, 118 CLI checks, 321 corpus programs
 and 1,280 independent numeric comparisons. Evidence and current status:
 https://soma-lang.dev/status.
 
@@ -78,6 +78,21 @@ with the `features` you need before writing a new cell).
   calls `transition()`.
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
+
+## Storage and provider corrections in Soma 2.8.9 (2026-09-20)
+
+Soma 2.8.9 distinguishes storage read failures from absent keys and empty
+collections. A failed read aborts the invocation and rolls back earlier local
+writes, including inside `try`. Legacy lists retain their values on append and
+cannot resurrect deleted items or hang during replacement. The JSON backend
+refuses malformed/unreadable files and preserves its old state on write failure.
+The HTTP storage adapter validates responses, propagates failures and preserves
+typed non-finite Floats. Both protocol demos are corrected. Thirty-six new Rust
+regressions cover these changes (including three Python HTTP scenarios).
+Scope: JSON storage has per-file replacement, not SQLite multi-slot transactions;
+HTTP providers have no remote transaction or exactly-once guarantee, and this
+release does not wire HTTP providers into `run`/`serve`.
+Details: https://soma-lang.dev/CHANGELOG.md.
 
 ## Persistence corrections in Soma 2.8.8 (2026-09-20)
 
@@ -153,7 +168,7 @@ actuation. Eventual cluster replication does not establish distributed safety.
 
 ## Cluster corrections in Soma 2.8.2 (2026-09-20)
 
-Use [Soma 2.8.8](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.8), which includes these corrections.
+Use [Soma 2.8.9](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.9), which includes these corrections.
 `scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
 Updates preserve types and are published after commit. Reconnect and periodic
 state exchange carry per-key logical versions and deletion markers. Use a

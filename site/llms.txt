@@ -30,6 +30,19 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
+Soma 2.8.9 distinguishes storage read failures from absent keys and empty
+collections. A failed read aborts the invocation and rolls back earlier local
+writes, including inside `try`. Legacy lists retain their values on append and
+cannot resurrect deleted items or hang during replacement. The JSON backend
+refuses malformed/unreadable files and preserves its old state on write failure.
+The HTTP storage adapter validates responses, propagates failures and preserves
+typed non-finite Floats. Both protocol demos are corrected. Thirty-six new Rust
+regressions cover these changes (including three Python HTTP scenarios).
+Scope: JSON storage has per-file replacement, not SQLite multi-slot transactions;
+HTTP providers have no remote transaction or exactly-once guarantee, and this
+release does not wire HTTP providers into `run`/`serve`.
+Details: https://soma-lang.dev/CHANGELOG.md.
+
 Soma 2.8.8 checks SQLite transaction boundaries and propagates refused writes
 from `remember()`, `next_id()` and transitions. Failed commits withhold queued
 events and replication; failed task boundaries stop execution. Auxiliary tables
@@ -493,8 +506,8 @@ previous tick. verify checks the `transition()` targets of these blocks too.
 
 ## Handlers are atomic
 
-A top-level handler invocation is all-or-nothing: if it raises, every memory
-write and every `transition()` it made is rolled back. A failing `try { }`
+With SQLite or in-memory storage, a top-level handler invocation is
+all-or-nothing: if it raises, its slot writes and transitions are rolled back. A failing `try { }`
 block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their new value), and the handler continues. Under
 `soma serve` handlers run one at a time (a [task] handler: each step between think()s), so read-modify-write is safe
 (300 parallel payments of 10 against a balance of 1000 pay exactly 100).
@@ -502,11 +515,14 @@ block's slot writes, transitions and pushes are rolled back to where it started 
 `push`, a Map slot only gains new keys; overwriting or deleting an entry
 raises kind `invariant` (an audit log that cannot be truncated or rewritten).
 
-With persistent slots the handler IS one SQLite transaction: a process killed
+With SQLite persistent slots the handler IS one SQLite transaction: a process killed
 mid-handler (`kill -9`) leaves nothing of it on disk. `every` / `after` ticks
 are handler invocations too (same rollback). You do not write compensation
 code. Not rolled back: effects outside the process (http calls, think(),
-emitted events).
+emitted events). Storage read failures abort the invocation even inside `try`.
+The legacy JSON backend only replaces individual files; it has no multi-slot
+transaction or cross-process isolation. The HTTP provider adapter has no remote
+transactions, and a failed write may have reached the remote service.
 
 ## Errors
 

@@ -5,21 +5,17 @@ Usage:
   python tools/sidecar/server.py
   python tools/sidecar/server.py --port 9100
 
-This implements the Soma storage provider HTTP protocol.
-Any Soma app can use this as a backend by setting:
-
-  [storage]
-  provider = "sidecar"
-  [storage.config]
-  url = "http://localhost:9100"
+This is an in-memory protocol demo for `soma test-provider`. A provider
+manifest can use native = "http://localhost:9100". It has no durability,
+transactions or authentication; it is not a production storage service.
 """
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 import sys
 
-storage = {}  # "cell.field" -> dict of key -> StoredValue
-logs = {}     # "cell.field" -> list of StoredValue
+storage = {}  # (cell, field) -> dict of key -> StoredValue
+logs = {}     # (cell, field) -> list of StoredValue
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -35,7 +31,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(content_len)) if content_len > 0 else {}
         cell = body.get('cell', '')
         field = body.get('field', '')
-        ns = f"{cell}.{field}"
+        ns = (cell, field)
 
         if ns not in storage:
             storage[ns] = {}
@@ -58,11 +54,12 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({'deleted': deleted})
 
         elif path == '/keys':
-            keys = [k for k in storage[ns].keys() if not k.startswith('__')]
+            keys = sorted(k for k in storage[ns] if not k.startswith('__'))
             self.respond({'keys': keys})
 
         elif path == '/values':
-            self.respond({'values': list(storage[ns].values())})
+            keys = sorted(k for k in storage[ns] if not k.startswith('__'))
+            self.respond({'values': [storage[ns][k] for k in keys]})
 
         elif path == '/has':
             self.respond({'exists': body['key'] in storage[ns]})
@@ -73,6 +70,11 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/append':
             logs[ns].append(body['value'])
+            self.respond({'ok': True})
+
+        elif path == '/unappend':
+            if logs[ns]:
+                logs[ns].pop()
             self.respond({'ok': True})
 
         elif path == '/list':
