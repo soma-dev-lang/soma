@@ -35,6 +35,7 @@ pub(crate) enum UndoOp {
     Push(BusEvent),
     /// a cross-process `emit` line for the [peers] bus, sent at commit
     PeerSend(String),
+    Cluster(crate::runtime::cluster::Update),
     /// a horde started / cancelled: applied to the live registry (workers
     /// start) when the unit commits; undoing it is dropping it
     Horde(horde::Commit),
@@ -46,6 +47,11 @@ pub(crate) enum UndoOp {
 /// 1000 with 50 parallel calls paid out 122–153 times). Handlers are
 /// serialized: correctness first, the language's claim is that limits hold.
 static HANDLER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn with_committed_storage<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
 /// Set by `soma serve`: no terminal is attached to a request, so `approve()`
 /// can never prompt — it fails closed instead of auto-approving.
 pub static IN_SERVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -3197,7 +3203,7 @@ impl Interpreter {
 
         // Is this slot sharded across the cluster?
         let is_sharded = self.cluster.is_some()
-            && (self.sharded_slots.contains_key(slot_name) || self.sharded_slots.contains_key(&prefixed));
+            && self.sharded_slots.contains_key(&prefixed);
 
         // A List slot is its append log: len / values / get(i) / first /
         // last read the log (the keyed map underneath is empty, so `.len`
@@ -3312,21 +3318,6 @@ impl Interpreter {
                     )))?;
                 let key_str = format!("{}", key);
 
-                // In cluster mode: check local first, then ask peers if not found
-                if is_sharded {
-                    if let Some(stored) = backend.get(&key_str) {
-                        return Ok(self.from_slot(cell_name, slot_name, stored_to_value(stored)));
-                    }
-                    if let Some(ref cluster) = self.cluster {
-                        if !cluster.owns_key(&key_str) {
-                            if let Some(val) = self.cluster_remote_get(slot_name, &key_str) {
-                                return Ok(self.from_slot(cell_name, slot_name, val));
-                            }
-                        }
-                    }
-                    return Ok(Value::Unit);
-                }
-
                 match backend.get(&key_str) {
                     Some(stored) => Ok(self.from_slot(cell_name, slot_name, stored_to_value(stored))),
                     None => Ok(Value::Unit),
@@ -3354,7 +3345,6 @@ impl Interpreter {
                         "{}.set((), …): the key is () — an absent value (a mistyped field?) cannot be a key", slot_name) }));
                 }
                 let key_str = format!("{}", key);
-                let val_str = format!("{}", val);
 
                 if self.slot_immutable(cell_name, slot_name) && backend.get(&key_str).is_some() {
                     return Err(Self::immutable_refusal(slot_name, &format!("rewriting key \"{}\"", key_str)));
@@ -3382,7 +3372,7 @@ impl Interpreter {
 
                 // In cluster mode: broadcast to peers via EVENT bus
                 if is_sharded {
-                    self.cluster_broadcast_set(slot_name, &key_str, &val_str);
+                    self.cluster_write(&prefixed, &key_str, Some(value_to_stored(val)))?;
                 }
 
                 Ok(Value::Unit)
@@ -3424,7 +3414,7 @@ impl Interpreter {
 
                 // Broadcast delete to cluster
                 if is_sharded {
-                    self.cluster_broadcast_del(slot_name, &key_str);
+                    self.cluster_write(&prefixed, &key_str, None)?;
                 }
                 Ok(Value::Bool(removed))
             }
@@ -3481,10 +3471,8 @@ impl Interpreter {
                 Ok(Value::List(keys.into_iter().map(Value::String).collect()))
             }
             "values" => {
-                // In cluster mode: fan-out to all peers, merge with local
-                if is_sharded {
-                    return self.cluster_fan_out_values(slot_name, &backend);
-                }
+                // Full replicas: values/keys/len/get read the same local
+                // snapshot. Fan-out duplicated keys and mixed handler states.
                 let vals = backend.values();
                 Ok(Value::List(vals.into_iter().map(stored_to_value).collect()))
             }
@@ -3533,112 +3521,58 @@ impl Interpreter {
 
     // ── Cluster storage helpers ──────────────────────────────────────
 
-    /// Broadcast a set operation to all peers via EVENT bus
-    fn cluster_broadcast_set(&self, slot: &str, key: &str, value: &str) {
-        if let Some(ref peers) = self.peer_bus {
-            let msg = format!("EVENT _cluster_set {}\n",
-                serde_json::json!({"slot": slot, "key": key, "value": value}));
-            if let Ok(senders) = peers.lock() {
-                for tx in senders.iter() {
-                    let _ = tx.send(msg.clone());
-                }
-            }
+    fn cluster_write(&mut self, slot: &str, key: &str, value: Option<StoredValue>) -> Result<(), ExecError> {
+        if key.starts_with("__") {
+            return Err(ExecError::Runtime(RuntimeError::TypeError("cluster keys beginning with __ are reserved".into())));
         }
+        let Some(cluster) = self.cluster.clone() else { return Ok(()); };
+        let Some(meta) = cluster.metadata.get(slot).cloned() else { return Ok(()); };
+        let version = cluster.next_version().map_err(|e| ExecError::Runtime(RuntimeError::TypeError(e)))?;
+        let update = crate::runtime::cluster::Update {
+            slot: slot.into(), key: key.into(), version, deleted: value.is_none(),
+            value: value.as_ref().map(crate::runtime::storage::stored_to_json).unwrap_or(serde_json::Value::Null),
+        };
+        if crate::runtime::cluster::Frame::Update(update.clone()).encode().len() as u64 > BUS_MAX_LINE {
+            return Err(ExecError::Runtime(RuntimeError::TypeError("cluster update exceeds the 16 MiB bus line limit".into())));
+        }
+        if let Some(j) = self.journal.as_mut() {
+            j.push(UndoOp::Restore { backend: meta.clone(), key: key.into(), prev: meta.get(key) });
+            j.push(UndoOp::Cluster(update.clone()));
+        }
+        meta.set(key, StoredValue::String(serde_json::to_string(&update).unwrap()));
+        if self.journal.is_none() { cluster.broadcast(crate::runtime::cluster::Frame::Update(update)); }
+        Ok(())
     }
 
-    /// Broadcast a delete operation to all peers
-    fn cluster_broadcast_del(&self, slot: &str, key: &str) {
-        if let Some(ref peers) = self.peer_bus {
-            let msg = format!("EVENT _cluster_del {}\n",
-                serde_json::json!({"slot": slot, "key": key}));
-            if let Ok(senders) = peers.lock() {
-                for tx in senders.iter() {
-                    let _ = tx.send(msg.clone());
-                }
-            }
-        }
-    }
-
-    /// Request a value from the cluster (blocking with timeout)
-    fn cluster_remote_get(&self, slot: &str, key: &str) -> Option<Value> {
-        let cluster = self.cluster.as_ref()?;
-        let req_id = cluster.next_req_id();
-        let (tx, rx) = std::sync::mpsc::channel();
-
-        cluster.pending.lock().unwrap().insert(req_id.clone(), tx);
-
-        if let Some(ref peers) = self.peer_bus {
-            let msg = format!("EVENT _cluster_get {}\n",
-                serde_json::json!({"slot": slot, "key": key, "req_id": req_id}));
-            if let Ok(senders) = peers.lock() {
-                for sender in senders.iter() {
-                    let _ = sender.send(msg.clone());
-                }
-            }
-        }
-
-        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
-            Ok(value) => {
-                cluster.pending.lock().unwrap().remove(&req_id);
-                if value.is_empty() { None } else { Some(Value::String(value)) }
-            }
-            Err(_) => {
-                cluster.pending.lock().unwrap().remove(&req_id);
-                None
-            }
-        }
-    }
-
-    /// Fan-out values() to all peers, merge with local
-    fn cluster_fan_out_values(&self, slot: &str, local_backend: &Arc<dyn StorageBackend>) -> Result<Value, ExecError> {
-        // Start with local values
-        let mut all_values: Vec<Value> = local_backend.values()
-            .into_iter().map(stored_to_value).collect();
-
-        // Fan-out to peers
-        if let (Some(ref cluster), Some(ref peers)) = (&self.cluster, &self.peer_bus) {
-            let req_id = cluster.next_req_id();
-            let (tx, rx) = std::sync::mpsc::channel();
-            cluster.pending.lock().unwrap().insert(req_id.clone(), tx);
-
-            let msg = format!("EVENT _cluster_values {}\n",
-                serde_json::json!({"slot": slot, "req_id": req_id}));
-            let peer_count = if let Ok(senders) = peers.lock() {
-                for sender in senders.iter() {
-                    let _ = sender.send(msg.clone());
-                }
-                senders.len()
-            } else {
-                0
+    /// Apply a newer remote register under the same transaction and handler
+    /// lock as local writes. Replication never bypasses slot/type boundaries.
+    pub(crate) fn apply_cluster_update(&mut self, update: crate::runtime::cluster::Update) -> Result<(), ExecError> {
+        self.atomically(|me| {
+            let Some(cluster) = me.cluster.clone() else { return Ok(()); };
+            let Some(meta) = cluster.metadata.get(&update.slot).cloned() else {
+                return Err(ExecError::Runtime(RuntimeError::TypeError("cluster update targets a slot not selected by scale.shard".into())));
             };
-
-            // Collect replies with timeout (best-effort)
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            let mut replies = 0;
-            while replies < peer_count {
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() { break; }
-                match rx.recv_timeout(remaining) {
-                    Ok(json_str) => {
-                        replies += 1;
-                        // Parse the values array from the reply
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                            if let Some(arr) = parsed.as_array() {
-                                for v in arr {
-                                    if let Some(s) = v.as_str() {
-                                        all_values.push(Value::String(s.to_string()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => break,
-                }
+            if update.key.starts_with("__") || update.version.0 == 0 || !crate::runtime::cluster::valid_node_id(&update.version.1) {
+                return Err(ExecError::Runtime(RuntimeError::TypeError("invalid cluster update key/version".into())));
             }
-            cluster.pending.lock().unwrap().remove(&req_id);
-        }
-
-        Ok(Value::List(all_values))
+            if crate::runtime::cluster::ClusterNode::read_update(&*meta, &update.key).map_or(false, |old| old.version >= update.version) {
+                return Ok(());
+            }
+            let (cell, slot) = update.slot.split_once('.').ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError("cluster slot must be Cell.slot".into())))?;
+            let backend = me.storage.get(&update.slot).cloned().ok_or_else(|| ExecError::Runtime(RuntimeError::TypeError("unknown cluster slot".into())))?;
+            let value = if update.deleted { None } else {
+                let value = stored_to_value(crate::runtime::storage::json_to_stored(&update.value));
+                Some(value_to_stored(&me.check_slot_value_type(cell, slot, &value)?))
+            };
+            if let Some(j) = me.journal.as_mut() {
+                j.push(UndoOp::Restore { backend: backend.clone(), key: update.key.clone(), prev: backend.get(&update.key) });
+                j.push(UndoOp::Restore { backend: meta.clone(), key: update.key.clone(), prev: meta.get(&update.key) });
+            }
+            match value { Some(v) => backend.set(&update.key, v), None => { backend.delete(&update.key); } }
+            meta.set(&update.key, StoredValue::String(serde_json::to_string(&update).unwrap()));
+            cluster.observe(&update.version);
+            Ok(())
+        })
     }
 
     /// Evaluate a constraint expression, returning true/false
@@ -4826,7 +4760,7 @@ impl Interpreter {
                 },
                 Some(UndoOp::Unappend { backend }) => backend.unappend(),
                 Some(UndoOp::RestoreList { backend, prev }) => backend.replace_list(prev),
-                Some(UndoOp::Push(_)) | Some(UndoOp::PeerSend(_)) | Some(UndoOp::Horde(_)) => {}
+                Some(UndoOp::Push(_)) | Some(UndoOp::PeerSend(_)) | Some(UndoOp::Cluster(_)) | Some(UndoOp::Horde(_)) => {}
                 None => break,
             }
         }
@@ -4857,13 +4791,15 @@ impl Interpreter {
     fn unit_end(&mut self, unit: Unit, ok: bool) {
         // how many writes / transitions the invocation committed (a
         // scheduler tick logs it — ticks were invisible in the serve log)
-        self.last_commit_writes = if ok { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Horde(_))).count()) } else { 0 };
+        self.last_commit_writes = if ok { self.journal.as_ref().map_or(0, |j| j.iter().filter(|u| !matches!(u, UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Cluster(_) | UndoOp::Horde(_))).count()) } else { 0 };
         let mut peer_lines: Vec<String> = Vec::new();
+        let mut cluster_updates = Vec::new();
         let mut hordes: Vec<horde::Commit> = Vec::new();
         let pushes: Vec<BusEvent> = if ok {
             self.journal.take().unwrap_or_default().into_iter().filter_map(|u| match u {
                 UndoOp::Push(e) => Some(e),
                 UndoOp::PeerSend(l) => { peer_lines.push(l); None }
+                UndoOp::Cluster(u) => { cluster_updates.push(u); None }
                 UndoOp::Horde(c) => { hordes.push(c); None }
                 _ => None,
             }).collect()
@@ -4882,6 +4818,10 @@ impl Interpreter {
                 horde::Commit::Sync { spec, inputs } => self.deferred_hordes.push((spec, inputs)),
                 c => horde::apply_commit(c),
             }
+        }
+        if let Some(cluster) = &self.cluster {
+            for update in cluster_updates { cluster.broadcast(crate::runtime::cluster::Frame::Update(update)); }
+            for line in &peer_lines { cluster.broadcast(crate::runtime::cluster::Frame::Signal(line.trim_end_matches('\n').to_string())); }
         }
         if !peer_lines.is_empty() {
             if let Some(ref peers) = self.peer_bus {
@@ -6764,7 +6704,7 @@ fn undo(op: UndoOp) {
         },
         UndoOp::Unappend { backend } => backend.unappend(),
         UndoOp::RestoreList { backend, prev } => backend.replace_list(prev),
-        UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Horde(_) => {}
+        UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Cluster(_) | UndoOp::Horde(_) => {}
     }
 }
 

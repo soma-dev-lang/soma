@@ -216,3 +216,24 @@ fn native_int_division_matches_the_interpreter() {
     assert!(out.contains("idiv"), "the error must name the fix: {out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn native_build_is_not_redirected_by_the_callers_cargo_target_directory() {
+    let dir = std::env::temp_dir().join(format!("soma_native_target_{}",std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A per-test-process source forces a fresh cache entry.
+    let n = std::process::id();
+    std::fs::write(dir.join("app.cell"),format!(r#"
+cell N {{
+ face {{ signal calculate(n: Int) -> Int }}
+ on calculate(n: Int) [native] {{ return n + {n} }}
+}}
+cell test T {{ rules {{ assert calculate(7) == {} }} }}
+"#,n+7)).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_soma"))
+        .args(["test","app.cell"]).current_dir(&dir)
+        .env("CARGO_TARGET_DIR",dir.join("external-target"))
+        .output().unwrap();
+    assert!(out.status.success(),"{}{}",String::from_utf8_lossy(&out.stdout),String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(dir);
+}

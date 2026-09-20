@@ -227,8 +227,8 @@ footer {
   "operatingSystem": "macOS, Linux",
   "description": "Experimental cell-based programming language with state-machine checks, memory properties, agent-oriented tooling, and a Rust implementation.",
   "url": "https://soma-lang.dev",
-  "downloadUrl": "https://github.com/soma-dev-lang/soma/releases/tag/v2.8.1",
-  "softwareVersion": "2.8.1",
+  "downloadUrl": "https://github.com/soma-dev-lang/soma/releases/tag/v2.8.2",
+  "softwareVersion": "2.8.2",
   "license": "https://github.com/soma-dev-lang/soma/blob/main/LICENSE",
   "codeRepository": "https://github.com/soma-dev-lang/soma",
   "programmingLanguage": "Rust",
@@ -262,7 +262,7 @@ footer {
     <code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
     <button type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
   </div>
-  <p><strong>Latest release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.1">Soma 2.8.1</a></strong> — fixes for numeric precision, loop execution, cost proofs and native code. Linux and macOS binaries include SHA-256 checksums. <a href="/CHANGELOG.md">Read the release notes.</a></p>
+  <p><strong>Latest release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.2">Soma 2.8.2</a></strong> — cluster replication fixes: preserved types, rollback isolation, reconnect and recovery, with explicit verification limits. Linux and macOS binaries include SHA-256 checksums. <a href="/CHANGELOG.md">Read the release notes.</a></p>
   <p><strong>Reading this as an AI agent?</strong> Go to <a href="/agents">/agents</a>, or fetch <a href="/llms-full.txt">/llms-full.txt</a> (the whole language, one request), <a href="/builtins.json">/builtins.json</a> (exact signatures) and <a href="/corpus/index.json">/corpus/index.json</a> (300+ programs passing check+test, verified where they have a state machine, filterable by feature). A project's <code>AGENTS.md</code> block is at <a href="/agent.md">/agent.md</a>.</p>
   <p class="note">Installer note: the shell installer executes code fetched from the project repository. Review <a href="https://github.com/soma-dev-lang/soma/blob/main/site/setup.sh">site/setup.sh</a> before running it in an environment you care about.</p>
 </header>
@@ -375,11 +375,11 @@ eventually = ["filled", "rejected"]</code></pre>
     </div>
     <div class="card">
       <h3><span class="tag partial">partial</span>Distributed runtime</h3>
-      <p>Nodes can join through the signal bus. Replication is currently broadcast-based and should be treated as eventual, not consensus-backed.</p>
+      <p>Soma 2.8.2 replicates typed Map entries after local commit, reconnects peers, and resynchronizes data and deletion markers. Per-key logical versions resolve concurrent writes deterministically. Three-process tests cover seed loss and restart. Reads remain local and may be stale; there is no consensus, physical sharding or exactly-once delivery. <a href="/docs/cluster.md">Cluster guarantees and setup</a>.</p>
     </div>
     <div class="card">
       <h3><span class="tag partial">scoped</span>Formal claims</h3>
-      <p>What <code>soma verify</code> proves, it proves for every input: state-machine reachability, liveness (a terminal state is always reachable; <code>eventually</code> proves every run reaches one) and temporal properties; memory invariants by induction over every write (literal, clamped, <code>require</code>-narrowed or read-modify-write); termination of structurally recursive handlers; token cost bounds across sibling calls and scheduled blocks. What it cannot prove it reports as runtime-checked, and <code>--strict</code> turns that into a failure. Out of scope: arbitrary handler semantics, cross-cell properties, and what an LLM answers — those are tested, and validated at runtime. The exact table: <a href="/docs/guarantees.md">docs/guarantees.md</a>.</p>
+      <p><code>soma verify</code> checks each cell’s state graph, supported memory invariants, termination and cost bounds. A proof covers the inputs represented by its analysis; graph liveness does not ensure that someone calls a handler. Unproved checks are reported, and <code>--strict</code> rejects warnings. Cluster convergence, partition behavior, arbitrary handler semantics, cross-cell rules and LLM answers are outside these proofs. Strong and causal cluster declarations are rejected because their protocols are not implemented. <a href="/docs/guarantees.md">Exact guarantees and limits</a>.</p>
     </div>
   </div>
 </section>

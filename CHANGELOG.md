@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## 2.8.2 — 2026-09-20
+
+### Cluster correctness and recovery
+
+- Preserve stored value types in replication, including BigInt, nested
+  values, empty strings and null. Keep cell-qualified slot identities.
+- Publish writes and deletes only after local commit; roll back replication
+  metadata with failed handlers and `try` blocks. Apply incoming updates
+  under the normal handler lock and transaction, with slot type checks.
+- Replace duplicate, unmonitored cluster links with versioned full-mesh
+  discovery, bounded queues and reconnect. Canonical identities prevent
+  seed aliases from creating phantom members. Seeds require an acknowledgement.
+- Resolve per-key conflicts by `(Lamport counter, node ID)`; ignore stale
+  and duplicate updates. Persist deletion tombstones and versions with
+  SQLite data. Periodic state exchange repairs missed writes and deletions
+  after disconnect or restart. Local collection reads no longer fan out,
+  duplicate entries, lose types or wait for replies that cannot arrive.
+- Restrict cluster mutation to explicitly selected mutable Map slots.
+  Legacy private events cannot write arbitrary memory on ordinary services.
+  Require distinct data directories, reachable advertised IDs on public
+  interfaces, and fixed ports that leave room for the bus.
+- Re-evaluate advisory scheduler leadership on every tick; use monotonic
+  heartbeat expiry. Consistent-hash utility now distributes adjacent virtual
+  node names evenly; the runtime itself uses full replication.
+- Remove false verifier claims of linearizability, CAP modes, automatic
+  replication and guaranteed failure tolerance. Strong/causal consistency,
+  replicated Lists, immutable slots and memory invariants are refused.
+  `verify --strict` explicitly rejects unproved distributed behavior.
+- Document and test the supported scope: eventual full Map replication,
+  local reads, no consensus, no fenced scheduler and no exactly-once signals.
+
+- Native compilation pins its output directory so an inherited
+  `CARGO_TARGET_DIR` cannot make a successful build lose its shared library.
+  Test launchers use Cargo's actual binary path for alternate target directories.
+
+**Cluster upgrade:** protocol v2 requires upgrading all nodes together.
+Retain each `.soma_data` directory. Do not mix old and new cluster binaries.
+See `docs/site/cluster.md` for setup and limitations.
+
 ## 2.8.1 — 2026-09-20
 
 ### Continued language audit — 2026-09-20

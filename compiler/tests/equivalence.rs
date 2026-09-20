@@ -122,7 +122,7 @@ const CASES: &[Case] = &[
 
 /// Run `soma` from the test binary's working directory and capture stdout.
 fn soma_run(args: &[&str]) -> (String, String, i32) {
-    let exe = "./target/release/soma";
+    let exe = env!("CARGO_BIN_EXE_soma");
     let output = Command::new(exe)
         .args(args)
         .current_dir(env!("CARGO_MANIFEST_DIR"))

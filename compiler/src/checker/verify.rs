@@ -385,188 +385,55 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     results
 }
 
-/// Verify distributed scale properties
+/// Validate declarations, without inventing a distributed proof from them.
 fn verify_scale(cell: &CellDef) -> Option<VerifyResult> {
     let scale = cell.sections.iter().find_map(|s| {
-        if let Section::Scale(ref sc) = s.node { Some(sc) } else { None }
+        if let Section::Scale(sc) = &s.node { Some(sc) } else { None }
     })?;
-
     let mut result = VerifyResult {
-        machine_name: format!("{}/scale", cell.name),
-        states: vec![
-            "single".to_string(),
-            "distributed".to_string(),
-            "partitioned".to_string(),
-            "recovering".to_string(),
-        ],
-        initial: "single".to_string(),
-        transitions: vec![
-            ("single".to_string(), "distributed".to_string()),
-            ("distributed".to_string(), "partitioned".to_string()),
-            ("partitioned".to_string(), "recovering".to_string()),
-            ("recovering".to_string(), "distributed".to_string()),
-        ],
-        terminal_states: vec![],
-        checks: Vec::new(),
+        machine_name: format!("{}/scale", cell.name), states: vec![], initial: String::new(),
+        transitions: vec![], terminal_states: vec![], checks: Vec::new(),
     };
-
-    // Collect memory slots
-    let slots: Vec<(String, Vec<String>)> = cell.sections.iter()
-        .filter_map(|s| {
-            if let Section::Memory(ref mem) = s.node {
-                Some(mem.slots.iter().map(|slot| {
-                    let props: Vec<String> = slot.node.properties.iter()
-                        .map(|p| p.node.name().to_string()).collect();
-                    (slot.node.name.clone(), props)
-                }).collect::<Vec<_>>())
-            } else {
-                None
-            }
-        })
-        .flatten()
-        .collect();
-
-    // Check 1: replicas > 0
-    if scale.replicas > 0 {
-        result.checks.push(VerifyCheck::Pass(
-            format!("replicas: {} instances declared", scale.replicas)
-        ));
+    if scale.replicas == 0 {
+        result.checks.push(VerifyCheck::Fail("replicas must be > 0".into(), None));
     } else {
-        result.checks.push(VerifyCheck::Fail(
-            "replicas must be > 0".to_string(), None
-        ));
+        result.checks.push(VerifyCheck::Pass(format!("replicas: {} requested (serve does not provision instances)", scale.replicas)));
     }
-
-    // Check 2: tolerance < replicas
-    if scale.tolerance < scale.replicas {
-        result.checks.push(VerifyCheck::Pass(
-            format!("tolerance: survives {} node failures (of {} replicas)", scale.tolerance, scale.replicas)
-        ));
+    if scale.tolerance >= scale.replicas {
+        result.checks.push(VerifyCheck::Fail("tolerance must be less than replicas".into(), None));
     } else {
-        result.checks.push(VerifyCheck::Fail(
-            format!("tolerance ({}) must be < replicas ({})", scale.tolerance, scale.replicas),
-            None,
-        ));
+        result.checks.push(VerifyCheck::Note(format!("tolerance: {} declared; no fault-tolerance proof or quorum enforcement", scale.tolerance)));
     }
-
-    // Check 3: shard references valid memory
-    if let Some(ref shard_name) = scale.shard {
-        let slot = slots.iter().find(|(name, _)| name == shard_name);
-        match slot {
-            Some((_, props)) => {
-                result.checks.push(VerifyCheck::Pass(
-                    format!("shard: '{}' is a valid memory slot", shard_name)
-                ));
-
-                // Check 4: sharded memory should be persistent
-                if props.iter().any(|p| p == "persistent") {
-                    result.checks.push(VerifyCheck::Pass(
-                        format!("shard '{}' is [persistent] — data survives node restart", shard_name)
-                    ));
-                } else if props.iter().any(|p| p == "ephemeral") {
-                    result.checks.push(VerifyCheck::Warning(
-                        format!("shard '{}' is [ephemeral] — data lost on node failure (tolerance provides no durability guarantee)", shard_name)
-                    ));
+    if let Some(shard) = &scale.shard {
+        let found = cell.sections.iter().find_map(|s| {
+            let Section::Memory(mem) = &s.node else { return None; };
+            mem.slots.iter().find(|slot| slot.node.name == *shard).map(|slot| (mem, &slot.node))
+        });
+        match found {
+            None => result.checks.push(VerifyCheck::Fail(format!("shard '{shard}' is not a declared memory slot"), None)),
+            Some((mem, slot)) => {
+                let is_map = matches!(&slot.ty.node, TypeExpr::Generic { name, .. } | TypeExpr::Simple(name) if name == "Map");
+                if !is_map || !mem.invariants.is_empty() || slot.properties.iter().any(|p| p.node.name() == "immutable") {
+                    result.checks.push(VerifyCheck::Fail("cluster supports only mutable Map slots without memory invariants; global invariants and distributed List operations are not implemented".into(), None));
                 }
-
-                // Check 5: consistency coherence
-                let has_consistent = props.iter().any(|p| p == "consistent");
-                match scale.consistency {
-                    ScaleConsistency::Strong => {
-                        if has_consistent {
-                            result.checks.push(VerifyCheck::Pass(
-                                format!("consistency: strong — [consistent] memory '{}' with linearizable reads/writes", shard_name)
-                            ));
-                        } else {
-                            result.checks.push(VerifyCheck::Pass(
-                                format!("consistency: strong — all reads/writes to '{}' are linearizable", shard_name)
-                            ));
-                        }
-                    }
-                    ScaleConsistency::Causal => {
-                        result.checks.push(VerifyCheck::Pass(
-                            format!("consistency: causal — operations on '{}' respect causal ordering", shard_name)
-                        ));
-                    }
-                    ScaleConsistency::Eventual => {
-                        result.checks.push(VerifyCheck::Warning(
-                            format!("consistency: eventual — reads from '{}' may return stale data after writes", shard_name)
-                        ));
-                    }
+                if scale.consistency != ScaleConsistency::Eventual {
+                    result.checks.push(VerifyCheck::Fail(format!("consistency: {} is not implemented by the cluster runtime (no consensus, causal protocol or quorum); serve refuses this declaration", scale.consistency), None));
+                } else {
+                    result.checks.push(VerifyCheck::Warning(format!("UNPROVEN distributed behavior: '{shard}' uses eventual full replication with per-key logical versions and tombstones; local reads can be stale, concurrent writes can overwrite each other")));
                 }
-
-                // Check 6: CAP analysis
-                if scale.tolerance > 0 {
-                    match scale.consistency {
-                        ScaleConsistency::Strong => {
-                            result.checks.push(VerifyCheck::Pass(
-                                "CAP: CP mode — consistent + partition-tolerant (availability reduced during partitions)".to_string()
-                            ));
-                        }
-                        ScaleConsistency::Eventual => {
-                            result.checks.push(VerifyCheck::Pass(
-                                "CAP: AP mode — available + partition-tolerant (consistency relaxed during partitions)".to_string()
-                            ));
-                        }
-                        ScaleConsistency::Causal => {
-                            result.checks.push(VerifyCheck::Pass(
-                                "CAP: causal consistency — weaker than linearizable, stronger than eventual".to_string()
-                            ));
-                        }
-                    }
+                if slot.properties.iter().any(|p| p.node.name() == "persistent") {
+                    result.checks.push(VerifyCheck::Note("local data and replication versions share SQLite transactions; durability still depends on the surviving data files".into()));
+                } else {
+                    result.checks.push(VerifyCheck::Warning("ephemeral replica data and tombstones are lost on process restart".into()));
                 }
             }
-            None => {
-                result.checks.push(VerifyCheck::Fail(
-                    format!("shard '{}' is not a declared memory slot", shard_name),
-                    None,
-                ));
-            }
+        }
+        if cell.sections.iter().any(|s| matches!(s.node, Section::Every(_))) {
+            result.checks.push(VerifyCheck::Warning("scheduler leadership follows live membership; partitions may produce multiple leaders, with no fencing or exactly-once guarantee".into()));
         }
     } else {
-        result.checks.push(VerifyCheck::Pass(
-            "no shard declared — all memory replicated to all nodes".to_string()
-        ));
+        result.checks.push(VerifyCheck::Note("no shard declared: memory remains local; scale alone does not replicate storage".into()));
     }
-
-    // Check 7: every blocks + leader election
-    let has_every = cell.sections.iter().any(|s| matches!(s.node, Section::Every(_)));
-    if has_every {
-        result.checks.push(VerifyCheck::Pass(
-            "scheduler: 'every' blocks run on leader node only (leader = lowest node ID)".to_string()
-        ));
-    }
-
-    // Check 8: quorum analysis for strong consistency
-    if scale.consistency == ScaleConsistency::Strong && scale.replicas > 1 {
-        let quorum = scale.replicas / 2 + 1;
-        let max_failures = scale.replicas - quorum;
-        if scale.tolerance <= max_failures {
-            result.checks.push(VerifyCheck::Pass(
-                format!("quorum: {}/{} nodes needed — tolerates {} failures", quorum, scale.replicas, max_failures)
-            ));
-        } else {
-            result.checks.push(VerifyCheck::Fail(
-                format!("tolerance ({}) exceeds maximum for strong consistency quorum ({}/{})",
-                    scale.tolerance, max_failures, scale.replicas),
-                None,
-            ));
-        }
-    }
-
-    // Check 9: verify non-sharded memory is local-only
-    for (slot_name, props) in &slots {
-        if scale.shard.as_deref() != Some(slot_name) {
-            let is_ephemeral = props.iter().any(|p| p == "ephemeral");
-            let is_local = props.iter().any(|p| p == "local");
-            if is_ephemeral || is_local {
-                result.checks.push(VerifyCheck::Pass(
-                    format!("memory '{}' is node-local — not distributed (fast path)", slot_name)
-                ));
-            }
-        }
-    }
-
     Some(result)
 }
 

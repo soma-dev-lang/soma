@@ -695,7 +695,7 @@ fn instantiate_native_backend(
 
 /// Convert a serde_json::Value to StoredValue (preserving types).
 /// A JSON object with `__variant__` key is decoded back to a Variant.
-fn json_to_stored(v: &serde_json::Value) -> StoredValue {
+pub(crate) fn json_to_stored(v: &serde_json::Value) -> StoredValue {
     match v {
         serde_json::Value::Null => StoredValue::Null,
         serde_json::Value::Bool(b) => StoredValue::Bool(*b),
@@ -768,7 +768,7 @@ fn json_to_stored(v: &serde_json::Value) -> StoredValue {
 
 /// Convert a StoredValue to serde_json::Value.
 /// Variants serialize as `{ "__variant__": type, "__name__": variant, "__kind__": ..., "__fields__": ... }`
-fn stored_to_json(v: &StoredValue) -> serde_json::Value {
+pub(crate) fn stored_to_json(v: &StoredValue) -> serde_json::Value {
     match v {
         StoredValue::Int(n) => serde_json::Value::Number((*n).into()),
         StoredValue::BigInt(d) => serde_json::json!({"__bigint__": d}),

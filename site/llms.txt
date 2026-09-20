@@ -29,6 +29,12 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
+Soma 2.8.2 cluster corrections: typed Map updates after commit, qualified
+slot identities, full-mesh reconnect, logical versions, persisted tombstones
+and state resynchronization. Local reads; no consensus, physical sharding,
+exactly-once signals or distributed proof. Unsupported strong/causal
+configurations are refused. See https://soma-lang.dev/docs/cluster.md.
+
 Soma 2.8.1 corrections (2026-09-20): integer while optimization
 preserves outer operands, each assignment and raised errors. Int ratios
 round once without inf/inf; variance retains nearby large-number differences.

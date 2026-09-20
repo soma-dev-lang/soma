@@ -125,7 +125,11 @@ processes it needs the bus: a `[peers]` table in soma.toml
 the events it accepts from other processes: `[bus] accept = ["paid"]` (an
 event this program emits itself is accepted too; anything else — any
 other handler — is refused). The event reaches every cell with `on paid`. `--join host:bus-port`
-registers a node for `scale` sharding; it does not by itself forward `emit`.
+forms an experimental cluster and also forwards committed `emit` events to
+connected cluster members. Selected Map slots replicate independently of
+application events. See [cluster.md](cluster.md) for the protocol, recovery
+and the exact limits; avoid configuring the same connection through both
+`[peers]` and cluster discovery.
 An event sent while the peer is down is logged `bus: event '…' NOT
 delivered` (also after a linked peer disconnects); `soma run` opens no bus,
 so an `emit` meant for `[peers]` is reported not delivered there too. A JSON

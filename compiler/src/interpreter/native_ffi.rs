@@ -311,9 +311,10 @@ fn build_dylib(
         std::fs::write(proj_src.join("lib.rs"), rust_source)
             .map_err(|e| format!("cannot write lib.rs: {}", e))?;
 
-        // Build with cargo
+        // Pin the output used below: inherited CARGO_TARGET_DIR otherwise
+        // redirects a successful build away from the dylib we load.
         let output = std::process::Command::new("cargo")
-            .args(["build", "--release", "--quiet"])
+            .args(["build", "--release", "--quiet", "--target-dir", "target"])
             .current_dir(&proj_dir)
             .output()
             .map_err(|e| format!("[native] needs the Rust toolchain: `cargo` was not found on PATH ({}) — install it (https://rustup.rs) or drop [native] to run interpreted", e))?;

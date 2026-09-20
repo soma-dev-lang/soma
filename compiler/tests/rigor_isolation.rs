@@ -15,7 +15,7 @@ fn soma_verify(source: &str, name: &str) -> String {
     std::fs::write(dir.join("app.cell"), source).unwrap();
     std::fs::write(dir.join("soma.toml"), "[package]\nname = \"test\"\n[verify]\ndeadlock_free = true\n").unwrap();
 
-    let output = Command::new("./target/release/soma")
+    let output = Command::new(env!("CARGO_BIN_EXE_soma"))
         .args(["verify", dir.join("app.cell").to_str().unwrap()])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
@@ -114,7 +114,7 @@ cell Reviewer {
 #[test]
 fn rebalancer_is_isolated() {
     // The real rebalancer: 5 handlers, 20 transitions, all literal
-    let output = Command::new("./target/release/soma")
+    let output = Command::new(env!("CARGO_BIN_EXE_soma"))
         .args(["verify", "../rebalancer/app.cell"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()

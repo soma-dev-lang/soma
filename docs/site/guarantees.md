@@ -48,10 +48,30 @@ sit in `authorized` until someone acts.
 | **Atomic handlers** | a handler that raises leaves no memory write and no transition behind: they are rolled back. Effects outside the program (an HTTP call, a file, an email, an LLM call) are not undone. A failing `try { }` block's slot writes, transitions and pushes are rolled back to where it started (plain locals it assigned keep their value). Consequence: an error means "nothing happened" — to *record* a refusal (a reservation moved to `rejected`), return it as a value instead of raising. |
 | **Cross-cell rules** | NOT verified: proofs are per cell. `soma verify` now NAMES each handler that transitions its own machine while acting on another cell with a machine (`note: cross-cell: …`) — enforce those rules yourself with a `require` that reads the other cell (`require Subjects.status(id) != "withdrawn" else Withdrawn`). |
 | **Invariants between slots** | `invariant (reserved ?? 0) <= (stock ?? 0)` in a cell's `memory` holds on every write to either slot: the written one is its new value, the others are read at the same key. Enforced at run time, never proven by induction (verify lists it as runtime-checked). |
-| **Serialized handlers** | under `soma serve`, top-level handler invocations run one at a time: read-modify-write needs no lock. Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
+| **Serialized handlers** | within each `soma serve` process, top-level handler invocations run one at a time: read-modify-write needs no lock. Exception: a `[task]` handler (or tick) runs as steps and waits for each `think()` outside the lock — each step is serialized and atomic, the task as a whole is not (see serving.md). |
 | `require` / `ensure` / `fail` | raise; errors carry a `kind` a caller can branch on. |
 | Token budget | `set_budget(N)` stops `think()` when the budget is spent; a `set_budget` inside a model's tool call can only lower it. |
 | Exhaustive `match` | a missing sum-type arm is a `soma check` error, not a runtime surprise. |
+
+## Cluster scope (Soma 2.8.2)
+
+`scale.shard` selects mutable Map slots for **eventual full replication**.
+Typed updates are sent only after the local handler commits; incoming
+updates use the handler lock and a local transaction. Local `get`, `keys`,
+`values` and `len` read the same replica. Logical versions order conflicts;
+deletes retain tombstones, persisted with SQLite data for persistent slots.
+Reconnect and periodic state exchange repair missed updates when peers can
+communicate again. These behaviors have process-level regression tests;
+**the verifier does not prove distributed convergence or fault tolerance**.
+
+`strong` and `causal` declarations fail verification and server startup.
+A distributed slot with memory invariants, `immutable`, or List operations
+is refused because the runtime cannot preserve its guarantees across nodes.
+`replicas` does not provision processes, and `tolerance` does not establish a
+quorum. A resource-only scale block leaves memory local. Advisory scheduler
+leadership follows live membership and can split during a partition.
+`verify --strict` rejects the explicit warning about unproved distribution.
+See [cluster.md](cluster.md) for setup and migration.
 
 ## 3. NOT COVERED — know this before you rely on Soma
 

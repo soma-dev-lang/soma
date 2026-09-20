@@ -353,6 +353,7 @@ def main():
         "docs/guarantees.md": "docs/site/guarantees.md",
         "docs/serving.md": "docs/site/serving.md",
         "docs/operations.md": "docs/site/operations.md",
+        "docs/cluster.md": "docs/site/cluster.md",
         "CHANGELOG.md": "CHANGELOG.md",
         "LICENSE": "LICENSE",
     }
@@ -385,6 +386,7 @@ def main():
     llms = read("site", "llms.txt")
     full = [
         llms.rstrip(),
+        "\n\n---\n\n" + read("docs/site/cluster.md").strip(),
         "\n\n---\n\n# PART 2 — Language reference (SOMA_REFERENCE.md)\n\n" + read("SOMA_REFERENCE.md").strip(),
         "\n\n---\n\n# PART 3 — Verified wrong→right pairs (AGENT_GOTCHAS.md)\n\n" + read("AGENT_GOTCHAS.md").strip(),
         "\n\n---\n\n# PART 4 — Every builtin (SOMA_BUILTINS.md, generated from the compiler)\n\n" + read("SOMA_BUILTINS.md").strip(),
@@ -397,6 +399,7 @@ def main():
     # the linear-algebra / quant reference (~half the size of llms-full)
     service = [
         llms.rstrip(),
+        "\n\n---\n\n" + read("docs/site/cluster.md").strip(),
         "\n\n---\n\n" + read("docs/site/guarantees.md").strip(),
         "\n\n---\n\n" + read("docs/site/serving.md").strip(),
         "\n\n---\n\n" + read("docs/site/operations.md").strip(),
@@ -436,6 +439,7 @@ def main():
                     "guarantees": f"{BASE}/docs/guarantees.md",
                     "serving": f"{BASE}/docs/serving.md",
                     "operations": f"{BASE}/docs/operations.md",
+                    "cluster": f"{BASE}/docs/cluster.md",
                     "corpus_domains": f"{BASE}/corpus/domains.json",
                     "changelog": f"{BASE}/CHANGELOG.md",
                     "license": f"{BASE}/LICENSE",
@@ -459,7 +463,7 @@ def main():
         "skill/SKILL.md", "docs/guarantees.md", "docs/serving.md", "docs/reference.md", "docs/builtins.md",
         "docs/gotchas.md", "builtins.json", "gotchas.json", "corpus/domains.json", "corpus/index.json",
         "corpus/index.md", "CHANGELOG.md", "LICENSE",
-        "repo/index.json", "version.json",
+        "repo/index.json", "version.json", "docs/cluster.md", "docs/operations.md",
     ]
     sm = ['<?xml version="1.0" encoding="UTF-8"?>',
           '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']

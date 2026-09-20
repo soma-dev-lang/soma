@@ -16,7 +16,7 @@ fn soma_check(source: &str, name: &str) -> (String, String, i32) {
     let cell_path = dir.join("app.cell");
     std::fs::write(&cell_path, source).unwrap();
 
-    let exe = "./target/release/soma";
+    let exe = env!("CARGO_BIN_EXE_soma");
     let output = Command::new(exe)
         .args(["check", cell_path.to_str().unwrap()])
         .current_dir(env!("CARGO_MANIFEST_DIR"))

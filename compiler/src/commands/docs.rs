@@ -13,6 +13,7 @@ const GOTCHAS: &str = include_str!("../../../AGENT_GOTCHAS.md");
 const AGENTS_MD: &str = include_str!("../../../site/agent.md");
 const GUARANTEES: &str = include_str!("../../../docs/site/guarantees.md");
 const SERVING: &str = include_str!("../../../docs/site/serving.md");
+const CLUSTER: &str = include_str!("../../../docs/site/cluster.md");
 const OPERATIONS: &str = include_str!("../../../docs/site/operations.md");
 
 const TOPICS: &[(&str, &str)] = &[
@@ -24,7 +25,8 @@ const TOPICS: &[(&str, &str)] = &[
     ("guarantees", "what is PROVEN, ENFORCED AT RUNTIME, or NOT COVERED — by command"),
     ("serving", "soma serve: routing, exposure, body shape, error statuses, bind address"),
     ("operations", "what kills the process and what does not, ports, exit codes, limits, Linux deployment"),
-    ("all", "agent + reference + gotchas + guarantees + serving + operations + builtins, one stream"),
+    ("cluster", "experimental replication, recovery, upgrades and distributed guarantees"),
+    ("all", "agent + cluster + reference + gotchas + guarantees + serving + operations + builtins, one stream"),
 ];
 
 pub fn cmd_docs(topic: &str) {
@@ -37,7 +39,9 @@ pub fn cmd_docs(topic: &str) {
         "guarantees" => print!("{}", GUARANTEES),
         "serving" | "serve" | "http" => print!("{}", SERVING),
         "operations" | "ops" => print!("{}", OPERATIONS),
+        "cluster" => print!("{}", CLUSTER),
         "all" => {
+            print!("{}\n\n---\n\n", CLUSTER);
             print!("{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n", AGENT_SUMMARY, REFERENCE, GOTCHAS, GUARANTEES, SERVING, OPERATIONS);
             print_builtins_markdown();
         }

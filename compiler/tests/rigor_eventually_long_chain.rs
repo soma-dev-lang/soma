@@ -39,7 +39,7 @@ fn write_proj(dir: &std::path::Path, n_states: usize) {
 }
 
 fn run_verify(file: &std::path::Path) -> serde_json::Value {
-    let exe = "./target/release/soma";
+    let exe = env!("CARGO_BIN_EXE_soma");
     let output = Command::new(exe)
         .args(["verify", file.to_str().unwrap(), "--json"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))

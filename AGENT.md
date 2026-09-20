@@ -59,6 +59,20 @@ with the `features` you need before writing a new cell).
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
 
+## Cluster corrections in Soma 2.8.2 (2026-09-20)
+
+Use [Soma 2.8.2](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.2).
+`scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
+Updates preserve types and are published after commit. Reconnect and periodic
+state exchange carry per-key logical versions and deletion markers. Use a
+separate directory and reachable `SOMA_NODE_ID=host:bus-port` per replica.
+Reads are local; concurrent writes can overwrite each other. This is full
+replication, not physical sharding or consensus. `strong`, `causal`, replicated
+Lists, immutable slots and memory invariants are refused. `verify --strict`
+reports distribution as unproved. Scheduling is advisory during partitions;
+signals are not replayed. Upgrade every node together (protocol v2).
+Full setup and limits: https://soma-lang.dev/docs/cluster.md.
+
 ## Corrections included in Soma 2.8.1 (2026-09-20)
 
 These fixes are included in [Soma 2.8.1](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.1).
