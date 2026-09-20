@@ -4773,3 +4773,41 @@ cell C {
     let (out, _) = soma_in(&d, &["run", "d.cell", "main"]);
     assert!(out.contains("[1, 2]") && out.contains("NaN"), "{out}");
 }
+
+#[test]
+fn cycle75b_lints_for_dropped_refusals_replayed_transitions_and_concat() {
+    let d = dir("cycle75b");
+    // a refusal whose result is dropped: the caller is NOT rolled back
+    std::fs::write(d.join("r.cell"), r#"
+cell Bank {
+    memory { bal: Map<String, Int> [persistent] }
+    on take(who: String, n: Int) {
+        if (bal.get(who) ?? 0) < n { return refusal("conflict", "short") }
+        bal.set(who, (bal.get(who) ?? 0) - n)
+        return map("ok", true)
+    }
+}
+cell Front {
+    memory { paid: Map<String, Int> [persistent] }
+    on pay(who: String, n: Int) {
+        Bank.take(who, n)
+        paid.set(who, n)
+        return map("paid", n)
+    }
+}
+"#).unwrap();
+    let (out, _) = soma_in(&d, &["check", "r.cell"]);
+    assert!(out.contains("`Bank.take` can answer with refusal") && out.contains("thrown away"), "{out}");
+    // a transition() before a think() in a [task]: a crash replays it
+    std::fs::write(d.join("t.cell"), "cell agent A {\n state s { initial: idle  idle -> working  working -> done }\n on step(id: String) [task] { transition(id, \"working\")\n let r = think(\"x\", map(\"max_tokens\", 5))\n transition(id, \"done\") }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "t.cell"]);
+    assert!(out.contains("transition() runs BEFORE a think()"), "{out}");
+    // quadratic string building in a loop
+    std::fs::write(d.join("q.cell"), "cell Q {\n on go(n: Int) { let s = \"\"\n for i in range(0, n) { s = s + \"x\" }\n return len(s) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "q.cell"]);
+    assert!(out.contains("grows by concatenation inside a loop"), "{out}");
+    // the between-slot order warning only fires when nothing seeds both
+    std::fs::write(d.join("s.cell"), "cell W {\n memory {\n  stock: Map<String, Int> [persistent]\n  reserved: Map<String, Int> [persistent]\n  invariant (reserved ?? 0) <= (stock ?? 0)\n }\n on open(k: String, n: Int) { stock.set(k, n)\n reserved.set(k, 0) }\n}\n").unwrap();
+    let (out, _) = soma_in(&d, &["check", "s.cell"]);
+    assert!(!out.contains("write the right-hand slot first"), "{out}");
+}

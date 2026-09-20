@@ -1754,3 +1754,22 @@ and three false positives that refused correct programs.
 
 ### Open
 - [ ] `range(0, 5, 0)` and `top(xs, -1)` are silent no-ops/identities.
+
+### Cycle 75 — last-mile dispatch port (8/10)
+
+1 460 lines; `verify --strict` green with the 3-attempt retry bound encoded
+in the graph (a theorem, not a counter); 4 043 req/s at 128 threads; a
+14-hour simulated day = 51 077 requests in 11.7 s, cash reconciled to the
+cent; 300 concurrent 1-cent remits against 50 cents → exactly 50; 400
+duplicate scans → 1 accepted, 399 refused, 800 audit rows kept;
+`Optimiser.plan` 241 couriers × 6 000 parcels in 20 ms.
+
+### Fixed
+- [x] **A dropped `refusal()` kept the caller's writes** with no warning (the port paid 100 from a balance of 10) — check warns on a discarded refusal.
+- [x] **`transition()` before a `think()` in a [task]/horde target is replayed after a crash** and fails for good (`invalid transition`); the port lost 32 of 80 notifications — check warns and names the guard.
+- [x] Quadratic string building in a loop (8 MB: 32 s vs 30 ms) — a warning.
+- [x] The between-slot order warning fired even on correct programs — silent when a handler seeds both.
+- [x] Docs: the SSE cap's client-visible symptom (the stream just ends, no Last-Event-ID).
+
+### Open
+- [ ] SSE has no `id:` / replay; `verify --strict` refuses computed transition targets (by design, but a table-driven machine must be expanded); test rules cannot call transition/get_status with several machines.

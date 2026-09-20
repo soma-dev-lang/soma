@@ -2192,7 +2192,24 @@ pub fn lint_program(program: &Program) -> Vec<InvariantIssue> {
                     let mut both: Vec<&String> = slots.iter().filter(|n| names.contains(n.as_str())).collect();
                     both.sort();
                     let text = crate::ast::render_expr(&inv.node);
-                    if both.len() > 1 && text.contains("??") {
+                    // …only when no handler seeds both slots together (a
+                    // program that writes the right-hand slot first is fine)
+                    let seeds_both = program.cells.iter().filter(|c| c.node.name == cell.node.name).any(|c| c.node.sections.iter().any(|sec| {
+                        let Section::OnSignal(on) = &sec.node else { return false };
+                        let mut written: HashSet<String> = HashSet::new();
+                        crate::checker::literals::for_each_stmt_deep(&on.body, &mut |st| match st {
+                            Statement::MethodCall { target, method, .. } if matches!(method.as_str(), "set" | "push" | "put") => { written.insert(target.clone()); }
+                            Statement::IndexSet { name, .. } => { written.insert(name.clone()); }
+                            _ => {}
+                        });
+                        crate::checker::literals::for_each_expr(&on.body, &mut |e| if let Expr::MethodCall { target, method, .. } = e {
+                            if matches!(method.as_str(), "set" | "push" | "put") {
+                                if let Expr::Ident(t) = &target.node { written.insert(t.clone()); }
+                            }
+                        });
+                        both.iter().all(|n| written.contains(n.as_str()))
+                    }));
+                    if both.len() > 1 && text.contains("??") && !seeds_both {
                         out.push(InvariantIssue {
                             message: format!("invariant between slots ({}) — at a key the other slot has no entry for, `?? 0` makes that side 0: write the right-hand slot first (or seed both in one handler), or the first write to the other is refused",
                                 both.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")),

@@ -443,6 +443,81 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
             }
         }
     }
+    // a handler whose refusal is thrown away: the caller carries on as if
+    // the call had succeeded (an error would have rolled everything back —
+    // a refusal does not)
+    {
+        let cells = super::names::collect_cells(program);
+        let mut refusers: HashSet<(String, String)> = HashSet::new();
+        for c in &cells {
+            for sec in &c.sections {
+                let Section::OnSignal(on) = &sec.node else { continue };
+                let mut refuses = false;
+                super::literals::for_each_expr(&on.body, &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "refusal") { refuses = true; });
+                if refuses { refusers.insert((c.name.clone(), on.signal_name.clone())); }
+            }
+        }
+        if !refusers.is_empty() {
+            for c in &cells {
+                for sec in &c.sections {
+                    let body = match &sec.node {
+                        Section::OnSignal(on) => &on.body,
+                        Section::Every(e) | Section::After(e) => &e.body,
+                        _ => continue,
+                    };
+                    let mut hits: Vec<String> = Vec::new();
+                    super::literals::for_each_stmt_deep(body, &mut |st| match st {
+                        Statement::ExprStmt { expr } => match &expr.node {
+                            Expr::FnCall { name, .. } if refusers.contains(&(c.name.clone(), name.clone())) => hits.push(name.clone()),
+                            Expr::MethodCall { target, method, .. } => if let Expr::Ident(t) = &target.node {
+                                if refusers.contains(&(t.clone(), method.clone())) { hits.push(format!("{}.{}", t, method)); }
+                            },
+                            _ => {}
+                        },
+                        Statement::MethodCall { target, method, .. } if refusers.contains(&(target.clone(), method.clone())) => hits.push(format!("{}.{}", target, method)),
+                        _ => {}
+                    });
+                    hits.sort(); hits.dedup();
+                    for h in hits {
+                        issues.push(InterpolationIssue {
+                            message: format!("`{}` can answer with refusal(…) and its result is thrown away here: a refusal does NOT roll the caller back (an error would) — bind it (`let r = {}(…)`) and return it, or check `r._status`", h, h),
+                            span: sec.span, warning: true, habit: true, kind: "refusal_discarded",
+                        });
+                    }
+                }
+            }
+        }
+    }
+    // building a String by repeated concatenation in a loop is quadratic
+    for c in super::names::collect_cells(program) {
+        for sec in &c.sections {
+            let body = match &sec.node {
+                Section::OnSignal(on) => &on.body,
+                Section::Every(e) | Section::After(e) => &e.body,
+                _ => continue,
+            };
+            let mut hit: Option<String> = None;
+            super::literals::for_each_stmt_deep(body, &mut |st| {
+                let inner = match st { Statement::For { body, .. } | Statement::While { body, .. } => body, _ => return };
+                super::literals::for_each_stmt_deep(inner, &mut |x| if let Statement::Assign { name, value } = x {
+                    let grows = match &value.node {
+                        Expr::BinaryOp { left, op: crate::ast::BinOp::Add, right } =>
+                            matches!(&left.node, Expr::Ident(n) if n == name) || matches!(&right.node, Expr::Ident(n) if n == name),
+                        Expr::FnCall { name: f, args } if f == "concat" || f == "join" =>
+                            args.iter().any(|a| matches!(&a.node, Expr::Ident(n) if n == name)),
+                        _ => false,
+                    };
+                    if grows && hit.is_none() { hit = Some(name.clone()); }
+                });
+            });
+            if let Some(v) = hit {
+                issues.push(InterpolationIssue {
+                    message: format!("`{}` grows by concatenation inside a loop — each step copies the whole value, so the loop is quadratic (8 MB took 32 s, a list + join() 30 ms): push the pieces to a List and `join(parts, \"\")` once", v),
+                    span: sec.span, warning: true, habit: true, kind: "quadratic_concat",
+                });
+            }
+        }
+    }
     // a misspelled handler annotation (`[tsak]`, `[nativ]`) was accepted
     // silently — the handler then ran without it
     for c in super::names::collect_cells(program) {
@@ -1706,6 +1781,18 @@ fn task_lints(label: &str, body: &[Spanned<Statement>], cell: &str, cell_slots: 
             message: format!("[task] on {} makes no think() / vote() (nor calls a handler that does) — it runs as one atomic unit like a plain handler", label),
             span, warning: true, habit: true, kind: "task_without_think",
         });
+    }
+    // a transition() before a think(): a crash replays that step, and the
+    // edge it takes is already taken — the task fails for good
+    if let Some(i) = body.iter().position(|st| has_think(std::slice::from_ref(st))) {
+        let mut transitions = false;
+        super::literals::for_each_expr(&body[..i], &mut |e| if matches!(e, Expr::FnCall { name, .. } if name == "transition") { transitions = true; });
+        if transitions {
+            issues.push(InterpolationIssue {
+                message: format!("[task] {}: this transition() runs BEFORE a think(), so a crash replays it and the edge is already taken (`invalid transition`, the task never finishes): guard it (`if get_status(id) != \"…\" {{ transition(…) }}`) or transition after the last think()", label),
+                span, warning: true, habit: true, kind: "task_transition_before_think",
+            });
+        }
     }
     // an `ensure` that fails undoes the CURRENT step only: the writes made
     // before the last think() are already committed

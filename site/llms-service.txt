@@ -1034,6 +1034,8 @@ body (or a Map-typed path/query argument) carrying `_type`, `_variant` or
   `{"event": "stream", "data": …}` and to the SSE clients subscribed to that
   name; an `emit ev(data)` is cell-to-cell: it reaches only SSE clients that
   NAME it (`sse("ev")`), never WebSocket clients (a client that stops reading
+  sees the stream simply END (there is no `id:` line and no Last-Event-ID
+  replay: re-fetch state after a reconnect). A subscriber
   is dropped after 1024 queued events (a WebSocket client also at 64 MB
   queued) and the drop is logged — so a stalled SSE subscriber can hold
   1024 × the size of one event in memory (100 KB events: ~100 MB each): keep

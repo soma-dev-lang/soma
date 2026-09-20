@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Check catches two silent foot-guns a port lost data to: a `refusal()`
+  whose result is thrown away (a refusal does not roll the caller back, so
+  the caller carried on as if the call had succeeded), and a
+  `transition()` BEFORE a `think()` in a `[task]` or horde target (a crash
+  replays that step and the edge is already taken: the task never
+  finishes). Also: a String grown by concatenation in a loop (quadratic).
+- The between-slot write-order warning is silent when a handler seeds both
+  slots together.
+
 - Interpolation: a `:` inside `{…}` no longer disables it — only a colon
   OUTSIDE quotes with no call or index is literal (CSS, `{n:>5}`).
   `"{split(t, \":\")[0]}"` and `"{\"http://x\"}"` used to print their own
