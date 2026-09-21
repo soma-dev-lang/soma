@@ -1343,3 +1343,33 @@ cell test T {
     assert!(out.contains("3 tests: 3 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn describe_lists_the_routes_the_server_matches() {
+    // describe found routes by grepping `path ==` in ./app.cell — the file of
+    // the current directory, whatever file was described — and missed every
+    // `match path { "/x" -> … }` arm
+    let dir = scratch("describe_routes");
+    std::fs::write(dir.join("svc.cell"), r#"
+cell Svc {
+    memory { items: Map<String, Int> }
+    on add(id: String, n: Int) { items.set(id, n) return n }
+    on request(method: String, path: String, body: Map) {
+        if path == "/health" { return map("ok", true) }
+        return match path {
+            "/stats" -> map("n", len(items))
+            "/items/" + id -> items.get(id)
+            _ -> response(404, map("error", "no"))
+        }
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["describe", "svc.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let cell = &v["cells"][0];
+    assert_eq!(cell["web"], serde_json::json!(true));
+    let routes: Vec<&str> = cell["routes"].as_array().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+    assert!(routes.contains(&"/health") && routes.contains(&"/stats") && routes.contains(&"/items/*"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

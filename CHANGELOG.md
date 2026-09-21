@@ -73,6 +73,11 @@
   "cannot compare Int and String" (the Int form beside a Map slot likewise).
   The message names the slots and says to give them their own `memory { }`
   section. One regression test.
+- `soma describe` lists the HTTP routes the server actually matches: it
+  found them by grepping `path ==` in `./app.cell` — the file of the current
+  directory, whatever file was described — and missed every
+  `match path { "/x" -> … }` arm. A prefix route is shown as `/items/*`. One
+  regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

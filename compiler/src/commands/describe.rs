@@ -18,7 +18,7 @@ pub fn cmd_describe(path: &PathBuf) {
 
     for cell in &program.cells {
         if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        cells.push(describe_cell(&cell.node, &source));
+        cells.push(describe_cell(&program, &cell.node, &source));
     }
 
     let imports: Vec<&str> = program.imports.iter().map(|s| s.as_str()).collect();
@@ -53,7 +53,7 @@ pub fn cmd_describe(path: &PathBuf) {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
 
-fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
+fn describe_cell(program: &Program, cell: &CellDef, source: &str) -> serde_json::Value {
     let mut handlers = Vec::new();
     let mut memory_slots = Vec::new();
     let mut state_machines = Vec::new();
@@ -234,19 +234,13 @@ fn describe_cell(cell: &CellDef, source: &str) -> serde_json::Value {
         }
     }
 
-    // Detect HTTP routes from request handler body (heuristic: look for path comparisons)
-    let source_text = std::fs::read_to_string(
-        std::env::current_dir().unwrap_or_default().join("app.cell")
-    ).unwrap_or_default();
-    for line in source_text.lines() {
-        let trimmed = line.trim();
-        if trimmed.contains("path ==") || trimmed.contains("path==\"") {
-            if let Some(start) = trimmed.find('"') {
-                if let Some(end) = trimmed[start+1..].find('"') {
-                    routes.push(trimmed[start+1..start+1+end].to_string());
-                }
-            }
-        }
+    // HTTP routes: the paths `request` matches explicitly, as the server
+    // routes them (this used to grep `path ==` in ./app.cell — whatever file
+    // was being described — and missed every `match path { "/x" -> … }`)
+    if has_request {
+        let explicit = crate::checker::routes::explicit_routes_in(program, cell);
+        routes.extend(explicit.exact.iter().cloned());
+        routes.extend(explicit.prefixes.iter().map(|p| format!("{}*", p)));
     }
 
     let mut result = serde_json::json!({
