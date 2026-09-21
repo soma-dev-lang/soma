@@ -32,6 +32,21 @@
   to `Open`). The turnstile example's note claimed a move to the current state
   is a silent no-op; every move needs a declared edge, and the note says so.
 
+### Stable output, honest rendering, negated `require`
+
+- `verify` printed terminal states, deadlocked states, liveness violations and
+  the `[verify.after.*]` properties in hash order: two runs of the same file
+  could differ, which made a diff of its output useless in CI. They now come in
+  declaration order (of the machine, of the manifest). `check` sorted the
+  `implies` notes of a custom property the same way; they are alphabetical.
+- `describe --faces` and the `soma test` report printed an invariant or an
+  assertion in its desugared form: `_coalesce(balances, 0)` for
+  `balances ?? 0`, and `!n < 0` for `!(n < 0)`. Every diagnostic now uses the
+  one renderer, which parenthesizes a negated comparison.
+- The guard prover reads a negated `require`: `require !(n < 0)` establishes
+  `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
+  `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
+
 ### `subscribe()` reconnects
 
 - A `subscribe(url)` stream ended for good when the publisher closed or

@@ -628,29 +628,9 @@ fn format_constraint(c: &Constraint) -> String {
 
 /// Best-effort rendering of an expression for display in describe output.
 fn format_expr(e: &Expr) -> String {
-    match e {
-        Expr::Literal(lit) => format_literal(lit),
-        Expr::Ident(name) => name.clone(),
-        Expr::FieldAccess { target, field } => {
-            format!("{}.{}", format_expr(&target.node), field)
-        }
-        Expr::BinaryOp { left, op, right } => {
-            format!("{} {} {}", format_expr(&left.node), op, format_expr(&right.node))
-        }
-        Expr::CmpOp { left, op, right } => {
-            format!("{} {} {}", format_expr(&left.node), op, format_expr(&right.node))
-        }
-        Expr::FnCall { name, args } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| format_expr(&a.node)).collect();
-            format!("{}({})", name, arg_strs.join(", "))
-        }
-        Expr::MethodCall { target, method, args } => {
-            let arg_strs: Vec<String> = args.iter().map(|a| format_expr(&a.node)).collect();
-            format!("{}.{}({})", format_expr(&target.node), method, arg_strs.join(", "))
-        }
-        Expr::Not(inner) => format!("!{}", format_expr(&inner.node)),
-        _ => "...".to_string(),
-    }
+    // one renderer for every diagnostic: precedence parentheses, `a ?? b`
+    // (a local copy printed the desugared `_coalesce(a, b)` in `--faces`)
+    crate::ast::render_expr(e)
 }
 
 fn format_literal(lit: &Literal) -> String {

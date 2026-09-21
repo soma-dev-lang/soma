@@ -473,7 +473,9 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
     };
 
     // 1. Collect all states and transitions
-    let mut states: HashSet<String> = HashSet::new();
+    // declaration order: every list derived from it (terminal, deadlocked,
+    // unreachable states) prints the same on every run
+    let mut states: indexmap::IndexSet<String> = indexmap::IndexSet::new();
     states.insert(sm.initial.clone());
 
     let mut edges: Vec<(String, String, bool)> = Vec::new(); // (from, to, has_guard)
@@ -598,7 +600,7 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
 
     // 5. Deadlock: non-terminal state with no outgoing (shouldn't happen after wildcard expansion,
     //    but check reachable non-terminal states)
-    let deadlocks: Vec<String> = reachable.iter()
+    let deadlocks: Vec<String> = states.iter().filter(|s| reachable.contains(*s))
         .filter(|s| {
             let outs = adj.get(*s).map_or(0, |v| v.len());
             outs == 0 && !terminals.contains(s)
@@ -635,7 +637,7 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
         }
     }
 
-    let stuck: Vec<String> = reachable.iter()
+    let stuck: Vec<String> = states.iter().filter(|s| reachable.contains(*s))
         .filter(|s| !can_terminate.contains(*s))
         .cloned()
         .collect();
@@ -1064,6 +1066,15 @@ fn narrow_constraint(facts: &mut Facts, c: &Constraint) {
         }
         Constraint::Comparison { left, op, right } => learn_comparison(facts, &left.node, *op, &right.node),
         Constraint::And(a, b) => { narrow_constraint(facts, &a.node); narrow_constraint(facts, &b.node); }
+        // `require !(n < 0)` establishes `n >= 0`
+        Constraint::Not(inner) => match &inner.node {
+            Constraint::Comparison { left, op: CmpOp::Eq, right } if matches!(right.node, Expr::Literal(Literal::Bool(true))) => {
+                narrow_expr(facts, &Expr::Not(Box::new(left.clone())));
+            }
+            Constraint::Comparison { left, op, right } => learn_comparison(facts, &left.node, negate_cmp(*op), &right.node),
+            Constraint::Not(back) => narrow_constraint(facts, &back.node),
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -1073,8 +1084,22 @@ fn narrow_expr(facts: &mut Facts, e: &Expr) {
     match e {
         Expr::CmpOp { left, op, right } => learn_comparison(facts, &left.node, *op, &right.node),
         Expr::BinaryOp { left, op: BinOp::And, right } => { narrow_expr(facts, &left.node); narrow_expr(facts, &right.node); }
+        // `require !(n < 0)` establishes `n >= 0`; `!(a || b)` establishes both negations
+        Expr::Not(inner) => match &inner.node {
+            Expr::CmpOp { left, op, right } => learn_comparison(facts, &left.node, negate_cmp(*op), &right.node),
+            Expr::BinaryOp { left, op: BinOp::Or, right } => {
+                narrow_expr(facts, &Expr::Not(left.clone()));
+                narrow_expr(facts, &Expr::Not(right.clone()));
+            }
+            Expr::Not(back) => narrow_expr(facts, &back.node),
+            _ => {}
+        },
         _ => {}
     }
+}
+
+fn negate_cmp(op: CmpOp) -> CmpOp {
+    match op { CmpOp::Lt => CmpOp::Ge, CmpOp::Ge => CmpOp::Lt, CmpOp::Gt => CmpOp::Le, CmpOp::Le => CmpOp::Gt, CmpOp::Eq => CmpOp::Ne, CmpOp::Ne => CmpOp::Eq }
 }
 
 fn atom_implied(facts: &Facts, a: &Atom) -> bool {
@@ -1130,6 +1155,12 @@ fn guard_atoms(g: &Expr) -> Option<Vec<Vec<Atom>>> {
             a.extend(b);
             Some(a)
         }
+        // `!(n < 0)` is `n >= 0`
+        Expr::Not(inner) => match &inner.node {
+            Expr::CmpOp { left, op, right } => guard_atoms(&Expr::CmpOp { left: left.clone(), op: negate_cmp(*op), right: right.clone() }),
+            Expr::Not(back) => guard_atoms(&back.node),
+            _ => None,
+        },
         _ => None,
     }
 }

@@ -78,7 +78,10 @@ impl<'a> PropertyChecker<'a> {
 
         // 4. Check implications (warn and suggest)
         for name in &prop_names {
-            let implied = self.registry.implications_for(name);
+            // sorted: the registry keeps a set, and two runs printed the
+            // `implies` notes in different orders
+            let mut implied: Vec<String> = self.registry.implications_for(name).into_iter().collect();
+            implied.sort();
             for imp in &implied {
                 if !prop_names.contains(imp) {
                     // Check if it contradicts something already present
@@ -108,7 +111,8 @@ impl<'a> PropertyChecker<'a> {
 
         // 5. Check requirements (must coexist)
         for name in &prop_names {
-            let required = self.registry.requirements_for(name);
+            let mut required: Vec<String> = self.registry.requirements_for(name).into_iter().collect();
+            required.sort();
             for req in &required {
                 if !prop_names.contains(req) {
                     self.errors.push(CheckError::InvalidPropertyCombination {

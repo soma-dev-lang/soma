@@ -27,7 +27,7 @@ semver = "1"
 tungstenite = "0.21"
 url = "2"
 rustc-hash = "1"
-indexmap = "2"
+indexmap = { version = "2", features = ["serde"] }
 libloading = "0.8"
 
 # tiny_http 0.12.0 with one fix: EqualReader::drop drained the unread body

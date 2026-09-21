@@ -808,7 +808,12 @@ pub fn render_expr(expr: &Expr) -> String {
             let wrap = |e: &Expr| { let t = render_expr(e); if expr_prec(e) <= 3 { format!("({})", t) } else { t } };
             format!("{} {} {}", wrap(&left.node), op, wrap(&right.node))
         }
-        Expr::Not(inner) => format!("!{}", render_expr(&inner.node)),
+        // `!(n < 0)` rendered as `!n < 0`, which reads as `(!n) < 0`
+        Expr::Not(inner) => match &inner.node {
+            Expr::CmpOp { .. } | Expr::BinaryOp { .. } | Expr::Pipe { .. } | Expr::IfExpr { .. }
+            | Expr::Match { .. } | Expr::Lambda { .. } | Expr::LambdaBlock { .. } => format!("!({})", render_expr(&inner.node)),
+            _ => format!("!{}", render_expr(&inner.node)),
+        },
         // never a Debug dump in a diagnostic: name the form
         Expr::Match { subject, .. } => format!("match {} {{ … }}", render_expr(&subject.node)),
         Expr::Lambda { param, .. } | Expr::LambdaBlock { param, .. } => format!("{} => …", param),

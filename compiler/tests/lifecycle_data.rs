@@ -230,3 +230,110 @@ cell test T {
     assert!(out.contains("handler `fund` ⟶ {Open → Funded}"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn describe_and_test_render_coalesce_and_negation_as_written() {
+    let dir = scratch("render");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Escrow {
+    memory {
+        balances: Map<String, Int> [persistent]
+        invariant status != "released" || (balances ?? 0) == 0
+    }
+    state deal {
+        initial: open
+        open -> released { guard { n >= 0 } }
+    }
+    on release(id: String, n: Int) {
+        require !(n < 0) else Negative
+        transition(id, "open", "released")
+        return get_status(id)
+    }
+}
+cell test T {
+    rules {
+        assert (Escrow.release("a", 1) ?? "none") == "released"
+    }
+}
+"#).unwrap();
+    // describe showed the desugared `_coalesce(balances, 0)`: every diagnostic
+    // now renders the expression as the author wrote it
+    let (code, out) = soma(&dir, &["describe", "app.cell", "--faces"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("(balances ?? 0) == 0"), "{out}");
+    assert!(!out.contains("_coalesce"), "{out}");
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("_coalesce"), "{out}");
+    let (_, out) = soma(&dir, &["verify", "app.cell"]);
+    assert!(out.contains("guard `n >= 0` on open -> released: proven"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn verify_and_check_print_the_same_thing_on_every_run() {
+    // terminal states, deadlocked states and `[verify.after.*]` properties came
+    // out of hash sets: two runs of `verify` printed them in different orders
+    let dir = scratch("stable");
+    std::fs::write(dir.join("app.cell"), r#"
+cell property geo_replicated {
+    face { promise "data replicated across regions" }
+    rules { implies [persistent, consistent] }
+}
+cell Order {
+    memory { paid: Map<String, Bool> [geo_replicated] }
+    state deal {
+        initial: open
+        open -> funded
+        funded -> released
+        funded -> refunded
+        open -> cancelled
+        released -> archived
+    }
+    on fund(id: String) { transition(id, "open", "funded") return get_status(id) }
+    on release(id: String) { transition(id, "funded", "released") return get_status(id) }
+    on refund(id: String) { transition(id, "funded", "refunded") return get_status(id) }
+    on cancel(id: String) { transition(id, "open", "cancelled") return get_status(id) }
+    on archive(id: String) { transition(id, "released", "archived") return get_status(id) }
+}
+"#).unwrap();
+    std::fs::write(dir.join("soma.toml"), r#"
+[package]
+name = "stable"
+version = "0.1.0"
+
+[verify]
+deadlock_free = true
+
+[verify.after.funded]
+eventually = ["released", "refunded"]
+
+[verify.after.open]
+eventually = ["funded", "cancelled"]
+
+[verify.after.released]
+eventually = ["archived"]
+never = ["open"]
+
+[verify.after.refunded]
+never = ["released"]
+"#).unwrap();
+    let (code, first) = soma(&dir, &["verify", "app.cell"]);
+    assert_eq!(code, 0, "{first}");
+    // declaration order, not hash order
+    assert!(first.contains("terminal states: [refunded, cancelled, archived]"), "{first}");
+    let after: Vec<&str> = first.lines().filter(|l| l.contains("after('")).collect();
+    assert_eq!(after.len(), 5, "{first}");
+    assert!(after[0].contains("after('funded'") && after[1].contains("after('open'")
+        && after[2].contains("after('released', state") && after[3].contains("after('released', never")
+        && after[4].contains("after('refunded'"), "{first}");
+    let (_, check_first) = soma(&dir, &["check", "app.cell"]);
+    assert!(check_first.contains("implies 'consistent'") && check_first.contains("implies 'persistent'"), "{check_first}");
+    for _ in 0..6 {
+        let (_, again) = soma(&dir, &["verify", "app.cell"]);
+        assert_eq!(first, again);
+        let (_, again) = soma(&dir, &["check", "app.cell"]);
+        assert_eq!(check_first, again);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

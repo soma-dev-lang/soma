@@ -661,27 +661,7 @@ fn run_property(
 }
 
 fn format_expr(expr: &ast::Expr) -> String {
-    match expr {
-        ast::Expr::CmpOp { left, op, right } => {
-            format!("{} {} {}", format_expr(&left.node), op, format_expr(&right.node))
-        }
-        ast::Expr::FnCall { name, args } => {
-            let args_str: Vec<String> = args.iter().map(|a| format_expr(&a.node)).collect();
-            format!("{}({})", name, args_str.join(", "))
-        }
-        ast::Expr::Literal(lit) => match lit {
-            ast::Literal::Int(n) => n.to_string(),
-            ast::Literal::Float(n) => n.to_string(),
-            ast::Literal::String(s) => format!("\"{}\"", s),
-            ast::Literal::Bool(b) => b.to_string(),
-            _ => "?".to_string(),
-        },
-        ast::Expr::Ident(name) => name.clone(),
-        ast::Expr::BinaryOp { left, op, right } => {
-            format!("{} {} {}", format_expr(&left.node), op, format_expr(&right.node))
-        }
-        _ => "...".to_string(),
-    }
+    crate::ast::render_expr(expr)
 }
 
 /// An execution error in the language's own words.

@@ -189,11 +189,13 @@ pub struct VerifyConfig {
     pub always: Vec<String>,
     /// After reaching state X, must eventually reach one of Y
     #[serde(default)]
-    pub after: HashMap<String, AfterConfig>,
+    // declaration order: `verify` prints properties in the order the manifest
+    // lists them (a HashMap shuffled them between two runs)
+    pub after: indexmap::IndexMap<String, AfterConfig>,
     /// Precedence: `[verify.before.paid] requires = ["manager_approved"]` —
     /// every path to `paid` passes through one of the listed states.
     #[serde(default)]
-    pub before: HashMap<String, BeforeConfig>,
+    pub before: indexmap::IndexMap<String, BeforeConfig>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
