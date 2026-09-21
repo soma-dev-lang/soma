@@ -1290,3 +1290,56 @@ cell test T {
     assert!(out.contains("6 tests: 6 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn generic_key_invariant_typed_for_the_wrong_slot_kind_is_refused() {
+    // `invariant key != ""` names no slot, so it guards every slot of the
+    // section — and on a List slot `key` is the index: every push failed at
+    // run time with "cannot compare Int and String"
+    let dir = scratch("generic_key");
+    let mixed = r#"
+cell A {
+    memory {
+        names: Map<String, String>
+        xs: List<Int>
+        invariant key != ""
+    }
+    on add(v: Int) { xs.push(v) return len(xs) }
+}
+"#;
+    std::fs::write(dir.join("app.cell"), mixed).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("on a List slot (xs) `key` is the index"), "{out}");
+    // the Int form beside a Map slot
+    std::fs::write(dir.join("app.cell"), mixed.replace(r#"key != """#, "key >= 0")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("on a Map slot (names) `key` is a String"), "{out}");
+    // each kind in its own section: fine, and the rule holds at run time
+    std::fs::write(dir.join("app.cell"), r#"
+cell A {
+    memory {
+        names: Map<String, String>
+        invariant key != ""
+    }
+    memory {
+        xs: List<Int>
+        invariant key >= 0
+    }
+    on add(v: Int) { xs.push(v) return len(xs) }
+    on name(k: String, v: String) { names.set(k, v) return v }
+}
+cell test T {
+    rules {
+        assert A.add(1) == 1
+        assert A.name("a", "b") == "b"
+        assert_fails A.name("", "b") matching "invariant"
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("3 tests: 3 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

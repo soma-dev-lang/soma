@@ -67,6 +67,12 @@
 - The reference states what `for` iterates: a Map's `{key, value}` entries,
   a String's non-empty lines (a one-line string is one element), nothing for
   `()`; an Int is refused. It was undocumented.
+- `soma check` refuses a generic `key` invariant typed for the wrong slots:
+  `invariant key != ""` names no slot, so it guards every slot of its section,
+  and on a List slot `key` is the index — every push failed at run time with
+  "cannot compare Int and String" (the Int form beside a Map slot likewise).
+  The message names the slots and says to give them their own `memory { }`
+  section. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

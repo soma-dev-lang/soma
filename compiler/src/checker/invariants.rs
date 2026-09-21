@@ -121,6 +121,55 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
                         });
                     }
                 }
+                // A rule with only generic bindings guards EVERY slot of the
+                // section, and `key` is a String on a Map but the index (an
+                // Int) on a List: `key != ""` beside a List slot failed every
+                // push at run time ("cannot compare Int and String").
+                if named.is_empty() && deep.contains("key") {
+                    let kind_of = |sl: &crate::ast::Spanned<crate::ast::MemorySlot>| match &sl.node.ty.node {
+                        crate::ast::TypeExpr::Generic { name, .. } if name == "List" => Some("List"),
+                        crate::ast::TypeExpr::Generic { name, .. } if name == "Map" => Some("Map"),
+                        _ => None,
+                    };
+                    let lists: Vec<&str> = mem.slots.iter().filter(|sl| kind_of(sl) == Some("List")).map(|sl| sl.node.name.as_str()).collect();
+                    let maps: Vec<&str> = mem.slots.iter().filter(|sl| kind_of(sl) == Some("Map")).map(|sl| sl.node.name.as_str()).collect();
+                    let (mut as_string, mut as_int) = (false, false);
+                    crate::checker::literals::for_each_in_expr(&inv.node, &mut |e| match e {
+                        Expr::CmpOp { left, right, .. } => {
+                            let is_key = |x: &Expr| matches!(x, Expr::Ident(n) if n == "key");
+                            for (a, b) in [(&left.node, &right.node), (&right.node, &left.node)] {
+                                if is_key(a) {
+                                    match b {
+                                        Expr::Literal(Literal::String(_)) => as_string = true,
+                                        Expr::Literal(Literal::Int(_)) => as_int = true,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        Expr::FnCall { name, args } if matches!(name.as_str(), "len" | "str_len" | "starts_with" | "ends_with" | "contains" | "trim" | "lowercase" | "uppercase" | "regex_match")
+                            && args.iter().any(|a| matches!(&a.node, Expr::Ident(n) if n == "key")) => as_string = true,
+                        _ => {}
+                    });
+                    if as_string && !lists.is_empty() {
+                        issues.push(InvariantIssue {
+                            message: format!(
+                                "memory invariant compares `key` with a String, but it names no slot so it guards every slot of this section, and on a List slot ({}) `key` is the index (an Int): every push would fail at run time. Put the List slot{} in {} own `memory {{ }}` section",
+                                lists.join(", "), if lists.len() == 1 { "" } else { "s" }, if lists.len() == 1 { "its" } else { "their" }
+                            ),
+                            span: inv.span,
+                        });
+                    }
+                    if as_int && !maps.is_empty() {
+                        issues.push(InvariantIssue {
+                            message: format!(
+                                "memory invariant compares `key` with an Int, but it names no slot so it guards every slot of this section, and on a Map slot ({}) `key` is a String: every set would fail at run time. Put the Map slot{} in {} own `memory {{ }}` section",
+                                maps.join(", "), if maps.len() == 1 { "" } else { "s" }, if maps.len() == 1 { "its" } else { "their" }
+                            ),
+                            span: inv.span,
+                        });
+                    }
+                }
                 for name in idents {
                     if slot_names.contains(name.as_str())
                         || GENERIC_BINDINGS.contains(&name.as_str())
