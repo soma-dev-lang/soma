@@ -64,6 +64,9 @@
   longer matches; a key present with value `()` still does. `"a" + 1.5` is
   refused as `cannot add String and Float`, like `"a" + 1` (it said "expected
   Float, got String"). One regression test.
+- The reference states what `for` iterates: a Map's `{key, value}` entries,
+  a String's non-empty lines (a one-line string is one element), nothing for
+  `()`; an Int is refused. It was undocumented.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

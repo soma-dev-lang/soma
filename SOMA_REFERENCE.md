@@ -119,6 +119,13 @@ for i in range(0, 10) {
     // 0 to 9
 }
 
+// A Map iterates {key, value} entries; a String iterates its non-empty LINES
+// (`for line in read_file(p)`), so a one-line string is one element — for the
+// characters write `for c in split(s, "")`. `()` has no elements; an Int is refused.
+for e in map("a", 1) {
+    print(e.key + " = " + to_string(e.value))
+}
+
 match value {
     "a" -> expr1
     "b" -> { stmts; expr2 }
