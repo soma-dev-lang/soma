@@ -1440,3 +1440,28 @@ cell test T { rules { assert App.run(3) == 7 } }
     assert!(out.contains("cannot import"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn is_a_recognizes_variants_as_the_gotchas_now_say() {
+    // AGENT_GOTCHAS §8 claimed `is_a(Box { w: 3 }, "Box")` is false; it is
+    // true, by variant name and by sum-type name, and a struct variant's
+    // field reads with `.` (what the rewritten gotcha shows)
+    let dir = scratch("is_a_variants");
+    std::fs::write(dir.join("app.cell"), r#"
+cell type Shape { variants { Box { w: Int } Dot } }
+cell G {
+    on t() { let b = Box { w: 3 } return [is_a(b, "Box"), is_a(b, "Shape"), is_a(Dot, "Shape"), is_a(b, "Dot"), type_of(b), b.w] }
+    on k(s: Map) { return match s { Box { w } -> "Box of {w}"  Dot -> "Dot" } }
+}
+cell test T {
+    rules {
+        assert G.t() == [true, true, true, false, "Variant", 3]
+        assert G.k(Box { w: 3 }) == "Box of 3"
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("2 tests: 2 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

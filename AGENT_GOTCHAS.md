@@ -100,22 +100,26 @@ let r = try { transition(id, "next") }
 if r.error != () { return map("error", r.error) }
 ```
 
-## 8. `is_a` does not recognize sum-type VARIANTS — match them
+## 8. `is_a` recognizes sum-type variants; `match` is how you branch on them
 
 ```soma
-let b = Box { w: 3 }         // Box is a `variants` constructor
-return is_a(b, "Box")        // false — variants aren't tagged records
+let b = Box { w: 3 }         // Box is a `variants` constructor of Shape
+is_a(b, "Box")               // true — the variant's name
+is_a(b, "Shape")             // true — its sum type's name
+type_of(b)                   // "Variant" (a record literal is a "Map")
+b.w                          // 3 — a struct variant's field reads with `.`
 ```
 ```soma
-// extract the kind with an exhaustive match handler
+// branch on the kind with an exhaustive match (a missing variant is a check error;
+// a tuple variant's fields, `Pair(a, b)`, are only reachable this way)
 on kind(s: Map) {
     return match s {
-        Box { w } -> "Box"
-        // ... every variant
+        Box { w } -> "Box of {w}"
+        Dot -> "Dot"
     }
 }
 ```
-(`is_a` / `is_type` DO work on record literals: `is_a(Game { x: 1 }, "Game")` is `true`.)
+(`is_a` / `is_type` also work on record literals: `is_a(Game { x: 1 }, "Game")` is `true`.)
 
 ## 9. There is no `cell type X { fields { ... } }`
 

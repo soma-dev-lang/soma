@@ -328,7 +328,7 @@ to_int(3.7)         // 3
 to_float(42)        // 42.0
 to_string(42)       // "42"
 type_of(42)         // "Int"
-is_type(rec, "User") // true if rec's _type field is "User" (alias: is_a)
+is_type(rec, "User") // true if rec's _type field is "User", or rec is a variant named User / of sum type User (alias: is_a)
 ```
 
 ## Error handling

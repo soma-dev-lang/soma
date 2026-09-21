@@ -126,7 +126,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("type_of", "types", "type_of(x) -> String",
         "Type name: \"Int\" (any size), \"Float\", \"String\", \"Bool\", \"List\", \"Map\", \"Function\", \"Variant\", or \"Unit\"."),
     doc("is_type", "types", "is_type(value: Map, type_name: String) -> Bool",
-        "True if a record's `_type` field equals `type_name`."),
+        "True if a record's `_type` field equals `type_name`, or if `value` is a variant of that name or of the sum type of that name (`is_a(Box { w: 1 }, \"Box\")` and `is_a(Box { w: 1 }, \"Shape\")`); read a variant's fields with `match`."),
     doc("is_a", "types", "is_a(value: Map, type_name: String) -> Bool",
         "Alias of is_type."),
 

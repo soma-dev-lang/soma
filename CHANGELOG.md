@@ -91,6 +91,10 @@
   A `use` path is now tried beside the importing file, then at the entry
   file's directory, then at the nearest ancestor holding a `soma.toml`. One
   regression test.
+- Docs: `is_a` / `is_type` recognize sum-type variants (by variant name and by
+  type name); the gotchas said the opposite, and the builtin doc mentioned
+  records only. The gotcha now shows the two names `is_a` accepts, that a
+  struct variant's field reads with `.`, and `match` for branching.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
