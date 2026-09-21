@@ -292,6 +292,25 @@ thread_local! {
     /// overflowed, and a diamond (`b` and `c` both use `d`) defined D twice
     static IMPORTED: std::cell::RefCell<std::collections::HashSet<PathBuf>> = std::cell::RefCell::new(std::collections::HashSet::new());
     static IMPORT_DEPTH: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    /// directory of the file that started the `use` graph: `use lib::x`
+    /// inside lib/scoring.cell names the PROJECT's lib/x, not lib/lib/x
+    static ROOT_DIR: std::cell::RefCell<PathBuf> = std::cell::RefCell::new(PathBuf::from("."));
+}
+
+/// Where a `use` path is looked up, in order: beside the importing file, at
+/// the project root (the entry file's directory), then at the nearest
+/// ancestor holding a soma.toml (a lib file checked on its own).
+fn import_roots(base_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![base_dir.to_path_buf(), ROOT_DIR.with(|r| r.borrow().clone())];
+    // absolute: `.` (or the empty parent of a bare file name) has no parent to walk up to
+    let mut dir = canonical(if base_dir.as_os_str().is_empty() { Path::new(".") } else { base_dir });
+    for _ in 0..6 {
+        if dir.join("soma.toml").exists() { roots.push(dir.clone()); break; }
+        match dir.parent() { Some(p) if p != dir => dir = p.to_path_buf(), _ => break }
+    }
+    let mut seen = std::collections::HashSet::new();
+    roots.retain(|r| seen.insert(canonical(r)));
+    roots
 }
 
 fn canonical(p: &Path) -> PathBuf { fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()) }
@@ -300,6 +319,7 @@ pub fn resolve_imports(program: &mut ast::Program, base_path: &PathBuf) {
     let base_dir = base_path.parent().unwrap_or(Path::new("."));
     if IMPORT_DEPTH.with(|d| d.get()) == 0 {
         IMPORTED.with(|s| { let mut s = s.borrow_mut(); s.clear(); s.insert(canonical(base_path)); });
+        ROOT_DIR.with(|r| *r.borrow_mut() = base_dir.to_path_buf());
     }
 
     for import_path in &program.imports.clone() {
@@ -320,18 +340,20 @@ pub fn resolve_imports(program: &mut ast::Program, base_path: &PathBuf) {
                 })
         } else if import_path.starts_with("lib:") {
             let mod_name = &import_path[4..];
-            let as_file = base_dir.join("lib").join(format!("{}.cell", mod_name));
-            let as_dir = base_dir.join("lib").join(mod_name);
-            if as_file.exists() { as_file } else { as_dir }
+            import_roots(base_dir).iter()
+                .flat_map(|root| [root.join("lib").join(format!("{}.cell", mod_name)), root.join("lib").join(mod_name)])
+                .find(|p| p.exists())
+                .unwrap_or_else(|| base_dir.join("lib").join(format!("{}.cell", mod_name)))
         } else {
             let with_ext = if !import_path.ends_with(".cell") {
                 format!("{}.cell", import_path)
             } else {
                 import_path.clone()
             };
-            let as_path = base_dir.join(&with_ext);
-            let as_dir = base_dir.join(import_path);
-            if as_path.exists() { as_path } else { as_dir }
+            import_roots(base_dir).iter()
+                .flat_map(|root| [root.join(&with_ext), root.join(import_path)])
+                .find(|p| p.exists())
+                .unwrap_or_else(|| base_dir.join(&with_ext))
         };
 
         if full_path.is_dir() {

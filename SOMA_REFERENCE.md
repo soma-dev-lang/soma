@@ -740,7 +740,8 @@ project/
 ```
 
 ```soma
-// app.cell
+// app.cell — `use` paths are resolved from the project root (the entry file's
+// directory, else the nearest soma.toml): lib/scoring.cell says `use lib::helpers` too
 use lib::helpers
 use lib::scoring
 

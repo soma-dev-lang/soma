@@ -1373,3 +1373,70 @@ cell Svc {
     assert!(routes.contains(&"/health") && routes.contains(&"/stats") && routes.contains(&"/items/*"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn run_without_a_handler_name_never_guesses_among_several() {
+    // `soma run app.cell` ran the first zero-arg public handler (a `reset`);
+    // `soma run app.cell 5` ran `close("5")` — declared before echo(s) and
+    // num(x) — and committed a transition. The guess must be unambiguous.
+    let dir = scratch("run_default");
+    std::fs::write(dir.join("svc.cell"), r#"
+cell Svc {
+    memory { log: List<String> }
+    on reset() { log.push("reset") return len(log) }
+    on close(id: String) { log.push("close " + id) return id }
+    on echo(s: String) { return s }
+    on show() { return log }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["run", "svc.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("several public handlers and no `main`/`run`"), "{out}");
+    let (code, out) = soma(&dir, &["run", "svc.cell", "5"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("1 argument(s) fit 2 handlers") && out.contains("[close, echo]"), "{out}");
+    // nothing ran
+    let (_, out) = soma(&dir, &["run", "svc.cell", "show"]);
+    assert_eq!(out.trim(), "[]", "{out}");
+    // still convenient: the only handler taking these arguments, main/run, a lone handler
+    std::fs::write(dir.join("fact.cell"), "cell F { on compute(n: Int) { return n * 2 }  on run() { return compute(20) } }\n").unwrap();
+    let (_, out) = soma(&dir, &["run", "fact.cell", "5"]);
+    assert_eq!(out.trim(), "10", "{out}");
+    let (_, out) = soma(&dir, &["run", "fact.cell"]);
+    assert_eq!(out.trim(), "40", "{out}");
+    std::fs::write(dir.join("one.cell"), "cell O { on only() { return 7 } }\n").unwrap();
+    let (_, out) = soma(&dir, &["run", "one.cell"]);
+    assert_eq!(out.trim(), "7", "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn use_lib_inside_a_lib_file_resolves_from_the_project_root() {
+    // lib/scoring.cell saying `use lib::helpers` looked for lib/lib/helpers
+    // (relative to the importing file): nested imports never resolved, and
+    // `soma check lib/scoring.cell` on its own failed too
+    let dir = scratch("use_lib_nested");
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib/helpers.cell"), "cell Helpers { on double(n: Int) { return n * 2 } }\n").unwrap();
+    std::fs::write(dir.join("lib/scoring.cell"), "use lib::helpers\ncell Scoring { on score(n: Int) { return double(n) + 1 } }\n").unwrap();
+    std::fs::write(dir.join("app.cell"), r#"
+use lib::scoring
+cell App { on run(n: Int) { return score(n) } }
+cell test T { rules { assert App.run(3) == 7 } }
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("1 tests: 1 passed"), "{out}");
+    // a lib file checked on its own finds the project through its soma.toml
+    std::fs::write(dir.join("soma.toml"), "[package]\nname = \"p\"\nversion = \"0.1.0\"\nentry = \"app.cell\"\n").unwrap();
+    let (code, out) = soma(&dir.join("lib"), &["check", "scoring.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["check", "lib/scoring.cell"]);
+    assert_eq!(code, 0, "{out}");
+    // a missing module is still the plain error
+    std::fs::write(dir.join("bad.cell"), "use lib::nothere\ncell B { on go() { return 1 } }\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "bad.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("cannot import"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

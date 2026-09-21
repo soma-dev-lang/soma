@@ -157,29 +157,7 @@ fn run_with_vm(program: ast::Program, arg_values: Vec<interpreter::Value>, regis
             unknown_handler_or_default(&name, &handler_names, &handler_params, arg_values)
         }
     } else {
-        // No explicit signal: dispatch by best match.
-        //   1. `run` with exactly the right arity wins (the canonical entry point)
-        //   2. any handler with the right arity (e.g. `compute` for `soma run fact.cell 5`)
-        //   3. fall back to a zero-arg `run`
-        //   4. any zero-arg handler
-        // This used to put step 3 ahead of step 2, which made
-        // `soma run fact.cell 5` try to call `run(5)` and error out
-        // even when `compute(n: Int)` was right there.
-        //   `main` / `run` first, and never a `_private` handler: `soma run
-        //   app.cell` ran `_wipe`, the first one declared
-        let n_args = arg_values.len();
-        let public: Vec<&(String, usize)> = handler_params.iter().filter(|(h, _)| !h.starts_with('_')).collect();
-        if public.is_empty() {
-            eprintln!("error: cell '{}' has only private (`_`) handlers — name the one to run: soma run <file> <handler> …", cell_name);
-            process::exit(1);
-        }
-        let default = public.iter().find(|(h, p)| (h == "main" || h == "run") && *p == n_args)
-            .or_else(|| public.iter().find(|(_, p)| *p == n_args))
-            .or_else(|| public.iter().find(|(h, _)| h == "main" || h == "run"))
-            .or_else(|| public.iter().find(|(_, p)| *p == 0))
-            .copied()
-            .unwrap_or(public[0]);
-        (default.0.clone(), arg_values)
+        (default_handler(&cell_name, &handler_params, arg_values.len()), arg_values)
     };
 
     let mut vm = vm::VM::new(chunks);
@@ -274,29 +252,7 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
             unknown_handler_or_default(&name, &handler_names, &handler_params, arg_values)
         }
     } else {
-        // No explicit signal: dispatch by best match.
-        //   1. `run` with exactly the right arity wins (the canonical entry point)
-        //   2. any handler with the right arity (e.g. `compute` for `soma run fact.cell 5`)
-        //   3. fall back to a zero-arg `run`
-        //   4. any zero-arg handler
-        // This used to put step 3 ahead of step 2, which made
-        // `soma run fact.cell 5` try to call `run(5)` and error out
-        // even when `compute(n: Int)` was right there.
-        //   `main` / `run` first, and never a `_private` handler: `soma run
-        //   app.cell` ran `_wipe`, the first one declared
-        let n_args = arg_values.len();
-        let public: Vec<&(String, usize)> = handler_params.iter().filter(|(h, _)| !h.starts_with('_')).collect();
-        if public.is_empty() {
-            eprintln!("error: cell '{}' has only private (`_`) handlers — name the one to run: soma run <file> <handler> …", cell_name);
-            process::exit(1);
-        }
-        let default = public.iter().find(|(h, p)| (h == "main" || h == "run") && *p == n_args)
-            .or_else(|| public.iter().find(|(_, p)| *p == n_args))
-            .or_else(|| public.iter().find(|(h, _)| h == "main" || h == "run"))
-            .or_else(|| public.iter().find(|(_, p)| *p == 0))
-            .copied()
-            .unwrap_or(public[0]);
-        (default.0.clone(), arg_values)
+        (default_handler(&cell_name, &handler_params, arg_values.len()), arg_values)
     };
 
     let mut interp = interpreter::Interpreter::new(&program);
@@ -451,6 +407,45 @@ fn run_single_cell(program: ast::Program, arg_values: Vec<interpreter::Value>, r
                 interp.source_text.as_deref(),
                 interp.last_span,
             ));
+            process::exit(1);
+        }
+    }
+}
+
+/// `soma run app.cell [args…]` without a handler name: the guess must be
+/// unambiguous. `main`/`run` first (the canonical entry point), else the
+/// cell's only public handler, else the only public handler taking these
+/// arguments — never a `_private` one (`soma run app.cell` ran `_wipe`, the
+/// first declared), never one of several (it ran the first zero-arg
+/// handler, a `reset`; `soma run app.cell 5` ran `close("5")` because it
+/// was declared before `echo(s)` — a transition, committed).
+fn default_handler(cell_name: &str, handler_params: &[(String, usize)], n_args: usize) -> String {
+    let public: Vec<&(String, usize)> = handler_params.iter().filter(|(h, _)| !h.starts_with('_')).collect();
+    if public.is_empty() {
+        eprintln!("error: cell '{}' has only private (`_`) handlers — name the one to run: soma run <file> <handler> …", cell_name);
+        process::exit(1);
+    }
+    let by_arity: Vec<&(String, usize)> = public.iter().filter(|(_, p)| *p == n_args).copied().collect();
+    let entry = public.iter().find(|(h, p)| (h == "main" || h == "run") && *p == n_args).copied();
+    // `soma run fact.cell 5` → compute(n), not run() with a wrong arity
+    let any_entry = || public.iter().find(|(h, _)| h == "main" || h == "run").copied();
+    match entry {
+        Some(e) => e.0.clone(),
+        None if public.len() == 1 => public[0].0.clone(),
+        None if by_arity.len() == 1 && n_args > 0 => by_arity[0].0.clone(),
+        None if any_entry().is_some() => any_entry().unwrap().0.clone(),
+        None => {
+            let names: Vec<&str> = if by_arity.len() > 1 { by_arity.iter().map(|(h, _)| h.as_str()).collect() } else { public.iter().map(|(h, _)| h.as_str()).collect() };
+            if n_args == 0 {
+                eprintln!("error: cell '{}' has several public handlers and no `main`/`run` — name the one to run: soma run <file> <handler> [args…]; handlers: [{}]",
+                    cell_name, names.join(", "));
+            } else if by_arity.len() > 1 {
+                eprintln!("error: {} argument(s) fit {} handlers of cell '{}' — name the one to run: soma run <file> <handler> [args…]; candidates: [{}]",
+                    n_args, by_arity.len(), cell_name, names.join(", "));
+            } else {
+                eprintln!("error: no public handler of cell '{}' takes {} argument(s) — usage: soma run <file> <handler> [args…]; handlers: [{}]",
+                    cell_name, n_args, names.join(", "));
+            }
             process::exit(1);
         }
     }

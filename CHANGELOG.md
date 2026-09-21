@@ -78,6 +78,19 @@
   directory, whatever file was described — and missed every
   `match path { "/x" -> … }` arm. A prefix route is shown as `/items/*`. One
   regression test.
+- `soma run app.cell` without a handler name no longer guesses among several
+  public handlers: it ran the first zero-argument one (a `reset`), and
+  `soma run app.cell 5` ran `close("5")` because it was declared before
+  `echo(s)` — a transition, committed. Without a name the choice must be
+  unambiguous: `main`/`run`, the cell's only public handler, or the only one
+  taking these arguments (`soma run fact.cell 5` still reaches `compute(n)`);
+  otherwise the command refuses and lists the candidates. One regression test.
+- `use lib::x` inside a file of `lib/` resolves from the project root: it was
+  looked up beside the importing file (`lib/lib/x`), so a library importing a
+  sibling never loaded, and `soma check lib/scoring.cell` on its own failed.
+  A `use` path is now tried beside the importing file, then at the entry
+  file's directory, then at the nearest ancestor holding a `soma.toml`. One
+  regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

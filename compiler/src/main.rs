@@ -62,7 +62,7 @@ enum Commands {
     Run {
         /// Path to the .cell source file
         file: PathBuf,
-        /// Arguments to pass (parsed as integers or strings)
+        /// Handler name, then its arguments (Int, Float, Bool, JSON for a List or Map, else String); without a name: `main`/`run`, or the only handler that fits
         // negative numbers are values, not flags: `soma run f.cell -7 2`;
         // and after the handler name everything is an argument (`soma run
         // app.cell put --fresh` wiped the database)
