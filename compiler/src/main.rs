@@ -716,6 +716,15 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
     let targeted_present = verify_config.as_ref().map(|cfg| {
         cfg.cells.is_empty() || cfg.cells.iter().any(|c| all_cell_names.contains(c))
     }).unwrap_or(false);
+    // the manifest's `entry` is another file of the directory that exists:
+    // its properties belong to that program, and --strict on this one must
+    // not fail for a gate that was never meant to apply here
+    let entry_is_another_file = manifest.as_ref().zip(files.first()).map(|(m, first)| {
+        let dir = first.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+        let entry = dir.join(&m.package.entry);
+        let same = |p: &PathBuf| std::fs::canonicalize(p).ok() == std::fs::canonicalize(&entry).ok();
+        entry.exists() && !files.iter().any(|f| same(f))
+    }).unwrap_or(false);
     // `cells = [...]` naming a cell: a near-miss of a cell of this file is a
     // typo (every property was silently skipped and verify said OK); a cell
     // of this file without a state machine cannot carry the properties
@@ -728,7 +737,7 @@ fn cmd_verify(files: &[PathBuf], json: bool, strict: bool) {
                 unknown_states.push(format!("soma.toml [verify] cells names '{c}', which has no `state {{ }}` — its properties apply to nothing"));
             } else if let Some(near) = checker::names::suggest(c, all_cell_names.iter()) {
                 unknown_states.push(format!("soma.toml [verify] cells names '{c}', which this file does not define (did you mean '{near}'?) — its properties were not checked"));
-            } else if strict && !targeted_present {
+            } else if strict && !targeted_present && !entry_is_another_file {
                 // --strict: properties that apply to NOTHING are no proof (a
                 // renamed cell silently disabled every property)
                 unknown_states.push(format!("soma.toml [verify] cells names '{c}', which this file does not define — none of its properties were checked"));

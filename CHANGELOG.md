@@ -43,6 +43,12 @@
   assertion in its desugared form: `_coalesce(balances, 0)` for
   `balances ?? 0`, and `!n < 0` for `!(n < 0)`. Every diagnostic now uses the
   one renderer, which parenthesizes a negated comparison.
+- `verify --strict` in a directory whose shared `soma.toml` has an `entry`
+  that is another existing file no longer fails a sibling program with
+  "[verify] cells names no state machine of this file": the gate belongs to
+  the entry (the corpus directories hold one manifest for many programs). A
+  manifest without an entry, or whose entry is the verified file, is refused
+  as before. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

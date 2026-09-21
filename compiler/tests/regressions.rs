@@ -1140,3 +1140,61 @@ fn subscribe_reconnects_after_the_publisher_restarts() {
     let _ = subscriber.wait();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn strict_ignores_a_shared_manifest_scoped_to_another_entry() {
+    // examples/corpus/web/soma.toml targets todo_state.cell; `verify
+    // url_shortener.cell --strict` in that directory failed with "[verify]
+    // cells names no state machine of this file" for a gate meant for the
+    // other program
+    let dir = scratch("strict_entry");
+    let machine = r#"
+cell Todo {
+    memory { n: Map<String, Int> }
+    state todo { initial: open  open -> done }
+    on finish(id: String) { transition(id, "open", "done") return get_status(id) }
+}
+"#;
+    std::fs::write(dir.join("todo.cell"), machine).unwrap();
+    std::fs::write(dir.join("other.cell"), r#"
+cell Counter {
+    memory { n: Map<String, Int> }
+    state c { initial: idle  idle -> busy  busy -> idle }
+    on go(id: String) { transition(id, "idle", "busy") return get_status(id) }
+    on stop(id: String) { transition(id, "busy", "idle") return get_status(id) }
+}
+"#).unwrap();
+    std::fs::write(dir.join("soma.toml"), r#"
+[package]
+name = "shared"
+version = "0.1.0"
+entry = "todo.cell"
+
+[verify]
+cells = ["Todo"]
+eventually = ["done"]
+"#).unwrap();
+    let (code, out) = soma(&dir, &["verify", "other.cell", "--strict"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("names no state machine"), "{out}");
+    assert!(out.contains("its properties are not checked here"), "{out}");
+    // the entry itself still carries the gate
+    let (code, out) = soma(&dir, &["verify", "todo.cell", "--strict"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("eventually"), "{out}");
+    // an entry that does not exist: the manifest is about THIS directory's
+    // program, and a cell it names but the file lacks is still refused
+    std::fs::write(dir.join("soma.toml"), r#"
+[package]
+name = "shared"
+version = "0.1.0"
+
+[verify]
+cells = ["Todo"]
+eventually = ["done"]
+"#).unwrap();
+    let (code, out) = soma(&dir, &["verify", "other.cell", "--strict"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("names no state machine"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
