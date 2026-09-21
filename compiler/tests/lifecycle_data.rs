@@ -177,3 +177,56 @@ cell B {
     assert!(out.contains("reads `status`") && out.contains("declares no `state { }` machine"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Typed machines: a handler whose target is ANOTHER variant does not take a
+/// guarded edge (every variant target was read as a computed one, so a guard
+/// reading a local was refused for every handler of the cell).
+#[test]
+fn guard_variable_check_ignores_handlers_targeting_other_variants() {
+    let dir = scratch("typed_guard");
+    std::fs::write(dir.join("app.cell"), r#"
+cell type Phase { variants { Open  Funded  Released } }
+cell Typed {
+    memory {
+        bal: Map<String, Int> [persistent]
+        invariant status != "Released" || (bal ?? 0) == 0
+    }
+    state deal: Phase {
+        initial: Open
+        Open -> Funded
+        Funded -> Released { guard { amount == 0 } }
+        * -> Open
+    }
+    on fund(id: String, amount: Int) { bal.set(id, amount)
+        transition(id, Open, Funded)
+        return get_status(id) }
+    on release(id: String, amount: Int) { require amount == 0 else NotZero
+        bal.set(id, amount)
+        transition(id, Funded, Released)
+        return get_status(id) }
+    on reopen(id: String) { transition(id, Open)
+        return get_status(id) }
+    on read(id: String) { return [get_status(id), bal.get(id)] }
+}
+cell test T {
+    rules {
+        assert Typed.fund("a", 5) == "Funded"
+        assert_fails Typed.release("a", 1) matching "NotZero"
+        assert Typed.release("a", 0) == "Released"
+        assert Typed.read("a") == ["Released", 0]
+        assert Typed.reopen("a") == "Open"
+        assert Typed.fund("b", 7) == "Funded"
+        assert Typed.reopen("b") == "Open"
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("7 tests: 7 passed"), "{out}");
+    let (_, out) = soma(&dir, &["verify", "app.cell"]);
+    assert!(out.contains("guard `amount == 0` on Funded -> Released: proven"), "{out}");
+    assert!(out.contains("handler `fund` ⟶ {Open → Funded}"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

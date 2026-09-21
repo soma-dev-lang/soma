@@ -26,6 +26,11 @@
   transition, or lose `--strict`.
 - The corpus gains `state_machines/wildcard_failure`: `* -> failed except […]`
   with `eventually`, the combination that traps a first attempt.
+- Typed machines: a handler whose transition target is another variant no
+  longer counts as taking every guarded edge (`check` refused a guard reading
+  a local — "handler `reopen` has no variable 'amount'" — for a handler moving
+  to `Open`). The turnstile example's note claimed a move to the current state
+  is a silent no-op; every move needs a declared edge, and the note says so.
 
 ### `subscribe()` reconnects
 

@@ -4,8 +4,9 @@
 // so we can assert_fails on a jump that the machine forbids (you cannot
 // go straight from locked to out_of_service without unlocking first).
 //
-// NOTE: transitioning an instance to its CURRENT state is a silent no-op,
-// not an error — only a move to a non-adjacent state is rejected.
+// NOTE: every move needs a declared edge, including a move to the state the
+// instance is already in (`locked -> locked` would have to be declared): a
+// transition() with no edge raises invalid_transition.
 
 cell Turnstile {
     face {

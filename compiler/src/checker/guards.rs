@@ -101,6 +101,11 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                                         }
                                         // a Variant name used as the target
                                         Expr::Ident(v) if v == &tr.node.to => takes = true,
+                                        // a Variant name that is ANOTHER state: this
+                                        // handler does not take this edge (it was read
+                                        // as a computed target, so every handler of a
+                                        // typed machine "took" every guarded edge)
+                                        Expr::Ident(v) if v.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => {}
                                         // a computed target can be ANY state:
                                         // this handler may take this edge
                                         _ => takes = true,
