@@ -500,8 +500,16 @@ fn eval_test_assertion(
             let (left_val, left_note) = eval_side(interp, &left.node, env)?;
             let (right_val, right_note) = eval_side(interp, &right.node, env)?;
 
+            // a comparison the interpreter refuses (`5 != "5"`, `[1] == "x"`)
+            // used to read as `false`: `assert x != "done"` FAILED with
+            // identical-looking sides, and `assert_fails` on it passed for
+            // the wrong reason. Report the refusal like any handler error.
             let result = interp.eval_cmpop_values(&left_val, op.clone(), &right_val)
-                .unwrap_or(false);
+                .map_err(|e| format!(
+                    "{} — left: {} {}, right: {} {}",
+                    e, interpreter::value_type_name(&left_val), left_val,
+                    interpreter::value_type_name(&right_val), right_val
+                ))?;
 
             let mut detail = Vec::new();
             if !result {

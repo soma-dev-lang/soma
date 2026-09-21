@@ -1198,3 +1198,30 @@ eventually = ["done"]
     assert!(out.contains("names no state machine"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn test_assertions_report_a_refused_comparison_as_an_error() {
+    // `assert 5 != "5"` read as `false` (the interpreter's "cannot compare"
+    // was swallowed): the report showed two identical-looking sides, and
+    // `assert_fails` on such a comparison passed for the wrong reason
+    let dir = scratch("assert_cmp");
+    std::fs::write(dir.join("app.cell"), r#"
+cell C {
+    on lst() { return [1, 2] }
+}
+cell test T {
+    rules {
+        assert 5 != "5"
+        assert C.lst() != "x"
+        assert C.lst() != [3]
+        assert C.lst() == [1, 2]
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("ERROR: cannot compare Int and String — left: Int 5, right: String 5"), "{out}");
+    assert!(out.contains("ERROR: cannot compare List and String"), "{out}");
+    assert!(out.contains("4 tests: 2 passed, 2 failed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
