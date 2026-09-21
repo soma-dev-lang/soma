@@ -1057,3 +1057,86 @@ cell test T {
 "#,
     );
 }
+
+/// `subscribe(url)` ended for good when the publisher closed the socket: the
+/// reader thread logged the error and stopped. It reconnects with a backoff;
+/// events published after the publisher's restart reach the subscriber.
+#[test]
+fn subscribe_reconnects_after_the_publisher_restarts() {
+    use std::net::TcpListener;
+    // a free HTTP/WebSocket/bus port triple at or after `from` (the listeners
+    // are dropped again, so two calls need distinct starting points)
+    fn triple(from: u16) -> u16 {
+        for p in (from..15000).step_by(4) {
+            if (0..3).all(|i| TcpListener::bind(("127.0.0.1", p + i)).is_ok()) { return p; }
+        }
+        panic!("no free port triple");
+    }
+    let root = scratch("subscribe_reconnect");
+    let (pub_dir, sub_dir) = (root.join("pub"), root.join("sub"));
+    std::fs::create_dir_all(&pub_dir).unwrap();
+    std::fs::create_dir_all(&sub_dir).unwrap();
+    let pub_port = triple(14000);
+    let sub_port = triple(pub_port + 4);
+    // the WebSocket port (HTTP port + 1) opens only with an `on ws` handler
+    std::fs::write(pub_dir.join("app.cell"), "cell Pub {\n    on ws(msg: String) { return msg }\n    on beat(n: Int) { publish(\"tick\", map(\"n\", n))\n        return n }\n}\n").unwrap();
+    std::fs::write(sub_dir.join("app.cell"), format!(
+        "cell Sub {{\n    memory {{ got: Map<String, Int> [persistent] }}\n    on start() {{ subscribe(\"ws://127.0.0.1:{}\") }}\n    on tick(data: Map) {{ got.set(\"n\" + to_string(data.n), data.n) }}\n    on state() {{ return sort(got.keys) }}\n}}\n", pub_port + 1)).unwrap();
+    std::fs::write(sub_dir.join("soma.toml"), "[bus]\naccept = [\"tick\"]\n").unwrap();
+    let spawn = |dir: &Path, port: u16| {
+        let log = std::fs::File::create(dir.join("serve.log")).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_soma"))
+            .args(["serve", "app.cell", "-p", &port.to_string(), "--no-schedule"])
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(log)
+            .spawn()
+            .unwrap()
+    };
+    let ready = |port: u16| {
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { return; }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("server on {port} did not start");
+    };
+    let post = |port: u16, path: &str| {
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(format!("POST {path} HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n").as_bytes()).unwrap();
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    };
+    let mut publisher = spawn(&pub_dir, pub_port);
+    ready(pub_port);
+    ready(pub_port + 1); // the WebSocket port the subscriber connects to
+    let mut subscriber = spawn(&sub_dir, sub_port);
+    ready(sub_port);
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    post(pub_port, "/beat/1");
+    let wait_for = |want: &str| {
+        for _ in 0..60 {
+            if get(sub_port, "/state").contains(want) { return; }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        panic!("subscriber never saw {want}: {}\n--- subscriber log\n{}\n--- publisher log\n{}", get(sub_port, "/state"),
+            std::fs::read_to_string(sub_dir.join("serve.log")).unwrap_or_default(),
+            std::fs::read_to_string(pub_dir.join("serve.log")).unwrap_or_default());
+    };
+    wait_for("\"n1\"");
+    // the publisher goes away and comes back: the subscription must follow
+    let _ = publisher.kill();
+    let _ = publisher.wait();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut publisher = spawn(&pub_dir, pub_port);
+    ready(pub_port);
+    ready(pub_port + 1);
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    post(pub_port, "/beat/2");
+    wait_for("\"n2\"");
+    let _ = publisher.kill();
+    let _ = subscriber.kill();
+    let _ = publisher.wait();
+    let _ = subscriber.wait();
+    let _ = std::fs::remove_dir_all(root);
+}

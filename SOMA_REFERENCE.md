@@ -580,7 +580,7 @@ let resp = http_post(url, body, map("timeout", 2000))    // a Map/List body goes
 // opts: timeout (ms, default 30000), max_bytes, headers: map("Authorization", "Bearer …")
 let ws = ws_connect("ws://host:9001")     // open WebSocket (send-only) → {status, url}
 ws_send(message)                          // send text on the open WebSocket
-subscribe("ws://host:9001/stream")        // read-only WS: incoming {"event", "data"} → on event(data) when the program emits that event or soma.toml [bus] accept lists it; other text → on ws(msg)
+subscribe("ws://host:9001/stream")        // read-only WS: incoming {"event", "data"} → on event(data) when the program emits that event or soma.toml [bus] accept lists it; other text → on ws(msg); a dropped stream is reconnected (1 s, backing off to 30 s)
 link("host:8082")                          // TCP signal-bus link: emits reach peer, peer EVENTs → handlers
 publish("stream-name", data)              // push to SSE subscribers on a runtime-chosen stream
 ```

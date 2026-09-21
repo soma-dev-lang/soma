@@ -357,7 +357,7 @@ pub static BUILTINS: &[BuiltinDoc] = &[
     doc("http_patch", "http", "http_patch(url: String, body, opts?) -> Map|List|String", "PATCH; same shape as http_post."),
     doc("http_delete", "http", "http_delete(url: String, opts?) -> Map|List|String", "DELETE; same shape as http_get."),
     doc("ws_connect", "http", "ws_connect(url: String) -> Map",
-        "Open a WebSocket connection; incoming messages dispatch as signals."),
+        "Open a send-only WebSocket connection for ws_send() → {status, url}; replies are not read (receive with subscribe(url), which dispatches {\"event\", \"data\"} messages and reconnects after a drop)."),
     doc("ws_send", "http", "ws_send(msg) -> ()",
         "Send a message on the current WebSocket connection; errors if not connected."),
     doc("link", "http", "link(addr: \"host:port\") -> ()",

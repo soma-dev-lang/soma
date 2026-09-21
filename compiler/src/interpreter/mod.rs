@@ -3893,15 +3893,15 @@ impl Interpreter {
 
     /// Subscribe to a remote WS stream — dedicated read-only connection
     /// Incoming messages are parsed as {"event":"name","data":{...}} and dispatched to on name() handlers
-    fn do_subscribe(&mut self, url: &str, cell_name: &str) -> Result<Value, RuntimeError> {
+    /// One WebSocket connection for `subscribe()`: bounded connect and
+    /// handshake (a server that accepts TCP and never answers held the
+    /// handler — and, serialized, the whole server — forever).
+    fn subscribe_connect(url: &str) -> Result<tungstenite::WebSocket<std::net::TcpStream>, RuntimeError> {
         let parsed = url::Url::parse(url).map_err(|e| {
             RuntimeError::TypeError(format!("subscribe: bad URL: {}", e))
         })?;
         let host = parsed.host_str().unwrap_or("localhost");
         let port = parsed.port().unwrap_or(80);
-
-        // bounded: a server that accepts TCP and never answers the handshake
-        // held the handler — and, serialized, the whole server — forever
         use std::net::ToSocketAddrs;
         let addr = format!("{}:{}", host, port).to_socket_addrs().ok().and_then(|mut a| a.next()).ok_or_else(|| {
             RuntimeError::TypeError(format!("subscribe: cannot resolve {}:{}", host, port))
@@ -3912,12 +3912,18 @@ impl Interpreter {
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
         let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
         let timeout_handle = stream.try_clone().ok();
-
         let (ws, _) = tungstenite::client::client(url, stream).map_err(|e| {
             RuntimeError::TypeError(format!("subscribe handshake (10 s limit): {}", e))
         })?;
         // linked: reads wait for events again
         if let Some(h) = timeout_handle { let _ = h.set_read_timeout(None); }
+        Ok(ws)
+    }
+
+    fn do_subscribe(&mut self, url: &str, cell_name: &str) -> Result<Value, RuntimeError> {
+        // the first connection is the caller's: a server that is down is a
+        // handler error; later drops are reconnected in the reader thread
+        let ws = Self::subscribe_connect(url)?;
 
         // Reader thread: blocks on read, dispatches to handlers
         let cells = self.cells.clone();
@@ -3932,7 +3938,12 @@ impl Interpreter {
         spawn_handler_thread(move || {
             let mut ws = ws;
             eprintln!("subscribe: listening on {}", url_owned);
+            // a lost stream is reconnected like a [peers] link (1 s, backing
+            // off to 30 s): a publisher restart ended the subscription for
+            // the rest of the subscriber's life
+            let mut backoff = 1u64;
             loop {
+            let reason: String = loop {
                 match ws.read() {
                     Ok(tungstenite::Message::Text(text)) => {
                         // Parse {"event":"trade","data":{...}} format
@@ -3985,16 +3996,28 @@ impl Interpreter {
                         // Fallback: dispatch to on ws(message)
                         let _ = interp.call_signal(&cname, "ws", vec![Value::String(text)]);
                     }
-                    Ok(tungstenite::Message::Close(_)) => {
-                        eprintln!("subscribe: connection closed");
+                    Ok(tungstenite::Message::Close(_)) => break "connection closed".to_string(),
+                    Err(e) => break format!("error: {}", e),
+                    _ => {}
+                }
+            };
+            eprintln!("subscribe: {} — reconnecting to {}", reason, url_owned);
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(backoff));
+                match Self::subscribe_connect(&url_owned) {
+                    Ok(w) => {
+                        ws = w;
+                        backoff = 1;
+                        eprintln!("subscribe: linked again to {}", url_owned);
                         break;
                     }
                     Err(e) => {
-                        eprintln!("subscribe: error: {}", e);
-                        break;
+                        let why = e.to_string();
+                        eprintln!("subscribe: {} — retry in {} s", why.trim_start_matches("subscribe: "), (backoff * 2).min(30));
+                        backoff = (backoff * 2).min(30);
                     }
-                    _ => {}
                 }
+            }
             }
         });
 

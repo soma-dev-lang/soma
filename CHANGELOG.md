@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### `subscribe()` reconnects
+
+- A `subscribe(url)` stream ended for good when the publisher closed or
+  restarted: the reader thread logged the error and stopped, so the subscriber
+  received nothing until its own restart. It now reconnects like a `[peers]`
+  link (1 s, backing off to 30 s) and logs `subscribe: linked again`. The first
+  connection is still the caller's: a publisher that is down when `subscribe`
+  runs is a handler error. One regression test.
+- `ws_connect` is documented as send-only (its replies are not read); the
+  builtin doc claimed incoming messages dispatched as signals.
+
 ## 2.8.10 — 2026-09-21
 
 ### Native handlers: Int-only builtins and exact quotients

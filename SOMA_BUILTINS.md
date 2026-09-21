@@ -220,7 +220,7 @@ The `native` section is usable inside `[native]` handlers only.
 | `http_put` | `http_put(url: String, body, opts?) -> Map\|List\|String` | PUT; same shape as http_post. |
 | `http_patch` | `http_patch(url: String, body, opts?) -> Map\|List\|String` | PATCH; same shape as http_post. |
 | `http_delete` | `http_delete(url: String, opts?) -> Map\|List\|String` | DELETE; same shape as http_get. |
-| `ws_connect` | `ws_connect(url: String) -> Map` | Open a WebSocket connection; incoming messages dispatch as signals. |
+| `ws_connect` | `ws_connect(url: String) -> Map` | Open a send-only WebSocket connection for ws_send() → {status, url}; replies are not read (receive with subscribe(url), which dispatches {"event", "data"} messages and reconnects after a drop). |
 | `ws_send` | `ws_send(msg) -> ()` | Send a message on the current WebSocket connection; errors if not connected. |
 | `link` | `link(addr: "host:port") -> ()` | Open a TCP signal-bus link to a peer node. |
 | `subscribe` | `subscribe(url: String) -> ()` | Subscribe to a remote event stream; an {"event", "data"} message runs on event(data) only for an event this program emits or soma.toml [bus] accept lists (else refused); other text runs on ws(msg). |
