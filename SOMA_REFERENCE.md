@@ -451,7 +451,13 @@ memory {
 }
 
 // Invariant bindings: <slot name> and `value` = the value being written,
-// `key` = the key, `size` = entry count after the write. An invariant
+// `key` = the key, `size` = entry count after the write, `status` = the state
+// of the machine instance whose id is the key (the cell must declare a
+// `state` machine). A `status` rule ties the lifecycle to the data and is
+// checked on every write of the slot AND on every transition() of that id
+// (with the target state), never proven by induction:
+//   invariant status != "released" || (balances ?? 0) == 0   // no released escrow keeps a balance
+// An invariant
 // that names slots guards only those; one using just value/key/size
 // guards every slot in its section. A violating write raises a
 // try-catchable error and the slot is UNCHANGED. `soma verify` proves
@@ -491,9 +497,24 @@ state order {
 }
 
 // In handlers:
-transition("order_id", "validated")    // move state
+transition("order_id", "validated")    // move state (from wherever the instance is)
+transition("order_id", "pending", "validated")  // …declaring the source: `soma check`
+                                       // verifies the edge pending -> validated exists, and the
+                                       // call raises invalid_transition when the instance is
+                                       // anywhere else — verify then sees which edge the handler takes
 let status = get_status("order_id")    // current state
 let valid = valid_transitions("order_id") // available transitions
+
+// A guard reads the locals of the handler that calls transition(). It is
+// PROVEN by `soma verify` when every such handler narrows the guard's
+// variables with a `require` (or an enclosing `if`) before the call and does
+// not reassign them in between; otherwise it is reported ⚠ runtime-checked
+// (and `verify --strict` fails on it):
+//   pending -> validated { guard { amount > 0 && amount < 1000 } }
+//   on validate(id: String, amount: Int) {
+//       require amount > 0 && amount <= 999 else BadAmount   // proves the guard
+//       transition(id, "pending", "validated")
+//   }
 ```
 
 ## Sum types

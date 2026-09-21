@@ -59,10 +59,16 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
                     }
                 }
                 let id = match instance_id(&args[0], "transition") { Ok(i) => i, Err(e) => return Some(Err(e)) };
+                if args.len() == 3 {
+                    // transition(id, from, to): the source is part of the call
+                    let from = format!("{}", args[1]);
+                    let target = format!("{}", args[2]);
+                    return Some(interp.do_transition_from_for(cell_name, &id, Some(&from), &target));
+                }
                 let target = format!("{}", args[1]);
                 Some(interp.do_transition_for(cell_name, &id, &target))
             } else {
-                Some(Err(RuntimeError::TypeError("transition(id, target_state) requires 2 args".to_string())))
+                Some(Err(RuntimeError::TypeError("transition(id, target_state) takes 2 arguments, or 3 with the source: transition(id, from, to)".to_string())))
             }
         }
         "get_status" => {

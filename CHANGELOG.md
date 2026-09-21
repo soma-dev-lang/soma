@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Lifecycle and data: `status` invariants, declared transition sources, proven guards
+
+- An invariant may read `status`, the state of the machine instance whose id
+  is the written key: `invariant status != "released" || (balances ?? 0) == 0`
+  refuses a released escrow that keeps a balance. It is checked on every write
+  of the slot and on every `transition()` of that id (with the target state);
+  `verify` lists it as runtime-checked (a Note), `check` refuses it in a cell
+  without a state machine.
+- `transition(id, from, to)` declares the source of a move. `soma check`
+  verifies the edge `from -> to` exists (and both states); at run time the call
+  raises `invalid_transition` when the instance is anywhere else, even if an
+  edge into `to` exists from there. `verify` shows the edge a handler takes
+  (`fund ⟶ {open → funded}`), counts a declared source as reaching only that
+  edge, and notes the handlers that still call the two-argument form.
+- Transition guards are proven per calling handler: a guard made of
+  comparisons of a handler local with a literal is proven when every handler
+  that transitions to that edge narrows those variables with a `require` (or
+  an enclosing `if`) before the call and does not reassign them in between.
+  Unproven guards are ⚠ runtime-checked, so `verify --strict` no longer
+  passes on a guard the runtime alone enforces. Compatibility: programs with
+  guards that were green under `--strict` may now need a `require` before the
+  transition, or lose `--strict`.
+- The corpus gains `state_machines/wildcard_failure`: `* -> failed except […]`
+  with `eventually`, the combination that traps a first attempt.
+
 ### `subscribe()` reconnects
 
 - A `subscribe(url)` stream ended for good when the publisher closed or

@@ -161,7 +161,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     super::refinement::RefinementFinding::UndeclaredTarget { handler, .. } => Some(handler.clone()),
                     _ => None,
                 }).collect();
-                for f in findings {
+                for f in findings.clone() {
                     use super::refinement::RefinementFinding::*;
                     match f {
                         UndeclaredTarget { handler, target, path, span } => {
@@ -198,10 +198,11 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                             if targets.is_empty() && !has_dynamic { continue; }
                             if refused.contains(&handler) { continue; }
                             let target_strs: Vec<String> = targets.iter().map(|c| {
+                                let edge = match &c.source { Some(s) => format!("{} → {}", s, c.target), None => c.target.clone() };
                                 if c.path.is_empty() {
-                                    c.target.clone()
+                                    edge
                                 } else {
-                                    format!("{} [{}]", c.target, c.path.join(" ∧ "))
+                                    format!("{} [{}]", edge, c.path.join(" ∧ "))
                                 }
                             }).collect();
                             let mut summary = if target_strs.is_empty() {
@@ -218,6 +219,30 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                             ));
                         }
                     }
+                }
+                // the source of a transition: `transition(id, target)` moves
+                // from wherever the instance is (the runtime refuses an
+                // illegal move, but the proof does not see the start);
+                // `transition(id, from, to)` declares it
+                {
+                    let mut blind: Vec<String> = Vec::new();
+                    for f in &findings {
+                        if let super::refinement::RefinementFinding::HandlerEffect { handler, targets, .. } = f {
+                            if targets.iter().any(|c| c.source.is_none()) && !blind.contains(handler) { blind.push(handler.clone()); }
+                        }
+                    }
+                    if !blind.is_empty() {
+                        result.checks.push(VerifyCheck::Note(format!(
+                            "transition sources: {} call{} transition(id, target) without declaring the source — the runtime refuses a move the graph forbids, but the proof does not see where the handler starts; `transition(id, from, to)` names the edge (checked by `soma check`, refused at run time from any other state)",
+                            blind.iter().map(|h| format!("`{}`", h)).collect::<Vec<_>>().join(", "),
+                            if blind.len() == 1 { "s" } else { "" }
+                        )));
+                    }
+                }
+                // guards: proven from the calling handler's `require`s (and
+                // enclosing `if`s), or runtime-checked
+                for check in prove_guards(sm, &handlers, &findings) {
+                    result.checks.push(check);
                 }
                 // V1.6: effect summary for think() in each handler.
                 for eff in super::effects::check_cell(&cell.node) {
@@ -646,14 +671,15 @@ fn verify_state_machine(sm: &StateMachineSection, cell: &CellDef) -> VerifyResul
         .collect();
 
     if !guarded.is_empty() {
+        // the model checker treats a guarded edge as always enabled (an
+        // over-approximation, so safety results still hold); whether each
+        // guard is PROVEN by its callers' `require`s is reported per guard
+        // by prove_guards() in verify_program
         let guards_str: Vec<String> = guarded.iter()
             .map(|(f, t)| format!("{} -> {}", f, t))
             .collect();
-        // Honest wording: the model checker treats a guarded edge as always
-        // enabled (an over-approximation, so safety results still hold); the
-        // guard itself is enforced when transition() runs.
-        result.checks.push(VerifyCheck::Pass(
-            format!("guards (enforced at runtime, edges kept in the model — liveness and `eventually` above assume they can pass): {}", guards_str.join(", "))
+        result.checks.push(VerifyCheck::Note(
+            format!("guarded edges kept in the model (liveness and `eventually` above assume they can pass): {}", guards_str.join(", "))
         ));
     }
 
@@ -919,6 +945,323 @@ pub fn cross_cell_notes(program: &Program) -> Vec<String> {
                 out.push(format!("cross-cell: `{}.{}` transitions its own machine and acts on {} — a rule BETWEEN the two cells' machines (\"not while the subject is withdrawn\") is not verified: state it as a `require` reading the other cell",
                     cell.node.name, on.signal_name, others.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", ")));
             }
+        }
+    }
+    out
+}
+
+
+// ── Guard proofs ────────────────────────────────────────────────────
+//
+// A guard `guard { amount < 1000 }` reads the locals of the handler that
+// calls transition(). It is PROVEN for a handler when that handler narrows
+// every variable the guard reads with a `require` (or an enclosing `if`)
+// that implies the guard before the call, and never reassigns it in
+// between. Anything else is honestly runtime-checked (a ⚠, so
+// `verify --strict` refuses a green that depends on the runtime).
+
+#[derive(Clone, Default, Debug)]
+struct Bound {
+    lo: Option<(f64, bool)>, // (value, inclusive)
+    hi: Option<(f64, bool)>,
+    eq: Option<String>,      // a literal the variable is known to equal
+    ne: Vec<String>,         // literals it is known to differ from
+}
+
+/// What a handler has established: numeric bounds per variable, plus the
+/// exact comparisons it required (`amount <= order.amount`), each with the
+/// names it reads (a reassignment of any of them forgets the fact).
+#[derive(Clone, Default, Debug)]
+struct Facts {
+    bounds: HashMap<String, Bound>,
+    exact: Vec<(String, HashSet<String>)>,
+}
+
+impl Facts {
+    fn forget(&mut self, name: &str) {
+        self.bounds.remove(name);
+        self.exact.retain(|(_, idents)| !idents.contains(name));
+    }
+}
+
+/// One guard atom: a variable against a literal (interval reasoning), or
+/// any other comparison taken as text (proven by an identical `require`).
+#[derive(Clone, Debug, PartialEq)]
+enum Atom {
+    Numeric(String, CmpOp, String, Option<f64>),
+    Exact(String),
+}
+
+fn comparison_text(left: &Expr, op: CmpOp, right: &Expr) -> String {
+    format!("{} {} {}", crate::ast::render_expr(left), op, crate::ast::render_expr(right))
+}
+
+fn idents_of(e: &Expr) -> HashSet<String> {
+    let mut out = HashSet::new();
+    super::literals::for_each_in_expr(e, &mut |x| if let Expr::Ident(n) = x { out.insert(n.clone()); });
+    out
+}
+
+fn literal_text(e: &Expr) -> Option<(String, Option<f64>)> {
+    match e {
+        Expr::Literal(Literal::Int(n)) => Some((n.to_string(), Some(*n as f64))),
+        Expr::Literal(Literal::Float(f)) => Some((f.to_string(), Some(*f))),
+        Expr::Literal(Literal::BigInt(s)) => Some((s.clone(), s.parse::<f64>().ok())),
+        Expr::Literal(Literal::String(s)) => Some((s.clone(), None)),
+        Expr::Literal(Literal::Bool(b)) => Some((b.to_string(), None)),
+        _ => None,
+    }
+}
+
+fn flip(op: CmpOp) -> CmpOp {
+    match op { CmpOp::Lt => CmpOp::Gt, CmpOp::Gt => CmpOp::Lt, CmpOp::Le => CmpOp::Ge, CmpOp::Ge => CmpOp::Le, o => o }
+}
+
+/// `x op lit` from either side, as (variable, op, literal text, numeric value).
+fn atom(left: &Expr, op: CmpOp, right: &Expr) -> Option<(String, CmpOp, String, Option<f64>)> {
+    match (left, right) {
+        (Expr::Ident(v), lit) => literal_text(lit).map(|(t, n)| (v.clone(), op, t, n)),
+        (lit, Expr::Ident(v)) => literal_text(lit).map(|(t, n)| (v.clone(), flip(op), t, n)),
+        _ => None,
+    }
+}
+
+fn narrow(facts: &mut Facts, var: &str, op: CmpOp, text: &str, num: Option<f64>) {
+    let b = facts.bounds.entry(var.to_string()).or_default();
+    match (op, num) {
+        (CmpOp::Lt, Some(c)) => if b.hi.map_or(true, |(h, _)| c <= h) { b.hi = Some((c, false)); },
+        (CmpOp::Le, Some(c)) => if b.hi.map_or(true, |(h, i)| c < h || (c == h && i)) { b.hi = Some((c, true)); },
+        (CmpOp::Gt, Some(c)) => if b.lo.map_or(true, |(l, _)| c >= l) { b.lo = Some((c, false)); },
+        (CmpOp::Ge, Some(c)) => if b.lo.map_or(true, |(l, i)| c > l || (c == l && i)) { b.lo = Some((c, true)); },
+        (CmpOp::Eq, Some(c)) => { b.lo = Some((c, true)); b.hi = Some((c, true)); b.eq = Some(text.to_string()); }
+        (CmpOp::Eq, None) => b.eq = Some(text.to_string()),
+        (CmpOp::Ne, _) => b.ne.push(text.to_string()),
+        _ => {}
+    }
+}
+
+/// One established comparison: a bound when one side is a literal, an
+/// exact fact otherwise.
+fn learn_comparison(facts: &mut Facts, left: &Expr, op: CmpOp, right: &Expr) {
+    match atom(left, op, right) {
+        Some((v, op, t, n)) => narrow(facts, &v, op, &t, n),
+        None => {
+            let mut idents = idents_of(left);
+            idents.extend(idents_of(right));
+            facts.exact.push((comparison_text(left, op, right), idents.clone()));
+            facts.exact.push((comparison_text(right, flip(op), left), idents));
+        }
+    }
+}
+
+/// Add what a `require` constraint establishes (conjunctions only).
+fn narrow_constraint(facts: &mut Facts, c: &Constraint) {
+    match c {
+        // the parser reads `require a > 0 && b < 9` as ONE expression
+        // compared to `true`: narrow from the expression itself
+        Constraint::Comparison { left, op: CmpOp::Eq, right } if matches!(right.node, Expr::Literal(Literal::Bool(true))) => {
+            narrow_expr(facts, &left.node);
+        }
+        Constraint::Comparison { left, op, right } => learn_comparison(facts, &left.node, *op, &right.node),
+        Constraint::And(a, b) => { narrow_constraint(facts, &a.node); narrow_constraint(facts, &b.node); }
+        _ => {}
+    }
+}
+
+/// Add what a boolean expression establishes when it is true.
+fn narrow_expr(facts: &mut Facts, e: &Expr) {
+    match e {
+        Expr::CmpOp { left, op, right } => learn_comparison(facts, &left.node, *op, &right.node),
+        Expr::BinaryOp { left, op: BinOp::And, right } => { narrow_expr(facts, &left.node); narrow_expr(facts, &right.node); }
+        _ => {}
+    }
+}
+
+fn atom_implied(facts: &Facts, a: &Atom) -> bool {
+    match a {
+        Atom::Numeric(var, op, text, num) => implied(&facts.bounds, var, *op, text, *num),
+        Atom::Exact(text) => facts.exact.iter().any(|(t, _)| t == text),
+    }
+}
+
+/// A guard holds when one of its disjuncts has every atom implied.
+fn guard_implied(facts: &Facts, guard: &[Vec<Atom>]) -> bool {
+    guard.iter().any(|conj| conj.iter().all(|a| atom_implied(facts, a)))
+}
+
+/// Does what is known about the variables imply the guard atom?
+fn implied(bounds: &HashMap<String, Bound>, var: &str, op: CmpOp, text: &str, num: Option<f64>) -> bool {
+    let Some(b) = bounds.get(var) else { return false };
+    match (op, num) {
+        (CmpOp::Lt, Some(c)) => b.hi.map_or(false, |(h, i)| h < c || (h == c && !i)),
+        (CmpOp::Le, Some(c)) => b.hi.map_or(false, |(h, _)| h <= c),
+        (CmpOp::Gt, Some(c)) => b.lo.map_or(false, |(l, i)| l > c || (l == c && !i)),
+        (CmpOp::Ge, Some(c)) => b.lo.map_or(false, |(l, _)| l >= c),
+        (CmpOp::Eq, Some(c)) => b.eq.as_deref() == Some(text) || (b.lo == Some((c, true)) && b.hi == Some((c, true))),
+        (CmpOp::Eq, None) => b.eq.as_deref() == Some(text),
+        (CmpOp::Ne, Some(c)) => b.ne.iter().any(|t| t == text)
+            || b.eq.as_ref().map_or(false, |e| e != text)
+            || b.hi.map_or(false, |(h, i)| h < c || (h == c && !i))
+            || b.lo.map_or(false, |(l, i)| l > c || (l == c && !i)),
+        (CmpOp::Ne, None) => b.ne.iter().any(|t| t == text) || b.eq.as_ref().map_or(false, |e| e != text),
+        _ => false,
+    }
+}
+
+/// The guard in disjunctive normal form (`a && b || c`: [[a, b], [c]]);
+/// `true` is the empty conjunction (always proven), `false` has no
+/// disjunct (never). None when it has a shape this prover does not read.
+fn guard_atoms(g: &Expr) -> Option<Vec<Vec<Atom>>> {
+    match g {
+        Expr::Literal(Literal::Bool(true)) => Some(vec![vec![]]),
+        Expr::Literal(Literal::Bool(false)) => Some(vec![]),
+        Expr::CmpOp { left, op, right } => Some(vec![vec![match atom(&left.node, *op, &right.node) {
+            Some((v, op, t, n)) => Atom::Numeric(v, op, t, n),
+            None => Atom::Exact(comparison_text(&left.node, *op, &right.node)),
+        }]]),
+        Expr::BinaryOp { left, op: BinOp::And, right } => {
+            let (a, b) = (guard_atoms(&left.node)?, guard_atoms(&right.node)?);
+            let mut out = Vec::new();
+            for x in &a { for y in &b { let mut c = x.clone(); c.extend(y.iter().cloned()); out.push(c); } }
+            Some(out)
+        }
+        Expr::BinaryOp { left, op: BinOp::Or, right } => {
+            let (mut a, b) = (guard_atoms(&left.node)?, guard_atoms(&right.node)?);
+            a.extend(b);
+            Some(a)
+        }
+        _ => None,
+    }
+}
+
+fn expr_calls_transition_to(e: &Expr, to: &str, from: &str) -> bool {
+    let mut hit = false;
+    super::literals::for_each_in_expr(e, &mut |x| {
+        if let Expr::FnCall { name, args } = x {
+            if name == "transition" {
+                let lit = |e: &Expr| match e {
+                    Expr::Literal(Literal::String(s)) => Some(s.clone()),
+                    Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => Some(n.clone()),
+                    _ => None,
+                };
+                let (src, tgt) = if args.len() >= 3 { (args.get(1).and_then(|a| lit(&a.node)), args.get(2).and_then(|a| lit(&a.node))) }
+                    else { (None, args.get(1).and_then(|a| lit(&a.node))) };
+                if tgt.as_deref() == Some(to) && src.as_deref().map_or(true, |s| s == from || from == "*") { hit = true; }
+            }
+        }
+    });
+    hit
+}
+
+/// Walk a handler body with the facts established so far; at every call of
+/// transition() to the edge, record whether the guard atoms are implied.
+fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &str,
+              guard: &[Vec<Atom>], out: &mut Vec<bool>) {
+    for st in stmts {
+        match &st.node {
+            Statement::Require { constraint, .. } => narrow_constraint(facts, &constraint.node),
+            Statement::Let { name, value } | Statement::Assign { name, value } => {
+                if expr_calls_transition_to(&value.node, to, from) {
+                    out.push(guard_implied(facts, guard));
+                }
+                facts.forget(name);
+            }
+            Statement::Return { value } | Statement::ExprStmt { expr: value } => {
+                if expr_calls_transition_to(&value.node, to, from) {
+                    out.push(guard_implied(facts, guard));
+                }
+            }
+            Statement::If { condition, then_body, else_body } => {
+                if expr_calls_transition_to(&condition.node, to, from) {
+                    out.push(guard_implied(facts, guard));
+                }
+                let mut then_facts = facts.clone();
+                narrow_expr(&mut then_facts, &condition.node);
+                walk_guard(then_body, &mut then_facts, to, from, guard, out);
+                let mut else_facts = facts.clone();
+                walk_guard(else_body, &mut else_facts, to, from, guard, out);
+                // facts established inside a branch do not survive it; a
+                // variable assigned inside one is unknown after it
+                for body in [then_body, else_body] {
+                    super::literals::for_each_stmt_deep(body, &mut |x| if let Statement::Assign { name, .. } | Statement::Let { name, .. } = x { facts.forget(name); });
+                }
+            }
+            Statement::While { body, .. } | Statement::For { body, .. } => {
+                let mut inner = facts.clone();
+                walk_guard(body, &mut inner, to, from, guard, out);
+                super::literals::for_each_stmt_deep(body, &mut |x| if let Statement::Assign { name, .. } | Statement::Let { name, .. } = x { facts.forget(name); });
+            }
+            _ => {
+                // a transition() nested anywhere else (a match arm, an emit
+                // argument…): counted with the facts known here
+                let mut found = false;
+                super::literals::for_each_expr(std::slice::from_ref(st), &mut |e| {
+                    if !found && matches!(e, Expr::FnCall { name, .. } if name == "transition") && expr_calls_transition_to(e, to, from) {
+                        found = true;
+                    }
+                });
+                if found {
+                    out.push(guard_implied(facts, guard));
+                }
+            }
+        }
+    }
+}
+
+fn prove_guards(sm: &StateMachineSection, handlers: &[(&OnSection, Span)], findings: &[super::refinement::RefinementFinding]) -> Vec<VerifyCheck> {
+    let mut out = Vec::new();
+    // handlers that transition to each edge (literal targets), from refinement
+    let callers_of = |from: &str, to: &str| -> Vec<String> {
+        let mut v: Vec<String> = Vec::new();
+        for f in findings {
+            if let super::refinement::RefinementFinding::HandlerEffect { handler, targets, .. } = f {
+                if targets.iter().any(|c| c.target == to && c.source.as_deref().map_or(true, |s| s == from || from == "*")) && !v.contains(handler) {
+                    v.push(handler.clone());
+                }
+            }
+        }
+        v
+    };
+    for t in &sm.transitions {
+        let Some(guard) = &t.node.guard else { continue };
+        let (from, to) = (t.node.from.as_str(), t.node.to.as_str());
+        let text = crate::ast::render_expr(&guard.node);
+        let Some(atoms) = guard_atoms(&guard.node) else {
+            out.push(VerifyCheck::Warning(format!(
+                "guard `{}` on {} -> {}: runtime-checked — the prover reads comparisons joined by && and ||; this guard has another shape", text, from, to)));
+            continue;
+        };
+        if atoms == vec![Vec::<Atom>::new()] {
+            out.push(VerifyCheck::Pass(format!("guard `{}` on {} -> {}: trivially true", text, from, to)));
+            continue;
+        }
+        let callers = callers_of(from, to);
+        if callers.is_empty() {
+            out.push(VerifyCheck::Warning(format!(
+                "guard `{}` on {} -> {}: runtime-checked — no handler of this cell calls transition() to '{}' with a literal target", text, from, to, to)));
+            continue;
+        }
+        let (mut proven, mut open): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+        for name in &callers {
+            let Some((on, _)) = handlers.iter().find(|(h, _)| &h.signal_name == name) else { continue };
+            let mut facts = Facts::default();
+            let mut verdicts: Vec<bool> = Vec::new();
+            walk_guard(&on.body, &mut facts, to, from, &atoms, &mut verdicts);
+            if !verdicts.is_empty() && verdicts.iter().all(|v| *v) { proven.push(name.clone()); } else { open.push(name.clone()); }
+        }
+        let list = |v: &Vec<String>| v.iter().map(|h| format!("`{}`", h)).collect::<Vec<_>>().join(", ");
+        if open.is_empty() {
+            out.push(VerifyCheck::Pass(format!("guard `{}` on {} -> {}: proven — every caller narrows it with require before transition() ({})", text, from, to, list(&proven))));
+        } else {
+            let vars: Vec<String> = {
+                let mut v: Vec<String> = atoms.iter().flatten().filter_map(|a| match a { Atom::Numeric(v, ..) => Some(v.clone()), Atom::Exact(_) => None }).collect();
+                v.sort(); v.dedup(); v
+            };
+            let narrows = if vars.is_empty() { "the same comparison".to_string() } else { vars.join(", ") };
+            out.push(VerifyCheck::Warning(format!(
+                "guard `{}` on {} -> {}: runtime-checked in {} — put `require {} else Tag` before the transition() (no require or if establishes {} there){}",
+                text, from, to, list(&open), text, narrows,
+                if proven.is_empty() { String::new() } else { format!("; proven in {}", list(&proven)) })));
         }
     }
     out

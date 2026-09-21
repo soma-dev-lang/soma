@@ -90,7 +90,9 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                         super::termination::walk_stmt(&stmt.node, &mut |e| {
                             if let Expr::FnCall { name, args } = e {
                                 if name == "transition" && args.len() >= 2 {
-                                    match &args[1].node {
+                                    // transition(id, from, to): the target is the third argument
+                                    let target = if args.len() >= 3 { &args[2] } else { &args[1] };
+                                    match &target.node {
                                         // an interpolated `"{t}"` may be any state
                                         Expr::Literal(Literal::String(s)) => {
                                             if s == &tr.node.to || s.contains('{') {
@@ -133,7 +135,8 @@ pub fn check_program(program: &Program) -> Vec<GuardIssue> {
                             super::termination::walk_stmt(&st.node, &mut |e| {
                                 if let Expr::FnCall { name, args } = e {
                                     if name == "transition" {
-                                        has_transition |= match args.get(1).map(|a| &a.node) {
+                                        let target = if args.len() >= 3 { args.get(2) } else { args.get(1) };
+                                        has_transition |= match target.map(|a| &a.node) {
                                             Some(Expr::Literal(Literal::String(s))) => s == to || s.contains('{'),
                                             _ => true,
                                         };

@@ -1,0 +1,67 @@
+// WILDCARD FAILURE — `* -> failed` with an `eventually` property.
+//
+// A job that can fail from any working state is the first thing people
+// write, and the first thing that traps them: `* -> failed` also leaves the
+// terminal states (a `done` job could "fail"), and `eventually = ["done",
+// "failed"]` only holds if no cycle can dodge both. The recipe:
+//   - `except [done]` keeps the terminal state final;
+//   - the retry loop `running -> queued` is bounded by data, not by the
+//     graph, so `verify` proves deadlock-freedom and liveness on the graph
+//     and the `eventually` property on the declared machine;
+//   - each handler declares the edge it takes (`transition(id, from, to)`),
+//     so `verify` shows `start ⟶ {queued → running}` instead of a bare target.
+//
+// Run: soma verify wildcard_failure.cell   (soma.toml carries the property)
+
+cell Job {
+    memory {
+        attempts: Map<String, Int> [persistent]
+        invariant attempts >= 0 && attempts <= 3
+        // a failed or done job never keeps a live attempt counter above 3
+        invariant status != "done" || (attempts ?? 0) <= 3
+    }
+    state job {
+        initial: queued
+        queued -> running
+        running -> done
+        running -> queued { guard { tries < 3 } }
+        * -> failed except [done]
+    }
+    on start(id: String) {
+        transition(id, "queued", "running")
+        return get_status(id)
+    }
+    on finish(id: String) {
+        transition(id, "running", "done")
+        return get_status(id)
+    }
+    on retry(id: String) {
+        let tries = (attempts.get(id) ?? 0) + 1
+        require tries <= 3 else TooManyRetries
+        attempts.set(id, tries)
+        require tries < 3 else LastAttempt
+        transition(id, "running", "queued")
+        return get_status(id)
+    }
+    on abort(id: String) {
+        transition(id, "failed")
+        return get_status(id)
+    }
+    on read(id: String) { return [get_status(id), attempts.get(id) ?? 0] }
+}
+cell test JobTests {
+    rules {
+        assert Job.start("a") == "running"
+        assert Job.retry("a") == "queued"
+        assert Job.start("a") == "running"
+        assert Job.retry("a") == "queued"
+        assert Job.start("a") == "running"
+        assert_fails Job.retry("a") matching "LastAttempt"
+        assert Job.read("a") == ["running", 2]
+        assert Job.finish("a") == "done"
+        assert_fails Job.abort("a") matching "invalid_transition"
+        assert Job.start("b") == "running"
+        assert Job.abort("b") == "failed"
+        assert_fails Job.start("b") matching "invalid_transition"
+    }
+}

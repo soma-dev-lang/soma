@@ -790,6 +790,9 @@ pub struct Interpreter {
     pub(crate) agent_token_budget: i64,
     /// set_budget(0): no more model calls (0 in agent_token_budget means none set)
     pub(crate) agent_budget_zero: bool,
+    /// `transition()` in progress: (instance id, target state) — the `status`
+    /// binding of an invariant reads the state the machine is MOVING to
+    pub(crate) pending_status: Option<(String, String)>,
     /// one multi-turn LLM context per agent cell
     pub(crate) agent_conversations: std::collections::HashMap<String, Vec<serde_json::Value>>,
     /// provider rounds allowed for the current think() (max_rounds, ≤ 10)
@@ -1060,6 +1063,7 @@ impl Interpreter {
             agent_tokens_used: 0,
             agent_token_budget: 0,
             agent_budget_zero: false,
+            pending_status: None,
             think_rounds: 10,
             agent_conversation: Vec::new(),
             agent_conversations: std::collections::HashMap::new(),
@@ -4185,6 +4189,19 @@ impl Interpreter {
         names.contains("key") || names.contains("_key")
     }
 
+    /// Map slots of the cell whose invariants read `status`: a transition of
+    /// instance `id` re-checks them at key `id` with the target state.
+    fn slots_reading_status(&self, cell_name: &str) -> Vec<String> {
+        let prefix = format!("{}.", cell_name);
+        let mut out: Vec<String> = self.invariants.iter()
+            .filter(|(k, invs)| k.starts_with(&prefix) && invs.iter().any(invariant_reads_status))
+            .map(|(k, _)| k[prefix.len()..].to_string())
+            .filter(|slot| self.slot_kind(cell_name, slot) == Some("Map"))
+            .collect();
+        out.sort();
+        out
+    }
+
     /// Does a rule BETWEEN slots guard this one? Then a delete matters too:
     /// dropping an entry takes the other side to () (a "value invariant
     /// cannot break on a delete" only holds for a single-slot rule).
@@ -4232,6 +4249,11 @@ impl Interpreter {
                 free_names_expr(inv, &mut names);
                 names.iter().any(|n| n != slot_name && self.slot_kind(cell_name, n).is_some())
             }).collect()
+        } else if op == "transition" {
+            // a transition re-checks only the rules that read `status`: the
+            // slot's own value rules were checked when the value was written
+            // (and the entry may not exist yet — `attempts >= 0` on ())
+            invs.into_iter().filter(invariant_reads_status).collect()
         } else { invs };
         if invs.is_empty() { return Ok(()); }
         for inv in &invs {
@@ -4261,6 +4283,17 @@ impl Interpreter {
             } else { Value::String(key_str.to_string()) };
             env.insert("key".to_string(), key_val);
             env.insert("size".to_string(), Value::Int(SomaInt::from_i64(size_after)));
+            // `status`: the state of the machine instance whose id is the key
+            // (`invariant status != "released" || (balances ?? 0) == 0` ties a
+            // lifecycle to its data); during a transition it is the TARGET
+            if invariant_reads_status(inv) {
+                let st = match &self.pending_status {
+                    Some((id, target)) if id == key_str => Value::String(target.clone()),
+                    _ => self.do_get_status_for(cell_name, key_str).map_err(|e| ExecError::Runtime(RuntimeError::RequireFailed(format!(
+                        "memory invariant on '{}' reads `status`, but {}", slot_name, e))))?,
+                };
+                env.insert("status".to_string(), st);
+            }
             // a rule BETWEEN slots (`invariant reserved <= stock`): the other
             // slots of the cell read at the same key (a Map / List slot), or
             // whole (anything else) — the written slot is its new value
@@ -5188,6 +5221,13 @@ impl Interpreter {
     }
 
     pub(crate) fn do_transition_for(&mut self, cell_name: &str, id: &str, target: &str) -> Result<Value, RuntimeError> {
+        self.do_transition_from_for(cell_name, id, None, target)
+    }
+
+    /// `transition(id, from, to)`: the handler declares where the instance
+    /// must be; anywhere else is an invalid transition even when an edge
+    /// into `to` exists from the actual state.
+    pub(crate) fn do_transition_from_for(&mut self, cell_name: &str, id: &str, expected_from: Option<&str>, target: &str) -> Result<Value, RuntimeError> {
         let (sm, status_slot) = self.find_state_machine_for(cell_name)
             .ok_or_else(|| RuntimeError::TypeError(format!(
                 "transition(): cell '{}' has no state machine{} — a transition moves the machine of the calling cell: call a handler of the cell that owns it",
@@ -5200,6 +5240,15 @@ impl Interpreter {
                 _ => format!("{}", v),
             })
             .unwrap_or(sm.initial.clone());
+
+        if let Some(from) = expected_from {
+            if from != current {
+                return Err(RuntimeError::RequireFailed(format!(
+                    "invalid transition: {} → {} — transition(id, \"{}\", \"{}\") declares its source, and '{}' is in '{}', not '{}'",
+                    current, target, from, target, id, current, from
+                )));
+            }
+        }
 
         // Find matching transition
         let transition = sm.transitions.iter().find(|t| {
@@ -5254,6 +5303,28 @@ impl Interpreter {
                     )));
                 }
             }
+        }
+
+        // Invariants that tie the lifecycle to the data (`status`): the
+        // slots of this cell keyed by the instance id are re-checked with the
+        // TARGET state before the move (a `released` escrow with its balance
+        // still full was invisible to every rule)
+        let status_slots = self.slots_reading_status(cell_name);
+        if !status_slots.is_empty() {
+            self.pending_status = Some((id.to_string(), target.to_string()));
+            for slot in &status_slots {
+                let val = self.call_storage_method(cell_name, slot, "get", &[Value::String(id.to_string())]).unwrap_or(Value::Unit);
+                let size = self.storage.get(&format!("{}.{}", cell_name, slot)).map(|b| b.len()).unwrap_or(0) as i64;
+                let checked = self.check_invariants(cell_name, slot, id, &val, size, "transition");
+                if let Err(e) = checked {
+                    self.pending_status = None;
+                    return Err(match e {
+                        ExecError::Runtime(r) => r,
+                        other => RuntimeError::TypeError(format!("invariant evaluation failed: {:?}", other)),
+                    });
+                }
+            }
+            self.pending_status = None;
         }
 
         // Re-find state machine storage after potential mutation from eval_expr
@@ -6798,6 +6869,14 @@ fn with_lexical_scope<T>(body: &[Spanned<Statement>], env: &mut Env, f: impl FnO
 
 /// CSS/format text, regex counts and semicolon-containing segments stay literal.
 /// Quoted colons in real expressions must not hide calls from static analyses.
+/// Does an invariant read the `status` binding (the machine state of the
+/// written key)?
+pub(crate) fn invariant_reads_status(inv: &Expr) -> bool {
+    let mut names: HashSet<String> = HashSet::new();
+    free_names_expr(inv, &mut names);
+    names.contains("status")
+}
+
 pub(crate) fn interp_segment_is_literal(segment: &str) -> bool {
     let (mut quoted, mut escaped, mut colon) = (false, false, false);
     for ch in segment.chars() {

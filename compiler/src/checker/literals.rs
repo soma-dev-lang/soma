@@ -29,6 +29,11 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
         }
         _ => None,
     });
+    // declared edges (from, to), `*` kept as the source of a wildcard edge
+    let edges: Vec<(String, String)> = cell.sections.iter().flat_map(|s| match &s.node {
+        Section::State(sm) => sm.transitions.iter().map(|t| (t.node.from.clone(), t.node.to.clone())).collect::<Vec<_>>(),
+        _ => Vec::new(),
+    }).collect();
     // states some declared edge enters (`* -> x` included)
     let entered: std::collections::HashSet<String> = cell.sections.iter().flat_map(|s| match &s.node {
         Section::State(sm) => sm.transitions.iter().map(|t| t.node.to.clone()).collect::<Vec<_>>(),
@@ -57,15 +62,33 @@ pub fn check_cell(cell: &CellDef) -> Vec<LiteralIssue> {
         };
         {
             for_each_call(body, &mut |name, args, span| {
-                if name == "transition" && args.len() != 2 && !params.contains_key("transition") {
+                if name == "transition" && !(2..=3).contains(&args.len()) && !params.contains_key("transition") {
                     out.push(LiteralIssue {
                         kind: "argument_count",
-                        message: format!("transition() takes 2 arguments (instance id, target state), got {} — `transition(id, \"shipped\")`", args.len()),
+                        message: format!("transition() takes 2 arguments (instance id, target state) or 3 (instance id, source state, target state), got {} — `transition(id, \"shipped\")` or `transition(id, \"paid\", \"shipped\")`", args.len()),
                         span,
                     });
                 }
+                // transition(id, from, to): the declared edge must exist
+                if name == "transition" && args.len() == 3 && !params.contains_key("transition") {
+                    if let (Some(states), Some(Spanned { node: Expr::Literal(Literal::String(from)), .. }), Some(Spanned { node: Expr::Literal(Literal::String(to)), .. })) = (&states, args.get(1), args.get(2)) {
+                        if !from.contains('{') && !to.contains('{') {
+                            if !states.contains(from) {
+                                let near = crate::checker::names::suggest(from, states.iter()).map(|s| format!(" (did you mean \"{}\"?)", s)).unwrap_or_default();
+                                out.push(LiteralIssue { kind: "unknown_transition_target", span,
+                                    message: format!("transition() from \"{}\"{} in {} — no such state in `state {{ }}` of cell '{}'", from, near, owner, cell.name) });
+                            } else if !edges.iter().any(|(f, t)| t == to && (f == from || f == "*")) {
+                                let leaving: Vec<String> = edges.iter().filter(|(f, _)| f == from || f == "*").map(|(_, t)| t.clone()).collect();
+                                out.push(LiteralIssue { kind: "unknown_transition_target", span,
+                                    message: format!("transition(id, \"{}\", \"{}\") in {} — cell '{}' declares no edge {} -> {}; edges leaving '{}': [{}]. Declare the edge, or fix the source",
+                                        from, to, owner, cell.name, from, to, from, leaving.join(", ")) });
+                            }
+                        }
+                    }
+                }
                 if name == "transition" {
-                    if let (Some(states), Some(Spanned { node: Expr::Literal(Literal::String(target)), .. })) = (&states, args.get(1)) {
+                    let target_arg = if args.len() >= 3 { args.get(2) } else { args.get(1) };
+                    if let (Some(states), Some(Spanned { node: Expr::Literal(Literal::String(target)), .. })) = (&states, target_arg) {
                         // "{g}_x" is interpolated at runtime: a dynamic target, not this text
                         // a declared state no edge ENTERS (the initial state,
                         // typically): the transition fails on every call

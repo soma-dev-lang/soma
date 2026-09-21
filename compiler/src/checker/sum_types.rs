@@ -233,7 +233,9 @@ fn walk_typed_transitions_expr(
 ) {
     match expr {
         Expr::FnCall { name, args } if name == "transition" => {
-            if let Some(target_expr) = args.get(1) {
+            // transition(id, from, to): both states must be variants
+            let state_args: Vec<&Spanned<Expr>> = if args.len() >= 3 { args[1..3].iter().collect() } else { args.get(1).into_iter().collect() };
+            for target_expr in state_args {
                 let target_name = match &target_expr.node {
                     Expr::Ident(n) if n.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => Some(n.clone()),
                     Expr::Literal(Literal::String(s)) => Some(s.clone()),

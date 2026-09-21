@@ -1,0 +1,12 @@
+[package]
+name = "wildcard_failure"
+version = "0.1.0"
+entry = "wildcard_failure.cell"
+
+# `* -> failed except [done]` keeps `done` final; every job ends done or
+# failed — and the retry guard `tries < 3` is proven from the handler's
+# `require`, so `soma verify --strict` is green.
+[verify]
+deadlock_free = true
+eventually = ["done", "failed"]
+never = []

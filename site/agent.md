@@ -70,7 +70,12 @@ with the `features` you need before writing a new cell).
   `else`: `let x = if ok { 1 } else { 0 }`. `return` exits the handler,
   including from a loop.
 - `7 / 2` is `3.5`; `idiv(7, 2)` is `3`.
-- `transition(id, "state")` returns `{id, from, to}`; read the state with
+- `transition(id, "state")` returns `{id, from, to}`; `transition(id, "from", "to")`
+  also declares the source (check verifies the edge, the call refuses any other
+  start state, verify sees the edge). An invariant may read `status`, the
+  machine state of the written key (`invariant status != "released" || (bal ?? 0) == 0`,
+  checked on writes and transitions). A transition guard is proven when the
+  calling handler narrows its variables with `require` before the call. Read the state with
   `get_status(id)`. Wrap a transition that may be illegal in `try { }`.
 - `.get/.set/.delete` are for `memory` slots; local maps use `m["k"]`.
 - `==` is structural on lists/maps; null is `()` (`x == ()`, `x ?? 0`); `push`/`concat`

@@ -98,6 +98,8 @@ pub enum RefinementFinding {
 #[derive(Debug, Clone)]
 pub struct TransitionCall {
     pub target: String,
+    /// `transition(id, from, to)`: the source the handler declares
+    pub source: Option<String>,
     pub path: Vec<String>,
     pub span: Span,
 }
@@ -160,15 +162,15 @@ pub fn check_refinement(
     }
 
     // ── Check 2: every declared transition's target must be reached by some handler
-    let reached_targets: HashSet<&str> = effects.iter()
-        .flat_map(|e| e.static_transitions.iter().map(|c| c.target.as_str()))
-        .collect();
+    // (a call that declares its source reaches only the edge it names)
+    let reached = |from: &str, to: &str| effects.iter().any(|e| e.static_transitions.iter().any(|c|
+        c.target == to && c.source.as_deref().map_or(true, |s| s == from || from == "*")));
     // Some handlers have dynamic targets — if any handler has one, we can't
     // be sure dead-transition warnings are accurate, so suppress them.
     let any_dynamic = effects.iter().any(|e| e.has_dynamic_target);
     if !any_dynamic {
         for t in &sm.transitions {
-            if !reached_targets.contains(t.node.to.as_str()) {
+            if !reached(&t.node.from, &t.node.to) {
                 findings.push(RefinementFinding::DeadTransition {
                     from: t.node.from.clone(),
                     to: t.node.to.clone(),
@@ -274,26 +276,33 @@ fn walk_stmt(stmt: &Statement, span: Span, path: &mut Vec<String>, eff: &mut Han
 fn walk_expr(expr: &Expr, span: Span, path: &mut Vec<String>, eff: &mut HandlerEffect) {
     match expr {
         Expr::FnCall { name, args } if name == "transition" => {
-            // Found a transition call. The target is the second arg (index 1).
-            // First arg is the instance id; we ignore it for refinement.
-            if let Some(target_expr) = args.get(1) {
-                match &target_expr.node {
+            // Found a transition call. The target is the second arg (index 1),
+            // or the third when the handler declares its source:
+            // `transition(id, from, to)`. First arg is the instance id.
+            let literal_state = |e: &Expr| -> Option<String> {
+                match e {
                     // `"{t}"` is interpolated: a computed target (it was
                     // refused as the literal state "{t}")
-                    Expr::Literal(Literal::String(s)) if !s.contains('{') => {
-                        eff.static_transitions.push(TransitionCall {
-                            target: s.clone(),
-                            path: path.clone(),
-                            span,
-                        });
-                    }
+                    Expr::Literal(Literal::String(s)) if !s.contains('{') => Some(s.clone()),
                     // Bare TypeIdent: `transition(id, Validated)`.  Parsed
                     // as Expr::Ident("Validated").  The interpreter resolves
                     // it via the variant registry; statically the target
                     // name is the identifier itself.
-                    Expr::Ident(name) if name.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => {
+                    Expr::Ident(name) if name.chars().next().map_or(false, |c| c.is_ascii_uppercase()) => Some(name.clone()),
+                    _ => None,
+                }
+            };
+            let (source, target_expr) = if args.len() >= 3 {
+                (args.get(1).and_then(|a| literal_state(&a.node)), args.get(2))
+            } else {
+                (None, args.get(1))
+            };
+            if let Some(target_expr) = target_expr {
+                match &target_expr.node {
+                    Expr::Literal(Literal::String(_)) | Expr::Ident(_) if literal_state(&target_expr.node).is_some() => {
                         eff.static_transitions.push(TransitionCall {
-                            target: name.clone(),
+                            target: literal_state(&target_expr.node).unwrap(),
+                            source,
                             path: path.clone(),
                             span,
                         });

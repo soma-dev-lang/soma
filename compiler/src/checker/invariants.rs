@@ -31,7 +31,7 @@ pub struct InvariantIssue {
 }
 
 const GENERIC_BINDINGS: &[&str] = &[
-    "value", "key", "size", "_slot_len", "_slot_name", "_key", "true", "false",
+    "value", "key", "size", "status", "_slot_len", "_slot_name", "_key", "true", "false",
 ];
 
 /// Check-time validation: every name an invariant references must be
@@ -50,6 +50,16 @@ pub fn validate_program(program: &Program) -> Vec<InvariantIssue> {
             for inv in &mem.invariants {
                 let mut idents = HashSet::new();
                 collect_idents(&inv.node, &mut idents);
+                // `status` is the machine state of the written key: it needs
+                // a `state` section in this cell
+                if deep_idents(&inv.node).contains("status")
+                    && !cell.node.sections.iter().any(|s| matches!(&s.node, Section::State(_)))
+                {
+                    issues.push(InvariantIssue {
+                        message: format!("memory invariant reads `status` (the machine state of the written key), but cell '{}' declares no `state {{ }}` machine", cell.node.name),
+                        span: inv.span,
+                    });
+                }
                 // An invariant is evaluated per write, with only the slot
                 // being written in scope. Naming two slots can never
                 // evaluate — every write to either would be rejected.
@@ -240,6 +250,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
 
         // invariant → the slots it guards (same scoping rule as runtime)
         let mut guarded: Vec<(Expr, Vec<String>, String)> = Vec::new();
+        let mut status_notes: Vec<String> = Vec::new();
         for section in &cell.node.sections {
             let Section::Memory(mem) = &section.node else { continue };
             let slot_names: Vec<String> =
@@ -251,11 +262,23 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     .filter(|n| refs.contains(*n))
                     .cloned()
                     .collect();
+                // a rule between the lifecycle and the data (`status`): the
+                // prover has no model of which state a handler writes in — it
+                // is checked on every write of the slot and every transition
+                // of the instance, and said so (a Note, not a proof)
+                if refs.contains("status") {
+                    let targets = if named.is_empty() { slot_names.clone() } else { named };
+                    status_notes.push(format!(
+                        "invariant {} — reads `status`: checked at run time on every write to {} and on every transition() of the written key (a rule between lifecycle and data is not proven by induction)",
+                        render_expr(&inv.node), targets.join(", ")
+                    ));
+                    continue;
+                }
                 let targets = if named.is_empty() { slot_names.clone() } else { named };
                 guarded.push((normalize_invariant(&inv.node, &slot_names), targets, render_expr(&inv.node)));
             }
         }
-        if guarded.is_empty() {
+        if guarded.is_empty() && status_notes.is_empty() {
             continue;
         }
 
@@ -339,6 +362,9 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             transitions: vec![],
             checks: vec![],
         };
+        for note in status_notes.drain(..) {
+            result.checks.push(VerifyCheck::Note(note));
+        }
 
         for (inv, targets, inv_text) in &guarded {
             let relevant: Vec<&(String, String, Expr, bool, Vec<usize>, Option<String>)> = writes
