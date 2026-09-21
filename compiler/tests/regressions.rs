@@ -1254,3 +1254,39 @@ cell test T {
     assert!(out.contains("5 tests: 5 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn map_pattern_needs_the_key_and_float_string_add_is_refused_plainly() {
+    // `{kind} -> …` bound kind = () for a map WITHOUT the key: the next arm
+    // was unreachable and the body failed later with "cannot add String and
+    // Unit". `"a" + 1.5` said "expected Float, got String" while `"a" + 1`
+    // said "cannot add String and Int".
+    let dir = scratch("map_pattern");
+    std::fs::write(dir.join("app.cell"), r#"
+cell S {
+    on m(v: Map) {
+        return match v {
+            {kind: "a", n} -> "a:" + to_string(n)
+            {kind} -> "other:" + kind
+            _ -> "none"
+        }
+    }
+    on present_unit() { return match map("kind", ()) { {kind} -> "present" _ -> "absent" } }
+    on f() { return "a" + 1.5 }
+}
+cell test T {
+    rules {
+        assert S.m(map("kind", "a", "n", 3)) == "a:3"
+        assert S.m(map("kind", "z")) == "other:z"
+        assert S.m(map("x", 1)) == "none"
+        assert S.m(map()) == "none"
+        assert S.present_unit() == "present"
+        assert_fails S.f() matching "cannot add String and Float"
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("6 tests: 6 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

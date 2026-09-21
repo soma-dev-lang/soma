@@ -58,6 +58,12 @@
   or Float size as 0 and had no cell limit (`identity(100000)` tried to build
   10^10 cells); `reshape` with a negative dimension said "cannot fill a 0x0
   matrix" instead of refusing the size. One regression test.
+- A map pattern needs its keys: `{kind} -> …` matched a map WITHOUT a `kind`
+  key (binding `kind = ()`), so the arm after it was unreachable and the body
+  failed later with "cannot add String and Unit". A key the map lacks no
+  longer matches; a key present with value `()` still does. `"a" + 1.5` is
+  refused as `cannot add String and Float`, like `"a" + 1` (it said "expected
+  Float, got String"). One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

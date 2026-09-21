@@ -127,7 +127,7 @@ match value {
     "x" || "y" -> expr5     // or-pattern
     name -> use(name)        // variable binding (captures value)
     "/api/" + rest -> api(rest) // string prefix pattern
-    {method: "GET", path} -> get(path) // map destructuring
+    {method: "GET", path} -> get(path) // map destructuring: every named key must be present
     _ -> default_expr        // wildcard
 }
 

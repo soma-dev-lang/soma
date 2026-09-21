@@ -3652,8 +3652,12 @@ impl Interpreter {
                 if let Value::Map(entries) = val {
                     let mut bindings = Vec::new();
                     for (field_name, sub_pattern) in fields {
-                        let field_val = entries.get(field_name).cloned().unwrap_or(Value::Unit);
-                        let (m, sub_bindings) = self.match_pattern(sub_pattern, &field_val);
+                        // a key the map lacks does not match: `{kind} -> …`
+                        // used to bind kind = () for ANY map, so the arm
+                        // after it was unreachable and the body failed later
+                        // ("cannot add String and Unit")
+                        let Some(field_val) = entries.get(field_name) else { return (false, vec![]); };
+                        let (m, sub_bindings) = self.match_pattern(sub_pattern, field_val);
                         if !m { return (false, vec![]); }
                         bindings.extend(sub_bindings);
                     }
@@ -4444,7 +4448,9 @@ impl Interpreter {
                 BinOp::And => Ok(Value::Bool(a.to_i64() != Some(0) && b.to_i64() != Some(0))),
                 BinOp::Or => Ok(Value::Bool(a.to_i64() != Some(0) || b.to_i64() != Some(0))),
             },
-            (Value::Float(_), _) | (_, Value::Float(_)) => {
+            // (`"a" + 1.5` said "expected Float, got String": it is the same
+            // refusal as `"a" + 1`, reported below)
+            (Value::Float(_), Value::Int(_) | Value::Float(_)) | (Value::Int(_), Value::Float(_)) => {
                 let a = l.as_float()?;
                 let b = r.as_float()?;
                 match op {
