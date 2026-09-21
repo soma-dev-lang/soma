@@ -54,6 +54,10 @@
   showed two identical-looking sides and `assert_fails` on it passed for the
   wrong reason. It is now the same error a handler raises, `cannot compare Int
   and String`, with both sides typed. One regression test.
+- `identity(n)` is the alias of `eye(n)` its doc promised: it read a negative
+  or Float size as 0 and had no cell limit (`identity(100000)` tried to build
+  10^10 cells); `reshape` with a negative dimension said "cannot fill a 0x0
+  matrix" instead of refusing the size. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

@@ -476,8 +476,8 @@ pub fn expr_cost(e: &Expr) -> Cost {
                     let c = literal_int_at(args, 1).unwrap_or(DEFAULT_CAPACITY);
                     arg_cost.plus(Cost::bytes(64 + r.saturating_mul(c).saturating_mul(16)))
                 }
-                // eye(n) — single positional arg.
-                "eye" => {
+                // eye(n) / identity(n) — single positional arg.
+                "eye" | "identity" => {
                     let n = literal_int_at(args, 0).unwrap_or(DEFAULT_CAPACITY);
                     arg_cost.plus(Cost::bytes(64 + n.saturating_mul(n).saturating_mul(16)))
                 }

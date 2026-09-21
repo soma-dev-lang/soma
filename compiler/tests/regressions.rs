@@ -1225,3 +1225,32 @@ cell test T {
     assert!(out.contains("4 tests: 2 passed, 2 failed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn identity_is_eye_and_refuses_bad_sizes() {
+    // identity(n) had its own code: a negative or Float size read as 0 and
+    // there was no cell limit (identity(100000) tried to build 10^10 cells)
+    let dir = scratch("identity");
+    std::fs::write(dir.join("app.cell"), r#"
+cell M {
+    on same() { return identity(3) == eye(3) }
+    on neg() { return identity(-1) }
+    on huge() { return identity(100000) }
+    on flt() { return identity(2.5) }
+    on reshape_neg() { return reshape([1, 2], -1, 2) }
+}
+cell test T {
+    rules {
+        assert M.same() == true
+        assert_fails M.neg() matching "non-negative"
+        assert_fails M.huge() matching "past the limit"
+        assert_fails M.flt() matching "expected integer"
+        assert_fails M.reshape_neg() matching "non-negative"
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("5 tests: 5 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -358,7 +358,6 @@ fn vec_to_value(v: &[f64]) -> Value {
 
 fn te(msg: &str) -> RuntimeError { RuntimeError::TypeError(msg.to_string()) }
 fn int(n: usize) -> Value { Value::Int(crate::interpreter::soma_int::SomaInt::from_i64(n as i64)) }
-fn arg_usize(v: &Value) -> usize { val_to_f64(v).unwrap_or(0.0).max(0.0) as usize }
 fn arg_f64(v: &Value) -> f64 { val_to_f64(v).unwrap_or(0.0) }
 
 /// Flatten a flat list OR a List<List> matrix into a row-major Vec<f64>.
@@ -1470,8 +1469,9 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
         "reshape" => {
             if args.len() != 3 { return Some(Err(te("reshape(values, rows, cols)"))); }
             let flat = match flatten_nums(&args[0]) { Ok(f) => f, Err(e) => return Some(Err(e)) };
-            let r = arg_usize(&args[1]);
-            let c = arg_usize(&args[2]);
+            // a negative or non-Int size read as 0 ("cannot fill a 0x0 matrix")
+            let r = match val_to_usize(&args[1]) { Ok(v) => v, Err(e) => return Some(Err(e)) };
+            let c = match val_to_usize(&args[2]) { Ok(v) => v, Err(e) => return Some(Err(e)) };
             if let Err(e) = check_cells(r, c) { return Some(Err(e)); }
             if r.checked_mul(c) != Some(flat.len()) {
                 return Some(Err(RuntimeError::TypeError(format!(
@@ -1520,11 +1520,6 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             let m = match to_matrix(&args[0]) { Ok(m) => m, Err(e) => return Some(Err(e)) };
             let n = m.len().min(m[0].len());
             Some(Ok(Value::Float((0..n).map(|i| m[i][i]).sum())))
-        }
-        "identity" => {
-            let n = arg_usize(&args[0]);
-            let m: Vec<Vec<f64>> = (0..n).map(|i| (0..n).map(|j| if i == j { 1.0 } else { 0.0 }).collect()).collect();
-            Some(Ok(matrix_to_value(&m)))
         }
         "scale" => {
             // scale(matrix, k) — scalar multiply
@@ -1822,9 +1817,11 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(matrix_to_value(&rows)))
         }
         // Identity matrix as a row-of-rows.
-        "eye" => {
+        // identity is the documented alias: it read a negative or non-Int size
+        // as 0 and had no cell limit (identity(100000) tried 10^10 cells)
+        "eye" | "identity" => {
             if args.is_empty() {
-                return Some(Err(RuntimeError::TypeError("eye expects (n: Int)".into())));
+                return Some(Err(RuntimeError::TypeError(format!("{name} expects (n: Int)"))));
             }
             let n = match val_to_usize(&args[0]) {
                 Ok(v) => v,
