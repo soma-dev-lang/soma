@@ -124,7 +124,7 @@ pub fn fatal_exit() -> ! {
         let msg = FATAL_MSG.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "the program does not load (details on stderr)".to_string());
         println!("{}", serde_json::json!({
             "errors": [{"level": "error", "kind": "load", "message": msg}],
-            "warnings": [], "error_count": 1, "passed": false
+            "warnings": [], "notes": [], "error_count": 1, "warning_count": 0, "passed": false
         }));
     }
     process::exit(1)
@@ -141,7 +141,7 @@ pub fn read_source(path: &PathBuf) -> String {
             if JSON_MODE.load(std::sync::atomic::Ordering::Relaxed) {
                 println!("{}", serde_json::json!({
                     "errors": [{"level": "error", "kind": "io", "message": format!("cannot read '{}': {}", path.display(), e), "fix": "check the path"}],
-                    "warnings": [], "error_count": 1, "passed": false
+                    "warnings": [], "notes": [], "error_count": 1, "warning_count": 0, "passed": false
                 }));
                 JSON_DONE.store(true, std::sync::atomic::Ordering::Relaxed);
             }

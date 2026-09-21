@@ -201,7 +201,13 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
         // ── Agent: set_budget(max_tokens) ──────────────────────────
         "set_budget" => {
             if let Some(Value::Int(si)) = args.first() {
-                let n = si.to_i64().unwrap_or(i64::MAX);
+                // an Int past 64 bits: a negative one is refused like any
+                // negative budget (it used to become i64::MAX, "unlimited")
+                let n = match si.to_i64() {
+                    Some(n) => n,
+                    None if si.cmp(&SomaInt::from_i64(0)) < 0 => -1,
+                    None => i64::MAX,
+                };
                 if n < 0 {
                     return Some(Err(RuntimeError::Domain { kind: "range".to_string(), message: format!("set_budget({}): a budget is a number of tokens, 0 or more (0: no more model calls)", n) }));
                 }
@@ -221,7 +227,7 @@ pub fn call_builtin(interp: &mut Interpreter, name: &str, args: &[Value], cell_n
 
                     let used = interp.agent_tokens_used;
                     let left = if interp.agent_token_budget > 0 { (interp.agent_token_budget - used).max(0) } else { n };
-                    interp.agent_token_budget = used + n.min(left);
+                    interp.agent_token_budget = used.saturating_add(n.min(left));
                     return Some(Ok(Value::Unit));
                 }
                 interp.agent_token_budget = n;

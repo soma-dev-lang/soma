@@ -29,6 +29,10 @@ pub(crate) enum UndoOp {
     Unappend { backend: Arc<dyn StorageBackend> },
     /// `rows[i] = v` / `rows.delete(i)` on a List slot: put the old log back
     RestoreList { backend: Arc<dyn StorageBackend>, prev: Vec<crate::runtime::storage::StoredValue> },
+    /// `rows[i] = v` on a List slot: put the one old element back
+    ListSet { backend: Arc<dyn StorageBackend>, index: usize, prev: crate::runtime::storage::StoredValue },
+    /// `rows.delete(i)` on a List slot: put the one removed element back
+    ListRestore { backend: Arc<dyn StorageBackend>, token: i64, prev: crate::runtime::storage::StoredValue },
     /// a `publish` / `emit` push to SSE and WebSocket clients: held until the
     /// handler commits (a rolled-back handler told clients about a move
     /// that never happened); undoing it is dropping it
@@ -1293,6 +1297,11 @@ impl Interpreter {
                 if t.ends_with("_log") || t.starts_with("sqlite_") || expected.contains(t) { continue; }
                 // a horde's queue (`Audit__horde-meta`, `Audit__horde-tasks`)
                 if t.ends_with("__horde-meta") || t.ends_with("__horde-tasks") { continue; }
+                // the cluster's per-key versions and tombstones
+                // (`_soma_cluster_v2_Replicated.records`): runtime metadata
+                // of a declared cell, reported at every restart as the data
+                // of a removed cell
+                if t.starts_with("_soma_cluster_") { continue; }
                 let log = format!("{}_log", t);
                 let rows = count(t) + if table_set.contains(&log) { count(&log) } else { 0 };
                 if rows == 0 { continue; }
@@ -1508,8 +1517,11 @@ impl Interpreter {
                 // a native `soma:<kind>: …` refusal keeps its kind (a
                 // loop_bound overrun was kind "type" natively, "loop_bound"
                 // interpreted)
+                // …and the interpreter's wording: its messages carry no
+                // `kind: ` prefix (str_at raised "index: str_at: …" natively)
                 Err(e) => return Err(match e.split_once(": ") {
-                    Some((k, _)) if matches!(k, "loop_bound" | "range" | "index") => RuntimeError::Domain { kind: k.to_string(), message: e.clone() },
+                    Some((k, rest)) if matches!(k, "loop_bound" | "range" | "index") => RuntimeError::Domain { kind: k.to_string(), message: rest.to_string() },
+                    Some(("type", rest)) => RuntimeError::TypeError(rest.to_string()),
                     _ => RuntimeError::TypeError(e),
                 }),
             }
@@ -1830,6 +1842,37 @@ impl Interpreter {
                                 return Ok(Value::Unit);
                             }
                         }
+                    }
+                }
+                // `m = with(m, k, v)` / `m = without(m, k)` on a local map:
+                // update in place like the pipe form above (each call copied
+                // the whole map: 20 000 removals took 26 s)
+                if let Expr::FnCall { name: fn_name, args } = &value.node {
+                    if matches!(fn_name.as_str(), "with" | "without") && args.len() >= 2
+                        && (fn_name == "without" || (args.len() - 1) % 2 == 0)
+                        && self.builtin_fast_path(fn_name, args.len(), env, cell_name)
+                        && matches!(&args[0].node, Expr::Ident(n) if n == name)
+                        && matches!(env.get(name), Some(Value::Map(_)))
+                    {
+                        let snapshot = args[1..].iter().any(|a| expr_may_assign(&a.node)).then(|| env[name].clone());
+                        let values = args[1..].iter().map(|a| self.eval_expr(&a.node, env, cell_name, signal_name)).collect::<Result<Vec<_>, _>>()?;
+                        if !self.builtin_fast_path(fn_name, args.len(), env, cell_name) {
+                            let mut all = vec![snapshot.unwrap_or_else(|| env[name].clone())];
+                            all.extend(values);
+                            let val = self.eval_named_call(fn_name, all, env, cell_name, signal_name)?;
+                            env.insert(name.clone(), val);
+                        } else {
+                            let mut base = snapshot.unwrap_or_else(|| env.remove(name).unwrap());
+                            if let Value::Map(m) = &mut base {
+                                if fn_name == "with" {
+                                    for pair in values.chunks_exact(2) { m.insert(format!("{}", pair[0]), pair[1].clone()); }
+                                } else {
+                                    for k in &values { m.shift_remove(&format!("{}", k)); }
+                                }
+                            }
+                            env.insert(name.clone(), base);
+                        }
+                        return Ok(Value::Unit);
                     }
                 }
                 let val = self.eval_expr(&value.node, env, cell_name, signal_name)?;
@@ -2841,7 +2884,8 @@ impl Interpreter {
                 match (&target_val, method.as_str()) {
                     (Value::List(items), "get") => {
                         if let Some(Value::Int(si)) = arg_vals.first() {
-                            Ok(items.get(si.to_i64().unwrap_or(0) as usize).cloned().unwrap_or(Value::Unit))
+                            // an Int past 64 bits is out of bounds, not element 0
+                            Ok(si.to_i64().and_then(|i| items.get(i as usize)).cloned().unwrap_or(Value::Unit))
                         } else {
                             Ok(Value::Unit)
                         }
@@ -2985,7 +3029,8 @@ impl Interpreter {
                 "last" => return Ok(items().into_iter().last().unwrap_or(Value::Unit)),
                 "get" | "at" | "nth" => {
                     if let Some(Value::Int(i)) = args.first() {
-                        let raw = i.to_i64().unwrap_or(0);
+                        // an Int past 64 bits is out of bounds, not element 0
+                        let Some(raw) = i.to_i64() else { return Ok(Value::Unit) };
                         let idx = if raw < 0 { raw + backend.list_len() as i64 } else { raw };
                         return Ok(if idx >= 0 {
                             backend.list_get(idx as usize).map(|v| self.from_slot(cell_name, slot_name, stored_to_value(v))).unwrap_or(Value::Unit)
@@ -3007,12 +3052,24 @@ impl Interpreter {
                 // rows[i] = v / rows.set(i, v): replace one element (was a
                 // silent no-op — the keyed map under the log took the write)
                 "set" | "put" if matches!(args.first(), Some(Value::Int(_))) && args.len() == 2 => {
-                    let xs = items();
-                    let raw = match &args[0] { Value::Int(i) => i.to_i64().unwrap_or(0), _ => 0 };
-                    let idx = if raw < 0 { raw + xs.len() as i64 } else { raw };
-                    if idx < 0 || idx as usize >= xs.len() {
+                    // length and the one old element, never the whole list
+                    // (a 20 000-row list was read three times and rewritten
+                    // for every `rows[i] = v`)
+                    let len = backend.list_len();
+                    self.check_storage_write()?;
+                    // an Int past 64 bits is out of bounds, not element 0
+                    let raw = match &args[0] {
+                        Value::Int(i) => match i.to_i64() {
+                            Some(v) => v,
+                            None => return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                                "{}[{}]: index out of bounds (the List slot has {} items) — push() appends", slot_name, i, len)))),
+                        },
+                        _ => 0,
+                    };
+                    let idx = if raw < 0 { raw + len as i64 } else { raw };
+                    if idx < 0 || idx as usize >= len {
                         return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
-                            "{}[{}]: index out of bounds (the List slot has {} items) — push() appends", slot_name, raw, xs.len()))));
+                            "{}[{}]: index out of bounds (the List slot has {} items) — push() appends", slot_name, raw, len))));
                     }
                     if self.slot_immutable(cell_name, slot_name) {
                         return Err(Self::immutable_refusal(slot_name, &format!("overwriting element #{}", idx)));
@@ -3020,56 +3077,70 @@ impl Interpreter {
                     let val = self.check_slot_value_type(cell_name, slot_name, &args[1])?;
                     // the REAL index: `slots[-2] = v` was checked with key -2
                     // and got past `invariant key != 0 || value == 0`
-                    self.check_invariants(cell_name, slot_name, &idx.to_string(), &val, xs.len() as i64, "write")?;
-                    let prev = backend.list();
+                    self.check_invariants(cell_name, slot_name, &idx.to_string(), &val, len as i64, "write")?;
+                    let prev = backend.list_get(idx as usize);
+                    self.check_storage_write()?;
+                    let Some(prev) = prev else {
+                        return Err(ExecError::Runtime(RuntimeError::TypeError(format!(
+                            "{}[{}]: index out of bounds (the List slot has {} items) — push() appends", slot_name, raw, len))));
+                    };
                     if let Some(j) = self.journal.as_mut() {
-                        j.push(UndoOp::RestoreList { backend: backend.clone(), prev });
+                        j.push(UndoOp::ListSet { backend: backend.clone(), index: idx as usize, prev });
                     }
-                    let mut stored = backend.list();
-                    stored[idx as usize] = value_to_stored(&val);
-                    backend.replace_list(stored);
+                    backend.list_set(idx as usize, value_to_stored(&val));
+                    self.check_storage_write()?;
                     return Ok(Value::Unit);
                 }
                 // rows.delete(i): remove one element by index
                 "delete" | "remove" if matches!(args.first(), Some(Value::Int(_))) => {
-                    let xs = items();
-                    let raw = match &args[0] { Value::Int(i) => i.to_i64().unwrap_or(0), _ => 0 };
-                    let idx = if raw < 0 { raw + xs.len() as i64 } else { raw };
+                    // the whole list only when an invariant needs the
+                    // shifted elements (each delete read and rewrote every row)
+                    let needs_all = self.slot_invariants_use_key(cell_name, slot_name);
+                    let xs = if needs_all { items() } else { Vec::new() };
+                    let len = if needs_all { xs.len() } else { backend.list_len() };
+                    self.check_storage_write()?;
+                    // an Int past 64 bits is out of range (a miss, like any
+                    // other index past the end), not element 0
+                    let raw = match &args[0] { Value::Int(i) => i.to_i64().unwrap_or(i64::MAX), _ => 0 };
+                    let idx = if raw < 0 { raw + len as i64 } else { raw };
                     // an [immutable] slot refuses a delete, in range or not
                     // (out of range answered `false`, so a test could not
                     // tell a refusal from a miss)
                     if self.slot_immutable(cell_name, slot_name) {
                         return Err(Self::immutable_refusal(slot_name, &format!("deleting element #{}", idx)));
                     }
-                    if idx < 0 || idx as usize >= xs.len() {
+                    if idx < 0 || idx as usize >= len {
                         return Ok(Value::Bool(false));
                     }
-                    let old = xs[idx as usize].clone();
+                    let old = if needs_all { xs[idx as usize].clone() } else {
+                        let got = backend.list_get(idx as usize);
+                        self.check_storage_write()?;
+                        match got { Some(v) => self.from_slot(cell_name, slot_name, stored_to_value(v)), None => return Ok(Value::Bool(false)) }
+                    };
                     // only a `size` clause can flip on a delete — as for a Map slot,
                     // and as verify says (every value invariant refused the
                     // delete here while verify proved the writer safe)
                     if self.slot_invariants_cross(cell_name, slot_name) {
-                        self.check_invariants(cell_name, slot_name, &idx.to_string(), &Value::Unit, xs.len() as i64 - 1, "delete_cross")?;
+                        self.check_invariants(cell_name, slot_name, &idx.to_string(), &Value::Unit, len as i64 - 1, "delete_cross")?;
                     }
                     if self.slot_invariants_use_size(cell_name, slot_name) {
-                        self.check_invariants(cell_name, slot_name, &idx.to_string(), &old, xs.len() as i64 - 1, "delete")?;
+                        self.check_invariants(cell_name, slot_name, &idx.to_string(), &old, len as i64 - 1, "delete")?;
                     }
                     // a List delete SHIFTS the later elements to new indexes: an
                     // invariant about `key` (or the value at a key) is checked
                     // for each of them at its new place (`drop0` left 5 at #0
                     // under `key != 0 || value == 0`)
-                    if self.slot_invariants_use_key(cell_name, slot_name) {
+                    if needs_all {
                         for i in (idx as usize + 1)..xs.len() {
-                            self.check_invariants(cell_name, slot_name, &(i - 1).to_string(), &xs[i], xs.len() as i64 - 1, "shift")?;
+                            self.check_invariants(cell_name, slot_name, &(i - 1).to_string(), &xs[i], len as i64 - 1, "shift")?;
                         }
                     }
-                    let prev = backend.list();
+                    let removed = backend.list_remove(idx as usize);
+                    self.check_storage_write()?;
+                    let Some(token) = removed else { return Ok(Value::Bool(false)) };
                     if let Some(j) = self.journal.as_mut() {
-                        j.push(UndoOp::RestoreList { backend: backend.clone(), prev });
+                        j.push(UndoOp::ListRestore { backend: backend.clone(), token, prev: value_to_stored(&old) });
                     }
-                    let mut stored = backend.list();
-                    stored.remove(idx as usize);
-                    backend.replace_list(stored);
                     return Ok(Value::Bool(true));
                 }
                 _ => {}
@@ -3461,8 +3532,12 @@ impl Interpreter {
     /// Evaluation failures propagate as real errors — they must not be
     /// silently embedded in the output string.
     fn eval_interpolation_expr(&mut self, expr_str: &str, env: &mut Env, cell_name: &str, signal_name: &str) -> InterpResult {
-        // Fast path: simple variable name
-        if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        // Fast path: simple variable name — an identifier, never a number
+        // (`"{0x1F}"`, `"{1e3}"` and `"{42}"` were looked up as variables
+        // and raised "undefined variable" after a clean check)
+        if expr_str.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && !expr_str.chars().next().map_or(true, |c| c.is_ascii_digit())
+        {
             if let Some(val) = env.get(expr_str) { return InterpResult::Value(val.clone()); }
             // `"{true}"` passed check and raised "undefined variable: true"
             match expr_str { "true" => return InterpResult::Value(Value::Bool(true)), "false" => return InterpResult::Value(Value::Bool(false)), _ => {} }
@@ -4544,6 +4619,8 @@ impl Interpreter {
                 },
                 Some(UndoOp::Unappend { backend }) => backend.unappend(),
                 Some(UndoOp::RestoreList { backend, prev }) => backend.replace_list(prev),
+                Some(UndoOp::ListSet { backend, index, prev }) => { backend.list_set(index, prev); }
+                Some(UndoOp::ListRestore { backend, token, prev }) => backend.list_restore(token, prev),
                 Some(UndoOp::Push(_)) | Some(UndoOp::PeerSend(_)) | Some(UndoOp::Cluster(_)) | Some(UndoOp::Horde(_)) => {}
                 None => break,
             }
@@ -4648,7 +4725,7 @@ impl Interpreter {
             for op in journal.into_iter().rev() {
                 let sqlite = match &op {
                     UndoOp::Restore { backend, .. } | UndoOp::Counter { backend, .. }
-                    | UndoOp::Unappend { backend } | UndoOp::RestoreList { backend, .. } => backend.backend_name() == "sqlite",
+                    | UndoOp::Unappend { backend } | UndoOp::RestoreList { backend, .. } | UndoOp::ListSet { backend, .. } | UndoOp::ListRestore { backend, .. } => backend.backend_name() == "sqlite",
                     _ => false,
                 };
                 if !sqlite { undo(op); }
@@ -6838,6 +6915,8 @@ fn undo(op: UndoOp) {
         },
         UndoOp::Unappend { backend } => backend.unappend(),
         UndoOp::RestoreList { backend, prev } => backend.replace_list(prev),
+        UndoOp::ListSet { backend, index, prev } => { backend.list_set(index, prev); }
+        UndoOp::ListRestore { backend, token, prev } => backend.list_restore(token, prev),
         UndoOp::Push(_) | UndoOp::PeerSend(_) | UndoOp::Cluster(_) | UndoOp::Horde(_) => {}
     }
 }

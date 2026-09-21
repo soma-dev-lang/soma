@@ -30,6 +30,25 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
+Soma 2.8.10 corrects native code that diverged from the interpreter: an exact
+Int quotient next to `%` stayed a Float, Int-only builtins given a Float were
+truncated or failed in rustc (they are refused like the interpreter), a huge
+literal times a small local overflowed instead of promoting to BigInt,
+`to_string` of an exact quotient printed "2.0", `str_at` bounds and error
+wording differed, `buffer(-3)` died on "capacity overflow". Storage: Int indices
+past 64 bits acted on element 0 of a List slot, a Map key serde reserves broke
+its round trip, `set_budget` accepted a negative BigInt; `rows[i] = v`,
+`rows.delete(i)` and `m.len` on persistent slots no longer rewrite or scan the
+whole table, joins and self-assigned `with`/`without` are linear. The
+quadratic-concatenation lint ignores numeric accumulators, `(f)(x)` is refused
+like `f(a)(b)`, `"{0x1F}"` interpolates, `check --json` keeps its keys on a load
+failure, and a restarted cluster node no longer reports its own tables as
+orphans. Sixteen new Rust regressions cover these changes; every program of the
+repository keeps its `check`, `verify` and `test` verdicts.
+Scope: native `/` is typed Float, so an exact-quotient division by zero answers
+`inf`/`NaN` natively where the interpreter raises. Details:
+https://soma-lang.dev/CHANGELOG.md.
+
 Soma 2.8.9 distinguishes storage read failures from absent keys and empty
 collections. A failed read aborts the invocation and rolls back earlier local
 writes, including inside `try`. Legacy lists retain their values on append and

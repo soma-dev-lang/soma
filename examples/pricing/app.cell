@@ -39,7 +39,7 @@ cell PricingEngine {
     scale {
         replicas: 50
         shard: trades
-        consistency: strong
+        consistency: eventual   // the cluster runtime replicates eventually; `strong` is refused
         tolerance: 2
         cpu: 4
         memory: "8Gi"

@@ -127,11 +127,23 @@ fn caught_remember_failure_rolls_back_its_savepoint_and_allows_later_writes() {
     assert_eq!(f.value("A_data", "after"), Some("4".into()));
 }
 #[test]
-fn list_update_stops_when_deleting_the_old_log_is_refused() {
+fn list_update_stops_when_the_row_update_is_refused() {
+    // `rows[0] = 99` updates one row (it used to delete and re-insert the
+    // whole log): a refused UPDATE is a storage error and the log is intact
     let f = Fixture::new("replace_delete");
-    f.reject("A_rows_log", "DELETE");
+    f.reject("A_rows_log", "UPDATE");
     f.refused("edit", "storage");
     assert_eq!(f.rows(), ["10", "20", "30", "40"]);
+}
+#[test]
+fn list_update_touches_no_other_row() {
+    // rejecting DELETE and INSERT on the log leaves the one-row update free
+    let f = Fixture::new("replace_untouched");
+    f.reject("A_rows_log", "DELETE");
+    f.sql("CREATE TRIGGER reject_insert BEFORE INSERT ON \"A_rows_log\" BEGIN SELECT RAISE(ABORT,'injected write refusal'); END");
+    let out = f.call("edit");
+    assert!(out.status.success(), "{}", output(&out));
+    assert_eq!(f.rows(), ["99", "20", "30", "40"]);
 }
 #[test]
 fn list_remove_stops_when_deleting_the_old_log_is_refused() {
@@ -141,9 +153,9 @@ fn list_remove_stops_when_deleting_the_old_log_is_refused() {
     assert_eq!(f.rows(), ["10", "20", "30", "40"]);
 }
 #[test]
-fn list_update_refuses_a_partial_insert_and_restores_the_original_log() {
+fn list_update_refuses_the_new_value_and_keeps_the_original_log() {
     let f = Fixture::new("replace_insert");
-    f.sql("CREATE TRIGGER reject_write BEFORE INSERT ON A_rows_log WHEN NEW.value='30' BEGIN SELECT RAISE(ABORT,'injected write refusal'); END");
+    f.sql("CREATE TRIGGER reject_write BEFORE UPDATE ON A_rows_log WHEN NEW.value='99' BEGIN SELECT RAISE(ABORT,'injected write refusal'); END");
     f.refused("edit", "storage");
     assert_eq!(f.rows(), ["10", "20", "30", "40"]);
 }

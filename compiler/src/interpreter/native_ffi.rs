@@ -353,9 +353,9 @@ fn build_dylib(
 }
 
 pub fn call_native(native: &LoadedNative, args: &[super::Value]) -> Result<super::Value, String> {
-    if native.sig.int_rational_return {
-        let _ = take_div_inexact(native); // drop a stale flag from an earlier call
-    }
+    // drop a stale flag from an earlier call: the return-value restoration
+    // and to_string(a / b) inside the handler both read it
+    let _ = take_div_inexact(native);
     let result = call_native_unguarded(native, args);
     // A panic inside the handler (division by zero, index out of range…)
     // is caught by the generated _soma_guard and parked in the dylib's

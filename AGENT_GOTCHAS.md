@@ -267,18 +267,35 @@ identifier. `error: expected identifier, found Given`. Use `granted`, `input`, e
 
 `assert`, `assert_fails` (optionally `… matching "text"`), `let name = expr`
 (a fixture for the rules below), `mock think "reply"` / `mock think ["a", "b"]`
-/ `mock think error "timeout"`, and `property`. No bare statements: put logic
-in a handler and call it.
+/ `mock think error "timeout"`, `mock http_get map(...)` / `mock Cell.handler v`,
+and `property`. No bare statements: put logic in a handler and call it.
+A List given to any `mock` is a QUEUE — one reply per call, in order — so a
+handler or `http_get` that answers a JSON array is mocked with a nested list:
+```soma
+mock http_get [1, 2]       // two calls: the first gets 1, the second 2
+mock http_get [[1, 2]]     // one call gets the list [1, 2]
+```
+`soma test` notes a scripted reply that no call consumed.
 
-## 18. One invariant, one slot
+## 18. An invariant between two slots defaults both sides
 
-An invariant is checked per write, with only the written slot in scope.
+An invariant is checked on every write to either slot it names: the written
+slot is its new value, the other one is read at the SAME key — and a key it
+has no entry for reads as `()`, which no comparison accepts.
 ```soma
 memory { a: Map<String, Int>  b: Map<String, Int>  invariant a + b <= 100 }
-// error: memory invariant references several slots (a, b) — ... Write
-//        one invariant per slot
+// error: memory invariant between slots (a, b) — the other slot is read at the
+//        SAME key, and a key it has no entry for reads as (), which no
+//        comparison accepts: default the sides (`(reserved ?? 0) <= (stock ?? 0)`)
 ```
-`size` invariants are enforced on `delete` too: `invariant size >= 1`
+```soma
+memory {
+    stock: Map<String, Int>  reserved: Map<String, Int>
+    invariant (reserved ?? 0) <= (stock ?? 0)   // runtime-checked on both slots
+}
+```
+A rule between two slots stays runtime-checked (`verify` cannot prove it by
+induction). `size` invariants are enforced on `delete` too: `invariant size >= 1`
 rejects removing the last entry.
 
 ## 19. `7 / 2 = 3.5` everywhere — say `idiv` when you mean the integer quotient

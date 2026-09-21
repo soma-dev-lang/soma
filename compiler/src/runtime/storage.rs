@@ -127,6 +127,33 @@ pub trait StorageBackend: Send + Sync {
             if has_storage_error() { return; }
         }
     }
+    /// `rows[i] = v` on a List slot: replace ONE element. Default: rewrite
+    /// the whole log. `false` when i is past the end.
+    fn list_set(&self, i: usize, value: StoredValue) -> bool {
+        let mut items = self.list();
+        if has_storage_error() || i >= items.len() { return false; }
+        items[i] = value;
+        self.replace_list(items);
+        true
+    }
+    /// `rows.delete(i)` on a List slot: remove ONE element and hand back a
+    /// token that `list_restore` uses to put it back at its place (a
+    /// failing `try` or handler). Default: rewrite the log; the token is
+    /// the index.
+    fn list_remove(&self, i: usize) -> Option<i64> {
+        let mut items = self.list();
+        if has_storage_error() || i >= items.len() { return None; }
+        items.remove(i);
+        self.replace_list(items);
+        if has_storage_error() { None } else { Some(i as i64) }
+    }
+    fn list_restore(&self, token: i64, value: StoredValue) {
+        let mut items = self.list();
+        if has_storage_error() { return; }
+        let at = usize::try_from(token).unwrap_or(0).min(items.len());
+        items.insert(at, value);
+        self.replace_list(items);
+    }
     fn list(&self) -> Vec<StoredValue>;
     /// Length / one element of the list, without materializing it
     /// (`rows.get(i)` in a loop loaded the whole log per call).
@@ -560,6 +587,87 @@ impl StorageBackend for SqliteBackend {
             .optional().map_err(|e| note_read_error("list index", &e)).ok().flatten()
     }
 
+    fn list_set(&self, i: usize, value: StoredValue) -> bool {
+        // one UPDATE by rowid (the whole log was deleted and re-inserted:
+        // `rows[i] = v` on 20 000 rows took 23 ms each). The i-th row in id
+        // order is right with or without gaps; a list still kept under the
+        // key/value table (no log rows) takes the rewriting path.
+        use rusqlite::OptionalExtension;
+        let Ok(index) = i64::try_from(i) else { return false };
+        let (text, tag) = Self::store_typed(&value);
+        let table = self.table.clone();
+        let done = self.write("list set", |conn| {
+            let id: Option<i64> = conn.query_row(
+                &format!("SELECT id FROM \"{}_log\" ORDER BY id LIMIT 1 OFFSET ?1", table),
+                rusqlite::params![index], |r| r.get(0)).optional()?;
+            match id {
+                Some(id) => {
+                    conn.execute(&format!("UPDATE \"{}_log\" SET value = ?1, type = ?2 WHERE id = ?3", table),
+                        rusqlite::params![text, tag, id])?;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        });
+        match done {
+            Some(true) => true,
+            Some(false) => {
+                let mut items = self.list();
+                if has_storage_error() || i >= items.len() { return false; }
+                items[i] = value;
+                self.replace_list(items);
+                !has_storage_error()
+            }
+            None => false,
+        }
+    }
+
+    fn list_remove(&self, i: usize) -> Option<i64> {
+        // one DELETE by rowid; the row's id is the token that puts it back
+        // (a list kept under the key/value table, no log rows, is rewritten)
+        use rusqlite::OptionalExtension;
+        let Ok(index) = i64::try_from(i) else { return None };
+        let table = self.table.clone();
+        let removed = self.write("list remove", |conn| {
+            let id: Option<i64> = conn.query_row(
+                &format!("SELECT id FROM \"{}_log\" ORDER BY id LIMIT 1 OFFSET ?1", table),
+                rusqlite::params![index], |r| r.get(0)).optional()?;
+            if let Some(id) = id {
+                conn.execute(&format!("DELETE FROM \"{}_log\" WHERE id = ?1", table), rusqlite::params![id])?;
+            }
+            Ok(id)
+        })?;
+        match removed {
+            Some(id) => Some(id),
+            None => {
+                let mut items = self.list();
+                if has_storage_error() || i >= items.len() { return None; }
+                items.remove(i);
+                self.replace_list(items);
+                if has_storage_error() { None } else { Some(-1 - index) }
+            }
+        }
+    }
+
+    fn list_restore(&self, token: i64, value: StoredValue) {
+        if token < 0 {
+            // the rewriting path's token: an index
+            let mut items = self.list();
+            if has_storage_error() { return; }
+            let at = usize::try_from(-1 - token).unwrap_or(0).min(items.len());
+            items.insert(at, value);
+            self.replace_list(items);
+            return;
+        }
+        let (text, tag) = Self::store_typed(&value);
+        let table = self.table.clone();
+        self.write("list restore", |conn| {
+            conn.execute(&format!("INSERT INTO \"{}_log\" (id, value, type) VALUES (?1, ?2, ?3)", table),
+                rusqlite::params![token, text, tag])?;
+            Ok(())
+        });
+    }
+
     fn replace_list(&self, items: Vec<StoredValue>) {
         self.write("replace list", |conn| {
             conn.execute(&format!("DELETE FROM \"{}_log\"", self.table), [])?;
@@ -610,10 +718,13 @@ impl StorageBackend for SqliteBackend {
     }
 
     fn len(&self) -> usize {
+        // a plain COUNT(*) walks the index; the `__` metadata keys are
+        // counted by an index RANGE and subtracted (`substr(key,1,2) != '__'`
+        // evaluated every row: `m.len` cost 0.5 ms on 20 000 entries)
         self.read("length", |conn| conn.query_row(
-            &format!("SELECT COUNT(*) FROM \"{}\" WHERE substr(key,1,2) != '__'", self.table), [],
+            &format!("SELECT (SELECT COUNT(*) FROM \"{t}\") - (SELECT COUNT(*) FROM \"{t}\" WHERE key >= '__' AND key < '_`')", t = self.table), [],
             |r| r.get::<_, i64>(0),
-        )).unwrap_or(0) as usize
+        )).unwrap_or(0).max(0) as usize
     }
 
     fn backend_name(&self) -> &str {
@@ -674,6 +785,21 @@ fn instantiate_native_backend(
     }
 }
 
+/// A user key serde_json itself gives a meaning to: with `arbitrary_precision`
+/// an object `{"$serde_json::private::Number": "42"}` deserializes as the
+/// NUMBER 42 (and as a parse error for "abc"), so a stored Map with that key
+/// read back as an Int or as a String. The key is spelled `__key__$serde…`
+/// on disk (which also triggers the `__map__` wrap) and restored on read; a
+/// user key that already starts with `__key__` is escaped the same way so
+/// the unescape stays unambiguous.
+fn escape_map_key(k: &str) -> String {
+    if k.starts_with("$serde_json::private::") || k.starts_with("__key__") { format!("__key__{}", k) } else { k.to_string() }
+}
+
+fn unescape_map_key(k: &str) -> String {
+    k.strip_prefix("__key__").unwrap_or(k).to_string()
+}
+
 /// Convert a serde_json::Value to StoredValue (preserving types).
 /// A JSON object with `__variant__` key is decoded back to a Variant.
 pub(crate) fn json_to_stored(v: &serde_json::Value) -> StoredValue {
@@ -693,7 +819,7 @@ pub(crate) fn json_to_stored(v: &serde_json::Value) -> StoredValue {
         }
         serde_json::Value::Object(obj) => {
             if let (1, Some(serde_json::Value::Object(inner))) = (obj.len(), obj.get("__map__")) {
-                return StoredValue::Map(inner.iter().map(|(k, v)| (k.clone(), json_to_stored(v))).collect());
+                return StoredValue::Map(inner.iter().map(|(k, v)| (unescape_map_key(k), json_to_stored(v))).collect());
             }
             // NaN / ±inf nested in a Map or List (JSON has no such number:
             // they were written as null and read back as `()`)
@@ -764,7 +890,7 @@ pub(crate) fn stored_to_json(v: &StoredValue) -> serde_json::Value {
         }
         StoredValue::Map(map) => {
             let obj: serde_json::Map<String, serde_json::Value> = map.iter()
-                .map(|(k, v)| (k.clone(), stored_to_json(v)))
+                .map(|(k, v)| (escape_map_key(k), stored_to_json(v)))
                 .collect();
             // a user map whose keys look like the encoding's own tags
             // (`__variant__`, `__bigint__`, `__init__`…) is wrapped, so it

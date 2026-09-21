@@ -24,7 +24,7 @@ cell StatusPage {
     scale {
         replicas: 3
         shard: incidents
-        consistency: strong
+        consistency: eventual   // the cluster runtime replicates eventually; `strong` is refused
         tolerance: 1
         cpu: 1
         memory: "256Mi"

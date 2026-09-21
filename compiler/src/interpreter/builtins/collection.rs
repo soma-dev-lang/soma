@@ -376,45 +376,25 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         // JOIN operations
-        "inner_join" => {
+        "inner_join" | "left_join" => {
+            let what = if name == "inner_join" { "join" } else { "left_join" };
             if args.len() >= 3 {
                 if let (Value::List(left), Value::List(right)) = (&args[0], &args[1]) {
                     let key = format!("{}", args[2]);
-                    let result: Vec<Value> = left.iter().filter_map(|l| {
-                        let lk = if let Value::Map(e) = l { e.get(&key).map(|v| format!("{}", v)) } else { None };
-                        lk.and_then(|lk_val| {
-                            right.iter().find(|r| {
-                                if let Value::Map(e) = r { e.get(&key).map(|v| format!("{}", v) == lk_val).unwrap_or(false) } else { false }
-                            }).map(|r| {
-                                let mut merged = if let Value::Map(e) = l { e.clone() } else { IndexMap::new() };
-                                if let Value::Map(re) = r {
-                                    for (rk, rv) in re {
-                                        if rk != &key && !merged.contains_key(rk) {
-                                            merged.insert(rk.clone(), rv.clone());
-                                        }
-                                    }
-                                }
-                                Value::Map(merged)
-                            })
-                        })
-                    }).collect();
-                    Some(Ok(Value::List(result)))
-                } else { Some(Err(RuntimeError::TypeError("join expects (list, list, key)".to_string()))) }
-            } else { Some(Err(RuntimeError::TypeError("join expects (list, list, key)".to_string()))) }
-        }
-        "left_join" => {
-            if args.len() >= 3 {
-                if let (Value::List(left), Value::List(right)) = (&args[0], &args[1]) {
-                    let key = format!("{}", args[2]);
-                    let result: Vec<Value> = left.iter().map(|l| {
-                        let lk = if let Value::Map(e) = l { e.get(&key).map(|v| format!("{}", v)) } else { None };
-                        let r_match = lk.and_then(|lk_val| {
-                            right.iter().find(|r| {
-                                if let Value::Map(e) = r { e.get(&key).map(|v| format!("{}", v) == lk_val).unwrap_or(false) } else { false }
-                            })
-                        });
+                    // the FIRST right row with an equal key (as text) wins;
+                    // indexed once — a scan per left row made a 20 000-row
+                    // join take 8 s (quadratic)
+                    let mut index: std::collections::HashMap<String, &Value> = std::collections::HashMap::new();
+                    for r in right {
+                        if let Value::Map(e) = r {
+                            if let Some(v) = e.get(&key) {
+                                index.entry(format!("{}", v)).or_insert(r);
+                            }
+                        }
+                    }
+                    let merge = |l: &Value, r: Option<&&Value>| -> Value {
                         let mut merged = if let Value::Map(e) = l { e.clone() } else { IndexMap::new() };
-                        if let Some(Value::Map(re)) = r_match {
+                        if let Some(Value::Map(re)) = r {
                             for (rk, rv) in re {
                                 if rk != &key && !merged.contains_key(rk) {
                                     merged.insert(rk.clone(), rv.clone());
@@ -422,10 +402,21 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                             }
                         }
                         Value::Map(merged)
-                    }).collect();
+                    };
+                    let result: Vec<Value> = if name == "inner_join" {
+                        left.iter().filter_map(|l| {
+                            let lk = if let Value::Map(e) = l { e.get(&key).map(|v| format!("{}", v)) } else { None };
+                            lk.and_then(|lk_val| index.get(&lk_val)).map(|r| merge(l, Some(r)))
+                        }).collect()
+                    } else {
+                        left.iter().map(|l| {
+                            let lk = if let Value::Map(e) = l { e.get(&key).map(|v| format!("{}", v)) } else { None };
+                            merge(l, lk.and_then(|lk_val| index.get(&lk_val)))
+                        }).collect()
+                    };
                     Some(Ok(Value::List(result)))
-                } else { Some(Err(RuntimeError::TypeError("left_join expects (list, list, key)".to_string()))) }
-            } else { Some(Err(RuntimeError::TypeError("left_join expects (list, list, key)".to_string()))) }
+                } else { Some(Err(RuntimeError::TypeError(format!("{} expects (list, list, key)", what)))) }
+            } else { Some(Err(RuntimeError::TypeError(format!("{} expects (list, list, key)", what)))) }
         }
         "reverse" => {
             if let Some(Value::List(items)) = args.first() {

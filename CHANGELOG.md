@@ -2,6 +2,134 @@
 
 ## Unreleased
 
+## 2.8.10 — 2026-09-21
+
+### Native handlers: Int-only builtins and exact quotients
+
+- `b / (c % 3)` in a `[native]` handler returns the exact Int the interpreter
+  answers (63, not 63.0): `%` counts as an integer-valued operand when the
+  handler's Float return is restored to an Int.
+- Int-only builtins in Float-mode native code (`band`, `bor`, `bxor`, `bnot`,
+  `shl`, `shr`, `bit_len`, `bit_test`/`bit_set`/`bit_clr`/`bit_next`, `idiv`,
+  `gcd`, `sqrt_int`, `pow_mod`) refuse a Float like the interpreter does
+  instead of truncating it (`bit_len(2.5)` gave 2.0, `pow_mod(2.5, 2, 7)` gave
+  4.0) or failing with raw rustc output (`gcd(2.5, 5)`, `shl(1, 2.5)`). A Float
+  literal, Float parameter or Float-valued builtin is refused by `soma check`;
+  a local that may hold an exact Int / Int quotient is checked at run time.
+- A BigInt `/` landing in an Int slot (a `pow_mod` exponent) emits the
+  exact-or-error division instead of an "internal" refusal.
+- One native regression test covers these paths.
+
+### Parser: calling a parenthesized expression
+
+- `(f)(2)` and `(x => x + 1)(2)` parsed as two statements: `return` handed back
+  the lambda and `(2)` was a discarded value (`soma check` only warned about
+  unreachable code). They are now refused like `f(a)(b)` with the same
+  "bind it first" fix; grouping parentheses are unaffected. One regression test.
+
+### Checker: quadratic-concatenation lint
+
+- The "grows by concatenation inside a loop" warning fired on every numeric
+  accumulator (`total = total + x`, `n = n + 1`, `acc = acc + 0.5`), and
+  `soma verify --strict` rejected such programs. It now fires only when the
+  variable or the added operand is known to be a String (a String literal or
+  parameter, a String-returning builtin); unknown shapes stay silent. One
+  regression test.
+
+### Interpolation: numeric literals
+
+- `"{0x1F}"`, `"{1e3}"` and `"{1_000}"` passed `soma check` and raised
+  "undefined variable" at run time: the interpolation fast path looked up any
+  alphanumeric segment as a variable. A segment starting with a digit now goes
+  through the expression evaluator; `{42}` stays literal text as documented.
+  One regression test.
+
+### Native handlers: huge literal times a small local
+
+- `9223372036854775807 * i` with `let i = 11` in a `[native]` handler answered
+  a `range` error: the i64 fast path overflowed, and the BigInt fallback
+  multiplied two plain i64 operands (a huge literal and a small local) and
+  overflowed again. The fallback now promotes one side to an Integer; the
+  handler answers the exact BigInt like the interpreter. One regression test.
+
+### Cluster: restart warning
+
+- A restarted cluster node warned that the tables of a removed cell were
+  still in `.soma_data` (`_soma_cluster_v2_<Cell>.<slot>`): those are the
+  runtime's own per-key versions and tombstones for a declared slot. They are
+  no longer reported as orphaned data. The restart regression asserts it.
+
+### Native buffers: negative size
+
+- `buffer(-3)` / `buffer_f(-3)` in a `[native]` handler failed with Rust's
+  "capacity overflow" (the size was cast to an unsigned length). They now raise
+  a `range` error naming the argument. One regression test.
+
+### `check --json` schema on load failures
+
+- A parse error or an unreadable file answered a JSON record without the
+  `notes` and `warning_count` keys that a normal `check --json` carries. The
+  load-failure record now has the same keys. One regression test.
+
+### Native handlers: `to_string` of a quotient, `str_at` bounds, error wording
+
+- `to_string(n / 2)` in a `[native]` handler printed "2.0" where the interpreter
+  prints the exact quotient as an Int ("2"). The exactness is now decided at run
+  time; an inexact quotient still prints "3.5". The inexact-division flag is
+  cleared at every native call instead of leaking into the next one.
+- `str_at` out of range raised Rust's index panic text natively; it raises the
+  interpreter's message with kind `index`. Native errors mapped back to the
+  interpreter no longer carry a `kind: ` prefix in their text (`type: band(): …`
+  read `band(): …` interpreted).
+- One regression test.
+
+### Storage and budget: Ints past 64 bits, reserved Map keys
+
+- An Int past 64 bits as a List-slot index acted on element 0: `rows.delete(2^63)`
+  removed the first row, `rows.set(2^63, v)` overwrote it and `rows.get(2^63)`
+  read it, while `rows[2^63]` was refused. Such an index is out of bounds like
+  any other index past the end; a local list's `.get` answers `()`.
+- A Map whose key is `$serde_json::private::Number` (a spelling serde_json
+  reserves under `arbitrary_precision`) read back from storage as an Int, or as
+  a String holding the whole map. The key is escaped on disk and restored on
+  read; keys starting with `__key__` are escaped the same way.
+- `set_budget(-10^21)` (an Int past 64 bits) escaped the negative check and set
+  an unlimited budget; it raises `range`. A nested `set_budget` no longer
+  overflows when it adds a huge budget to the tokens used.
+- Three regression tests.
+
+### Pipelines: joins are linear
+
+- `inner_join`, `left_join` and `join(left, right, key)` scanned the right list
+  once per left row: joining two 20 000-row lists took 8 s. The right side is
+  indexed once (first row per key wins, keys compared as text as before);
+  100 000 rows join in under a second. One regression test.
+- `m = with(m, k, v)` and `m = without(m, k)` on a local map copied the map at
+  every step (20 000 removals took 26 s). Like the pipe form, they now update
+  the map in place; earlier aliases keep their value. One regression test.
+- `rows[i] = v` on a persistent List slot read the log three times and rewrote
+  every row (23 ms per write on 20 000 rows). It now updates the one row by
+  id; a failing `try` or handler restores that element alone. Backends without
+  a specific implementation keep the rewriting path. One regression test.
+- `rows.delete(i)` on a persistent List slot likewise rewrote every row (23 ms
+  per delete on 20 000 rows). It deletes the one row by id and, on rollback,
+  puts it back at its original position. One regression test.
+- `m.len` on a persistent Map evaluated `substr(key, 1, 2)` on every row
+  (0.5 ms per call on 20 000 entries); it counts the index and subtracts the
+  reserved `__` keys by an index range (3 µs).
+
+### Documentation
+
+- `AGENT_GOTCHAS.md` #18 describes the current rule for an invariant between
+  two slots (default both sides with `?? 0`; runtime-checked) instead of the
+  removed "one invariant, one slot" error.
+- `mock` with a List is documented as a queue of replies: a handler or
+  `http_get` answering a JSON array is mocked with a nested list
+  (`mock http_get [[1, 2]]`), in the reference and in gotcha #17.
+- The `messenger`, `statuspage` and `pricing` examples declared
+  `consistency: strong`, which the cluster runtime has refused since 2.8.2, so
+  `soma verify` failed on them; they declare `eventual`, the implemented mode.
+
 ## 2.8.9 — 2026-09-20
 
 ### Storage reads, legacy lists and provider failures

@@ -10,12 +10,13 @@ carries the rest.
 (`face`), storage with invariants (`memory`), a model-checked lifecycle
 (`state`), handlers (`on`), HTTP routes and tests.
 
-## Implementation scope — Soma 2.8.9
+## Implementation scope — Soma 2.8.10
 
 The language core is implemented; recent audits cover numeric boundaries,
 typed inputs and storage, evaluation order, collections, dispatch, constructors,
-SQLite failures, transaction boundaries, legacy lists and storage providers.
-Release validation passed 665 Rust tests, 118 CLI checks, 321 corpus programs
+SQLite failures, transaction boundaries, legacy lists, storage providers,
+native/interpreter parity and storage complexity.
+Release validation passed 681 Rust tests, 118 CLI checks, 321 corpus programs
 and 1,280 independent numeric comparisons. Evidence and current status:
 https://soma-lang.dev/status.
 
@@ -78,6 +79,27 @@ with the `features` you need before writing a new cell).
   calls `transition()`.
 - Agents: `cell agent` + a `state` machine + `set_budget(N)`. Test offline
   with `[agent] mock = "echo"` in `soma.toml`.
+
+## Native parity, storage and analysis corrections in Soma 2.8.10 (2026-09-21)
+
+Soma 2.8.10 corrects native code that diverged from the interpreter: an exact
+Int quotient next to `%` stayed a Float, Int-only builtins given a Float were
+truncated or failed in rustc (they are refused like the interpreter), a huge
+literal times a small local overflowed instead of promoting to BigInt,
+`to_string` of an exact quotient printed "2.0", `str_at` bounds and error
+wording differed, `buffer(-3)` died on "capacity overflow". Storage: Int indices
+past 64 bits acted on element 0 of a List slot, a Map key serde reserves broke
+its round trip, `set_budget` accepted a negative BigInt; `rows[i] = v`,
+`rows.delete(i)` and `m.len` on persistent slots no longer rewrite or scan the
+whole table, joins and self-assigned `with`/`without` are linear. The
+quadratic-concatenation lint ignores numeric accumulators, `(f)(x)` is refused
+like `f(a)(b)`, `"{0x1F}"` interpolates, `check --json` keeps its keys on a load
+failure, and a restarted cluster node no longer reports its own tables as
+orphans. Sixteen new Rust regressions cover these changes; every program of the
+repository keeps its `check`, `verify` and `test` verdicts.
+Scope: native `/` is typed Float, so an exact-quotient division by zero answers
+`inf`/`NaN` natively where the interpreter raises. Details:
+https://soma-lang.dev/CHANGELOG.md.
 
 ## Storage and provider corrections in Soma 2.8.9 (2026-09-20)
 
@@ -168,7 +190,7 @@ actuation. Eventual cluster replication does not establish distributed safety.
 
 ## Cluster corrections in Soma 2.8.2 (2026-09-20)
 
-Use [Soma 2.8.9](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.9), which includes these corrections.
+Use [Soma 2.8.10](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.10), which includes these corrections.
 `scale.shard` supports mutable Map slots with explicit `consistency: eventual`.
 Updates preserve types and are published after commit. Reconnect and periodic
 state exchange carry per-key logical versions and deletion markers. Use a

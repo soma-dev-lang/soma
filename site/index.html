@@ -227,8 +227,8 @@ footer {
   "operatingSystem": "macOS, Linux",
   "description": "Experimental cell-based programming language with state-machine checks, memory properties, agent-oriented tooling, and a Rust implementation.",
   "url": "https://soma-lang.dev",
-  "downloadUrl": "https://github.com/soma-dev-lang/soma/releases/tag/v2.8.9",
-  "softwareVersion": "2.8.9",
+  "downloadUrl": "https://github.com/soma-dev-lang/soma/releases/tag/v2.8.10",
+  "softwareVersion": "2.8.10",
   "license": "https://github.com/soma-dev-lang/soma/blob/main/LICENSE",
   "codeRepository": "https://github.com/soma-dev-lang/soma",
   "programmingLanguage": "Rust",
@@ -262,7 +262,7 @@ footer {
     <code>curl -fsSL https://soma-lang.dev/install.sh | sh</code>
     <button type="button" onclick="navigator.clipboard.writeText('curl -fsSL https://soma-lang.dev/install.sh | sh')">copy</button>
   </div>
-  <p><strong>Latest release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.9">Soma 2.8.9</a></strong> — corrected storage read failures, legacy-list migration, JSON write failures and HTTP provider responses. Thirty-six new regression tests cover the fixes. Linux and macOS binaries include SHA-256 checksums. <a href="/CHANGELOG.md">Read the release notes.</a></p>
+  <p><strong>Latest release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.10">Soma 2.8.10</a></strong> — corrected native/interpreter divergences, out-of-range List indices, a reserved Map key and quadratic storage and join operations. Sixteen new regression tests cover the fixes. Linux and macOS binaries include SHA-256 checksums. <a href="/CHANGELOG.md">Read the release notes.</a></p>
   <p><strong>Reading this as an AI agent?</strong> Go to <a href="/agents">/agents</a>, or fetch <a href="/llms-full.txt">/llms-full.txt</a> (the whole language, one request), <a href="/builtins.json">/builtins.json</a> (exact signatures) and <a href="/corpus/index.json">/corpus/index.json</a> (300+ programs passing check+test, verified where they have a state machine, filterable by feature). A project's <code>AGENTS.md</code> block is at <a href="/agent.md">/agent.md</a>.</p>
   <p class="note">Installer note: the shell installer executes code fetched from the project repository. Review <a href="https://github.com/soma-dev-lang/soma/blob/main/site/setup.sh">site/setup.sh</a> before running it in an environment you care about.</p>
 </header>
@@ -368,12 +368,12 @@ eventually = ["filled", "rejected"]</code></pre>
 
 <section id="status">
   <h2>Implementation Status</h2>
-  <p>Current release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.9">Soma 2.8.9</a>. <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.9">Release validation</a>: 665 Rust tests, 118 CLI checks, 321 corpus programs and 1,280 independent numeric comparisons passed.</p>
+  <p>Current release: <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.10">Soma 2.8.10</a>. <a href="https://github.com/soma-dev-lang/soma/releases/tag/v2.8.10">Release validation</a>: 681 Rust tests, 118 CLI checks, 321 corpus programs and 1,280 independent numeric comparisons passed.</p>
   <div class="status-grid">
     <div class="card">
       <h3><span class="tag implemented">implemented</span> Language core</h3>
       <p>Typed cells and handlers, persistent memory, runtime invariants, state machines, pattern matching, collections, pipes, tests and a CLI.</p>
-      <p>Recent audits corrected numeric boundaries, input and storage validation, argument evaluation, collection updates, call resolution, typed constructors, interpolation analysis, agent-memory isolation, SQLite transaction failures and storage providers. <a href="/CHANGELOG.md">Corrections and regression tests</a>.</p>
+      <p>Recent audits corrected numeric boundaries, input and storage validation, argument evaluation, collection updates, call resolution, typed constructors, interpolation analysis, agent-memory isolation, SQLite transaction failures, storage providers, native/interpreter parity and storage complexity. <a href="/CHANGELOG.md">Corrections and regression tests</a>.</p>
     </div>
     <div class="card">
       <h3><span class="tag partial">experimental</span> Eventual cluster replication</h3>

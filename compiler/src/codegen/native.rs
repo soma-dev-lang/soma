@@ -324,9 +324,23 @@ pub fn generate_native_source_with_config(
     out.push_str("impl _SomaDepth { #[inline(always)] fn enter() -> _SomaDepth { _SOMA_DEPTH.with(|d| { let n = d.get() + 1; d.set(n); if n > 20_000 { panic!(\"soma:stack_overflow: native recursion deeper than 20000 calls\") } }); _SomaDepth } }\n");
     // a bit index: 0 ≤ i ≤ 2^24 (a negative one became a 4-billion-bit set_bit: a hang)
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_bit_index(k: i64) -> i64 { if k < 0 || k > (1i64 << 24) { panic!(\"soma:type: bit index {} out of range\", k) } k }\n");
+    // a Float reaching an Int-only builtin (band, gcd, pow_mod…): the
+    // interpreter raises a type error; native code truncated it (bit_len(2.5)
+    // answered 2). Only an integral value — an exact Int / Int quotient the
+    // interpreter kept as an Int — passes.
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_int_arg(v: f64, name: &str) -> i64 { if v.is_finite() && v.fract() == 0.0 && v.abs() <= 9007199254740992.0 { v as i64 } else { panic!(\"soma:type: {}(): expected Int arguments, got Float {}\", name, _soma_fmt_f(v)) } }\n");
+    // buffer(n) / buffer_f(n): a negative n became `(-3) as usize`, a
+    // 16-exabyte allocation refused as "capacity overflow"
+    out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_buf_len(n: i64) -> usize { if n < 0 { panic!(\"soma:range: buffer(n): n is a number of elements, 0 or more — got {}\", n) } n as usize }\n");
     out.push_str("#[inline(always)] #[allow(dead_code)] fn _soma_next_bit(a: i64, k: i64) -> i64 { let k = _soma_bit_index(k); if k >= 64 { return if a < 0 { k } else { -1 }; } let bits = (a as u64) & (u64::MAX << k); if bits == 0 { -1 } else { bits.trailing_zeros() as i64 } }\n");
     // a Float prints like the interpreter's (an integral Float as "8.0")
     out.push_str("#[inline] #[allow(dead_code)] fn _soma_fmt_f(f: f64) -> String { let t = format!(\"{}\", f); if f.is_finite() && !t.contains('.') { format!(\"{}.0\", t) } else { t } }\n");
+    // to_string(a / b): the interpreter prints the exact quotient as an Int
+    // ("2", not "2.0"); the flag says whether a division since the last take
+    // was inexact — put it back for the return-value restoration
+    out.push_str("#[inline] #[allow(dead_code)] fn _soma_fmt_q(q: f64, before: bool, during: bool, has_div: bool) -> String { if before || during { _SOMA_DIV_INEXACT.store(true, std::sync::atomic::Ordering::Relaxed); } let inexact = if has_div { during } else { before || during }; if !inexact && q.is_finite() && q.fract() == 0.0 && q.abs() <= 9007199254740992.0 { format!(\"{}\", q as i64) } else { _soma_fmt_f(q) } }\n");
+    // str_at: the interpreter's wording and kind, not Rust's index panic
+    out.push_str("#[inline] #[allow(dead_code)] fn _soma_str_at(s: &str, i: i64) -> i64 { let b = s.as_bytes(); if i < 0 || i as u64 >= b.len() as u64 { panic!(\"soma:index: str_at: index {} out of range for a string of {} bytes\", i, b.len()) } b[i as usize] as i64 }\n");
     out.push_str("impl Drop for _SomaDepth { #[inline(always)] fn drop(&mut self) { _SOMA_DEPTH.with(|d| d.set(d.get().saturating_sub(1))); } }\n\n");
     let _ = all_direct_originally; // kept for future per-handler decisions
 
@@ -3176,6 +3190,9 @@ struct FnGenerator {
     errors: RefCell<Vec<String>>,
     /// Name of the handler being compiled (for error context).
     handler_name: String,
+    /// Parameters declared `Float`: always a Float at run time (the
+    /// interpreter promotes an Int argument), never an exact quotient.
+    float_params: HashSet<String>,
     /// Declared/inferred return type of the handler being compiled.
     fn_return_type: NativeType,
     /// Names of siblings that have a fast (Direct) path. When in Direct
@@ -3192,11 +3209,15 @@ struct FnGenerator {
 impl FnGenerator {
     fn new(params: &[Param], siblings: &HashSet<String>, mode: Mode) -> Self {
         let mut var_types = HashMap::new();
+        let mut float_params = HashSet::new();
         for p in params {
-            var_types.insert(p.name.clone(), type_expr_to_native(&p.ty.node));
+            let ty = type_expr_to_native(&p.ty.node);
+            if ty == NativeType::Float { float_params.insert(p.name.clone()); }
+            var_types.insert(p.name.clone(), ty);
         }
         Self {
             var_types,
+            float_params,
             siblings: siblings.clone(),
             sibling_info: HashMap::new(),
             mode,
@@ -3824,7 +3845,9 @@ impl FnGenerator {
                     || self.var_types.get(name).copied() == Some(NativeType::Int)
             }
             Expr::BinaryOp { left, op, right } => {
-                matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div)
+                // `%` too: `b / (c % 3)` returned 63.0 where the
+                // interpreter answers the exact Int 63
+                matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod)
                     && self.is_int_rational(&left.node, rational)
                     && self.is_int_rational(&right.node, rational)
             }
@@ -3893,7 +3916,7 @@ impl FnGenerator {
                         if fname == "buffer" && args.len() == 1 {
                             let n_expr = self.gen_expr_direct(&args[0].node, NativeType::Int);
                             return format!(
-                                "{}let mut {}: Vec<i64> = vec![0i64; ({}) as usize];\n",
+                                "{}let mut {}: Vec<i64> = vec![0i64; _soma_buf_len({})];\n",
                                 ind, name, n_expr
                             );
                         }
@@ -3904,7 +3927,7 @@ impl FnGenerator {
                         if fname == "buffer_f" && args.len() == 1 {
                             let n_expr = self.gen_expr_direct(&args[0].node, NativeType::Int);
                             return format!(
-                                "{}let mut {}: Vec<f64> = vec![0.0f64; ({}) as usize];\n",
+                                "{}let mut {}: Vec<f64> = vec![0.0f64; _soma_buf_len({})];\n",
                                 ind, name, n_expr
                             );
                         }
@@ -3951,8 +3974,7 @@ impl FnGenerator {
                                     if fname == "to_string" && args.len() == 1 {
                                         let arg_ty = self.infer_expr_type(&args[0].node);
                                         if matches!(arg_ty, NativeType::Int | NativeType::Float | NativeType::Bool) {
-                                            let arg = self.gen_expr_direct(&args[0].node, arg_ty);
-                                            let arg = if arg_ty == NativeType::Float { format!("_soma_fmt_f({})", arg) } else { arg };
+                                            let arg = if arg_ty == NativeType::Float { self.gen_float_to_string_direct(&args[0].node) } else { self.gen_expr_direct(&args[0].node, arg_ty) };
                                             return format!(
                                                 "{}{{ use std::fmt::Write; write!({}, \"{{}}\", {}).unwrap(); }}\n",
                                                 ind, name, arg
@@ -4278,7 +4300,10 @@ impl FnGenerator {
                 let l = self.gen_expr_rug(left);
                 let r = self.gen_expr_rug(right);
                 if target_ty == NativeType::Int {
-                    self.err("internal: BigInt `/` reached the i64 emitter in an Int context");
+                    // an Int slot (a pow_mod exponent, a shift count): the
+                    // exact quotient or a runtime error, then back to i64 —
+                    // this used to be refused as an internal error
+                    return format!("_soma_div_exact_big({}, {}).to_i64().expect(\"BigInt overflow\")", l, r);
                 }
                 return self.coerce_direct(
                     format!("_soma_div_f_big({}, {})", l, r),
@@ -4307,6 +4332,62 @@ impl FnGenerator {
         let r = self.gen_expr_direct(right, common);
         let inner = format!("({} {} {})", l, arith_op_str(op), r);
         self.coerce_direct(inner, common, target_ty)
+    }
+
+    /// An argument of an Int-only builtin (band, shl, gcd, pow_mod, idiv…).
+    /// A Float literal, a Float parameter or a Float-valued builtin is
+    /// refused at compile time, like the interpreter's type error; a Float
+    /// local that may hold an exact Int / Int quotient (an Int to the
+    /// interpreter) is checked at run time. Truncating `as i64` gave
+    /// pow_mod(2.5, 2, 7) = 4 and bit_len(2.5) = 2 where the interpreter raises.
+    fn gen_int_arg_direct(&self, expr: &Expr, fname: &str) -> String {
+        if self.infer_expr_type(expr) != NativeType::Float {
+            return self.gen_expr_direct(expr, NativeType::Int);
+        }
+        // Int / Int in an Int slot: the exact-or-error division, already i64
+        if let Expr::BinaryOp { left, op: BinOp::Div, right } = expr {
+            if self.infer_expr_type(&left.node) == NativeType::Int
+                && self.infer_expr_type(&right.node) == NativeType::Int
+            {
+                return self.gen_expr_direct(expr, NativeType::Int);
+            }
+        }
+        let maybe_int: HashSet<String> = self.var_types.iter()
+            .filter(|(n, t)| **t == NativeType::Float && !self.float_params.contains(*n))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if !self.is_int_rational(expr, &maybe_int) {
+            self.err(format!(
+                "{}() takes Ints, got the Float `{}` (the interpreter raises \"expected Int arguments, got Float\") — write floor(), round() or to_int() for the Int you mean",
+                fname, crate::ast::render_expr(expr)
+            ));
+            return "0i64".to_string();
+        }
+        format!("_soma_int_arg({}, \"{}\")", self.gen_expr_direct(expr, NativeType::Float), fname)
+    }
+
+    /// `to_string(x)` for a Float-typed x. An Int / Int chain prints as the
+    /// interpreter does: the exact quotient is an Int ("2", not "2.0"),
+    /// decided at run time from the inexact-division flag.
+    fn gen_float_to_string_direct(&self, arg: &Expr) -> String {
+        let maybe_int: HashSet<String> = self.var_types.iter()
+            .filter(|(n, t)| **t == NativeType::Float && !self.float_params.contains(*n))
+            .map(|(n, _)| n.clone())
+            .collect();
+        let a = self.gen_expr_direct(arg, NativeType::Float);
+        if self.is_int_rational(arg, &maybe_int) {
+            // the expression divides itself: only ITS divisions decide;
+            // a plain local carries whatever happened before
+            fn has_div(e: &Expr) -> bool {
+                match e {
+                    Expr::BinaryOp { left, op, right } => matches!(op, BinOp::Div) || has_div(&left.node) || has_div(&right.node),
+                    _ => false,
+                }
+            }
+            format!("{{ let _w = _soma_div_inexact_take(); let _q: f64 = {}; let _n = _soma_div_inexact_take(); _soma_fmt_q(_q, _w != 0, _n != 0, {}) }}", a, has_div(arg))
+        } else {
+            format!("_soma_fmt_f({})", a)
+        }
     }
 
     fn gen_fn_call_direct(&self, name: &str, args: &[Spanned<Expr>], target_ty: NativeType) -> String {
@@ -4610,11 +4691,12 @@ impl FnGenerator {
             }
             "to_string" => {
                 let a_ty = self.infer_expr_type(&args[0].node);
-                let a = self.gen_expr_direct(&args[0].node, a_ty);
                 if a_ty == NativeType::Float {
-                    // the interpreter prints an integral Float as "1.0"
-                    format!("_soma_fmt_f({})", a)
+                    // the interpreter prints an integral Float as "1.0",
+                    // and an exact Int / Int quotient as an Int
+                    self.gen_float_to_string_direct(&args[0].node)
                 } else {
+                    let a = self.gen_expr_direct(&args[0].node, a_ty);
                     format!("format!(\"{{}}\", {})", a)
                 }
             }
@@ -4633,8 +4715,8 @@ impl FnGenerator {
             }
             "str_at" if args.len() == 2 => {
                 let s = self.gen_expr_direct(&args[0].node, NativeType::String);
-                let i = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                format!("({}.as_bytes()[({}) as usize] as i64)", s, i)
+                let i = self.gen_int_arg_direct(&args[1].node, name);
+                format!("_soma_str_at(&{}, {})", s, i)
             }
             "str_eq" if args.len() == 2 => {
                 let a = self.gen_expr_direct(&args[0].node, NativeType::String);
@@ -4648,13 +4730,13 @@ impl FnGenerator {
             }
             // Bit operations (Int)
             "band" | "bor" | "bxor" if args.len() == 2 => {
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
+                let b = self.gen_int_arg_direct(&args[1].node, name);
                 let op = match name { "band" => "&", "bor" => "|", _ => "^" };
                 format!("(({}) {} ({}))", a, op, b)
             }
             "bnot" if args.len() == 1 => {
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
                 format!("(!({}))", a)
             }
             "shl" if args.len() == 2 => {
@@ -4663,20 +4745,20 @@ impl FnGenerator {
                 // a panic). A result of i64::MIN is a genuine value: the
                 // host distinguishes it from the "big result" sentinel by
                 // the (cleared) result buffer.
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
+                let b = self.gen_int_arg_direct(&args[1].node, name);
                 // exact: a lost bit is an overflow → the BigInt fallback runs
                 format!("({{ let (_a, _k): (i64, i64) = ({}, {}); if _k < 0 {{ panic!(\"soma:type: shl(): shift count {{}} out of range\", _k) }} match (_k < 64).then(|| _a.checked_shl(_k as u32)).flatten() {{ Some(r) if (r >> (_k as u32)) == _a => r, _ => panic!(\"attempt to shift left with overflow\") }} }})", a, b)
             }
             "shr" if args.len() == 2 => {
                 // arithmetic shift; a count ≥ 64 saturates (0 or -1)
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
+                let b = self.gen_int_arg_direct(&args[1].node, name);
                 format!("({{ let (_a, _k): (i64, i64) = ({}, {}); if _k < 0 {{ panic!(\"soma:type: shr(): shift count {{}} out of range\", _k) }} if _k >= 64 {{ if _a < 0 {{ -1i64 }} else {{ 0i64 }} }} else {{ _a >> _k }} }})", a, b)
             }
             "bit_len" if args.len() == 1 => {
                 // of the magnitude, like the interpreter (bit_len(-1) is 1)
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
                 format!("(64 - ({} as i64).unsigned_abs().leading_zeros() as i64)", a)
             }
             // Bit-position primitives. In Direct mode (i64), test/set/clr
@@ -4686,7 +4768,7 @@ impl FnGenerator {
             // surrounding small_int_var consumer skip the Integer wrap.
             "bit_test" if args.len() == 2 => {
                 let b_expr = &args[1].node;
-                let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
+                let b = format!("_soma_bit_index({})", self.gen_int_arg_direct(b_expr, name));
                 if self.mode == Mode::Rug {
                     if let Expr::Ident(name) = &args[0].node {
                         if !self.small_int_vars.contains(name) {
@@ -4694,26 +4776,26 @@ impl FnGenerator {
                         }
                     }
                 }
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
                 // past bit 63 the sign bit repeats (two's complement, like
                 // the interpreter's BigInt: bit_test(-1, 64) is 1)
                 format!("({{ let (_k, _a): (i64, i64) = ({}, {}); if _k < 0 {{ panic!(\"soma:type: bit_test(): bit index {{}} out of range\", _k) }} else if _k >= 64 {{ if _a < 0 {{ 1i64 }} else {{ 0i64 }} }} else {{ (_a >> _k) & 1i64 }} }})", b, a)
             }
             "bit_set" if args.len() == 2 => {
                 let b_expr = &args[1].node;
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
+                let a = self.gen_int_arg_direct(&args[0].node, name);
+                let b = format!("_soma_bit_index({})", self.gen_int_arg_direct(b_expr, name));
                 // bit 63 and above do not fit an i64: the BigInt variant computes it
                 format!("({{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} _a | (1i64 << _k) }})", b, a)
             }
             "bit_clr" if args.len() == 2 => {
                 let b_expr = &args[1].node;
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = format!("_soma_bit_index({})", self.gen_expr_direct(b_expr, NativeType::Int));
+                let a = self.gen_int_arg_direct(&args[0].node, name);
+                let b = format!("_soma_bit_index({})", self.gen_int_arg_direct(b_expr, name));
                 format!("({{ let (_k, _a): (i64, i64) = ({}, {}); if _k >= 63 {{ panic!(\"attempt to shift left with overflow\") }} _a & !(1i64 << _k) }})", b, a)
             }
             "bit_next" if args.len() == 2 => {
-                let b = format!("_soma_bit_index({})", self.gen_expr_direct(&args[1].node, NativeType::Int));
+                let b = format!("_soma_bit_index({})", self.gen_int_arg_direct(&args[1].node, name));
                 // Mixed mode: big-Integer source in Rug mode → use GMP scan.
                 if self.mode == Mode::Rug {
                     if let Expr::Ident(name) = &args[0].node {
@@ -4725,7 +4807,7 @@ impl FnGenerator {
                         }
                     }
                 }
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
                 format!("_soma_next_bit({}, {})", a, b)
             }
             // Number theory
@@ -4733,26 +4815,26 @@ impl FnGenerator {
             // backend-independent spelling (`/` on two Ints promotes to
             // Float in the interpreter when non-exact).
             "idiv" if args.len() == 2 => {
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
+                let b = self.gen_int_arg_direct(&args[1].node, name);
                 format!("(({}) / ({}))", a, b)
             }
             "gcd" if args.len() == 2 => {
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let b = self.gen_expr_direct(&args[1].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
+                let b = self.gen_int_arg_direct(&args[1].node, name);
                 format!("{{ let (mut _a, mut _b): (i64, i64) = (({}).abs(), ({}).abs()); while _b != 0 {{ let _t = _b; _b = _a % _b; _a = _t; }} _a }}", a, b)
             }
             "sqrt_int" if args.len() == 1 => {
-                let a = self.gen_expr_direct(&args[0].node, NativeType::Int);
+                let a = self.gen_int_arg_direct(&args[0].node, name);
                 // exact integer root (the f64 root is off past 2^52), and a
                 // negative argument raises like the interpreter (it gave 0)
                 format!("({{ let _a: i64 = {}; if _a < 0 {{ panic!(\"soma:type: sqrt_int: negative argument\") }} let mut _r: i128 = (_a as f64).sqrt() as i128; let _n = _a as i128; while _r * _r > _n {{ _r -= 1; }} while (_r + 1) * (_r + 1) <= _n {{ _r += 1; }} _r as i64 }})", a)
             }
             "pow_mod" if args.len() == 3 => {
                 // Direct mode pow_mod: square-and-multiply on i64
-                let base = self.gen_expr_direct(&args[0].node, NativeType::Int);
-                let exp = self.gen_expr_direct(&args[1].node, NativeType::Int);
-                let m = self.gen_expr_direct(&args[2].node, NativeType::Int);
+                let base = self.gen_int_arg_direct(&args[0].node, name);
+                let exp = self.gen_int_arg_direct(&args[1].node, name);
+                let m = self.gen_int_arg_direct(&args[2].node, name);
                 // the result is in [0, m) like the interpreter (a negative
                 // base gave -1 for pow_mod(-1, 1, 7), not 6)
                 format!("{{ let (_m, _base, mut _e): (i128, i128, i64) = (({}) as i128, ({}) as i128, {}); if _m == 0 {{ panic!(\"soma:type: pow_mod(): modulus 0\") }} let mut _r: i128 = 1i128.rem_euclid(_m); let mut _b: i128 = _base.rem_euclid(_m); if _e < 0 {{ panic!(\"soma:type: pow_mod(): negative exponent\") }} while _e > 0 {{ if _e & 1 == 1 {{ _r = (_r * _b).rem_euclid(_m); }} _e >>= 1; _b = (_b * _b).rem_euclid(_m); }} _r as i64 }}",
@@ -4886,7 +4968,7 @@ impl FnGenerator {
                         if fname == "buffer" && args.len() == 1 {
                             let n_expr = self.gen_expr_direct(&args[0].node, NativeType::Int);
                             return format!(
-                                "{}let mut {}: Vec<i64> = vec![0i64; ({}) as usize];\n",
+                                "{}let mut {}: Vec<i64> = vec![0i64; _soma_buf_len({})];\n",
                                 ind, name, n_expr
                             );
                         }
@@ -4897,7 +4979,7 @@ impl FnGenerator {
                         if fname == "buffer_f" && args.len() == 1 {
                             let n_expr = self.gen_expr_direct(&args[0].node, NativeType::Int);
                             return format!(
-                                "{}let mut {}: Vec<f64> = vec![0.0f64; ({}) as usize];\n",
+                                "{}let mut {}: Vec<f64> = vec![0.0f64; _soma_buf_len({})];\n",
                                 ind, name, n_expr
                             );
                         }
@@ -5310,8 +5392,24 @@ impl FnGenerator {
         // Mixed: pick representation that rug supports
         // Rug supports: Integer op &Integer, Integer op u32/i32/u64/i64
         // For "small * Integer" we want: small as i64 * &big = Integer
-        let l = self.gen_expr_rug_operand(left);
+        let mut l = self.gen_expr_rug_operand(left);
         let r = self.gen_expr_rug_operand(right);
+        // both operands plain i64 (a literal, a small variable) but not a
+        // small expression — `9223372036854775807 * i` is too big for
+        // i64 and rustc's `i64 * i64` overflowed in the BigInt fallback
+        // itself; give rug one Integer side
+        let plain_i64 = |e: &Expr| match e {
+            Expr::Literal(Literal::Int(_)) => true,
+            Expr::Ident(name) => match self.var_types.get(name).copied().unwrap_or(NativeType::Float) {
+                NativeType::Int => self.small_int_vars.contains(name),
+                NativeType::Float | NativeType::Bool => true,
+                NativeType::String => false,
+            },
+            _ => false,
+        };
+        if plain_i64(left) && plain_i64(right) {
+            l = format!("Integer::from({})", l);
+        }
         // a product is capped as interpreted (x = x * x over a client
         // number grew to gigabytes)
         if matches!(op, BinOp::Mul) {
@@ -5834,8 +5932,7 @@ impl FnGenerator {
                         format!("{}.to_string()", a)
                     }
                 } else if arg_ty == NativeType::Float {
-                    let a = self.gen_expr_direct(&args[0].node, arg_ty);
-                    format!("_soma_fmt_f({})", a)
+                    self.gen_float_to_string_direct(&args[0].node)
                 } else {
                     let a = self.gen_expr_direct(&args[0].node, arg_ty);
                     format!("format!(\"{{}}\", {})", a)
@@ -6055,7 +6152,7 @@ impl FnGenerator {
                 // The index is an Int expression in Rug mode (could be Integer)
                 // — produce code that yields a usize.
                 let i_int = self.gen_int_to_i64_rug(&args[1].node);
-                format!("Integer::from({}.as_bytes()[({}) as usize] as i64)", s_name, i_int)
+                format!("Integer::from(_soma_str_at(&{}, {}))", s_name, i_int)
             }
             "min" | "max" if args.len() == 2 => {
                 let a = self.gen_expr_rug(&args[0].node);

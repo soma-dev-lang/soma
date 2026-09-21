@@ -30,6 +30,25 @@ verified against it. Unknown URLs on this site return 404, never a page.
 
 ## Pick Soma when / skip it when
 
+Soma 2.8.10 corrects native code that diverged from the interpreter: an exact
+Int quotient next to `%` stayed a Float, Int-only builtins given a Float were
+truncated or failed in rustc (they are refused like the interpreter), a huge
+literal times a small local overflowed instead of promoting to BigInt,
+`to_string` of an exact quotient printed "2.0", `str_at` bounds and error
+wording differed, `buffer(-3)` died on "capacity overflow". Storage: Int indices
+past 64 bits acted on element 0 of a List slot, a Map key serde reserves broke
+its round trip, `set_budget` accepted a negative BigInt; `rows[i] = v`,
+`rows.delete(i)` and `m.len` on persistent slots no longer rewrite or scan the
+whole table, joins and self-assigned `with`/`without` are linear. The
+quadratic-concatenation lint ignores numeric accumulators, `(f)(x)` is refused
+like `f(a)(b)`, `"{0x1F}"` interpolates, `check --json` keeps its keys on a load
+failure, and a restarted cluster node no longer reports its own tables as
+orphans. Sixteen new Rust regressions cover these changes; every program of the
+repository keeps its `check`, `verify` and `test` verdicts.
+Scope: native `/` is typed Float, so an exact-quotient division by zero answers
+`inf`/`NaN` natively where the interpreter raises. Details:
+https://soma-lang.dev/CHANGELOG.md.
+
 Soma 2.8.9 distinguishes storage read failures from absent keys and empty
 collections. A failed read aborts the invocation and rolls back earlier local
 writes, including inside `try`. Legacy lists retain their values on append and
@@ -1095,7 +1114,7 @@ eventually consistent, with local reads and no fenced scheduler. Use the
 # Experimental cluster runtime
 
 The replication protocol described here is available since Soma 2.8.2 and is
-included in the current [Soma 2.8.9 release](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.9).
+included in the current [Soma 2.8.10 release](https://github.com/soma-dev-lang/soma/releases/tag/v2.8.10).
 
 ## What is implemented
 
@@ -2093,18 +2112,35 @@ identifier. `error: expected identifier, found Given`. Use `granted`, `input`, e
 
 `assert`, `assert_fails` (optionally `… matching "text"`), `let name = expr`
 (a fixture for the rules below), `mock think "reply"` / `mock think ["a", "b"]`
-/ `mock think error "timeout"`, and `property`. No bare statements: put logic
-in a handler and call it.
+/ `mock think error "timeout"`, `mock http_get map(...)` / `mock Cell.handler v`,
+and `property`. No bare statements: put logic in a handler and call it.
+A List given to any `mock` is a QUEUE — one reply per call, in order — so a
+handler or `http_get` that answers a JSON array is mocked with a nested list:
+```soma
+mock http_get [1, 2]       // two calls: the first gets 1, the second 2
+mock http_get [[1, 2]]     // one call gets the list [1, 2]
+```
+`soma test` notes a scripted reply that no call consumed.
 
-## 18. One invariant, one slot
+## 18. An invariant between two slots defaults both sides
 
-An invariant is checked per write, with only the written slot in scope.
+An invariant is checked on every write to either slot it names: the written
+slot is its new value, the other one is read at the SAME key — and a key it
+has no entry for reads as `()`, which no comparison accepts.
 ```soma
 memory { a: Map<String, Int>  b: Map<String, Int>  invariant a + b <= 100 }
-// error: memory invariant references several slots (a, b) — ... Write
-//        one invariant per slot
+// error: memory invariant between slots (a, b) — the other slot is read at the
+//        SAME key, and a key it has no entry for reads as (), which no
+//        comparison accepts: default the sides (`(reserved ?? 0) <= (stock ?? 0)`)
 ```
-`size` invariants are enforced on `delete` too: `invariant size >= 1`
+```soma
+memory {
+    stock: Map<String, Int>  reserved: Map<String, Int>
+    invariant (reserved ?? 0) <= (stock ?? 0)   // runtime-checked on both slots
+}
+```
+A rule between two slots stays runtime-checked (`verify` cannot prove it by
+induction). `size` invariants are enforced on `delete` too: `invariant size >= 1`
 rejects removing the last entry.
 
 ## 19. `7 / 2 = 3.5` everywhere — say `idiv` when you mean the integer quotient

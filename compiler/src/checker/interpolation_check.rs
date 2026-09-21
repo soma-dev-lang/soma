@@ -23,7 +23,7 @@
 //! acceptable; false positives are not.
 
 use crate::ast::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::names::{suggest, ProgramIndex};
 
@@ -491,18 +491,65 @@ pub fn check_program(program: &Program) -> Vec<InterpolationIssue> {
     // building a String by repeated concatenation in a loop is quadratic
     for c in super::names::collect_cells(program) {
         for sec in &c.sections {
-            let body = match &sec.node {
-                Section::OnSignal(on) => &on.body,
-                Section::Every(e) | Section::After(e) => &e.body,
+            let (body, params): (&Vec<Spanned<Statement>>, &[crate::ast::Param]) = match &sec.node {
+                Section::OnSignal(on) => (&on.body, &on.params),
+                Section::Every(e) | Section::After(e) => (&e.body, &[]),
                 _ => continue,
             };
+            // what a variable holds: Some(true) a String, Some(false) a
+            // number, None unknown — `total = total + x` on an Int
+            // accumulator is not a concatenation (every numeric loop
+            // was warned, and --strict rejected it)
+            fn concat_kind(e: &Expr, vars: &HashMap<String, Option<bool>>) -> Option<bool> {
+                use crate::ast::{BinOp, Literal};
+                const STRING_FNS: [&str; 16] = ["to_string", "format", "join", "replace", "trim", "uppercase", "lowercase",
+                    "pad_left", "pad_right", "substring", "to_json", "render", "render_each", "escape_html", "load_template", "chr"];
+                const NUMBER_FNS: [&str; 26] = ["len", "str_len", "sum", "count", "idiv", "mod", "abs", "floor", "ceil", "round", "sqrt",
+                    "min", "max", "avg", "product", "to_int", "to_float", "parse_int", "parse_float", "pow", "ipow", "now", "now_ms", "index_of", "ord", "gcd"];
+                match e {
+                    Expr::Literal(Literal::String(_)) => Some(true),
+                    Expr::Literal(Literal::Int(_) | Literal::BigInt(_) | Literal::Float(_)) => Some(false),
+                    Expr::Ident(n) => vars.get(n).copied().flatten(),
+                    Expr::FnCall { name, .. } if STRING_FNS.contains(&name.as_str()) => Some(true),
+                    Expr::FnCall { name, .. } if NUMBER_FNS.contains(&name.as_str()) => Some(false),
+                    Expr::BinaryOp { left, op: BinOp::Add, right } => match (concat_kind(&left.node, vars), concat_kind(&right.node, vars)) {
+                        (Some(true), _) | (_, Some(true)) => Some(true),
+                        (Some(false), Some(false)) => Some(false),
+                        _ => None,
+                    },
+                    Expr::BinaryOp { op: BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, .. } => Some(false),
+                    _ => None,
+                }
+            }
+            let mut vars: HashMap<String, Option<bool>> = HashMap::new();
+            for p in params {
+                let k = match &p.ty.node {
+                    crate::ast::TypeExpr::Simple(t) if t == "String" => Some(true),
+                    crate::ast::TypeExpr::Simple(t) if t == "Int" || t == "Float" => Some(false),
+                    _ => None,
+                };
+                vars.insert(p.name.clone(), k);
+            }
+            super::literals::for_each_stmt_deep(body, &mut |st| if let Statement::Let { name, value } = st {
+                let k = concat_kind(&value.node, &vars);
+                vars.insert(name.clone(), k);
+            });
             let mut hit: Option<String> = None;
             super::literals::for_each_stmt_deep(body, &mut |st| {
                 let inner = match st { Statement::For { body, .. } | Statement::While { body, .. } => body, _ => return };
                 super::literals::for_each_stmt_deep(inner, &mut |x| if let Statement::Assign { name, value } = x {
                     let grows = match &value.node {
-                        Expr::BinaryOp { left, op: crate::ast::BinOp::Add, right } =>
-                            matches!(&left.node, Expr::Ident(n) if n == name) || matches!(&right.node, Expr::Ident(n) if n == name),
+                        Expr::BinaryOp { left, op: crate::ast::BinOp::Add, right } => {
+                            let (other, is_self) = if matches!(&left.node, Expr::Ident(n) if n == name) { (&right.node, true) }
+                                else if matches!(&right.node, Expr::Ident(n) if n == name) { (&left.node, true) }
+                                else { (&left.node, false) };
+                            // a String on either side and a number on neither
+                            is_self && match (vars.get(name).copied().flatten(), concat_kind(other, &vars)) {
+                                (Some(false), _) | (_, Some(false)) => false,
+                                (Some(true), _) | (_, Some(true)) => true,
+                                _ => false,
+                            }
+                        }
                         Expr::FnCall { name: f, args } if f == "concat" || f == "join" =>
                             args.iter().any(|a| matches!(&a.node, Expr::Ident(n) if n == name)),
                         _ => false,

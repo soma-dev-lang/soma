@@ -705,3 +705,355 @@ cell test T { rules {
 "#,
     );
 }
+
+/// `(f)(2)` and `(x => x + 1)(2)` parsed as two statements: `return` gave
+/// back the lambda and `(2)` was an unreachable value. They are refused like
+/// `f(a)(b)`; parentheses that merely group still parse.
+#[test]
+fn calling_a_parenthesized_expression_is_refused_like_a_call_result() {
+    let dir = scratch("paren_call");
+    for (name, body) in [
+        ("lambda", "return (x => x + 1)(2)"),
+        ("ident", "let f = x => x + 1\n        return (f)(2)"),
+    ] {
+        let src = format!("cell P {{\n    on run() {{\n        {body}\n    }}\n}}\n");
+        std::fs::write(dir.join("app.cell"), src).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{name}: {out}");
+        assert!(out.contains("parenthesized expression directly"), "{name}: {out}");
+        assert!(out.contains("bind it first"), "{name}: {out}");
+    }
+    passes(
+        "paren_ok",
+        r#"
+cell P {
+    on go() {
+        let f = x => x + 1
+        let g = (f)
+        let a = (1)
+        return (g(2)) + (f(1)) + (a) * (2)
+    }
+}
+cell test T {
+    rules {
+        assert P.go() == 7
+    }
+}
+"#,
+    );
+}
+
+/// `"{0x1F}"`, `"{1e3}"` and `"{1_000}"` passed `soma check` and raised
+/// "undefined variable" at run time: the interpolation fast path took any
+/// alphanumeric segment for a variable name. `{42}` stays literal text (a
+/// regex quantifier), as the checker mirrors.
+#[test]
+fn interpolated_numeric_literals_evaluate_like_code() {
+    passes(
+        "interp_numeric_literals",
+        r#"
+cell P {
+    on go(x: Int) {
+        return "{0x1F} {1e3} {1_000} {0b11} {42} {true} {x} {1.5}"
+    }
+}
+cell test T {
+    rules {
+        assert P.go(2) == "31 1000.0 1000 3 {42} true 2 1.5"
+    }
+}
+"#,
+    );
+}
+
+/// An Int past 64 bits as a List-slot index was element 0: `rows.delete(2^63)`
+/// removed the first row, `rows.set(2^63, v)` overwrote it, `rows.get(2^63)`
+/// read it (the `rows[i]` form refused it). It is out of bounds like any
+/// other index past the end; a local list's `.get` answers `()`.
+#[test]
+fn bigint_list_indices_are_out_of_bounds_not_element_zero() {
+    passes(
+        "bigint_list_index",
+        r#"
+cell A {
+    memory { rows: List<Int> [persistent] }
+    on seed() { rows.push(10)
+        rows.push(20)
+        return rows.values }
+    on del_big() { return [rows.delete(9223372036854775808), rows.values] }
+    on set_big() { let r = try { rows.set(9223372036854775808, 99) }
+        return [r.kind, rows.values] }
+    on get_big() { return rows.get(9223372036854775808) }
+    on local_get() { let xs = [10, 20]
+        return xs.get(9223372036854775808) }
+}
+cell test T {
+    rules {
+        assert A.seed() == [10, 20]
+        assert A.del_big() == [false, [10, 20]]
+        assert A.set_big() == ["index", [10, 20]]
+        assert A.get_big() == ()
+        assert A.local_get() == ()
+    }
+}
+"#,
+    );
+}
+
+/// A Map key that serde_json gives a meaning to (`$serde_json::private::Number`
+/// under `arbitrary_precision`) read back as an Int, or turned the whole Map
+/// into a String, after a round trip through SQLite. It is escaped on disk.
+#[test]
+fn map_keys_serde_reserves_survive_storage() {
+    passes(
+        "serde_private_key",
+        r#"
+cell K {
+    memory { prefs: Map<String, Map> [persistent] }
+    on put(field: String, v: String) { prefs.set("u", map(field, v))
+        return prefs.get("u") }
+    on read() { return prefs.get("u") }
+}
+cell test T {
+    rules {
+        assert K.put("$serde_json::private::Number", "42") == map("$serde_json::private::Number", "42")
+        assert K.read() == map("$serde_json::private::Number", "42")
+        assert K.put("$serde_json::private::Number", "abc") == map("$serde_json::private::Number", "abc")
+        assert type_of(K.read()) == "Map"
+        assert K.put("__key__x", "1") == map("__key__x", "1")
+        assert K.read() == map("__key__x", "1")
+        assert K.put("__map__", "1") == map("__map__", "1")
+    }
+}
+"#,
+    );
+}
+
+/// `set_budget(-10^21)` (an Int past 64 bits) escaped the negative check and
+/// became an unlimited budget; a huge positive one saturates.
+#[test]
+fn set_budget_refuses_a_negative_bigint() {
+    passes(
+        "budget_bigint",
+        r#"
+cell agent B {
+    on neg() { let r = try { set_budget(-1000000000000000000000) }
+        return r.kind }
+    on huge() { set_budget(99999999999999999999999)
+        return tokens_remaining() > 0 }
+}
+cell test T {
+    rules {
+        assert B.neg() == "range"
+        assert B.huge() == true
+    }
+}
+"#,
+    );
+}
+
+/// `inner_join` / `left_join` scanned the right list once per left row: a
+/// 20 000-row join took 8 s. The right side is indexed once; the first right
+/// row with an equal key (as text) still wins, and rows without the key are
+/// kept by left_join and dropped by inner_join.
+#[test]
+fn joins_index_the_right_side_and_keep_first_match_semantics() {
+    passes(
+        "join_index",
+        r#"
+cell J {
+    on rows(n: Int) {
+        let out = []
+        for i in range(0, n) { out = push(out, map("id", i, "v", i * 3 % 101)) }
+        return out
+    }
+    on big(n: Int) {
+        let a = rows(n)
+        let b = rows(n) |> map(r => map("id", r.id, "w", 1))
+        return [len(inner_join(a, b, "id")), len(left_join(a, b, "id"))]
+    }
+    on small() {
+        let a = [map("k", 1, "a", 1), map("k", 2, "a", 2), map("k", 3, "a", 3), map("x", 1)]
+        let b = [map("k", 2, "b", "first"), map("k", 2, "b", "second"), map("k", 1, "b", "one"), map("k", "1", "b", "str")]
+        return [inner_join(a, b, "k"), left_join(a, b, "k"), join(a, b, "k")]
+    }
+}
+cell test T {
+    rules {
+        assert J.big(30000) == [30000, 30000]
+        let s = J.small()
+        assert s[0] == [map("k", 1, "a", 1, "b", "one"), map("k", 2, "a", 2, "b", "first")]
+        assert s[1] == [map("k", 1, "a", 1, "b", "one"), map("k", 2, "a", 2, "b", "first"), map("k", 3, "a", 3), map("x", 1)]
+        assert s[2] == s[0]
+    }
+}
+"#,
+    );
+}
+
+/// `m = with(m, k, v)` and `m = without(m, k)` on a local map copied the whole
+/// map at every step (20 000 removals took 26 s; the pipe form `m = m |> with(…)`
+/// was already in place). They update in place; aliases made before the
+/// assignment keep the old value.
+#[test]
+fn self_assigned_with_and_without_update_a_local_map_in_place() {
+    passes(
+        "with_without_in_place",
+        r#"
+cell W {
+    on many(n: Int) {
+        let m = map()
+        for i in range(0, n) { m = with(m, "k" + to_string(i), i) }
+        let full = len(m)
+        for i in range(0, n) { m = without(m, "k" + to_string(i)) }
+        return [full, len(m)]
+    }
+    on alias() {
+        let m = map("a", 1, "b", 2, "c", 3)
+        let keep = m
+        m = without(m, "b", "zz")
+        m = with(m, "d", 4, 1, "int-key")
+        let f = m
+        f = with(f, "a", len(f))
+        return [m, keep, f, without(m, "c")]
+    }
+}
+cell test T {
+    rules {
+        assert W.many(30000) == [30000, 0]
+        let a = W.alias()
+        assert a[0] == map("a", 1, "c", 3, "d", 4, "1", "int-key")
+        assert a[1] == map("a", 1, "b", 2, "c", 3)
+        assert a[2] == map("a", 4, "c", 3, "d", 4, "1", "int-key")
+        assert a[3] == map("a", 1, "d", 4, "1", "int-key")
+    }
+}
+"#,
+    );
+}
+
+/// `rows[i] = v` on a List slot read the whole log three times and rewrote
+/// it (23 ms per write on 20 000 rows). It updates one row; a failing `try`
+/// or handler puts the one old element back; gaps after a delete, negative
+/// indices, invariants, immutable slots and bounds behave as before.
+#[test]
+fn list_slot_element_writes_update_one_row() {
+    passes(
+        "list_slot_set",
+        r#"
+cell L {
+    memory {
+        rows: List<Int> [persistent]
+        fixed: List<Int> [persistent, immutable]
+        invariant rows >= 0
+    }
+    on seed() { rows.push(1)
+        rows.push(2)
+        rows.push(3)
+        fixed.push(9)
+        return rows.values }
+    on set_ok() { rows[1] = 20
+        rows[-1] = 30
+        return rows.values }
+    on set_try() { let r = try { rows[0] = 100
+            fail("abort") }
+        return [r.kind, rows.values] }
+    on set_then_fail() { rows[0] = 111
+        fail("boom") }
+    on set_neg() { let r = try { rows[1] = -5 }
+        return [r.kind, rows.values] }
+    on set_imm() { let r = try { fixed[0] = 1 }
+        return [r.kind, fixed.values] }
+    on set_oob() { let r = try { rows[3] = 1 }
+        return [r.kind, rows.values] }
+    on after_delete() { rows.delete(0)
+        rows[0] = 22
+        rows.push(4)
+        rows[2] = 44
+        return rows.values }
+    on read() { return [rows.values, rows.len, rows[0], rows.get(-1)] }
+}
+cell test T {
+    rules {
+        assert L.seed() == [1, 2, 3]
+        assert L.set_ok() == [1, 20, 30]
+        assert L.set_try() == ["abort", [1, 20, 30]]
+        assert_fails L.set_then_fail()
+        assert L.read() == [[1, 20, 30], 3, 1, 30]
+        assert L.set_neg() == ["invariant", [1, 20, 30]]
+        assert L.set_imm() == ["invariant", [9]]
+        assert L.set_oob() == ["index", [1, 20, 30]]
+        assert L.after_delete() == [22, 30, 44]
+        assert L.read() == [[22, 30, 44], 3, 22, 44]
+    }
+}
+"#,
+    );
+}
+
+/// `rows.delete(i)` on a List slot rewrote the whole log (23 ms per delete on
+/// 20 000 rows). It deletes one row by id; a failing `try` or handler puts
+/// the element back at its place. Negative and out-of-range indices,
+/// key-shift and size invariants behave as before.
+#[test]
+fn list_slot_element_deletes_remove_one_row() {
+    passes(
+        "list_slot_delete",
+        r#"
+cell D {
+    memory { rows: List<Int> [persistent] }
+    on seed() { for i in [10, 20, 30, 40, 50] { rows.push(i) }
+        return rows.values }
+    on del_mid() { return [rows.delete(2), rows.values, rows[2], rows.len] }
+    on del_try() { let r = try { rows.delete(1)
+            rows.delete(0)
+            fail("abort") }
+        return [r.kind, rows.values, rows[1]] }
+    on del_then_fail() { rows.delete(0)
+        rows.delete(0)
+        fail("boom") }
+    on del_neg_oob() { return [rows.delete(-1), rows.values, rows.delete(99), rows.delete(-99), rows.values] }
+    on del_then_push() { rows.delete(0)
+        rows.push(60)
+        rows[0] = 11
+        return [rows.values, rows[0], rows.get(-1), rows.len] }
+    on read() { return [rows.values, rows.len] }
+}
+cell K {
+    memory { keyed: List<Int> [persistent]
+        invariant key != 0 || keyed == 0 }
+    on seed() { keyed.push(0)
+        keyed.push(5)
+        return keyed.values }
+    on del0() { let r = try { keyed.delete(0) }
+        return [r.kind, keyed.values] }
+    on del1() { let r = try { keyed.delete(1) }
+        return [r.value, keyed.values] }
+}
+cell Z {
+    memory { sized: List<Int> [persistent]
+        invariant size >= 1 }
+    on seed() { sized.push(1)
+        return sized.values }
+    on del0() { let r = try { sized.delete(0) }
+        return [r.kind, sized.values] }
+}
+cell test T {
+    rules {
+        assert D.seed() == [10, 20, 30, 40, 50]
+        assert D.del_mid() == [true, [10, 20, 40, 50], 40, 4]
+        assert D.del_try() == ["abort", [10, 20, 40, 50], 20]
+        assert_fails D.del_then_fail()
+        assert D.read() == [[10, 20, 40, 50], 4]
+        assert D.del_neg_oob() == [true, [10, 20, 40], false, false, [10, 20, 40]]
+        assert D.del_then_push() == [[11, 40, 60], 11, 60, 3]
+        assert K.seed() == [0, 5]
+        assert K.del0() == ["invariant", [0, 5]]
+        assert K.del1() == [true, [0]]
+        assert Z.seed() == [1]
+        assert Z.del0() == ["invariant", [1]]
+    }
+}
+"#,
+    );
+}

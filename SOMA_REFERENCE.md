@@ -592,7 +592,9 @@ and its body, parsed when JSON), `timeout`, `refused` or `network`. Branch on
 holds the handler lock for its whole duration (handlers are serialized):
 keep timeouts short. In tests, `mock http_post map(...)` scripts the next
 call, `mock http_get error "timeout: slow"` a failure (`status_404: …`
-gives status 404); an unscripted real call prints a note.
+gives status 404); an unscripted real call prints a note. A List scripts
+several calls in order (`mock http_get [1, 2]` answers 1 then 2): to answer
+ONE call with a JSON array, nest it (`mock http_get [[1, 2]]`).
 
 ## Events: `emit`
 

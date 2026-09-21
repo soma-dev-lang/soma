@@ -536,3 +536,79 @@ cell F {
     assert_eq!(code, 0, "{out}");
     assert!(!out.contains("is a Float (7 / 2"), "nothing left to warn about: {out}");
 }
+
+// ── quadratic concatenation: Strings only ───────────────────────────
+
+/// `total = total + x` on an Int accumulator is not a concatenation. Every
+/// numeric loop used to get the quadratic-String warning — and `verify
+/// --strict` rejected it. A String built in a loop still warns.
+#[test]
+fn quadratic_concat_lint_ignores_numeric_accumulators() {
+    let (out, code) = check_src(
+        "soma_lint_concat_numeric.cell",
+        r#"
+cell L {
+    on total(xs: List, base: Int) {
+        let total = 0
+        let acc = 0.0
+        let n = base
+        for x in xs {
+            total = total + x
+            acc = acc + 0.5
+            n = n + len(xs)
+        }
+        return [total, acc, n]
+    }
+}
+"#,
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("grows by concatenation"), "{out}");
+
+    let (out, _) = check_src(
+        "soma_lint_concat_string.cell",
+        r#"
+cell L {
+    on text(parts: List) {
+        let s = ""
+        for p in parts { s = s + "{p}," }
+        return s
+    }
+    on prefixed(parts: List, prefix: String) {
+        let out = prefix
+        for p in parts { out = out + p }
+        return out
+    }
+}
+"#,
+    );
+    assert!(out.contains("`s` grows by concatenation"), "{out}");
+    assert!(out.contains("`out` grows by concatenation"), "{out}");
+}
+
+// ── --json: one schema, also when the program does not load ─────────
+
+/// A parse error or a missing file answered a JSON record without the
+/// `notes` and `warning_count` keys of a normal `check --json` — an agent
+/// reading `warning_count` got a KeyError on exactly the runs that failed.
+#[test]
+fn check_json_keeps_its_schema_when_the_program_does_not_load() {
+    let (out, code) = check_src(
+        "soma_json_parse_error.cell",
+        "cell P {\n    on run() {\n        return (x => x + 1)(2)\n    }\n}\n",
+    );
+    assert_ne!(code, 0, "{out}");
+    let tmp = std::env::temp_dir().join("soma_json_parse_error.cell");
+    let (stdout, _, _) = soma(&["check", tmp.to_str().unwrap(), "--json"]);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    for key in ["passed", "errors", "warnings", "notes", "error_count", "warning_count"] {
+        assert!(v.get(key).is_some(), "missing {key}: {stdout}");
+    }
+    assert_eq!(v["passed"], false);
+    assert_eq!(v["error_count"], 1);
+    let (stdout, _, _) = soma(&["check", "/nonexistent/soma_missing_file.cell", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    for key in ["passed", "errors", "warnings", "notes", "error_count", "warning_count"] {
+        assert!(v.get(key).is_some(), "missing {key}: {stdout}");
+    }
+}

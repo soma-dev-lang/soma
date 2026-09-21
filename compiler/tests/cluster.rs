@@ -241,6 +241,11 @@ fn replicas_preserve_types_rollback_and_converge_after_seed_loss_and_restart() {
     c.call("/put", json!({"key":"offline", "value":"new"}));
     b.start(Some(c.port), false);
     wait(|| b.entries() == c.entries());
+    // its own version/tombstone table is runtime metadata of a declared
+    // cell, not the data of a removed one (every restart warned about
+    // `_soma_cluster_v2_Replicated.records`)
+    let restarted_log = std::fs::read_to_string(b.dir.join("serve.log")).unwrap();
+    assert!(!restarted_log.contains("no longer declares"), "{restarted_log}");
     assert!(!b.call("/", json!({}))["keys"]
         .as_array()
         .unwrap()

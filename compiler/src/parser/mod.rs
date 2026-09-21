@@ -2901,13 +2901,15 @@ impl Parser {
                     span,
                 );
             } else if self.check(&Token::LParen)
-                && matches!(expr.node, Expr::FnCall { .. } | Expr::Index { .. } | Expr::MethodCall { .. })
                 && self.peek_span().start == self.prev_span().end
+                && (matches!(expr.node, Expr::FnCall { .. } | Expr::Index { .. } | Expr::MethodCall { .. })
+                    || matches!(self.tokens[self.pos.saturating_sub(1)].token, Token::RParen))
             {
-                // `mk(5)(n)` / `fs[0](n)`: calling a call's result — it parsed
-                // as two statements and `return` gave back the lambda
+                // `mk(5)(n)` / `fs[0](n)` / `(f)(n)` / `(x => x + 1)(n)`:
+                // calling an expression's result — it parsed as two
+                // statements and `return` gave back the lambda
                 return Err(ParseError::FixIt {
-                    message: "calling the result of a call or an index directly (`f(a)(b)`, `fs[0](x)`) is not supported — bind it first: `let g = fs[0]` then `g(x)`".to_string(),
+                    message: "calling the result of a call, an index or a parenthesized expression directly (`f(a)(b)`, `fs[0](x)`, `(x => x + 1)(2)`) is not supported — bind it first: `let g = fs[0]` then `g(x)`".to_string(),
                     span: self.peek_span(),
                 });
             } else if self.check(&Token::Question) {
