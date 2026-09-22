@@ -482,6 +482,9 @@ accounts.delete("a1")
 let keys = accounts.keys             // list of keys
 let vals = accounts.values           // list of values
 let n = accounts.len                 // count
+// Those aliases are the bare form only: with an argument the name is the
+// builtin over the slot's content — `rows.all(r => r.ok)` is `all(rows, …)`,
+// `rows.count(p)` counts the matches (bare `rows.count` is the entry count).
 // The value type is enforced on every write: Map<String, Int> refuses a
 // String or 1.5 (kind `type`); an Int written to a Float slot becomes a
 // Float; Map<String, Pay> takes only Pay variants. Ints of any size,

@@ -1493,3 +1493,32 @@ cell test T {
     assert!(out.contains("2 tests: 2 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn slot_aliases_do_not_swallow_a_predicate() {
+    // `rows.all(r => …)` on a List slot returned the slot's CONTENT (a
+    // truthy list), so `if rows.all(p)` was always taken and a `require`
+    // on it never refused; `rows.count(p)` returned the entry count
+    let dir = scratch("slot_alias");
+    std::fs::write(dir.join("app.cell"), r#"
+cell P {
+    memory { rows: List<Int> [persistent]  m: Map<String, Int> [persistent] }
+    on seed() { rows.push(20) rows.push(90) m.set("a", 1) m.set("b", 2) return len(rows) }
+    on preds() { return [rows.all(x => x > 100), rows.any(x => x > 100), rows.count(x => x > 100), rows.all(x => x > 1), rows.count(x => x > 1)] }
+    on bare() { return [rows.all, rows.len, rows.count, rows.first, rows.last, m.all, m.count, m.len] }
+    on local() { let l = [20, 90] return [l.all(x => x > 100), l.any(x => x > 100), l.count(x => x > 100), l.all(x => x > 1), l.count(x => x > 1)] }
+}
+cell test T {
+    rules {
+        assert P.seed() == 2
+        assert P.preds() == [false, false, 0, true, 2]
+        assert P.preds() == P.local()
+        assert P.bare() == [[20, 90], 2, 2, 20, 90, [1, 2], 2, 2]
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("4 tests: 4 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

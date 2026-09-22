@@ -3028,9 +3028,12 @@ impl Interpreter {
             };
             match method {
                 "len" | "size" | "count" | "length" if args.is_empty() => return Ok(Value::Int(SomaInt::from_i64(backend.list_len() as i64))),
-                "values" | "all" | "list" | "entries" | "items" => return Ok(Value::List(items())),
-                "first" => return Ok(items().into_iter().next().unwrap_or(Value::Unit)),
-                "last" => return Ok(items().into_iter().last().unwrap_or(Value::Unit)),
+                // only the no-argument aliases: `rows.all(r => …)` is the
+                // builtin over the content, not "give me everything" (it
+                // returned the list, so `if rows.all(p)` was always taken)
+                "values" | "all" | "list" | "entries" | "items" if args.is_empty() => return Ok(Value::List(items())),
+                "first" if args.is_empty() => return Ok(items().into_iter().next().unwrap_or(Value::Unit)),
+                "last" if args.is_empty() => return Ok(items().into_iter().last().unwrap_or(Value::Unit)),
                 "get" | "at" | "nth" => {
                     if let Some(Value::Int(i)) = args.first() {
                         // an Int past 64 bits is out of bounds, not element 0
@@ -3292,16 +3295,18 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
             // `length` counts on a local Map / List too (it read as a missing field here)
-            "len" | "size" | "count" | "length" => {
+            // with an argument it is the builtin: `m.count(e => …)` counted
+            // the ENTRIES, whatever the predicate said
+            "len" | "size" | "count" | "length" if args.is_empty() => {
                 Ok(Value::Int(SomaInt::from_i64(backend.len() as i64)))
             }
-            "list" | "all" => {
+            "list" | "all" if args.is_empty() => {
                 let items = backend.list();
                 Ok(Value::List(items.into_iter().map(stored_to_value).collect()))
             }
             // like entries(m): {key, value} records, sorted by key (it
             // returned the bare values)
-            "entries" | "items" => {
+            "entries" | "items" if args.is_empty() => {
                 let mut out = Vec::new();
                 for k in backend.keys() {
                     if let Some(v) = backend.get(&k) {

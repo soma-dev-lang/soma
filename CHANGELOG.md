@@ -103,6 +103,14 @@
   warning is limited to `len`, `size`, `length`, `keys`, `values`. On a memory
   slot `.length` read as a missing field while it counts on a value; slots now
   accept `len`, `size`, `count` and `length` alike. One regression test.
+- A slot's no-argument aliases no longer swallow a predicate: `rows.all(r => …)`
+  on a List slot returned the slot's content — a non-empty list, so
+  `if rows.all(p)` was always taken and a `require` on it never refused — and
+  `rows.count(p)` returned the entry count instead of the matches. `all`,
+  `count`, `values`, `list`, `entries`, `items`, `first` and `last` answer as
+  slot aliases only when called without arguments; with one they are the
+  builtin over the slot's content, exactly as on a local list. One regression
+  test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
