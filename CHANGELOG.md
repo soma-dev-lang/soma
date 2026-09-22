@@ -138,6 +138,12 @@
   comparison raised `cannot compare String and Variant` on every run and
   could never be true. `check` names the fix (`== "Funded"`); a
   variant-to-variant test is untouched. One regression test.
+- `soma check` reports a `match` arm that can never run: a case appended below
+  an unguarded `_ -> …` (the match silently kept taking the catch-all), or one
+  repeating an earlier unguarded pattern — a literal, a variant, a prefix, a
+  range, or an or-pattern whose alternatives are all already taken. A guarded
+  arm may fail its guard, so it kills nothing. It is a warning, like the other
+  unreachable code. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

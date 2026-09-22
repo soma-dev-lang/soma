@@ -1660,3 +1660,35 @@ fn comparing_a_state_name_with_a_variant_is_refused() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_match_arm_that_can_never_run_is_reported() {
+    // a case appended below `_ -> …`, or repeating an earlier pattern, never
+    // ran: the match silently kept taking the earlier arm
+    let dir = scratch("dead_arm");
+    let head = "cell type Shape { variants { Box { w: Int } Dot } }\ncell D {\n";
+    let dead = [
+        "on a(x: Int) { return match x { 1 -> \"a\"  _ -> \"w\"  2 -> \"b\" } }",
+        "on a(x: Int) { return match x { 1 -> \"a\"  1 -> \"b\"  _ -> \"w\" } }",
+        "on a(s: String) { return match s { \"a\" -> 1  \"a\" -> 2  _ -> 0 } }",
+        "on a(v: Shape) { return match v { Box { w } -> w  Dot -> 0  Box { w } -> 9 } }",
+        "on a(x: Int) { return match x { n -> n  5 -> 0 } }",
+        "on a(x: Int) { return match x { 1 || 2 -> \"a\"  2 -> \"b\"  _ -> \"w\" } }",
+    ];
+    for m in dead {
+        std::fs::write(dir.join("app.cell"), format!("{head}    {m}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_eq!(code, 0, "a dead arm is a warning, not an error\n{m}\n{out}");
+        assert!(out.contains("this match arm never runs"), "{m}\n{out}");
+    }
+    // a guard may fail, so a guarded arm kills nothing; a partly covered
+    // or-pattern is still reachable
+    std::fs::write(dir.join("app.cell"), format!(
+        "{head}    on a(x: Int) {{ return match x {{ n if n > 5 -> 1  n if n > 2 -> 2  _ -> 0 }} }}\n\
+         \x20   on b(x: Int) {{ return match x {{ 1 || 2 -> \"a\"  2 || 3 -> \"b\"  _ -> \"w\" }} }}\n\
+         \x20   on c(v: Shape) {{ return match v {{ Box {{ w }} -> w  Dot -> 0 }} }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("never runs"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

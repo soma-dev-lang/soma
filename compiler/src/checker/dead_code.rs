@@ -116,6 +116,82 @@ fn check_stmt(
 }
 
 /// Only expressions that carry statement blocks matter here.
+/// An arm after an unguarded catch-all, or repeating an earlier unguarded
+/// pattern, never runs: a case appended below `_ -> …` silently kept taking
+/// the catch-all. A guarded arm may fail its guard, so it kills nothing.
+fn check_arm_reachability(arms: &[MatchArm], label: &str, warnings: &mut Vec<DeadCodeFinding>) {
+    let mut catch_all_at: Option<usize> = None;
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for (i, arm) in arms.iter().enumerate() {
+        let span = arm.result.span;
+        if let Some(first) = catch_all_at {
+            warnings.push(DeadCodeFinding {
+                message: format!("in {}: this match arm never runs — arm {} catches everything before it (move it above, or drop it)", label, first + 1),
+                span,
+            });
+            continue;
+        }
+        if arm.guard.is_none() {
+            if matches!(arm.pattern, MatchPattern::Wildcard | MatchPattern::Variable(_)) {
+                catch_all_at = Some(i);
+                continue;
+            }
+            // an or-pattern is dead only when EVERY alternative is taken
+            if let Some(keys) = pattern_members(&arm.pattern) {
+                let covered: Vec<usize> = keys.iter()
+                    .filter_map(|k| seen.iter().find(|(s, _)| s == k).map(|(_, at)| *at))
+                    .collect();
+                if covered.len() == keys.len() {
+                    warnings.push(DeadCodeFinding {
+                        message: format!("in {}: this match arm never runs — arm {} already matches the same {}", label,
+                            covered.iter().min().unwrap() + 1,
+                            if keys.len() == 1 { "pattern" } else { "patterns" }),
+                        span,
+                    });
+                } else {
+                    for k in keys { if !seen.iter().any(|(s, _)| *s == k) { seen.push((k, i)); } }
+                }
+            }
+        }
+    }
+}
+
+/// The alternatives an arm matches, each as a comparable key. `None` when any
+/// part is beyond what we compare with confidence.
+fn pattern_members(p: &MatchPattern) -> Option<Vec<String>> {
+    match p {
+        MatchPattern::Or(alts) => alts.iter().map(pattern_key).collect::<Option<Vec<_>>>(),
+        other => pattern_key(other).map(|k| vec![k]),
+    }
+}
+
+/// A canonical form of the patterns we can compare with confidence.
+/// `None` means "cannot say", and no duplicate is reported.
+fn pattern_key(p: &MatchPattern) -> Option<String> {
+    Some(match p {
+        MatchPattern::Literal(l) => format!("lit:{}", render_expr(&Expr::Literal(l.clone()))),
+        MatchPattern::StringPrefix { prefix, .. } => format!("prefix:{}", prefix),
+        MatchPattern::Range { from, to } => format!("range:{}..{}", from, to),
+        MatchPattern::Variant { name, fields, .. } if matches!(fields, VariantPatternFields::Unit) =>
+            format!("variant:{}", name),
+        MatchPattern::Variant { name, fields: VariantPatternFields::Tuple(ps), .. }
+            if ps.iter().all(|x| matches!(x, MatchPattern::Wildcard | MatchPattern::Variable(_))) =>
+            format!("variant:{}/{}", name, ps.len()),
+        MatchPattern::Variant { name, fields: VariantPatternFields::Struct { fields, rest }, .. }
+            if fields.iter().all(|(_, x)| matches!(x, MatchPattern::Wildcard | MatchPattern::Variable(_))) => {
+            let mut names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+            names.sort();
+            format!("variant:{}{{{}{}}}", name, names.join(","), if *rest { ",.." } else { "" })
+        }
+        MatchPattern::Or(alts) => {
+            let mut keys: Vec<String> = alts.iter().map(pattern_key).collect::<Option<Vec<_>>>()?;
+            keys.sort();
+            format!("or:[{}]", keys.join("|"))
+        }
+        _ => return None,
+    })
+}
+
 fn check_expr(
     expr: &Expr,
     label: &str,
@@ -129,6 +205,7 @@ fn check_expr(
         }
         Expr::Match { subject, arms } => {
             check_expr(&subject.node, label, errors, warnings);
+            check_arm_reachability(arms, label, warnings);
             for arm in arms {
                 check_block(&arm.body, label, errors, warnings);
                 check_expr(&arm.result.node, label, errors, warnings);
