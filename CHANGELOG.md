@@ -116,6 +116,11 @@
   variant passed the gate and then failed on every fire, rolled back, visible
   only in the server log. Every other static check already covered those
   blocks. One regression test.
+- `soma check` refuses a `face` promise nothing checks: an unknown predicate
+  was silently true, so `promise all_persistemt` was green on a cell without a
+  single persistent slot, and the face claimed a guarantee no check backed.
+  The message names the known structural promises and suggests the nearest, or
+  quoting the text to keep it a note. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

@@ -1544,3 +1544,35 @@ fn every_and_after_bodies_are_checked_for_exhaustive_match() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn an_unknown_structural_promise_is_refused() {
+    // `promise all_persistemt` passed with "All checks passed" on a cell
+    // whose slots were not persistent: an unknown predicate was silently
+    // true, so a typo turned a checked guarantee into a no-op
+    let dir = scratch("promise_typo");
+    let cell = |promise: &str, prop: &str| format!(
+        "cell A {{\n    face {{\n        signal go() -> Int\n        promise {promise}\n    }}\n    memory {{ n: Map<String, Int>{prop} }}\n    on go() {{ return 1 }}\n}}\n");
+    std::fs::write(dir.join("app.cell"), cell("all_persistemt", "")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("which nothing checks") && out.contains("did you mean 'all_persistent'?"), "{out}");
+    // an invented one, with no near match, is refused too and lists the known ones
+    std::fs::write(dir.join("app.cell"), cell("never_loses_data", "")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("The structural promises are: all_persistent"), "{out}");
+    // the real predicate still both fails when violated and passes when met
+    std::fs::write(dir.join("app.cell"), cell("all_persistent", "")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("promise 'all_persistent' is not satisfied"), "{out}");
+    std::fs::write(dir.join("app.cell"), cell("all_persistent", " [persistent]")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    // a quoted promise stays a note
+    std::fs::write(dir.join("app.cell"), cell("\"backed up hourly\"", " [persistent]")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

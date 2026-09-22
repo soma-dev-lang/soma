@@ -711,7 +711,10 @@ cell API {
     face {
         signal create(name: String) -> Map    // MUST have matching handler
         signal delete(id: String)              // MUST have matching handler
-        promise all_persistent                 // structural check
+        promise all_persistent                 // structural check: all_persistent,
+                                               // all_encrypted, all_consistent,
+                                               // has_memory, has_face, has_signals,
+                                               // has_auth — any other name is refused
         promise "human-readable description"   // a note (not checked)
     }
     // Missing handler for 'delete' → compile error

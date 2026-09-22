@@ -467,6 +467,13 @@ pub struct Checker<'a> {
     analysis_cells: std::collections::HashMap<String, CellDef>,
 }
 
+/// The promise predicates `face { promise <name> }` can name. One that is not
+/// here is a typo or an invention: it is refused, never silently true.
+const STRUCTURAL_PROMISES: &[&str] = &[
+    "all_persistent", "all_encrypted", "all_consistent",
+    "has_memory", "has_face", "has_signals", "has_auth",
+];
+
 impl<'a> Checker<'a> {
     pub fn new(registry: &'a Registry) -> Self {
         Self {
@@ -1755,6 +1762,23 @@ impl<'a> Checker<'a> {
                                 });
                             }
                             Constraint::Predicate { name, .. } => {
+                                // an unknown predicate used to pass silently, so a
+                                // typo turned a checked guarantee into a no-op
+                                // (`promise all_persistemt` was green on a cell with
+                                // no persistent slot at all)
+                                if !STRUCTURAL_PROMISES.contains(&name.as_str()) {
+                                    let near = crate::checker::names::suggest(name, STRUCTURAL_PROMISES.iter().map(|s| s.to_string()).collect::<Vec<_>>().iter())
+                                        .map(|s| format!(" (did you mean '{}'?)", s))
+                                        .unwrap_or_default();
+                                    self.errors.push(CheckError::Static {
+                                        kind: "unknown_promise",
+                                        message: format!(
+                                            "cell '{}' promises '{}'{}, which nothing checks — a promise no check backs proves nothing. The structural promises are: {}. For a note, quote it: `promise \"{}\"`",
+                                            cell.name, name, near, STRUCTURAL_PROMISES.join(", "), name),
+                                        span: p.constraint.span,
+                                    });
+                                    continue;
+                                }
                                 let ok = self.verify_structural_promise(cell, name);
                                 if !ok {
                                     self.errors.push(CheckError::PromiseViolation {
@@ -1775,6 +1799,7 @@ impl<'a> Checker<'a> {
 
     /// Check a structural promise predicate against a cell's structure
     fn verify_structural_promise(&self, cell: &CellDef, predicate: &str) -> bool {
+        debug_assert!(STRUCTURAL_PROMISES.contains(&predicate));
         match predicate {
             "all_persistent" => self.all_slots_have_property(cell, "persistent"),
             "all_encrypted" => self.all_slots_have_property(cell, "encrypted"),
@@ -1783,7 +1808,7 @@ impl<'a> Checker<'a> {
             "has_face" => cell.sections.iter().any(|s| matches!(s.node, Section::Face(_))),
             "has_signals" => self.cell_has_signals(cell),
             "has_auth" => self.cell_has_given(cell, "auth") || self.cell_has_given(cell, "token"),
-            _ => true, // Unknown predicates pass (permissive)
+            _ => true, // unreachable: check_promises refuses an unknown predicate
         }
     }
 
