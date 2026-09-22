@@ -133,6 +133,11 @@
   tuple variant all passed `check` — which then called the match exhaustive —
   and raised "variant not handled" at run time on every value of it. The
   message names what the variant declares. One regression test.
+- `get_status(id) == Funded` is refused: in a typed machine `transition()`
+  takes the variant while `get_status()` answers the state's name, so the
+  comparison raised `cannot compare String and Variant` on every run and
+  could never be true. `check` names the fix (`== "Funded"`); a
+  variant-to-variant test is untouched. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

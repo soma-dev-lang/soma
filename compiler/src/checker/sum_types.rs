@@ -371,6 +371,12 @@ fn walk_expr(expr: &Expr, span: Span, reg: &VariantRegistry, issues: &mut Vec<Su
             for s in else_body { walk_stmt(&s.node, reg, issues); }
             walk_expr(&else_result.node, else_result.span, reg, issues);
         }
+        Expr::CmpOp { left, op, right } if matches!(op, CmpOp::Eq | CmpOp::Ne) => {
+            check_state_vs_variant(&left.node, &right.node, span, reg, issues);
+            check_state_vs_variant(&right.node, &left.node, span, reg, issues);
+            walk_expr(&left.node, left.span, reg, issues);
+            walk_expr(&right.node, right.span, reg, issues);
+        }
         Expr::BinaryOp { left, right, .. } | Expr::CmpOp { left, right, .. } | Expr::Pipe { left, right } => {
             walk_expr(&left.node, left.span, reg, issues);
             walk_expr(&right.node, right.span, reg, issues);
@@ -461,6 +467,32 @@ fn check_match_exhaustiveness(
             ),
         });
     }
+}
+
+/// `get_status(id) == Funded` in a typed machine, or `"a" == SomeVariant`:
+/// `get_status` answers the state's NAME, so this comparison raises "cannot
+/// compare String and Variant" every time it runs — it can never be true.
+fn check_state_vs_variant(
+    text_side: &Expr,
+    variant_side: &Expr,
+    span: Span,
+    reg: &VariantRegistry,
+    issues: &mut Vec<SumTypeIssue>,
+) {
+    let Expr::Ident(name) = variant_side else { return };
+    if !matches!(reg.variant_shape.get(name), Some(VariantShape::Unit)) { return }
+    let what = match text_side {
+        Expr::FnCall { name: f, .. } if f == "get_status" => "get_status(…)",
+        Expr::Literal(Literal::String(_)) => "a String",
+        _ => return,
+    };
+    issues.push(SumTypeIssue {
+        kind: SumTypeIssueKind::UnknownVariant,
+        span,
+        message: format!(
+            "{} answers a String and `{}` is a variant — comparing them raises `cannot compare String and Variant` every time. Compare the name: `== \"{}\"` (only `transition()` takes the variant)",
+            what, name, name),
+    });
 }
 
 /// A variant pattern that names no variant, or whose payload does not match

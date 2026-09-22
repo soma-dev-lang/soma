@@ -1635,3 +1635,28 @@ fn a_variant_pattern_of_the_wrong_shape_is_refused() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn comparing_a_state_name_with_a_variant_is_refused() {
+    // in a typed machine `transition()` takes the variant but `get_status()`
+    // answers the state's NAME, so `get_status(id) == Funded` raised "cannot
+    // compare String and Variant" on every run — it can never be true
+    let dir = scratch("state_vs_variant");
+    let head = "cell type Status { variants { Open  Funded } }\ncell T {\n    state deal: Status { initial: Open  Open -> Funded }\n";
+    for body in ["if get_status(id) == Funded { return 1 } return 0",
+                 "if Funded != get_status(id) { return 1 } return 0"] {
+        std::fs::write(dir.join("app.cell"), format!("{head}    on a(id: String) {{ {body} }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{body}\n{out}");
+        assert!(out.contains("Compare the name: `== \"Funded\"`"), "{body}\n{out}");
+    }
+    // the string form, a real variant-to-variant test and transition() are fine
+    std::fs::write(dir.join("app.cell"), format!(
+        "cell type Pay {{ variants {{ Card {{ last4: String }}  Cash }} }}\n{head}\
+         \x20   on a(id: String) {{ if get_status(id) == \"Funded\" {{ return 1 }} return 0 }}\n\
+         \x20   on b(id: String) {{ transition(id, Open, Funded) return get_status(id) }}\n\
+         \x20   on c(p: Pay) {{ return p == Cash }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
