@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### A compound or comparison face promise is checked or refused
+
+- Only a bare structural promise was evaluated. `promise all_persistent &&
+  has_auth` passed on a cell with neither, `promise all_persistemt ||
+  has_face` hid its typo, and `promise balance >= 0` — enforced by nothing,
+  at check or at run time — let `put(-5)` store -5. Structural promises
+  combined with `&&`, `||` and `!` are now evaluated, and any other promise
+  is refused, pointing at `invariant` for stored values and `cost {
+  latency: … }` for latency. The `custom_property` example's `promise
+  latency < 200ms` is now the quoted note it always was.
+
 ### A native BigInt division rounds once
 
 - In a `[native]` handler, an inexact `BigInt / Int` converted both operands

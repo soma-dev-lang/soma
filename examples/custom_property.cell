@@ -28,7 +28,7 @@ cell GlobalUserStore {
         signal get_user(id: String) -> Map
         signal put_user(id: String, data: String)
         promise "reads reflect latest write"
-        promise latency < 200ms
+        promise "latency < 200ms"
     }
 
     memory {

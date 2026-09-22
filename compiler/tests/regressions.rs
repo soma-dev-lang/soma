@@ -3043,3 +3043,21 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn a_compound_or_comparison_face_promise_is_checked_or_refused() {
+    // `promise all_persistent && has_auth`, `promise all_persistemt ||
+    // has_face` and `promise balance >= 0` passed check: only a bare
+    // predicate was evaluated, and nothing enforced the rest at run time
+    let dir = scratch("compound_promises");
+    std::fs::write(dir.join("app.cell"), "cell API {\n  face {\n    signal put(v: Int)\n    promise all_persistent && has_auth\n    promise all_persistemt || has_face\n    promise balance >= 0\n  }\n  memory { balance: Map<String, Int> [ephemeral] }\n  on put(v: Int) { balance.set(\"a\", v) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("promise 'all_persistent && has_auth' is not satisfied"), "{out}");
+    assert!(out.contains("'all_persistemt' (did you mean 'all_persistent'?)"), "{out}");
+    assert!(out.contains("promises `balance >= 0`, which nothing checks"), "{out}");
+    std::fs::write(dir.join("app.cell"), "cell A {\n  face {\n    signal put(v: Int)\n    promise has_memory && !all_encrypted\n    promise all_encrypted || has_face\n  }\n  memory { x: Map<String, Int> [ephemeral] }\n  on put(v: Int) { x.set(\"a\", v) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

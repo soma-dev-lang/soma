@@ -1882,6 +1882,77 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A promise built from structural predicates with `&&`, `||` and `!`:
+    /// Some(holds), or None once an error has been reported for a part no
+    /// check backs (an unknown predicate, a comparison, a quoted note).
+    fn eval_promise(&mut self, cell: &CellDef, c: &Spanned<Constraint>) -> Option<bool> {
+        match &c.node {
+            Constraint::Predicate { name, .. } => self.eval_promise_predicate(cell, name, c.span),
+            Constraint::And(a, b) => {
+                let (x, y) = (self.eval_promise(cell, a), self.eval_promise(cell, b));
+                Some(x? && y?)
+            }
+            Constraint::Or(a, b) => {
+                let (x, y) = (self.eval_promise(cell, a), self.eval_promise(cell, b));
+                Some(x? || y?)
+            }
+            Constraint::Not(inner) => self.eval_promise(cell, inner).map(|v| !v),
+            // `promise a && b` parses as the expression `a && b` == true
+            Constraint::Comparison { left, op: CmpOp::Eq, right } if matches!(right.node, Expr::Literal(Literal::Bool(true))) => {
+                self.eval_promise_expr(cell, &left.node, c.span)
+            }
+            _ => self.unchecked_promise(cell, &crate::commands::describe::format_constraint_pub(&c.node), c.span),
+        }
+    }
+
+    fn eval_promise_expr(&mut self, cell: &CellDef, e: &Expr, span: Span) -> Option<bool> {
+        match e {
+            Expr::Ident(name) => self.eval_promise_predicate(cell, name, span),
+            Expr::FnCall { name, args } if args.is_empty() => self.eval_promise_predicate(cell, name, span),
+            Expr::BinaryOp { left, op: BinOp::And, right } => {
+                let (x, y) = (self.eval_promise_expr(cell, &left.node, span), self.eval_promise_expr(cell, &right.node, span));
+                Some(x? && y?)
+            }
+            Expr::BinaryOp { left, op: BinOp::Or, right } => {
+                let (x, y) = (self.eval_promise_expr(cell, &left.node, span), self.eval_promise_expr(cell, &right.node, span));
+                Some(x? || y?)
+            }
+            Expr::Not(inner) => self.eval_promise_expr(cell, &inner.node, span).map(|v| !v),
+            other => self.unchecked_promise(cell, &crate::ast::render_expr(other), span),
+        }
+    }
+
+    fn eval_promise_predicate(&mut self, cell: &CellDef, name: &str, span: Span) -> Option<bool> {
+        // an unknown predicate used to pass silently, so a typo turned a
+        // checked guarantee into a no-op (`promise all_persistemt` was green
+        // on a cell with no persistent slot at all)
+        if !STRUCTURAL_PROMISES.contains(&name) {
+            let near = crate::checker::names::suggest(name, STRUCTURAL_PROMISES.iter().map(|s| s.to_string()).collect::<Vec<_>>().iter())
+                .map(|s| format!(" (did you mean '{}'?)", s))
+                .unwrap_or_default();
+            self.errors.push(CheckError::Static {
+                kind: "unknown_promise",
+                message: format!(
+                    "cell '{}' promises '{}'{}, which nothing checks — a promise no check backs proves nothing. The structural promises are: {}. For a note, quote it: `promise \"{}\"`",
+                    cell.name, name, near, STRUCTURAL_PROMISES.join(", "), name),
+                span,
+            });
+            return None;
+        }
+        Some(self.verify_structural_promise(cell, name))
+    }
+
+    fn unchecked_promise(&mut self, cell: &CellDef, text: &str, span: Span) -> Option<bool> {
+        self.errors.push(CheckError::Static {
+            kind: "unknown_promise",
+            message: format!(
+                "cell '{}' promises `{}`, which nothing checks — a face promise is structural ({}), combined with &&, || and !. A bound on stored values is an `invariant` in `memory`, a latency bound goes in `cost {{ latency: … }}`; for a note, quote it: `promise \"{}\"`",
+                cell.name, text, STRUCTURAL_PROMISES.join(", "), text.replace('"', "'")),
+            span,
+        });
+        None
+    }
+
     /// Verify structural promises — promises that can be checked at compile time.
     /// Structural promises use known predicate names:
     ///   promise all_persistent   — every memory slot has [persistent]
@@ -1902,35 +1973,24 @@ impl<'a> Checker<'a> {
                                     span: p.constraint.span,
                                 });
                             }
-                            Constraint::Predicate { name, .. } => {
-                                // an unknown predicate used to pass silently, so a
-                                // typo turned a checked guarantee into a no-op
-                                // (`promise all_persistemt` was green on a cell with
-                                // no persistent slot at all)
-                                if !STRUCTURAL_PROMISES.contains(&name.as_str()) {
-                                    let near = crate::checker::names::suggest(name, STRUCTURAL_PROMISES.iter().map(|s| s.to_string()).collect::<Vec<_>>().iter())
-                                        .map(|s| format!(" (did you mean '{}'?)", s))
-                                        .unwrap_or_default();
-                                    self.errors.push(CheckError::Static {
-                                        kind: "unknown_promise",
-                                        message: format!(
-                                            "cell '{}' promises '{}'{}, which nothing checks — a promise no check backs proves nothing. The structural promises are: {}. For a note, quote it: `promise \"{}\"`",
-                                            cell.name, name, near, STRUCTURAL_PROMISES.join(", "), name),
-                                        span: p.constraint.span,
-                                    });
-                                    continue;
-                                }
-                                let ok = self.verify_structural_promise(cell, name);
-                                if !ok {
+                            _ => {
+                                // `promise all_persistent && has_auth` and
+                                // `promise balance >= 0` were accepted and
+                                // checked by nothing: a compound of structural
+                                // promises is evaluated, a comparison refused
+                                if self.eval_promise(cell, &p.constraint) == Some(false) {
+                                    let promise = match &p.constraint.node {
+                                        Constraint::Predicate { name, .. } => name.clone(),
+                                        Constraint::Comparison { left, .. } => crate::ast::render_expr(&left.node),
+                                        other => crate::commands::describe::format_constraint_pub(other),
+                                    };
                                     self.errors.push(CheckError::PromiseViolation {
                                         cell: cell.name.clone(),
-                                        promise: name.clone(),
+                                        promise,
                                         span: p.constraint.span,
                                     });
                                 }
                             }
-                            // Comparison promises (value >= 0) are runtime-checked
-                            _ => {}
                         }
                     }
                 }
