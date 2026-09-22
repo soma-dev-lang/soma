@@ -111,6 +111,11 @@
   slot aliases only when called without arguments; with one they are the
   builtin over the slot's content, exactly as on a local list. One regression
   test.
+- `soma check` reads `every` / `after` bodies when it proves a `match`
+  exhaustive: only `on` handlers were walked, so a scheduled tick missing a
+  variant passed the gate and then failed on every fire, rolled back, visible
+  only in the server log. Every other static check already covered those
+  blocks. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

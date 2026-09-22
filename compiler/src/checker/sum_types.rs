@@ -100,10 +100,16 @@ pub fn check_program(program: &Program) -> Vec<SumTypeIssue> {
             continue;
         }
         for section in &cell.node.sections {
-            if let Section::OnSignal(ref on) = section.node {
-                for stmt in &on.body {
-                    walk_stmt(&stmt.node, &registry, &mut issues);
-                }
+            // `every` / `after` bodies too: a non-exhaustive match there
+            // passed `check` and failed every tick at run time, rolled back,
+            // visible only in the server log
+            let body = match &section.node {
+                Section::OnSignal(on) => &on.body,
+                Section::Every(ev) | Section::After(ev) => &ev.body,
+                _ => continue,
+            };
+            for stmt in body {
+                walk_stmt(&stmt.node, &registry, &mut issues);
             }
         }
     }

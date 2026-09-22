@@ -1522,3 +1522,25 @@ cell test T {
     assert!(out.contains("4 tests: 4 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn every_and_after_bodies_are_checked_for_exhaustive_match() {
+    // a non-exhaustive match inside `every` / `after` passed `soma check`
+    // (only `on` bodies were walked) and failed EVERY tick at run time,
+    // rolled back, visible only in the server log
+    let dir = scratch("exhaustive_tick");
+    let head = "cell type Shape { variants { Box { w: Int } Dot Pair(Int, Int) } }\ncell Y {\n    memory { n: Map<String, Int> }\n";
+    for block in ["    every 10s {", "    after 10s {"] {
+        std::fs::write(dir.join("app.cell"), format!(
+            "{head}{block} let v = Pair(1, 2) let r = match v {{ Box {{ w }} -> w  Dot -> 0 }} n.set(\"e\", r) }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{out}");
+        assert!(out.contains("non-exhaustive match on 'Shape': missing variant `Pair`"), "{out}");
+    }
+    // an exhaustive tick still passes
+    std::fs::write(dir.join("app.cell"), format!(
+        "{head}    every 10s {{ let v = Dot let r = match v {{ Box {{ w }} -> w  Dot -> 0  Pair(a, b) -> a }} n.set(\"e\", r) }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
