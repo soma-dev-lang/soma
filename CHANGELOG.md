@@ -12,6 +12,10 @@
   `capacity(10, 20)` silently read only the first. Each is now refused, naming
   what is wrong. A parameterised property that feeds no proof, such as
   `ttl(30min)`, is untouched.
+- `state foo [max_instances(N)]` is checked the same way, and any other
+  annotation in that position is refused: `max_instances` is the only one
+  anything reads there, so `[max_instanes(10)]` sat doing nothing while the
+  proof used the default instance count.
 
 ### A `cell property` rule naming nothing is reported
 

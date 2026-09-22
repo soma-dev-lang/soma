@@ -1446,6 +1446,11 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        for section in &cell.sections {
+            if let Section::State(ref sm) = section.node {
+                properties::check_state_machine_properties(sm, &mut prop_checker.errors);
+            }
+        }
         self.errors.extend(prop_checker.errors);
         self.warnings.extend(prop_checker.warnings);
 

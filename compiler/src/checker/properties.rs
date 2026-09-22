@@ -50,26 +50,8 @@ impl<'a> PropertyChecker<'a> {
         for prop in &slot.properties {
             let MemoryProperty::Param(ref p) = prop.node else { continue };
             if !BUDGET_PARAMS.contains(&p.name.as_str()) { continue }
-            let bad = match p.values.as_slice() {
-                [one] => match one.node {
-                    Literal::Int(n) if n >= 0 => None,
-                    Literal::Int(n) => Some(format!("{} is negative", n)),
-                    _ => Some("its argument is not a whole number".to_string()),
-                },
-                [] => Some("it carries no bound".to_string()),
-                many => Some(format!("it carries {} arguments, and only the first would be read", many.len())),
-            };
-            if let Some(why) = bad {
-                self.errors.push(CheckError::Static {
-                    kind: "budget_annotation",
-                    message: format!(
-                        "`{}({})` on '{}': {} — the memory proof would silently use the default instead. Write `{}(N)` with one whole number, or drop it",
-                        p.name,
-                        p.values.iter().map(|v| format!("{}", crate::ast::render_expr(&Expr::Literal(v.node.clone())))).collect::<Vec<_>>().join(", "),
-                        slot.name, why, p.name
-                    ),
-                    span: prop.span,
-                });
+            if let Some(e) = budget_param_error(p, &format!("'{}'", slot.name), prop.span) {
+                self.errors.push(e);
             }
         }
 
@@ -437,5 +419,63 @@ mod tests {
         checker.check_slot(&slot, Span::new(0, 0));
         assert_eq!(checker.errors.len(), 0);
         assert!(checker.warnings.iter().any(|w| matches!(w, CheckWarning::UnknownProperty { .. })));
+    }
+}
+
+
+/// `capacity("big")` fell back to the DEFAULT capacity and `soma check` still
+/// printed "budget proven" — on a number the author never wrote. A bound that
+/// feeds a proof has to be one whole number.
+fn budget_param_error(p: &PropertyParam, on: &str, span: Span) -> Option<CheckError> {
+    let why = match p.values.as_slice() {
+        [one] => match one.node {
+            Literal::Int(n) if n >= 0 => return None,
+            Literal::Int(n) => format!("{} is negative", n),
+            _ => "its argument is not a whole number".to_string(),
+        },
+        [] => "it carries no bound".to_string(),
+        many => format!("it carries {} arguments, and only the first would be read", many.len()),
+    };
+    let written = p.values.iter()
+        .map(|v| crate::ast::render_expr(&Expr::Literal(v.node.clone())))
+        .collect::<Vec<_>>().join(", ");
+    Some(CheckError::Static {
+        kind: "budget_annotation",
+        message: format!(
+            "`{}({})` on {}: {} — the memory proof would silently use the default instead. Write `{}(N)` with one whole number, or drop it",
+            p.name, written, on, why, p.name
+        ),
+        span,
+    })
+}
+
+/// A `state foo [...]` annotation. `max_instances(N)` is the only one anything
+/// reads, so any other name sat there doing nothing — and a mistyped
+/// `max_instanes(10)` left the proof on the default instance count.
+pub fn check_state_machine_properties(sm: &StateMachineSection, errors: &mut Vec<CheckError>) {
+    for prop in &sm.properties {
+        match &prop.node {
+            MemoryProperty::Param(p) if p.name == "max_instances" => {
+                if let Some(e) = budget_param_error(p, &format!("state machine '{}'", sm.name), prop.span) {
+                    errors.push(e);
+                }
+            }
+            other => {
+                let name = other.name();
+                let near = if crate::checker::names::levenshtein(name, "max_instances") <= 3 {
+                    " — did you mean `max_instances(N)`?"
+                } else {
+                    ""
+                };
+                errors.push(CheckError::Static {
+                    kind: "state_annotation",
+                    message: format!(
+                        "`[{}]` on state machine '{}' is read by nothing{} — `max_instances(N)` is the only annotation a state machine takes",
+                        name, sm.name, near
+                    ),
+                    span: prop.span,
+                });
+            }
+        }
     }
 }

@@ -2275,6 +2275,31 @@ fn a_malformed_budget_annotation_is_refused_rather_than_defaulted() {
         let (code, out) = soma(&dir, &["check", "app.cell"]);
         assert_eq!(code, 0, "[{prop}]\n{out}");
     }
+    // the same annotation on a state machine: `max_instances` is the only
+    // one anything reads there, and a mistyped one left the proof on the
+    // default instance count with nothing said
+    let machine = |ann: &str| format!(
+        "cell A {{\n    memory {{ st: Map<String, Int> [persistent, capacity(10)] }}\n         \x20   state flow {ann} {{\n        initial: a\n        a -> b\n    }}\n         \x20   scale {{\n        replicas: 1\n        memory: \"128Mi\"\n    }}\n         \x20   on go(id: String) {{ transition(id, \"b\")  return 1 }}\n}}\n");
+    for ann in ["[max_instances()]", "[max_instances(\"big\")]", "[max_instances(10, 20)]"] {
+        std::fs::write(dir.join("app.cell"), machine(ann)).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "[{ann}]\n{out}");
+        assert!(out.contains("the memory proof would silently use the default"), "[{ann}]\n{out}");
+    }
+    for (ann, want) in [("[max_instanes(10)]", "did you mean `max_instances(N)`?"),
+                        ("[persistent]", "is the only annotation a state machine takes")] {
+        std::fs::write(dir.join("app.cell"), machine(ann)).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "[{ann}]\n{out}");
+        assert!(out.contains("is read by nothing"), "[{ann}]\n{out}");
+        assert!(out.contains(want), "[{ann}]\n{out}");
+    }
+    for ann in ["[max_instances(10)]", ""] {
+        std::fs::write(dir.join("app.cell"), machine(ann)).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_eq!(code, 0, "[{ann}]\n{out}");
+    }
+
     // and the bound that is written is the bound that is proven
     std::fs::write(dir.join("app.cell"), cell("capacity(10)")).unwrap();
     let (_, tight) = soma(&dir, &["check", "app.cell"]);
