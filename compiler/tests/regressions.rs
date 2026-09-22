@@ -1900,3 +1900,42 @@ fn add_keeps_the_manifest_the_author_wrote() {
     assert!(after.starts_with("# bare\n") && after.contains("[dependencies.p]") && after.contains("path = \"../lib\""), "{after}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_dashboard_is_same_origin_while_handlers_are_not() {
+    // serving.md listed the dashboard among the responses carrying
+    // `Access-Control-Allow-Origin: *`; the code deliberately withholds it
+    // there so another origin cannot read the program's structure
+    let dir = scratch("dashboard_cors");
+    std::fs::write(dir.join("app.cell"), r#"
+cell App {
+    memory { n: Map<String, Int> [persistent] }
+    on bump() { n.set("c", (n.get("c") ?? 0) + 1) return n.get("c") }
+}
+"#).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let _server = Server(
+        Command::new(env!("CARGO_BIN_EXE_soma"))
+            .args(["serve", "app.cell", "--no-schedule", "-p", &port.to_string()])
+            .current_dir(&dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    for _ in 0..100 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let header = "access-control-allow-origin";
+    let handler = get(port, "/bump").to_lowercase();
+    assert!(handler.contains(header), "a handler answers any origin\n{handler}");
+    for path in ["/__soma/", "/__soma/hordes"] {
+        let dash = get(port, path).to_lowercase();
+        assert!(dash.contains("200 ok"), "{path}\n{dash}");
+        assert!(!dash.contains(header), "{path} must stay same-origin\n{dash}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

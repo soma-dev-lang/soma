@@ -294,10 +294,13 @@ on busy links); `start()` runs BEFORE the links to `[peers]` are up, so an
 `[peers]` link is re-established when it drops (a peer that restarted, was
 down at start-up, or was cut off for reading too slowly); events emitted
 meanwhile are logged NOT delivered, not queued; `PORT +
-1` only when a cell declares `on ws`. Every response, static files, the
-dashboard and the pre-handler 400s included, carries
+1` only when a cell declares `on ws`. Every response, static files
+and the pre-handler 400s included, carries
 `Access-Control-Allow-Origin: *` (browsers on any origin may call it; put a
-proxy in front to restrict). `--no-schedule` starts the HTTP side without the
+proxy in front to restrict). The dashboard is the exception: `/__soma/` and
+its `/__soma/hordes` data carry no such header, so a page on another origin
+cannot read the program's cells, invariants and machines.
+`--no-schedule` starts the HTTP side without the
 `every` / `after` threads (tests, debugging). Run it behind a reverse proxy
 and firewall the bus port.
 

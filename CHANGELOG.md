@@ -182,6 +182,11 @@
   spelled out. It now edits the text, touching only the dependency's own
   entry (replacing it when the package is already there), and refuses rather
   than write a manifest it cannot edit safely. One regression test.
+- Docs: `soma docs serving` listed the dashboard among the responses carrying
+  `Access-Control-Allow-Origin: *`. It does not: `/__soma/` and
+  `/__soma/hordes` deliberately withhold the header, so a page on another
+  origin cannot read the program's cells, invariants and machines. A test
+  pins both sides of that posture.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
