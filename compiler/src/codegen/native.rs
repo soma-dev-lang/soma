@@ -3552,6 +3552,28 @@ impl FnGenerator {
         }
     }
 
+    /// An argument of to_int / floor / ceil / round whose value provably fits
+    /// i64: small Int variables and literals, Float literals below 2^31, and
+    /// + - / % of those (* only by such a literal). A Float variable or a
+    /// call can hold any magnitude.
+    fn is_small_float_source(expr: &Expr, small: &HashSet<String>) -> bool {
+        match expr {
+            Expr::Literal(Literal::Int(n)) => n.unsigned_abs() <= (1u64 << 32),
+            Expr::Literal(Literal::Float(f)) => f.abs() <= (1u64 << 31) as f64,
+            Expr::Ident(n) => small.contains(n),
+            Expr::BinaryOp { left, op, right } => {
+                let lit = |e: &Expr| matches!(e, Expr::Literal(_));
+                match op {
+                    BinOp::Add | BinOp::Sub | BinOp::Div | BinOp::Mod => {}
+                    BinOp::Mul if lit(&left.node) || lit(&right.node) => {}
+                    _ => return false,
+                }
+                Self::is_small_float_source(&left.node, small) && Self::is_small_float_source(&right.node, small)
+            }
+            _ => false,
+        }
+    }
+
     /// Non-self bounded expression: i64-safe assuming all referenced vars are bounded.
     ///
     /// Rules:
@@ -3621,6 +3643,12 @@ impl FnGenerator {
                 // when fed by `a = bit_next(big_bitmap, a + 1)`.
                 if matches!(name.as_str(), "bit_test" | "bit_next" | "bit_len") {
                     return true;
+                }
+                // a Float → Int conversion is bounded only by an argument
+                // built from small Ints: `let n = to_int(x)` with x = 1e30
+                // was kept i64 and raised kind range (no Rug to fall back on)
+                if matches!(name.as_str(), "to_int" | "floor" | "ceil" | "round") {
+                    return args.len() == 1 && Self::is_small_float_source(&args[0].node, small);
                 }
                 args.iter().all(|a| Self::is_bounded_expr(&a.node, small, siblings, var_types))
             }

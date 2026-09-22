@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### A native Float → Int conversion past 64 bits answers
+
+- In a `[native]` handler, `let n = to_int(x)` — and `floor`, `ceil`,
+  `round`, assigned or accumulated — was kept an i64 local whatever `x`
+  held, so `x = 1e30` raised kind `range` where the interpreter answered
+  `1000000000000000019884624838657`. Such a local is now kept i64 only when
+  its argument is built from small Ints; the repository's native programs
+  run at the same speed.
+
 ### `push` and `merge` refuse what is not their collection
 
 - `push(list(1))` answered `[[1]]`, `push(5, 6)` the list `[5, 6]` and

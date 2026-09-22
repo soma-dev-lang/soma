@@ -2956,3 +2956,36 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn a_native_float_to_int_past_64_bits_answers_like_the_interpreter() {
+    // `let n = to_int(x)` (floor, ceil, round too) was kept an i64 local, so
+    // x = 1e30 raised kind range with no BigInt path to fall back on
+    passes("native_float_to_int", r#"
+cell N {
+    on f(x: Float) [native] {
+        let n = to_int(x)
+        return n + 1
+    }
+    on g(x: Float) [native] {
+        let n = 0
+        n = floor(x)
+        return n
+    }
+    on h(x: Float) [native] {
+        let s = 0
+        for i in range(0, 3) { s = s + round(x) }
+        return s
+    }
+    on i(x: Float) { return to_int(x) + 1 }
+}
+cell test T {
+    rules {
+        assert N.f(1.0e30) == N.i(1.0e30)
+        assert N.g(0.0 - 1.0e25) == floor(0.0 - 1.0e25)
+        assert N.h(1.0e20) == 3 * round(1.0e20)
+        assert N.f(2.5) == 3
+    }
+}
+"#);
+}
