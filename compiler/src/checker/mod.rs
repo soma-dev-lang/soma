@@ -467,6 +467,24 @@ pub struct Checker<'a> {
     analysis_cells: std::collections::HashMap<String, CellDef>,
 }
 
+/// Every predicate name a checker constraint mentions that no structural
+/// promise implements, with the span of its `require`.
+fn collect_unknown_predicates(c: &Constraint, span: Span, checker: &str, out: &mut Vec<(String, String, Span)>) {
+    match c {
+        Constraint::Predicate { name, .. } => {
+            if !STRUCTURAL_PROMISES.contains(&name.as_str()) {
+                out.push((checker.to_string(), name.clone(), span));
+            }
+        }
+        Constraint::Not(inner) => collect_unknown_predicates(&inner.node, span, checker, out),
+        Constraint::And(a, b) | Constraint::Or(a, b) => {
+            collect_unknown_predicates(&a.node, span, checker, out);
+            collect_unknown_predicates(&b.node, span, checker, out);
+        }
+        _ => {}
+    }
+}
+
 /// The promise predicates `face { promise <name> }` can name. One that is not
 /// here is a typo or an invention: it is refused, never silently true.
 const STRUCTURAL_PROMISES: &[&str] = &[
@@ -488,6 +506,9 @@ impl<'a> Checker<'a> {
     }
 
     pub fn check(&mut self, program: &Program) {
+        // once per program, not per cell: a checker rule naming a predicate
+        // nothing implements is refused before it silently holds everywhere
+        self.validate_checker_predicates();
         // Structure: something to check, one machine per cell with a start
         // state, unique cell names. Each of these used to pass silently
         // (the runtime kept the LAST machine / merged same-named cells).
@@ -1886,6 +1907,32 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Once per program: a `cell checker` rule naming a predicate nothing
+    /// implements enforced nothing (`require has_auht` was silently true for
+    /// every cell), and under a `!` it failed every cell instead.
+    fn validate_checker_predicates(&mut self) {
+        let mut bad: Vec<(String, String, Span)> = Vec::new();
+        for def in &self.registry.checkers {
+            for stmt in &def.check_body {
+                if let Statement::Require { constraint, .. } = &stmt.node {
+                    collect_unknown_predicates(&constraint.node, constraint.span, &def.name, &mut bad);
+                }
+            }
+        }
+        for (checker, name, span) in bad {
+            let near = crate::checker::names::suggest(&name, STRUCTURAL_PROMISES.iter().map(|s| s.to_string()).collect::<Vec<_>>().iter())
+                .map(|s| format!(" (did you mean '{}'?)", s))
+                .unwrap_or_default();
+            self.errors.push(CheckError::Static {
+                kind: "unknown_checker_predicate",
+                message: format!(
+                    "checker '{}' requires '{}'{}, which nothing implements — the rule would hold for every cell (and fail every cell under `!`). The predicates are: {}",
+                    checker, name, near, STRUCTURAL_PROMISES.join(", ")),
+                span,
+            });
+        }
+    }
+
     fn run_custom_checkers(&mut self, cell: &CellDef) {
         for checker_def in &self.registry.checkers {
             // For each checker, evaluate its check body against this cell
@@ -1893,6 +1940,11 @@ impl<'a> Checker<'a> {
             // look at the cell's face for specific patterns
             for stmt in &checker_def.check_body {
                 if let Statement::Require { constraint, else_signal } = &stmt.node {
+                    // an unknown predicate is already an error of its own:
+                    // do not ALSO fire this rule against every cell
+                    let mut unknown = Vec::new();
+                    collect_unknown_predicates(&constraint.node, constraint.span, &checker_def.name, &mut unknown);
+                    if !unknown.is_empty() { continue; }
                     let satisfied = self.evaluate_checker_constraint(cell, &constraint.node);
                     if !satisfied {
                         self.errors.push(CheckError::CustomCheckerFailed {
@@ -1916,16 +1968,13 @@ impl<'a> Checker<'a> {
     /// that map to structural checks on the cell.
     fn evaluate_checker_constraint(&self, cell: &CellDef, constraint: &Constraint) -> bool {
         match constraint {
-            Constraint::Predicate { name, .. } => {
-                match name.as_str() {
-                    // Built-in checker predicates
-                    "has_auth" => self.cell_has_given(cell, "auth") || self.cell_has_given(cell, "token"),
-                    "has_face" => cell.sections.iter().any(|s| matches!(s.node, Section::Face(_))),
-                    "has_memory" => cell.sections.iter().any(|s| matches!(s.node, Section::Memory(_))),
-                    "has_signals" => self.cell_has_signals(cell),
-                    _ => true, // Unknown predicates pass (permissive)
-                }
-            }
+            // one vocabulary with `face { promise … }`: a checker could only
+            // read four of the seven (`require all_persistent` was silently
+            // true), and an unknown name passed — refused up front now, so
+            // reaching here with one is impossible
+            Constraint::Predicate { name, .. } if STRUCTURAL_PROMISES.contains(&name.as_str()) =>
+                self.verify_structural_promise(cell, name),
+            Constraint::Predicate { .. } => true,
             Constraint::Not(inner) => !self.evaluate_checker_constraint(cell, &inner.node),
             Constraint::And(a, b) => {
                 self.evaluate_checker_constraint(cell, &a.node)

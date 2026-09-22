@@ -121,6 +121,12 @@
   single persistent slot, and the face claimed a guarantee no check backed.
   The message names the known structural promises and suggests the nearest, or
   quoting the text to keep it a note. One regression test.
+- A `cell checker` rule naming a predicate nothing implements is refused:
+  `require has_auht else Tag` (a typo) held for every cell, so the project
+  rule enforced nothing, and the same typo under a `!` failed every cell
+  instead. A checker now reads the same vocabulary as `face { promise … }`
+  (`require all_persistent` was silently true there too) and an unknown name
+  is an error naming the predicates, reported once. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

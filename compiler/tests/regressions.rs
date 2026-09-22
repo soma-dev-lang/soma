@@ -1576,3 +1576,32 @@ fn an_unknown_structural_promise_is_refused() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_checker_predicate_nothing_implements_is_refused() {
+    // `cell checker … rules { check { require has_auht else Tag } }` was
+    // silently true for every cell (the project rule enforced nothing), and
+    // under `!` it failed every cell instead; `require all_persistent`, a
+    // real structural promise, was not implemented here either
+    let dir = scratch("checker_pred");
+    let prog = |pred: &str, prop: &str| format!(
+        "cell checker rule_x {{\n    face {{ promise \"a project rule\" }}\n    rules {{ check {{ require {pred} else Tag }} }}\n}}\ncell A {{\n    face {{ signal go() -> Int }}\n    memory {{ n: Map<String, Int>{prop} }}\n    on go() {{ return 1 }}\n}}\n");
+    std::fs::write(dir.join("app.cell"), prog("has_auht", "")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("which nothing implements") && out.contains("did you mean 'has_auth'?"), "{out}");
+    // under `!` the unknown predicate is reported once and fires no rule
+    std::fs::write(dir.join("app.cell"), prog("!has_memry", "")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert_eq!(out.lines().filter(|l| l.starts_with("error")).count(), 1, "{out}");
+    // the whole promise vocabulary now works in a checker, and really checks
+    std::fs::write(dir.join("app.cell"), prog("all_persistent", "")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("failed check 'Tag'"), "{out}");
+    std::fs::write(dir.join("app.cell"), prog("all_persistent", " [persistent]")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
