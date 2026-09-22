@@ -83,9 +83,10 @@ impl<'a> LintPass<'a> {
     // ── Top-level walk ──────────────────────────────────────────────
 
     fn check_program(&mut self, program: &ast::Program) {
-        for cell in &program.cells {
-            if matches!(cell.node.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
-                self.check_cell(&cell.node);
+        // interior cells too: their handlers were never linted
+        for cell in crate::checker::names::collect_cells(program) {
+            if matches!(cell.kind, ast::CellKind::Cell | ast::CellKind::Agent) {
+                self.check_cell(cell);
             }
         }
     }

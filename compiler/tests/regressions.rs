@@ -1825,3 +1825,24 @@ fn calling_an_interior_cell_by_name_is_refused() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lint_reads_interior_cells() {
+    // `soma lint` walked only top-level cells, so the handlers of a cell
+    // nested in `interior { }` were never linted
+    let dir = scratch("lint_interior");
+    let body = "        let s = status.get(\"a\")\n        return s\n";
+    std::fs::write(dir.join("flat.cell"), format!(
+        "cell A {{\n    memory {{ status: Map<String, String> }}\n    on h() {{\n{body}    }}\n}}\n")).unwrap();
+    let (code, flat) = soma(&dir, &["lint", "flat.cell"]);
+    assert_eq!(code, 0, "{flat}");
+    assert!(flat.contains("unchecked .get()"), "{flat}");
+    std::fs::write(dir.join("app.cell"), format!(
+        "cell Outer {{\n    on run() {{ return 1 }}\n    interior {{\n\
+         \x20       cell A {{\n            face {{ signal h() }}\n            memory {{ status: Map<String, String> }}\n\
+         \x20           on h() {{\n{body}            }}\n        }}\n    }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["lint", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("unchecked .get()"), "the interior handler must be linted too\n{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
