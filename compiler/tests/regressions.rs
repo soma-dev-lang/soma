@@ -1751,3 +1751,48 @@ fn verify_proves_interior_cells_too() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn describe_shows_interior_cells() {
+    // `describe --faces` is the contract summary of every cell, yet a cell
+    // nested in `interior { }` was invisible: its face, memory and handlers
+    // never appeared, in text or in JSON
+    let dir = scratch("describe_interior");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Outer {
+    memory { top: Map<String, Int> [persistent] }
+    on run() { top.set("t", 1) return 1 }
+    interior {
+        cell Driver {
+            face { signal ping(id: String) }
+            on ping(id: String) { return 1 }
+        }
+        cell Worker {
+            face { await ping(id: String) }
+            memory { n: Map<String, Int> [persistent] }
+            on ping(id: String) { n.set(id, 1) return n.get(id) }
+        }
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["describe", "app.cell", "--faces"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("cell Driver   (interior of Outer)"), "{out}");
+    assert!(out.contains("cell Worker   (interior of Outer)"), "{out}");
+    assert!(out.contains("memory n: Map<String, Int>"), "{out}");
+    for args in [vec!["describe", "app.cell"], vec!["describe", "app.cell", "--faces", "--json"]] {
+        let (code, out) = soma(&dir, &args);
+        assert_eq!(code, 0, "{out}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let cells = v["cells"].as_array().unwrap();
+        let named: Vec<(&str, Option<&str>)> = cells.iter()
+            .map(|c| (c["name"].as_str().unwrap(), c["interior_of"].as_str()))
+            .collect();
+        assert!(named.contains(&("Outer", None)), "{out}");
+        assert!(named.contains(&("Driver", Some("Outer"))), "{out}");
+        assert!(named.contains(&("Worker", Some("Outer"))), "{out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

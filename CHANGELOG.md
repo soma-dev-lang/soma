@@ -156,6 +156,12 @@
   as `VERIFY OK`. The machine, refinement, termination and invariant proofs
   now run on interior cells (the composition check already did). One
   regression test.
+- `soma describe` shows the cells inside `interior { }`: the contract summary
+  of "every cell" listed only top-level ones, so their face, memory and
+  handlers were invisible to a reader and to an agent — `chat.cell` reported
+  one cell of its four. Each nested cell is listed after its parent, named
+  `(interior of X)` in the text and carrying `interior_of` in the JSON. One
+  regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

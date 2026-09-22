@@ -16,9 +16,13 @@ pub fn cmd_describe(path: &PathBuf) {
 
     let mut cells = Vec::new();
 
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        cells.push(describe_cell(&program, &cell.node, &source));
+    for (cell, parent) in cells_with_parents(&program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        let mut v = describe_cell(&program, cell, &source);
+        if let (Some(p), Some(obj)) = (parent, v.as_object_mut()) {
+            obj.insert("interior_of".to_string(), serde_json::json!(p));
+        }
+        cells.push(v);
     }
 
     let imports: Vec<&str> = program.imports.iter().map(|s| s.as_str()).collect();
@@ -341,10 +345,15 @@ pub fn cmd_describe_faces(path: &PathBuf, json: bool) {
 
     if json {
         let mut out = Vec::new();
-        for cell in &program.cells {
-            match cell.node.kind {
+        // interior cells are cells: their contracts were missing entirely
+        for (cell, parent) in cells_with_parents(&program) {
+            match cell.kind {
                 CellKind::Cell | CellKind::Agent | CellKind::Type => {
-                    out.push(face_json(&cell.node));
+                    let mut v = face_json(cell);
+                    if let (Some(p), Some(obj)) = (parent, v.as_object_mut()) {
+                        obj.insert("interior_of".to_string(), serde_json::json!(p));
+                    }
+                    out.push(v);
                 }
                 _ => {}
             }
@@ -359,24 +368,43 @@ pub fn cmd_describe_faces(path: &PathBuf, json: bool) {
     println!("# {} — contracts only (no handler bodies)", file_str);
 
     // Sum types first: they are the vocabulary the cells speak.
-    for cell in &program.cells {
-        if cell.node.kind != CellKind::Type { continue; }
-        for section in &cell.node.sections {
+    for (cell, _) in cells_with_parents(&program) {
+        if cell.kind != CellKind::Type { continue; }
+        for section in &cell.sections {
             if let Section::Variants(v) = &section.node {
-                println!("type {} = {}", cell.node.name, format_variants(v));
+                println!("type {} = {}", cell.name, format_variants(v));
             }
         }
     }
 
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        print_cell_face(&cell.node);
+    for (cell, parent) in cells_with_parents(&program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        print_cell_face(cell, parent);
     }
 }
 
-fn print_cell_face(cell: &CellDef) {
+/// Every cell of the program, each with the name of the cell whose
+/// `interior { }` holds it. A parent comes before its children.
+fn cells_with_parents(program: &Program) -> Vec<(&CellDef, Option<&str>)> {
+    fn rec<'a>(cell: &'a CellDef, parent: Option<&'a str>, out: &mut Vec<(&'a CellDef, Option<&'a str>)>) {
+        out.push((cell, parent));
+        for s in &cell.sections {
+            if let Section::Interior(interior) = &s.node {
+                for child in &interior.cells { rec(&child.node, Some(&cell.name), out); }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for c in &program.cells { rec(&c.node, None, &mut out); }
+    out
+}
+
+fn print_cell_face(cell: &CellDef, parent: Option<&str>) {
     let kind = if cell.kind == CellKind::Agent { "agent" } else { "cell" };
-    println!("\n{} {}", kind, cell.name);
+    match parent {
+        Some(p) => println!("\n{} {}   (interior of {})", kind, cell.name, p),
+        None => println!("\n{} {}", kind, cell.name),
+    }
 
     let mut has_face = false;
     for section in &cell.sections {
