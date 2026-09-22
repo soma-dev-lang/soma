@@ -5,10 +5,32 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
 fn dir(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("soma_agent_ux_{name}"));
+    // scoped to the running process: two suite runs at once (two checkouts,
+    // a rerun started before the first ended) shared these directories, and
+    // one wiped `.soma_data` under the other's live server — which failed as
+    // "cannot prepare storage: No such file or directory"
+    let d = std::env::temp_dir().join(format!("soma_agent_ux_{}_{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+/// True once the server answers a real HTTP request. A bare `connect()`
+/// succeeds as soon as the socket listens, which `soma serve` does well
+/// before its accept loop — the request that followed could be reset.
+fn http_up(port: u16) -> bool {
+    let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else { return false };
+    if s.set_read_timeout(Some(std::time::Duration::from_millis(500))).is_err() { return false }
+    if s.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n").is_err() { return false }
+    let mut head = [0u8; 5];
+    let mut got = 0;
+    while got < head.len() {
+        match s.read(&mut head[got..]) {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => got += n,
+        }
+    }
+    &head == b"HTTP/"
 }
 
 fn soma_in(d: &std::path::Path, args: &[&str]) -> (String, i32) {
@@ -218,7 +240,8 @@ cell test T {
 }
 "#);
     // think(prompt, system, opts): the options are the LAST argument
-    let d = std::env::temp_dir().join("soma_agent_ux_mocks");
+    // the directory `passes("mocks", …)` just wrote, under the same scope
+    let d = std::env::temp_dir().join(format!("soma_agent_ux_{}_mocks", std::process::id()));
     let (out, _) = soma_in(&d, &["check", "app.cell"]);
     assert!(out.contains("'tokens' bound proven — peak 50 reply tokens"), "{out}");
 }
@@ -3946,7 +3969,7 @@ cell agent Reviewer {
         .args(["serve", "s.cell", "-p", &port.to_string()])
         .env("SOMA_LLM_MOCK", "echo").env("SOMA_LLM_MOCK_LATENCY_MS", "400")
         .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("serve");
-    let wait_up = || { for _ in 0..80 { if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { return true; } std::thread::sleep(std::time::Duration::from_millis(100)); } false };
+    let wait_up = || { for _ in 0..80 { if http_up(port) { return true; } std::thread::sleep(std::time::Duration::from_millis(100)); } false };
     let post = |path: &str, body: &str| -> String {
         use std::io::{Read, Write};
         let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -4180,7 +4203,7 @@ cell W { on work(n: Int) [task] { return think("doc {n}", map("max_tokens", 50))
         .args(["serve", "s.cell", "-p", &port.to_string()])
         .env("SOMA_LLM_MOCK", "echo").env("SOMA_LLM_MOCK_LATENCY_MS", lat)
         .current_dir(&d).stdout(Stdio::null()).stderr(Stdio::null()).spawn().expect("serve");
-    let wait_up = || { for _ in 0..80 { if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { return true; } std::thread::sleep(std::time::Duration::from_millis(100)); } false };
+    let wait_up = || { for _ in 0..80 { if http_up(port) { return true; } std::thread::sleep(std::time::Duration::from_millis(100)); } false };
     let post = |path: &str| -> String {
         use std::io::{Read, Write};
         let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else { return String::new() };

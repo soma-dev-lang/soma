@@ -191,6 +191,48 @@ impl Drop for Server {
     }
 }
 
+/// Wait until the server answers a real HTTP request, not merely until the
+/// port accepts a connection: `soma serve` binds long before its accept
+/// loop, so a bare `connect()` succeeded while startup was still running and
+/// the request that followed could be reset.
+fn wait_http(port: u16) {
+    for _ in 0..200 {
+        if http_probe(port) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("server on {port} did not answer an HTTP request");
+}
+
+/// Wait until the port accepts a connection. For a listener that does not
+/// speak HTTP (the WebSocket port a subscriber dials), which is all that can
+/// be checked.
+fn wait_port(port: u16) {
+    for _ in 0..200 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("nothing listening on {port}");
+}
+
+fn http_probe(port: u16) -> bool {
+    let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", port)) else { return false };
+    if stream.set_read_timeout(Some(std::time::Duration::from_millis(500))).is_err() { return false }
+    if stream.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n").is_err() { return false }
+    let mut head = [0u8; 5];
+    let mut got = 0;
+    while got < head.len() {
+        match stream.read(&mut head[got..]) {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => got += n,
+        }
+    }
+    &head == b"HTTP/"
+}
+
 fn get(port: u16, path: &str) -> String {
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
@@ -258,12 +300,7 @@ cell App {
             .spawn()
             .unwrap(),
     );
-    for _ in 0..100 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    wait_http(port);
     let out = get(port, "/query?flag&text=a%2Bb+c&%2Bkey=%2B&&");
     assert!(out.contains("200 OK"), "{out}");
     let body: serde_json::Value =
@@ -1093,13 +1130,9 @@ fn subscribe_reconnects_after_the_publisher_restarts() {
             .spawn()
             .unwrap()
     };
-    let ready = |port: u16| {
-        for _ in 0..100 {
-            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { return; }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        panic!("server on {port} did not start");
-    };
+    let ready = |port: u16| wait_http(port);
+    // the WebSocket port does not answer HTTP: an open socket is the signal
+    let ready_socket = |port: u16| wait_port(port);
     let post = |port: u16, path: &str| {
         let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.write_all(format!("POST {path} HTTP/1.0\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n").as_bytes()).unwrap();
@@ -1109,7 +1142,7 @@ fn subscribe_reconnects_after_the_publisher_restarts() {
     };
     let mut publisher = spawn(&pub_dir, pub_port);
     ready(pub_port);
-    ready(pub_port + 1); // the WebSocket port the subscriber connects to
+    ready_socket(pub_port + 1); // the WebSocket port the subscriber connects to
     let mut subscriber = spawn(&sub_dir, sub_port);
     ready(sub_port);
     std::thread::sleep(std::time::Duration::from_millis(800));
@@ -1130,7 +1163,7 @@ fn subscribe_reconnects_after_the_publisher_restarts() {
     std::thread::sleep(std::time::Duration::from_millis(1500));
     let mut publisher = spawn(&pub_dir, pub_port);
     ready(pub_port);
-    ready(pub_port + 1);
+    ready_socket(pub_port + 1);
     std::thread::sleep(std::time::Duration::from_millis(2500));
     post(pub_port, "/beat/2");
     wait_for("\"n2\"");
@@ -1987,6 +2020,27 @@ fn verify_names_a_rebound_parameter_as_the_reason_the_write_is_not_proven() {
 }
 
 #[test]
+fn refinement_does_not_count_a_transition_past_a_return() {
+    // `soma check` warns the statement is unreachable, and verify still
+    // listed it: the handler was reported as reaching a state that nothing
+    // could reach through it — the opposite of what a safety audit needs
+    let dir = scratch("refinement_dead_transition");
+    std::fs::write(dir.join("app.cell"),
+        "cell T {\n    memory { st: Map<String, Int> [persistent] }\n         \x20   state flow {\n        initial: draft\n        draft -> live\n        live -> done\n    }\n         \x20   on early(id: String) {\n        return get_status(id)\n        transition(id, \"live\")\n    }\n         \x20   on guarded(id: String, ok: Bool) {\n         \x20       if ok == false { return map(\"ok\", false) }\n         \x20       transition(id, \"live\")\n        return map(\"ok\", true)\n    }\n         \x20   on finish(id: String) { transition(id, \"done\")  return 1 }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["verify", "app.cell"]);
+    assert!(!out.contains("`early` ⟶"),
+        "a transition past a return is not an edge the handler takes\n{out}");
+    // a return inside an `if` does not end the handler: what follows counts
+    assert!(out.contains("`guarded` ⟶ {live}"), "{out}");
+    assert!(out.contains("`finish` ⟶ {done}"), "{out}");
+    // and the runtime agrees: `early` leaves the instance where it was
+    let (code, out) = soma(&dir, &["run", "app.cell", "early", "z"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("draft"), "early must not move the instance\n{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and
@@ -2072,10 +2126,7 @@ cell App {
             .spawn()
             .unwrap(),
     );
-    for _ in 0..100 {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() { break; }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    wait_http(port);
     let header = "access-control-allow-origin";
     let handler = get(port, "/bump").to_lowercase();
     assert!(handler.contains(header), "a handler answers any origin\n{handler}");
