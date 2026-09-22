@@ -622,26 +622,35 @@ pub fn max_arity(name: &str) -> Option<usize> {
         let after = &rest[i + pat.len()..];
         let mut depth = 0i32;
         let mut end = None;
+        // the `>` of a lambda arrow closes nothing: reading `x => Bool` as a
+        // generic made depth negative, so the real `)` was never found and
+        // every lambda-taking builtin lost its arity check
+        let mut prev = ' ';
         for (j, c) in after.char_indices() {
             match c {
+                '>' if prev == '=' => {}
                 '(' | '<' | '[' | '{' => depth += 1,
                 ')' if depth == 0 => { end = Some(j); break; }
                 ')' | '>' | ']' | '}' => depth -= 1,
                 _ => {}
             }
+            prev = c;
         }
         let inner = &after[..end?];
         if inner.contains("...") || inner.contains('…') { return None; }
         let mut n = 0usize;
         let mut d = 0i32;
         let mut cur = String::new();
+        let mut prev = ' ';
         for c in inner.chars() {
             match c {
+                '>' if prev == '=' => cur.push(c),
                 '<' | '(' | '[' | '{' => { d += 1; cur.push(c); }
                 '>' | ')' | ']' | '}' => { d -= 1; cur.push(c); }
                 ',' if d == 0 => { if !cur.trim().is_empty() { n += 1; } cur.clear(); }
                 _ => cur.push(c),
             }
+            prev = c;
         }
         if !cur.trim().is_empty() { n += 1; }
         best = best.max(n);

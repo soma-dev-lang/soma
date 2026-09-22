@@ -1962,3 +1962,32 @@ fn duration_and_percentage_literals_render_as_written() {
     assert!(!out.contains("Duration {") && !out.contains("Milliseconds"), "no Rust Debug\n{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_lambda_builtin_refuses_extra_arguments() {
+    // the `>` of a lambda arrow was read as a closing generic when the
+    // registry signature was parsed, so `filter(list: List, x => Bool)`
+    // yielded no arity at all and every lambda-taking builtin accepted an
+    // extra argument, silently ignored at run time
+    let dir = scratch("lambda_arity");
+    let bad = [
+        ("filter([1, 2, 3], x => x > 1, 99)", "filter() takes at most 2 arguments (3 given)"),
+        ("any([1, 2], x => x > 1, 1, 2)", "any() takes at most 2 arguments (4 given)"),
+        ("count([1, 2], x => x > 0, 7)", "count() takes at most 2 arguments (3 given)"),
+        ("find([1, 2], x => x > 1, 5)", "find() takes at most 2 arguments (3 given)"),
+        ("all([1, 2], x => x > 0, 5)", "all() takes at most 2 arguments (3 given)"),
+        ("reduce([1, 2], 0, p => p.acc + p.val, 9)", "reduce() takes at most 3 arguments (4 given)"),
+        ("sort_by([map(\"k\", 2)], \"k\", \"desc\", 9)", "sort_by() takes at most 3 arguments (4 given)"),
+    ];
+    for (call, want) in bad {
+        std::fs::write(dir.join("app.cell"), format!("cell L {{\n    on h() {{ return {call} }}\n}}\n")).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{call}\n{out}");
+        assert!(out.contains(want), "{call}\nwant: {want}\n{out}");
+    }
+    // the right number of arguments still passes, piped form included
+    std::fs::write(dir.join("app.cell"), "cell L {\n    on a() { return filter([1, 2, 3], x => x > 1) }\n    on b() { return sort_by([map(\"k\", 2)], \"k\") }\n    on c() { return reduce([1, 2], 0, p => p.acc + p.val) }\n    on d() { return [1, 2] |> filter(x => x > 1) }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

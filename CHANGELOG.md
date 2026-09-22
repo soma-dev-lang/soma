@@ -193,6 +193,12 @@
   came out of `describe --faces` as Rust's `Debug`
   (`Duration(Duration { value: 200.0, unit: Milliseconds })`). One regression
   test.
+- A builtin taking a lambda refuses extra arguments like every other one:
+  reading its registry signature, the `>` of the arrow in
+  `filter(list: List, x => Bool)` counted as a closing generic, so no arity
+  could be derived and `filter`, `find`, `any`, `all`, `count`, `reduce` and
+  `sort_by` accepted any number of arguments, the extra ones silently ignored
+  at run time. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
