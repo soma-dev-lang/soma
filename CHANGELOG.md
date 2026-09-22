@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### `soma serve -w` keeps its flags, and its server stops with it
+
+- The watched server was started as `serve <file> -p <port>` only: with
+  `-w`, `--no-schedule` still ran every timer, and `--host`, `--verbose`,
+  `--join`, `--no-check` and the global flags were dropped in silence. It
+  now gets the same command line, minus `-w`.
+- Killing the watcher (`kill`, a supervisor's SIGTERM) left that server
+  running under init, serving and holding the port, so the next `soma
+  serve` on it failed. On Unix the server now exits once its watcher is
+  gone.
+
 ### A wildcard `except` names a declared state
 
 - `* -> cancelled except [setled]` was accepted: the misspelt name excepted

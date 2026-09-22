@@ -414,7 +414,7 @@ fn main_inner() {
         Commands::Serve { file, port, host, no_check, no_schedule, watch, verbose, join } => {
             runtime::storage::set_data_dir_beside(&file);
             if watch {
-                commands::serve::cmd_serve_watch(&file, port, &mut registry);
+                commands::serve::cmd_serve_watch(&file, &mut registry);
             } else {
                 if no_schedule { commands::serve::NO_SCHEDULE.store(true, std::sync::atomic::Ordering::Relaxed); }
                 commands::serve::cmd_serve(&file, port, &host, verbose, join.as_deref(), no_check, &mut registry);

@@ -2891,3 +2891,44 @@ fn a_wildcard_except_names_a_declared_state() {
     assert_eq!(code, 0, "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[cfg(unix)]
+#[test]
+fn serve_watch_keeps_its_flags_and_its_server_stops_with_it() {
+    // the watched server was started as `serve <file> -p <port>` only, so
+    // --no-schedule (and --host, --verbose, …) were dropped; killing the
+    // watcher left that server running, re-parented, holding the port
+    let dir = scratch("serve_watch");
+    std::fs::write(dir.join("app.cell"), r#"
+cell W {
+    memory { n: Map<String, Int> [persistent] }
+    every 100ms { n.set("e", (n.get("e") ?? 0) + 1) }
+    on x() { return n.get("e") ?? 0 }
+}
+"#).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut watcher = Server(
+        Command::new(env!("CARGO_BIN_EXE_soma"))
+            .args(["serve", "-w", "--no-schedule", "app.cell", "-p", &port.to_string()])
+            .current_dir(&dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_http(port);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let out = get(port, "/x");
+    assert!(out.ends_with("{\"result\": 0}"), "timers ran under --no-schedule: {out}");
+    let _ = watcher.0.kill();
+    let _ = watcher.0.wait();
+    let mut closed = false;
+    for _ in 0..40 {
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() { closed = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(closed, "the watched server outlived its watcher");
+    let _ = std::fs::remove_dir_all(dir);
+}

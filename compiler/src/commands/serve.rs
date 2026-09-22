@@ -9,7 +9,7 @@ use crate::registry::Registry;
 use crate::runtime;
 use super::{read_source, lex_with_location, parse_with_location, resolve_imports, load_meta_cells_from_program};
 
-pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
+pub fn cmd_serve_watch(path: &PathBuf, _registry: &mut Registry) {
     eprintln!("soma serve --watch");
     eprintln!("watching: {}", path.display());
     eprintln!("---");
@@ -18,9 +18,25 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
     let mut last_modified = fs::metadata(path).ok()
         .and_then(|m| m.modified().ok());
 
+    // the child is this very command line without the watch flag: it was
+    // `serve <file> -p <port>` only, so --no-schedule, --host, --verbose,
+    // --join, --no-check and the global flags were dropped in silence
+    let child_args: Vec<String> = std::env::args().skip(1).filter_map(|a| {
+        if a == "-w" || a == "--watch" { return None; }
+        // `-wv`-style bundles of short flags
+        if a.len() > 2 && a.starts_with('-') && !a.starts_with("--") && a[1..].chars().all(|c| c.is_ascii_alphabetic()) && a.contains('w') {
+            let rest: String = a[1..].chars().filter(|c| *c != 'w').collect();
+            return Some(format!("-{}", rest));
+        }
+        Some(a)
+    }).collect();
+
     loop {
         let mut child = std::process::Command::new(&exe)
-            .args(["serve", path.to_str().unwrap(), "-p", &port.to_string()])
+            .args(&child_args)
+            // the child stops when this watcher does: a `kill` of the
+            // watcher left it serving (and holding the port) under init
+            .env("SOMA_SERVE_WATCHER", std::process::id().to_string())
             .spawn()
             .expect("failed to start server");
 
@@ -65,10 +81,26 @@ pub fn cmd_serve_watch(path: &PathBuf, port: u16, _registry: &mut Registry) {
     }
 }
 
+/// A server started by `soma serve -w` exits once its watcher is gone
+/// (killed, whatever the signal): it was re-parented and kept serving.
+fn exit_with_watcher() {
+    #[cfg(unix)]
+    if let Some(watcher) = std::env::var("SOMA_SERVE_WATCHER").ok().and_then(|v| v.parse::<u32>().ok()) {
+        std::env::remove_var("SOMA_SERVE_WATCHER");
+        std::thread::spawn(move || loop {
+            if std::os::unix::process::parent_id() != watcher {
+                process::exit(0);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        });
+    }
+}
+
 /// `--no-schedule`: HTTP handlers only, no `every` / `after` threads.
 pub static NO_SCHEDULE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn cmd_serve(path: &PathBuf, port: u16, host: &str, verbose: bool, join: Option<&str>, no_check: bool, registry: &mut Registry) {
+    exit_with_watcher();
     crate::interpreter::PERSIST_MACHINES.store(true, std::sync::atomic::Ordering::Relaxed);
     crate::interpreter::IN_SERVE.store(true, std::sync::atomic::Ordering::Relaxed);
     let source = read_source(path);
