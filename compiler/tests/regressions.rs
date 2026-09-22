@@ -2739,3 +2739,42 @@ fn a_list_literal_needs_its_commas() {
     passes("list_commas_ok", "cell L {\n  on t() { return [\n    1,\n    2,\n  ] }\n}\ncell test T {\n  rules {\n    assert L.t() == [1, 2]\n    assert [1 -1] == [0]\n  }\n}\n");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_native_comparison_on_a_bigint_answers_outside_an_if() {
+    // `if x > 0` compared a BigInt fine; `return x > 0`, `let b = x > 0` and
+    // `b = x > 0` lowered the Int to i64 and raised kind range
+    passes("native_bigint_bool", r#"
+cell N {
+    on f(x: Int) [native] { return x > 0 }
+    on g(x: Int) [native] {
+        let b = x > 0
+        let c = 0
+        if b { c = 1 }
+        return c
+    }
+    on h(x: Int, y: Int) [native] { return x == y }
+    on k(n: Int) [native] {
+        let s = 1
+        for i in range(0, n) { s = s * 3 }
+        return s % 2 == 1 && !(s < 0)
+    }
+    on m(x: Int) [native] {
+        let b = false
+        b = x >= 5 || x < 0 - 5
+        return b
+    }
+}
+cell test T {
+    rules {
+        assert N.f(shl(1, 70)) == true
+        assert N.f(0 - shl(1, 70)) == false
+        assert N.g(shl(1, 70)) == 1
+        assert N.h(shl(1, 70), shl(1, 70)) == true
+        assert N.k(60) == true
+        assert N.m(0 - shl(1, 70)) == true
+        assert N.m(1) == false
+    }
+}
+"#);
+}

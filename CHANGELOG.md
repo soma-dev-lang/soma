@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### A native comparison on a BigInt answers outside an `if`
+
+- In a `[native]` handler, `if x > 0` compared an Int past 64 bits, but
+  `return x > 0`, `let b = x > 0` and `b = x > 0` lowered the Int to i64 and
+  raised kind `range` where the interpreter answered — the error even
+  advised binding the value with `let`, which it already was. A comparison
+  and its `!`, `&&`, `||` now take the same path as a condition.
+
 ### A list literal needs its commas
 
 - The comma between list elements was optional: `[1 2 3]` and `["a" "b"]`

@@ -5163,7 +5163,7 @@ impl FnGenerator {
                 format!("{}let mut {}: f64 = {};\n", ind, name, expr)
             }
             NativeType::Bool => {
-                let expr = self.gen_expr_direct(value, NativeType::Bool);
+                let expr = self.gen_bool_rug(value);
                 format!("{}let mut {}: bool = {};\n", ind, name, expr)
             }
         }
@@ -5188,8 +5188,12 @@ impl FnGenerator {
             }
             NativeType::Int => self.gen_assign_rug(name, value, ind, rest),
             NativeType::String => self.gen_assign_string_rug(name, value, ind),
-            NativeType::Float | NativeType::Bool => {
+            NativeType::Float => {
                 let expr = self.gen_expr_direct(value, ty);
+                format!("{}{} = {};\n", ind, name, expr)
+            }
+            NativeType::Bool => {
+                let expr = self.gen_bool_rug(value);
                 format!("{}{} = {};\n", ind, name, expr)
             }
         }
@@ -5249,10 +5253,26 @@ impl FnGenerator {
                 let expr = self.gen_expr_rug_string(value);
                 format!("{}return {};\n", ind, expr)
             }
-            NativeType::Float | NativeType::Bool => {
+            NativeType::Float => {
                 let expr = self.gen_expr_direct(value, fn_ret_type);
                 format!("{}return {};\n", ind, expr)
             }
+            NativeType::Bool => {
+                let expr = self.gen_bool_rug(value);
+                format!("{}return {};\n", ind, expr)
+            }
+        }
+    }
+
+    /// A Bool value in Rug mode. A comparison went through the direct
+    /// lowering, which reads an Int operand as i64 — `return x > 0` and
+    /// `let b = x > 0` raised kind range on a BigInt that `if x > 0` compared
+    /// fine. Comparisons and their `!` / `&&` / `||` take the condition path.
+    fn gen_bool_rug(&self, value: &Expr) -> String {
+        match value {
+            Expr::CmpOp { .. } | Expr::Not(_) => self.gen_cond_rug(value),
+            Expr::BinaryOp { op: BinOp::And | BinOp::Or, .. } => self.gen_cond_rug(value),
+            _ => self.gen_expr_direct(value, NativeType::Bool),
         }
     }
 
