@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### A transition guard is not proven through a rebinding
+
+- `soma verify` proved `guard { amount > 0 }` whenever the calling handler
+  had `require amount > 0` before the `transition()`, and forgot the narrowing
+  only on a plain `let` or `=`. An assignment inside a `try` block, the loop
+  variable of a `for`, an assignment later in the loop body (seen by the next
+  pass), a lambda parameter or a `match` binding named `amount` all went
+  unseen: verify, even `--strict`, said "proven" and `soma run` failed the
+  guard. Each is now runtime-checked; the verdicts of the repository's
+  programs are unchanged.
+
 ### `par_read_files` and `par_word_count` answer an empty input
 
 - `par_word_count(list())`, and `par_read_files` on an empty or missing

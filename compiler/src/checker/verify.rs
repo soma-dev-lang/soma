@@ -1189,27 +1189,69 @@ fn expr_calls_transition_to(e: &Expr, to: &str, from: &str) -> bool {
     hit
 }
 
+/// The names a statement may rebind or shadow before a transition() nested
+/// in it runs: an assignment inside an expression block (`try { amount = 0 -
+/// 5 }`, a match arm), a lambda parameter, a match binding, a loop variable.
+/// Only the statement's own top-level `let`/`=` used to be forgotten, so a
+/// guard narrowed by `require` read as proven through any of these.
+fn rebound_within(stmts: &[Spanned<Statement>]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    super::invariants::collect_binders_stmts(stmts, &mut out);
+    super::literals::for_each_stmt_deep(stmts, &mut |x| match x {
+        Statement::Let { name, .. } | Statement::Assign { name, .. } => { out.insert(name.clone()); }
+        Statement::For { var, .. } => { out.insert(var.clone()); }
+        _ => {}
+    });
+    out
+}
+
+fn rebound_within_expr(e: &Expr) -> HashSet<String> {
+    let mut out = HashSet::new();
+    super::invariants::collect_binders_expr(e, &mut out);
+    super::literals::for_each_stmt_in_expr(e, &mut |x| match x {
+        Statement::Let { name, .. } | Statement::Assign { name, .. } => { out.insert(name.clone()); }
+        Statement::For { var, .. } => { out.insert(var.clone()); }
+        _ => {}
+    });
+    out
+}
+
+/// The guard judged at a transition() nested in a statement: with what
+/// the statement itself may rebind forgotten.
+fn implied_past(facts: &Facts, rebound: &HashSet<String>, guard: &[Vec<Atom>]) -> bool {
+    if rebound.is_empty() { return guard_implied(facts, guard); }
+    let mut f = facts.clone();
+    for n in rebound { f.forget(n); }
+    guard_implied(&f, guard)
+}
+
 /// Walk a handler body with the facts established so far; at every call of
 /// transition() to the edge, record whether the guard atoms are implied.
 fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &str,
               guard: &[Vec<Atom>], out: &mut Vec<bool>) {
     for st in stmts {
+        // an assignment inside an expression block (`let r = try { amount =
+        // 0 - 5 }`) outlives the statement: what follows no longer knows it
+        let mut leaked: Vec<&str> = Vec::new();
+        if !matches!(st.node, Statement::If { .. } | Statement::While { .. } | Statement::For { .. }) {
+            super::literals::for_each_stmt_deep(std::slice::from_ref(st), &mut |x| if let Statement::Assign { name, .. } = x { leaked.push(name); });
+        }
         match &st.node {
             Statement::Require { constraint, .. } => narrow_constraint(facts, &constraint.node),
             Statement::Let { name, value } | Statement::Assign { name, value } => {
                 if expr_calls_transition_to(&value.node, to, from) {
-                    out.push(guard_implied(facts, guard));
+                    out.push(implied_past(facts, &rebound_within(std::slice::from_ref(st)), guard));
                 }
                 facts.forget(name);
             }
             Statement::Return { value } | Statement::ExprStmt { expr: value } => {
                 if expr_calls_transition_to(&value.node, to, from) {
-                    out.push(guard_implied(facts, guard));
+                    out.push(implied_past(facts, &rebound_within(std::slice::from_ref(st)), guard));
                 }
             }
             Statement::If { condition, then_body, else_body } => {
                 if expr_calls_transition_to(&condition.node, to, from) {
-                    out.push(guard_implied(facts, guard));
+                    out.push(implied_past(facts, &rebound_within_expr(&condition.node), guard));
                 }
                 let mut then_facts = facts.clone();
                 narrow_expr(&mut then_facts, &condition.node);
@@ -1223,9 +1265,13 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
                 }
             }
             Statement::While { body, .. } | Statement::For { body, .. } => {
+                // the body runs again after its own assignments, and the
+                // loop variable is rebound on every pass
+                let mut rebound = rebound_within(body);
+                if let Statement::For { var, .. } = &st.node { rebound.insert(var.clone()); }
+                for n in &rebound { facts.forget(n); }
                 let mut inner = facts.clone();
                 walk_guard(body, &mut inner, to, from, guard, out);
-                super::literals::for_each_stmt_deep(body, &mut |x| if let Statement::Assign { name, .. } | Statement::Let { name, .. } = x { facts.forget(name); });
             }
             _ => {
                 // a transition() nested anywhere else (a match arm, an emit
@@ -1237,10 +1283,11 @@ fn walk_guard(stmts: &[Spanned<Statement>], facts: &mut Facts, to: &str, from: &
                     }
                 });
                 if found {
-                    out.push(guard_implied(facts, guard));
+                    out.push(implied_past(facts, &rebound_within(std::slice::from_ref(st)), guard));
                 }
             }
         }
+        for n in leaked { facts.forget(n); }
     }
 }
 

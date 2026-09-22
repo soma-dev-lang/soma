@@ -2592,3 +2592,61 @@ cell test T {
     assert!(out.contains("7 tests: 7 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_guard_is_not_proven_through_a_rebinding_the_require_does_not_cover() {
+    // each handler narrows `amount` with require, then changes what the
+    // transition() reads: inside a try block, as the loop variable, on a
+    // later pass of the loop, as a lambda parameter, as a match binding.
+    // verify said "proven" for all five and `soma run` failed the guard.
+    let dir = scratch("guard_rebinding");
+    std::fs::write(dir.join("app.cell"), r#"
+cell Order {
+    state order {
+        initial: pending
+        pending -> validated { guard { amount > 0 } }
+    }
+    on via_try(id: String, amount: Int) {
+        require amount > 0 else "bad"
+        let r = try { amount = 0 - 5 }
+        transition(id, "pending", "validated")
+        return 1
+    }
+    on via_for_var(id: String, amount: Int) {
+        require amount > 0 else "bad"
+        for amount in [0 - 5] { transition(id, "pending", "validated") }
+        return 1
+    }
+    on via_loop(amount: Int) {
+        require amount > 0 else "bad"
+        for k in ["a", "b"] {
+            transition(k, "pending", "validated")
+            amount = 0 - 5
+        }
+        return 1
+    }
+    on via_lambda(id: String, amount: Int) {
+        require amount > 0 else "bad"
+        let r = [0 - 3] |> map(amount => transition(id, "pending", "validated"))
+        return 1
+    }
+    on via_match(id: String, amount: Int, m: Map) {
+        require amount > 0 else "bad"
+        let r = match m { { amount } -> transition(id, "pending", "validated") }
+        return 1
+    }
+    on kept(id: String, amount: Int) {
+        require amount > 0 else "bad"
+        let r = try { get_status(id) }
+        for k in [1, 2] { let z = k }
+        transition(id, "pending", "validated")
+        return 1
+    }
+}
+"#).unwrap();
+    let (_, out) = soma(&dir, &["verify", "app.cell"]);
+    let line = out.lines().find(|l| l.contains("guard `amount > 0`") && !l.contains("kept in the model")).unwrap_or_default().to_string();
+    assert!(line.contains("runtime-checked in `via_try`, `via_for_var`, `via_loop`, `via_lambda`, `via_match`"), "{out}");
+    assert!(line.contains("proven in `kept`"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

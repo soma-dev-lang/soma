@@ -2390,7 +2390,7 @@ fn collect_non_for_binders(stmts: &[Spanned<Statement>], out: &mut HashSet<Strin
     }
 }
 
-fn collect_binders_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
+pub(crate) fn collect_binders_stmts(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
     for st in stmts {
         match &st.node {
             Statement::Let { value, .. } | Statement::Assign { value, .. } | Statement::Return { value }
@@ -2416,7 +2416,7 @@ fn nested_lets(stmts: &[Spanned<Statement>], out: &mut HashSet<String>) {
     }
 }
 
-fn collect_binders_expr(e: &Expr, out: &mut HashSet<String>) {
+pub(crate) fn collect_binders_expr(e: &Expr, out: &mut HashSet<String>) {
     match e {
         Expr::LambdaBlock { stmts, .. } => nested_lets(stmts, out),
         Expr::Match { arms, .. } => for arm in arms { nested_lets(&arm.body, out) },
