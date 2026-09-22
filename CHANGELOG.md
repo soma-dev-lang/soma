@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### An or-pattern binds only what every alternative binds
+
+- `match m { Up(n) || Wait -> n … }` passed `soma check`, and `Wait` then
+  raised "undefined variable: n": the checker took the names bound by ANY
+  alternative. A name is now in scope only when every alternative binds it
+  (`Up(n) || Down(n) -> n` is unchanged).
+
 ### A string pattern is interpolated like any string
 
 - `v == "user-{id}"` was true, but `match v { "user-{id}" -> … }` compared

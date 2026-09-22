@@ -3285,3 +3285,18 @@ cell test T {
     assert!(out.contains("undefined variable 'nosuch'"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn an_or_pattern_binds_only_what_every_alternative_binds() {
+    // `Up(n) || Wait -> n` passed check and raised "undefined variable: n"
+    // on Wait: the bindings of the alternatives were united
+    let dir = scratch("or_pattern_bindings");
+    std::fs::write(dir.join("app.cell"), "cell type Move { variants { Up(Int) Down(Int) Wait } }\ncell X {\n  on f(m: Move) { return match m { Up(n) || Wait -> n  Down(n) -> 0 } }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("undefined variable 'n'"), "{out}");
+    std::fs::write(dir.join("app.cell"), "cell type Move { variants { Up(Int) Down(Int) Wait } }\ncell X {\n  on g(m: Move) { return match m { Up(n) || Down(n) -> n  Wait -> 0 } }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

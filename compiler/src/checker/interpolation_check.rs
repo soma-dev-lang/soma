@@ -1670,10 +1670,16 @@ pub(super) fn bind_pattern(pattern: &MatchPattern, scope: &mut HashSet<String>) 
         MatchPattern::Variable(name) => {
             scope.insert(name.clone());
         }
+        // a name is bound only when EVERY alternative binds it: `Up(n) ||
+        // Wait -> n` passed check and raised "undefined variable: n" on Wait
         MatchPattern::Or(alts) => {
+            let mut common: Option<HashSet<String>> = None;
             for alt in alts {
-                bind_pattern(alt, scope);
+                let mut b = HashSet::new();
+                bind_pattern(alt, &mut b);
+                common = Some(match common { None => b, Some(c) => c.intersection(&b).cloned().collect() });
             }
+            scope.extend(common.unwrap_or_default());
         }
         MatchPattern::MapDestructure(fields) => {
             for (_, sub) in fields {
