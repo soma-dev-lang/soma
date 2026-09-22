@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### `soma fix` keeps annotations and the meaning of arithmetic
+
+- Removing a handler's return type took everything up to the `{`: `on
+  sq(x: Int) -> Int [native] {` became `on sq(x: Int) {`, silently dropping
+  `[native]` (and `[task]`), while the fix reported "All checks passed". The
+  removal now stops at the annotation.
+- `;` was replaced by spaces even when the next statement began with an
+  operator: `let d = a; -b` became `let d = a   -b`, which is `a - b`. Such a
+  `;` is now left for the author, with its diagnostic.
+
 ### `to_float` reads what `to_int` reads
 
 - `to_int(" 12 ")` and `to_int("12\n")` trim the text; `to_float(" 1.5 ")`

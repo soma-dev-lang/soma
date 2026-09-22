@@ -3148,3 +3148,21 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn soma_fix_keeps_annotations_and_the_meaning_of_arithmetic() {
+    // removing `-> Int` took `[native]` / `[task]` with it; replacing `;`
+    // by spaces turned `let d = a; -b` into `let d = a   -b`, i.e. a - b
+    let dir = scratch("fix_meaning");
+    std::fs::write(dir.join("rt.cell"), "cell A {\n    face {\n        signal sq(x: Int) -> Int\n    }\n    on sq(x: Int) -> Int [native] {\n        return x * x\n    }\n}\n").unwrap();
+    let (_, out) = soma(&dir, &["fix", "rt.cell"]);
+    let fixed = std::fs::read_to_string(dir.join("rt.cell")).unwrap();
+    assert!(fixed.contains("on sq(x: Int) [native] {"), "{out}\n{fixed}");
+    std::fs::write(dir.join("semi.cell"), "cell A {\n    on f(a: Int, b: Int) {\n        let xs = [a]; let ys = [b]\n        let d = a; -b\n        return d\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["fix", "semi.cell"]);
+    let fixed = std::fs::read_to_string(dir.join("semi.cell")).unwrap();
+    assert!(fixed.contains("let d = a; -b"), "{out}\n{fixed}");
+    assert!(!fixed.contains("let xs = [a];"), "{out}\n{fixed}");
+    assert_ne!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

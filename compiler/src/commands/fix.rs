@@ -166,7 +166,11 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
             Err(e) => {
                 let Some(cpos) = super::lex_error_position(&e) else { break };
                 let pos = char_to_byte(source, cpos);
-                if matches!(e, crate::lexer::LexError::UnexpectedChar { .. }) && source[pos..].starts_with(';') {
+                // …unless what follows would continue the expression: `let d =
+                // a; -b` became `let d = a   -b`, which is a - b
+                let continues = source[pos + 1..].trim_start_matches([' ', '\t'])
+                    .starts_with(['-', '+', '*', '/', '%', '(', '[', '.', '|', '&', '=', '<', '>', '?', '!']);
+                if matches!(e, crate::lexer::LexError::UnexpectedChar { .. }) && source[pos..].starts_with(';') && !continues {
                     // `a = 1; b = 2` — two spaces separate statements on one line
                     let (line, _) = crate::interpreter::span_to_location(source, cpos);
                     source.replace_range(pos..pos + 1, "  ");
@@ -197,7 +201,9 @@ fn syntax_fixes(source: &mut String) -> Vec<String> {
                     // cell's `{` and deleted everything between, cell
                     // declaration included, while reporting the fix as applied
                     let line_end = source[span.start..].find('\n').map(|i| span.start + i).unwrap_or(source.len());
-                    if let Some(rel) = source[span.start..line_end].find('{') {
+                    // …and stop at an annotation: `-> Int [native] {` lost
+                    // its [native] (and `[task]`) with the type
+                    if let Some(rel) = source[span.start..line_end].find(['[', '{']) {
                         let mut start = span.start;
                         while start > 0 && source.as_bytes()[start - 1] == b' ' { start -= 1; }
                         source.replace_range(start..span.start + rel, " ");
