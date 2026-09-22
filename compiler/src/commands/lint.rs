@@ -51,6 +51,9 @@ struct LintPass<'a> {
     /// (slot, loop variable) pairs of `for k in slot.keys`: `slot.get(k)`
     /// inside cannot miss
     known_keys: Vec<(String, String)>,
+    /// slot -> (value type as written, literal default for it if one exists).
+    /// `Map<String, String>.get()` was told to fall back on `map()`.
+    slot_value: std::collections::HashMap<String, (String, Option<String>)>,
 }
 
 impl<'a> LintPass<'a> {
@@ -62,6 +65,7 @@ impl<'a> LintPass<'a> {
             all_handler_names: Vec::new(),
             suppress_unchecked_get: false,
             known_keys: Vec::new(),
+            slot_value: std::collections::HashMap::new(),
         }
     }
 
@@ -100,6 +104,20 @@ impl<'a> LintPass<'a> {
                 None
             }
         }).flatten().collect();
+
+        self.slot_value.clear();
+        for section in &cell.sections {
+            if let ast::Section::Memory(ref mem) = section.node {
+                for slot in &mem.slots {
+                    if let Some(v) = value_type_of(&slot.node.ty.node) {
+                        self.slot_value.insert(
+                            slot.node.name.clone(),
+                            (render_type(v), literal_default(v)),
+                        );
+                    }
+                }
+            }
+        }
 
         // Collect handler names and check for routing references
         self.all_handler_names.clear();
@@ -385,12 +403,29 @@ impl<'a> LintPass<'a> {
             if !self.suppress_unchecked_get && !key_known && self.is_bare_storage_get(&value.node, memory_slots) {
                 let line = self.line_of(span);
                 let get_expr = self.expr_to_source(&value.node);
+                let slot = match &value.node {
+                    Expr::MethodCall { target, .. } => match &target.node {
+                        Expr::Ident(n) => Some(n.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                // the default has to have the slot's value type: a
+                // `Map<String, String>` was told to fall back on `map()`
+                let suggestion = match slot.as_deref().and_then(|s| self.slot_value.get(s)) {
+                    Some((_, Some(default))) => format!("{} ?? {}", get_expr, default),
+                    Some((ty, None)) => format!(
+                        "compare the result to () before using it \u{2014} {} has no literal default",
+                        ty
+                    ),
+                    None => format!("{} ?? ()", get_expr),
+                };
                 self.warn(
                     "unchecked_get",
                     Severity::Warning,
                     line,
                     "unchecked .get() \u{2014} may return ()",
-                    &format!("{} ?? map()", get_expr),
+                    &suggestion,
                 );
             }
         }
@@ -842,5 +877,49 @@ fn constraint_mentions(c: &ast::Constraint, name: &str) -> bool {
         ast::Constraint::And(a, b) | ast::Constraint::Or(a, b) => constraint_mentions(&a.node, name) || constraint_mentions(&b.node, name),
         ast::Constraint::Not(inner) => constraint_mentions(&inner.node, name),
         _ => false,
+    }
+}
+
+
+/// The type a `.get()` on this slot yields: the value type of a `Map<K, V>`,
+/// the element type of a `List<T>`.
+fn value_type_of(ty: &ast::TypeExpr) -> Option<&ast::TypeExpr> {
+    match ty {
+        ast::TypeExpr::Generic { name, args } if name == "Map" && args.len() == 2 => Some(&args[1].node),
+        ast::TypeExpr::Generic { name, args } if name == "List" && args.len() == 1 => Some(&args[0].node),
+        _ => None,
+    }
+}
+
+/// The type as the source spells it, for a message that names it.
+fn render_type(ty: &ast::TypeExpr) -> String {
+    match ty {
+        ast::TypeExpr::Simple(n) => n.clone(),
+        ast::TypeExpr::Generic { name, args } => format!(
+            "{}<{}>",
+            name,
+            args.iter().map(|a| render_type(&a.node)).collect::<Vec<_>>().join(", ")
+        ),
+        ast::TypeExpr::CellRef { cell, member } => format!("{}.{}", cell, member),
+    }
+}
+
+/// The literal a `??` can fall back on for this type, when one exists.
+/// A user type or `Any` has none, and inventing `map()` for it was the bug.
+fn literal_default(ty: &ast::TypeExpr) -> Option<String> {
+    match ty {
+        ast::TypeExpr::Simple(n) => match n.as_str() {
+            "String" => Some("\"\"".to_string()),
+            "Int" => Some("0".to_string()),
+            "Float" => Some("0.0".to_string()),
+            "Bool" => Some("false".to_string()),
+            _ => None,
+        },
+        ast::TypeExpr::Generic { name, .. } => match name.as_str() {
+            "List" => Some("[]".to_string()),
+            "Map" => Some("map()".to_string()),
+            _ => None,
+        },
+        ast::TypeExpr::CellRef { .. } => None,
     }
 }

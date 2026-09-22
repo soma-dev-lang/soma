@@ -1848,6 +1848,42 @@ fn lint_reads_interior_cells() {
 }
 
 #[test]
+fn lint_defaults_the_unchecked_get_to_the_slot_value_type() {
+    // the `??` fallback was hardcoded to `map()` whatever the slot held:
+    // a `Map<String, String>` was told to fall back on a Map, and applying
+    // the suggestion put a Map where a String belonged
+    let dir = scratch("lint_get_default");
+    std::fs::write(dir.join("app.cell"),
+        "cell A {\n    memory {\n        s: Map<String, String>\n        i: Map<String, Int>\n         \x20       f: Map<String, Float>\n        b: Map<String, Bool>\n         \x20       m: Map<String, Map<String, Int>>\n        l: Map<String, List<Int>>\n         \x20       a: Map<String, Any>\n        e: List<String>\n    }\n         \x20   on h(k: String) {\n        let v1 = s.get(k)\n        let v2 = i.get(k)\n         \x20       let v3 = f.get(k)\n        let v4 = b.get(k)\n        let v5 = m.get(k)\n         \x20       let v6 = l.get(k)\n        let v7 = a.get(k)\n        let v8 = e.get(0)\n         \x20       return [v1, v2, v3, v4, v5, v6, v7, v8]\n    }\n}\n").unwrap();
+    let (code, out) = soma(&dir, &["lint", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    for want in ["s.get(k) ?? \"\"", "i.get(k) ?? 0", "f.get(k) ?? 0.0",
+                 "b.get(k) ?? false", "m.get(k) ?? map()", "l.get(k) ?? []",
+                 "e.get(0) ?? \"\""] {
+        assert!(out.contains(want), "missing suggestion `{want}`\n{out}");
+    }
+    // a type with no literal default is not given an invented one
+    assert!(out.contains("Any has no literal default"), "{out}");
+    assert!(!out.contains("a.get(k) ?? map()"), "{out}");
+
+    // every suggested default is accepted where the `.get()` stood
+    std::fs::write(dir.join("fixed.cell"),
+        std::fs::read_to_string(dir.join("app.cell")).unwrap()
+            .replace("= s.get(k)", "= s.get(k) ?? \"\"")
+            .replace("= i.get(k)", "= i.get(k) ?? 0")
+            .replace("= f.get(k)", "= f.get(k) ?? 0.0")
+            .replace("= b.get(k)", "= b.get(k) ?? false")
+            .replace("= m.get(k)", "= m.get(k) ?? map()")
+            .replace("= l.get(k)", "= l.get(k) ?? []")
+            .replace("= e.get(0)", "= e.get(0) ?? \"\"")).unwrap();
+    let (code, out) = soma(&dir, &["check", "fixed.cell"]);
+    assert_eq!(code, 0, "the suggested defaults must type-check\n{out}");
+    let (_, out) = soma(&dir, &["lint", "fixed.cell"]);
+    assert!(!out.contains("s.get(k)"), "the warning must be gone once applied\n{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and

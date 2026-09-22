@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### `soma lint`: the `.get()` fallback has the slot's value type
+
+- The `unchecked .get()` warning suggested `?? map()` whatever the slot held.
+  A `Map<String, String>` was told to fall back on a Map, so applying the
+  suggestion put a Map where a String belonged. The default now comes from the
+  declared value type: `""` for a String, `0` for an Int, `0.0` for a Float,
+  `false` for a Bool, `[]` for a List, `map()` for a Map, and the element type
+  for a `List<T>` slot. A type with no literal default (`Any`, a user type) is
+  no longer given an invented one: the suggestion says to compare the result
+  to `()` instead. Nineteen of the shipped `soma example` programs carried the
+  wrong advice.
+
 ### Lifecycle and data: `status` invariants, declared transition sources, proven guards
 
 - An invariant may read `status`, the state of the machine instance whose id
