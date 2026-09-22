@@ -293,16 +293,18 @@ fn set_slot_int(cell: &CellDef) {
 pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
     let mut results = Vec::new();
 
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) {
+    // interior cells too: an invariant inside `interior { }` was never
+    // proven — a statically violated one passed as VERIFY OK
+    for cell in crate::checker::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) {
             continue;
         }
-        set_slot_int(&cell.node);
+        set_slot_int(&cell);
 
         // invariant → the slots it guards (same scoping rule as runtime)
         let mut guarded: Vec<(Expr, Vec<String>, String)> = Vec::new();
         let mut status_notes: Vec<String> = Vec::new();
-        for section in &cell.node.sections {
+        for section in &cell.sections {
             let Section::Memory(mem) = &section.node else { continue };
             let slot_names: Vec<String> =
                 mem.slots.iter().map(|s| s.node.name.clone()).collect();
@@ -353,13 +355,12 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
 
         // `every` / `after` blocks write slots too: they are writers (their
         // writes were invisible — "no handler writes to guarded slots")
-        let ticks: Vec<OnSection> = cell.node.sections.iter().enumerate().filter_map(|(i, s)| match &s.node {
+        let ticks: Vec<OnSection> = cell.sections.iter().enumerate().filter_map(|(i, s)| match &s.node {
             Section::Every(e) => Some(OnSection { signal_name: format!("every {}ms #{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: if e.task { vec!["task".to_string()] } else { vec![] } }),
             Section::After(e) => Some(OnSection { signal_name: format!("after {}ms #{}", e.interval_ms, i), params: vec![], body: e.body.clone(), properties: if e.task { vec!["task".to_string()] } else { vec![] } }),
             _ => None,
         }).collect();
         let mut handlers: HashMap<String, &OnSection> = cell
-            .node
             .sections
             .iter()
             .filter_map(|s| if let Section::OnSignal(on) = &s.node { Some((on.signal_name.clone(), on)) } else { None })
@@ -375,7 +376,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
             }))
             .collect();
         // this cell's ticks too (a `[task]` tick's think() ends a step)
-        for t in &ticks { all_handlers.push((cell.node.name.clone(), t)); }
+        for t in &ticks { all_handlers.push((cell.name.clone(), t)); }
         let all_handlers = all_handlers;
         let cell_names: HashSet<String> = program.cells.iter().map(|c| c.node.name.clone()).collect();
         // every handler of each cell: a computed `delegate` may run any
@@ -406,7 +407,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
         }
 
         let mut result = VerifyResult {
-            machine_name: format!("{}/invariants", cell.node.name),
+            machine_name: format!("{}/invariants", cell.name),
             states: vec![],
             initial: String::new(),
             terminal_states: vec![],
@@ -446,14 +447,14 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     collect_fn_names(inv, &mut fns);
                     // a List delete SHIFTS the later elements: an invariant
                     // about `key` (the index) can break without a write
-                    let list_slot = cell.node.sections.iter().any(|sec| matches!(&sec.node, Section::Memory(m)
+                    let list_slot = cell.sections.iter().any(|sec| matches!(&sec.node, Section::Memory(m)
                         if m.slots.iter().any(|sl| sl.node.name == *slot && matches!(&sl.node.ty.node, TypeExpr::Simple(t) | TypeExpr::Generic { name: t, .. } if t == "List"))));
                     let keyed = names.contains("key") || names.contains("_key");
                     // a rule BETWEEN slots CAN break on a delete: the entry
                     // it drops takes that side to () (a "proven" ✓ let a
                     // delete leave 3 reserved against 0 in stock)
                     let cross = {
-                        let all: Vec<String> = cell.node.sections.iter().filter_map(|sec| match &sec.node {
+                        let all: Vec<String> = cell.sections.iter().filter_map(|sec| match &sec.node {
                             Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()), _ => None })
                             .flatten().collect();
                         all.iter().any(|n| n != slot && names.contains(n.as_str()))
@@ -490,7 +491,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // reaches (a helper, emit, delegate, itself): drop such facts
                 let rewritten = {
                     let own = writes.iter().filter(|(h, sl, e, _, _, _)| h == handler && sl == slot && !matches!(e, Expr::Ident(n) if n == "<deleted entry>")).count() > 1;
-                    let me = cell.node.name.clone();
+                    let me = cell.name.clone();
                     let mut seen: HashSet<(String, String)> = HashSet::new();
                     let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
                     let mut other = false;
@@ -520,7 +521,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // …also a think() in a handler it reaches (a helper, delegate,
                 // an emit listener): it ends the step all the same
                 let task_with_think = handlers.get(handler).map_or(false, |on| on.properties.iter().any(|p| p == "task")) && {
-                    let me = cell.node.name.clone();
+                    let me = cell.name.clone();
                     let mut seen: HashSet<(String, String)> = HashSet::new();
                     let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
                     let mut t = false;
@@ -629,7 +630,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // reaches) can remove the required key before the write:
                 // `require m.get(k) != ()  m.delete(k)  m.set(k, 2)` grew it
                 let deletes_reached = {
-                    let me = cell.node.name.clone();
+                    let me = cell.name.clone();
                     let mut seen: HashSet<(String, String)> = HashSet::new();
                     let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
                     let mut hit = false;
@@ -719,7 +720,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                     // calls, emits and think tools) can write THIS slot — a pure
                     // helper call (`let x = _pure(id)`) defeated the proof
                     let calls_handlers = {
-                        let me = cell.node.name.clone();
+                        let me = cell.name.clone();
                         let mut seen: HashSet<(String, String)> = HashSet::new();
                         let mut stack: Vec<(String, String)> = Vec::new();
                         let push_calls = |c: &str, on: &OnSection, stack: &mut Vec<(String, String)>| {
@@ -789,7 +790,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // handler that calls back, an `emit` listener) that also adds
                 // to the slot grows it past the one require (transitively)
                 {
-                    let me = cell.node.name.clone();
+                    let me = cell.name.clone();
                     let mut seen: HashSet<(String, String)> = HashSet::new();
                     let mut stack: Vec<(String, String)> = vec![(me.clone(), handler.clone())];
                     let mut recursive = false;
@@ -842,7 +843,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // a Float slot: NaN (sqrt(-1.0), 0.0 / 0.0, inf - inf) fails
                 // every comparison, and no interval says a value is not NaN —
                 // `x >= 0.0` "proven" for `abs(v)` rejected abs(sqrt(-1.0))
-                let float_slot = cell.node.sections.iter().any(|s| match &s.node {
+                let float_slot = cell.sections.iter().any(|s| match &s.node {
                     Section::Memory(m) => m.slots.iter().any(|sl| sl.node.name == *slot && type_mentions_float(&sl.node.ty.node)),
                     _ => false,
                 });
@@ -1001,7 +1002,7 @@ pub fn verify_program_invariants(program: &Program) -> Vec<VerifyResult> {
                 // suggestion: in a handler the slot name is the whole Map,
                 // so the suggested line could not even evaluate)
                 let cross = {
-                    let all: Vec<String> = cell.node.sections.iter().filter_map(|sec| match &sec.node {
+                    let all: Vec<String> = cell.sections.iter().filter_map(|sec| match &sec.node {
                         Section::Memory(m) => Some(m.slots.iter().map(|sl| sl.node.name.clone()).collect::<Vec<_>>()), _ => None })
                         .flatten().collect();
                     let mut names: HashSet<String> = HashSet::new();

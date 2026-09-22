@@ -37,15 +37,18 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
     let program = &analysis;
     let mut results = Vec::new();
 
-    for cell in &program.cells {
-        if !matches!(cell.node.kind, CellKind::Cell | CellKind::Agent) { continue; }
-        for section in &cell.node.sections {
+    // interior cells too: a machine, an invariant or a loop inside
+    // `interior { }` was never proven — verify said OK on a statically
+    // violated invariant
+    for cell in super::names::collect_cells(program) {
+        if !matches!(cell.kind, CellKind::Cell | CellKind::Agent) { continue; }
+        for section in &cell.sections {
             if let Section::State(ref sm) = section.node {
-                let mut result = verify_state_machine(sm, &cell.node);
+                let mut result = verify_state_machine(sm, &cell);
                 // several machines: name the CELL too (two `s` blocks could
                 // not be told apart)
-                let machine_cells = program.cells.iter().filter(|c| c.node.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
-                if machine_cells > 1 { result.machine_name = format!("{}.{}", cell.node.name, sm.name); }
+                let machine_cells = super::names::collect_cells(program).iter().filter(|c| c.sections.iter().any(|s| matches!(s.node, Section::State(_)))).count();
+                if machine_cells > 1 { result.machine_name = format!("{}.{}", cell.name, sm.name); }
                 // ── V1.3: refinement check ─────────────────────────────
                 // The CTL checker proves properties about the *picture* of
                 // the state machine. The refinement check proves the
@@ -57,7 +60,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 // scheduler blocks (`every 1s { … }`, `after 5s { … }`) are
                 // handler bodies too: an undeclared transition target in one
                 // used to pass verify and raise every tick under serve
-                let scheduled: Vec<OnSection> = cell.node.sections.iter().filter_map(|s| match &s.node {
+                let scheduled: Vec<OnSection> = cell.sections.iter().filter_map(|s| match &s.node {
                     Section::Every(e) => Some(OnSection { signal_name: format!("every@{}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
                     Section::After(e) => Some(OnSection { signal_name: format!("after@{}ms", e.interval_ms), params: vec![], body: e.body.clone(), properties: vec![] }),
                     _ => None,
@@ -74,7 +77,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                             _ => None,
                         })).collect()
                 } else { Vec::new() };
-                let mut handlers: Vec<(&OnSection, Span)> = cell.node.sections.iter()
+                let mut handlers: Vec<(&OnSection, Span)> = cell.sections.iter()
                     .filter_map(|s| if let Section::OnSignal(ref on) = s.node { Some((on, s.span)) } else { None })
                     .collect();
                 // the only machine of the program is also moved by the
@@ -92,9 +95,9 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                         }
                     }
                 }
-                for (i, s) in cell.node.sections.iter().enumerate() {
+                for (i, s) in cell.sections.iter().enumerate() {
                     if matches!(s.node, Section::Every(_) | Section::After(_)) {
-                        let idx = cell.node.sections[..i].iter().filter(|x| matches!(x.node, Section::Every(_) | Section::After(_))).count();
+                        let idx = cell.sections[..i].iter().filter(|x| matches!(x.node, Section::Every(_) | Section::After(_))).count();
                         handlers.push((&scheduled[idx], s.span));
                     }
                 }
@@ -106,7 +109,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 // then CTL safety properties hold regardless of what
                 // think() / any LLM builtin returns. See isolation.rs.
                 let isolation = super::isolation::check_isolation(
-                    &cell.node.name, &cell.node, &findings);
+                    &cell.name, &cell, &findings);
                 match &isolation {
                     super::isolation::IsolationFinding::ThinkIsolated { n_handlers, n_transitions, .. } => {
                         result.checks.push(VerifyCheck::Pass(
@@ -130,7 +133,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                 }
 
                 // ── V1.4: handler termination check ──────────────
-                let term_findings = super::termination::check_cell_termination(&cell.node, program);
+                let term_findings = super::termination::check_cell_termination(&cell, program);
                 let all_terminate = term_findings.iter().all(|f|
                     matches!(f, super::termination::TerminationFinding::Terminates { .. }));
                 if all_terminate && !term_findings.is_empty() {
@@ -245,7 +248,7 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
                     result.checks.push(check);
                 }
                 // V1.6: effect summary for think() in each handler.
-                for eff in super::effects::check_cell(&cell.node) {
+                for eff in super::effects::check_cell(&cell) {
                     let tools: Vec<String> = eff.think_tools.iter().cloned().collect();
                     let summary = if tools.is_empty() {
                         "no tools available".to_string()
@@ -262,20 +265,20 @@ pub fn verify_program(program: &Program) -> Vec<VerifyResult> {
             }
         }
         // Verify scale section if present
-        if let Some(scale_result) = verify_scale(&cell.node) {
+        if let Some(scale_result) = verify_scale(&cell) {
             results.push(scale_result);
         }
 
         // ── V1.4: composition check for interior cells ────────
         // For each interior block, verify that every emitted signal
         // has a matching handler and every handler has a signal source.
-        for section in &cell.node.sections {
+        for section in &cell.sections {
             if let Section::Interior(ref interior) = section.node {
                 let comp = super::composition::check_composition(
-                    &interior.cells, &cell.node);
+                    &interior.cells, &cell);
                 if !comp.pairs.is_empty() || !comp.undelivered.is_empty() || !comp.orphans.is_empty() {
                     let mut comp_result = VerifyResult {
-                        machine_name: format!("{}/composition", cell.node.name),
+                        machine_name: format!("{}/composition", cell.name),
                         states: vec![],
                         initial: String::new(),
                         terminal_states: vec![],

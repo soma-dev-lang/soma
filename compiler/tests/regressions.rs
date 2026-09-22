@@ -1721,3 +1721,33 @@ fn interior_cells_get_the_same_static_checks() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn verify_proves_interior_cells_too() {
+    // `soma verify` walked only top-level cells: a machine, a loop and an
+    // invariant inside `interior { }` were never proven, so a STATICALLY
+    // violated invariant came out as VERIFY OK
+    let dir = scratch("verify_interior");
+    let worker = "    memory {\n        n: Map<String, Int>\n        invariant n >= 0\n    }\n\
+        \x20   state m { initial: a  a -> b  b -> c  c -> b }\n\
+        \x20   on go(id: String) {\n        n.set(\"k\", 0 - 1)\n        let i = 0\n\
+        \x20       while i < 10 { i = i + 1 }\n        transition(id, \"a\", \"b\")\n        return get_status(id)\n    }\n";
+    std::fs::write(dir.join("flat.cell"), format!("cell Worker {{\n{worker}}}\n")).unwrap();
+    let (code, flat) = soma(&dir, &["verify", "flat.cell"]);
+    assert_ne!(code, 0, "{flat}");
+    let nested: String = worker.lines().map(|l| format!("        {l}\n")).collect();
+    std::fs::write(dir.join("app.cell"), format!(
+        "cell Outer {{\n    on run() {{ return 1 }}\n    interior {{\n\
+         \x20       cell Driver {{\n            face {{ signal go(id: String) }}\n            on go(id: String) {{ return 1 }}\n        }}\n\
+         \x20       cell Worker {{\n            face {{ await go(id: String) }}\n{nested}        }}\n    }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = soma(&dir, &["verify", "app.cell"]);
+    assert_ne!(code, 0, "an interior cell must be proven like any other\n{out}");
+    for want in ["invariant n >= 0", "statically violated",
+                 "while-loop without provable termination bound",
+                 "no terminal states"] {
+        assert!(out.contains(want), "missing {want:?} for the interior cell\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
