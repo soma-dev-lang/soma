@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### `push` and `merge` refuse what is not their collection
+
+- `push(list(1))` answered `[[1]]`, `push(5, 6)` the list `[5, 6]` and
+  `push("ab", "c")` `["ab", "c"]`: a first argument that was not a List
+  became an element. `push(xs)` now answers a copy of `xs`, and a non-List
+  first argument raises kind `type`.
+- `merge(5, m)` answered `5`, `merge(m, [1])` answered `m` unchanged, and
+  `merge(a, b, c)` ignored `c`. Every argument must be a Map (kind `type`
+  otherwise), and all of them are merged, later ones winning.
+
 ### `soma serve -w` keeps its flags, and its server stops with it
 
 - The watched server was started as `serve <file> -p <port>` only: with

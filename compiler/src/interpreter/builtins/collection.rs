@@ -200,16 +200,17 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             Some(Ok(Value::Map(entries)))
         }
         "push" => {
-            if args.len() >= 2 {
-                if let Value::List(existing) = &args[0] {
+            // push(list(1)) answered [[1]] and push(5, 6) the list [5, 6]:
+            // the first argument is the list, the rest are appended
+            match args.first() {
+                Some(Value::List(existing)) => {
                     let mut result = existing.clone();
-                    result.extend(args[1..].to_vec());
+                    result.extend(args[1..].iter().cloned());
                     Some(Ok(Value::List(result)))
-                } else {
-                    Some(Ok(Value::List(args.to_vec())))
                 }
-            } else {
-                Some(Ok(Value::List(args.to_vec())))
+                other => Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                    "push(list, items…) appends to a List, got {} — start from `[]`: push([], x)",
+                    other.map(|v| format!("{} {}", crate::interpreter::value_type_name(v), super::string::to_json_string(v))).unwrap_or_else(|| "nothing".to_string())) })),
             }
         }
         "with" => {
@@ -274,17 +275,23 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
             }
         }
         "merge" => {
-            if args.len() >= 2 {
-                if let (Value::Map(a), Value::Map(b)) = (&args[0], &args[1]) {
-                    let mut result = a.clone();
-                    for (key, val) in b {
-                        result.insert(key.clone(), val.clone());
-                    }
-                    Some(Ok(Value::Map(result)))
-                } else { Some(Ok(args[0].clone())) }
-            } else {
-                Some(Err(RuntimeError::TypeError("merge expects (map1, map2)".to_string())))
+            // merge(5, m) answered 5 and merge(m, [1]) answered m unchanged;
+            // a third map was ignored
+            if args.len() < 2 {
+                return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: "merge(a: Map, b: Map, …) takes at least two maps".to_string() }));
             }
+            let mut result: IndexMap<String, Value> = IndexMap::new();
+            for (i, a) in args.iter().enumerate() {
+                let Value::Map(m) = a else {
+                    return Some(Err(RuntimeError::Domain { kind: "type".to_string(), message: format!(
+                        "merge(a: Map, b: Map, …): argument {} is {} {}, not a Map", i + 1,
+                        crate::interpreter::value_type_name(a), super::string::to_json_string(a)) }));
+                };
+                for (key, val) in m {
+                    result.insert(key.clone(), val.clone());
+                }
+            }
+            Some(Ok(Value::Map(result)))
         }
         "join" => {
             // Smart dispatch: join(list, list, key) → data join, join(list, sep) → string join

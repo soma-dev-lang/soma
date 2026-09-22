@@ -2932,3 +2932,27 @@ cell W {
     assert!(closed, "the watched server outlived its watcher");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn push_and_merge_refuse_what_is_not_their_collection() {
+    // push(list(1)) answered [[1]], push(5, 6) the list [5, 6]; merge(5, m)
+    // answered 5, merge(m, [1]) m unchanged, and a third map was ignored
+    passes("push_merge_types", r#"
+cell S {
+    on k(r: Map) { return if r.error != () { "ERR:" + r.kind } else { to_string(r.value) } }
+}
+cell test T {
+    rules {
+        assert push([1]) == [1]
+        assert push([1], 2, 3) == [1, 2, 3]
+        assert [1].push(2) == [1, 2]
+        assert S.k(try { push(5, 6) }) == "ERR:type"
+        assert S.k(try { push("ab", "c") }) == "ERR:type"
+        assert merge(map("a", 1), map("a", 2, "b", 3)) == map("a", 2, "b", 3)
+        assert merge(map("a", 1), map("b", 2), map("c", 3)) == map("a", 1, "b", 2, "c", 3)
+        assert S.k(try { merge(map("a", 1), [1]) }) == "ERR:type"
+        assert S.k(try { merge(5, map("a", 1)) }) == "ERR:type"
+    }
+}
+"#);
+}
