@@ -2846,3 +2846,18 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn word_count_keys_come_in_first_appearance_order() {
+    // the counts went through a HashMap: another key order on every run
+    passes("word_count_order", r#"
+cell test T {
+    rules {
+        assert keys(word_count("zeta alpha Zeta beta gamma delta epsilon eta theta")) == ["zeta", "alpha", "beta", "gamma", "delta", "epsilon", "eta", "theta"]
+        assert keys(word_count(["b a", "c b"])) == ["b", "a", "c"]
+        assert keys(par_word_count(["b a", "c b", "d e", "f a", "g h", "i j", "k l", "m n", "o p", "q r", "s t", "u v"])) == ["b", "a", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v"]
+        assert word_count("zeta alpha Zeta").zeta == 2
+    }
+}
+"#);
+}

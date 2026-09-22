@@ -290,10 +290,12 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
         "word_count" => {
             // word_count(text) → map of word → count
             // word_count(list_of_strings) → aggregated map
-            // Implemented in Rust for speed — 10-50x faster than interpreted loop
+            // Implemented in Rust for speed — 10-50x faster than interpreted loop.
+            // Words in the order they first appear (a HashMap gave another
+            // key order on every run, breaking replay and to_json output).
             match args.first() {
                 Some(Value::String(text)) => {
-                    let mut counts: HashMap<String, i64> = HashMap::new();
+                    let mut counts: IndexMap<String, i64> = IndexMap::new();
                     for word in text.split_whitespace() {
                         let w = word.to_lowercase();
                         *counts.entry(w).or_insert(0) += 1;
@@ -305,7 +307,7 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                 }
                 Some(Value::List(items)) => {
                     // Aggregate word counts across all strings in the list
-                    let mut counts: HashMap<String, i64> = HashMap::new();
+                    let mut counts: IndexMap<String, i64> = IndexMap::new();
                     for item in items {
                         let text = match item {
                             Value::String(s) => s.clone(),
@@ -394,10 +396,10 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                 // an empty list made a chunk size of 0, which panics
                 let chunk = items.len().div_ceil(n_threads).max(1);
 
-                let merged: HashMap<String, i64> = std::thread::scope(|s| {
+                let merged: IndexMap<String, i64> = std::thread::scope(|s| {
                     let handles: Vec<_> = items.chunks(chunk).map(|chunk_items| {
                         s.spawn(move || {
-                            let mut local: HashMap<String, i64> = HashMap::new();
+                            let mut local: IndexMap<String, i64> = IndexMap::new();
                             for item in chunk_items {
                                 let text = match item {
                                     Value::String(s) => s.as_str(),
@@ -416,7 +418,8 @@ fn call_bulk_io(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeError
                         })
                     }).collect();
 
-                    let mut merged: HashMap<String, i64> = HashMap::new();
+                    // merged in chunk order: the same first-appearance order as word_count
+                    let mut merged: IndexMap<String, i64> = IndexMap::new();
                     for handle in handles {
                         for (k, v) in handle.join().unwrap() {
                             *merged.entry(k).or_insert(0) += v;

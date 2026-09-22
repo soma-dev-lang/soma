@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### `word_count` answers its words in a stable order
+
+- `word_count` and `par_word_count` collected their counts in a hash map,
+  so `keys(word_count(text))` and `to_json(...)` came out in another order
+  on every run — though neither is listed as nondeterministic, and a replay
+  compares them. The words now come in the order they first appear, for the
+  parallel form too.
+
 ### `html(status, body)` checks its status like `response()`
 
 - `html(query.code, …)` with the String `"404"` answered 200, and
