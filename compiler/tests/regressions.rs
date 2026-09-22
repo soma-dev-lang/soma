@@ -2861,3 +2861,18 @@ cell test T {
 }
 "#);
 }
+
+#[test]
+fn an_empty_top_level_verify_list_is_refused() {
+    // `eventually = []`, `never = []`, `always = []` under [verify] checked
+    // nothing and printed VERIFY OK; the after/before sections refused theirs
+    for key in ["eventually", "never", "always"] {
+        let dir = scratch(&format!("empty_verify_{key}"));
+        std::fs::write(dir.join("app.cell"), "cell O {\n  state order {\n    initial: a\n    a -> b\n  }\n  on go(id: String) { transition(id, \"b\") }\n}\n").unwrap();
+        std::fs::write(dir.join("soma.toml"), format!("[verify]\ndeadlock_free = true\n{key} = []\n")).unwrap();
+        let (code, out) = soma(&dir, &["verify", "app.cell"]);
+        assert_ne!(code, 0, "{key}: {out}");
+        assert!(out.contains("names no state"), "{key}: {out}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### An empty `[verify]` state list is refused
+
+- `eventually = []`, `never = []` and `always = []` under `[verify]` checked
+  nothing and `soma verify` printed VERIFY OK — while the same empty list
+  under `[verify.after.X]` or `[verify.before.X]` was already refused. They
+  are now a manifest error naming the key. `soma init` no longer writes an
+  empty list into a new soma.toml, and the `messenger` example loses the
+  `never = []` that checked nothing.
+
 ### `word_count` answers its words in a stable order
 
 - `word_count` and `par_word_count` collected their counts in a hash map,

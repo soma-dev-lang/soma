@@ -171,6 +171,17 @@ pub struct ParallelConfig {
     pub handlers: Vec<String>,
 }
 
+/// `eventually = []` under [verify] checked nothing and printed VERIFY OK
+/// (an empty `always` even reads as "the machine is in no state", which is
+/// false); `[verify.after.X]` and `[verify.before.X]` already refused theirs.
+fn states_listed<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let v = Vec::<String>::deserialize(d)?;
+    if v.is_empty() {
+        return Err(serde::de::Error::custom("an empty list names no state — it checks nothing: list the states (`[\"settled\"]`) or remove the key"));
+    }
+    Ok(v)
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)] // a typo'd property must not vanish silently
 pub struct VerifyConfig {
@@ -183,13 +194,13 @@ pub struct VerifyConfig {
     #[serde(default)]
     pub deadlock_free: bool,
     /// States that must eventually be reached (OR semantics)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "states_listed", skip_serializing_if = "Vec::is_empty")]
     pub eventually: Vec<String>,
     /// States that must never be reached
-    #[serde(default)]
+    #[serde(default, deserialize_with = "states_listed", skip_serializing_if = "Vec::is_empty")]
     pub never: Vec<String>,
     /// States that must always be reachable
-    #[serde(default)]
+    #[serde(default, deserialize_with = "states_listed", skip_serializing_if = "Vec::is_empty")]
     pub always: Vec<String>,
     /// After reaching state X, must eventually reach one of Y
     #[serde(default)]
