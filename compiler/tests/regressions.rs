@@ -1796,3 +1796,32 @@ cell Outer {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn calling_an_interior_cell_by_name_is_refused() {
+    // the interpreter never registers a cell declared in `interior { }`, so
+    // `Worker.ping(…)` passed `check` and raised "undefined variable:
+    // Worker" when the rule or the handler ran
+    let dir = scratch("interior_call");
+    let interior = "    interior {\n\
+        \x20       cell Driver {\n            face { signal ping(id: String) }\n            on ping(id: String) { return 1 }\n        }\n\
+        \x20       cell Worker {\n            face { await ping(id: String) }\n            on ping(id: String) { return 2 }\n        }\n    }\n";
+    // from a test rule
+    std::fs::write(dir.join("app.cell"), format!(
+        "cell Outer {{\n    on run() {{ return 1 }}\n{interior}}}\n\
+         cell test T {{\n    rules {{\n        assert Worker.ping(\"a\") == 2\n    }}\n}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("is a cell inside the `interior { }` of 'Outer'"), "{out}");
+    // and from a top-level handler
+    std::fs::write(dir.join("app.cell"), format!(
+        "cell Outer {{\n    on run() {{ return Worker.ping(\"a\") }}\n{interior}}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("never called by name"), "{out}");
+    // the composition itself stays legal
+    std::fs::write(dir.join("app.cell"), format!("cell Outer {{\n    on run() {{ return 1 }}\n{interior}}}\n")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -162,6 +162,11 @@
   one cell of its four. Each nested cell is listed after its parent, named
   `(interior of X)` in the text and carrying `interior_of` in the JSON. One
   regression test.
+- Calling a cell of an `interior { }` by name is refused: the interpreter
+  never registers those cells, so `Worker.ping(…)` passed `check` and raised
+  `undefined variable: Worker` when the test rule or the handler ran. The
+  bare-name form was already refused; the qualified one now is too, with the
+  reason (a sibling's signals drive them). One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.

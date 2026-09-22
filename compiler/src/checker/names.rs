@@ -65,6 +65,10 @@ pub struct ProgramIndex {
     pub slots: HashSet<String>,
     /// Top-level cell names (targets of `Cell.handler(args)` calls).
     pub cells: HashSet<String>,
+    /// Cells declared inside an `interior { }`, with their parent: they are
+    /// not callable at all (the interpreter never registers them), so
+    /// `Worker.ping(…)` is refused rather than left to fail at run time.
+    pub interior_cells: HashMap<String, String>,
     /// Slots declared with a List type (the others are maps).
     pub list_slots: HashSet<String>,
     /// (cell, handler) → its parameter count (`B.bh()` with the wrong count
@@ -123,6 +127,16 @@ impl ProgramIndex {
             .map(|c| c.node.name.as_str())
             .collect();
         let cells: HashSet<String> = top_level.iter().map(|s| s.to_string()).collect();
+        let mut interior_cells: HashMap<String, String> = HashMap::new();
+        for parent in &program.cells {
+            for s in &parent.node.sections {
+                if let Section::Interior(interior) = &s.node {
+                    for child in &interior.cells {
+                        interior_cells.insert(child.node.name.clone(), parent.node.name.clone());
+                    }
+                }
+            }
+        }
 
         for cell in collect_cells(program) {
             known.insert(cell.name.clone());
@@ -188,7 +202,7 @@ impl ProgramIndex {
             }
         }
 
-        Self { handler_map, known, variants, slots, cells, list_slots, arity, slot_owners }
+        Self { handler_map, known, variants, slots, cells, interior_cells, list_slots, arity, slot_owners }
     }
 }
 

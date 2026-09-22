@@ -1060,6 +1060,20 @@ impl<'a> Walker<'a> {
                 // `Ledger.deposit(a, n)` — a call into another cell: the
                 // handler must exist there (the runtime resolves it by name)
                 if let Expr::Ident(cell) = &target.node {
+                    // an interior cell is not registered by the interpreter:
+                    // `Worker.ping(…)` passed check and raised "undefined
+                    // variable: Worker" when the rule or handler ran
+                    if let Some(parent) = self.index.interior_cells.get(cell) {
+                        if !self.scope.contains(cell) {
+                            self.issues.push(InterpolationIssue {
+                                message: format!("`{cell}.{method}(…)`: '{cell}' is a cell inside the `interior {{ }}` of '{parent}' — those are driven by a sibling's signals, never called by name (calling it raises `undefined variable: {cell}` at run time)"),
+                                span: target.span,
+                                warning: false,
+                                habit: false,
+                                kind: "interior_call",
+                            });
+                        }
+                    }
                     if self.index.cells.contains(cell) && !self.scope.contains(cell) {
                         let defined = self.index.handler_map.get(method)
                             .map(|cs| cs.contains(cell)).unwrap_or(false);
