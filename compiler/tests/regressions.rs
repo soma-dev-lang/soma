@@ -2021,3 +2021,25 @@ cell test T {
     assert!(out.contains("5 tests: 5 passed"), "{out}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn lowercase_and_uppercase_case_the_stringified_value() {
+    // the doc says "non-strings are stringified first" — the stringified
+    // form came back untouched, so `uppercase(true)` gave "true" and the
+    // call quietly did nothing
+    let dir = scratch("case_nonstring");
+    std::fs::write(dir.join("app.cell"), r#"
+cell U {
+    on t() { return [uppercase(true), lowercase("AB"), uppercase("ab"), uppercase([1, "ab"]), uppercase(map("Ka", "Vb")), uppercase(12)] }
+}
+cell test T {
+    rules {
+        assert U.t() == ["TRUE", "ab", "AB", "[1, \"AB\"]", "{\"KA\": \"VB\"}", "12"]
+    }
+}
+"#).unwrap();
+    let (code, out) = soma(&dir, &["test", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("1 tests: 1 passed"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}

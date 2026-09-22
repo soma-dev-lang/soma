@@ -104,22 +104,19 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Result<Value, RuntimeE
                 Some(Err(RuntimeError::TypeError("ends_with expects 2 arguments".to_string())))
             }
         }
+        // "non-strings are stringified first" — and then cased: the
+        // stringified form was returned untouched (`uppercase(true)` gave
+        // "true"), so the call quietly did nothing
         "lowercase" => {
             args.first().map(|a| {
-                if let Value::String(s) = a {
-                    Ok(Value::String(s.to_lowercase()))
-                } else {
-                    Ok(Value::String(format!("{}", a)))
-                }
+                let text = match a { Value::String(s) => s.clone(), other => format!("{}", other) };
+                Ok(Value::String(text.to_lowercase()))
             })
         }
         "uppercase" => {
             args.first().map(|a| {
-                if let Value::String(s) = a {
-                    Ok(Value::String(s.to_uppercase()))
-                } else {
-                    Ok(Value::String(format!("{}", a)))
-                }
+                let text = match a { Value::String(s) => s.clone(), other => format!("{}", other) };
+                Ok(Value::String(text.to_uppercase()))
             })
         }
         // Same functions the [native] backend compiles to the `regex` crate.

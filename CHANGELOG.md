@@ -203,6 +203,10 @@
   so a forgotten second one produced a wrong result in silence, while every
   sibling (`split`, `replace`, `contains`…) raises on a missing argument. The
   message names the two forms. One regression test.
+- `lowercase` / `uppercase` case the value they stringify: their doc says
+  "non-strings are stringified first", but the stringified form came back
+  untouched, so `uppercase(true)` answered `"true"` and the call quietly did
+  nothing. One regression test.
 - The guard prover reads a negated `require`: `require !(n < 0)` establishes
   `n >= 0`, `!(a || b)` establishes both negations, and a guard written as
   `!(n < 0)` is proven from `require n >= 0`. Two regression tests.
