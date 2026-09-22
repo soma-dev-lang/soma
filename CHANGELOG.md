@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### A `cost` axis speaks only for the bound it was given
+
+- An empty `cost { }`, and `cost { usd: 1 }`, were both told their `tokens`
+  bound was advisory — a bound the author never wrote. The tokens advisory is
+  now raised only when a tokens bound is declared, as the latency axis
+  already did.
+- A declared `usd` or `latency` bound that unbounded `think()` sites keep from
+  being proven said nothing at all: neither proven nor advisory. Each now
+  names those sites on its own axis.
+
 ### A malformed budget annotation is refused, not quietly defaulted
 
 - `capacity(N)`, `max_key_bytes(N)`, `max_value_bytes(N)` and

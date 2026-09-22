@@ -746,7 +746,11 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
     advisory_sites.sort();
     advisory_sites.dedup();
     let bounded = advisory_sites.is_empty();
-    if !advisory_sites.is_empty() {
+    // only when a tokens bound was declared: `cost { usd: 1 }`, and even an
+    // empty `cost { }`, were told their 'tokens' bound was advisory — a
+    // bound the author never wrote. The latency axis below already gates
+    // its own advisory this way.
+    if !advisory_sites.is_empty() && cost.tokens.is_some() {
         findings.push(CostFinding::Advisory {
             axis: "tokens",
             reason: format!("{} unbounded think()/loop site(s): [{}]",
@@ -774,6 +778,14 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
             findings.push(CostFinding::Advisory {
                 axis: "latency",
                 reason: format!("{} unbounded I/O site(s): [{}]", latency_advisory.len(), latency_advisory.join(", ")),
+            });
+        } else if !bounded {
+            // the think sites that block the latency proof, said on the axis
+            // the author declared
+            findings.push(CostFinding::Advisory {
+                axis: "latency",
+                reason: format!("{} unbounded think()/loop site(s): [{}]",
+                                advisory_sites.len(), advisory_sites.join(", ")),
             });
         }
         if peak_latency_ms > declared {
@@ -804,6 +816,13 @@ pub fn check_cell(cell: &CellDef, manifest: Option<&Manifest>, all: &AllHandlers
         } else if bounded {
             findings.push(CostFinding::Proven {
                 axis: "usd", computed: peak_usd_milli, declared, unit: "milli-USD",
+            });
+        } else {
+            // neither proven nor exceeded: say why, instead of nothing
+            findings.push(CostFinding::Advisory {
+                axis: "usd",
+                reason: format!("{} unbounded think()/loop site(s): [{}]",
+                                advisory_sites.len(), advisory_sites.join(", ")),
             });
         }
     }

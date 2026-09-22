@@ -2327,6 +2327,43 @@ fn a_malformed_budget_annotation_is_refused_rather_than_defaulted() {
 }
 
 #[test]
+fn a_cost_axis_speaks_only_for_the_bound_it_was_given() {
+    // an empty `cost { }`, and `cost { usd: 1 }`, were both told their
+    // 'tokens' bound was advisory — a bound the author never wrote. And a
+    // declared usd bound that could not be proven said nothing at all
+    let dir = scratch("cost_axis");
+    let cell = |body: &str, handler: &str| format!(
+        "cell A {{\n    cost {{\n{body}    }}\n    on r() {handler}\n}}\n");
+    let unbounded = "[task] { return think(\"hi\") }";
+
+    // nothing declared, nothing claimed
+    let (code, out) = {
+        std::fs::write(dir.join("app.cell"), cell("", unbounded)).unwrap();
+        soma(&dir, &["check", "app.cell"])
+    };
+    assert_eq!(code, 0, "an empty cost block declares no bound\n{out}");
+    assert!(!out.contains("advisory"), "{out}");
+
+    // each axis reports on its own bound
+    for (body, axis) in [("        tokens: 300\n", "tokens"), ("        usd: 1\n", "usd")] {
+        std::fs::write(dir.join("app.cell"), cell(body, unbounded)).unwrap();
+        let (code, out) = soma(&dir, &["check", "app.cell"]);
+        assert_ne!(code, 0, "{out}");
+        assert!(out.contains(&format!("'{axis}' bound is advisory")), "{out}");
+        let other = if axis == "tokens" { "usd" } else { "tokens" };
+        assert!(!out.contains(&format!("'{other}' bound")), "no axis speaks for a bound not given\n{out}");
+    }
+
+    // a bound that can be proven still is
+    std::fs::write(dir.join("app.cell"),
+        cell("        usd: 1\n", "{ return think(\"hi\", \"sys\", map(\"max_tokens\", 5)) }")).unwrap();
+    let (code, out) = soma(&dir, &["check", "app.cell"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("'usd' bound proven"), "{out}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn fix_never_deletes_code_past_the_handler_line() {
     // removing a handler's `-> T` searched the WHOLE file for the opening
     // brace: with no body on that line it found the next cell's `{` and
